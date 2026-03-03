@@ -42,6 +42,7 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
   const [state, setState] = useState<WizardState>(EMPTY)
   const [validation, setValidation] = useState<ValidateConfigResponse | null>(null)
   const [creating, setCreating] = useState(false)
+  const [result, setResult] = useState<{ space_id: string; space_url: string } | null>(null)
 
   // UC browser state
   const [catalogs, setCatalogs] = useState<string[]>([])
@@ -130,7 +131,8 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
         display_name: state.name,
         serialized_space: buildConfig(),
       })
-      onCreated(r.space_id, state.name)
+      setResult(r)
+      setStep(5)
     } catch (e: unknown) {
       alert(`Failed: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
@@ -418,7 +420,33 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
         </div>
       )}
 
+      {/* Step 5: Success */}
+      {step === 5 && result && (
+        <div className="text-center py-8">
+          <div className="w-12 h-12 rounded-full bg-green-500/10 flex items-center justify-center mx-auto mb-4">
+            <Check className="w-6 h-6 text-green-500" />
+          </div>
+          <p className="font-semibold text-primary mb-2">Space Created!</p>
+          <a
+            href={result.space_url}
+            target="_blank"
+            rel="noreferrer"
+            className="text-accent underline text-sm"
+          >
+            Open in Databricks
+          </a>
+          <br />
+          <button
+            onClick={() => onCreated(result.space_id, state.name)}
+            className="mt-4 px-4 py-2 bg-accent text-white rounded-lg text-sm font-medium"
+          >
+            View Space →
+          </button>
+        </div>
+      )}
+
       {/* Nav buttons */}
+      {step < 5 && (
       <div className="flex justify-between mt-8">
         <button
           onClick={() => setStep((s) => Math.max(0, s - 1))}
@@ -445,6 +473,7 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
           </button>
         )}
       </div>
+      )}
     </div>
   )
 }
