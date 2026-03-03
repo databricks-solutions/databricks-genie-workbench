@@ -96,6 +96,8 @@ async def create_space_endpoint(body: CreateSpaceRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
     except Exception as e:
         logger.exception(f"create_genie_space failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to create Genie Space")
