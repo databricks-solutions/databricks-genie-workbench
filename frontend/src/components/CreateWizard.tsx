@@ -7,7 +7,7 @@ import {
   validateSpaceConfig,
   createWizardSpace,
 } from "@/lib/api"
-import type { UcTable, ValidateConfigResponse } from "@/types"
+import type { UcTable, ValidateConfigResponse, CreateWizardSpaceResponse } from "@/types"
 
 const STEPS = ["Requirements", "Data Sources", "Sample Questions", "Instructions", "Review", "Create"]
 
@@ -42,7 +42,7 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
   const [state, setState] = useState<WizardState>(EMPTY)
   const [validation, setValidation] = useState<ValidateConfigResponse | null>(null)
   const [creating, setCreating] = useState(false)
-  const [result, setResult] = useState<{ space_id: string; space_url: string } | null>(null)
+  const [result, setResult] = useState<CreateWizardSpaceResponse | null>(null)
 
   // UC browser state
   const [catalogs, setCatalogs] = useState<string[]>([])
@@ -119,9 +119,14 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
   })
 
   const validate = async () => {
-    const r = await validateSpaceConfig(buildConfig())
-    setValidation(r)
-    return r.valid
+    try {
+      const r = await validateSpaceConfig(buildConfig())
+      setValidation(r)
+      return r.valid
+    } catch (e: unknown) {
+      alert(`Validation failed: ${e instanceof Error ? e.message : String(e)}`)
+      return false
+    }
   }
 
   const create = async () => {
@@ -458,7 +463,7 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
         {step < 4 ? (
           <button
             onClick={() => setStep((s) => Math.min(4, s + 1))}
-            disabled={step === 0 && !state.name}
+            disabled={(step === 0 && !state.name) || (step === 1 && state.tables.length === 0)}
             className="flex items-center gap-1 px-4 py-2 bg-accent text-white rounded-lg text-sm disabled:opacity-50"
           >
             Next <ArrowRight className="w-4 h-4" />
