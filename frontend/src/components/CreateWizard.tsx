@@ -13,8 +13,6 @@ const STEPS = ["Requirements", "Data Sources", "Sample Questions", "Instructions
 
 interface WizardState {
   name: string
-  description: string
-  audience: string
   tables: UcTable[]
   sampleQuestions: string[]
   textInstructions: string
@@ -24,8 +22,6 @@ interface WizardState {
 
 const EMPTY: WizardState = {
   name: "",
-  description: "",
-  audience: "",
   tables: [],
   sampleQuestions: Array(5).fill(""),
   textInstructions: "",
@@ -185,23 +181,6 @@ export function CreateWizard({ onCreated }: CreateWizardProps) {
               onChange={(e) => setState((s) => ({ ...s, name: e.target.value }))}
               className="w-full border border-default rounded-lg px-3 py-2 text-sm bg-surface text-primary"
               placeholder="e.g. Sales Analytics"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium block mb-1 text-secondary">Description</label>
-            <textarea
-              value={state.description}
-              onChange={(e) => setState((s) => ({ ...s, description: e.target.value }))}
-              className="w-full border border-default rounded-lg px-3 py-2 text-sm bg-surface text-primary resize-none h-20"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium block mb-1 text-secondary">Intended Audience</label>
-            <input
-              value={state.audience}
-              onChange={(e) => setState((s) => ({ ...s, audience: e.target.value }))}
-              className="w-full border border-default rounded-lg px-3 py-2 text-sm bg-surface text-primary"
-              placeholder="e.g. Sales team, Finance analysts"
             />
           </div>
         </div>

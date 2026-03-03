@@ -598,11 +598,15 @@ export async function createWizardSpace(payload: {
   serialized_space: Record<string, unknown>
   parent_path?: string
 }): Promise<CreateWizardSpaceResponse> {
-  return fetchWithTimeout<CreateWizardSpaceResponse>(`${API_BASE}/create`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  })
+  return fetchWithTimeout<CreateWizardSpaceResponse>(
+    `${API_BASE}/create`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+    LONG_TIMEOUT // Space creation via Databricks API can take time
+  )
 }
 
 export { ApiError }
