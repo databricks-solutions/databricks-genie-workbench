@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 def get_llm_model() -> str:
     """Get the configured LLM model name."""
-    return os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4")
+    return os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
 
 
 def call_serving_endpoint(

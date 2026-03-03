@@ -450,7 +450,7 @@ async def get_settings():
 
     return SettingsResponse(
         genie_space_id=None,  # This is session-specific, passed from frontend
-        llm_model=os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4"),
+        llm_model=os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6"),
         sql_warehouse_id=get_sql_warehouse_id(),
         databricks_host=get_databricks_host(),
         workspace_directory=os.environ.get("GENIE_TARGET_DIRECTORY", "").strip() or None,
