@@ -1,6 +1,6 @@
 /**
  * App - Genie Workbench root component.
- * Supports three top-level views: SpaceList, SpaceDetail, AdminDashboard.
+ * Supports four top-level views: SpaceList, SpaceDetail, AdminDashboard, CreateWizard.
  */
 import { useState } from "react"
 import { LayoutGrid, BarChart2, PlusCircle } from "lucide-react"
