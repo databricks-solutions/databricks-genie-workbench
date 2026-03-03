@@ -35,7 +35,7 @@ env:
   # LLM Model
   # ---------------------------------------------------------------------------
   - name: LLM_MODEL
-    value: "databricks-claude-sonnet-4-5"
+    value: "databricks-claude-sonnet-4-6"
 
   # ---------------------------------------------------------------------------
   # SQL Warehouse (required for GenieIQ benchmark execution)
