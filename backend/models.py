@@ -256,3 +256,19 @@ class AlertItem(BaseModel):
     display_name: str
     score: int
     top_finding: str | None = None
+
+
+# ===== Create Wizard Models =====
+
+class CreateSpaceRequest(BaseModel):
+    """Request body for the Create Space Wizard endpoint."""
+    display_name: str = Field(..., min_length=1, max_length=255)
+    serialized_space: dict
+    parent_path: str | None = Field(None, max_length=1000)
+
+
+class CreateSpaceResponse(BaseModel):
+    """Response from the Create Space Wizard endpoint."""
+    space_id: str
+    display_name: str
+    space_url: str
