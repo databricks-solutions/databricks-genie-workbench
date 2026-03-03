@@ -570,25 +570,25 @@ export function streamFixAgent(
 // ── Create Wizard ────────────────────────────────────────────────────────────
 
 export async function discoverCatalogs(): Promise<{ catalogs: UcCatalog[] }> {
-  return fetchWithTimeout<{ catalogs: UcCatalog[] }>('/api/create/discover/catalogs')
+  return fetchWithTimeout<{ catalogs: UcCatalog[] }>(`${API_BASE}/create/discover/catalogs`)
 }
 
 export async function discoverSchemas(catalog: string): Promise<{ schemas: UcSchema[] }> {
   return fetchWithTimeout<{ schemas: UcSchema[] }>(
-    `/api/create/discover/schemas?catalog=${encodeURIComponent(catalog)}`
+    `${API_BASE}/create/discover/schemas?catalog=${encodeURIComponent(catalog)}`
   )
 }
 
 export async function discoverTables(catalog: string, schema: string): Promise<{ tables: UcTable[] }> {
   return fetchWithTimeout<{ tables: UcTable[] }>(
-    `/api/create/discover/tables?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}`
+    `${API_BASE}/create/discover/tables?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}`
   )
 }
 
 export async function validateSpaceConfig(serialized_space: Record<string, unknown>): Promise<ValidateConfigResponse> {
-  return fetchWithTimeout<ValidateConfigResponse>('/api/create/validate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  return fetchWithTimeout<ValidateConfigResponse>(`${API_BASE}/create/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ serialized_space }),
   })
 }
@@ -598,9 +598,9 @@ export async function createWizardSpace(payload: {
   serialized_space: Record<string, unknown>
   parent_path?: string
 }): Promise<CreateWizardSpaceResponse> {
-  return fetchWithTimeout<CreateWizardSpaceResponse>('/api/create', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  return fetchWithTimeout<CreateWizardSpaceResponse>(`${API_BASE}/create`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   })
 }
