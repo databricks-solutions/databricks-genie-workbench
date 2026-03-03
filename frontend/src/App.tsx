@@ -3,14 +3,15 @@
  * Supports three top-level views: SpaceList, SpaceDetail, AdminDashboard.
  */
 import { useState } from "react"
-import { LayoutGrid, BarChart2 } from "lucide-react"
+import { LayoutGrid, BarChart2, PlusCircle } from "lucide-react"
 import { ThemeToggle } from "@/components/ThemeToggle"
 import { useTheme } from "@/hooks/useTheme"
 import { SpaceList } from "@/pages/SpaceList"
 import { SpaceDetail } from "@/pages/SpaceDetail"
 import { AdminDashboard } from "@/pages/AdminDashboard"
+import { CreateWizard } from "@/components/CreateWizard"
 
-type View = "list" | "detail" | "admin"
+type View = "list" | "detail" | "admin" | "create"
 
 interface DetailState {
   spaceId: string
@@ -40,6 +41,15 @@ export default function App() {
   const handleNavAdmin = () => {
     setCurrentView("admin")
     setDetailState(null)
+  }
+
+  const handleNavCreate = () => {
+    setCurrentView("create")
+    setDetailState(null)
+  }
+
+  const handleCreated = (spaceId: string, displayName: string) => {
+    handleSelectSpace(spaceId, displayName)
   }
 
   return (
@@ -81,6 +91,17 @@ export default function App() {
               <BarChart2 className="w-4 h-4" />
               Admin
             </button>
+            <button
+              onClick={handleNavCreate}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                currentView === "create"
+                  ? "bg-accent/10 text-accent"
+                  : "text-muted hover:text-secondary hover:bg-surface-secondary"
+              }`}
+            >
+              <PlusCircle className="w-4 h-4" />
+              Create Space
+            </button>
           </nav>
 
           <ThemeToggle />
@@ -103,6 +124,18 @@ export default function App() {
 
         {currentView === "admin" && (
           <AdminDashboard onSelectSpace={handleSelectSpace} />
+        )}
+
+        {currentView === "create" && (
+          <div>
+            <div className="mb-6">
+              <h1 className="text-2xl font-bold text-primary">Create Genie Space</h1>
+              <p className="text-muted text-sm mt-1">
+                Build a new Genie Space from Unity Catalog tables
+              </p>
+            </div>
+            <CreateWizard onCreated={handleCreated} />
+          </div>
         )}
       </main>
     </div>
