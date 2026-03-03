@@ -1,0 +1,55 @@
+# Databricks Apps ignore file
+# Controls what files are synced during deployment
+# See: https://github.com/databricks-solutions/databricks-genai-app-template
+
+# =============================================================================
+# IMPORTANT: frontend/dist/ MUST be deployed (it contains the React build)
+# =============================================================================
+
+# Development and IDE files
+.git/
+.vscode/
+.cursor/
+.idea/
+*.pyc
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Environment files (secrets - never deploy these)
+.env
+.env.local
+.env.*
+
+# Frontend SOURCE files (not needed - only the built dist/ is needed)
+frontend/node_modules/
+frontend/src/
+frontend/public/
+frontend/*.json
+frontend/*.ts
+frontend/*.js
+frontend/*.html
+frontend/*.md
+frontend/.vite/
+
+# DO NOT ignore frontend/dist - it must be deployed!
+# The React build lives there
+
+# Test and scratch files
+tests/
+test_*.py
+/scratch/
+/output/
+
+# Documentation (not needed at runtime)
+/docs/
+CLAUDE.md
+README.md
+
+# Python virtual environments
+.venv/
+venv/
+
+# MLflow local runs
+mlruns/

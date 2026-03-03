@@ -1,0 +1,235 @@
+/**
+ * SpaceList - Org-wide Genie Space listing with IQ scores.
+ */
+import { useState, useEffect, useCallback } from "react"
+import { Star, RefreshCw, Search, LayoutGrid, AlertTriangle, Zap } from "lucide-react"
+import { listSpaces, scanSpace, toggleStar } from "@/lib/api"
+import { getScoreHex } from "@/lib/utils"
+import type { SpaceListItem, ScanResult } from "@/types"
+
+interface SpaceListProps {
+  onSelectSpace: (spaceId: string, displayName: string) => void
+}
+
+function MaturityBadge({ maturity }: { maturity: string | null }) {
+  if (!maturity) return <span className="text-xs text-muted">Not scanned</span>
+
+  const colors: Record<string, string> = {
+    Optimized: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+    Proficient: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+    Developing: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
+    Basic: "bg-orange-500/20 text-orange-400 border-orange-500/30",
+    Nascent: "bg-red-500/20 text-red-400 border-red-500/30",
+  }
+  const cls = colors[maturity] || "bg-surface-secondary text-muted border-default"
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${cls}`}>
+      {maturity}
+    </span>
+  )
+}
+
+function ScoreRing({ score }: { score: number | null }) {
+  if (score === null) {
+    return (
+      <div className="w-14 h-14 rounded-full border-2 border-default flex items-center justify-center">
+        <span className="text-xs text-muted">—</span>
+      </div>
+    )
+  }
+
+  const color = getScoreHex(score)
+  const radius = 22
+  const circumference = 2 * Math.PI * radius
+  const dashOffset = circumference * (1 - score / 100)
+
+  return (
+    <div className="relative w-14 h-14">
+      <svg className="w-full h-full -rotate-90" viewBox="0 0 56 56">
+        <circle cx="28" cy="28" r={radius} fill="none" stroke="currentColor" strokeWidth="3" className="text-surface-secondary" />
+        <circle
+          cx="28" cy="28" r={radius}
+          fill="none" stroke={color} strokeWidth="3"
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+          strokeLinecap="round"
+          style={{ transition: "stroke-dashoffset 0.5s ease" }}
+        />
+      </svg>
+      <span className="absolute inset-0 flex items-center justify-center text-sm font-bold text-primary">
+        {score}
+      </span>
+    </div>
+  )
+}
+
+export function SpaceList({ onSelectSpace }: SpaceListProps) {
+  const [spaces, setSpaces] = useState<SpaceListItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [search, setSearch] = useState("")
+  const [starredOnly, setStarredOnly] = useState(false)
+  const [scanning, setScanning] = useState<Set<string>>(new Set())
+
+  const loadSpaces = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const data = await listSpaces({ search: search || undefined, starred_only: starredOnly })
+      setSpaces(data)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load spaces")
+    } finally {
+      setLoading(false)
+    }
+  }, [search, starredOnly])
+
+  useEffect(() => {
+    loadSpaces()
+  }, [loadSpaces])
+
+  const handleScan = async (e: React.MouseEvent, spaceId: string) => {
+    e.stopPropagation()
+    setScanning(prev => new Set(prev).add(spaceId))
+    try {
+      const result: ScanResult = await scanSpace(spaceId)
+      setSpaces(prev => prev.map(s =>
+        s.space_id === spaceId
+          ? { ...s, score: result.score, maturity: result.maturity, last_scanned: result.scanned_at }
+          : s
+      ))
+    } catch (e) {
+      console.error("Scan failed:", e)
+    } finally {
+      setScanning(prev => { const s = new Set(prev); s.delete(spaceId); return s })
+    }
+  }
+
+  const handleToggleStar = async (e: React.MouseEvent, space: SpaceListItem) => {
+    e.stopPropagation()
+    const newStarred = !space.is_starred
+    setSpaces(prev => prev.map(s => s.space_id === space.space_id ? { ...s, is_starred: newStarred } : s))
+    try {
+      await toggleStar(space.space_id, newStarred)
+    } catch (e) {
+      // Revert
+      setSpaces(prev => prev.map(s => s.space_id === space.space_id ? { ...s, is_starred: !newStarred } : s))
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-display font-bold text-primary">Genie Spaces</h2>
+          <p className="text-muted mt-1">{spaces.length} spaces{starredOnly ? " (starred)" : ""}</p>
+        </div>
+        <button
+          onClick={loadSpaces}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg border border-default bg-surface hover:bg-surface-secondary text-sm text-secondary transition-colors"
+        >
+          <RefreshCw className="w-4 h-4" />
+          Refresh
+        </button>
+      </div>
+
+      {/* Filters */}
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search spaces..."
+            className="w-full pl-9 pr-3 py-2 rounded-lg border border-default bg-surface text-primary text-sm placeholder:text-muted focus:outline-none focus:ring-2 focus:ring-accent/50"
+          />
+        </div>
+        <button
+          onClick={() => setStarredOnly(!starredOnly)}
+          className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-sm transition-colors ${
+            starredOnly
+              ? "border-amber-500/50 bg-amber-500/10 text-amber-400"
+              : "border-default bg-surface text-muted hover:text-secondary"
+          }`}
+        >
+          <Star className="w-4 h-4" />
+          Starred
+        </button>
+      </div>
+
+      {/* Content */}
+      {loading ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="bg-surface border border-default rounded-xl p-4 animate-pulse">
+              <div className="h-4 bg-surface-secondary rounded w-3/4 mb-3" />
+              <div className="h-3 bg-surface-secondary rounded w-1/2" />
+            </div>
+          ))}
+        </div>
+      ) : error ? (
+        <div className="flex items-center gap-3 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400">
+          <AlertTriangle className="w-5 h-5 flex-shrink-0" />
+          <span>{error}</span>
+        </div>
+      ) : spaces.length === 0 ? (
+        <div className="text-center py-16 text-muted">
+          <LayoutGrid className="w-12 h-12 mx-auto mb-4 opacity-30" />
+          <p className="text-lg">No spaces found</p>
+          {search && <p className="text-sm mt-1">Try a different search term</p>}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {spaces.map(space => (
+            <div
+              key={space.space_id}
+              onClick={() => onSelectSpace(space.space_id, space.display_name)}
+              className="group bg-surface border border-default rounded-xl p-4 hover:border-accent/40 hover:bg-surface-secondary/50 cursor-pointer transition-all"
+            >
+              <div className="flex items-start gap-3">
+                <ScoreRing score={space.score} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold text-primary truncate flex-1">
+                      {space.display_name}
+                    </h3>
+                    <button
+                      onClick={(e) => handleToggleStar(e, space)}
+                      className="opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Star className={`w-4 h-4 ${space.is_starred ? "fill-amber-400 text-amber-400" : "text-muted hover:text-amber-400"}`} />
+                    </button>
+                  </div>
+                  <div className="mt-1">
+                    <MaturityBadge maturity={space.maturity} />
+                  </div>
+                  {space.last_scanned && (
+                    <p className="text-xs text-muted mt-2">
+                      Scanned {new Date(space.last_scanned).toLocaleDateString()}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="mt-3 pt-3 border-t border-default flex items-center justify-between">
+                <span className="text-xs text-muted font-mono truncate max-w-[120px]">{space.space_id}</span>
+                <button
+                  onClick={(e) => handleScan(e, space.space_id)}
+                  disabled={scanning.has(space.space_id)}
+                  className="flex items-center gap-1 text-xs px-2 py-1 rounded-md border border-default hover:border-accent/40 hover:text-accent text-muted transition-colors disabled:opacity-50"
+                >
+                  {scanning.has(space.space_id) ? (
+                    <RefreshCw className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Zap className="w-3 h-3" />
+                  )}
+                  {scanning.has(space.space_id) ? "Scanning..." : "Scan"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
