@@ -278,3 +278,36 @@ export interface AppState {
   error: string | null
 }
 
+// ===== Create Wizard Types =====
+
+export interface UcCatalog {
+  name: string
+  comment?: string
+}
+
+export interface UcSchema {
+  name: string
+  catalog_name: string
+  comment?: string
+}
+
+export interface UcTable {
+  name: string
+  full_name: string
+  catalog_name: string
+  schema_name: string
+  comment?: string
+  table_type?: string
+}
+
+export interface ValidateConfigResponse {
+  valid: boolean
+  errors: string[]
+  warnings: string[]
+}
+
+export interface CreateWizardSpaceResponse {
+  space_id: string
+  display_name: string
+  space_url: string
+}
