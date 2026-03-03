@@ -6,8 +6,8 @@ logger = logging.getLogger(__name__)
 
 
 def list_catalogs() -> list[dict]:
-    client = get_workspace_client()
     try:
+        client = get_workspace_client()
         return [{"name": c.name, "comment": c.comment} for c in client.catalogs.list()]
     except Exception as e:
         logger.error(f"list_catalogs failed: {e}")
@@ -15,8 +15,8 @@ def list_catalogs() -> list[dict]:
 
 
 def list_schemas(catalog: str) -> list[dict]:
-    client = get_workspace_client()
     try:
+        client = get_workspace_client()
         return [{"name": s.name, "catalog_name": s.catalog_name, "comment": s.comment}
                 for s in client.schemas.list(catalog_name=catalog)]
     except Exception as e:
@@ -25,8 +25,8 @@ def list_schemas(catalog: str) -> list[dict]:
 
 
 def list_tables(catalog: str, schema: str) -> list[dict]:
-    client = get_workspace_client()
     try:
+        client = get_workspace_client()
         return [
             {
                 "name": t.name,
@@ -44,8 +44,8 @@ def list_tables(catalog: str, schema: str) -> list[dict]:
 
 
 def get_table_columns(catalog: str, schema: str, table: str) -> list[dict]:
-    client = get_workspace_client()
     try:
+        client = get_workspace_client()
         t = client.tables.get(f"{catalog}.{schema}.{table}")
         return [
             {
