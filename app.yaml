@@ -1,0 +1,114 @@
+# Databricks Apps configuration for Genie Workbench
+# See: https://docs.databricks.com/dev-tools/databricks-apps/
+#
+# Genie Workbench combines:
+#   - GenieRx: LLM-powered analysis and optimization of Genie Spaces
+#   - GenieIQ: Org-wide scoring with PostgreSQL (Lakebase) persistence
+#
+# Authentication: User-based (OBO) — users can only access Genie Spaces
+# they have permission to manage.
+#
+# The FastAPI server serves both:
+#   - Static React frontend files from /frontend/dist
+#   - REST API endpoints under /api
+
+command:
+  - "uvicorn"
+  - "backend.main:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+env:
+  # ---------------------------------------------------------------------------
+  # MLflow Tracing
+  # ---------------------------------------------------------------------------
+  - name: MLFLOW_TRACKING_URI
+    value: "databricks"
+  - name: MLFLOW_REGISTRY_URI
+    value: "databricks-uc"
+  - name: MLFLOW_EXPERIMENT_ID
+    value: ""  # OPTIONAL: Set to your MLflow experiment ID to enable tracing
+
+  # ---------------------------------------------------------------------------
+  # LLM Model
+  # ---------------------------------------------------------------------------
+  - name: LLM_MODEL
+    value: "databricks-claude-sonnet-4-6"
+
+  # ---------------------------------------------------------------------------
+  # SQL Warehouse (required for GenieIQ benchmark execution)
+  # ---------------------------------------------------------------------------
+  - name: SQL_WAREHOUSE_ID
+    value: ""  # Required: your SQL warehouse ID
+
+  # ---------------------------------------------------------------------------
+  # Genie Space target directory (required for creating new Genie Spaces)
+  # e.g. /Workspace/Users/you@company.com/
+  # ---------------------------------------------------------------------------
+  - name: GENIE_TARGET_DIRECTORY
+    value: ""
+
+  # ---------------------------------------------------------------------------
+  # Local dev auth (only used when running outside Databricks Apps)
+  # ---------------------------------------------------------------------------
+  - name: DEV_USER_EMAIL
+    value: ""
+
+  # ---------------------------------------------------------------------------
+  # Lakebase PostgreSQL connection
+  # These values are injected automatically by the Lakebase resource binding
+  # defined in the `resources` section below. Do not set them manually here.
+  # ---------------------------------------------------------------------------
+  - name: LAKEBASE_HOST
+    valueFrom:
+      secretRef: lakebase-connection
+      key: host
+  - name: LAKEBASE_PORT
+    valueFrom:
+      secretRef: lakebase-connection
+      key: port
+  - name: LAKEBASE_DATABASE
+    valueFrom:
+      secretRef: lakebase-connection
+      key: database
+  - name: LAKEBASE_USER
+    valueFrom:
+      secretRef: lakebase-connection
+      key: user
+  - name: LAKEBASE_PASSWORD
+    valueFrom:
+      secretRef: lakebase-connection
+      key: password
+
+# ---------------------------------------------------------------------------
+# Lakebase resource binding
+# Provisions a Lakebase PostgreSQL instance and injects connection credentials
+# as the secret reference "lakebase-connection" used by the env vars above.
+# Run sql/setup_lakebase.sql once after first deploy to create the schema.
+# ---------------------------------------------------------------------------
+resources:
+  - name: lakebase-connection
+    description: "PostgreSQL connection for Genie Workbench scan result persistence"
+    resource_type: "database"
+    config:
+      type: postgresql
+
+# ---------------------------------------------------------------------------
+# Service Principal authorization
+# The app runs under its own service principal identity.
+# Grant the SP access to the following resources after deploying:
+#
+#   Programmatic (use notebooks/grant_app_permissions.py):
+#     1. Workspace Directory  — Can Manage  (for creating new Genie Spaces)
+#     2. Unity Catalog/Schema — USE CATALOG, USE SCHEMA, SELECT
+#
+#   Via UI:
+#     3. LLM Serving Endpoint — Can Query   (Serving > Endpoint > Permissions)
+#     4. SQL Warehouse        — Can Use     (SQL > Warehouse > Permissions)
+#     5. Genie Space(s)       — Can Edit    (Genie Space > Settings)
+#
+# Find the service principal at: Compute > Apps > [your app] > Authorization
+# The SP name follows the pattern: app-XXXXX [app-name]
+# ---------------------------------------------------------------------------

@@ -13,7 +13,50 @@ Include a GIF overview of what your project does. Use a service like Quicktime, 
 
 ## Installation
 
-Include details on how to use and install this content. 
+### Local Development
+
+**1. Configure environment**
+
+```bash
+cp .env.example .env.local
+# Edit .env.local — minimum required fields:
+# DATABRICKS_HOST, DATABRICKS_TOKEN
+```
+
+The only required fields to get started are `DATABRICKS_HOST` and `DATABRICKS_TOKEN`. Everything else (Lakebase, MLflow, SQL warehouse) is optional — the app falls back to in-memory storage without Lakebase.
+
+**2. Install Python deps**
+
+```bash
+uv sync
+# or: pip install -e .
+```
+
+**3. Install frontend deps**
+
+```bash
+cd frontend
+npm install
+```
+
+**4. Run (two terminals)**
+
+```bash
+# Terminal 1 — backend (from repo root)
+uv run start-server
+
+# Terminal 2 — frontend
+cd frontend
+npm run dev
+```
+
+The frontend runs at `http://localhost:5173` and proxies API requests to the backend at `http://localhost:8000`.
+
+**Notes:**
+- No Lakebase needed locally — scan results are stored in-memory and reset on server restart
+- `SQL_WAREHOUSE_ID` is only required if using the Optimize tab's benchmark runner
+- Leave `MLFLOW_EXPERIMENT_ID` empty to skip MLflow tracing
+- Alternatively, authenticate via `databricks auth login` (OAuth) and set `DATABRICKS_CONFIG_PROFILE=DEFAULT` instead of using a PAT
 
 ## How to get help
 
