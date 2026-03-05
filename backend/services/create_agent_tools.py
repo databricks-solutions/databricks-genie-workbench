@@ -562,7 +562,7 @@ def _discover_catalogs() -> dict:
     return {
         "catalogs": catalogs,
         "count": len(catalogs),
-        "ui_hint": {"type": "single_select", "id": "catalog_selection", "label": "Select a catalog"},
+        "ui_hint": {"type": "multi_select", "id": "catalog_selection", "label": "Select catalogs"},
     }
 
 
@@ -571,7 +571,7 @@ def _discover_schemas(catalog: str) -> dict:
     return {
         "schemas": schemas,
         "count": len(schemas),
-        "ui_hint": {"type": "single_select", "id": "schema_selection", "label": "Select a schema"},
+        "ui_hint": {"type": "multi_select", "id": "schema_selection", "label": "Select schemas"},
     }
 
 

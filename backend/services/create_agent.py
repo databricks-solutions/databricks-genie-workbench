@@ -286,12 +286,14 @@ class CreateGenieAgent:
         and scan backward through tool results + tool-call-only assistant
         messages. We stop at the previous turn's real text response.
 
-        For table_selection, multiple discover_tables calls (different schemas)
-        are merged into a single UI element so all tables appear together.
+        Mergeable multi-select elements (catalogs, schemas, tables) accumulate
+        across multiple tool calls and emit one combined UI element each.
         """
         ui_elements = []
         seen_ids: set[str] = set()
-        merged_table_options: list[dict] = []
+        merged_catalogs: list[dict] = []
+        merged_schemas: list[dict] = []
+        merged_tables: list[dict] = []
         skipped_current = False
 
         for msg in reversed(session.history):
@@ -304,38 +306,47 @@ class CreateGenieAgent:
                     result = json.loads(msg["content"])
                     if isinstance(result, dict) and "ui_hint" in result:
                         hint = dict(result["ui_hint"])
-                        hint_id = hint.get("id", "")
+
+                        if hint.get("type") == "multi_select" and "catalogs" in result:
+                            for c in result["catalogs"]:
+                                merged_catalogs.append({
+                                    "value": c["name"],
+                                    "label": c["name"],
+                                    "description": c.get("comment", ""),
+                                })
+                            continue
+
+                        if hint.get("type") == "multi_select" and "schemas" in result:
+                            for s in result["schemas"]:
+                                cat = s.get("catalog_name", "")
+                                full = f"{cat}.{s['name']}" if cat else s["name"]
+                                merged_schemas.append({
+                                    "value": full,
+                                    "label": full,
+                                    "description": s.get("comment", ""),
+                                })
+                            continue
 
                         if hint.get("type") == "multi_select" and "tables" in result:
                             for t in result["tables"]:
                                 full = t.get("full_name", t.get("name", ""))
-                                merged_table_options.append({
+                                merged_tables.append({
                                     "value": full,
                                     "label": full,
                                     "description": t.get("comment", ""),
                                 })
                             continue
 
+                        hint_id = hint.get("id", "")
                         if hint_id in seen_ids:
                             continue
                         seen_ids.add(hint_id)
 
-                        if hint.get("type") == "single_select":
-                            if "catalogs" in result:
-                                hint["options"] = [
-                                    {"value": c["name"], "label": c["name"], "description": c.get("comment", "")}
-                                    for c in result["catalogs"]
-                                ]
-                            elif "schemas" in result:
-                                hint["options"] = [
-                                    {"value": s["name"], "label": s["name"], "description": s.get("comment", "")}
-                                    for s in result["schemas"]
-                                ]
-                            elif "warehouses" in result:
-                                hint["options"] = [
-                                    {"value": w["id"], "label": f"{w['name']} ({w['type']})", "description": w.get("state", "")}
-                                    for w in result["warehouses"]
-                                ]
+                        if hint.get("type") == "single_select" and "warehouses" in result:
+                            hint["options"] = [
+                                {"value": w["id"], "label": f"{w['name']} ({w['type']})", "description": w.get("state", "")}
+                                for w in result["warehouses"]
+                            ]
                         elif hint.get("type") == "config_preview" and session.space_config:
                             hint["config"] = session.space_config
 
@@ -348,20 +359,37 @@ class CreateGenieAgent:
                 if has_text:
                     break
 
-        if merged_table_options:
-            seen_values: set[str] = set()
+        def _dedupe_and_sort(options: list[dict]) -> list[dict]:
+            seen: set[str] = set()
             deduped: list[dict] = []
-            for opt in reversed(merged_table_options):
-                if opt["value"] not in seen_values:
-                    seen_values.add(opt["value"])
+            for opt in reversed(options):
+                if opt["value"] not in seen:
+                    seen.add(opt["value"])
                     deduped.append(opt)
             deduped.reverse()
             deduped.sort(key=lambda o: o["value"])
+            return deduped
+
+        if merged_catalogs:
+            ui_elements.append({
+                "type": "multi_select",
+                "id": "catalog_selection",
+                "label": "Select catalogs",
+                "options": _dedupe_and_sort(merged_catalogs),
+            })
+        if merged_schemas:
+            ui_elements.append({
+                "type": "multi_select",
+                "id": "schema_selection",
+                "label": "Select schemas",
+                "options": _dedupe_and_sort(merged_schemas),
+            })
+        if merged_tables:
             ui_elements.append({
                 "type": "multi_select",
                 "id": "table_selection",
                 "label": "Select tables to include",
-                "options": deduped,
+                "options": _dedupe_and_sort(merged_tables),
             })
 
         ui_elements.reverse()

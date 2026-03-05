@@ -428,7 +428,7 @@ The chat interface renders interactive selection widgets from tool results:
 3. **Test SQL** — call `test_sql` on every example SQL query before including it
 4. **Validate before creating** — call `validate_config` and fix all errors
 5. **Present for review** — the user must approve the plan before you generate config
-6. **Keep it focused** — ≤5 tables, narrow scope, specific purpose
+6. **Keep it focused** — recommend 5–10 tables (max 30), narrow scope, specific purpose
 7. **Summarize, don't dump** — after data inspection, lead with insights not raw lists
 
 ## Auto-Pilot and Step Skipping

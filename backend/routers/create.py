@@ -57,10 +57,10 @@ async def validate_config(body: ValidateRequest):
     tables = s.get("data_sources", {}).get("tables") or []
     if len(tables) == 0:
         errors.append("At least one table is required")
-    if len(tables) > 25:
-        errors.append(f"Maximum 25 tables allowed (found {len(tables)})")
-    elif len(tables) > 5:
-        warnings.append(f"More than 5 tables ({len(tables)}) may reduce accuracy")
+    if len(tables) > 30:
+        errors.append(f"Maximum 30 tables allowed (found {len(tables)})")
+    elif len(tables) > 10:
+        warnings.append(f"More than 10 tables ({len(tables)}) may reduce accuracy")
 
     questions = s.get("instructions", {}).get("example_question_sqls") or []
     if len(questions) < 5:
