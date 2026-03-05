@@ -285,9 +285,13 @@ class CreateGenieAgent:
         latest entry in history is the current assistant response. We skip it
         and scan backward through tool results + tool-call-only assistant
         messages. We stop at the previous turn's real text response.
+
+        For table_selection, multiple discover_tables calls (different schemas)
+        are merged into a single UI element so all tables appear together.
         """
         ui_elements = []
         seen_ids: set[str] = set()
+        merged_table_options: list[dict] = []
         skipped_current = False
 
         for msg in reversed(session.history):
@@ -301,20 +305,22 @@ class CreateGenieAgent:
                     if isinstance(result, dict) and "ui_hint" in result:
                         hint = dict(result["ui_hint"])
                         hint_id = hint.get("id", "")
+
+                        if hint.get("type") == "multi_select" and "tables" in result:
+                            for t in result["tables"]:
+                                full = t.get("full_name", t.get("name", ""))
+                                merged_table_options.append({
+                                    "value": full,
+                                    "label": full,
+                                    "description": t.get("comment", ""),
+                                })
+                            continue
+
                         if hint_id in seen_ids:
                             continue
                         seen_ids.add(hint_id)
 
-                        if hint.get("type") == "multi_select" and "tables" in result:
-                            hint["options"] = [
-                                {
-                                    "value": t.get("full_name", t.get("name", "")),
-                                    "label": t.get("name", ""),
-                                    "description": t.get("comment", ""),
-                                }
-                                for t in result["tables"]
-                            ]
-                        elif hint.get("type") == "single_select":
+                        if hint.get("type") == "single_select":
                             if "catalogs" in result:
                                 hint["options"] = [
                                     {"value": c["name"], "label": c["name"], "description": c.get("comment", "")}
@@ -341,6 +347,22 @@ class CreateGenieAgent:
                 has_text = bool(msg.get("content") and msg["content"].strip())
                 if has_text:
                     break
+
+        if merged_table_options:
+            seen_values: set[str] = set()
+            deduped: list[dict] = []
+            for opt in reversed(merged_table_options):
+                if opt["value"] not in seen_values:
+                    seen_values.add(opt["value"])
+                    deduped.append(opt)
+            deduped.reverse()
+            deduped.sort(key=lambda o: o["value"])
+            ui_elements.append({
+                "type": "multi_select",
+                "id": "table_selection",
+                "label": "Select tables to include",
+                "options": deduped,
+            })
 
         ui_elements.reverse()
         return ui_elements if ui_elements else None
