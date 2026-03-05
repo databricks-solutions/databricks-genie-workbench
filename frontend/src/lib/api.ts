@@ -609,5 +609,85 @@ export async function createWizardSpace(payload: {
   )
 }
 
+// ── Create Agent Chat ────────────────────────────────────────────────────────
+
+export interface AgentChatCallbacks {
+  onSession: (sessionId: string) => void
+  onThinking: () => void
+  onToolCall: (tool: string, args: Record<string, unknown>) => void
+  onToolResult: (tool: string, result: Record<string, unknown>) => void
+  onMessage: (content: string, uiElements?: Record<string, unknown>[] | null) => void
+  onCreated: (spaceId: string, url: string, displayName: string) => void
+  onError: (message: string) => void
+  onDone: () => void
+}
+
+export function streamAgentChat(
+  message: string,
+  sessionId: string | null,
+  selections: Record<string, unknown> | null,
+  callbacks: AgentChatCallbacks,
+): () => void {
+  const abortController = new AbortController()
+
+  fetch(`${API_BASE}/create/agent/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      session_id: sessionId,
+      selections,
+    }),
+    signal: abortController.signal,
+  })
+    .then(async (response) => {
+      if (!response.ok) throw new ApiError("Agent chat request failed", response.status)
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error("No response body")
+      const decoder = new TextDecoder()
+      let buffer = ""
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split("\n\n")
+        buffer = chunks.pop() || ""
+
+        for (const chunk of chunks) {
+          const lines = chunk.split("\n")
+          let eventType = ""
+          let dataStr = ""
+          for (const line of lines) {
+            if (line.startsWith("event: ")) eventType = line.slice(7)
+            else if (line.startsWith("data: ")) dataStr = line.slice(6)
+          }
+          if (!eventType || !dataStr) continue
+          try {
+            const data = JSON.parse(dataStr)
+            switch (eventType) {
+              case "session": callbacks.onSession(data.session_id); break
+              case "thinking": callbacks.onThinking(); break
+              case "tool_call": callbacks.onToolCall(data.tool, data.args); break
+              case "tool_result": callbacks.onToolResult(data.tool, data.result); break
+              case "message": callbacks.onMessage(data.content, data.ui_elements); break
+              case "created": callbacks.onCreated(data.space_id, data.url, data.display_name); break
+              case "error": callbacks.onError(data.message); break
+              case "done": callbacks.onDone(); break
+            }
+          } catch { /* ignore parse errors */ }
+        }
+      }
+    })
+    .catch((error) => {
+      if (error.name !== "AbortError") {
+        callbacks.onError(error.message || "Connection failed")
+        callbacks.onDone()
+      }
+    })
+
+  return () => abortController.abort()
+}
+
 export { ApiError }
 

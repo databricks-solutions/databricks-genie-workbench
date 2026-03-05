@@ -659,6 +659,33 @@ button:disabled,
   margin-right: 0.5rem;
 }
 
+/* Chat-sized variant — smaller headings and tighter spacing for chat bubbles */
+.prose-chat {
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.prose-chat h1 { font-size: 1.15rem; margin-top: 0.75rem; margin-bottom: 0.5rem; }
+.prose-chat h2 { font-size: 1.05rem; margin-top: 0.75rem; margin-bottom: 0.5rem; }
+.prose-chat h3 { font-size: 0.95rem; margin-top: 0.5rem; margin-bottom: 0.35rem; }
+.prose-chat h4 { font-size: 0.875rem; margin-top: 0.5rem; margin-bottom: 0.25rem; }
+
+.prose-chat p { margin-top: 0.4rem; margin-bottom: 0.4rem; }
+.prose-chat ul, .prose-chat ol { margin-top: 0.4rem; margin-bottom: 0.4rem; padding-left: 1.25rem; }
+.prose-chat li { margin-top: 0.15rem; margin-bottom: 0.15rem; }
+
+.prose-chat pre {
+  font-size: 0.8rem;
+  padding: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.prose-chat table { font-size: 0.8rem; }
+.prose-chat th, .prose-chat td { padding: 0.25rem 0.5rem; }
+
+.prose-chat blockquote { margin-top: 0.5rem; margin-bottom: 0.5rem; padding-left: 0.75rem; font-size: 0.85rem; }
+
 /* ==========================================================================
    FOCUS STYLES
    ========================================================================== */

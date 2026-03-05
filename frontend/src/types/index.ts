@@ -311,3 +311,41 @@ export interface CreateWizardSpaceResponse {
   display_name: string
   space_url: string
 }
+
+// ===== Create Agent Chat Types =====
+
+export interface AgentUIElement {
+  type: "single_select" | "multi_select" | "config_preview"
+  id: string
+  label?: string
+  options?: { value: string; label: string; description?: string }[]
+  config?: Record<string, unknown>
+}
+
+export type AgentEventType =
+  | "session"
+  | "thinking"
+  | "tool_call"
+  | "tool_result"
+  | "message"
+  | "created"
+  | "error"
+  | "done"
+
+export interface AgentSSEEvent {
+  event: AgentEventType
+  data: Record<string, unknown>
+}
+
+export interface AgentChatMessage {
+  id: string
+  role: "user" | "assistant" | "tool"
+  content: string
+  timestamp: number
+  ui_elements?: AgentUIElement[] | null
+  tool_name?: string
+  tool_args?: Record<string, unknown>
+  tool_result?: Record<string, unknown>
+  is_thinking?: boolean
+  created_space?: { space_id: string; url: string; display_name: string }
+}

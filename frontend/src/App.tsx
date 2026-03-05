@@ -1,6 +1,6 @@
 /**
  * App - Genie Workbench root component.
- * Supports four top-level views: SpaceList, SpaceDetail, AdminDashboard, CreateWizard.
+ * Supports four top-level views: SpaceList, SpaceDetail, AdminDashboard, CreateSpace.
  */
 import { useState } from "react"
 import { LayoutGrid, BarChart2, PlusCircle } from "lucide-react"
@@ -9,7 +9,7 @@ import { useTheme } from "@/hooks/useTheme"
 import { SpaceList } from "@/pages/SpaceList"
 import { SpaceDetail } from "@/pages/SpaceDetail"
 import { AdminDashboard } from "@/pages/AdminDashboard"
-import { CreateWizard } from "@/components/CreateWizard"
+import { CreateAgentChat } from "@/components/CreateAgentChat"
 
 type View = "list" | "detail" | "admin" | "create"
 
@@ -19,7 +19,7 @@ interface DetailState {
 }
 
 export default function App() {
-  useTheme() // Ensures theme is applied on mount
+  useTheme()
   const [currentView, setCurrentView] = useState<View>("list")
   const [detailState, setDetailState] = useState<DetailState | null>(null)
 
@@ -128,13 +128,13 @@ export default function App() {
 
         {currentView === "create" && (
           <div>
-            <div className="mb-6">
+            <div className="mb-4">
               <h1 className="text-2xl font-bold text-primary">Create Genie Space</h1>
               <p className="text-muted text-sm mt-1">
-                Build a new Genie Space from Unity Catalog tables
+                AI-guided creation with live progress tracking — describe what you need and fill in details as you go
               </p>
             </div>
-            <CreateWizard onCreated={handleCreated} />
+            <CreateAgentChat onCreated={handleCreated} />
           </div>
         )}
       </main>

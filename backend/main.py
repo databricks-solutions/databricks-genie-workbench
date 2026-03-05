@@ -114,6 +114,8 @@ if not is_running_on_databricks_apps():
 async def startup():
     from backend.services.lakebase import init_pool
     await init_pool()
+    from backend.services.create_agent_session import _ensure_table
+    await _ensure_table()
 
 
 @app.on_event("shutdown")

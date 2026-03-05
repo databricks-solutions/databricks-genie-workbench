@@ -57,43 +57,17 @@ env:
     value: ""
 
   # ---------------------------------------------------------------------------
-  # Lakebase PostgreSQL connection
-  # These values are injected automatically by the Lakebase resource binding
-  # defined in the `resources` section below. Do not set them manually here.
+  # Lakebase PostgreSQL — credentials auto-generated via Databricks SDK (SP)
+  # Grant the app's service principal CAN MANAGE on the Lakebase instance.
   # ---------------------------------------------------------------------------
   - name: LAKEBASE_HOST
-    valueFrom:
-      secretRef: lakebase-connection
-      key: host
+    value: ""  # e.g. instance-XXXX.database.cloud.databricks.com
   - name: LAKEBASE_PORT
-    valueFrom:
-      secretRef: lakebase-connection
-      key: port
+    value: "5432"
   - name: LAKEBASE_DATABASE
-    valueFrom:
-      secretRef: lakebase-connection
-      key: database
-  - name: LAKEBASE_USER
-    valueFrom:
-      secretRef: lakebase-connection
-      key: user
-  - name: LAKEBASE_PASSWORD
-    valueFrom:
-      secretRef: lakebase-connection
-      key: password
-
-# ---------------------------------------------------------------------------
-# Lakebase resource binding
-# Provisions a Lakebase PostgreSQL instance and injects connection credentials
-# as the secret reference "lakebase-connection" used by the env vars above.
-# Run sql/setup_lakebase.sql once after first deploy to create the schema.
-# ---------------------------------------------------------------------------
-resources:
-  - name: lakebase-connection
-    description: "PostgreSQL connection for Genie Workbench scan result persistence"
-    resource_type: "database"
-    config:
-      type: postgresql
+    value: "databricks_postgres"
+  - name: LAKEBASE_INSTANCE_NAME
+    value: ""  # e.g. genie-workbench-sz
 
 # ---------------------------------------------------------------------------
 # Service Principal authorization

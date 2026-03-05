@@ -1,9 +1,11 @@
 """
-/api/create — UC discovery + config validation + Genie Space creation wizard.
+/api/create — UC discovery + config validation + Genie Space creation wizard + agent chat.
 """
+import json
 import logging
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from backend.models import CreateSpaceRequest, CreateSpaceResponse
 from backend.services.uc_client import (
@@ -108,3 +110,103 @@ async def create_space_endpoint(body: CreateSpaceRequest):
         display_name=result["display_name"],
         space_url=result["space_url"],
     )
+
+
+# ── Agent chat (agentic create flow) ─────────────────────────────────────────
+
+class AgentChatRequest(BaseModel):
+    """Request body for the agent chat endpoint."""
+    message: str = Field(..., min_length=1, max_length=10000)
+    session_id: str | None = Field(None, description="Existing session ID. Omit to start a new session.")
+    selections: dict | None = Field(None, description="UI selections from interactive elements")
+
+
+@router.post("/agent/chat")
+async def agent_chat(body: AgentChatRequest):
+    """Conversational endpoint for the Create Genie agent.
+
+    Returns a streaming SSE response with typed events:
+    - thinking: agent is processing
+    - tool_call: agent is calling a tool
+    - tool_result: tool returned a result
+    - message: agent text response (may include ui_elements)
+    - created: space was created successfully
+    - error: something went wrong
+    - done: turn is complete
+    """
+    from backend.services.create_agent import get_create_agent
+    from backend.services.create_agent_session import (
+        create_session, get_session_async, persist_session,
+    )
+
+    agent = get_create_agent()
+
+    if body.session_id:
+        session = await get_session_async(body.session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found or expired")
+    else:
+        session = create_session()
+
+    user_message = body.message
+    if body.selections:
+        user_message += f"\n\n[User selections: {json.dumps(body.selections)}]"
+
+    async def event_stream():
+        yield _sse_event("session", {"session_id": session.session_id})
+        async for event in agent.chat(session, user_message):
+            yield _sse_event(event["event"], event["data"])
+        # Persist session to Lakebase after the turn completes
+        await persist_session(session)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/agent/sessions/{session_id}")
+async def get_agent_session(session_id: str):
+    """Get session history for page refresh / reconnection."""
+    from backend.services.create_agent_session import get_session_async
+
+    session = await get_session_async(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+
+    display_history = []
+    for msg in session.history:
+        if msg["role"] == "user":
+            display_history.append({"role": "user", "content": msg["content"]})
+        elif msg["role"] == "assistant" and msg.get("content"):
+            display_history.append({"role": "assistant", "content": msg["content"]})
+
+    return {
+        "session_id": session.session_id,
+        "history": display_history,
+        "space_id": session.space_id,
+        "space_url": session.space_url,
+        "has_config": session.space_config is not None,
+    }
+
+
+@router.delete("/agent/sessions/{session_id}")
+async def delete_agent_session(session_id: str):
+    """Delete a session."""
+    from backend.services.create_agent_session import delete_session_async
+
+    deleted = await delete_session_async(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"deleted": True}
+
+
+def _sse_event(event_type: str, data: dict) -> str:
+    """Format a dict as an SSE event string."""
+    payload = json.dumps(data, default=str)
+    return f"event: {event_type}\ndata: {payload}\n\n"
