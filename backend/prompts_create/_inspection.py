@@ -34,6 +34,10 @@ Once inspection is complete, present a **concise summary** that includes data qu
 
 When `describe_table` returns `recommendations.exclude_etl`, and `assess_data_quality` returns columns with `recommendations` containing `action: "exclude"`, automatically add those columns as `exclude: true` in the plan's column configs. For columns flagged with `action: "flag"`, mention them to the user and let them decide.
 
+**Column settings to confirm with the user:**
+- **Excluded columns**: Always list which columns you're excluding and why (e.g., "`_etl_loaded_at` — ETL metadata, hidden from Genie"). The user must be aware of what's hidden.
+- **Format assistance & entity matching**: These are ON by default for all non-excluded columns. This helps Genie understand data formats and match user terms to actual values. Mention this default and flag any columns where you'd recommend disabling them (e.g., high-cardinality ID columns like `customer_id` where entity matching adds no value).
+
 If `profile_table_usage` returns `system_tables_available: false`, skip lineage notes — don't mention the failure to the user. If it returns data, use it concretely:
 
 **How to use lineage and query history in later steps:**

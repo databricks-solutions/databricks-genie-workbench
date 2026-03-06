@@ -337,7 +337,8 @@ TOOL_DEFINITIONS = [
                                 "display_name": {"type": "string"},
                                 "sql": {"type": "string", "description": "Aggregate SQL expression, e.g. SUM(orders.amount)"},
                                 "synonyms": {"type": "array", "items": {"type": "string"}},
-                                "instruction": {"type": "string"},
+                                "instruction": {"type": "string", "description": "When Genie should use this measure (e.g., 'Use for any revenue aggregation')"},
+                                "comment": {"type": "string", "description": "Internal note about the measure definition or business context"},
                             },
                             "required": ["alias", "sql"],
                         },
@@ -350,7 +351,8 @@ TOOL_DEFINITIONS = [
                                 "display_name": {"type": "string"},
                                 "sql": {"type": "string", "description": "Boolean condition WITHOUT the WHERE keyword"},
                                 "synonyms": {"type": "array", "items": {"type": "string"}},
-                                "instruction": {"type": "string"},
+                                "instruction": {"type": "string", "description": "When Genie should apply this filter (e.g., 'Apply when users ask about high-value orders')"},
+                                "comment": {"type": "string", "description": "Internal note about threshold or business context"},
                             },
                             "required": ["display_name", "sql"],
                         },
@@ -364,7 +366,8 @@ TOOL_DEFINITIONS = [
                                 "display_name": {"type": "string"},
                                 "sql": {"type": "string", "description": "Dimension SQL expression, e.g. YEAR(orders.order_date)"},
                                 "synonyms": {"type": "array", "items": {"type": "string"}},
-                                "instruction": {"type": "string"},
+                                "instruction": {"type": "string", "description": "When Genie should use this expression (e.g., 'Use for year-based grouping')"},
+                                "comment": {"type": "string", "description": "Internal note about this computed column"},
                             },
                             "required": ["alias", "sql"],
                         },
@@ -384,7 +387,8 @@ TOOL_DEFINITIONS = [
                                     "type": "string",
                                     "enum": ["MANY_TO_ONE", "ONE_TO_MANY", "ONE_TO_ONE", "MANY_TO_MANY"],
                                 },
-                                "instruction": {"type": "string"},
+                                "instruction": {"type": "string", "description": "When Genie should use this join"},
+                                "comment": {"type": "string", "description": "Description of the relationship (e.g., 'Join orders to customers on customer_id')"},
                             },
                             "required": ["left_table", "left_alias", "right_table", "right_alias", "left_column", "right_column", "relationship"],
                         },
@@ -489,10 +493,14 @@ TOOL_DEFINITIONS = [
                         "items": {
                             "type": "object",
                             "properties": {
+                                "alias": {"type": "string", "description": "SQL alias for the measure"},
                                 "display_name": {"type": "string"},
                                 "sql": {"type": "string"},
+                                "synonyms": {"type": "array", "items": {"type": "string"}},
+                                "instruction": {"type": "string"},
+                                "comment": {"type": "string"},
                             },
-                            "required": ["display_name", "sql"],
+                            "required": ["alias", "display_name", "sql"],
                         },
                     },
                     "filters": {
@@ -502,6 +510,9 @@ TOOL_DEFINITIONS = [
                             "properties": {
                                 "display_name": {"type": "string"},
                                 "sql": {"type": "string"},
+                                "synonyms": {"type": "array", "items": {"type": "string"}},
+                                "instruction": {"type": "string"},
+                                "comment": {"type": "string"},
                             },
                             "required": ["display_name", "sql"],
                         },
@@ -511,10 +522,14 @@ TOOL_DEFINITIONS = [
                         "items": {
                             "type": "object",
                             "properties": {
+                                "alias": {"type": "string", "description": "SQL alias for the expression"},
                                 "display_name": {"type": "string"},
                                 "sql": {"type": "string"},
+                                "synonyms": {"type": "array", "items": {"type": "string"}},
+                                "instruction": {"type": "string"},
+                                "comment": {"type": "string"},
                             },
-                            "required": ["display_name", "sql"],
+                            "required": ["alias", "display_name", "sql"],
                         },
                     },
                     "example_sqls": {
@@ -1837,6 +1852,8 @@ def _generate_config(
                 entry["synonyms"] = m["synonyms"]
             if m.get("instruction"):
                 entry["instruction"] = [m["instruction"]]
+            if m.get("comment"):
+                entry["comment"] = [m["comment"]]
             m_items.append(entry)
         m_items.sort(key=lambda x: x["id"])
         snippets["measures"] = m_items
@@ -1852,6 +1869,8 @@ def _generate_config(
                 entry["synonyms"] = f["synonyms"]
             if f.get("instruction"):
                 entry["instruction"] = [f["instruction"]]
+            if f.get("comment"):
+                entry["comment"] = [f["comment"]]
             f_items.append(entry)
         f_items.sort(key=lambda x: x["id"])
         snippets["filters"] = f_items
@@ -1866,6 +1885,8 @@ def _generate_config(
                 entry["synonyms"] = e["synonyms"]
             if e.get("instruction"):
                 entry["instruction"] = [e["instruction"]]
+            if e.get("comment"):
+                entry["comment"] = [e["comment"]]
             e_items.append(entry)
         e_items.sort(key=lambda x: x["id"])
         snippets["expressions"] = e_items
@@ -1890,6 +1911,8 @@ def _generate_config(
             }
             if js.get("instruction"):
                 entry["instruction"] = [js["instruction"]]
+            if js.get("comment"):
+                entry["comment"] = [js["comment"]]
             js_items.append(entry)
         js_items.sort(key=lambda x: x["id"])
         instructions["join_specs"] = js_items

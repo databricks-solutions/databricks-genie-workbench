@@ -37,7 +37,7 @@ import {
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { streamAgentChat } from "@/lib/api"
-import type { AgentChatMessage, AgentUIElement, AgentStep } from "@/types"
+import type { AgentChatMessage, AgentUIElement } from "@/types"
 
 interface CreateAgentChatProps {
   onCreated: (spaceId: string, displayName: string) => void
@@ -71,15 +71,6 @@ const ELEMENT_ICONS: Record<string, typeof Database> = {
   table_selection: Table2,
   warehouse_selection: Server,
 }
-
-const STEP_META = [
-  { key: "requirements", label: "Requirements" },
-  { key: "data_sources", label: "Data sources" },
-  { key: "inspection", label: "Inspection" },
-  { key: "plan", label: "Plan" },
-  { key: "config_create", label: "Config" },
-  { key: "post_creation", label: "Create" },
-]
 
 const COMBOBOX_THRESHOLD = 15
 
@@ -304,7 +295,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [businessContextDraft, setBusinessContextDraft] = useState("")
   const [expandedPlanSections, setExpandedPlanSections] = useState<Set<string>>(new Set(["sample_questions"]))
   const [agentStatus, setAgentStatus] = useState<string | null>(null)
-  const [agentStep, setAgentStep] = useState<AgentStep | null>(null)
   const [editedPlan, setEditedPlan] = useState<EditablePlan | null>(restored.current?.editedPlan ?? null)
   const [editingPlanItem, setEditingPlanItem] = useState<string | null>(null)
   const [autoPilot, setAutoPilot] = useState(false)
@@ -409,9 +399,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
       stopRef.current = streamAgentChat(text.trim(), sessionId, selections ?? null, {
         onSession: (sid) => setSessionId(sid),
-        onStep: (step, label, index, total) => {
-          setAgentStep({ step, label, index, total })
-        },
+        onStep: () => {},
         onThinking: (message, _step, _round) => {
           setAgentStatus(message)
         },
@@ -633,7 +621,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         },
         onDone: () => {
           setAgentStatus(null)
-          setAgentStep(null)
           setIsStreaming(false)
           // Clean up streaming refs
           if (streamingRafRef.current) {
@@ -671,7 +658,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     stopRef.current?.()
     setIsStreaming(false)
     setAgentStatus(null)
-    setAgentStep(null)
     setQueuedMessage(null)
     if (streamingRafRef.current) {
       cancelAnimationFrame(streamingRafRef.current)
@@ -693,7 +679,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setSessionId(null)
     setIsStreaming(false)
     setAgentStatus(null)
-    setAgentStep(null)
     if (streamingRafRef.current) {
       cancelAnimationFrame(streamingRafRef.current)
       streamingRafRef.current = null
@@ -2225,8 +2210,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         break
       }
     }
-    const showSuggestions = isLastAssistant && !isStreaming && !msg.ui_elements?.length
-
     return (
       <div key={msg.id} className="flex items-start gap-3 mx-4 my-3">
         <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -2237,35 +2220,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
           </div>
           {msg.ui_elements && msg.ui_elements.length > 0 && renderUIElements(msg.id, msg.ui_elements)}
-          {showSuggestions && getSuggestions().length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mt-3">
-              {getSuggestions().map((s) => (
-                <button
-                  key={s}
-                  onClick={() => sendMessage(s)}
-                  className="px-2.5 py-1 text-[11px] text-accent bg-accent/5 border border-accent/20 rounded-full hover:bg-accent/15 transition-colors"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       </div>
     )
   }
 
-  const getSuggestions = (): string[] => {
-    if (isStreaming || messages.length === 0) return []
-    const p = progress
-    if (p.spaceId) return ["Add a business rule", "Update sample questions", "Diagnose the space"]
-    if (p.configReady) return ["Create the space now", "Add a business rule first", "Show me the config"]
-    if (p.planReady) return ["Looks good — proceed", "Add more sample questions", "Add a business rule"]
-    if (p.inspectionDone) return ["Build the plan", "Inspect more tables", "Add a business rule"]
-    if (p.tables.length > 0) return ["Inspect these tables", "Add more tables", "Skip inspection — build plan"]
-    if (p.catalog) return []
-    return []
-  }
 
   // ─── Progress panel ───────────────────────────────────────────
 
@@ -2603,63 +2562,15 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                   : renderMessage(item.msg),
               )}
               {agentStatus && (
-                <div className="mx-4 my-2 py-1.5 space-y-1.5">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center flex-shrink-0">
-                      <Loader2 className="w-4 h-4 text-accent animate-spin" />
-                    </div>
-                    <span className="text-xs font-medium text-muted">{agentStatus}</span>
-                  </div>
-                  {agentStep && (
-                    <div className="ml-9 flex items-center gap-1.5">
-                      {STEP_META.map((s, i) => (
-                        <div
-                          key={s.key}
-                          className={`h-1 rounded-full transition-all duration-300 ${
-                            i < agentStep.index
-                              ? "w-5 bg-accent/40"
-                              : i === agentStep.index
-                                ? "w-7 bg-accent"
-                                : "w-5 bg-border"
-                          }`}
-                          title={s.label}
-                        />
-                      ))}
-                      <span className="ml-1.5 text-[10px] text-muted/60">{agentStep.label}</span>
-                    </div>
-                  )}
+                <div className="mx-4 my-2 flex items-center gap-2">
+                  <Loader2 className="w-3.5 h-3.5 text-accent animate-spin flex-shrink-0" />
+                  <span className="text-xs text-muted">{agentStatus}</span>
                 </div>
               )}
               <div ref={messagesEndRef} />
             </div>
           )}
         </div>
-
-        {/* "Continue" nudge — shown when agent is idle, it's the user's turn, and no suggestion chips are visible */}
-        {messages.length > 0 && !isStreaming && !queuedMessage && !input.trim() && getSuggestions().length === 0 && (() => {
-          const lastMsg = messages[messages.length - 1]
-          const isAgentTurn = lastMsg?.role === "assistant" || lastMsg?.role === "tool"
-          if (!isAgentTurn) return null
-          const p = progress
-          let nudge = "Continue"
-          if (p.spaceId) nudge = "What else can you help with?"
-          else if (p.configReady) nudge = "Let's create the space"
-          else if (editedPlan) nudge = "I've reviewed the plan — let's proceed"
-          else if (p.inspectionDone) nudge = "Continue to build the plan"
-          else if (p.tables.length > 0) nudge = "Continue with data inspection"
-          else if (p.schemas.length > 0) nudge = "Continue with table selection"
-          else if (p.catalog) nudge = "Continue with schema selection"
-          else nudge = "Let's get started"
-          return (
-            <button
-              onClick={() => sendMessage(nudge)}
-              className="mt-1.5 self-start flex items-center gap-1.5 px-3 py-1.5 text-xs text-accent bg-accent/5 border border-accent/20 rounded-full hover:bg-accent/10 transition-colors"
-            >
-              <Sparkles className="w-3 h-3" />
-              {nudge}
-            </button>
-          )
-        })()}
 
         {/* Queued message indicator */}
         {queuedMessage && (

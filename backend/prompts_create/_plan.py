@@ -102,12 +102,16 @@ Present a **complete plan** for user review in a single, well-structured message
 
 5. **Filters** — reusable WHERE clause snippets for common filter patterns (suggest based on data inspection)
 
-   Each filter has a `display_name`, `sql` (a WHERE condition without the WHERE keyword), and optional `synonyms`.
+   Each filter has a `display_name`, `sql` (a WHERE condition without the WHERE keyword), and optional `synonyms`, `instruction`, and `comment`.
+   - `instruction`: tells Genie WHEN to apply this filter (e.g., "Apply when users ask about high-value or large orders")
+   - `comment`: internal note about the threshold/business context (e.g., "Threshold aligned with finance team's $1000 definition")
    These should be self-contained SQL predicates, not conceptual rules. Example: `YEAR(order_date) = YEAR(CURRENT_DATE())` for "current year".
 
 6. **Measures** — reusable aggregation SQL for key metrics
 
-   Each measure has an `alias`, `sql` (an aggregate expression), and optional `display_name`/`synonyms`.
+   Each measure has an `alias`, `sql` (an aggregate expression), `display_name`, and optional `synonyms`, `instruction`, and `comment`.
+   - `instruction`: tells Genie WHEN to use this measure (e.g., "Use for any revenue aggregation")
+   - `comment`: internal note explaining the formula or business context
    Put the actual aggregation formula here, not in text instructions. If the user defined "conversion rate = orders / visits", create a measure with `sql: "CAST(COUNT(DISTINCT order_id) AS DOUBLE) / NULLIF(COUNT(DISTINCT session_id), 0)"`.
 
 7. **Benchmark queries** (5-10 pairs) — for validating the space after creation
