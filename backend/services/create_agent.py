@@ -116,16 +116,16 @@ class CreateGenieAgent:
 
                 content_parts: list[str] = []
                 tool_calls_acc: dict[int, dict] = {}
-                llm_span = mlflow.start_span(name="llm_call", span_type=SpanType.LLM)
-                llm_span.set_inputs({
-                    "model": self.model,
-                    "message_count": len(messages),
-                    "round": round_num,
-                    "session_id": session.session_id,
-                    "workflow_step": step,
-                })
 
-                try:
+                with mlflow.start_span(name="llm_call", span_type=SpanType.LLM) as llm_span:
+                    llm_span.set_inputs({
+                        "model": self.model,
+                        "message_count": len(messages),
+                        "round": round_num,
+                        "session_id": session.session_id,
+                        "workflow_step": step,
+                    })
+
                     async for chunk in self._async_stream_llm(messages):
                         choices = chunk.get("choices", [])
                         if not choices:
@@ -157,14 +157,13 @@ class CreateGenieAgent:
                                         tool_calls_acc[idx]["function"]["name"] = fn["name"]
                                     if fn.get("arguments"):
                                         tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
-                finally:
+
                     accumulated_content = "".join(content_parts)
                     llm_span.set_outputs({
                         "has_tool_calls": bool(tool_calls_acc),
                         "tool_count": len(tool_calls_acc),
                         "response_preview": accumulated_content[:200],
                     })
-                    llm_span.end()
 
                 if tool_calls_acc:
                     tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
