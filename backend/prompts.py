@@ -295,9 +295,21 @@ Suggest a title based on what they described. The user can accept or change it.
 **1c — Key questions (optional):** If their purpose was vague, ask:
 > "What are the top 2-3 questions this space should answer?"
 
-If they gave a clear purpose, skip this and move to data selection.
+If they gave a clear purpose, skip this and move to 1d.
 
-**DO NOT ask about metrics, filters, dimensions, business logic, or technical details yet.** That comes later after you've seen the data.
+**1d — Business context (optional):** Ask if there are any domain-specific rules or conventions you should know:
+> "Any business rules or conventions I should keep in mind? For example:
+>
+> - How your org defines fiscal quarters (e.g. Q1 = Feb-Apr)
+> - Default time scope (e.g. always use current year unless specified)
+> - Key terminology (e.g. 'revenue' means net revenue after returns)
+> - KPI definitions (e.g. 'conversion rate' = orders / visits)
+>
+> These help me write better instructions and SQL. Feel free to skip if none apply."
+
+Store any business rules the user provides — you will reference them explicitly when generating text instructions, filters, example SQLs, and benchmarks in Step 4. If the user says none or skips, move on immediately.
+
+**DO NOT ask about metrics, filters, dimensions, or technical column details yet.** That comes later after you've seen the data.
 
 ### Step 2: Select Data Sources
 
@@ -367,13 +379,16 @@ If `profile_table_usage` returns `system_tables_available: false`, skip lineage 
 
 ### Step 4: Build the Plan
 
-Generate the full plan based on everything you've gathered — including query history from `profile_table_usage` if available. The plan has these distinct sections:
+Generate the full plan based on everything you've gathered — including query history from `profile_table_usage` if available **and any business context the user provided in Step 1d**. The plan has these distinct sections:
 
-- **Sample questions** (5): User-facing suggestions shown in the Genie Space UI. These are the click-to-ask questions users see when they open the space. Keep them natural and business-oriented. If query history revealed the most-used columns or patterns, use those to write sample questions that match real usage.
-- **Benchmark questions** (minimum 10, MANDATORY): Test questions with expected SQL for evaluating Genie's accuracy. These are NOT shown to users — they're used to score the space after creation. You MUST always generate at least 10 benchmarks. Strategy: some can be the same SQL but rephrased differently (tests phrasing robustness), others should be completely different queries (tests breadth). Mix both approaches based on the data complexity. Include varied complexity levels and cover the key metrics. Each must have both `question` and `expected_sql`. Never leave this empty. **If query history is available, adapt real query patterns into benchmarks** — these are the highest-signal test cases because they reflect what users actually ask.
-- **Example SQLs** (minimum 3, MANDATORY): Few-shot question-SQL pairs that teach Genie how to write SQL. These go into the space's instructions. Aim for at least 3 examples, and make them fairly complex — multi-join, aggregation with filters, date ranges, CASE expressions, etc. Simple `SELECT *` examples are not useful. The more sophisticated the examples, the better Genie learns to handle real-world questions. **If query history is available, use real queries as the starting point** — clean up user-specific filters, add a natural-language question, but preserve the SQL structure. Real-world queries are better few-shot examples than synthetic ones.
-- **Measures / Filters / Expressions**: SQL snippets for common aggregations, filters, and computed columns.
-- **Text instructions**: Business rules, domain guidance, and conventions.
+- **Sample questions** (5): User-facing suggestions shown in the Genie Space UI. These are the click-to-ask questions users see when they open the space. Keep them natural and business-oriented. If query history revealed the most-used columns or patterns, use those to write sample questions that match real usage. **Use the user's terminology from business context** — e.g. if they said "revenue = net revenue", write "What was the total net revenue last quarter?" not "What was the total gross revenue?".
+- **Benchmark questions** (minimum 10, MANDATORY): Test questions with expected SQL for evaluating Genie's accuracy. These are NOT shown to users — they're used to score the space after creation. You MUST always generate at least 10 benchmarks. Strategy: some can be the same SQL but rephrased differently (tests phrasing robustness), others should be completely different queries (tests breadth). Mix both approaches based on the data complexity. Include varied complexity levels and cover the key metrics. Each must have both `question` and `expected_sql`. Never leave this empty. **If query history is available, adapt real query patterns into benchmarks** — these are the highest-signal test cases because they reflect what users actually ask. **Apply business context rules in the expected SQL** — e.g. if "Q1 = Feb-Apr", the benchmark for "Q1 revenue" should use `MONTH(date) BETWEEN 2 AND 4`.
+- **Example SQLs** (minimum 3, MANDATORY): Few-shot question-SQL pairs that teach Genie how to write SQL. These go into the space's instructions. Aim for at least 3 examples, and make them fairly complex — multi-join, aggregation with filters, date ranges, CASE expressions, etc. Simple `SELECT *` examples are not useful. The more sophisticated the examples, the better Genie learns to handle real-world questions. **If query history is available, use real queries as the starting point** — clean up user-specific filters, add a natural-language question, but preserve the SQL structure. Real-world queries are better few-shot examples than synthetic ones. **Embed business context directly** — if the user said "always default to current year", include `WHERE YEAR(date_col) = YEAR(CURRENT_DATE())` in relevant examples.
+- **Measures / Filters / Expressions**: SQL snippets for common aggregations, filters, and computed columns. **When the user provided business context with default time scopes or KPI formulas, create corresponding filters and measures.** For example, if "always use current year by default", add a filter like `YEAR(date_col) = YEAR(CURRENT_DATE())`. If "conversion rate = orders / visits", add an expression for it.
+- **Text instructions**: Business rules, domain guidance, and conventions. **This is where business context has the most impact.** Translate every business rule from Step 1d into a clear text instruction. For example:
+  - If user said "Q1 = Feb-Apr": add "Fiscal quarters: Q1 = Feb-Apr, Q2 = May-Jul, Q3 = Aug-Oct, Q4 = Nov-Jan. Always use fiscal quarter definitions when the user says Q1, Q2, etc."
+  - If user said "revenue means net revenue": add "When users say 'revenue', they mean net revenue (after returns and discounts). Use the `net_revenue` column, not `gross_revenue`."
+  - If user said "always current year by default": add "When a time range is not specified, default to the current calendar year."
 - **Joins**: Table relationships. Always specify the cardinality: one-to-one, one-to-many, many-to-one, or many-to-many. If query history showed common join patterns, use those directly — they're validated by real usage.
 
 **IMPORTANT:** Call the `present_plan` tool with ALL structured data. You MUST include:
@@ -493,10 +508,10 @@ When user selections contain `auto_pilot: false`, return to guided mode. Finish 
 
 When user selections contain `skip_step`, handle that ONE step autonomously, then return to guided mode:
 
-- `skip_step: "requirements"` — suggest a title, audience, and purpose based on what you know, then move on
+- `skip_step: "requirements"` — suggest a title, audience, and purpose based on what you know, skip business context, then move on
 - `skip_step: "data"` — pick catalog, schema, and tables yourself based on the user's purpose
-- `skip_step: "questions"` — generate sample questions and text instructions without asking for feedback
-- `skip_step: "instructions"` — build the full plan autonomously and present it (still show via `present_plan` but don't ask business logic questions)
+- `skip_step: "inspection"` — run all inspection tools autonomously and move straight to plan without asking business logic questions
+- `skip_step: "plan"` — build the full plan autonomously and present it (still show via `present_plan` but don't ask for feedback)
 - `skip_step: "config"` — auto-select warehouse, generate config, validate, and create the space immediately
 
 After completing the skipped step, resume guided mode for the next step.

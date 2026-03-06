@@ -18,7 +18,6 @@ import {
   Server,
   FileText,
   MessageSquare,
-  BookOpen,
   Settings,
   Rocket,
   X,
@@ -72,63 +71,71 @@ const COMBOBOX_THRESHOLD = 15
 
 // ─── Build progress tracking ───────────────────────────────────
 
+interface PlanSummary {
+  questions: number
+  benchmarks: number
+  measures: number
+  filters: number
+  expressions: number
+  exampleSqls: number
+  joins: number
+  textInstruction: boolean
+}
+
 interface BuildProgress {
   title: string
   description: string
+  businessContext: string[]
   catalog: string
   schemas: string[]
   tables: string[]
-  profilingDone: boolean
-  sampleQuestions: string[]
-  instructionCounts: {
-    measures: number
-    filters: number
-    expressions: number
-    exampleSqls: number
-    textInstruction: boolean
-  }
+  inspectionDone: boolean
+  inspectionSummary: { qualityIssues: number; lineageCount: number; columnsProfiled: number }
+  planReady: boolean
+  planSummary: PlanSummary
   configReady: boolean
   config: Record<string, unknown> | null
   spaceId: string
   spaceUrl: string
   spaceDisplayName: string
-  benchmarks: string[]
 }
+
+const EMPTY_PLAN_SUMMARY: PlanSummary = { questions: 0, benchmarks: 0, measures: 0, filters: 0, expressions: 0, exampleSqls: 0, joins: 0, textInstruction: false }
 
 const EMPTY_PROGRESS: BuildProgress = {
   title: "",
   description: "",
+  businessContext: [],
   catalog: "",
   schemas: [],
   tables: [],
-  profilingDone: false,
-  sampleQuestions: [],
-  instructionCounts: { measures: 0, filters: 0, expressions: 0, exampleSqls: 0, textInstruction: false },
+  inspectionDone: false,
+  inspectionSummary: { qualityIssues: 0, lineageCount: 0, columnsProfiled: 0 },
+  planReady: false,
+  planSummary: { ...EMPTY_PLAN_SUMMARY },
   configReady: false,
   config: null,
   spaceId: "",
   spaceUrl: "",
   spaceDisplayName: "",
-  benchmarks: [],
 }
 
 const STEPS = [
   { key: "requirements", label: "Requirements", Icon: FileText, backtrackMsg: "Let's go back to the requirements. I want to change the title or purpose." },
   { key: "data", label: "Data Sources", Icon: Database, backtrackMsg: "Let's go back to data selection. I want to change which tables to use." },
-  { key: "questions", label: "Sample Questions", Icon: MessageSquare, backtrackMsg: "Let's revisit the sample questions. I want to adjust them." },
-  { key: "instructions", label: "Instructions", Icon: BookOpen, backtrackMsg: "Let's go back to the instructions and plan. I want to make changes." },
+  { key: "inspection", label: "Data Inspection", Icon: Search, backtrackMsg: "Let's re-inspect the data. I want to review quality or lineage again." },
+  { key: "plan", label: "Plan", Icon: ListChecks, backtrackMsg: "Let's go back to the plan. I want to adjust questions, instructions, or benchmarks." },
   { key: "config", label: "Configuration", Icon: Settings, backtrackMsg: "Let's revisit the configuration before creating the space." },
   { key: "create", label: "Create Space", Icon: Rocket, backtrackMsg: "" },
-  { key: "benchmarks", label: "Benchmarks", Icon: BarChart3, backtrackMsg: "" },
 ] as const
 
 function currentStep(p: BuildProgress): number {
-  if (p.spaceId) return 6
-  if (p.configReady) return 5
-  if (p.sampleQuestions.length > 0 || p.instructionCounts.measures > 0) return 4
-  if (p.profilingDone) return 3
-  if (p.tables.length > 0) return 2
-  if (p.catalog || p.schemas.length > 0) return 1
+  if (p.spaceId) return 5
+  if (p.configReady) return 4
+  if (p.planReady) return 3
+  if (p.inspectionDone) return 2
+  if (p.tables.length > 0) return 1
+  if (p.catalog || p.schemas.length > 0) return 0
   return 0
 }
 
@@ -190,6 +197,18 @@ function loadState(): PersistedState | null {
     if (p && !Array.isArray(p.schemas)) {
       p.schemas = p.schema ? [p.schema] : []
       delete p.schema
+    }
+    // Migrate old sidebar fields to new BuildProgress shape
+    if (p && !("inspectionDone" in p)) {
+      p.inspectionDone = p.profilingDone ?? false
+      p.inspectionSummary = p.inspectionSummary ?? { qualityIssues: 0, lineageCount: 0, columnsProfiled: 0 }
+      p.businessContext = p.businessContext ?? []
+      p.planReady = p.planReady ?? (p.sampleQuestions?.length > 0 || p.instructionCounts?.measures > 0)
+      p.planSummary = p.planSummary ?? { ...EMPTY_PLAN_SUMMARY }
+      delete p.profilingDone
+      delete p.sampleQuestions
+      delete p.instructionCounts
+      delete p.benchmarks
     }
     // Migrate editedPlan: ensure benchmarks array exists
     if (parsed.editedPlan && !Array.isArray(parsed.editedPlan.benchmarks)) {
@@ -263,7 +282,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [panelOpen] = useState(true)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
-  const [benchmarkDraft, setBenchmarkDraft] = useState("")
+  const [businessContextDraft, setBusinessContextDraft] = useState("")
   const [expandedPlanSections, setExpandedPlanSections] = useState<Set<string>>(new Set(["sample_questions"]))
   const [agentStatus, setAgentStatus] = useState<string | null>(null)
   const [editedPlan, setEditedPlan] = useState<EditablePlan | null>(restored.current?.editedPlan ?? null)
@@ -367,9 +386,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           pendingToolCalls.push(toolMsg)
           setMessages((prev) => [...prev, toolMsg])
 
-          // Capture structured data from generate_config args
+          // Capture structured data from generate_config args for plan summary
           if (tool === "generate_config" && args) {
-            const sqs = args.sample_questions as string[] | undefined
             const measures = (args.measures as unknown[])?.length ?? 0
             const filters = (args.filters as unknown[])?.length ?? 0
             const expressions = (args.expressions as unknown[])?.length ?? 0
@@ -377,8 +395,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             const hasText = !!args.text_instruction
             setProgress((p) => ({
               ...p,
-              sampleQuestions: sqs?.length ? sqs : p.sampleQuestions,
-              instructionCounts: { measures, filters, expressions, exampleSqls: exSqls, textInstruction: hasText },
+              planSummary: { ...p.planSummary, measures, filters, expressions, exampleSqls: exSqls, textInstruction: hasText },
             }))
           }
         },
@@ -395,12 +412,48 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           )
 
           if ((tool === "describe_table" || tool === "profile_columns" || tool === "assess_data_quality" || tool === "profile_table_usage") && !result.error) {
-            setProgress((p) => ({ ...p, profilingDone: true }))
+            setProgress((p) => {
+              const updated = { ...p, inspectionDone: true }
+              if (tool === "assess_data_quality") {
+                const qs = (result as Record<string, unknown>).summary as { total_recommended_excludes?: number; total_recommended_review?: number } | undefined
+                updated.inspectionSummary = {
+                  ...p.inspectionSummary,
+                  qualityIssues: (qs?.total_recommended_excludes ?? 0) + (qs?.total_recommended_review ?? 0),
+                }
+              }
+              if (tool === "profile_table_usage") {
+                const us = (result as Record<string, unknown>).summary as { tables_with_lineage?: number } | undefined
+                updated.inspectionSummary = { ...updated.inspectionSummary, lineageCount: us?.tables_with_lineage ?? 0 }
+              }
+              if (tool === "profile_columns") {
+                const profiles = (result as Record<string, unknown>).profiles as Record<string, unknown> | undefined
+                updated.inspectionSummary = {
+                  ...updated.inspectionSummary,
+                  columnsProfiled: p.inspectionSummary.columnsProfiled + (profiles ? Object.keys(profiles).length : 0),
+                }
+              }
+              return updated
+            })
           }
           if (tool === "present_plan" && !result.error) {
             if (resolvedId) setExpandedTools((et) => new Set(et).add(resolvedId))
-            setEditedPlan(planFromResult(result as Record<string, unknown>))
+            const plan = planFromResult(result as Record<string, unknown>)
+            setEditedPlan(plan)
             setEditingPlanItem(null)
+            setProgress((p) => ({
+              ...p,
+              planReady: true,
+              planSummary: {
+                questions: plan.sample_questions.length,
+                benchmarks: plan.benchmarks.length,
+                measures: plan.measures.length,
+                filters: plan.filters.length,
+                expressions: plan.expressions.length,
+                exampleSqls: plan.example_sqls.length,
+                joins: plan.joins.length,
+                textInstruction: plan.text_instructions.length > 0,
+              },
+            }))
           }
 
           // Derive catalog/schema/tables from tool results so the
@@ -460,7 +513,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             spaceUrl: url,
             spaceDisplayName: displayName,
             title: p.title || displayName,
-            benchmarks: p.benchmarks.length > 0 ? p.benchmarks : [...p.sampleQuestions],
           }))
         },
         onError: (message) => {
@@ -528,7 +580,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setProgress(EMPTY_PROGRESS)
     setEditingTitle(false)
     setTitleDraft("")
-    setBenchmarkDraft("")
+    setBusinessContextDraft("")
     setExpandedPlanSections(new Set(["sample_questions"]))
     setEditedPlan(null)
     setEditingPlanItem(null)
@@ -612,14 +664,14 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     sendMessage(`Please remove the ${short} table from the selection`)
   }
 
-  // Panel: benchmark management
-  const addBenchmark = () => {
-    if (!benchmarkDraft.trim()) return
-    setProgress((p) => ({ ...p, benchmarks: [...p.benchmarks, benchmarkDraft.trim()] }))
-    setBenchmarkDraft("")
+  // Panel: business context management
+  const addBusinessContext = () => {
+    if (!businessContextDraft.trim()) return
+    setProgress((p) => ({ ...p, businessContext: [...p.businessContext, businessContextDraft.trim()] }))
+    setBusinessContextDraft("")
   }
-  const removeBenchmark = (i: number) => {
-    setProgress((p) => ({ ...p, benchmarks: p.benchmarks.filter((_, j) => j !== i) }))
+  const removeBusinessContext = (i: number) => {
+    setProgress((p) => ({ ...p, businessContext: p.businessContext.filter((_, j) => j !== i) }))
   }
 
   // ─── Render helpers ───────────────────────────────────────────
@@ -1657,7 +1709,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const isElementSuperseded = (elId: string): boolean => {
     if (elId === "catalog_selection") return progress.schemas.length > 0
     if (elId === "schema_selection") return progress.tables.length > 0
-    if (elId === "table_selection") return progress.profilingDone
+    if (elId === "table_selection") return progress.inspectionDone
     if (elId === "warehouse_selection") return progress.configReady
     return false
   }
@@ -2148,7 +2200,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                   >
                     {s.label}
                   </span>
-                  {active && !autoPilot && !isStreaming && s.key !== "create" && s.key !== "benchmarks" && (
+                  {active && !autoPilot && !isStreaming && s.key !== "create" && (
                     <button
                       onClick={() =>
                         sendMessage(`Skip ${s.label} — let AI decide`, { skip_step: s.key })
@@ -2164,7 +2216,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
                 {/* Step-specific details */}
                 {s.key === "requirements" && (
-                  <div className="mt-1">
+                  <div className="mt-1 space-y-1.5">
                     {editingTitle ? (
                       <div className="flex gap-1">
                         <input
@@ -2205,6 +2257,41 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                         + Set name
                       </button>
                     ) : null}
+                    {progress.businessContext.length > 0 && (
+                      <div className="space-y-0.5">
+                        {progress.businessContext.map((ctx, ci) => (
+                          <div key={ci} className="group flex items-start gap-1">
+                            <p className="text-[10px] text-muted flex-1 truncate" title={ctx}>
+                              &bull; {ctx}
+                            </p>
+                            <button
+                              onClick={() => removeBusinessContext(ci)}
+                              className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                            >
+                              <X className="w-2.5 h-2.5 text-muted hover:text-red-400" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {(active || done) && (
+                      <div className="flex gap-1">
+                        <input
+                          value={businessContextDraft}
+                          onChange={(e) => setBusinessContextDraft(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") addBusinessContext() }}
+                          placeholder="Add a business rule..."
+                          className="flex-1 text-[10px] border border-default rounded px-2 py-1 bg-surface text-primary focus:outline-none focus:border-accent/40"
+                        />
+                        <button
+                          onClick={addBusinessContext}
+                          disabled={!businessContextDraft.trim()}
+                          className="px-1.5 text-accent disabled:opacity-30"
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -2241,31 +2328,35 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                   </div>
                 )}
 
-                {s.key === "questions" && progress.sampleQuestions.length > 0 && (
-                  <div className="mt-1 space-y-0.5">
-                    {progress.sampleQuestions.slice(0, 4).map((q, qi) => (
-                      <p key={qi} className="text-[10px] text-muted truncate" title={q}>
-                        &bull; {q}
-                      </p>
-                    ))}
-                    {progress.sampleQuestions.length > 4 && (
-                      <p className="text-[10px] text-muted">
-                        +{progress.sampleQuestions.length - 4} more
-                      </p>
-                    )}
+                {s.key === "inspection" && progress.inspectionDone && (
+                  <div className="mt-1">
+                    {(() => {
+                      const is = progress.inspectionSummary
+                      const parts: string[] = []
+                      if (is.columnsProfiled > 0) parts.push(`${is.columnsProfiled} columns profiled`)
+                      if (is.qualityIssues > 0) parts.push(`${is.qualityIssues} quality issue${is.qualityIssues !== 1 ? "s" : ""}`)
+                      if (is.lineageCount > 0) parts.push(`${is.lineageCount} table${is.lineageCount !== 1 ? "s" : ""} with lineage`)
+                      return parts.length > 0 ? (
+                        <p className="text-[10px] text-muted">{parts.join(" · ")}</p>
+                      ) : (
+                        <p className="text-[10px] text-muted">Inspection complete</p>
+                      )
+                    })()}
                   </div>
                 )}
 
-                {s.key === "instructions" && (
+                {s.key === "plan" && progress.planReady && (
                   <div className="mt-1">
                     {(() => {
-                      const ic = progress.instructionCounts
+                      const ps = progress.planSummary
                       const parts: string[] = []
-                      if (ic.measures > 0) parts.push(`${ic.measures} measure${ic.measures !== 1 ? "s" : ""}`)
-                      if (ic.filters > 0) parts.push(`${ic.filters} filter${ic.filters !== 1 ? "s" : ""}`)
-                      if (ic.expressions > 0) parts.push(`${ic.expressions} expr`)
-                      if (ic.exampleSqls > 0) parts.push(`${ic.exampleSqls} SQL example${ic.exampleSqls !== 1 ? "s" : ""}`)
-                      if (ic.textInstruction) parts.push("text instruction")
+                      if (ps.questions > 0) parts.push(`${ps.questions} question${ps.questions !== 1 ? "s" : ""}`)
+                      if (ps.benchmarks > 0) parts.push(`${ps.benchmarks} benchmark${ps.benchmarks !== 1 ? "s" : ""}`)
+                      if (ps.measures > 0) parts.push(`${ps.measures} measure${ps.measures !== 1 ? "s" : ""}`)
+                      if (ps.joins > 0) parts.push(`${ps.joins} join${ps.joins !== 1 ? "s" : ""}`)
+                      if (ps.exampleSqls > 0) parts.push(`${ps.exampleSqls} SQL example${ps.exampleSqls !== 1 ? "s" : ""}`)
+                      if (ps.filters > 0) parts.push(`${ps.filters} filter${ps.filters !== 1 ? "s" : ""}`)
+                      if (ps.textInstruction) parts.push("text instruction")
                       return parts.length > 0 ? (
                         <p className="text-[10px] text-muted">{parts.join(", ")}</p>
                       ) : null
@@ -2296,44 +2387,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                       <ExternalLink className="w-2.5 h-2.5" />
                       Open space
                     </a>
-                  </div>
-                )}
-
-                {s.key === "benchmarks" && progress.spaceId && (
-                  <div className="mt-1 space-y-1.5">
-                    {progress.benchmarks.length > 0 && (
-                      <div className="space-y-0.5">
-                        {progress.benchmarks.map((bq, bi) => (
-                          <div key={bi} className="group flex items-start gap-1">
-                            <p className="text-[10px] text-muted flex-1 truncate" title={bq}>
-                              {bi + 1}. {bq}
-                            </p>
-                            <button
-                              onClick={() => removeBenchmark(bi)}
-                              className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                            >
-                              <X className="w-2.5 h-2.5 text-muted hover:text-red-400" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <div className="flex gap-1">
-                      <input
-                        value={benchmarkDraft}
-                        onChange={(e) => setBenchmarkDraft(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") addBenchmark() }}
-                        placeholder="Add a benchmark question..."
-                        className="flex-1 text-[10px] border border-default rounded px-2 py-1 bg-surface text-primary focus:outline-none focus:border-accent/40"
-                      />
-                      <button
-                        onClick={addBenchmark}
-                        disabled={!benchmarkDraft.trim()}
-                        className="px-1.5 text-accent disabled:opacity-30"
-                      >
-                        <Plus className="w-3 h-3" />
-                      </button>
-                    </div>
                   </div>
                 )}
               </div>
@@ -2431,7 +2484,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           if (p.spaceId) nudge = "What else can you help with?"
           else if (p.configReady) nudge = "Let's create the space"
           else if (editedPlan) nudge = "I've reviewed the plan — let's proceed"
-          else if (p.profilingDone) nudge = "Continue to build the plan"
+          else if (p.inspectionDone) nudge = "Continue to build the plan"
           else if (p.tables.length > 0) nudge = "Continue with data inspection"
           else if (p.schemas.length > 0) nudge = "Continue with table selection"
           else if (p.catalog) nudge = "Continue with schema selection"
