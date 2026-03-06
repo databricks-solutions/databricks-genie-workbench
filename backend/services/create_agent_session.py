@@ -33,7 +33,7 @@ class AgentSession:
     def add_tool_call(self, tool_call_id: str, name: str, arguments: str) -> None:
         self.history.append({
             "role": "assistant",
-            "content": "",
+            "content": None,
             "tool_calls": [{
                 "id": tool_call_id,
                 "type": "function",

@@ -11,8 +11,6 @@ import time
 from pathlib import Path
 from typing import AsyncGenerator, Generator
 
-import requests as http_client
-
 import mlflow
 from mlflow.entities import SpanType
 
@@ -144,6 +142,7 @@ class CreateGenieAgent:
                                     fn = tc_delta.get("function", {})
                                     tool_calls_acc[idx] = {
                                         "id": tc_delta.get("id", ""),
+                                        "type": "function",
                                         "function": {
                                             "name": fn.get("name", ""),
                                             "arguments": fn.get("arguments", ""),
@@ -166,11 +165,16 @@ class CreateGenieAgent:
                     })
 
                 if tool_calls_acc:
+                    for tc in tool_calls_acc.values():
+                        args_str = tc["function"].get("arguments", "")
+                        if not args_str or not args_str.strip():
+                            tc["function"]["arguments"] = "{}"
                     tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
 
-                    assistant_msg = {
+                    tc_content = accumulated_content.strip() if accumulated_content else None
+                    assistant_msg: dict = {
                         "role": "assistant",
-                        "content": accumulated_content or "",
+                        "content": tc_content,
                         "tool_calls": tool_calls,
                     }
                     session.history.append(assistant_msg)
@@ -297,12 +301,23 @@ class CreateGenieAgent:
                     "content": msg.get("content") or "{}",
                 })
             elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                tc_content = (msg.get("content") or "").strip()
-                messages.append({
-                    "role": "assistant",
-                    "content": tc_content if tc_content else None,
-                    "tool_calls": msg["tool_calls"],
-                })
+                tc_content = (msg.get("content") or "").strip() or None
+                normalized_tcs = []
+                for tc in msg["tool_calls"]:
+                    ntc = {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"].get("arguments") or "{}",
+                        },
+                    }
+                    normalized_tcs.append(ntc)
+                # content MUST appear before tool_calls — the Databricks
+                # serving endpoint mis-translates to Anthropic format
+                # when tool_calls comes first in the JSON object.
+                tc_msg: dict = {"role": "assistant", "content": tc_content, "tool_calls": normalized_tcs}
+                messages.append(tc_msg)
             elif msg["role"] == "assistant":
                 content = msg.get("content") or ""
                 if not content.strip():
@@ -351,11 +366,11 @@ class CreateGenieAgent:
     def _stream_llm(self, messages: list[dict]) -> Generator[dict, None, None]:
         """Stream LLM response chunks from the serving endpoint (sync).
 
-        Yields parsed SSE data dicts with OpenAI-compatible streaming format.
+        Uses the SDK's pre-authenticated requests.Session so auth works
+        across all methods (PAT, OAuth/M2M, CLI profile).
         """
         client = get_workspace_client()
         host = (client.config.host or "").rstrip("/")
-        token = client.config.token
 
         body = {
             "messages": messages,
@@ -366,18 +381,34 @@ class CreateGenieAgent:
 
         url = f"{host}/serving-endpoints/{self.model}/invocations"
         logger.info(f"Streaming LLM call to {self.model} with {len(messages)} messages")
+        for i, m in enumerate(messages):
+            role = m.get("role", "?")
+            has_tc = bool(m.get("tool_calls"))
+            tc_id = m.get("tool_call_id", "")
+            content_preview = str(m.get("content", ""))[:80] if m.get("content") else "(none)"
+            logger.info(f"  msg[{i}] role={role} tool_calls={has_tc} tc_id={tc_id} content={content_preview!r}")
+            if has_tc:
+                for j, tc in enumerate(m["tool_calls"]):
+                    logger.info(f"    tc[{j}] id={tc.get('id','?')} type={tc.get('type','?')} fn={tc.get('function',{}).get('name','?')} args_len={len(tc.get('function',{}).get('arguments',''))}")
 
-        with http_client.post(
+        resp = client.api_client._api_client._session.post(
             url,
             json=body,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
             stream=True,
             timeout=120,
-        ) as resp:
-            resp.raise_for_status()
+        )
+        try:
+            if not resp.ok:
+                error_body = resp.text[:500]
+                logger.error("LLM endpoint returned %s: %s", resp.status_code, error_body)
+                import tempfile, os
+                debug_path = os.path.join(tempfile.gettempdir(), "llm_debug_body.json")
+                with open(debug_path, "w") as f:
+                    json.dump(body, f, indent=2, default=str)
+                logger.error("Wrote failing request body to %s", debug_path)
+                resp.raise_for_status()
+
+            resp.encoding = "utf-8"
             for line in resp.iter_lines(decode_unicode=True):
                 if not line or not line.startswith("data: "):
                     continue
@@ -388,6 +419,8 @@ class CreateGenieAgent:
                     yield json.loads(data)
                 except json.JSONDecodeError:
                     continue
+        finally:
+            resp.close()
 
     async def _async_stream_llm(self, messages: list[dict]) -> AsyncGenerator[dict, None]:
         """Async wrapper that bridges the sync streaming generator to async."""

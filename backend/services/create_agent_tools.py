@@ -287,7 +287,14 @@ TOOL_DEFINITIONS = [
                     "text_instructions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Business rules and domain guidance lines",
+                        "description": (
+                            "Business rules injected into Genie's LLM prompt. Focus on: "
+                            "terminology definitions ('revenue' means net after discounts), "
+                            "default assumptions (default to current year when unspecified), "
+                            "fiscal calendar rules, data quality warnings, and cross-table business logic. "
+                            "Do NOT duplicate what's already in measures, filters, expressions, or joins. "
+                            "Include any business rules the user explicitly stated."
+                        ),
                     },
                     "example_sqls": {
                         "type": "array",
@@ -451,7 +458,12 @@ TOOL_DEFINITIONS = [
                     "text_instructions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Business rules and domain guidance lines",
+                        "description": (
+                            "Business rules injected into Genie's LLM prompt. Focus on: "
+                            "terminology definitions, default assumptions, fiscal calendar, "
+                            "data quality warnings, cross-table business logic. "
+                            "Include any business rules the user explicitly stated."
+                        ),
                     },
                     "joins": {
                         "type": "array",
@@ -599,7 +611,8 @@ TOOL_DEFINITIONS = [
             "description": (
                 "Patch the existing serialized_space config in-place. Use this INSTEAD of generate_config "
                 "for post-creation modifications. It directly mutates the current config — no rebuild, no "
-                "new IDs, instant. Supports multiple actions in one call."
+                "new IDs, instant. Supports multiple actions in one call. "
+                "For business rules, use add_instruction_line (appends) instead of update_instructions (replaces all)."
             ),
             "parameters": {
                 "type": "object",
@@ -616,6 +629,8 @@ TOOL_DEFINITIONS = [
                                         "enable_prompt_matching",
                                         "disable_prompt_matching",
                                         "update_instructions",
+                                        "add_instruction_line",
+                                        "remove_instruction_line",
                                         "update_sample_questions",
                                         "add_example_sql",
                                         "remove_example_sql",
@@ -651,6 +666,10 @@ TOOL_DEFINITIONS = [
                                     "type": "array",
                                     "items": {"type": "string"},
                                     "description": "New text instruction lines (for update_instructions — replaces existing)",
+                                },
+                                "instruction_line": {
+                                    "type": "string",
+                                    "description": "A single instruction line to add or remove (for add_instruction_line / remove_instruction_line). For business rules, domain definitions, or data quality warnings.",
                                 },
                                 "sample_questions": {
                                     "type": "array",
@@ -1963,6 +1982,41 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
                     "content": content,
                 }]
             applied.append(f"Updated text instructions ({len(lines)} lines)")
+
+        elif action == "add_instruction_line":
+            line = act.get("instruction_line", "").strip()
+            if not line:
+                applied.append("Skipped add_instruction_line — instruction_line required")
+                continue
+            formatted = line if line.endswith("\n") else line + "\n"
+            ti_list = cfg.setdefault("instructions", {}).get("text_instructions", [])
+            if ti_list:
+                existing = ti_list[0].get("content", [])
+                if formatted not in existing and line + "\n" not in existing:
+                    existing.append(formatted)
+            else:
+                cfg["instructions"]["text_instructions"] = [{
+                    "id": secrets.token_hex(16),
+                    "content": [formatted],
+                }]
+            applied.append(f"Added instruction line: {line[:80]}")
+
+        elif action == "remove_instruction_line":
+            line = act.get("instruction_line", "").strip().lower()
+            if not line:
+                applied.append("Skipped remove_instruction_line — instruction_line required")
+                continue
+            ti_list = cfg.get("instructions", {}).get("text_instructions", [])
+            if ti_list:
+                before = len(ti_list[0].get("content", []))
+                ti_list[0]["content"] = [
+                    l for l in ti_list[0].get("content", [])
+                    if line not in l.strip().lower()
+                ]
+                removed = before - len(ti_list[0]["content"])
+                applied.append(f"Removed {removed} instruction line(s) matching '{line[:40]}'")
+            else:
+                applied.append("No text instructions to remove from")
 
         elif action == "update_sample_questions":
             questions = act.get("sample_questions", [])
