@@ -32,11 +32,12 @@ uv sync
 # or: pip install -e .
 ```
 
-**3. Install frontend deps**
+**3. Install frontend deps and build**
 
 ```bash
 cd frontend
 npm install
+npm run build
 ```
 
 **4. Run (two terminals)**

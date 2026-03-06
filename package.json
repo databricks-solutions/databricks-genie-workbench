@@ -1,0 +1,9 @@
+{
+  "name": "genie-workbench",
+  "private": true,
+  "scripts": {
+    "postinstall": "cd frontend && npm install",
+    "build": "cd frontend && npm run build",
+    "start": "uvicorn backend.main:app --host 0.0.0.0 --port 8000"
+  }
+}
