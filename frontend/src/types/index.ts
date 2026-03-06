@@ -187,7 +187,7 @@ export interface SpaceListItem {
   maturity: MaturityLevel | null
   is_starred: boolean
   last_scanned: string | null
-  path: string | null
+  space_url: string | null
 }
 
 export interface StarToggleRequest {

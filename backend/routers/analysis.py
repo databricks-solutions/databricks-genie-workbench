@@ -160,7 +160,7 @@ async def fetch_space(request: FetchSpaceRequest):
         space_data = get_serialized_space(request.genie_space_id)
         analyzer = get_analyzer()
         all_sections = analyzer.get_all_sections(space_data)
-        
+
         sections = [
             {
                 "name": name,
@@ -169,7 +169,7 @@ async def fetch_space(request: FetchSpaceRequest):
             }
             for name, data in all_sections
         ]
-        
+
         return FetchSpaceResponse(
             genie_space_id=request.genie_space_id,
             space_data=space_data,

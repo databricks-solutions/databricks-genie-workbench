@@ -45,11 +45,13 @@ async def list_spaces(
     try:
         try:
             raw_spaces = list_genie_spaces()
-            if raw_spaces:
-                logger.info(f"Sample space fields: {list(raw_spaces[0].keys())}")
         except Exception as e:
             logger.error(f"Failed to list Genie Spaces: {e}")
             raise HTTPException(status_code=500, detail="Failed to fetch Genie Spaces from Databricks")
+
+        client = get_workspace_client()
+        host = (client.config.host or "").rstrip("/")
+
         starred_ids = await get_starred_spaces()
         starred_set = set(starred_ids)
 
@@ -57,7 +59,6 @@ async def list_spaces(
         for space in raw_spaces:
             space_id = space.get("space_id", "")
             display_name = space.get("title", space_id)
-            path = space.get("path", None)
 
             # Filter by starred
             if starred_only and space_id not in starred_set:
@@ -86,7 +87,7 @@ async def list_spaces(
                 maturity=maturity,
                 is_starred=(space_id in starred_set),
                 last_scanned=last_scanned,
-                path=path,
+                space_url=f"{host}/genie/rooms/{space_id}" if host else None,
             ))
 
         # Sort: starred first, then by score descending (unscanned last)

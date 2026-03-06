@@ -2,7 +2,7 @@
  * SpaceList - Org-wide Genie Space listing with IQ scores.
  */
 import { useState, useEffect, useCallback } from "react"
-import { Star, RefreshCw, Search, LayoutGrid, AlertTriangle, Zap, Plus, FolderOpen } from "lucide-react"
+import { Star, RefreshCw, Search, LayoutGrid, AlertTriangle, Zap, Plus, ExternalLink } from "lucide-react"
 import { listSpaces, scanSpace, toggleStar } from "@/lib/api"
 import { getScoreHex } from "@/lib/utils"
 import type { SpaceListItem, ScanResult } from "@/types"
@@ -232,14 +232,21 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
                   )}
                 </div>
               </div>
-              {space.path && (
-                <p className="text-xs text-muted mt-1.5 flex items-center gap-1">
-                  <FolderOpen className="w-3 h-3 flex-shrink-0" />
-                  <span className="break-all">{space.path}</span>
-                </p>
-              )}
               <div className="mt-3 pt-3 border-t border-default flex items-center justify-between">
-                <span className="text-xs text-muted font-mono break-all">{space.space_id}</span>
+                {space.space_url ? (
+                  <a
+                    href={space.space_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-xs text-muted font-mono break-all hover:text-accent transition-colors inline-flex items-center gap-1"
+                  >
+                    {space.space_id}
+                    <ExternalLink className="w-3 h-3 flex-shrink-0" />
+                  </a>
+                ) : (
+                  <span className="text-xs text-muted font-mono break-all">{space.space_id}</span>
+                )}
                 <button
                   onClick={(e) => handleScan(e, space.space_id)}
                   disabled={scanning.has(space.space_id)}
