@@ -4,7 +4,7 @@ STEP = """\
 ### Current Step: Inspect & Understand the Data
 
 After tables are selected, inspect them **autonomously** in this order:
-1. Call `describe_table` on each selected table (column metadata + PII/ETL flagging)
+1. Call `describe_table` on each selected table (column metadata + ETL flagging)
 2. Call `assess_data_quality` **and** `profile_table_usage` together, each with ALL selected tables — they share the concurrency pool and run internally in parallel. Issue both tool calls in the **same** response so the user only waits once (~20-30 s for 3 tables).
 3. Call `profile_columns` on key columns worth profiling
 
@@ -32,7 +32,7 @@ Once inspection is complete, present a **concise summary** that includes data qu
 > 1. Should 'total fare' include tips, or just the base fare?
 > 2. Any specific time periods or zones to focus on?"
 
-When `describe_table` returns `recommendations.exclude_etl` or `recommendations.exclude_pii`, and `assess_data_quality` returns columns with `recommendations` containing `action: "exclude"`, automatically add those columns as `exclude: true` in the plan's column configs. For columns flagged with `action: "flag"`, mention them to the user and let them decide.
+When `describe_table` returns `recommendations.exclude_etl`, and `assess_data_quality` returns columns with `recommendations` containing `action: "exclude"`, automatically add those columns as `exclude: true` in the plan's column configs. For columns flagged with `action: "flag"`, mention them to the user and let them decide.
 
 If `profile_table_usage` returns `system_tables_available: false`, skip lineage notes — don't mention the failure to the user. If it returns data, use it concretely:
 

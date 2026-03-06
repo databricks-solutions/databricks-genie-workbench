@@ -108,7 +108,7 @@ TOOL_DEFINITIONS = [
             "name": "describe_table",
             "description": (
                 "Get detailed column metadata for a table: column names, types, descriptions, "
-                "and recommendations (PII, ETL/metadata columns to exclude). "
+                "and recommendations (ETL/metadata columns to exclude). "
                 "Returns a recommendations summary with columns grouped by reason."
             ),
             "parameters": {
@@ -849,8 +849,8 @@ def _discover_tables(catalog: str, schema: str) -> dict:
 def _describe_table(table_identifier: str) -> dict:
     """Get column metadata via the SDK.
 
-    Flags potential PII and ETL/metadata columns with structured
-    recommendations the agent and frontend can act on.
+    Flags ETL/metadata columns with structured recommendations the
+    agent and frontend can act on.
     """
     client = get_workspace_client()
     try:
@@ -859,7 +859,6 @@ def _describe_table(table_identifier: str) -> dict:
         return {"error": f"Cannot access table {table_identifier}: {e}"}
 
     columns = []
-    exclude_pii: list[str] = []
     exclude_etl: list[str] = []
 
     for col in (table_info.columns or []):
@@ -867,9 +866,6 @@ def _describe_table(table_identifier: str) -> dict:
         col_type = str(col.type_text or col.type_name or "")
 
         recommendations: list[dict] = []
-        if PII_PATTERNS.search(col_name):
-            recommendations.append({"action": "exclude", "reason": "pii", "confidence": "high"})
-            exclude_pii.append(col_name)
         if ETL_PATTERNS.search(col_name):
             recommendations.append({"action": "exclude", "reason": "etl_metadata", "confidence": "high"})
             exclude_etl.append(col_name)
@@ -878,7 +874,6 @@ def _describe_table(table_identifier: str) -> dict:
             "name": col_name,
             "type": col_type,
             "description": col.comment,
-            "pii_hint": bool(PII_PATTERNS.search(col_name)),
         }
         if recommendations:
             entry["recommendations"] = recommendations
@@ -909,17 +904,12 @@ def _describe_table(table_identifier: str) -> dict:
         "comment": table_info.comment,
         "columns": columns,
         "column_count": len(columns),
-        "pii_columns": exclude_pii,
         "sample_rows": sample_rows,
         "uc_url": uc_url,
     }
 
-    if exclude_pii or exclude_etl:
-        result_dict["recommendations"] = {}
-        if exclude_pii:
-            result_dict["recommendations"]["exclude_pii"] = exclude_pii
-        if exclude_etl:
-            result_dict["recommendations"]["exclude_etl"] = exclude_etl
+    if exclude_etl:
+        result_dict["recommendations"] = {"exclude_etl": exclude_etl}
 
     return result_dict
 
@@ -1335,8 +1325,6 @@ def _column_quality_recommendations(
     # Name-based checks (supplement describe_table's checks)
     if ETL_PATTERNS.search(col_name):
         recs.append({"action": "exclude", "reason": "etl_metadata", "confidence": "high"})
-    if PII_PATTERNS.search(col_name):
-        recs.append({"action": "exclude", "reason": "pii", "confidence": "high"})
 
     return recs
 
@@ -1705,7 +1693,7 @@ def _present_plan(
 
 @mlflow.trace(name="generate_config", span_type=SpanType.TOOL)
 def _generate_config(
-    tables: list[dict],
+    tables: list[dict] | None = None,
     sample_questions: list[str] | None = None,
     text_instructions: list[str] | None = None,
     example_sqls: list[dict] | None = None,
@@ -1722,6 +1710,15 @@ def _generate_config(
     Use this for INITIAL creation only. For post-creation modifications,
     use update_config instead.
     """
+    if not tables:
+        return {
+            "error": "tables is required and must contain at least one table",
+            "hint": (
+                "Pass tables as a list of objects with at least 'identifier' "
+                "(catalog.schema.table). Review describe_table results for the "
+                "identifiers you inspected earlier."
+            ),
+        }
     if sample_questions is None:
         sample_questions = []
 
@@ -1883,7 +1880,8 @@ def _generate_config(
             la = js.get("left_alias", js["left_table"].split(".")[-1])
             ra = js.get("right_alias", js["right_table"].split(".")[-1])
             condition = f"`{la}`.`{js['left_column']}` = `{ra}`.`{js['right_column']}`"
-            rt = f"--rt=FROM_RELATIONSHIP_TYPE_{js['relationship']}--"
+            rel_norm = js["relationship"].upper().replace("-", "_")
+            rt = f"--rt=FROM_RELATIONSHIP_TYPE_{rel_norm}--"
             entry: dict[str, Any] = {
                 "id": secrets.token_hex(16),
                 "left": {"identifier": js["left_table"], "alias": la},
@@ -1984,7 +1982,7 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
             applied.append(f"Updated text instructions ({len(lines)} lines)")
 
         elif action == "add_instruction_line":
-            line = act.get("instruction_line", "").strip()
+            line = (act.get("instruction_line") or act.get("instruction") or "").strip()
             if not line:
                 applied.append("Skipped add_instruction_line — instruction_line required")
                 continue
@@ -2002,7 +2000,7 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
             applied.append(f"Added instruction line: {line[:80]}")
 
         elif action == "remove_instruction_line":
-            line = act.get("instruction_line", "").strip().lower()
+            line = (act.get("instruction_line") or act.get("instruction") or "").strip().lower()
             if not line:
                 applied.append("Skipped remove_instruction_line — instruction_line required")
                 continue
@@ -2169,7 +2167,8 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
             la = act.get("left_alias", lt.split(".")[-1])
             ra = act.get("right_alias", rt_table.split(".")[-1])
             condition = f"`{la}`.`{lc}` = `{ra}`.`{rc}`"
-            rt_tag = f"--rt=FROM_RELATIONSHIP_TYPE_{rel}--"
+            rel_norm = rel.upper().replace("-", "_")
+            rt_tag = f"--rt=FROM_RELATIONSHIP_TYPE_{rel_norm}--"
             entry: dict[str, Any] = {
                 "id": secrets.token_hex(16),
                 "left": {"identifier": lt, "alias": la},

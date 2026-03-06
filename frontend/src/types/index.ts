@@ -363,5 +363,6 @@ export interface AgentChatMessage {
   tool_args?: Record<string, unknown>
   tool_result?: Record<string, unknown>
   is_thinking?: boolean
+  is_error?: boolean
   created_space?: { space_id: string; url: string; display_name: string }
 }

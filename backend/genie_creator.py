@@ -7,6 +7,7 @@ Creates new Genie Spaces from optimized configurations via the Databricks API.
 import json
 import logging
 import os
+import re
 
 from backend.services.auth import get_workspace_client, get_databricks_host
 from backend.sql_executor import get_sql_warehouse_id
@@ -89,7 +90,40 @@ def _enforce_constraints(config: dict) -> dict:
                     filtered.append(item)
             sql_snippets[snippet_type] = filtered
 
+    # Normalize join relationship types to uppercase underscores
+    _normalize_join_relationships(config)
+
     return config
+
+
+_RT_PATTERN = re.compile(r"--rt=FROM_RELATIONSHIP_TYPE_([^-]+)--")
+
+
+def _normalize_join_relationships(config: dict) -> None:
+    """Fix join_spec relationship tags in-place.
+
+    The Genie API requires FROM_RELATIONSHIP_TYPE_MANY_TO_ONE (uppercase
+    underscores), but the LLM may produce many-to-one (lowercase hyphens).
+    """
+    join_specs = (
+        config.get("instructions", {}).get("join_specs", [])
+    )
+    if not isinstance(join_specs, list):
+        return
+    for js in join_specs:
+        sql_lines = js.get("sql", [])
+        if not isinstance(sql_lines, list):
+            continue
+        for i, line in enumerate(sql_lines):
+            if not isinstance(line, str) or "--rt=" not in line:
+                continue
+            m = _RT_PATTERN.search(line)
+            if m:
+                original = m.group(1)
+                normalized = original.upper().replace("-", "_")
+                if normalized != original:
+                    sql_lines[i] = line.replace(original, normalized)
+                    logger.info("Normalized join relationship: %s -> %s", original, normalized)
 
 
 def _sort_array(items: list, sort_keys: tuple) -> list:

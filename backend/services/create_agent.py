@@ -188,6 +188,12 @@ class CreateGenieAgent:
                         except json.JSONDecodeError:
                             tool_args = {}
 
+                        if tool_name == "generate_config":
+                            injected = self._backfill_generate_config_args(session, tool_args)
+                            if injected:
+                                fn["arguments"] = json.dumps(tool_args)
+                                logger.info("Backfilled generate_config args from session: %s", ", ".join(injected))
+
                         yield {"event": "tool_call", "data": {"tool": tool_name, "args": tool_args}}
 
                         with mlflow.start_span(name=f"tool:{tool_name}", span_type=SpanType.TOOL) as tool_span:
@@ -196,9 +202,17 @@ class CreateGenieAgent:
                                 "args": tool_args,
                                 "session_id": session.session_id,
                             })
-                            result = await asyncio.get_event_loop().run_in_executor(
+                            loop = asyncio.get_event_loop()
+                            future = loop.run_in_executor(
                                 None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
                             )
+                            # Send heartbeats every 3s so the SSE connection stays alive
+                            while not future.done():
+                                try:
+                                    await asyncio.wait_for(asyncio.shield(future), timeout=3.0)
+                                except asyncio.TimeoutError:
+                                    yield {"event": "heartbeat", "data": {"tool": tool_name}}
+                            result = future.result()
                             tool_span.set_outputs({
                                 "success": "error" not in result,
                                 "result_keys": list(result.keys()),
@@ -380,16 +394,17 @@ class CreateGenieAgent:
         }
 
         url = f"{host}/serving-endpoints/{self.model}/invocations"
-        logger.info(f"Streaming LLM call to {self.model} with {len(messages)} messages")
-        for i, m in enumerate(messages):
-            role = m.get("role", "?")
-            has_tc = bool(m.get("tool_calls"))
-            tc_id = m.get("tool_call_id", "")
-            content_preview = str(m.get("content", ""))[:80] if m.get("content") else "(none)"
-            logger.info(f"  msg[{i}] role={role} tool_calls={has_tc} tc_id={tc_id} content={content_preview!r}")
-            if has_tc:
-                for j, tc in enumerate(m["tool_calls"]):
-                    logger.info(f"    tc[{j}] id={tc.get('id','?')} type={tc.get('type','?')} fn={tc.get('function',{}).get('name','?')} args_len={len(tc.get('function',{}).get('arguments',''))}")
+        logger.info("Streaming LLM call to %s with %d messages", self.model, len(messages))
+        if logger.isEnabledFor(logging.DEBUG):
+            for i, m in enumerate(messages):
+                role = m.get("role", "?")
+                has_tc = bool(m.get("tool_calls"))
+                tc_id = m.get("tool_call_id", "")
+                content_preview = str(m.get("content", ""))[:80] if m.get("content") else "(none)"
+                logger.debug("  msg[%d] role=%s tool_calls=%s tc_id=%s content=%r", i, role, has_tc, tc_id, content_preview)
+                if has_tc:
+                    for j, tc in enumerate(m["tool_calls"]):
+                        logger.debug("    tc[%d] id=%s fn=%s args_len=%d", j, tc.get("id", "?"), tc.get("function", {}).get("name", "?"), len(tc.get("function", {}).get("arguments", "")))
 
         resp = client.api_client._api_client._session.post(
             url,
@@ -401,11 +416,6 @@ class CreateGenieAgent:
             if not resp.ok:
                 error_body = resp.text[:500]
                 logger.error("LLM endpoint returned %s: %s", resp.status_code, error_body)
-                import tempfile, os
-                debug_path = os.path.join(tempfile.gettempdir(), "llm_debug_body.json")
-                with open(debug_path, "w") as f:
-                    json.dump(body, f, indent=2, default=str)
-                logger.error("Wrote failing request body to %s", debug_path)
                 resp.raise_for_status()
 
             resp.encoding = "utf-8"
@@ -433,6 +443,81 @@ class CreateGenieAgent:
             if chunk is _sentinel:
                 break
             yield chunk
+
+    @staticmethod
+    def _backfill_generate_config_args(session: AgentSession, tool_args: dict) -> list[str]:
+        """Backfill missing generate_config arguments from session history.
+
+        Scans for describe_table results (tables + columns) and the most
+        recent present_plan result (sample_questions, text_instructions,
+        example_sqls, joins, measures, filters, expressions, benchmarks).
+
+        Mutates tool_args in-place and returns the list of keys that were injected.
+        """
+        injected: list[str] = []
+
+        # --- Extract tables from describe_table results ---
+        if "tables" not in tool_args:
+            tables_by_id: dict[str, dict] = {}
+            for msg in session.history:
+                if msg["role"] != "tool":
+                    continue
+                try:
+                    result = json.loads(msg.get("content", "{}"))
+                    if not isinstance(result, dict):
+                        continue
+                    table_id = result.get("table")
+                    if table_id and "columns" in result:
+                        cols = []
+                        for col in result["columns"]:
+                            entry: dict = {"column_name": col["name"]}
+                            if col.get("description"):
+                                entry["description"] = col["description"]
+                            cols.append(entry)
+                        tables_by_id[table_id] = {
+                            "identifier": table_id,
+                            "description": result.get("comment") or "",
+                            "column_configs": cols,
+                        }
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    continue
+            if tables_by_id:
+                tool_args["tables"] = list(tables_by_id.values())
+                injected.append(f"tables({len(tables_by_id)})")
+
+        # --- Extract plan data from the most recent present_plan result ---
+        plan_sections: dict | None = None
+        for msg in reversed(session.history):
+            if msg["role"] != "tool":
+                continue
+            try:
+                result = json.loads(msg.get("content", "{}"))
+                if isinstance(result, dict) and "sections" in result:
+                    plan_sections = result["sections"]
+                    break
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+
+        if plan_sections:
+            mapping = {
+                "sample_questions": "sample_questions",
+                "text_instructions": "text_instructions",
+                "example_sqls": "example_sqls",
+                "joins": "join_specs",
+                "measures": "measures",
+                "filters": "filters",
+                "expressions": "expressions",
+                "benchmarks": "benchmarks",
+            }
+            for plan_key, arg_key in mapping.items():
+                if arg_key not in tool_args:
+                    val = plan_sections.get(plan_key)
+                    if val:
+                        tool_args[arg_key] = val
+                        count = len(val) if isinstance(val, list) else 1
+                        injected.append(f"{arg_key}({count})")
+
+        return injected
 
     def _extract_ui_hints(self, session: AgentSession) -> list[dict] | None:
         """Extract UI hint metadata from tool results in the current turn.

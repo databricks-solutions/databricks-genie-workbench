@@ -51,13 +51,18 @@ const TOOL_LABELS: Record<string, string> = {
   discover_schemas: "Browsing schemas",
   discover_tables: "Browsing tables",
   describe_table: "Inspecting table",
+  assess_data_quality: "Assessing data quality",
+  profile_table_usage: "Profiling table usage & lineage",
   profile_columns: "Profiling columns",
   test_sql: "Testing SQL",
   discover_warehouses: "Finding warehouses",
   present_plan: "Preparing plan for review",
+  get_config_schema: "Fetching config schema",
   generate_config: "Generating config",
+  update_config: "Updating config",
   validate_config: "Validating config",
   create_space: "Creating space",
+  update_space: "Updating space",
 }
 
 const ELEMENT_ICONS: Record<string, typeof Database> = {
@@ -377,13 +382,18 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           case "discover_schemas": return catalog ? `Browsing schemas in ${catalog}...` : "Discovering schemas..."
           case "discover_tables": return schema ? `Finding tables in ${schema}...` : "Discovering tables..."
           case "describe_table": return tableName ? `Inspecting ${tableName}...` : "Inspecting table..."
+          case "assess_data_quality": return "Assessing data quality..."
+          case "profile_table_usage": return "Checking table usage & lineage..."
           case "profile_columns": return tableName ? `Profiling ${tableName}...` : "Profiling data..."
           case "test_sql": return "Testing SQL..."
           case "discover_warehouses": return "Finding warehouses..."
           case "present_plan": return "Preparing plan..."
+          case "get_config_schema": return "Fetching config schema..."
           case "generate_config": return "Generating configuration..."
+          case "update_config": return "Updating configuration..."
           case "validate_config": return "Validating configuration..."
           case "create_space": return "Creating space..."
+          case "update_space": return "Updating space..."
           default: return "Working..."
         }
       }
@@ -603,7 +613,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         },
         onError: (message) => {
           setAgentStatus(null)
-          // Clean up any in-flight streaming message
           if (streamingRafRef.current) {
             cancelAnimationFrame(streamingRafRef.current)
             streamingRafRef.current = null
@@ -616,9 +625,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             {
               id: nextId(),
               role: "assistant",
-              content: `Error: ${message}`,
+              content: message,
               timestamp: Date.now(),
-            },
+              is_error: true,
+            } as AgentChatMessage,
           ])
         },
         onDone: () => {
@@ -2194,6 +2204,20 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       )
     }
 
+    if (msg.is_error) {
+      return (
+        <div key={msg.id} className="mx-4 my-3">
+          <div className="flex items-start gap-2.5 px-3.5 py-2.5 bg-red-500/10 border border-red-500/25 rounded-xl">
+            <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-red-400 mb-0.5">Something went wrong</p>
+              <p className="text-xs text-red-300/80 break-words">{msg.content}</p>
+            </div>
+          </div>
+        </div>
+      )
+    }
+
     let isLastAssistant = false
     for (let i = messages.length - 1; i >= 0; i--) {
       if (messages[i].role === "assistant" && !messages[i].is_thinking) {
@@ -2231,7 +2255,17 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     )
   }
 
-  const getSuggestions = (): string[] => []
+  const getSuggestions = (): string[] => {
+    if (isStreaming || messages.length === 0) return []
+    const p = progress
+    if (p.spaceId) return ["Add a business rule", "Update sample questions", "Diagnose the space"]
+    if (p.configReady) return ["Create the space now", "Add a business rule first", "Show me the config"]
+    if (p.planReady) return ["Looks good — proceed", "Add more sample questions", "Add a business rule"]
+    if (p.inspectionDone) return ["Build the plan", "Inspect more tables", "Add a business rule"]
+    if (p.tables.length > 0) return ["Inspect these tables", "Add more tables", "Skip inspection — build plan"]
+    if (p.catalog) return []
+    return []
+  }
 
   // ─── Progress panel ───────────────────────────────────────────
 
@@ -2405,8 +2439,9 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                   <div className="mt-1 space-y-1">
                     {progress.catalog && (
                       <span className="text-[10px] text-muted font-mono block truncate">
-                        {progress.catalog}
-                        {progress.schemas.length > 0 ? `.${progress.schemas.join(", .")}` : ""}
+                        {progress.schemas.length > 0
+                          ? progress.schemas.map((s) => s.includes(".") ? s : `${progress.catalog}.${s}`).join(", ")
+                          : progress.catalog}
                       </span>
                     )}
                     {progress.tables.length > 0 && (
