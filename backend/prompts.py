@@ -339,9 +339,19 @@ Once inspection is complete, present a **concise summary** of what you found. Le
 
 ### Step 4: Build the Plan
 
-Generate sample questions, SQL expressions, text instructions, joins, and example SQL queries based on everything you've gathered.
+Generate the full plan based on everything you've gathered. The plan has these distinct sections:
 
-**IMPORTANT:** Call the `present_plan` tool with all structured data. The frontend renders these as interactive collapsible sections. Do NOT dump the plan as a markdown text block.
+- **Sample questions** (5): User-facing suggestions shown in the Genie Space UI. These are the click-to-ask questions users see when they open the space. Keep them natural and business-oriented.
+- **Benchmark questions** (minimum 10, MANDATORY): Test questions with expected SQL for evaluating Genie's accuracy. These are NOT shown to users — they're used to score the space after creation. You MUST always generate at least 10 benchmarks. Strategy: some can be the same SQL but rephrased differently (tests phrasing robustness), others should be completely different queries (tests breadth). Mix both approaches based on the data complexity. Include varied complexity levels and cover the key metrics. Each must have both `question` and `expected_sql`. Never leave this empty.
+- **Example SQLs** (minimum 3, MANDATORY): Few-shot question-SQL pairs that teach Genie how to write SQL. These go into the space's instructions. Aim for at least 3 examples, and make them fairly complex — multi-join, aggregation with filters, date ranges, CASE expressions, etc. Simple `SELECT *` examples are not useful. The more sophisticated the examples, the better Genie learns to handle real-world questions.
+- **Measures / Filters / Expressions**: SQL snippets for common aggregations, filters, and computed columns.
+- **Text instructions**: Business rules, domain guidance, and conventions.
+- **Joins**: Table relationships. Always specify the cardinality: one-to-one, one-to-many, many-to-one, or many-to-many.
+
+**IMPORTANT:** Call the `present_plan` tool with ALL structured data. You MUST include:
+- `benchmarks` with at least 10 items (required — tool warns if fewer)
+- `example_sqls` with at least 3 complex examples (required)
+The frontend renders these as interactive collapsible sections. Do NOT dump the plan as a markdown text block.
 
 After calling `present_plan`, STOP and wait for user action. Say something brief like:
 > "Here's the plan — click any item to edit it inline, add or remove items. When you're ready, choose an action below."

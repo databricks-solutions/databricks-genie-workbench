@@ -141,6 +141,7 @@ interface EditablePlan {
   filters: Record<string, string>[]
   expressions: Record<string, string>[]
   example_sqls: Record<string, string>[]
+  benchmarks: Record<string, string>[]
 }
 
 function planFromResult(result: Record<string, unknown>): EditablePlan {
@@ -153,6 +154,7 @@ function planFromResult(result: Record<string, unknown>): EditablePlan {
     filters: ((s.filters as Record<string, string>[]) || []).map((f) => ({ ...f })),
     expressions: ((s.expressions as Record<string, string>[]) || []).map((e) => ({ ...e })),
     example_sqls: ((s.example_sqls as Record<string, string>[]) || []).map((e) => ({ ...e })),
+    benchmarks: ((s.benchmarks as Record<string, string>[]) || []).map((b) => ({ ...b })),
   }
 }
 
@@ -187,6 +189,10 @@ function loadState(): PersistedState | null {
     if (p && !Array.isArray(p.schemas)) {
       p.schemas = p.schema ? [p.schema] : []
       delete p.schema
+    }
+    // Migrate editedPlan: ensure benchmarks array exists
+    if (parsed.editedPlan && !Array.isArray(parsed.editedPlan.benchmarks)) {
+      parsed.editedPlan.benchmarks = []
     }
     // Reconstruct editedPlan from messages if missing
     if (!parsed.editedPlan && parsed.messages) {
@@ -830,12 +836,13 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
     const sqlExpressionCount = plan.measures.length + plan.filters.length + plan.expressions.length
 
-    const PLAN_SECTIONS: { key: string; label: string; Icon: typeof MessageSquare; count: number }[] = [
-      { key: "sample_questions", label: "Sample Questions", Icon: MessageSquare, count: plan.sample_questions.length },
-      { key: "text_instructions", label: "Text Instructions", Icon: FileText, count: plan.text_instructions.length },
-      { key: "joins", label: "Joins", Icon: Link2, count: plan.joins.length },
-      { key: "sql_expressions", label: "SQL Expressions", Icon: Code2, count: sqlExpressionCount },
-      { key: "example_sqls", label: "Example SQL Queries", Icon: ListChecks, count: plan.example_sqls.length },
+    const PLAN_SECTIONS: { key: string; label: string; description: string; Icon: typeof MessageSquare; count: number }[] = [
+      { key: "sample_questions", label: "Sample Questions", description: "Click-to-ask suggestions shown to users in the Genie Space UI", Icon: MessageSquare, count: plan.sample_questions.length },
+      { key: "text_instructions", label: "Text Instructions", description: "Business rules and domain context that guide how Genie interprets questions", Icon: FileText, count: plan.text_instructions.length },
+      { key: "joins", label: "Joins", description: "Table relationships so Genie can combine data across tables", Icon: Link2, count: plan.joins.length },
+      { key: "sql_expressions", label: "SQL Expressions", description: "Reusable measures, filters, and dimensions for common calculations", Icon: Code2, count: sqlExpressionCount },
+      { key: "example_sqls", label: "Example SQL Queries", description: "Question-SQL pairs that teach Genie how to write correct queries", Icon: ListChecks, count: plan.example_sqls.length },
+      { key: "benchmarks", label: "Benchmark Questions", description: "Test questions with expected SQL to evaluate Genie accuracy after creation", Icon: BarChart3, count: (plan.benchmarks || []).length },
     ]
 
     const TYPE_BADGE: Record<string, { label: string; cls: string }> = {
@@ -850,7 +857,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       ...plan.expressions.map((e, i) => ({ ...e, _type: "dimension" as const, _key: "expressions" as keyof EditablePlan, _idx: i })),
     ]
 
-    const totalItems = plan.sample_questions.length + plan.text_instructions.length + plan.joins.length + sqlExpressionCount + plan.example_sqls.length
+    const totalItems = plan.sample_questions.length + (plan.benchmarks || []).length + plan.text_instructions.length + plan.joins.length + sqlExpressionCount + plan.example_sqls.length
 
     const isEditing = (itemKey: string) => editingPlanItem === itemKey
     const startEdit = (itemKey: string) => setEditingPlanItem(itemKey)
@@ -869,7 +876,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
         <div className="divide-y divide-[var(--border-color)]">
           {PLAN_SECTIONS.map((sec) => {
-            if (sec.count === 0 && sec.key !== "sample_questions") return null
+            const alwaysShow = ["sample_questions", "example_sqls", "benchmarks"]
+            if (sec.count === 0 && !alwaysShow.includes(sec.key)) return null
             const isOpen = expandedPlanSections.has(sec.key)
             const { Icon } = sec
             return (
@@ -880,8 +888,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                 >
                   {isOpen ? <ChevronDown className="w-3 h-3 text-muted" /> : <ChevronRight className="w-3 h-3 text-muted" />}
                   <Icon className="w-3.5 h-3.5 text-accent" />
-                  <span className="font-medium text-primary flex-1">{sec.label}</span>
-                  <span className="text-[10px] text-muted bg-surface-secondary px-1.5 py-0.5 rounded-full">{sec.count}</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="font-medium text-primary block">{sec.label}</span>
+                    {!isOpen && <span className="text-[10px] text-muted block truncate">{sec.description}</span>}
+                  </div>
+                  <span className="text-[10px] text-muted bg-surface-secondary px-1.5 py-0.5 rounded-full flex-shrink-0">{sec.count}</span>
                 </button>
 
                 {isOpen && (
@@ -918,6 +929,54 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                           className="flex items-center gap-1 text-accent hover:underline mt-1"
                         >
                           <Plus className="w-3 h-3" /> Add question
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Benchmark Questions */}
+                    {sec.key === "benchmarks" && (
+                      <div className="space-y-2">
+                        {plan.benchmarks.map((b, i) => {
+                          const itemKey = `bm-${i}`
+                          return isEditing(itemKey) ? (
+                            <div key={i} className="border border-accent/20 rounded-lg overflow-hidden bg-elevated">
+                              <div className="flex items-center gap-1.5 px-3 py-2">
+                                <input
+                                  autoFocus
+                                  value={b.question}
+                                  onChange={(e) => updatePlanObj("benchmarks", i, "question", e.target.value)}
+                                  placeholder="Benchmark question"
+                                  className="flex-1 bg-surface border border-default rounded px-2 py-1 text-primary focus:outline-none focus:ring-1 focus:ring-accent/40"
+                                />
+                                <button onClick={() => removePlanItem("benchmarks", i)} className="p-1 text-red-400 hover:text-red-300"><Trash2 className="w-3 h-3" /></button>
+                              </div>
+                              <textarea
+                                value={b.expected_sql}
+                                onChange={(e) => updatePlanObj("benchmarks", i, "expected_sql", e.target.value)}
+                                rows={3}
+                                className="w-full px-3 py-2 font-mono text-secondary bg-surface resize-none focus:outline-none focus:ring-1 focus:ring-accent/40"
+                                placeholder="SELECT ... (expected SQL answer)"
+                                onBlur={stopEdit}
+                              />
+                            </div>
+                          ) : (
+                            <div key={i} className="group/item cursor-pointer hover:bg-elevated rounded-lg px-2 py-1.5 -mx-1" onClick={() => startEdit(itemKey)}>
+                              <div className="flex items-start gap-2">
+                                <span className="text-muted select-none w-4 text-right flex-shrink-0">{i + 1}.</span>
+                                <div className="flex-1 min-w-0">
+                                  <span className="text-secondary block">{b.question}</span>
+                                  <span className="text-muted font-mono text-[10px] block truncate mt-0.5">{b.expected_sql}</span>
+                                </div>
+                                <Pencil className="w-3 h-3 text-muted opacity-0 group-hover/item:opacity-100 flex-shrink-0 mt-0.5" />
+                              </div>
+                            </div>
+                          )
+                        })}
+                        <button
+                          onClick={() => addPlanItem("benchmarks", { question: "", expected_sql: "" })}
+                          className="flex items-center gap-1 text-accent hover:underline mt-1"
+                        >
+                          <Plus className="w-3 h-3" /> Add benchmark
                         </button>
                       </div>
                     )}
@@ -965,6 +1024,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                           <thead>
                             <tr className="text-muted border-b border-default">
                               <th className="px-2 py-1.5 font-medium">Left Table</th>
+                              <th className="px-2 py-1.5 font-medium">Relationship</th>
                               <th className="px-2 py-1.5 font-medium">Right Table</th>
                               <th className="px-2 py-1.5 font-medium">Condition</th>
                             </tr>
@@ -973,9 +1033,13 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                             {plan.joins.map((j, i) => {
                               const leftShort = (j.left_table || "").split(".").pop() || j.left_table
                               const rightShort = (j.right_table || "").split(".").pop() || j.right_table
+                              const rel = j.relationship || "—"
                               return (
                                 <tr key={i} className="border-b border-default last:border-0">
                                   <td className="px-2 py-1.5 font-mono text-primary">{leftShort}</td>
+                                  <td className="px-2 py-1.5">
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 whitespace-nowrap">{rel}</span>
+                                  </td>
                                   <td className="px-2 py-1.5 font-mono text-primary">{rightShort}</td>
                                   <td className="px-2 py-1.5 font-mono text-secondary">
                                     {leftShort}.{j.left_column} = {rightShort}.{j.right_column}

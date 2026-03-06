@@ -184,7 +184,7 @@ TOOL_DEFINITIONS = [
                     "sample_questions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "3-5 sample questions for business users",
+                        "description": "5 sample questions shown to users in the Genie Space UI as click-to-ask suggestions",
                     },
                     "text_instructions": {
                         "type": "array",
@@ -193,7 +193,12 @@ TOOL_DEFINITIONS = [
                     },
                     "example_sqls": {
                         "type": "array",
-                        "description": "Example question-SQL pairs",
+                        "minItems": 3,
+                        "description": (
+                            "At least 3 complex example question-SQL pairs that teach Genie how to write SQL "
+                            "(few-shot learning). Make them non-trivial: multi-join, aggregations with "
+                            "filters, date ranges, CASE expressions, etc."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
@@ -267,7 +272,10 @@ TOOL_DEFINITIONS = [
                     },
                     "benchmarks": {
                         "type": "array",
-                        "description": "Benchmark question-SQL pairs for scoring. If omitted, benchmarks are auto-generated from example_sqls.",
+                        "description": (
+                            "10 benchmark question-SQL pairs for evaluating Genie accuracy. "
+                            "Pass these from the plan's benchmarks section. Each must have question + expected_sql."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
@@ -279,7 +287,7 @@ TOOL_DEFINITIONS = [
                     },
                     "generate_benchmarks": {
                         "type": "boolean",
-                        "description": "If true, auto-generate benchmarks from example_sqls. Defaults to true.",
+                        "description": "If true and no benchmarks provided, auto-generate from example_sqls. Defaults to false.",
                     },
                 },
                 "required": ["tables"],
@@ -302,7 +310,7 @@ TOOL_DEFINITIONS = [
                     "sample_questions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "3-5 sample questions for business users",
+                        "description": "5 sample questions shown to users in the Genie Space UI as click-to-ask suggestions",
                     },
                     "text_instructions": {
                         "type": "array",
@@ -311,7 +319,7 @@ TOOL_DEFINITIONS = [
                     },
                     "joins": {
                         "type": "array",
-                        "description": "Table join specifications",
+                        "description": "Table join specifications with relationship cardinality",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -319,9 +327,13 @@ TOOL_DEFINITIONS = [
                                 "right_table": {"type": "string"},
                                 "left_column": {"type": "string"},
                                 "right_column": {"type": "string"},
-                                "relationship": {"type": "string"},
+                                "relationship": {
+                                    "type": "string",
+                                    "enum": ["one-to-one", "one-to-many", "many-to-one", "many-to-many"],
+                                    "description": "Cardinality of the join relationship",
+                                },
                             },
-                            "required": ["left_table", "right_table", "left_column", "right_column"],
+                            "required": ["left_table", "right_table", "left_column", "right_column", "relationship"],
                         },
                     },
                     "measures": {
@@ -359,7 +371,13 @@ TOOL_DEFINITIONS = [
                     },
                     "example_sqls": {
                         "type": "array",
-                        "description": "Example question-SQL pairs",
+                        "minItems": 3,
+                        "description": (
+                            "REQUIRED — at least 3 complex example question-SQL pairs that teach Genie "
+                            "how to write SQL (few-shot learning). Make them non-trivial: multi-join, "
+                            "aggregations with filters, date ranges, CASE expressions, etc. "
+                            "Simple SELECT * examples are not useful."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
@@ -369,8 +387,27 @@ TOOL_DEFINITIONS = [
                             "required": ["question", "sql"],
                         },
                     },
+                    "benchmarks": {
+                        "type": "array",
+                        "minItems": 10,
+                        "description": (
+                            "REQUIRED — exactly 10 benchmark questions with expected SQL for evaluating "
+                            "Genie accuracy post-creation. These are TEST questions — separate from "
+                            "sample_questions (UI suggestions) and example_sqls (few-shot instructions). "
+                            "Include varied phrasings and different complexity levels. "
+                            "Each must have question + expected_sql. NEVER pass an empty array."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "question": {"type": "string", "description": "The benchmark test question"},
+                                "expected_sql": {"type": "string", "description": "SQL query that produces the correct answer"},
+                            },
+                            "required": ["question", "expected_sql"],
+                        },
+                    },
                 },
-                "required": ["sample_questions"],
+                "required": ["sample_questions", "example_sqls", "benchmarks"],
             },
         },
     },
@@ -450,6 +487,17 @@ TOOL_DEFINITIONS = [
                                         "remove_table",
                                         "update_table_description",
                                         "update_column_config",
+                                        "add_benchmark",
+                                        "remove_benchmark",
+                                        "update_benchmarks",
+                                        "add_join",
+                                        "remove_join",
+                                        "add_measure",
+                                        "remove_measure",
+                                        "add_filter",
+                                        "remove_filter",
+                                        "add_expression",
+                                        "remove_expression",
                                     ],
                                     "description": "The type of modification to apply",
                                 },
@@ -481,12 +529,39 @@ TOOL_DEFINITIONS = [
                                     "type": "string",
                                     "description": "Table or column description text",
                                 },
-                                "question": {"type": "string", "description": "Example question (for add/remove_example_sql)"},
-                                "sql": {"type": "string", "description": "SQL query (for add_example_sql)"},
+                                "question": {"type": "string", "description": "Question text (for add/remove_example_sql, add/remove_benchmark)"},
+                                "sql": {"type": "string", "description": "SQL query (for add_example_sql, add_measure, add_filter, add_expression)"},
+                                "expected_sql": {"type": "string", "description": "Expected SQL answer (for add_benchmark)"},
                                 "usage_guidance": {"type": "string", "description": "When to use this SQL (for add_example_sql)"},
                                 "column_name": {"type": "string", "description": "Column name (for update_column_config)"},
-                                "synonyms": {"type": "array", "items": {"type": "string"}, "description": "Column synonyms (for update_column_config)"},
+                                "synonyms": {"type": "array", "items": {"type": "string"}, "description": "Synonyms (for update_column_config, add_measure, add_filter, add_expression)"},
                                 "exclude": {"type": "boolean", "description": "Exclude column (for update_column_config)"},
+                                "benchmarks": {
+                                    "type": "array",
+                                    "description": "Full replacement benchmark list (for update_benchmarks). Each item needs question + expected_sql.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "question": {"type": "string"},
+                                            "expected_sql": {"type": "string"},
+                                        },
+                                        "required": ["question", "expected_sql"],
+                                    },
+                                },
+                                "left_table": {"type": "string", "description": "catalog.schema.table (for add_join, remove_join)"},
+                                "right_table": {"type": "string", "description": "catalog.schema.table (for add_join, remove_join)"},
+                                "left_column": {"type": "string", "description": "Join column on left table (for add_join)"},
+                                "right_column": {"type": "string", "description": "Join column on right table (for add_join)"},
+                                "left_alias": {"type": "string", "description": "Alias for left table (for add_join — defaults to table short name)"},
+                                "right_alias": {"type": "string", "description": "Alias for right table (for add_join — defaults to table short name)"},
+                                "relationship": {
+                                    "type": "string",
+                                    "enum": ["one-to-one", "one-to-many", "many-to-one", "many-to-many"],
+                                    "description": "Join cardinality (for add_join, defaults to one-to-many)",
+                                },
+                                "display_name": {"type": "string", "description": "Display name (for add_measure, add_filter, add_expression)"},
+                                "alias": {"type": "string", "description": "SQL alias (for add_expression, remove_expression)"},
+                                "instruction": {"type": "string", "description": "Usage instruction (for add_join, add_measure, add_filter, add_expression)"},
                             },
                             "required": ["action"],
                         },
@@ -754,6 +829,7 @@ def _present_plan(
     filters: list[dict] | None = None,
     expressions: list[dict] | None = None,
     example_sqls: list[dict] | None = None,
+    benchmarks: list[dict] | None = None,
 ) -> dict:
     """Pass structured plan data through for frontend rendering."""
     sections: dict[str, Any] = {}
@@ -765,13 +841,31 @@ def _present_plan(
     sections["filters"] = filters or []
     sections["expressions"] = expressions or []
     sections["example_sqls"] = example_sqls or []
+    sections["benchmarks"] = benchmarks or []
 
     total = sum(len(v) for v in sections.values() if isinstance(v, list))
-    return {
+    warnings = []
+    bench_count = len(sections["benchmarks"])
+    if bench_count < 10:
+        warnings.append(
+            f"Only {bench_count} benchmark questions provided — minimum is 10. "
+            "Call present_plan again with at least 10 benchmarks."
+        )
+    example_count = len(sections["example_sqls"])
+    if example_count < 3:
+        warnings.append(
+            f"Only {example_count} example SQL queries provided — minimum is 3. "
+            "Call present_plan again with at least 3 complex example SQL pairs."
+        )
+
+    result: dict[str, Any] = {
         "sections": sections,
         "total_items": total,
         "ui_hint": {"type": "plan_review", "id": "plan_review", "label": "Review the plan"},
     }
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def _generate_config(
@@ -784,7 +878,7 @@ def _generate_config(
     expressions: list[dict] | None = None,
     join_specs: list[dict] | None = None,
     benchmarks: list[dict] | None = None,
-    generate_benchmarks: bool = True,
+    generate_benchmarks: bool = False,
 ) -> dict:
     """Build a complete serialized_space config from structured inputs.
 
@@ -1111,6 +1205,170 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
                 break
             else:
                 applied.append(f"Table {ident} not found")
+
+        # ── Benchmark actions ─────────────────────────────────────────
+        elif action == "add_benchmark":
+            question = act.get("question", "")
+            expected_sql = act.get("expected_sql", "")
+            if not question or not expected_sql:
+                applied.append("Skipped add_benchmark — question and expected_sql required")
+                continue
+            bq = cfg.setdefault("benchmarks", {}).setdefault("questions", [])
+            bq.append({
+                "id": secrets.token_hex(16),
+                "question": [question],
+                "answer": [{"format": "SQL", "content": _split_sql_to_lines(expected_sql)}],
+            })
+            bq.sort(key=lambda x: x["id"])
+            applied.append(f"Added benchmark: {question[:60]}")
+
+        elif action == "remove_benchmark":
+            question = act.get("question", "").lower()
+            bq = cfg.get("benchmarks", {}).get("questions", [])
+            before = len(bq)
+            cfg.setdefault("benchmarks", {})["questions"] = [
+                b for b in bq if b.get("question", [""])[0].lower() != question
+            ]
+            removed = before - len(cfg["benchmarks"]["questions"])
+            applied.append(f"Removed {removed} benchmark(s) matching '{question[:40]}'")
+
+        elif action == "update_benchmarks":
+            benchmarks_list = act.get("benchmarks", [])
+            if not benchmarks_list:
+                applied.append("Skipped update_benchmarks — benchmarks array required")
+                continue
+            bq_items = []
+            for b in benchmarks_list:
+                bq_items.append({
+                    "id": secrets.token_hex(16),
+                    "question": [b["question"]],
+                    "answer": [{"format": "SQL", "content": _split_sql_to_lines(b["expected_sql"])}],
+                })
+            bq_items.sort(key=lambda x: x["id"])
+            cfg["benchmarks"] = {"questions": bq_items}
+            applied.append(f"Replaced all benchmarks ({len(bq_items)})")
+
+        # ── Join actions ──────────────────────────────────────────────
+        elif action == "add_join":
+            lt = act.get("left_table", "")
+            rt_table = act.get("right_table", "")
+            lc = act.get("left_column", "")
+            rc = act.get("right_column", "")
+            rel = act.get("relationship", "one-to-many")
+            if not all([lt, rt_table, lc, rc]):
+                applied.append("Skipped add_join — left_table, right_table, left_column, right_column required")
+                continue
+            la = act.get("left_alias", lt.split(".")[-1])
+            ra = act.get("right_alias", rt_table.split(".")[-1])
+            condition = f"`{la}`.`{lc}` = `{ra}`.`{rc}`"
+            rt_tag = f"--rt=FROM_RELATIONSHIP_TYPE_{rel}--"
+            entry: dict[str, Any] = {
+                "id": secrets.token_hex(16),
+                "left": {"identifier": lt, "alias": la},
+                "right": {"identifier": rt_table, "alias": ra},
+                "sql": [condition, rt_tag],
+            }
+            if act.get("instruction"):
+                entry["instruction"] = [act["instruction"]]
+            js_list = cfg.setdefault("instructions", {}).setdefault("join_specs", [])
+            js_list.append(entry)
+            js_list.sort(key=lambda x: x["id"])
+            applied.append(f"Added join: {la}.{lc} = {ra}.{rc} ({rel})")
+
+        elif action == "remove_join":
+            lt = act.get("left_table", "")
+            rt_table = act.get("right_table", "")
+            js_list = cfg.get("instructions", {}).get("join_specs", [])
+            before = len(js_list)
+            cfg.setdefault("instructions", {})["join_specs"] = [
+                j for j in js_list
+                if not (j.get("left", {}).get("identifier") == lt and j.get("right", {}).get("identifier") == rt_table)
+            ]
+            removed = before - len(cfg["instructions"]["join_specs"])
+            applied.append(f"Removed {removed} join(s) between {lt} and {rt_table}")
+
+        # ── SQL snippet actions (measures, filters, expressions) ──────
+        elif action == "add_measure":
+            dn = act.get("display_name", "")
+            sql = act.get("sql", "")
+            if not dn or not sql:
+                applied.append("Skipped add_measure — display_name and sql required")
+                continue
+            entry_m: dict[str, Any] = {"id": secrets.token_hex(16), "display_name": dn, "sql": [sql]}
+            if act.get("synonyms"):
+                entry_m["synonyms"] = act["synonyms"]
+            if act.get("instruction"):
+                entry_m["instruction"] = [act["instruction"]]
+            ms = cfg.setdefault("instructions", {}).setdefault("sql_snippets", {}).setdefault("measures", [])
+            ms.append(entry_m)
+            ms.sort(key=lambda x: x["id"])
+            applied.append(f"Added measure: {dn}")
+
+        elif action == "remove_measure":
+            dn = act.get("display_name", "").lower()
+            ms = cfg.get("instructions", {}).get("sql_snippets", {}).get("measures", [])
+            before = len(ms)
+            cfg.setdefault("instructions", {}).setdefault("sql_snippets", {})["measures"] = [
+                m for m in ms if m.get("display_name", "").lower() != dn
+            ]
+            removed = before - len(cfg["instructions"]["sql_snippets"]["measures"])
+            applied.append(f"Removed {removed} measure(s) matching '{dn}'")
+
+        elif action == "add_filter":
+            dn = act.get("display_name", "")
+            sql = act.get("sql", "")
+            if not dn or not sql:
+                applied.append("Skipped add_filter — display_name and sql required")
+                continue
+            if sql.strip().upper().startswith("WHERE "):
+                sql = sql.strip()[6:]
+            entry_f: dict[str, Any] = {"id": secrets.token_hex(16), "display_name": dn, "sql": [sql]}
+            if act.get("synonyms"):
+                entry_f["synonyms"] = act["synonyms"]
+            if act.get("instruction"):
+                entry_f["instruction"] = [act["instruction"]]
+            fs = cfg.setdefault("instructions", {}).setdefault("sql_snippets", {}).setdefault("filters", [])
+            fs.append(entry_f)
+            fs.sort(key=lambda x: x["id"])
+            applied.append(f"Added filter: {dn}")
+
+        elif action == "remove_filter":
+            dn = act.get("display_name", "").lower()
+            fs = cfg.get("instructions", {}).get("sql_snippets", {}).get("filters", [])
+            before = len(fs)
+            cfg.setdefault("instructions", {}).setdefault("sql_snippets", {})["filters"] = [
+                f for f in fs if f.get("display_name", "").lower() != dn
+            ]
+            removed = before - len(cfg["instructions"]["sql_snippets"]["filters"])
+            applied.append(f"Removed {removed} filter(s) matching '{dn}'")
+
+        elif action == "add_expression":
+            alias = act.get("alias", "")
+            sql = act.get("sql", "")
+            if not alias or not sql:
+                applied.append("Skipped add_expression — alias and sql required")
+                continue
+            entry_e: dict[str, Any] = {"id": secrets.token_hex(16), "alias": alias, "sql": [sql]}
+            if act.get("display_name"):
+                entry_e["display_name"] = act["display_name"]
+            if act.get("synonyms"):
+                entry_e["synonyms"] = act["synonyms"]
+            if act.get("instruction"):
+                entry_e["instruction"] = [act["instruction"]]
+            es = cfg.setdefault("instructions", {}).setdefault("sql_snippets", {}).setdefault("expressions", [])
+            es.append(entry_e)
+            es.sort(key=lambda x: x["id"])
+            applied.append(f"Added expression: {alias}")
+
+        elif action == "remove_expression":
+            alias = act.get("alias", "").lower()
+            es = cfg.get("instructions", {}).get("sql_snippets", {}).get("expressions", [])
+            before = len(es)
+            cfg.setdefault("instructions", {}).setdefault("sql_snippets", {})["expressions"] = [
+                e for e in es if e.get("alias", "").lower() != alias
+            ]
+            removed = before - len(cfg["instructions"]["sql_snippets"]["expressions"])
+            applied.append(f"Removed {removed} expression(s) matching '{alias}'")
 
         else:
             applied.append(f"Unknown action: {action}")
