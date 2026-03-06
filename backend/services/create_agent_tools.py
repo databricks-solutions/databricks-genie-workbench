@@ -196,11 +196,23 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "test_sql",
-            "description": "Execute a SQL query to verify it runs successfully. Use this to test example SQL queries before including them in the config. Returns column names, first few rows, and row count.",
+            "description": "Execute a SQL query to verify it runs successfully. Use this to test example SQL queries before including them in the config. Returns column names, first few rows, and row count. For parameterized SQL (using :param_name syntax), pass the parameters with default_value so the query can be tested with real values.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "sql": {"type": "string", "description": "The SQL query to test"},
+                    "parameters": {
+                        "type": "array",
+                        "description": "Parameters for parameterized SQL. Each parameter's default_value is substituted for :param_name before execution.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "Parameter name matching :name in the SQL"},
+                                "default_value": {"type": "string", "description": "Value to substitute for testing"},
+                            },
+                            "required": ["name", "default_value"],
+                        },
+                    },
                 },
                 "required": ["sql"],
             },
@@ -1526,8 +1538,41 @@ def _build_usage_summary(
     }
 
 
-def _test_sql(sql: str) -> dict:
-    result = execute_sql(sql, row_limit=5)
+def _substitute_params(sql: str, parameters: list[dict] | None) -> str:
+    """Replace :param_name placeholders with default values for testing."""
+    if not parameters:
+        return sql
+    import re
+    for param in parameters:
+        name = param.get("name", "")
+        value = param.get("default_value", "")
+        if not name:
+            continue
+        type_hint = param.get("type_hint", "STRING").upper()
+        if type_hint in ("NUMBER", "BOOLEAN"):
+            literal = value
+        else:
+            literal = f"'{value}'"
+        sql = re.sub(rf":{re.escape(name)}\b", literal, sql)
+    return sql
+
+
+def _test_sql(sql: str, parameters: list[dict] | None = None) -> dict:
+    test_query = _substitute_params(sql, parameters)
+
+    import re
+    remaining = re.findall(r":([a-zA-Z_]\w*)\b", test_query)
+    if remaining:
+        return {
+            "success": False,
+            "sql": sql,
+            "error": (
+                f"Unbound SQL parameters: {', '.join(remaining)}. "
+                "Pass 'parameters' with 'name' and 'default_value' for each :param so the query can be tested."
+            ),
+        }
+
+    result = execute_sql(test_query, row_limit=5)
     if result.get("error"):
         return {"success": False, "sql": sql, "error": result["error"]}
     return {

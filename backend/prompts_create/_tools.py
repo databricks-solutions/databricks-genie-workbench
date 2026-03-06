@@ -16,7 +16,7 @@ Bad:
 - `describe_table` → always first when exploring a new table
 - `assess_data_quality` + `profile_table_usage` → call together after describe_table
 - `profile_columns` → after describe, on columns that need deeper inspection
-- `test_sql` → on every SQL query before including it anywhere
+- `test_sql` → on every SQL query before including it anywhere (for parameterized SQL, pass `parameters` with `name`+`default_value` so `:param` placeholders get substituted)
 - `generate_config` → after user approves the plan
 - `validate_config` → after generate_config, must pass before create_space
 - `create_space` → final step, only after validation passes

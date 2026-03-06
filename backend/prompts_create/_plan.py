@@ -96,6 +96,8 @@ Present a **complete plan** for user review in a single, well-structured message
 
    Aim for a mix: ~3-5 hardcoded examples for structural patterns, ~2-5 parameterized examples for entity-specific queries.
 
+   **Testing parameterized SQL:** When calling `test_sql` on parameterized queries, pass the `parameters` array with each parameter's `name` and `default_value`. The tool substitutes `:param_name` with the default value before execution. Without this, the query will fail with an UNBOUND_SQL_PARAMETER error.
+
    Incorporate patterns from `profile_table_usage` query history where available — real query patterns make better few-shot examples than synthetic ones. Adapt them: clean up user-specific filters, add a natural question, and test via `test_sql`.
 
 5. **Filters** — reusable WHERE clause snippets for common filter patterns (suggest based on data inspection)
