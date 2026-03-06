@@ -7,6 +7,7 @@ Creates new Genie Spaces from optimized configurations via the Databricks API.
 import json
 import logging
 import os
+import re
 
 from backend.services.auth import get_workspace_client, get_databricks_host
 from backend.sql_executor import get_sql_warehouse_id
@@ -47,7 +48,18 @@ _SORT_REQUIREMENTS = {
     "column_configs": ("column_name",),
     # Sort by (id, identifier) tuple
     "sql_functions": ("id", "identifier"),
+    # Sort by 'name'
+    "parameters": ("name",),
 }
+
+
+_MAX_STRING_CHARS = 25_000        # per-string character limit (API enforced)
+_MAX_SERIALIZED_BYTES = 3_500_000 # 3.5 MB total
+_MAX_TABLES = 30
+_SIZE_CHECKED_FIELDS = frozenset({
+    "description", "content", "question", "sql",
+    "instruction", "synonyms", "usage_guidance", "comment",
+})
 
 
 def _enforce_constraints(config: dict) -> dict:
@@ -56,6 +68,9 @@ def _enforce_constraints(config: dict) -> dict:
     Fixes:
     - Text instructions: At most 1 allowed (keep first only)
     - Empty SQL snippets: Remove filters/expressions/measures with empty sql
+    - String values in size-checked fields truncated to <= 25,000 chars
+    - Tables capped at 30
+    - Serialized output capped at 3.5 MB (warning only)
     """
     import copy
     config = copy.deepcopy(config)
@@ -67,17 +82,21 @@ def _enforce_constraints(config: dict) -> dict:
         logger.warning(f"Truncating text_instructions from {len(text_instructions)} to 1")
         instructions["text_instructions"] = text_instructions[:1]
 
+    # Cap tables at 30
+    tables = config.get("data_sources", {}).get("tables", [])
+    if isinstance(tables, list) and len(tables) > _MAX_TABLES:
+        logger.warning("Truncating tables from %d to %d", len(tables), _MAX_TABLES)
+        config["data_sources"]["tables"] = tables[:_MAX_TABLES]
+
     # Remove sql_snippets with empty sql
     sql_snippets = instructions.get("sql_snippets", {})
     for snippet_type in ["filters", "expressions", "measures"]:
         items = sql_snippets.get(snippet_type, [])
         if isinstance(items, list):
-            # Filter out items with empty sql
             filtered = []
             for item in items:
                 if isinstance(item, dict):
                     sql_field = item.get("sql", [])
-                    # Check if sql is non-empty
                     if sql_field and (
                         (isinstance(sql_field, list) and any(s.strip() for s in sql_field if isinstance(s, str))) or
                         (isinstance(sql_field, str) and sql_field.strip())
@@ -89,7 +108,77 @@ def _enforce_constraints(config: dict) -> dict:
                     filtered.append(item)
             sql_snippets[snippet_type] = filtered
 
+    # Normalize join relationship types to uppercase underscores
+    _normalize_join_relationships(config)
+
+    # Truncate oversized strings in size-checked fields
+    _truncate_oversized_strings(config)
+
+    # Warn if total serialized size is close to / over limit
+    serialized_size = len(json.dumps(config).encode("utf-8"))
+    if serialized_size > _MAX_SERIALIZED_BYTES:
+        logger.error(
+            "Serialized config is %s bytes — exceeds 3.5 MB limit. "
+            "The API may reject this request.", f"{serialized_size:,}"
+        )
+
     return config
+
+
+def _truncate_oversized_strings(obj: any, field_name: str = "") -> None:
+    """Walk the config tree and truncate strings exceeding the character limit in-place."""
+    if isinstance(obj, dict):
+        for k in obj:
+            v = obj[k]
+            if isinstance(v, str) and k in _SIZE_CHECKED_FIELDS:
+                if len(v) > _MAX_STRING_CHARS:
+                    logger.warning(
+                        "Truncating %s from %d to %d chars", k, len(v), _MAX_STRING_CHARS,
+                    )
+                    obj[k] = v[:_MAX_STRING_CHARS]
+            else:
+                _truncate_oversized_strings(v, k)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, str) and field_name in _SIZE_CHECKED_FIELDS:
+                if len(item) > _MAX_STRING_CHARS:
+                    logger.warning(
+                        "Truncating %s[%d] from %d to %d chars",
+                        field_name, i, len(item), _MAX_STRING_CHARS,
+                    )
+                    obj[i] = item[:_MAX_STRING_CHARS]
+            else:
+                _truncate_oversized_strings(item, field_name)
+
+
+_RT_PATTERN = re.compile(r"--rt=FROM_RELATIONSHIP_TYPE_([^-]+)--")
+
+
+def _normalize_join_relationships(config: dict) -> None:
+    """Fix join_spec relationship tags in-place.
+
+    The Genie API requires FROM_RELATIONSHIP_TYPE_MANY_TO_ONE (uppercase
+    underscores), but the LLM may produce many-to-one (lowercase hyphens).
+    """
+    join_specs = (
+        config.get("instructions", {}).get("join_specs", [])
+    )
+    if not isinstance(join_specs, list):
+        return
+    for js in join_specs:
+        sql_lines = js.get("sql", [])
+        if not isinstance(sql_lines, list):
+            continue
+        for i, line in enumerate(sql_lines):
+            if not isinstance(line, str) or "--rt=" not in line:
+                continue
+            m = _RT_PATTERN.search(line)
+            if m:
+                original = m.group(1)
+                normalized = original.upper().replace("-", "_")
+                if normalized != original:
+                    sql_lines[i] = line.replace(original, normalized)
+                    logger.info("Normalized join relationship: %s -> %s", original, normalized)
 
 
 def _sort_array(items: list, sort_keys: tuple) -> list:
@@ -138,22 +227,51 @@ def _clean_config(obj: any, key: str | None = None) -> any:
         return obj
 
 
+_FALLBACK_DIR = "/Shared/"
+
+
 def get_target_directory() -> str:
-    """Get the target directory for new Genie Spaces.
+    """Get the configured target directory for new Genie Spaces.
 
-    Returns:
-        The workspace path from GENIE_TARGET_DIRECTORY env var
-
-    Raises:
-        ValueError: If GENIE_TARGET_DIRECTORY is not configured
+    Returns GENIE_TARGET_DIRECTORY if set, otherwise ``/Shared/``.
     """
     target_dir = os.environ.get("GENIE_TARGET_DIRECTORY", "").strip()
-    if not target_dir:
-        raise ValueError(
-            "GENIE_TARGET_DIRECTORY must be configured. "
-            "Set it to a workspace path like /Workspace/Users/you@company.com/"
-        )
-    return target_dir
+    return target_dir if target_dir else _FALLBACK_DIR
+
+
+def _build_path_candidates(explicit_path: str | None) -> list[str]:
+    """Build an ordered list of parent paths to try.
+
+    Priority:
+    1. Explicitly provided path (from the agent/user)
+    2. GENIE_TARGET_DIRECTORY env var (if different from #1)
+    3. /Shared/ as a last-resort fallback
+
+    Duplicates are removed while preserving order.
+    """
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p: str) -> None:
+        normalized = p.rstrip("/") + "/"
+        if normalized not in seen:
+            seen.add(normalized)
+            candidates.append(normalized)
+
+    if explicit_path and explicit_path.strip():
+        _add(explicit_path.strip())
+
+    env_dir = os.environ.get("GENIE_TARGET_DIRECTORY", "").strip()
+    if env_dir:
+        _add(env_dir)
+
+    _add(_FALLBACK_DIR)
+    return candidates
+
+
+def _is_permission_error(e: Exception) -> bool:
+    s = str(e).lower()
+    return "403" in s or "permission" in s or "forbidden" in s
 
 
 def create_genie_space(
@@ -163,110 +281,102 @@ def create_genie_space(
 ) -> dict:
     """Create a new Genie Space with the given configuration.
 
+    Attempts creation with a fallback chain of parent paths.  If the
+    primary path returns a permission error, the next candidate is
+    tried automatically (configured directory -> /Shared/).
+
     Args:
         display_name: The display name for the new Genie Space
         merged_config: The merged configuration dict (from optimization)
         parent_path: Optional workspace path for the parent directory.
-                    If not provided, uses GENIE_TARGET_DIRECTORY env var.
+                    If not provided, uses GENIE_TARGET_DIRECTORY or /Shared/.
 
     Returns:
-        dict with:
-            - genie_space_id: ID of the created space
-            - display_name: Display name of the space
-            - space_url: URL to access the space in Databricks
+        dict with genie_space_id, display_name, space_url, parent_path
 
     Raises:
-        ValueError: If configuration is invalid or parent_path not provided
-        PermissionError: If the app doesn't have write permission
+        ValueError: If configuration is invalid
+        PermissionError: If none of the candidate paths are writable
+        TimeoutError: If the request timed out
     """
-    # Resolve parent path
-    if parent_path:
-        target_path = parent_path.strip()
-    else:
-        target_path = get_target_directory()
+    import time as _time
 
-    # Ensure path ends with /
-    if not target_path.endswith("/"):
-        target_path += "/"
-
-    # Validate display name
     if not display_name or not display_name.strip():
         raise ValueError("Display name is required")
-
     display_name = display_name.strip()
 
-    # Get warehouse ID (required by API)
     warehouse_id = get_sql_warehouse_id()
     if not warehouse_id:
         raise ValueError(
-            "SQL_WAREHOUSE_ID must be configured to create Genie Spaces. "
-            "Set it to your SQL Warehouse ID."
+            "No SQL warehouse available. Ensure you have access to at least "
+            "one running Pro or Serverless SQL warehouse."
         )
 
-    # Enforce API constraints (text_instructions limit, empty sql removal, etc.)
+    t0 = _time.monotonic()
     constrained_config = _enforce_constraints(merged_config)
-
-    # Clean up config for API compatibility (type fixes, sorting)
     cleaned_config = _clean_config(constrained_config)
-
-    # Serialize the config to JSON string (API expects serialized_space as string)
     serialized_space = json.dumps(cleaned_config)
+    t_prep = _time.monotonic() - t0
+    logger.info("Config prep took %.2fs (serialized %d bytes)", t_prep, len(serialized_space))
 
     client = get_workspace_client()
     host = get_databricks_host()
 
-    logger.info(f"Creating Genie Space with title: {display_name}")
-    logger.info(f"Parent path: {target_path}")
-    logger.info(f"Warehouse ID: {warehouse_id}")
-    logger.info(f"Workspace host: {host}")
-    logger.info(f"Serialized space length: {len(serialized_space)} chars")
+    candidates = _build_path_candidates(parent_path)
+    last_error: Exception | None = None
 
-    try:
-        response = client.api_client.do(
-            method="POST",
-            path="/api/2.0/genie/spaces",
-            body={
-                "title": display_name,
-                "description": f"Optimized Genie Space created from GenieRx",
-                "parent_path": target_path,
-                "warehouse_id": warehouse_id,
-                "serialized_space": serialized_space,
-            },
-        )
+    for target_path in candidates:
+        logger.info(f"Attempting to create Genie Space '{display_name}' in {target_path}")
 
-        logger.info(f"API response keys: {list(response.keys()) if isinstance(response, dict) else response}")
-
-        # Extract the space ID from response (API returns space_id)
-        genie_space_id = response.get("space_id")
-        if not genie_space_id:
-            logger.error(f"No space_id in response. Full response: {response}")
-            raise ValueError(f"API did not return a space_id. Response: {response}")
-
-        # Build the URL to the new space
-        space_url = f"{host}/genie/rooms/{genie_space_id}"
-
-        logger.info(f"Created Genie Space: {genie_space_id}")
-        logger.info(f"Space URL: {space_url}")
-
-        return {
-            "genie_space_id": genie_space_id,
-            "display_name": display_name,
-            "space_url": space_url,
-        }
-
-    except Exception as e:
-        error_str = str(e).lower()
-        logger.error(f"Failed to create Genie Space: {e}")
-
-        # Map common errors to user-friendly messages
-        if "403" in error_str or "permission" in error_str or "forbidden" in error_str:
-            raise PermissionError(
-                "Cannot create Genie Space. Ensure the app has write permission "
-                "to the target directory."
+        try:
+            t_api = _time.monotonic()
+            response = client.api_client.do(
+                method="POST",
+                path="/api/2.0/genie/spaces",
+                body={
+                    "title": display_name,
+                    "description": "Optimized Genie Space created from GenieRx",
+                    "parent_path": target_path,
+                    "warehouse_id": warehouse_id,
+                    "serialized_space": serialized_space,
+                },
             )
-        elif "400" in error_str or "invalid" in error_str:
-            raise ValueError(f"The configuration is invalid: {e}")
-        elif "timeout" in error_str:
-            raise TimeoutError("Request timed out. Please try again.")
-        else:
+            t_api_done = _time.monotonic() - t_api
+
+            genie_space_id = response.get("space_id")
+            if not genie_space_id:
+                logger.error(f"No space_id in response: {response}")
+                raise ValueError(f"API did not return a space_id. Response: {response}")
+
+            space_url = f"{host}/genie/rooms/{genie_space_id}"
+            logger.info("Created Genie Space %s in %s (API call %.2fs)", genie_space_id, target_path, t_api_done)
+
+            return {
+                "genie_space_id": genie_space_id,
+                "display_name": display_name,
+                "space_url": space_url,
+                "parent_path": target_path,
+            }
+
+        except Exception as e:
+            last_error = e
+            if _is_permission_error(e) and target_path != candidates[-1]:
+                logger.warning(
+                    f"Permission denied for {target_path}, trying next candidate"
+                )
+                continue
+
+            error_str = str(e).lower()
+            if "400" in error_str or "invalid" in error_str:
+                raise ValueError(f"The configuration is invalid: {e}")
+            if "timeout" in error_str:
+                raise TimeoutError("Request timed out. Please try again.")
+            if _is_permission_error(e):
+                break
             raise
+
+    raise PermissionError(
+        f"Cannot create Genie Space — no writable directory found. "
+        f"Tried: {', '.join(candidates)}. "
+        f"Grant the app's service principal 'Can Manage' on a workspace folder."
+    )

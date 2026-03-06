@@ -65,12 +65,49 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from backend.services.auth import is_running_on_databricks_apps
+from backend.services.auth import is_running_on_databricks_apps, set_obo_user_token, clear_obo_user_token
 from backend.routers.analysis import router as analysis_router
 from backend.routers.spaces import router as spaces_router
 from backend.routers.admin import router as admin_router
 from backend.routers.auth import router as auth_router
 from backend.routers.create import router as create_router
+
+
+class OBOAuthMiddleware(BaseHTTPMiddleware):
+    """Extract the user's access token and set a per-request OBO client.
+
+    On Databricks Apps the platform forwards the user's OAuth token in the
+    ``x-forwarded-access-token`` header (NOT the standard Authorization
+    header).  We store it in a ContextVar so that every
+    ``get_workspace_client()`` call in the request path returns a client
+    authenticated as the user — not the service principal.
+
+    Ref: https://docs.databricks.com/aws/en/dev-tools/databricks-apps/auth#user-authorization
+
+    For streaming endpoints (SSE), the ContextVar is NOT cleared after
+    ``call_next`` because the response body streams lazily. Instead,
+    streaming handlers must call ``set_obo_user_token`` themselves from
+    within the generator (the token is stashed on ``request.state``).
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        if request.url.path.startswith("/api/"):
+            token = request.headers.get("x-forwarded-access-token", "")
+            if token:
+                set_obo_user_token(token)
+                logger.info("OBO: using user token for %s", request.url.path)
+            else:
+                logger.info("OBO: no x-forwarded-access-token, using SP for %s", request.url.path)
+            request.state.user_token = token
+        else:
+            request.state.user_token = ""
+
+        response = await call_next(request)
+
+        is_streaming = getattr(response, "media_type", "") == "text/event-stream"
+        if not is_streaming:
+            clear_obo_user_token()
+        return response
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -99,6 +136,7 @@ if _mlflow_configured:
         logger.warning(f"MLflow git-based version tracking not configured: {e}")
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(OBOAuthMiddleware)
 
 if not is_running_on_databricks_apps():
     app.add_middleware(
@@ -114,6 +152,8 @@ if not is_running_on_databricks_apps():
 async def startup():
     from backend.services.lakebase import init_pool
     await init_pool()
+    from backend.services.create_agent_session import _ensure_table
+    await _ensure_table()
 
 
 @app.on_event("shutdown")

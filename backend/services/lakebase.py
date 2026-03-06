@@ -20,6 +20,48 @@ _pool = None
 _lakebase_available = False
 
 
+def _generate_lakebase_credential() -> tuple[str, str] | None:
+    """Generate Lakebase OAuth credentials using the Databricks SDK.
+
+    Uses whatever auth the SDK resolves (service principal in prod, CLI
+    profile locally). Returns (user_email, oauth_token) or None.
+    """
+    instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME")
+    if not instance_name:
+        return None
+
+    try:
+        from backend.services.auth import get_workspace_client
+        client = get_workspace_client()
+
+        resp = client.api_client.do(
+            method="POST",
+            path="/api/2.0/database/credentials",
+            body={
+                "request_id": "lakebase-pool",
+                "instance_names": [instance_name],
+            },
+        )
+        token = resp.get("token")
+        if not token:
+            logger.warning("Lakebase credential response missing token")
+            return None
+
+        # Resolve username: SP identity or human user
+        user = os.environ.get("LAKEBASE_USER")
+        if not user:
+            try:
+                me = client.current_user.me()
+                user = me.user_name
+            except Exception:
+                user = "databricks"
+        logger.info(f"Generated Lakebase credential via SDK (user={user})")
+        return user, token
+    except Exception as e:
+        logger.warning(f"Lakebase credential generation failed: {e}")
+        return None
+
+
 async def init_pool():
     """Initialize asyncpg connection pool. Falls back gracefully if unavailable."""
     global _pool, _lakebase_available
@@ -29,17 +71,29 @@ async def init_pool():
         logger.info("LAKEBASE_HOST not set - using in-memory fallback")
         return
 
+    password = os.environ.get("LAKEBASE_PASSWORD")
+    user = os.environ.get("LAKEBASE_USER", "postgres")
+
+    if not password:
+        cred = _generate_lakebase_credential()
+        if cred:
+            user, password = cred
+        else:
+            logger.warning("No LAKEBASE_PASSWORD and credential generation failed - using in-memory fallback")
+            return
+
     try:
         import asyncpg
         _pool = await asyncpg.create_pool(
             host=host,
             port=int(os.environ.get("LAKEBASE_PORT", "5432")),
-            database=os.environ.get("LAKEBASE_DATABASE", "genie_workbench"),
-            user=os.environ.get("LAKEBASE_USER", "postgres"),
-            password=os.environ.get("LAKEBASE_PASSWORD", ""),
+            database=os.environ.get("LAKEBASE_DATABASE", "databricks_postgres"),
+            user=user,
+            password=password,
             min_size=2,
             max_size=10,
             command_timeout=30,
+            ssl="require",
         )
         _lakebase_available = True
         logger.info("Lakebase connection pool initialized")

@@ -1,9 +1,12 @@
 """
-/api/create — UC discovery + config validation + Genie Space creation wizard.
+/api/create — UC discovery + config validation + Genie Space creation wizard + agent chat.
 """
+import asyncio
+import json
 import logging
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
 from backend.models import CreateSpaceRequest, CreateSpaceResponse
 from backend.services.uc_client import (
@@ -55,10 +58,10 @@ async def validate_config(body: ValidateRequest):
     tables = s.get("data_sources", {}).get("tables") or []
     if len(tables) == 0:
         errors.append("At least one table is required")
-    if len(tables) > 25:
-        errors.append(f"Maximum 25 tables allowed (found {len(tables)})")
-    elif len(tables) > 5:
-        warnings.append(f"More than 5 tables ({len(tables)}) may reduce accuracy")
+    if len(tables) > 30:
+        errors.append(f"Maximum 30 tables allowed (found {len(tables)})")
+    elif len(tables) > 10:
+        warnings.append(f"More than 10 tables ({len(tables)}) may reduce accuracy")
 
     questions = s.get("instructions", {}).get("example_question_sqls") or []
     if len(questions) < 5:
@@ -108,3 +111,130 @@ async def create_space_endpoint(body: CreateSpaceRequest):
         display_name=result["display_name"],
         space_url=result["space_url"],
     )
+
+
+# ── Agent chat (agentic create flow) ─────────────────────────────────────────
+
+class AgentChatRequest(BaseModel):
+    """Request body for the agent chat endpoint."""
+    message: str = Field(..., min_length=1, max_length=10000)
+    session_id: str | None = Field(None, description="Existing session ID. Omit to start a new session.")
+    selections: dict | None = Field(None, description="UI selections from interactive elements")
+
+
+@router.post("/agent/chat")
+async def agent_chat(body: AgentChatRequest, request: Request):
+    """Conversational endpoint for the Create Genie agent.
+
+    Returns a streaming SSE response with typed events:
+    - thinking: agent is processing
+    - tool_call: agent is calling a tool
+    - tool_result: tool returned a result
+    - message: agent text response (may include ui_elements)
+    - created: space was created successfully
+    - error: something went wrong
+    - done: turn is complete
+    """
+    from backend.services.create_agent import get_create_agent
+    from backend.services.create_agent_session import (
+        create_session, get_session_async, persist_session,
+    )
+    from backend.services.auth import set_obo_user_token, clear_obo_user_token
+
+    agent = get_create_agent()
+
+    if body.session_id:
+        session = await get_session_async(body.session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found or expired")
+    else:
+        session = create_session()
+
+    user_message = body.message
+    if body.selections:
+        user_message += f"\n\n[User selections: {json.dumps(body.selections)}]"
+
+    # Capture the user token so the streaming generator can re-establish
+    # the OBO context (ContextVars don't propagate into async generators
+    # that outlive the middleware's call_next).
+    user_token = getattr(request.state, "user_token", "")
+
+    _KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalive comments
+
+    async def event_stream():
+        if user_token:
+            set_obo_user_token(user_token)
+        try:
+            yield _sse_event("session", {"session_id": session.session_id})
+
+            agent_iter = agent.chat(session, user_message).__aiter__()
+            next_coro = None
+            while True:
+                if next_coro is None:
+                    next_coro = asyncio.ensure_future(agent_iter.__anext__())
+                try:
+                    event = await asyncio.wait_for(
+                        asyncio.shield(next_coro), timeout=_KEEPALIVE_INTERVAL
+                    )
+                    next_coro = None
+                    yield _sse_event(event["event"], event["data"])
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                except StopAsyncIteration:
+                    break
+
+            await persist_session(session)
+        finally:
+            clear_obo_user_token()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/agent/sessions/{session_id}")
+async def get_agent_session(session_id: str):
+    """Get session history for page refresh / reconnection."""
+    from backend.services.create_agent_session import get_session_async
+
+    session = await get_session_async(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+
+    display_history = []
+    for msg in session.history:
+        if msg["role"] == "user":
+            display_history.append({"role": "user", "content": msg["content"]})
+        elif msg["role"] == "assistant" and msg.get("content"):
+            display_history.append({"role": "assistant", "content": msg["content"]})
+
+    return {
+        "session_id": session.session_id,
+        "history": display_history,
+        "space_id": session.space_id,
+        "space_url": session.space_url,
+        "has_config": session.space_config is not None,
+    }
+
+
+@router.delete("/agent/sessions/{session_id}")
+async def delete_agent_session(session_id: str):
+    """Delete a session."""
+    from backend.services.create_agent_session import delete_session_async
+
+    deleted = await delete_session_async(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"deleted": True}
+
+
+def _sse_event(event_type: str, data: dict) -> str:
+    """Format a dict as an SSE event string."""
+    payload = json.dumps(data, default=str)
+    return f"event: {event_type}\ndata: {payload}\n\n"

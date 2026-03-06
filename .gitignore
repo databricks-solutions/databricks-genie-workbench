@@ -20,7 +20,9 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-# NOTE: dist/ is NOT ignored because frontend/dist/ needs to be deployed
+# frontend/dist/ is ignored in git (build artifact) but NOT in .databricksignore
+# so it still gets synced to the workspace for deployment.
+frontend/dist/
 # The .databricksignore file controls what gets synced to Databricks Apps
 downloads/
 eggs/
@@ -209,13 +211,14 @@ sketch
 
 **/uv.lock
 **/mlruns/
+mlflow.db
 **/.vite/
 **/.databricks
 **/.claude
 **/.env.local
 
 # Frontend build artifacts (Vite)
-# NOTE: frontend/dist/ is NOT ignored - it must be deployed to Databricks Apps
+# frontend/dist/ is deployed via databricks sync (not git)
 **/dist-ssr/
 
 # Frontend debug logs

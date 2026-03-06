@@ -29,7 +29,7 @@ env:
   - name: MLFLOW_REGISTRY_URI
     value: "databricks-uc"
   - name: MLFLOW_EXPERIMENT_ID
-    value: ""  # OPTIONAL: Set to your MLflow experiment ID to enable tracing
+    value: "2624606869914616"
 
   # ---------------------------------------------------------------------------
   # LLM Model
@@ -38,17 +38,20 @@ env:
     value: "databricks-claude-sonnet-4-6"
 
   # ---------------------------------------------------------------------------
-  # SQL Warehouse (required for GenieIQ benchmark execution)
+  # SQL Warehouse — pulled from the app resource named "sql-warehouse".
+  # Configure the warehouse resource in the Databricks Apps UI.
+  # Falls back to auto-detect if empty.
   # ---------------------------------------------------------------------------
   - name: SQL_WAREHOUSE_ID
-    value: ""  # Required: your SQL warehouse ID
+    valueFrom: sql-warehouse
 
   # ---------------------------------------------------------------------------
-  # Genie Space target directory (required for creating new Genie Spaces)
-  # e.g. /Workspace/Users/you@company.com/
+  # Genie Space target directory (where new spaces are created)
+  # Defaults to /Shared/ which is writable by most service principals.
+  # Override to a specific folder if needed (e.g. /Workspace/Shared/Analytics/).
   # ---------------------------------------------------------------------------
   - name: GENIE_TARGET_DIRECTORY
-    value: ""
+    value: "/Shared/"
 
   # ---------------------------------------------------------------------------
   # Local dev auth (only used when running outside Databricks Apps)
@@ -57,43 +60,17 @@ env:
     value: ""
 
   # ---------------------------------------------------------------------------
-  # Lakebase PostgreSQL connection
-  # These values are injected automatically by the Lakebase resource binding
-  # defined in the `resources` section below. Do not set them manually here.
+  # Lakebase PostgreSQL — credentials auto-generated via Databricks SDK (SP)
+  # Grant the app's service principal CAN MANAGE on the Lakebase instance.
   # ---------------------------------------------------------------------------
   - name: LAKEBASE_HOST
-    valueFrom:
-      secretRef: lakebase-connection
-      key: host
+    value: ""  # e.g. instance-XXXX.database.cloud.databricks.com
   - name: LAKEBASE_PORT
-    valueFrom:
-      secretRef: lakebase-connection
-      key: port
+    value: "5432"
   - name: LAKEBASE_DATABASE
-    valueFrom:
-      secretRef: lakebase-connection
-      key: database
-  - name: LAKEBASE_USER
-    valueFrom:
-      secretRef: lakebase-connection
-      key: user
-  - name: LAKEBASE_PASSWORD
-    valueFrom:
-      secretRef: lakebase-connection
-      key: password
-
-# ---------------------------------------------------------------------------
-# Lakebase resource binding
-# Provisions a Lakebase PostgreSQL instance and injects connection credentials
-# as the secret reference "lakebase-connection" used by the env vars above.
-# Run sql/setup_lakebase.sql once after first deploy to create the schema.
-# ---------------------------------------------------------------------------
-resources:
-  - name: lakebase-connection
-    description: "PostgreSQL connection for Genie Workbench scan result persistence"
-    resource_type: "database"
-    config:
-      type: postgresql
+    value: "databricks_postgres"
+  - name: LAKEBASE_INSTANCE_NAME
+    value: ""  # e.g. genie-workbench-sz
 
 # ---------------------------------------------------------------------------
 # Service Principal authorization

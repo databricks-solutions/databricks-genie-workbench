@@ -2,6 +2,7 @@
 # Mirrors the dependencies declared in pyproject.toml.
 # Usage:  pip install -r requirements.txt
 # For development: pip install -e ".[dev]"
+# For E2E deployed app tests: pip install playwright && playwright install chromium
 
 databricks-sdk>=0.58.0
 pydantic>=2.0

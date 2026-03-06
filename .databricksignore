@@ -51,5 +51,20 @@ README.md
 .venv/
 venv/
 
-# MLflow local runs
+# MLflow local runs and database
 mlruns/
+mlflow.db
+
+# Other non-runtime files
+*.md
+!backend/references/schema.md
+CODEOWNERS.txt
+LICENSE.md
+NOTICE.md
+SECURITY.md
+notebooks/
+scripts/
+sql/
+.databricks/
+.gitleaksignore
+.gitignore

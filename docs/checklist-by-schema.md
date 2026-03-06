@@ -1,6 +1,6 @@
 # Genie Space Checklist (Organized by Schema)
 
-Based on the [official Databricks Genie best-practices doc](https://docs.databricks.com/aws/en/genie/best-practices) and the [Genie conversation API create/select guidance](https://docs.databricks.com/aws/en/genie/conversation-api#create-or-select-a-genie-space). Last verified on 2026-02-18.
+Based on the [official Databricks Genie best-practices doc](https://docs.databricks.com/aws/en/genie/best-practices) and the [Genie conversation API create/select guidance](https://docs.databricks.com/aws/en/genie/conversation-api#create-or-select-a-genie-space). Last verified on 2026-03-06.
 
 This checklist is organized according to the serialized Genie Space JSON schema structure. All items are evaluated by LLM analysis.
 

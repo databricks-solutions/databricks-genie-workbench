@@ -1,0 +1,6 @@
+# False positives from Vite-bundled React build artifacts (minified JS)
+dba8a46670f71554d7c6f85b8156c6ff8b927154:frontend/dist/assets/index-DfyblZUj.js:vault-service-token:8
+dba8a46670f71554d7c6f85b8156c6ff8b927154:frontend/dist/assets/index-BEGK0X5-.js:vault-service-token:8
+faff5e63c36691d4cd42c63cdd9c47c7a6e0fc71:frontend/dist/assets/index-BEGK0X5-.js:vault-service-token:8
+faff5e63c36691d4cd42c63cdd9c47c7a6e0fc71:frontend/dist/assets/index-Dkgq7VUt.js:vault-service-token:8
+fa428d65a8d509b4b544de096ccbcff4ef4a3d1a:frontend/dist/assets/index-Dkgq7VUt.js:vault-service-token:8
