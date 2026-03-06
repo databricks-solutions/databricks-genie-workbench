@@ -9,6 +9,8 @@ import json
 import logging
 import re
 import secrets
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,36 @@ PII_PATTERNS = re.compile(
     r"birth_date|salary|wage|income|bank_account|routing_number|"
     r"password|secret|token|api_key)", re.IGNORECASE
 )
+
+ETL_PATTERNS = re.compile(
+    r"(^_etl|^_load|^_ingest|^_pipeline|^_batch"
+    r"|^_job_id$|^_run_id$|^_task_id$|^_execution_id$"
+    r"|_created_at$|_updated_at$|_modified_at$|_inserted_at$|_loaded_at$"
+    r"|^__[a-z]|^_dlt_|^_rescued_data$|^_metadata$"
+    r"|^dwh_|^stg_|^src_|^etl_)", re.IGNORECASE
+)
+
+_STRING_TYPES = {"string", "varchar", "char"}
+_DATE_TYPES = {"date", "timestamp", "timestamp_ntz"}
+_NUMERIC_TYPES = {"int", "bigint", "smallint", "tinyint", "float", "double", "decimal"}
+_BOOLEAN_TYPES = {"boolean"}
+
+# Cap concurrent SQL statements to avoid overwhelming the warehouse.
+# 3 is safe for even a 2X-Small Pro warehouse; serverless could handle
+# much more but we design for the lowest common denominator.
+_SQL_CONCURRENCY = 3
+_sql_semaphore = threading.Semaphore(_SQL_CONCURRENCY)
+
+
+def _execute_sql_throttled(sql: str, **kwargs) -> dict:
+    """Execute SQL through the shared concurrency limiter."""
+    with _sql_semaphore:
+        return execute_sql(sql, **kwargs)
+
+
+def _base_col_type(type_text: str) -> str:
+    """Normalize a column type to its base name (strip generics and precision)."""
+    return type_text.lower().split("<")[0].split("(")[0].strip()
 
 
 # ── Tool definitions (OpenAI function-calling format) ────────────────────────
@@ -71,7 +103,11 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "describe_table",
-            "description": "Get detailed column metadata for a table: column names, types, descriptions, and flags for potentially sensitive (PII) columns.",
+            "description": (
+                "Get detailed column metadata for a table: column names, types, descriptions, "
+                "and recommendations (PII, ETL/metadata columns to exclude). "
+                "Returns a recommendations summary with columns grouped by reason."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -103,6 +139,53 @@ TOOL_DEFINITIONS = [
                     },
                 },
                 "required": ["table_identifier"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "assess_data_quality",
+            "description": (
+                "Assess data quality across one or more tables in parallel. "
+                "For each table returns: null rates per column, empty/whitespace strings, "
+                "boolean-as-string values (true/TRUE/True), inconsistent casing variants, "
+                "constant columns (single value), and all-null columns. "
+                "Use after describe_table to decide which columns to exclude or flag."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "table_identifiers": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "One or more fully qualified table names (catalog.schema.table). Tables are assessed in parallel.",
+                    },
+                },
+                "required": ["table_identifiers"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "profile_table_usage",
+            "description": (
+                "Discover how tables are used in the workspace: upstream/downstream lineage "
+                "and recent query patterns from system tables. Best-effort — returns partial "
+                "results if system tables are inaccessible. Use alongside assess_data_quality "
+                "(both can be called in the same tool-call round)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "table_identifiers": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Fully qualified table names (catalog.schema.table).",
+                    },
+                },
+                "required": ["table_identifiers"],
             },
         },
     },
@@ -588,6 +671,8 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
         "discover_schemas": _discover_schemas,
         "discover_tables": _discover_tables,
         "describe_table": _describe_table,
+        "assess_data_quality": _assess_data_quality,
+        "profile_table_usage": _profile_table_usage,
         "profile_columns": _profile_columns,
         "test_sql": _test_sql,
         "discover_warehouses": _discover_warehouses,
@@ -660,8 +745,11 @@ def _discover_tables(catalog: str, schema: str) -> dict:
 
 
 def _describe_table(table_identifier: str) -> dict:
-    """Get column metadata via the SDK. Flags potential PII columns.
-    Also fetches a handful of sample rows and a link to the UC explorer."""
+    """Get column metadata via the SDK.
+
+    Flags potential PII and ETL/metadata columns with structured
+    recommendations the agent and frontend can act on.
+    """
     client = get_workspace_client()
     try:
         table_info = client.tables.get(table_identifier)
@@ -669,15 +757,30 @@ def _describe_table(table_identifier: str) -> dict:
         return {"error": f"Cannot access table {table_identifier}: {e}"}
 
     columns = []
+    exclude_pii: list[str] = []
+    exclude_etl: list[str] = []
+
     for col in (table_info.columns or []):
         col_name = col.name or ""
-        is_pii = bool(PII_PATTERNS.search(col_name))
-        columns.append({
+        col_type = str(col.type_text or col.type_name or "")
+
+        recommendations: list[dict] = []
+        if PII_PATTERNS.search(col_name):
+            recommendations.append({"action": "exclude", "reason": "pii", "confidence": "high"})
+            exclude_pii.append(col_name)
+        if ETL_PATTERNS.search(col_name):
+            recommendations.append({"action": "exclude", "reason": "etl_metadata", "confidence": "high"})
+            exclude_etl.append(col_name)
+
+        entry: dict[str, Any] = {
             "name": col_name,
-            "type": str(col.type_text or col.type_name or ""),
+            "type": col_type,
             "description": col.comment,
-            "pii_hint": is_pii,
-        })
+            "pii_hint": bool(PII_PATTERNS.search(col_name)),
+        }
+        if recommendations:
+            entry["recommendations"] = recommendations
+        columns.append(entry)
 
     # Fetch sample rows (best-effort)
     sample_rows: list[dict] = []
@@ -699,15 +802,24 @@ def _describe_table(table_identifier: str) -> dict:
         if host:
             uc_url = f"{host}/explore/data/{parts[0]}/{parts[1]}/{parts[2]}"
 
-    return {
+    result_dict: dict[str, Any] = {
         "table": table_identifier,
         "comment": table_info.comment,
         "columns": columns,
         "column_count": len(columns),
-        "pii_columns": [c["name"] for c in columns if c["pii_hint"]],
+        "pii_columns": exclude_pii,
         "sample_rows": sample_rows,
         "uc_url": uc_url,
     }
+
+    if exclude_pii or exclude_etl:
+        result_dict["recommendations"] = {}
+        if exclude_pii:
+            result_dict["recommendations"]["exclude_pii"] = exclude_pii
+        if exclude_etl:
+            result_dict["recommendations"]["exclude_etl"] = exclude_etl
+
+    return result_dict
 
 
 def _profile_columns(table_identifier: str, columns: list[str] | None = None) -> dict:
@@ -753,6 +865,591 @@ def _profile_columns(table_identifier: str, columns: list[str] | None = None) ->
             uc_url = f"{host}/explore/data/{parts[0]}/{parts[1]}/{parts[2]}"
 
     return {"table": table_identifier, "profiles": profiles, "uc_url": uc_url}
+
+
+# ── Data quality assessment ───────────────────────────────────────────────────
+
+_BOOL_STRINGS = {"true", "false", "yes", "no", "y", "n"}
+_NULL_STRINGS = {"null", "none", "na", "n/a", ""}
+_MAX_QUALITY_COLS_PER_QUERY = 20
+
+
+def _assess_data_quality(table_identifiers: list[str]) -> dict:
+    """Assess data quality across one or more tables in parallel.
+
+    Each table gets a single-pass SQL query for null/empty/constant metrics,
+    then targeted queries for string columns to detect casing issues and
+    boolean-as-string values. Tables are processed concurrently.
+    """
+    results: dict[str, Any] = {}
+
+    with ThreadPoolExecutor(max_workers=min(len(table_identifiers), _SQL_CONCURRENCY)) as pool:
+        futures = {
+            pool.submit(_assess_single_table, tbl): tbl
+            for tbl in table_identifiers
+        }
+        for future in as_completed(futures):
+            tbl = futures[future]
+            try:
+                results[tbl] = future.result()
+            except Exception as e:
+                logger.exception(f"assess_data_quality failed for {tbl}")
+                results[tbl] = {"error": str(e)}
+
+    global_summary = _build_global_summary(results)
+    return {"tables": results, "summary": global_summary}
+
+
+def _assess_single_table(table_identifier: str) -> dict:
+    """Run quality checks on a single table."""
+    # Get column metadata first
+    desc = _describe_table(table_identifier)
+    if "error" in desc:
+        return {"error": desc["error"]}
+
+    columns_meta = desc["columns"]
+    total_rows = _get_row_count(table_identifier)
+    if total_rows == 0:
+        return {
+            "total_rows": 0,
+            "column_quality": {},
+            "summary": {"good_columns": 0, "empty_table": True},
+        }
+
+    # Phase 1: null/empty/constant metrics — single-pass SQL per batch
+    col_quality = _run_null_metrics(table_identifier, columns_meta, total_rows)
+
+    # Phase 2: string-column deep checks (casing variants, bool-as-string)
+    # Pass col_quality so high-cardinality columns are skipped automatically.
+    string_cols = [
+        c["name"] for c in columns_meta
+        if _base_col_type(c["type"]) in _STRING_TYPES
+    ]
+    if string_cols:
+        casing_issues = _run_casing_checks(table_identifier, string_cols, col_quality)
+        for col_name, issues in casing_issues.items():
+            if col_name in col_quality:
+                col_quality[col_name].update(issues)
+
+    # Build per-column recommendations
+    exclude_recommend: list[str] = []
+    review_recommend: list[str] = []
+    for col_name, metrics in col_quality.items():
+        recs = _column_quality_recommendations(col_name, metrics, total_rows)
+        if recs:
+            metrics["recommendations"] = recs
+            for r in recs:
+                if r["action"] == "exclude":
+                    exclude_recommend.append(col_name)
+                elif r["action"] == "flag":
+                    review_recommend.append(col_name)
+
+    # Summaries
+    good = sum(1 for m in col_quality.values() if not m.get("recommendations"))
+    sparse = sum(1 for m in col_quality.values()
+                 if 0.5 < m.get("null_rate", 0) < 1.0)
+    empty_cols = sum(1 for m in col_quality.values() if m.get("null_rate", 0) == 1.0)
+    constant = sum(1 for m in col_quality.values() if m.get("distinct_count") == 1)
+
+    return {
+        "total_rows": total_rows,
+        "column_quality": col_quality,
+        "summary": {
+            "good_columns": good,
+            "sparse_columns": sparse,
+            "empty_columns": empty_cols,
+            "constant_columns": constant,
+            "recommended_excludes": exclude_recommend,
+            "recommended_review": review_recommend,
+        },
+    }
+
+
+def _get_row_count(table_identifier: str) -> int:
+    result = _execute_sql_throttled(f"SELECT COUNT(*) FROM {table_identifier}")
+    if result.get("error") or not result.get("data"):
+        return 0
+    try:
+        return int(result["data"][0][0])
+    except (IndexError, TypeError, ValueError):
+        return 0
+
+
+def _run_null_metrics(
+    table_identifier: str,
+    columns_meta: list[dict],
+    total_rows: int,
+) -> dict[str, dict]:
+    """Compute null rate, empty-string rate, and distinct count per column.
+
+    Batches columns into groups to keep SQL manageable, runs batches in parallel.
+    """
+    col_quality: dict[str, dict] = {}
+    batches = [
+        columns_meta[i:i + _MAX_QUALITY_COLS_PER_QUERY]
+        for i in range(0, len(columns_meta), _MAX_QUALITY_COLS_PER_QUERY)
+    ]
+
+    def run_batch(batch: list[dict]) -> dict[str, dict]:
+        parts: list[str] = []
+        for col in batch:
+            cn = col["name"]
+            base_type = _base_col_type(col["type"])
+            parts.append(
+                f"SUM(CASE WHEN `{cn}` IS NULL THEN 1 ELSE 0 END) AS `{cn}__nulls`"
+            )
+            parts.append(f"COUNT(DISTINCT `{cn}`) AS `{cn}__distinct`")
+            if base_type in _STRING_TYPES:
+                parts.append(
+                    f"SUM(CASE WHEN TRIM(CAST(`{cn}` AS STRING)) = '' "
+                    f"AND `{cn}` IS NOT NULL THEN 1 ELSE 0 END) AS `{cn}__empty`"
+                )
+        sql = f"SELECT {', '.join(parts)} FROM {table_identifier}"
+        result = _execute_sql_throttled(sql)
+        batch_quality: dict[str, dict] = {}
+        if result.get("error") or not result.get("data"):
+            for col in batch:
+                batch_quality[col["name"]] = {"error": result.get("error", "no data")}
+            return batch_quality
+        row = result["data"][0]
+        col_map = {c["name"]: i for i, c in enumerate(result["columns"])}
+        for col in batch:
+            cn = col["name"]
+            base_type = _base_col_type(col["type"])
+            nulls = _safe_int(row[col_map.get(f"{cn}__nulls", -1)])
+            distinct = _safe_int(row[col_map.get(f"{cn}__distinct", -1)])
+            metrics: dict[str, Any] = {
+                "null_rate": round(nulls / total_rows, 4) if total_rows else 0,
+                "null_count": nulls,
+                "distinct_count": distinct,
+            }
+            if base_type in _STRING_TYPES:
+                empty = _safe_int(row[col_map.get(f"{cn}__empty", -1)])
+                metrics["empty_rate"] = round(empty / total_rows, 4) if total_rows else 0
+                metrics["empty_count"] = empty
+            batch_quality[cn] = metrics
+        return batch_quality
+
+    if len(batches) == 1:
+        col_quality.update(run_batch(batches[0]))
+    else:
+        with ThreadPoolExecutor(max_workers=min(len(batches), _SQL_CONCURRENCY)) as pool:
+            futures = {pool.submit(run_batch, b): b for b in batches}
+            for future in as_completed(futures):
+                try:
+                    col_quality.update(future.result())
+                except Exception as e:
+                    for col in futures[future]:
+                        col_quality[col["name"]] = {"error": str(e)}
+
+    return col_quality
+
+
+_CASING_BATCH_SIZE = 4
+
+
+def _run_casing_checks(
+    table_identifier: str,
+    string_cols: list[str],
+    col_quality: dict[str, dict] | None = None,
+) -> dict[str, dict]:
+    """Detect boolean-as-string values and inconsistent casing in string columns.
+
+    Optimised for latency: builds UNION ALL batches of up to _CASING_BATCH_SIZE
+    columns, each combining bool+casing detection in a single scan.  Columns
+    with high cardinality (>100 distinct values from phase-1 null metrics) are
+    skipped because casing variance is noisy and the GROUP BY is expensive.
+
+    Total SQL calls: ceil(eligible_cols / _CASING_BATCH_SIZE) per table.
+    """
+    eligible = _filter_casing_candidates(string_cols, col_quality)
+    if not eligible:
+        return {}
+
+    batches = [
+        eligible[i:i + _CASING_BATCH_SIZE]
+        for i in range(0, len(eligible), _CASING_BATCH_SIZE)
+    ]
+
+    issues: dict[str, dict] = {}
+
+    def run_batch(cols: list[str]) -> dict[str, dict]:
+        sql = _build_casing_union_sql(table_identifier, cols)
+        result = _execute_sql_throttled(sql)
+        return _parse_casing_result(result)
+
+    if len(batches) == 1:
+        issues.update(run_batch(batches[0]))
+    else:
+        with ThreadPoolExecutor(max_workers=min(len(batches), _SQL_CONCURRENCY)) as pool:
+            futures = {pool.submit(run_batch, b): b for b in batches}
+            for future in as_completed(futures):
+                try:
+                    issues.update(future.result())
+                except Exception as e:
+                    for c in futures[future]:
+                        logger.warning(f"Casing check failed for {c}: {e}")
+
+    return issues
+
+
+def _filter_casing_candidates(
+    string_cols: list[str],
+    col_quality: dict[str, dict] | None,
+) -> list[str]:
+    """Pick string columns worth running casing checks on.
+
+    Skips columns with >100 distinct values (high cardinality — expensive and
+    noisy) or 0 distinct values (all null). Caps at 12 columns per table.
+    """
+    if col_quality is None:
+        return string_cols[:12]
+
+    eligible: list[str] = []
+    for col in string_cols:
+        metrics = col_quality.get(col, {})
+        distinct = metrics.get("distinct_count", -1)
+        if distinct == 0 or distinct > 100:
+            continue
+        eligible.append(col)
+        if len(eligible) >= 12:
+            break
+    return eligible
+
+
+def _build_casing_union_sql(table_identifier: str, cols: list[str]) -> str:
+    """Build a UNION ALL query that checks bool+casing for multiple columns."""
+    parts: list[str] = []
+    for col in cols:
+        parts.append(
+            f"SELECT '{col}' AS col_name, "
+            f"LOWER(CAST(`{col}` AS STRING)) AS normalized, "
+            f"COLLECT_SET(CAST(`{col}` AS STRING)) AS variants, "
+            f"COUNT(DISTINCT CAST(`{col}` AS STRING)) AS variant_count, "
+            f"COUNT(*) AS cnt "
+            f"FROM {table_identifier} "
+            f"WHERE `{col}` IS NOT NULL "
+            f"GROUP BY LOWER(CAST(`{col}` AS STRING)) "
+            f"HAVING COUNT(DISTINCT CAST(`{col}` AS STRING)) > 1 "
+            f"OR LOWER(CAST(`{col}` AS STRING)) IN "
+            f"('true','false','yes','no','y','n')"
+        )
+    return " UNION ALL ".join(parts)
+
+
+def _parse_casing_result(result: dict) -> dict[str, dict]:
+    """Parse the UNION ALL casing result into per-column issues."""
+    issues: dict[str, dict] = {}
+    if result.get("error") or not result.get("data"):
+        return issues
+
+    for row in result["data"]:
+        col_name = row[0]
+        normalized = row[1]
+        variants_raw = row[2]
+        variant_count = _safe_int(row[3])
+        cnt = _safe_int(row[4])
+
+        if isinstance(variants_raw, str):
+            try:
+                variants_raw = json.loads(variants_raw)
+            except (json.JSONDecodeError, TypeError):
+                variants_raw = [variants_raw]
+        if not isinstance(variants_raw, list):
+            variants_raw = [str(variants_raw)]
+
+        entry = {
+            "normalized": normalized,
+            "variants": variants_raw,
+            "variant_count": variant_count,
+            "count": cnt,
+        }
+
+        if col_name not in issues:
+            issues[col_name] = {}
+
+        if normalized in _BOOL_STRINGS:
+            issues[col_name].setdefault("boolean_as_string", []).append(entry)
+        if variant_count > 1:
+            issues[col_name].setdefault("inconsistent_casing", []).append(entry)
+
+    return issues
+
+
+def _column_quality_recommendations(
+    col_name: str,
+    metrics: dict,
+    total_rows: int,
+) -> list[dict]:
+    """Generate recommendations based on column quality metrics."""
+    recs: list[dict] = []
+    null_rate = metrics.get("null_rate", 0)
+    distinct = metrics.get("distinct_count", -1)
+
+    if null_rate == 1.0:
+        recs.append({"action": "exclude", "reason": "all_null", "confidence": "high"})
+    elif null_rate >= 0.8:
+        recs.append({"action": "flag", "reason": "high_null_rate",
+                      "detail": f"{null_rate:.0%} null", "confidence": "medium"})
+
+    if distinct == 1 and null_rate < 1.0:
+        recs.append({"action": "flag", "reason": "constant_value", "confidence": "medium"})
+
+    if metrics.get("boolean_as_string"):
+        has_multi_variant = any(
+            len(bv.get("variants", [])) > 1
+            for bv in metrics["boolean_as_string"]
+        )
+        if has_multi_variant:
+            recs.append({
+                "action": "flag",
+                "reason": "inconsistent_boolean",
+                "detail": "Multiple casings of boolean values (e.g. true/TRUE/True)",
+                "confidence": "high",
+            })
+        else:
+            recs.append({
+                "action": "flag",
+                "reason": "boolean_as_string",
+                "detail": "Boolean values stored as strings",
+                "confidence": "medium",
+            })
+
+    if metrics.get("inconsistent_casing"):
+        non_bool = [
+            cv for cv in metrics["inconsistent_casing"]
+            if cv["normalized"] not in _BOOL_STRINGS
+        ]
+        if non_bool:
+            recs.append({
+                "action": "flag",
+                "reason": "inconsistent_casing",
+                "detail": f"{len(non_bool)} value(s) with mixed casing variants",
+                "confidence": "high",
+            })
+
+    # Name-based checks (supplement describe_table's checks)
+    if ETL_PATTERNS.search(col_name):
+        recs.append({"action": "exclude", "reason": "etl_metadata", "confidence": "high"})
+    if PII_PATTERNS.search(col_name):
+        recs.append({"action": "exclude", "reason": "pii", "confidence": "high"})
+
+    return recs
+
+
+def _build_global_summary(table_results: dict[str, dict]) -> dict:
+    """Build a cross-table summary of quality findings."""
+    total_tables = len(table_results)
+    all_excludes: list[str] = []
+    all_review: list[str] = []
+    tables_with_issues = 0
+
+    for tbl, res in table_results.items():
+        if "error" in res:
+            continue
+        summary = res.get("summary", {})
+        short_name = tbl.split(".")[-1]
+        for col in summary.get("recommended_excludes", []):
+            all_excludes.append(f"{short_name}.{col}")
+        for col in summary.get("recommended_review", []):
+            all_review.append(f"{short_name}.{col}")
+        if summary.get("recommended_excludes") or summary.get("recommended_review"):
+            tables_with_issues += 1
+
+    return {
+        "tables_assessed": total_tables,
+        "tables_with_issues": tables_with_issues,
+        "total_recommended_excludes": len(all_excludes),
+        "total_recommended_review": len(all_review),
+        "excludes": all_excludes[:20],
+        "review": all_review[:20],
+    }
+
+
+def _safe_int(val: Any) -> int:
+    try:
+        return int(val) if val is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+# ── Table usage profiling (lineage + query history) ──────────────────────────
+
+_LINEAGE_TIMEOUT_S = 8
+_QUERY_HISTORY_TIMEOUT_S = 10
+_USAGE_COL_PATTERN = re.compile(r"`(\w+)`|(?:^|\.)(\w+)(?:\s|,|\)|$)", re.MULTILINE)
+
+
+def _profile_table_usage(table_identifiers: list[str]) -> dict:
+    """Profile table lineage and recent query patterns from system tables.
+
+    Best-effort: if system tables are inaccessible the tool returns
+    ``system_tables_available: false`` and the agent can proceed without it.
+    All SQL is executed through the shared semaphore.
+    """
+    results: dict[str, Any] = {}
+    system_ok = True
+
+    with ThreadPoolExecutor(max_workers=min(len(table_identifiers) + 1, _SQL_CONCURRENCY)) as pool:
+        lineage_futures = {
+            pool.submit(_fetch_lineage, tbl): tbl for tbl in table_identifiers
+        }
+        history_future = pool.submit(_fetch_query_history, table_identifiers)
+
+        for future in as_completed(lineage_futures):
+            tbl = lineage_futures[future]
+            try:
+                lin = future.result()
+                if lin.get("error"):
+                    system_ok = False
+                results.setdefault(tbl, {})["lineage"] = lin
+            except Exception as e:
+                system_ok = False
+                results.setdefault(tbl, {})["lineage"] = {"error": str(e)}
+
+        try:
+            hist = history_future.result()
+            if hist.get("error"):
+                system_ok = False
+        except Exception as e:
+            system_ok = False
+            hist = {"error": str(e)}
+
+    for tbl in table_identifiers:
+        tbl_short = tbl.split(".")[-1]
+        tbl_hist = [
+            q for q in hist.get("queries", [])
+            if tbl in q.get("query_preview", "") or tbl_short in q.get("query_preview", "")
+        ]
+        results.setdefault(tbl, {})["recent_queries"] = tbl_hist[:10]
+
+    summary = _build_usage_summary(results, table_identifiers)
+    return {
+        "system_tables_available": system_ok,
+        "tables": results,
+        "summary": summary,
+    }
+
+
+def _fetch_lineage(table_identifier: str) -> dict:
+    """Fetch upstream and downstream tables from system.access.table_lineage."""
+    sql = (
+        f"SELECT source_table_full_name, target_table_full_name, "
+        f"source_type, target_type "
+        f"FROM system.access.table_lineage "
+        f"WHERE (target_table_full_name = '{table_identifier}' "
+        f"OR source_table_full_name = '{table_identifier}') "
+        f"AND event_time >= date_sub(current_date(), 30) "
+        f"LIMIT 50"
+    )
+    result = _execute_sql_throttled(sql)
+    if result.get("error"):
+        return {"error": result["error"]}
+
+    upstream: list[str] = []
+    downstream: list[str] = []
+    for row in result.get("data", []):
+        src, tgt = row[0], row[1]
+        if tgt == table_identifier and src and src != table_identifier:
+            if src not in upstream:
+                upstream.append(src)
+        if src == table_identifier and tgt and tgt != table_identifier:
+            if tgt not in downstream:
+                downstream.append(tgt)
+
+    return {"upstream": upstream, "downstream": downstream}
+
+
+def _fetch_query_history(table_identifiers: list[str]) -> dict:
+    """Fetch recent queries referencing these tables from system.query.history."""
+    if not table_identifiers:
+        return {"queries": []}
+
+    like_clauses = " OR ".join(
+        f"statement_text LIKE '%{tbl}%'" for tbl in table_identifiers
+    )
+    sql = (
+        f"SELECT executed_by, "
+        f"SUBSTRING(statement_text, 1, 300) AS query_preview, "
+        f"total_duration_ms, produced_rows "
+        f"FROM system.query.history "
+        f"WHERE start_time >= date_sub(current_date(), 7) "
+        f"AND execution_status = 'FINISHED' "
+        f"AND ({like_clauses}) "
+        f"ORDER BY start_time DESC "
+        f"LIMIT 30"
+    )
+    result = _execute_sql_throttled(sql)
+    if result.get("error"):
+        return {"error": result["error"]}
+
+    queries: list[dict] = []
+    for row in result.get("data", []):
+        queries.append({
+            "executed_by": row[0],
+            "query_preview": row[1],
+            "duration_ms": _safe_int(row[2]),
+            "rows_produced": _safe_int(row[3]),
+        })
+
+    column_usage = _extract_column_patterns(queries)
+    return {"queries": queries, "column_usage": column_usage}
+
+
+def _extract_column_patterns(queries: list[dict]) -> dict[str, int]:
+    """Extract frequently referenced column names from query snippets.
+
+    Uses simple regex to find backtick-quoted or dot-qualified identifiers.
+    Not perfect, but good enough to surface common patterns for the LLM.
+    """
+    counts: dict[str, int] = {}
+    for q in queries:
+        preview = q.get("query_preview", "")
+        for m in _USAGE_COL_PATTERN.finditer(preview):
+            col = m.group(1) or m.group(2)
+            if col and len(col) > 1 and col.upper() not in {
+                "SELECT", "FROM", "WHERE", "AND", "OR", "GROUP", "BY",
+                "ORDER", "LIMIT", "JOIN", "ON", "AS", "IN", "NOT", "IS",
+                "NULL", "CASE", "WHEN", "THEN", "ELSE", "END", "HAVING",
+                "WITH", "UNION", "ALL", "DISTINCT", "COUNT", "SUM", "AVG",
+                "MIN", "MAX", "LOWER", "UPPER", "TRIM", "CAST", "STRING",
+                "INT", "BIGINT", "DATE", "TIMESTAMP", "TRUE", "FALSE",
+                "BETWEEN", "LIKE", "EXISTS", "LEFT", "RIGHT", "INNER",
+                "OUTER", "FULL", "CROSS", "ASC", "DESC", "OVER",
+                "PARTITION", "ROW", "ROWS", "CURRENT", "PRECEDING",
+                "FOLLOWING", "UNBOUNDED",
+            }:
+                counts[col] = counts.get(col, 0) + 1
+    top = sorted(counts.items(), key=lambda x: -x[1])[:20]
+    return dict(top)
+
+
+def _build_usage_summary(
+    table_results: dict[str, dict],
+    table_identifiers: list[str],
+) -> dict:
+    """Build a human-friendly summary of lineage and usage findings."""
+    total_upstream = 0
+    total_downstream = 0
+    total_queries = 0
+    tables_with_lineage = 0
+
+    for tbl in table_identifiers:
+        lin = table_results.get(tbl, {}).get("lineage", {})
+        up = len(lin.get("upstream", []))
+        down = len(lin.get("downstream", []))
+        total_upstream += up
+        total_downstream += down
+        if up or down:
+            tables_with_lineage += 1
+        total_queries += len(table_results.get(tbl, {}).get("recent_queries", []))
+
+    return {
+        "tables_with_lineage": tables_with_lineage,
+        "total_upstream_sources": total_upstream,
+        "total_downstream_consumers": total_downstream,
+        "recent_query_count": total_queries,
+    }
 
 
 def _test_sql(sql: str) -> dict:

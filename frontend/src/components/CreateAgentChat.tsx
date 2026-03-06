@@ -33,6 +33,7 @@ import {
   Trash2,
   FastForward,
   Clock,
+  GitBranch,
 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -212,7 +213,7 @@ function loadState(): PersistedState | null {
 
 // ─── Message grouping ──────────────────────────────────────────
 
-const INSPECTION_TOOLS = new Set(["describe_table", "profile_columns"])
+const INSPECTION_TOOLS = new Set(["describe_table", "profile_columns", "assess_data_quality", "profile_table_usage"])
 
 type RenderItem =
   | { type: "message"; msg: AgentChatMessage }
@@ -393,7 +394,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             }),
           )
 
-          if ((tool === "describe_table" || tool === "profile_columns") && !result.error) {
+          if ((tool === "describe_table" || tool === "profile_columns" || tool === "assess_data_quality" || tool === "profile_table_usage") && !result.error) {
             setProgress((p) => ({ ...p, profilingDone: true }))
           }
           if (tool === "present_plan" && !result.error) {
@@ -623,13 +624,68 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   // ─── Render helpers ───────────────────────────────────────────
 
+  const renderColumnBadge = (label: string, colorClass: string, title?: string) => (
+    <span
+      title={title}
+      className={`ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${colorClass}`}
+    >
+      {label}
+    </span>
+  )
+
+  const renderColumnBadges = (col: {
+    name: string;
+    pii_hint?: boolean;
+    recommendations?: { action: string; reason: string; detail?: string; confidence?: string }[];
+  }) => {
+    const badges: React.ReactNode[] = []
+    const reasons = new Set<string>()
+
+    if (col.recommendations) {
+      for (const rec of col.recommendations) {
+        reasons.add(rec.reason)
+      }
+    }
+
+    if (col.pii_hint || reasons.has("pii"))
+      badges.push(renderColumnBadge("PII", "bg-amber-500/15 text-amber-500", "Potentially sensitive column"))
+    if (reasons.has("etl_metadata"))
+      badges.push(renderColumnBadge("ETL", "bg-zinc-500/15 text-zinc-400", "ETL/metadata column — consider hiding"))
+    if (reasons.has("all_null"))
+      badges.push(renderColumnBadge("EMPTY", "bg-red-500/15 text-red-400", "100% null values"))
+    if (reasons.has("high_null_rate")) {
+      const detail = col.recommendations?.find(r => r.reason === "high_null_rate")?.detail
+      badges.push(renderColumnBadge(detail || "HIGH NULL", "bg-orange-500/15 text-orange-400", "High null rate"))
+    }
+    if (reasons.has("constant_value"))
+      badges.push(renderColumnBadge("CONSTANT", "bg-zinc-500/15 text-zinc-400", "Single distinct value"))
+    if (reasons.has("inconsistent_boolean") || reasons.has("boolean_as_string"))
+      badges.push(renderColumnBadge("BOOL STR", "bg-purple-500/15 text-purple-400", "Boolean values stored as strings with mixed casing"))
+    if (reasons.has("inconsistent_casing"))
+      badges.push(renderColumnBadge("CASING", "bg-purple-500/15 text-purple-400", "Inconsistent casing across values"))
+
+    return badges.length > 0 ? <>{badges}</> : null
+  }
+
   const renderDescribeCard = (result: Record<string, unknown>) => {
-    const columns = (result.columns as { name: string; type: string; description?: string; pii_hint?: boolean }[]) || []
+    const columns = (result.columns as {
+      name: string;
+      type: string;
+      description?: string;
+      pii_hint?: boolean;
+      recommendations?: { action: string; reason: string; detail?: string; confidence?: string }[];
+    }[]) || []
     const sampleRows = (result.sample_rows as Record<string, unknown>[]) || []
     const ucUrl = result.uc_url as string | undefined
     const tableName = result.table as string | undefined
     const comment = result.comment as string | undefined
+    const recommendations = result.recommendations as {
+      exclude_pii?: string[];
+      exclude_etl?: string[];
+    } | undefined
     const colNames = columns.slice(0, 12).map((c) => c.name)
+
+    const excludeCount = (recommendations?.exclude_pii?.length || 0) + (recommendations?.exclude_etl?.length || 0)
 
     return (
       <div className="mt-2 border border-default rounded-lg overflow-hidden bg-surface text-xs">
@@ -639,6 +695,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             <Table2 className="w-3.5 h-3.5 text-accent" />
             <span className="font-semibold text-primary">{tableName?.split(".").pop()}</span>
             <span className="text-muted">{columns.length} columns</span>
+            {excludeCount > 0 && (
+              <span className="text-muted">
+                · {excludeCount} recommended to hide
+              </span>
+            )}
           </div>
           {ucUrl && (
             <a
@@ -669,11 +730,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                 <tr key={col.name} className="border-b border-default last:border-0">
                   <td className="px-3 py-1 font-mono text-primary">
                     {col.name}
-                    {col.pii_hint && (
-                      <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/15 text-amber-500">
-                        PII
-                      </span>
-                    )}
+                    {renderColumnBadges(col)}
                   </td>
                   <td className="px-3 py-1 text-muted font-mono">{col.type}</td>
                   <td className="px-3 py-1 text-secondary">{col.description || "—"}</td>
@@ -715,6 +772,203 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             </div>
           </>
         )}
+      </div>
+    )
+  }
+
+  const renderQualityCard = (result: Record<string, unknown>) => {
+    const tables = (result.tables || {}) as Record<string, {
+      total_rows?: number;
+      column_quality?: Record<string, {
+        null_rate?: number;
+        empty_rate?: number;
+        distinct_count?: number;
+        boolean_as_string?: { normalized: string; variants: string[]; count: number }[];
+        inconsistent_casing?: { normalized: string; variants: string[]; variant_count: number }[];
+        recommendations?: { action: string; reason: string; detail?: string }[];
+        error?: string;
+      }>;
+      summary?: {
+        good_columns?: number;
+        sparse_columns?: number;
+        empty_columns?: number;
+        constant_columns?: number;
+        recommended_excludes?: string[];
+        recommended_review?: string[];
+      };
+      error?: string;
+    }>
+    const globalSummary = result.summary as {
+      tables_assessed?: number;
+      tables_with_issues?: number;
+      total_recommended_excludes?: number;
+      total_recommended_review?: number;
+    } | undefined
+
+    const reasonBadge = (reason: string) => {
+      const map: Record<string, { label: string; color: string }> = {
+        all_null: { label: "EMPTY", color: "bg-red-500/15 text-red-400" },
+        high_null_rate: { label: "HIGH NULL", color: "bg-orange-500/15 text-orange-400" },
+        constant_value: { label: "CONSTANT", color: "bg-zinc-500/15 text-zinc-400" },
+        inconsistent_boolean: { label: "BOOL CASING", color: "bg-purple-500/15 text-purple-400" },
+        boolean_as_string: { label: "BOOL STR", color: "bg-purple-500/15 text-purple-400" },
+        inconsistent_casing: { label: "CASING", color: "bg-purple-500/15 text-purple-400" },
+        etl_metadata: { label: "ETL", color: "bg-zinc-500/15 text-zinc-400" },
+        pii: { label: "PII", color: "bg-amber-500/15 text-amber-500" },
+      }
+      const m = map[reason] || { label: reason.toUpperCase(), color: "bg-zinc-500/15 text-zinc-400" }
+      return (
+        <span key={reason} className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${m.color}`}>
+          {m.label}
+        </span>
+      )
+    }
+
+    return (
+      <div className="mt-2 border border-default rounded-lg overflow-hidden bg-surface text-xs">
+        {/* Header */}
+        <div className="px-3 py-2 bg-surface-secondary border-b border-default flex items-center gap-2">
+          <Table2 className="w-3.5 h-3.5 text-accent" />
+          <span className="font-semibold text-primary">Data Quality Assessment</span>
+          {globalSummary && (
+            <span className="text-muted">
+              {globalSummary.tables_assessed} table{(globalSummary.tables_assessed ?? 0) !== 1 ? "s" : ""}
+              {(globalSummary.total_recommended_excludes ?? 0) > 0 && (
+                <> · <span className="text-red-400">{globalSummary.total_recommended_excludes} to hide</span></>
+              )}
+              {(globalSummary.total_recommended_review ?? 0) > 0 && (
+                <> · <span className="text-orange-400">{globalSummary.total_recommended_review} to review</span></>
+              )}
+            </span>
+          )}
+        </div>
+
+        {/* Per-table results */}
+        <div className="max-h-64 overflow-auto divide-y divide-default">
+          {Object.entries(tables).map(([tbl, data]) => {
+            if (data.error) {
+              return (
+                <div key={tbl} className="px-3 py-2">
+                  <span className="font-mono text-primary">{tbl.split(".").pop()}</span>
+                  <span className="ml-2 text-red-400">Error: {data.error}</span>
+                </div>
+              )
+            }
+            const quality = data.column_quality || {}
+            const flagged = Object.entries(quality).filter(
+              ([, m]) => m.recommendations && m.recommendations.length > 0
+            )
+            if (flagged.length === 0) {
+              return (
+                <div key={tbl} className="px-3 py-2">
+                  <span className="font-mono text-primary">{tbl.split(".").pop()}</span>
+                  <span className="ml-2 text-emerald-400">No issues found</span>
+                  <span className="text-muted ml-1">({data.total_rows?.toLocaleString()} rows)</span>
+                </div>
+              )
+            }
+            return (
+              <div key={tbl} className="px-3 py-2">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="font-mono font-semibold text-primary">{tbl.split(".").pop()}</span>
+                  <span className="text-muted">{data.total_rows?.toLocaleString()} rows · {flagged.length} flagged</span>
+                </div>
+                <div className="space-y-1">
+                  {flagged.map(([colName, metrics]) => (
+                    <div key={colName} className="flex items-center gap-2 pl-2">
+                      <span className="font-mono text-secondary w-40 truncate" title={colName}>{colName}</span>
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {metrics.recommendations?.map((rec) => reasonBadge(rec.reason))}
+                        {metrics.null_rate !== undefined && metrics.null_rate > 0 && (
+                          <span className="text-muted">{(metrics.null_rate * 100).toFixed(0)}% null</span>
+                        )}
+                      </div>
+                      {metrics.inconsistent_casing && metrics.inconsistent_casing.length > 0 && (
+                        <span className="text-muted truncate" title={metrics.inconsistent_casing.map(c => c.variants.join(", ")).join("; ")}>
+                          e.g. {metrics.inconsistent_casing[0].variants.slice(0, 3).join(", ")}
+                        </span>
+                      )}
+                      {metrics.boolean_as_string && metrics.boolean_as_string.length > 0 && !metrics.inconsistent_casing?.length && (
+                        <span className="text-muted truncate" title={metrics.boolean_as_string.map(b => b.variants.join(", ")).join("; ")}>
+                          e.g. {metrics.boolean_as_string[0].variants.slice(0, 3).join(", ")}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
+  const renderUsageCard = (result: Record<string, unknown>) => {
+    const tables = (result.tables || {}) as Record<string, {
+      lineage?: { upstream?: string[]; downstream?: string[]; error?: string };
+      recent_queries?: { query_preview?: string; executed_by?: string; duration_ms?: number }[];
+    }>
+    const summary = result.summary as {
+      tables_with_lineage?: number; total_upstream_sources?: number;
+      total_downstream_consumers?: number; recent_query_count?: number;
+    } | undefined
+    const sysAvailable = result.system_tables_available as boolean | undefined
+
+    return (
+      <div className="mt-2 border border-default rounded-lg overflow-hidden bg-surface text-xs">
+        <div className="flex items-center justify-between px-3 py-2 bg-surface-secondary border-b border-default">
+          <div className="flex items-center gap-2">
+            <GitBranch className="w-3.5 h-3.5 text-accent" />
+            <span className="font-semibold text-primary">Table Usage & Lineage</span>
+            {sysAvailable === false && (
+              <span className="px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-600 text-[10px] font-medium">system tables unavailable</span>
+            )}
+          </div>
+          {summary && (
+            <span className="text-muted">
+              {summary.total_upstream_sources ?? 0} upstream · {summary.total_downstream_consumers ?? 0} downstream · {summary.recent_query_count ?? 0} queries
+            </span>
+          )}
+        </div>
+        <div className="max-h-64 overflow-auto divide-y divide-[var(--border-color)]">
+          {Object.entries(tables).map(([tbl, info]) => (
+            <div key={tbl} className="px-3 py-2">
+              <span className="font-mono font-medium text-primary">{tbl.split(".").pop()}</span>
+              {info.lineage?.error ? (
+                <span className="ml-2 text-muted italic">lineage unavailable</span>
+              ) : (
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {(info.lineage?.upstream || []).map((u, i) => (
+                    <span key={`u-${i}`} className="inline-block px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 font-mono text-[10px]">
+                      ← {u.split(".").pop()}
+                    </span>
+                  ))}
+                  {(info.lineage?.downstream || []).map((d, i) => (
+                    <span key={`d-${i}`} className="inline-block px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono text-[10px]">
+                      → {d.split(".").pop()}
+                    </span>
+                  ))}
+                  {!(info.lineage?.upstream?.length) && !(info.lineage?.downstream?.length) && (
+                    <span className="text-muted italic">no lineage found</span>
+                  )}
+                </div>
+              )}
+              {(info.recent_queries?.length ?? 0) > 0 && (
+                <div className="mt-1.5 space-y-0.5">
+                  {info.recent_queries!.slice(0, 3).map((q, i) => (
+                    <div key={i} className="flex items-center gap-2 text-[10px] text-muted">
+                      <span className="font-mono truncate max-w-[400px]">{q.query_preview?.slice(0, 120)}</span>
+                      {q.duration_ms != null && (
+                        <span className="shrink-0 text-secondary/60">{(q.duration_ms / 1000).toFixed(1)}s</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     )
   }
@@ -1239,7 +1493,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   }
 
   const hasRichCard = (msg: AgentChatMessage): boolean =>
-    !!msg.tool_result && !msg.tool_result.error && (msg.tool_name === "describe_table" || msg.tool_name === "profile_columns" || msg.tool_name === "present_plan" || msg.tool_name === "test_sql")
+    !!msg.tool_result && !msg.tool_result.error && (msg.tool_name === "describe_table" || msg.tool_name === "profile_columns" || msg.tool_name === "present_plan" || msg.tool_name === "test_sql" || msg.tool_name === "assess_data_quality" || msg.tool_name === "profile_table_usage")
 
   const getToolSummary = (msg: AgentChatMessage): string | null => {
     if (!msg.tool_result || msg.tool_result.error) return null
@@ -1259,6 +1513,25 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       const cols = (r.columns as unknown[])?.length ?? 0
       const rows = (r.row_count as number) ?? 0
       return `${cols} col${cols !== 1 ? "s" : ""} · ${rows} row${rows !== 1 ? "s" : ""}`
+    }
+    if (msg.tool_name === "assess_data_quality") {
+      const summary = r.summary as { tables_assessed?: number; total_recommended_excludes?: number; total_recommended_review?: number } | undefined
+      if (summary) {
+        const parts: string[] = [`${summary.tables_assessed ?? 0} table${(summary.tables_assessed ?? 0) !== 1 ? "s" : ""}`]
+        if (summary.total_recommended_excludes) parts.push(`${summary.total_recommended_excludes} to hide`)
+        if (summary.total_recommended_review) parts.push(`${summary.total_recommended_review} to review`)
+        return parts.join(" · ")
+      }
+    }
+    if (msg.tool_name === "profile_table_usage") {
+      const usageSummary = r.summary as { tables_with_lineage?: number; recent_query_count?: number } | undefined
+      if (usageSummary) {
+        const parts: string[] = []
+        if (usageSummary.tables_with_lineage) parts.push(`${usageSummary.tables_with_lineage} with lineage`)
+        if (usageSummary.recent_query_count) parts.push(`${usageSummary.recent_query_count} recent queries`)
+        return parts.length ? parts.join(" · ") : "no usage data"
+      }
+      if (r.system_tables_available === false) return "system tables unavailable"
     }
     return null
   }
@@ -1302,7 +1575,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                 ? renderPlanCard(msg.tool_result)
                 : msg.tool_name === "test_sql"
                   ? renderTestSqlCard(msg.tool_result)
-                  : renderProfileCard(msg.tool_result)
+                  : msg.tool_name === "assess_data_quality"
+                    ? renderQualityCard(msg.tool_result)
+                    : msg.tool_name === "profile_table_usage"
+                      ? renderUsageCard(msg.tool_result)
+                      : renderProfileCard(msg.tool_result)
           ) : (
             <div className="ml-5 mt-1 text-xs bg-surface-secondary rounded-lg p-3 max-h-48 overflow-auto">
               <pre className="font-mono text-secondary whitespace-pre-wrap break-words">
@@ -1323,6 +1600,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     const tables = new Set<string>()
     let totalCols = 0
     let totalProfiled = 0
+    let qualityIssues = 0
+    let lineageCount = 0
 
     for (const m of group.msgs) {
       if (!m.tool_result) continue
@@ -1334,11 +1613,23 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         const profiles = r.profiles as Record<string, unknown> | undefined
         totalProfiled += profiles ? Object.keys(profiles).length : 0
       }
+      if (m.tool_name === "assess_data_quality") {
+        const qs = r.summary as { total_recommended_excludes?: number; total_recommended_review?: number } | undefined
+        qualityIssues += (qs?.total_recommended_excludes ?? 0) + (qs?.total_recommended_review ?? 0)
+      }
+      if (m.tool_name === "profile_table_usage") {
+        const us = r.summary as { tables_with_lineage?: number } | undefined
+        if (us?.tables_with_lineage) lineageCount += us.tables_with_lineage
+      }
     }
 
-    const summary = allDone
-      ? `${tables.size} table${tables.size !== 1 ? "s" : ""} · ${totalCols} cols${totalProfiled ? ` · ${totalProfiled} profiled` : ""}`
-      : `${group.msgs.length} operations`
+    const summaryParts: string[] = []
+    summaryParts.push(`${tables.size} table${tables.size !== 1 ? "s" : ""}`)
+    if (totalCols) summaryParts.push(`${totalCols} cols`)
+    if (totalProfiled) summaryParts.push(`${totalProfiled} profiled`)
+    if (qualityIssues) summaryParts.push(`${qualityIssues} quality issue${qualityIssues !== 1 ? "s" : ""}`)
+    if (lineageCount) summaryParts.push(`${lineageCount} with lineage`)
+    const summary = allDone ? summaryParts.join(" · ") : `${group.msgs.length} operations`
 
     return (
       <div key={group.id} className="mx-12 my-1">
