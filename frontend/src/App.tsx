@@ -16,6 +16,7 @@ type View = "list" | "detail" | "admin" | "create"
 interface DetailState {
   spaceId: string
   displayName: string
+  spaceUrl?: string
 }
 
 export default function App() {
@@ -23,8 +24,8 @@ export default function App() {
   const [currentView, setCurrentView] = useState<View>("list")
   const [detailState, setDetailState] = useState<DetailState | null>(null)
 
-  const handleSelectSpace = (spaceId: string, displayName: string) => {
-    setDetailState({ spaceId, displayName })
+  const handleSelectSpace = (spaceId: string, displayName: string, spaceUrl?: string) => {
+    setDetailState({ spaceId, displayName, spaceUrl })
     setCurrentView("detail")
   }
 
@@ -107,6 +108,7 @@ export default function App() {
           <SpaceDetail
             spaceId={detailState.spaceId}
             displayName={detailState.displayName}
+            spaceUrl={detailState.spaceUrl}
             onBack={handleBack}
           />
         )}

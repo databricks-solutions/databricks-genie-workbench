@@ -8,7 +8,7 @@ import { getScoreHex } from "@/lib/utils"
 import type { SpaceListItem, ScanResult } from "@/types"
 
 interface SpaceListProps {
-  onSelectSpace: (spaceId: string, displayName: string) => void
+  onSelectSpace: (spaceId: string, displayName: string, spaceUrl?: string) => void
   onCreateSpace?: () => void
 }
 
@@ -205,7 +205,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
           {spaces.map(space => (
             <div
               key={space.space_id}
-              onClick={() => onSelectSpace(space.space_id, space.display_name)}
+              onClick={() => onSelectSpace(space.space_id, space.display_name, space.space_url ?? undefined)}
               className="group bg-surface border border-default rounded-xl p-4 hover:border-accent/40 hover:bg-surface-secondary/50 cursor-pointer transition-all"
             >
               <div className="flex items-start gap-3">
