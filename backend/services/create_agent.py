@@ -13,7 +13,7 @@ from backend.services.llm_utils import get_llm_model
 from backend.services.auth import get_workspace_client
 from backend.services.create_agent_session import AgentSession
 from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call
-from backend.prompts import get_create_agent_system_prompt
+from backend.prompts_create import assemble_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +25,13 @@ class CreateGenieAgent:
 
     def __init__(self):
         self.model = get_llm_model()
-        self._system_prompt: str | None = None
+        self._schema_content: str | None = None
 
-    def _get_system_prompt(self) -> str:
-        if self._system_prompt is None:
+    def _get_schema_content(self) -> str:
+        if self._schema_content is None:
             schema_path = Path(__file__).parent.parent / "references" / "schema.md"
-            schema_content = schema_path.read_text()
-            self._system_prompt = get_create_agent_system_prompt(schema_content)
-        return self._system_prompt
+            self._schema_content = schema_path.read_text()
+        return self._schema_content
 
     async def chat(
         self,
@@ -177,7 +176,8 @@ class CreateGenieAgent:
         # This happens when the user clicks "stop" while tools are running.
         self._heal_orphaned_tool_calls(session)
 
-        messages: list[dict] = [{"role": "system", "content": self._get_system_prompt()}]
+        prompt = assemble_system_prompt(session, self._get_schema_content())
+        messages: list[dict] = [{"role": "system", "content": prompt}]
 
         # Build a lookup from tool_call_id → tool_name for annotating results
         tc_id_to_name: dict[str, str] = {}
