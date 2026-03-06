@@ -450,11 +450,38 @@ TOOL_DEFINITIONS = [
                 "Present a structured plan for the user to review BEFORE generating the config. "
                 "The frontend renders this as collapsible sections mirroring the Genie Space UI tabs. "
                 "Call this after the business logic checkpoint — the user must approve the plan before "
-                "you call generate_config. Use the SAME parameter shapes as generate_config."
+                "you call generate_config. Parameters are IDENTICAL to generate_config so the plan "
+                "is a 1:1 preview of what will be created."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "tables": {
+                        "type": "array",
+                        "description": "Tables to include in the space",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "identifier": {"type": "string", "description": "catalog.schema.table"},
+                                "description": {"type": "string", "description": "Space-scoped table description"},
+                                "column_configs": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "column_name": {"type": "string"},
+                                            "description": {"type": "string"},
+                                            "synonyms": {"type": "array", "items": {"type": "string"}},
+                                            "exclude": {"type": "boolean"},
+                                            "enable_matching": {"type": "boolean", "description": "Enable entity matching + format assistance"},
+                                        },
+                                        "required": ["column_name"],
+                                    },
+                                },
+                            },
+                            "required": ["identifier"],
+                        },
+                    },
                     "sample_questions": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -464,29 +491,45 @@ TOOL_DEFINITIONS = [
                         "type": "array",
                         "items": {"type": "string"},
                         "description": (
-                            "Business rules injected into Genie's LLM prompt. Focus on: "
-                            "terminology definitions, default assumptions, fiscal calendar, "
-                            "data quality warnings, cross-table business logic. "
+                            "Business rules injected into Genie's LLM prompt. Keep each instruction concise. "
+                            "Focus on: terminology definitions ('revenue' means net after discounts), "
+                            "default assumptions (default to current year when unspecified), "
+                            "fiscal calendar rules, data quality warnings, and cross-table business logic. "
+                            "Do NOT duplicate what's already in measures, filters, expressions, or joins. "
                             "Include any business rules the user explicitly stated."
                         ),
                     },
-                    "joins": {
+                    "example_sqls": {
                         "type": "array",
-                        "description": "Table join specifications with relationship cardinality",
+                        "minItems": 3,
+                        "description": (
+                            "At least 3 complex example question-SQL pairs that teach Genie how to write SQL "
+                            "(few-shot learning). Keep each SQL query concise. "
+                            "Make them non-trivial: multi-join, aggregations with "
+                            "filters, date ranges, CASE expressions, etc."
+                        ),
                         "items": {
                             "type": "object",
                             "properties": {
-                                "left_table": {"type": "string"},
-                                "right_table": {"type": "string"},
-                                "left_column": {"type": "string"},
-                                "right_column": {"type": "string"},
-                                "relationship": {
-                                    "type": "string",
-                                    "enum": ["one-to-one", "one-to-many", "many-to-one", "many-to-many"],
-                                    "description": "Cardinality of the join relationship",
+                                "question": {"type": "string"},
+                                "sql": {"type": "string", "description": "The full SQL query as a single string. Use :param_name for parameterized values."},
+                                "usage_guidance": {"type": "string"},
+                                "parameters": {
+                                    "type": "array",
+                                    "description": "Parameters for parameterized SQL (using :param_name in the query).",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": {"type": "string"},
+                                            "type_hint": {"type": "string", "enum": ["STRING", "NUMBER", "DATE", "BOOLEAN"]},
+                                            "description": {"type": "string"},
+                                            "default_value": {"type": "string"},
+                                        },
+                                        "required": ["name", "type_hint", "default_value"],
+                                    },
                                 },
                             },
-                            "required": ["left_table", "right_table", "left_column", "right_column", "relationship"],
+                            "required": ["question", "sql"],
                         },
                     },
                     "measures": {
@@ -494,14 +537,14 @@ TOOL_DEFINITIONS = [
                         "items": {
                             "type": "object",
                             "properties": {
-                                "alias": {"type": "string", "description": "SQL alias for the measure"},
+                                "alias": {"type": "string"},
                                 "display_name": {"type": "string"},
-                                "sql": {"type": "string"},
+                                "sql": {"type": "string", "description": "Aggregate SQL expression, e.g. SUM(orders.amount)"},
                                 "synonyms": {"type": "array", "items": {"type": "string"}},
                                 "instruction": {"type": "string"},
                                 "comment": {"type": "string"},
                             },
-                            "required": ["alias", "display_name", "sql"],
+                            "required": ["alias", "sql"],
                         },
                     },
                     "filters": {
@@ -510,7 +553,7 @@ TOOL_DEFINITIONS = [
                             "type": "object",
                             "properties": {
                                 "display_name": {"type": "string"},
-                                "sql": {"type": "string"},
+                                "sql": {"type": "string", "description": "Boolean condition WITHOUT the WHERE keyword"},
                                 "synonyms": {"type": "array", "items": {"type": "string"}},
                                 "instruction": {"type": "string"},
                                 "comment": {"type": "string"},
@@ -523,51 +566,75 @@ TOOL_DEFINITIONS = [
                         "items": {
                             "type": "object",
                             "properties": {
-                                "alias": {"type": "string", "description": "SQL alias for the expression"},
+                                "alias": {"type": "string"},
                                 "display_name": {"type": "string"},
-                                "sql": {"type": "string"},
+                                "sql": {"type": "string", "description": "Dimension SQL expression, e.g. YEAR(orders.order_date)"},
                                 "synonyms": {"type": "array", "items": {"type": "string"}},
                                 "instruction": {"type": "string"},
                                 "comment": {"type": "string"},
                             },
-                            "required": ["alias", "display_name", "sql"],
+                            "required": ["alias", "sql"],
                         },
                     },
-                    "example_sqls": {
+                    "join_specs": {
                         "type": "array",
-                        "minItems": 3,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "left_table": {"type": "string", "description": "Fully qualified left table"},
+                                "left_alias": {"type": "string"},
+                                "right_table": {"type": "string", "description": "Fully qualified right table"},
+                                "right_alias": {"type": "string"},
+                                "left_column": {"type": "string"},
+                                "right_column": {"type": "string"},
+                                "relationship": {
+                                    "type": "string",
+                                    "enum": ["MANY_TO_ONE", "ONE_TO_MANY", "ONE_TO_ONE", "MANY_TO_MANY"],
+                                },
+                                "instruction": {"type": "string", "description": "When Genie should use this join"},
+                                "comment": {"type": "string", "description": "Description of the relationship"},
+                            },
+                            "required": ["left_table", "left_alias", "right_table", "right_alias", "left_column", "right_column", "relationship"],
+                        },
+                    },
+                    "benchmarks": {
+                        "type": "array",
                         "description": (
-                            "REQUIRED — at least 3 complex example question-SQL pairs that teach Genie "
-                            "how to write SQL (few-shot learning). Make them non-trivial: multi-join, "
-                            "aggregations with filters, date ranges, CASE expressions, etc. "
-                            "Simple SELECT * examples are not useful."
+                            "10 benchmark question-SQL pairs for evaluating Genie accuracy. "
+                            "These are TEST questions — separate from sample_questions and example_sqls. "
+                            "Each must have question + expected_sql."
                         ),
                         "items": {
                             "type": "object",
                             "properties": {
                                 "question": {"type": "string"},
-                                "sql": {"type": "string"},
+                                "expected_sql": {"type": "string"},
                             },
-                            "required": ["question", "sql"],
+                            "required": ["question", "expected_sql"],
                         },
                     },
-                    "benchmarks": {
+                    "metric_views": {
                         "type": "array",
-                        "minItems": 10,
-                        "description": (
-                            "REQUIRED — exactly 10 benchmark questions with expected SQL for evaluating "
-                            "Genie accuracy post-creation. These are TEST questions — separate from "
-                            "sample_questions (UI suggestions) and example_sqls (few-shot instructions). "
-                            "Include varied phrasings and different complexity levels. "
-                            "Each must have question + expected_sql. NEVER pass an empty array."
-                        ),
+                        "description": "Optional metric views to include. Only add if discover_tables found metric views in the schema.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "question": {"type": "string", "description": "The benchmark test question"},
-                                "expected_sql": {"type": "string", "description": "SQL query that produces the correct answer"},
+                                "identifier": {"type": "string", "description": "catalog.schema.metric_view_name"},
+                                "description": {"type": "string"},
+                                "column_configs": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "column_name": {"type": "string"},
+                                            "description": {"type": "string"},
+                                            "enable_format_assistance": {"type": "boolean"},
+                                        },
+                                        "required": ["column_name"],
+                                    },
+                                },
                             },
-                            "required": ["question", "expected_sql"],
+                            "required": ["identifier"],
                         },
                     },
                 },
@@ -727,8 +794,8 @@ TOOL_DEFINITIONS = [
                                 "right_alias": {"type": "string", "description": "Alias for right table (for add_join — defaults to table short name)"},
                                 "relationship": {
                                     "type": "string",
-                                    "enum": ["one-to-one", "one-to-many", "many-to-one", "many-to-many"],
-                                    "description": "Join cardinality (for add_join, defaults to one-to-many)",
+                                    "enum": ["MANY_TO_ONE", "ONE_TO_MANY", "ONE_TO_ONE", "MANY_TO_MANY"],
+                                    "description": "Join cardinality (for add_join, defaults to ONE_TO_MANY)",
                                 },
                                 "display_name": {"type": "string", "description": "Display name (for add_measure, add_filter, add_expression)"},
                                 "alias": {"type": "string", "description": "SQL alias (for add_expression, remove_expression)"},
@@ -790,16 +857,22 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
     except TypeError as e:
         err_msg = str(e)
         logger.exception(f"Tool {name} failed with TypeError")
-        if name == "generate_config" and "missing" in err_msg:
-            return {
-                "error": err_msg,
-                "hint": (
-                    "generate_config requires 'tables' and 'sample_questions'. "
-                    "For post-creation changes, use update_config instead. "
-                    "If unsure about parameter shapes, call get_config_schema."
-                ),
-            }
-        return {"error": err_msg}
+        hint = (
+            "If unsure about parameter shapes, call get_config_schema. "
+            f"Received arguments: {list(arguments.keys())}"
+        )
+        if name == "generate_config":
+            hint = (
+                "generate_config requires 'tables'. "
+                "For post-creation changes, use update_config instead. " + hint
+            )
+        elif name == "present_plan":
+            hint = (
+                "present_plan accepts the same parameters as generate_config: "
+                "tables, sample_questions, text_instructions, example_sqls, "
+                "join_specs, measures, filters, expressions, benchmarks. " + hint
+            )
+        return {"error": err_msg, "hint": hint}
     except Exception as e:
         logger.exception(f"Tool {name} failed")
         return {"error": str(e)}
@@ -1661,26 +1734,35 @@ def _get_config_schema() -> dict:
 
 
 def _present_plan(
-    sample_questions: list[str],
+    tables: list[dict] | None = None,
+    sample_questions: list[str] | None = None,
     text_instructions: list[str] | None = None,
-    joins: list[dict] | None = None,
+    example_sqls: list[dict] | None = None,
     measures: list[dict] | None = None,
     filters: list[dict] | None = None,
     expressions: list[dict] | None = None,
-    example_sqls: list[dict] | None = None,
+    join_specs: list[dict] | None = None,
     benchmarks: list[dict] | None = None,
+    metric_views: list[dict] | None = None,
 ) -> dict:
-    """Pass structured plan data through for frontend rendering."""
+    """Pass structured plan data through for frontend rendering.
+
+    Parameters are identical to generate_config so the plan is
+    a 1:1 preview of the config that will be created.
+    """
     sections: dict[str, Any] = {}
 
+    sections["tables"] = tables or []
     sections["sample_questions"] = sample_questions or []
     sections["text_instructions"] = text_instructions or []
-    sections["joins"] = joins or []
+    sections["example_sqls"] = example_sqls or []
     sections["measures"] = measures or []
     sections["filters"] = filters or []
     sections["expressions"] = expressions or []
-    sections["example_sqls"] = example_sqls or []
+    sections["join_specs"] = join_specs or []
     sections["benchmarks"] = benchmarks or []
+    if metric_views:
+        sections["metric_views"] = metric_views
 
     total = sum(len(v) for v in sections.values() if isinstance(v, list))
     warnings = []
@@ -2184,7 +2266,7 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
             rt_table = act.get("right_table", "")
             lc = act.get("left_column", "")
             rc = act.get("right_column", "")
-            rel = act.get("relationship", "one-to-many")
+            rel = act.get("relationship", "ONE_TO_MANY")
             if not all([lt, rt_table, lc, rc]):
                 applied.append("Skipped add_join — left_table, right_table, left_column, right_column required")
                 continue
@@ -2327,8 +2409,10 @@ _SIZE_CHECK_FIELDS = {"description", "content", "question", "sql", "instruction"
 _GUIDANCE_FIELDS = {"comment", "instruction", "usage_guidance"}
 
 
-def _validate_config(config: dict) -> dict:
+def _validate_config(config: dict | None = None) -> dict:
     """Validate a serialized_space config. Returns errors and warnings."""
+    if not config:
+        return {"error": "No config to validate — call generate_config first"}
     errors = []
     warnings = []
 
@@ -2369,11 +2453,16 @@ def _validate_config(config: dict) -> dict:
             ccs = tbl.get("column_configs", [])
             if ccs:
                 _check_sorted(ccs, lambda x: x.get("column_name", ""), "column_name", f"data_sources.tables[{i}].column_configs", error)
-            for cc in ccs:
+            for j, cc in enumerate(ccs):
                 key = (ident, cc.get("column_name", ""))
                 if key in col_keys:
                     error(f"data_sources.tables[{i}].column_configs", f"Duplicate column config: {key}")
                 col_keys.add(key)
+                if cc.get("enable_entity_matching") and not cc.get("enable_format_assistance"):
+                    error(
+                        f"data_sources.tables[{i}].column_configs[{j}]",
+                        f"enable_entity_matching requires enable_format_assistance to be true (column: {cc.get('column_name', '')})"
+                    )
 
     # metric_views
     mvs = config.get("data_sources", {}).get("metric_views", [])
@@ -2398,6 +2487,9 @@ def _validate_config(config: dict) -> dict:
             sql = eq.get("sql", [])
             if not sql:
                 error(f"instructions.example_question_sqls[{i}].sql", "SQL must not be empty")
+            params = eq.get("parameters", [])
+            if params:
+                _check_sorted(params, lambda x: x.get("name", ""), "name", f"instructions.example_question_sqls[{i}].parameters", error)
 
     # sql_functions
     sfs = config.get("instructions", {}).get("sql_functions", [])
@@ -2410,8 +2502,10 @@ def _validate_config(config: dict) -> dict:
         _check_sorted(jss, lambda x: x.get("id", ""), "id", "instructions.join_specs", error)
         for i, js in enumerate(jss):
             sql = js.get("sql", [])
-            if not any(isinstance(s, str) and s.startswith("--rt=") for s in sql):
-                error(f"instructions.join_specs[{i}].sql", "Missing --rt= relationship type annotation")
+            if not sql or (isinstance(sql, list) and not any(isinstance(s, str) and s.strip() for s in sql)):
+                error(f"instructions.join_specs[{i}].sql", "Join condition SQL must not be empty")
+            elif not any(isinstance(s, str) and s.startswith("--rt=") for s in sql):
+                error(f"instructions.join_specs[{i}].sql", "Missing --rt=FROM_RELATIONSHIP_TYPE_...-- annotation (API rejects without it)")
 
     # sql_snippets
     snippets = config.get("instructions", {}).get("sql_snippets", {})
@@ -2558,12 +2652,14 @@ def _check_sorted(items: list, key_fn, key_name: str, path: str, error_fn) -> No
 
 
 @mlflow.trace(name="create_space", span_type=SpanType.TOOL)
-def _create_space(display_name: str, config: dict, parent_path: str | None = None) -> dict:
+def _create_space(display_name: str, config: dict | None = None, parent_path: str | None = None) -> dict:
     """Create the Genie space via the API.
 
     Path resolution is automatic: configured directory -> /Shared/.
     On permission errors the next candidate is tried transparently.
     """
+    if not config:
+        return {"success": False, "error": "No config provided — call generate_config first"}
     try:
         result = create_genie_space(
             display_name=display_name,
@@ -2585,8 +2681,10 @@ def _create_space(display_name: str, config: dict, parent_path: str | None = Non
 
 
 @mlflow.trace(name="update_space", span_type=SpanType.TOOL)
-def _update_space(space_id: str, config: dict) -> dict:
+def _update_space(space_id: str, config: dict | None = None) -> dict:
     """Update an existing Genie space with a new configuration."""
+    if not config:
+        return {"success": False, "error": "No config provided — call generate_config first"}
     try:
         from backend.services.auth import get_workspace_client, get_databricks_host
         from backend.genie_creator import _enforce_constraints, _clean_config

@@ -149,7 +149,7 @@ function currentStep(p: BuildProgress): number {
 interface EditablePlan {
   sample_questions: string[]
   text_instructions: string
-  joins: Record<string, string>[]
+  join_specs: Record<string, string>[]
   measures: Record<string, string>[]
   filters: Record<string, string>[]
   expressions: Record<string, string>[]
@@ -163,7 +163,7 @@ function planFromResult(result: Record<string, unknown>): EditablePlan {
   return {
     sample_questions: [...((s.sample_questions as string[]) || [])],
     text_instructions: tiArr.join("\n"),
-    joins: ((s.joins as Record<string, string>[]) || []).map((j) => ({ ...j })),
+    join_specs: (((s.join_specs || s.joins) as Record<string, string>[]) || []).map((j) => ({ ...j })),
     measures: ((s.measures as Record<string, string>[]) || []).map((m) => ({ ...m })),
     filters: ((s.filters as Record<string, string>[]) || []).map((f) => ({ ...f })),
     expressions: ((s.expressions as Record<string, string>[]) || []).map((e) => ({ ...e })),
@@ -223,6 +223,11 @@ function loadState(): PersistedState | null {
     // Migrate text_instructions from string[] to single string
     if (parsed.editedPlan && Array.isArray((parsed.editedPlan as any).text_instructions)) {
       parsed.editedPlan.text_instructions = ((parsed.editedPlan as any).text_instructions as string[]).join("\n")
+    }
+    // Migrate joins → join_specs
+    if (parsed.editedPlan && (parsed.editedPlan as any).joins && !parsed.editedPlan.join_specs) {
+      parsed.editedPlan.join_specs = (parsed.editedPlan as any).joins
+      delete (parsed.editedPlan as any).joins
     }
     // Reconstruct editedPlan from messages if missing
     if (!parsed.editedPlan && parsed.messages) {
@@ -499,7 +504,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                 filters: plan.filters.length,
                 expressions: plan.expressions.length,
                 exampleSqls: plan.example_sqls.length,
-                joins: plan.joins.length,
+                joins: plan.join_specs.length,
                 textInstruction: plan.text_instructions.trim().length > 0,
               },
             }))
@@ -1268,7 +1273,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     const PLAN_SECTIONS: { key: string; label: string; description: string; Icon: typeof MessageSquare; count: number }[] = [
       { key: "sample_questions", label: "Sample Questions", description: "Click-to-ask suggestions shown to users in the Genie Space UI", Icon: MessageSquare, count: plan.sample_questions.length },
       { key: "text_instructions", label: "Text Instructions", description: "Business rules and domain context that guide how Genie interprets questions", Icon: FileText, count: plan.text_instructions.trim() ? 1 : 0 },
-      { key: "joins", label: "Joins", description: "Table relationships so Genie can combine data across tables", Icon: Link2, count: plan.joins.length },
+      { key: "join_specs", label: "Joins", description: "Table relationships so Genie can combine data across tables", Icon: Link2, count: plan.join_specs.length },
       { key: "sql_expressions", label: "SQL Expressions", description: "Reusable measures, filters, and dimensions for common calculations", Icon: Code2, count: sqlExpressionCount },
       { key: "example_sqls", label: "Example SQL Queries", description: "Question-SQL pairs that teach Genie how to write correct queries", Icon: ListChecks, count: plan.example_sqls.length },
       { key: "benchmarks", label: "Benchmark Questions", description: "Test questions with expected SQL to evaluate Genie accuracy after creation", Icon: BarChart3, count: (plan.benchmarks || []).length },
@@ -1286,7 +1291,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       ...plan.expressions.map((e, i) => ({ ...e, _type: "dimension" as const, _key: "expressions" as keyof EditablePlan, _idx: i })),
     ]
 
-    const totalItems = plan.sample_questions.length + (plan.benchmarks || []).length + (plan.text_instructions.trim() ? 1 : 0) + plan.joins.length + sqlExpressionCount + plan.example_sqls.length
+    const totalItems = plan.sample_questions.length + (plan.benchmarks || []).length + (plan.text_instructions.trim() ? 1 : 0) + plan.join_specs.length + sqlExpressionCount + plan.example_sqls.length
 
     const isEditing = (itemKey: string) => editingPlanItem === itemKey
     const startEdit = (itemKey: string) => setEditingPlanItem(itemKey)
@@ -1431,7 +1436,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                     )}
 
                     {/* Joins (read-only — complex structure) */}
-                    {sec.key === "joins" && (
+                    {sec.key === "join_specs" && (
                       <div className="overflow-x-auto">
                         <table className="w-full text-left">
                           <thead>
@@ -1443,7 +1448,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                             </tr>
                           </thead>
                           <tbody>
-                            {plan.joins.map((j, i) => {
+                            {plan.join_specs.map((j, i) => {
                               const leftShort = (j.left_table || "").split(".").pop() || j.left_table
                               const rightShort = (j.right_table || "").split(".").pop() || j.right_table
                               const rel = j.relationship || "—"

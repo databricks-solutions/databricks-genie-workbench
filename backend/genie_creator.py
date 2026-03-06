@@ -48,6 +48,8 @@ _SORT_REQUIREMENTS = {
     "column_configs": ("column_name",),
     # Sort by (id, identifier) tuple
     "sql_functions": ("id", "identifier"),
+    # Sort by 'name'
+    "parameters": ("name",),
 }
 
 

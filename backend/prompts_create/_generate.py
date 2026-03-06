@@ -31,8 +31,8 @@ After creation, present the result with column-level detail:
 > [Open in Databricks →](link)
 >
 > **What's configured:**
-> - 3 tables, 7 example SQL pairs, 4 measures, 2 filters
-> - 8 text instructions, 5 benchmark questions
+> - 3 tables, 7 example SQL pairs, 4 measures, 2 filters, 3 expressions
+> - 2 join specs, 8 text instructions, 5 benchmark questions
 > - Format assistance & entity matching: ON for all non-excluded columns
 > - Excluded: `_etl_loaded_at`, `_dlt_id` (ETL metadata)
 >

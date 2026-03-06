@@ -1,6 +1,6 @@
 # Databricks Genie Space Configuration Schema
 
-This document describes the serialized Genie Space JSON schema used by the Genie Conversation API. It is aligned with the [official Databricks doc](https://docs.databricks.com/aws/en/genie/conversation-api#create-or-select-a-genie-space). Last verified on 2026-02-18.
+This document describes the serialized Genie Space JSON schema used by the Genie Conversation API. It is aligned with the [official Databricks doc](https://docs.databricks.com/aws/en/genie/conversation-api#create-or-select-a-genie-space). Last verified on 2026-03-06.
 
 ## Root Structure
 
@@ -97,9 +97,9 @@ When calling the create/update APIs, this object is passed as an escaped JSON st
       {
         "id": "01f0b37c378e1c9100000000000000a1",
         "content": [
-          "When calculating revenue, sum the order_amount column.",
-          "When asked about last month, use the previous calendar month.",
-          "Round all monetary values to 2 decimal places."
+          "When calculating revenue, sum the order_amount column.\n",
+          "When asked about last month, use the previous calendar month.\n",
+          "Round all monetary values to 2 decimal places.\n"
         ]
       }
     ],
@@ -150,7 +150,8 @@ When calling the create/update APIs, this object is passed as an escaped JSON st
     "sql_functions": [
       {
         "id": "01f0c0b4e815100000000000000000f1",
-        "identifier": "sales.analytics.fiscal_quarter"
+        "identifier": "sales.analytics.fiscal_quarter",
+        "description": "Calculates the fiscal quarter from a date"
       }
     ],
     "join_specs": [
@@ -164,7 +165,10 @@ When calling the create/update APIs, this object is passed as an escaped JSON st
           "identifier": "sales.analytics.customers",
           "alias": "customers"
         },
-        "sql": ["orders.customer_id = customers.customer_id"],
+        "sql": [
+          "`orders`.`customer_id` = `customers`.`customer_id`",
+          "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"
+        ],
         "comment": ["Join orders to customers on customer_id."],
         "instruction": ["Use this join when customer attributes are required for order analysis."]
       }
@@ -267,6 +271,10 @@ The API rejects unsorted arrays.
 
 - Use schema version `2` for new spaces.
 - Table identifiers must use three-level namespace format (`catalog.schema.table`).
+- `text_instructions[].content`: The API concatenates array elements without separators — each element **must end with `\n`** to avoid jammed text.
+- `join_specs[].sql`: Requires exactly **two elements** — (1) backtick-quoted join condition (e.g., `` `orders`.`customer_id` = `customers`.`customer_id` ``), (2) relationship type annotation (e.g., `"--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"`). **Without the `--rt=` annotation, the API rejects the request** with a protobuf parsing error.
+- `sql_snippets`: Column references must be table-qualified (`table_alias.column_name`). Filters must NOT include the `WHERE` keyword.
 - `benchmarks.questions[].answer` must contain exactly one item, and its `format` must be `"SQL"`.
 - SQL snippets: filter, expression, and measure `sql` fields must not be empty.
+- `sql_functions[].description`: Plain string (not an array) describing what the function does.
 - Databricks guidance recommends at least 5 tested `example_question_sqls` and at least 5 benchmark questions.

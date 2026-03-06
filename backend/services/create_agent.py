@@ -476,8 +476,8 @@ class CreateGenieAgent:
         """Backfill missing generate_config arguments from session history.
 
         Scans for describe_table results (tables + columns) and the most
-        recent present_plan result (sample_questions, text_instructions,
-        example_sqls, joins, measures, filters, expressions, benchmarks).
+        recent present_plan result (tables, sample_questions, text_instructions,
+        example_sqls, join_specs, measures, filters, expressions, benchmarks, metric_views).
 
         Mutates tool_args in-place and returns the list of keys that were injected.
         """
@@ -527,14 +527,16 @@ class CreateGenieAgent:
 
         if plan_sections:
             mapping = {
+                "tables": "tables",
                 "sample_questions": "sample_questions",
                 "text_instructions": "text_instructions",
                 "example_sqls": "example_sqls",
-                "joins": "join_specs",
+                "join_specs": "join_specs",
                 "measures": "measures",
                 "filters": "filters",
                 "expressions": "expressions",
                 "benchmarks": "benchmarks",
+                "metric_views": "metric_views",
             }
             for plan_key, arg_key in mapping.items():
                 if arg_key not in tool_args:

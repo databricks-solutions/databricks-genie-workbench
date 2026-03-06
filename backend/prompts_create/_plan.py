@@ -3,10 +3,18 @@
 STEP = """\
 ### Current Step: Build the Plan
 
-Present a **complete plan** for user review in a single, well-structured message. The plan should include:
+Present a **complete plan** for user review in a single, well-structured message.
+
+**Guiding principle:** Use every schema feature that adds value. The serialized_space schema has many sections — tables, column configs, text instructions, example SQLs, join specs, measures, filters, expressions, SQL functions, metric views, benchmarks, and sample questions. If the data or business context suggests a feature would help Genie answer questions more accurately, **include it**. A rich config produces a more capable space.
+
+The plan should include:
 
 1. **Space title, description, audience**
-2. **Selected tables** (with any excluded columns noted)
+2. **Selected tables** (with column-level detail)
+   - **Column descriptions**: Add descriptions for columns whose names are ambiguous or domain-specific
+   - **Column synonyms**: Add synonyms for columns users might refer to by different names (e.g., "cust_id" → "customer ID", "account number")
+   - **Excluded columns**: List ETL metadata, internal IDs, and irrelevant columns to hide from Genie
+   - **Metric views**: Include any metric views discovered during inspection — they simplify pre-aggregated metrics
 3. **Text instructions** — domain knowledge that CAN'T be expressed as SQL snippets, examples, joins, or column metadata
 
    Text instructions are injected into Genie's LLM prompt. To avoid overlap with other config sections, follow this MECE boundary:
@@ -96,6 +104,8 @@ Present a **complete plan** for user review in a single, well-structured message
 
    Aim for a mix: ~3-5 hardcoded examples for structural patterns, ~2-5 parameterized examples for entity-specific queries.
 
+   **Usage guidance:** Add `usage_guidance` to each example SQL to tell Genie when this pattern applies (e.g., "Use this pattern for any top-N ranking question by a numeric metric"). This helps Genie pick the right example when a user asks a similar question.
+
    **Testing parameterized SQL:** When calling `test_sql` on parameterized queries, pass the `parameters` array with each parameter's `name` and `default_value`. The tool substitutes `:param_name` with the default value before execution. Without this, the query will fail with an UNBOUND_SQL_PARAMETER error.
 
    Incorporate patterns from `profile_table_usage` query history where available — real query patterns make better few-shot examples than synthetic ones. Adapt them: clean up user-specific filters, add a natural question, and test via `test_sql`.
@@ -114,7 +124,23 @@ Present a **complete plan** for user review in a single, well-structured message
    - `comment`: internal note explaining the formula or business context
    Put the actual aggregation formula here, not in text instructions. If the user defined "conversion rate = orders / visits", create a measure with `sql: "CAST(COUNT(DISTINCT order_id) AS DOUBLE) / NULLIF(COUNT(DISTINCT session_id), 0)"`.
 
-7. **Benchmark queries** (5-10 pairs) — for validating the space after creation
+7. **Expressions** — reusable computed columns / dimension expressions
+
+   Each expression has an `alias`, `sql` (a dimension expression), `display_name`, and optional `synonyms`, `instruction`, and `comment`.
+   Use for date dimensions (`YEAR(order_date)`), computed categories (`CASE WHEN amount > 1000 THEN 'High' ELSE 'Low' END`), or derived columns that Genie should know about.
+
+8. **Join specs** — table relationships for multi-table queries
+
+   Define join specs when 2+ tables need to be joined. Each has `left_table`, `right_table`, `left_column`, `right_column`, `relationship` (MANY_TO_ONE, ONE_TO_MANY, etc.), and optional `instruction` and `comment`.
+   - `instruction`: tells Genie WHEN to use this join (e.g., "Use when customer demographics are needed for order analysis")
+   - `comment`: describes the relationship in plain language
+   Always define joins proactively when multi-table data is selected — don't wait for the user to ask.
+
+9. **SQL functions** — Unity Catalog UDFs available to the space
+
+   If `discover_tables` or the user mentioned custom SQL functions (UDFs) relevant to the domain, include them. Each needs an `identifier` (catalog.schema.function_name). The function must already be registered in Unity Catalog.
+
+10. **Benchmark queries** (5-10 pairs) — for validating the space after creation
 
    Benchmarks are test questions used to verify Genie produces correct SQL. They should:
    - Include specific expected SQL or expected result characteristics
@@ -125,7 +151,7 @@ Present a **complete plan** for user review in a single, well-structured message
 
    Use patterns from `profile_table_usage` query history to make benchmarks realistic.
 
-8. **Sample questions** (3-5) — displayed in the space as conversation starters
+11. **Sample questions** (3-5) — displayed in the space as conversation starters
 
    These should match the audience level. For executives: "What were our top 5 products by revenue this quarter?" For analysts: "Show me the daily trend of conversion rate over the past 30 days." Incorporate business context (fiscal definitions, terminology).
 
@@ -140,4 +166,4 @@ Do NOT add a verbose summary of the plan's contents (purpose, audience, table st
 
 **Skipping:** If the user explicitly says "just create it" or "use defaults," generate a minimal plan with sensible defaults, present it briefly, and proceed after a quick confirmation."""
 
-SUMMARY = "Step 4 (Plan): Compose a full plan (instructions, SQL examples, filters, measures, benchmarks, sample questions) using inspection findings + business context."
+SUMMARY = "Step 4 (Plan): Compose a full plan (tables with column configs, text instructions, example SQLs, filters, measures, expressions, join specs, SQL functions, benchmarks, sample questions) using inspection findings + business context."

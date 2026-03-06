@@ -101,7 +101,7 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
       {
         "id": "e5f6a7b8c9d00000000000000000000e",
         "identifier": "catalog.schema.fiscal_quarter",
-        "description": "Calculates the fiscal quarter from a date"
+        "description": "Calculates the fiscal quarter from a date (fiscal year starts April 1)"
       }
     ],
     "join_specs": [
@@ -195,11 +195,11 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
 - `sql` fields: string arrays, each clause on a separate element with `\n` suffix
 - `sql_snippets` require table-qualified column references: `table_alias.column_name`
 - Filters must NOT include `WHERE` keyword — only the boolean condition
-- `join_specs.sql`: exactly TWO elements — (1) backtick-quoted condition `\`alias\`.\`col\`` (2) `--rt=FROM_RELATIONSHIP_TYPE_...--`
+- `join_specs.sql`: exactly **TWO elements** — (1) backtick-quoted condition `` `alias`.`col` = `alias`.`col` `` (2) `--rt=FROM_RELATIONSHIP_TYPE_...--` relationship annotation. **Without the `--rt=` annotation the API rejects the request** with a protobuf parsing error.
 
 ### Size limits
 - `version`: Required. Must be `2`.
-- `text_instructions`: Max **1** entry per space. Each content element must end with `\n`.
+- `text_instructions`: Max **1** entry per space. Each content element **must end with `\n`** (the API concatenates without separators — omitting `\n` jams text together).
 - Max **100** total instructions (each example SQL + each function + 1 for text block).
 - Table identifiers: three-level namespace `catalog.schema.table`.
 - Individual strings: max 25,000 characters.
