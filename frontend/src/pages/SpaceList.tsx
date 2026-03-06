@@ -2,13 +2,14 @@
  * SpaceList - Org-wide Genie Space listing with IQ scores.
  */
 import { useState, useEffect, useCallback } from "react"
-import { Star, RefreshCw, Search, LayoutGrid, AlertTriangle, Zap } from "lucide-react"
+import { Star, RefreshCw, Search, LayoutGrid, AlertTriangle, Zap, Plus, FolderOpen } from "lucide-react"
 import { listSpaces, scanSpace, toggleStar } from "@/lib/api"
 import { getScoreHex } from "@/lib/utils"
 import type { SpaceListItem, ScanResult } from "@/types"
 
 interface SpaceListProps {
   onSelectSpace: (spaceId: string, displayName: string) => void
+  onCreateSpace?: () => void
 }
 
 function MaturityBadge({ maturity }: { maturity: string | null }) {
@@ -63,7 +64,7 @@ function ScoreRing({ score }: { score: number | null }) {
   )
 }
 
-export function SpaceList({ onSelectSpace }: SpaceListProps) {
+export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
   const [spaces, setSpaces] = useState<SpaceListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -178,9 +179,29 @@ export function SpaceList({ onSelectSpace }: SpaceListProps) {
           <LayoutGrid className="w-12 h-12 mx-auto mb-4 opacity-30" />
           <p className="text-lg">No spaces found</p>
           {search && <p className="text-sm mt-1">Try a different search term</p>}
+          {onCreateSpace && (
+            <button
+              onClick={onCreateSpace}
+              className="mt-6 inline-flex items-center gap-2 px-4 py-2 rounded-lg border-2 border-dashed border-default hover:border-accent/40 hover:text-accent text-muted transition-colors"
+            >
+              <Plus className="w-5 h-5" />
+              Create Space
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {onCreateSpace && (
+            <button
+              onClick={onCreateSpace}
+              className="group bg-surface border-2 border-dashed border-default rounded-xl p-4 hover:border-accent/40 hover:bg-surface-secondary/50 cursor-pointer transition-all flex flex-col items-center justify-center gap-3 min-h-[140px]"
+            >
+              <div className="w-14 h-14 rounded-full border-2 border-default group-hover:border-accent/40 flex items-center justify-center transition-colors">
+                <Plus className="w-6 h-6 text-muted group-hover:text-accent transition-colors" />
+              </div>
+              <span className="text-sm font-semibold text-muted group-hover:text-accent transition-colors">Create Space</span>
+            </button>
+          )}
           {spaces.map(space => (
             <div
               key={space.space_id}
@@ -196,7 +217,7 @@ export function SpaceList({ onSelectSpace }: SpaceListProps) {
                     </h3>
                     <button
                       onClick={(e) => handleToggleStar(e, space)}
-                      className="opacity-0 group-hover:opacity-100 transition-opacity"
+                      className={`transition-opacity ${space.is_starred ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
                     >
                       <Star className={`w-4 h-4 ${space.is_starred ? "fill-amber-400 text-amber-400" : "text-muted hover:text-amber-400"}`} />
                     </button>
@@ -211,8 +232,14 @@ export function SpaceList({ onSelectSpace }: SpaceListProps) {
                   )}
                 </div>
               </div>
+              {space.path && (
+                <p className="text-xs text-muted mt-1.5 flex items-center gap-1">
+                  <FolderOpen className="w-3 h-3 flex-shrink-0" />
+                  <span className="break-all">{space.path}</span>
+                </p>
+              )}
               <div className="mt-3 pt-3 border-t border-default flex items-center justify-between">
-                <span className="text-xs text-muted font-mono truncate max-w-[120px]">{space.space_id}</span>
+                <span className="text-xs text-muted font-mono break-all">{space.space_id}</span>
                 <button
                   onClick={(e) => handleScan(e, space.space_id)}
                   disabled={scanning.has(space.space_id)}

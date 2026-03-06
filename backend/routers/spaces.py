@@ -7,8 +7,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 import json
 
-from backend.services.auth import get_workspace_client
-from backend.services.genie_client import list_genie_spaces
+from backend.services.auth import get_workspace_client, get_service_principal_client
+from backend.services.genie_client import list_genie_spaces, _is_scope_error
 from backend.services.lakebase import (
     get_latest_score,
     get_score_history,
@@ -45,6 +45,8 @@ async def list_spaces(
     try:
         try:
             raw_spaces = list_genie_spaces()
+            if raw_spaces:
+                logger.info(f"Sample space fields: {list(raw_spaces[0].keys())}")
         except Exception as e:
             logger.error(f"Failed to list Genie Spaces: {e}")
             raise HTTPException(status_code=500, detail="Failed to fetch Genie Spaces from Databricks")
@@ -53,8 +55,9 @@ async def list_spaces(
 
         items = []
         for space in raw_spaces:
-            space_id = space.get("id", "")
-            display_name = space.get("display_name", space_id)
+            space_id = space.get("space_id", "")
+            display_name = space.get("title", space_id)
+            path = space.get("path", None)
 
             # Filter by starred
             if starred_only and space_id not in starred_set:
@@ -83,6 +86,7 @@ async def list_spaces(
                 maturity=maturity,
                 is_starred=(space_id in starred_set),
                 last_scanned=last_scanned,
+                path=path,
             ))
 
         # Sort: starred first, then by score descending (unscanned last)
@@ -105,11 +109,25 @@ async def get_space_detail(space_id: str) -> dict:
     try:
         client = get_workspace_client()
 
-        # Fetch space metadata
-        space = client.api_client.do(
-            method="GET",
-            path=f"/api/2.0/genie/spaces/{space_id}",
-        )
+        # Fetch space metadata, with SP fallback for scope errors
+        try:
+            space = client.api_client.do(
+                method="GET",
+                path=f"/api/2.0/genie/spaces/{space_id}",
+            )
+        except Exception as e:
+            if _is_scope_error(e):
+                logger.info("OBO token lacks genie scope, retrying with service principal")
+                sp_client = get_service_principal_client()
+                if sp_client is not client:
+                    space = sp_client.api_client.do(
+                        method="GET",
+                        path=f"/api/2.0/genie/spaces/{space_id}",
+                    )
+                else:
+                    raise
+            else:
+                raise
 
         # Get latest score
         score_data = await get_latest_score(space_id)

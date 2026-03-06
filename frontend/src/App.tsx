@@ -3,7 +3,7 @@
  * Supports four top-level views: SpaceList, SpaceDetail, AdminDashboard, CreateSpace.
  */
 import { useState } from "react"
-import { LayoutGrid, BarChart2, PlusCircle } from "lucide-react"
+import { LayoutGrid, BarChart2 } from "lucide-react"
 import { ThemeToggle } from "@/components/ThemeToggle"
 import { useTheme } from "@/hooks/useTheme"
 import { SpaceList } from "@/pages/SpaceList"
@@ -91,17 +91,6 @@ export default function App() {
               <BarChart2 className="w-4 h-4" />
               Admin
             </button>
-            <button
-              onClick={handleNavCreate}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                currentView === "create"
-                  ? "bg-accent/10 text-accent"
-                  : "text-muted hover:text-secondary hover:bg-surface-secondary"
-              }`}
-            >
-              <PlusCircle className="w-4 h-4" />
-              Create Space
-            </button>
           </nav>
 
           <ThemeToggle />
@@ -111,7 +100,7 @@ export default function App() {
       {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {currentView === "list" && (
-          <SpaceList onSelectSpace={handleSelectSpace} />
+          <SpaceList onSelectSpace={handleSelectSpace} onCreateSpace={handleNavCreate} />
         )}
 
         {currentView === "detail" && detailState && (

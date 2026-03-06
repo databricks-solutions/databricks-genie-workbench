@@ -23,7 +23,7 @@ def _list_genie_spaces_safe() -> list[dict]:
 
 def _get_display_name(space_id: str, spaces_map: dict) -> str:
     """Get display name for a space ID."""
-    return spaces_map.get(space_id, {}).get("display_name", space_id)
+    return spaces_map.get(space_id, {}).get("title", space_id)
 
 
 @router.get("/dashboard")
@@ -73,7 +73,7 @@ async def get_leaderboard(top_n: int = 5) -> dict:
     """Get top and bottom N spaces by IQ score."""
     try:
         all_spaces = _list_genie_spaces_safe()
-        spaces_map = {s["id"]: s for s in all_spaces}
+        spaces_map = {s.get("space_id", ""): s for s in all_spaces}
 
         scan_summaries = await get_all_scan_summaries()
         if not scan_summaries:
@@ -104,7 +104,7 @@ async def get_alerts(score_threshold: int = 40) -> list[AlertItem]:
     """Get spaces with critical scores (below threshold)."""
     try:
         all_spaces = _list_genie_spaces_safe()
-        spaces_map = {s["id"]: s for s in all_spaces}
+        spaces_map = {s.get("space_id", ""): s for s in all_spaces}
 
         scan_summaries = await get_all_scan_summaries()
         critical = [s for s in scan_summaries if s["score"] < score_threshold]
