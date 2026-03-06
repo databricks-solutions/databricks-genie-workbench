@@ -11,9 +11,6 @@ import time
 from pathlib import Path
 from typing import AsyncGenerator, Generator
 
-import mlflow
-from mlflow.entities import SpanType
-
 from backend.services.llm_utils import get_llm_model
 from backend.services.auth import get_workspace_client
 from backend.services.create_agent_session import AgentSession
@@ -86,21 +83,6 @@ class CreateGenieAgent:
         step = detect_step(session)
         step_idx = STEP_ORDER.index(step) if step in STEP_ORDER else 0
 
-        # Start a root MLflow trace for the entire agent turn.
-        # Wrapped in try/except so tracing failures never break the app.
-        _trace = None
-        try:
-            _trace = mlflow.start_trace(
-                name="agent_chat",
-                inputs={"user_message": user_message, "session_id": session.session_id, "step": step},
-            )
-            mlflow.update_current_trace(tags={
-                "session_id": session.session_id,
-                "workflow_step": step,
-            })
-        except Exception:
-            logger.debug("MLflow start_trace failed, continuing without tracing", exc_info=True)
-
         yield {"event": "step", "data": {
             "step": step,
             "label": STEP_LABELS.get(step, step),
@@ -130,59 +112,45 @@ class CreateGenieAgent:
                 content_parts: list[str] = []
                 tool_calls_acc: dict[int, dict] = {}
 
-                with mlflow.start_span(name="llm_call", span_type=SpanType.LLM) as llm_span:
-                    llm_span.set_inputs({
-                        "model": self.model,
-                        "message_count": len(messages),
-                        "round": round_num,
-                        "session_id": session.session_id,
-                        "workflow_step": step,
-                    })
+                tool_call_signaled = False
 
-                    tool_call_signaled = False
+                async for chunk in self._async_stream_llm(messages):
+                    choices = chunk.get("choices", [])
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta", {})
 
-                    async for chunk in self._async_stream_llm(messages):
-                        choices = chunk.get("choices", [])
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta", {})
+                    if delta.get("content"):
+                        token = delta["content"]
+                        content_parts.append(token)
+                        yield {"event": "message_delta", "data": {"content": token}}
 
-                        if delta.get("content"):
-                            token = delta["content"]
-                            content_parts.append(token)
-                            yield {"event": "message_delta", "data": {"content": token}}
+                    if delta.get("tool_calls"):
+                        if not tool_call_signaled:
+                            tool_call_signaled = True
+                            yield {"event": "thinking", "data": {"message": "Planning next steps…", "step": step, "round": round_num}}
+                        for tc_delta in delta["tool_calls"]:
+                            idx = tc_delta.get("index", 0)
+                            if idx not in tool_calls_acc:
+                                fn = tc_delta.get("function", {})
+                                tool_calls_acc[idx] = {
+                                    "id": tc_delta.get("id", ""),
+                                    "type": "function",
+                                    "function": {
+                                        "name": fn.get("name", ""),
+                                        "arguments": fn.get("arguments", ""),
+                                    },
+                                }
+                            else:
+                                if tc_delta.get("id"):
+                                    tool_calls_acc[idx]["id"] = tc_delta["id"]
+                                fn = tc_delta.get("function", {})
+                                if fn.get("name"):
+                                    tool_calls_acc[idx]["function"]["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
 
-                        if delta.get("tool_calls"):
-                            if not tool_call_signaled:
-                                tool_call_signaled = True
-                                yield {"event": "thinking", "data": {"message": "Planning next steps…", "step": step, "round": round_num}}
-                            for tc_delta in delta["tool_calls"]:
-                                idx = tc_delta.get("index", 0)
-                                if idx not in tool_calls_acc:
-                                    fn = tc_delta.get("function", {})
-                                    tool_calls_acc[idx] = {
-                                        "id": tc_delta.get("id", ""),
-                                        "type": "function",
-                                        "function": {
-                                            "name": fn.get("name", ""),
-                                            "arguments": fn.get("arguments", ""),
-                                        },
-                                    }
-                                else:
-                                    if tc_delta.get("id"):
-                                        tool_calls_acc[idx]["id"] = tc_delta["id"]
-                                    fn = tc_delta.get("function", {})
-                                    if fn.get("name"):
-                                        tool_calls_acc[idx]["function"]["name"] = fn["name"]
-                                    if fn.get("arguments"):
-                                        tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
-
-                    accumulated_content = "".join(content_parts)
-                    llm_span.set_outputs({
-                        "has_tool_calls": bool(tool_calls_acc),
-                        "tool_count": len(tool_calls_acc),
-                        "response_preview": accumulated_content[:200],
-                    })
+                accumulated_content = "".join(content_parts)
 
                 if tool_calls_acc:
                     for tc in tool_calls_acc.values():
@@ -235,27 +203,16 @@ class CreateGenieAgent:
                                 session.space_config = recovered
                                 logger.info("Recovered space_config from session history for %s", tool_name)
 
-                        with mlflow.start_span(name=f"tool:{tool_name}", span_type=SpanType.TOOL) as tool_span:
-                            tool_span.set_inputs({
-                                "tool": tool_name,
-                                "args": tool_args,
-                                "session_id": session.session_id,
-                            })
-                            loop = asyncio.get_event_loop()
-                            future = loop.run_in_executor(
-                                None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
-                            )
-                            # Send heartbeats every 3s so the SSE connection stays alive
-                            while not future.done():
-                                try:
-                                    await asyncio.wait_for(asyncio.shield(future), timeout=3.0)
-                                except asyncio.TimeoutError:
-                                    yield {"event": "heartbeat", "data": {"tool": tool_name}}
-                            result = future.result()
-                            tool_span.set_outputs({
-                                "success": "error" not in result,
-                                "result_keys": list(result.keys()),
-                            })
+                        loop = asyncio.get_event_loop()
+                        future = loop.run_in_executor(
+                            None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
+                        )
+                        while not future.done():
+                            try:
+                                await asyncio.wait_for(asyncio.shield(future), timeout=3.0)
+                            except asyncio.TimeoutError:
+                                yield {"event": "heartbeat", "data": {"tool": tool_name}}
+                        result = future.result()
 
                         tools_used.append(tool_name)
 
@@ -315,17 +272,6 @@ class CreateGenieAgent:
                 "Agent turn complete: step=%s tools=%s error=%s",
                 step, tools_used, error_msg,
             )
-
-        try:
-            if _trace is not None:
-                status = "ERROR" if error_msg else "OK"
-                mlflow.end_trace(
-                    request_id=_trace.request_id,
-                    outputs={"tools_used": tools_used, "error": error_msg},
-                    status=status,
-                )
-        except Exception:
-            logger.debug("MLflow end_trace failed", exc_info=True)
 
         yield {"event": "done", "data": {}}
 
@@ -394,6 +340,12 @@ class CreateGenieAgent:
             return compressed[:cls._TOOL_RESULT_CHAR_LIMIT] + "\n...(truncated)"
         return compressed
 
+    _INSPECTION_TOOLS = frozenset({
+        "describe_table", "profile_columns", "profile_table_usage",
+        "assess_data_quality", "test_sql",
+    })
+    _POST_INSPECTION_STEPS = frozenset({"plan", "config_create", "post_creation"})
+
     def _build_messages(self, session: AgentSession) -> list[dict]:
         """Build the full message list for the LLM call.
 
@@ -405,21 +357,43 @@ class CreateGenieAgent:
         2. Tool result messages: include the ``name`` field (some endpoints need it)
         3. Orphaned tool_use blocks: if the user stopped the stream mid-tool-call,
            inject synthetic "cancelled" results so Claude doesn't reject the history
+
+        When the workflow has moved past inspection (plan step or later),
+        old inspection tool-call/result pairs are replaced with a compact
+        summary to cut context size by ~70%.
         """
-        # First, heal any orphaned tool calls in the session history.
-        # This happens when the user clicks "stop" while tools are running.
         self._heal_orphaned_tool_calls(session)
+
+        step = detect_step(session)
+        compact = step in self._POST_INSPECTION_STEPS
 
         prompt = assemble_system_prompt(session, self._get_schema_content())
         messages: list[dict] = [{"role": "system", "content": prompt}]
 
-        # Build a lookup from tool_call_id → tool_name for annotating results
         tc_id_to_name: dict[str, str] = {}
         for msg in session.history:
             if msg["role"] == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     tc_id_to_name[tc["id"]] = tc["function"]["name"]
 
+        if compact:
+            messages = self._build_compacted_messages(
+                session, messages, tc_id_to_name,
+            )
+        else:
+            messages = self._build_full_messages(
+                session, messages, tc_id_to_name,
+            )
+
+        return messages
+
+    def _build_full_messages(
+        self,
+        session: AgentSession,
+        messages: list[dict],
+        tc_id_to_name: dict[str, str],
+    ) -> list[dict]:
+        """Append all history messages with standard compression."""
         for msg in session.history:
             if msg["role"] == "tool":
                 tool_name = tc_id_to_name.get(msg["tool_call_id"], "unknown")
@@ -443,9 +417,96 @@ class CreateGenieAgent:
                         },
                     }
                     normalized_tcs.append(ntc)
-                # content MUST appear before tool_calls — the Databricks
-                # serving endpoint mis-translates to Anthropic format
-                # when tool_calls comes first in the JSON object.
+                tc_msg: dict = {"role": "assistant", "content": tc_content, "tool_calls": normalized_tcs}
+                messages.append(tc_msg)
+            elif msg["role"] == "assistant":
+                content = msg.get("content") or ""
+                if not content.strip():
+                    continue
+                messages.append({"role": "assistant", "content": content})
+            else:
+                messages.append({
+                    "role": msg["role"],
+                    "content": msg.get("content") or " ",
+                })
+        return messages
+
+    def _build_compacted_messages(
+        self,
+        session: AgentSession,
+        messages: list[dict],
+        tc_id_to_name: dict[str, str],
+    ) -> list[dict]:
+        """Build messages with inspection-phase tool results compacted.
+
+        Replaces verbose tool call/result pairs from profiling tools with
+        a single summary message, cutting context by ~70% for post-inspection
+        steps (plan, config_create, post_creation).
+        """
+        inspection_findings: list[str] = []
+        skip_tool_ids: set[str] = set()
+
+        # First pass: collect inspection tool results into summaries
+        for msg in session.history:
+            if msg["role"] == "tool":
+                tool_name = tc_id_to_name.get(msg["tool_call_id"], "unknown")
+                if tool_name in self._INSPECTION_TOOLS:
+                    skip_tool_ids.add(msg["tool_call_id"])
+                    summary = self._summarize_tool_result(tool_name, msg.get("content") or "{}")
+                    if summary:
+                        inspection_findings.append(summary)
+
+        # Also mark assistant messages whose tool_calls are ALL inspection tools
+        # so we can skip those too
+        skip_assistant_indices: set[int] = set()
+        for i, msg in enumerate(session.history):
+            if msg["role"] == "assistant" and msg.get("tool_calls"):
+                tc_ids = {tc["id"] for tc in msg["tool_calls"]}
+                if tc_ids and tc_ids.issubset(skip_tool_ids):
+                    skip_assistant_indices.add(i)
+
+        # Inject the compacted summary after the last user message before
+        # the first skipped block
+        summary_injected = False
+
+        for i, msg in enumerate(session.history):
+            if msg["role"] == "tool":
+                if msg["tool_call_id"] in skip_tool_ids:
+                    # Inject summary right before we start skipping
+                    if not summary_injected and inspection_findings:
+                        summary_text = (
+                            "Here is a summary of the data inspection findings:\n\n"
+                            + "\n\n".join(inspection_findings)
+                        )
+                        messages.append({"role": "assistant", "content": summary_text})
+                        summary_injected = True
+                    continue
+                tool_name = tc_id_to_name.get(msg["tool_call_id"], "unknown")
+                raw_content = msg.get("content") or "{}"
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": msg["tool_call_id"],
+                    "name": tool_name,
+                    "content": self._compress_tool_result(tool_name, raw_content),
+                })
+            elif i in skip_assistant_indices:
+                continue
+            elif msg["role"] == "assistant" and msg.get("tool_calls"):
+                # Mixed: some inspection, some not — keep only non-inspection calls
+                kept_tcs = [tc for tc in msg["tool_calls"] if tc["id"] not in skip_tool_ids]
+                if not kept_tcs:
+                    continue
+                tc_content = (msg.get("content") or "").strip() or None
+                normalized_tcs = []
+                for tc in kept_tcs:
+                    normalized_tcs.append({
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"].get("arguments") or "{}",
+                        },
+                    })
                 tc_msg: dict = {"role": "assistant", "content": tc_content, "tool_calls": normalized_tcs}
                 messages.append(tc_msg)
             elif msg["role"] == "assistant":
@@ -459,7 +520,81 @@ class CreateGenieAgent:
                     "content": msg.get("content") or " ",
                 })
 
+        # If we collected findings but never injected (edge case), append now
+        if not summary_injected and inspection_findings:
+            summary_text = (
+                "Here is a summary of the data inspection findings:\n\n"
+                + "\n\n".join(inspection_findings)
+            )
+            messages.append({"role": "assistant", "content": summary_text})
+
         return messages
+
+    @staticmethod
+    def _summarize_tool_result(tool_name: str, content: str) -> str | None:
+        """Extract a compact summary from an inspection tool result."""
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+        if tool_name == "describe_table":
+            table = data.get("table_name", "?")
+            cols = data.get("columns", [])
+            col_names = [c.get("name", "?") for c in cols[:50]]
+            row_count = data.get("row_count", "?")
+            return (
+                f"**{table}**: {len(cols)} columns ({', '.join(col_names)}), "
+                f"~{row_count} rows"
+            )
+
+        if tool_name == "profile_columns":
+            parts = []
+            for col, profile in data.get("profiles", {}).items():
+                dtype = profile.get("data_type", "?")
+                nulls = profile.get("null_pct", "?")
+                distinct = profile.get("distinct_count", "?")
+                vals = profile.get("distinct_values", [])[:5]
+                vals_str = ", ".join(str(v) for v in vals)
+                parts.append(f"  - {col} ({dtype}): {distinct} distinct, {nulls}% null, samples=[{vals_str}]")
+            if parts:
+                return "Column profiles:\n" + "\n".join(parts)
+            return None
+
+        if tool_name == "profile_table_usage":
+            parts = []
+            for tbl, info in data.get("tables", {}).items():
+                freq = info.get("query_frequency", "?")
+                users = info.get("distinct_users", "?")
+                parts.append(f"  - {tbl}: {freq} queries, {users} users")
+            if parts:
+                return "Usage profiles:\n" + "\n".join(parts)
+            return None
+
+        if tool_name == "assess_data_quality":
+            parts = []
+            for tbl, info in data.get("tables", {}).items():
+                if isinstance(info, dict):
+                    score = info.get("overall_score", info.get("quality_score", "?"))
+                    issues = info.get("issues", [])
+                    issue_str = "; ".join(str(i) for i in issues[:3]) if issues else "none"
+                    parts.append(f"  - {tbl}: score={score}, issues: {issue_str}")
+            if parts:
+                return "Data quality:\n" + "\n".join(parts)
+            return None
+
+        if tool_name == "test_sql":
+            status = "OK" if data.get("success") or "data" in data else "FAILED"
+            query = data.get("query", data.get("sql", "?"))[:120]
+            row_ct = len(data.get("data", []))
+            cols = data.get("columns", [])
+            col_str = ", ".join(str(c) for c in cols[:10]) if cols else "?"
+            error = data.get("error", "")
+            if error:
+                return f"SQL test ({status}): `{query}` → error: {error[:200]}"
+            return f"SQL test ({status}): `{query}` → {row_ct} rows, columns=[{col_str}]"
+
+        return None
 
     @staticmethod
     def _heal_orphaned_tool_calls(session: AgentSession) -> None:
