@@ -386,6 +386,30 @@ TOOL_DEFINITIONS = [
                         "type": "boolean",
                         "description": "If true and no benchmarks provided, auto-generate from example_sqls. Defaults to false.",
                     },
+                    "metric_views": {
+                        "type": "array",
+                        "description": "Optional metric views to include. Only add if discover_tables found metric views in the schema.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "identifier": {"type": "string", "description": "catalog.schema.metric_view_name"},
+                                "description": {"type": "string"},
+                                "column_configs": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "column_name": {"type": "string"},
+                                            "description": {"type": "string"},
+                                            "enable_format_assistance": {"type": "boolean"},
+                                        },
+                                        "required": ["column_name"],
+                                    },
+                                },
+                            },
+                            "required": ["identifier"],
+                        },
+                    },
                 },
                 "required": ["tables"],
             },
@@ -751,11 +775,40 @@ def _discover_schemas(catalog: str) -> dict:
 
 def _discover_tables(catalog: str, schema: str) -> dict:
     tables = list_tables(catalog, schema)
-    return {
+
+    metric_views: list[dict] = []
+    try:
+        result = execute_sql(
+            f"SHOW METRIC VIEWS IN `{catalog}`.`{schema}`",
+            row_limit=100,
+        )
+        if result.get("data") and result.get("columns"):
+            name_idx = next(
+                (i for i, c in enumerate(result["columns"]) if c["name"].lower() in ("viewname", "name", "view_name")),
+                0,
+            )
+            for row in result["data"]:
+                mv_name = row[name_idx] if name_idx < len(row) else None
+                if mv_name:
+                    metric_views.append({
+                        "name": mv_name,
+                        "full_name": f"{catalog}.{schema}.{mv_name}",
+                        "type": "METRIC_VIEW",
+                    })
+    except Exception:
+        pass
+
+    response: dict[str, Any] = {
         "tables": tables,
         "count": len(tables),
         "ui_hint": {"type": "multi_select", "id": "table_selection", "label": "Select tables to include"},
     }
+
+    if metric_views:
+        response["metric_views"] = metric_views
+        response["metric_view_count"] = len(metric_views)
+
+    return response
 
 
 def _describe_table(table_identifier: str) -> dict:
@@ -1590,6 +1643,7 @@ def _generate_config(
     join_specs: list[dict] | None = None,
     benchmarks: list[dict] | None = None,
     generate_benchmarks: bool = False,
+    metric_views: list[dict] | None = None,
 ) -> dict:
     """Build a complete serialized_space config from structured inputs.
 
@@ -1637,7 +1691,30 @@ def _generate_config(
             entry["column_configs"] = cc_list
         ds_tables.append(entry)
     ds_tables.sort(key=lambda x: x["identifier"])
-    config["data_sources"] = {"tables": ds_tables}
+    data_sources: dict[str, Any] = {"tables": ds_tables}
+
+    if metric_views:
+        mv_items = []
+        for mv in metric_views:
+            mv_entry: dict[str, Any] = {"identifier": mv["identifier"]}
+            if mv.get("description"):
+                mv_entry["description"] = [mv["description"]]
+            if mv.get("column_configs"):
+                cc_list = []
+                for cc in mv["column_configs"]:
+                    cc_entry: dict[str, Any] = {"column_name": cc["column_name"]}
+                    if cc.get("description"):
+                        cc_entry["description"] = [cc["description"]]
+                    if cc.get("enable_format_assistance") is not None:
+                        cc_entry["enable_format_assistance"] = cc["enable_format_assistance"]
+                    cc_list.append(cc_entry)
+                cc_list.sort(key=lambda x: x["column_name"])
+                mv_entry["column_configs"] = cc_list
+            mv_items.append(mv_entry)
+        mv_items.sort(key=lambda x: x["identifier"])
+        data_sources["metric_views"] = mv_items
+
+    config["data_sources"] = data_sources
 
     # ── instructions ──
     instructions: dict[str, Any] = {}
