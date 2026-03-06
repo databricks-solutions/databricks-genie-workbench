@@ -29,7 +29,7 @@ env:
   - name: MLFLOW_REGISTRY_URI
     value: "databricks-uc"
   - name: MLFLOW_EXPERIMENT_ID
-    value: ""  # OPTIONAL: Set to your MLflow experiment ID to enable tracing
+    value: "2624606869914616"
 
   # ---------------------------------------------------------------------------
   # LLM Model

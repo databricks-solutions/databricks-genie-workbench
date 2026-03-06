@@ -86,6 +86,21 @@ class CreateGenieAgent:
         step = detect_step(session)
         step_idx = STEP_ORDER.index(step) if step in STEP_ORDER else 0
 
+        # Start a root MLflow trace for the entire agent turn.
+        # Wrapped in try/except so tracing failures never break the app.
+        _trace = None
+        try:
+            _trace = mlflow.start_trace(
+                name="agent_chat",
+                inputs={"user_message": user_message, "session_id": session.session_id, "step": step},
+            )
+            mlflow.update_current_trace(tags={
+                "session_id": session.session_id,
+                "workflow_step": step,
+            })
+        except Exception:
+            logger.debug("MLflow start_trace failed, continuing without tracing", exc_info=True)
+
         yield {"event": "step", "data": {
             "step": step,
             "label": STEP_LABELS.get(step, step),
@@ -301,9 +316,20 @@ class CreateGenieAgent:
                 step, tools_used, error_msg,
             )
 
+        try:
+            if _trace is not None:
+                status = "ERROR" if error_msg else "OK"
+                mlflow.end_trace(
+                    request_id=_trace.request_id,
+                    outputs={"tools_used": tools_used, "error": error_msg},
+                    status=status,
+                )
+        except Exception:
+            logger.debug("MLflow end_trace failed", exc_info=True)
+
         yield {"event": "done", "data": {}}
 
-    _TOOL_RESULT_CHAR_LIMIT = 6000
+    _TOOL_RESULT_CHAR_LIMIT = 3000
     _COMPRESSIBLE_TOOLS = frozenset({
         "describe_table", "profile_columns", "profile_table_usage",
         "assess_data_quality", "test_sql",

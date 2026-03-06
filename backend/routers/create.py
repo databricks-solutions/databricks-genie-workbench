@@ -1,6 +1,7 @@
 """
 /api/create — UC discovery + config validation + Genie Space creation wizard + agent chat.
 """
+import asyncio
 import json
 import logging
 from fastapi import APIRouter, HTTPException, Request
@@ -158,13 +159,26 @@ async def agent_chat(body: AgentChatRequest, request: Request):
     # that outlive the middleware's call_next).
     user_token = getattr(request.state, "user_token", "")
 
+    _KEEPALIVE_INTERVAL = 15  # seconds between SSE keepalive comments
+
     async def event_stream():
         if user_token:
             set_obo_user_token(user_token)
         try:
             yield _sse_event("session", {"session_id": session.session_id})
-            async for event in agent.chat(session, user_message):
-                yield _sse_event(event["event"], event["data"])
+
+            agent_iter = agent.chat(session, user_message).__aiter__()
+            while True:
+                try:
+                    event = await asyncio.wait_for(
+                        agent_iter.__anext__(), timeout=_KEEPALIVE_INTERVAL
+                    )
+                    yield _sse_event(event["event"], event["data"])
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                except StopAsyncIteration:
+                    break
+
             await persist_session(session)
         finally:
             clear_obo_user_token()

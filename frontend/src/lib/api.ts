@@ -687,7 +687,9 @@ export function streamAgentChat(
     })
     .catch((error) => {
       if (error.name !== "AbortError") {
-        callbacks.onError(error.message || "Connection failed")
+        callbacks.onError(error.message === "network error"
+          ? "Connection interrupted — your progress is saved. Send another message to continue."
+          : (error.message || "Connection failed"))
         callbacks.onDone()
       }
     })
