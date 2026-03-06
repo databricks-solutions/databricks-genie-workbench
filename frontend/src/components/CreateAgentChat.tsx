@@ -300,6 +300,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [autoPilot, setAutoPilot] = useState(false)
   const [elementSearch, setElementSearch] = useState<Record<string, string>>({})
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null)
+  const queuedMessageRef = useRef<string | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -346,7 +347,9 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     (text: string, selections?: Record<string, unknown>) => {
       if (!text.trim()) return
       if (isStreaming) {
-        setQueuedMessage(text.trim())
+        const trimmed = text.trim()
+        queuedMessageRef.current = trimmed
+        setQueuedMessage(trimmed)
         setInput("")
         return
       }
@@ -630,12 +633,12 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           streamingContentRef.current = ""
           streamingMsgIdRef.current = null
           pendingToolCalls = []
-          setQueuedMessage((queued) => {
-            if (queued) {
-              setTimeout(() => sendMessage(queued), 100)
-            }
-            return null
-          })
+          const pending = queuedMessageRef.current
+          queuedMessageRef.current = null
+          setQueuedMessage(null)
+          if (pending) {
+            requestAnimationFrame(() => sendMessage(pending))
+          }
         },
       })
     },
@@ -658,6 +661,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     stopRef.current?.()
     setIsStreaming(false)
     setAgentStatus(null)
+    queuedMessageRef.current = null
     setQueuedMessage(null)
     if (streamingRafRef.current) {
       cancelAnimationFrame(streamingRafRef.current)
@@ -696,6 +700,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setEditedPlan(null)
     setEditingPlanItem(null)
     setAutoPilot(false)
+    queuedMessageRef.current = null
     setQueuedMessage(null)
     setShowClearConfirm(false)
     sessionStorage.removeItem(STORAGE_KEY)
@@ -753,8 +758,9 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       })
     }
 
+    const itemType = el.id === "catalog_selection" ? "catalog" : el.id === "schema_selection" ? "schema" : "table"
     sendMessage(
-      `I've selected ${selectedLabels.length} table${selectedLabels.length !== 1 ? "s" : ""}: ${selectedLabels.join(", ")}`,
+      `I've selected ${selectedLabels.length} ${itemType}${selectedLabels.length !== 1 ? "s" : ""}: ${selectedLabels.join(", ")}`,
       selectionData,
     )
   }
@@ -2580,7 +2586,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
               Queued: &ldquo;{queuedMessage}&rdquo;
             </span>
             <button
-              onClick={() => setQueuedMessage(null)}
+              onClick={() => { queuedMessageRef.current = null; setQueuedMessage(null) }}
               className="text-amber-500 hover:text-amber-600 flex-shrink-0"
             >
               <X className="w-3 h-3" />

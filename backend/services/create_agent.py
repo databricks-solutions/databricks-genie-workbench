@@ -124,6 +124,8 @@ class CreateGenieAgent:
                         "workflow_step": step,
                     })
 
+                    tool_call_signaled = False
+
                     async for chunk in self._async_stream_llm(messages):
                         choices = chunk.get("choices", [])
                         if not choices:
@@ -136,6 +138,9 @@ class CreateGenieAgent:
                             yield {"event": "message_delta", "data": {"content": token}}
 
                         if delta.get("tool_calls"):
+                            if not tool_call_signaled:
+                                tool_call_signaled = True
+                                yield {"event": "thinking", "data": {"message": "Planning next steps…", "step": step, "round": round_num}}
                             for tc_delta in delta["tool_calls"]:
                                 idx = tc_delta.get("index", 0)
                                 if idx not in tool_calls_acc:
@@ -195,6 +200,15 @@ class CreateGenieAgent:
                                 logger.info("Backfilled generate_config args from session: %s", ", ".join(injected))
 
                         yield {"event": "tool_call", "data": {"tool": tool_name, "args": tool_args}}
+
+                        # Recover space_config from history if it was lost
+                        if session.space_config is None and tool_name in (
+                            "update_config", "validate_config", "create_space", "update_space",
+                        ):
+                            recovered = self._recover_config_from_history(session)
+                            if recovered:
+                                session.space_config = recovered
+                                logger.info("Recovered space_config from session history for %s", tool_name)
 
                         with mlflow.start_span(name=f"tool:{tool_name}", span_type=SpanType.TOOL) as tool_span:
                             tool_span.set_inputs({
@@ -377,11 +391,15 @@ class CreateGenieAgent:
         for idx, msg in reversed(inserts):
             session.history.insert(idx, msg)
 
+    _MAX_LLM_RETRIES = 4
+    _RETRY_BACKOFF_BASE = 2  # seconds
+
     def _stream_llm(self, messages: list[dict]) -> Generator[dict, None, None]:
         """Stream LLM response chunks from the serving endpoint (sync).
 
         Uses the SDK's pre-authenticated requests.Session so auth works
         across all methods (PAT, OAuth/M2M, CLI profile).
+        Retries automatically on 429 (rate limit) with exponential backoff.
         """
         client = get_workspace_client()
         host = (client.config.host or "").rstrip("/")
@@ -406,12 +424,21 @@ class CreateGenieAgent:
                     for j, tc in enumerate(m["tool_calls"]):
                         logger.debug("    tc[%d] id=%s fn=%s args_len=%d", j, tc.get("id", "?"), tc.get("function", {}).get("name", "?"), len(tc.get("function", {}).get("arguments", "")))
 
-        resp = client.api_client._api_client._session.post(
-            url,
-            json=body,
-            stream=True,
-            timeout=120,
-        )
+        session = client.api_client._api_client._session
+        for attempt in range(self._MAX_LLM_RETRIES + 1):
+            resp = session.post(url, json=body, stream=True, timeout=120)
+            if resp.status_code == 429:
+                resp.close()
+                if attempt >= self._MAX_LLM_RETRIES:
+                    logger.error("Rate-limited after %d retries, giving up", self._MAX_LLM_RETRIES)
+                    raise RuntimeError("LLM endpoint rate-limited (429). Please try again in a moment.")
+                retry_after = resp.headers.get("Retry-After")
+                delay = float(retry_after) if retry_after else self._RETRY_BACKOFF_BASE * (2 ** attempt)
+                logger.warning("429 rate-limited, retrying in %.1fs (attempt %d/%d)", delay, attempt + 1, self._MAX_LLM_RETRIES)
+                time.sleep(delay)
+                continue
+            break
+
         try:
             if not resp.ok:
                 error_body = resp.text[:500]
@@ -518,6 +545,27 @@ class CreateGenieAgent:
                         injected.append(f"{arg_key}({count})")
 
         return injected
+
+    @staticmethod
+    def _recover_config_from_history(session: AgentSession) -> dict | None:
+        """Scan session history for the most recent generate_config or update_config result
+        that contains a 'config' key, and return it.
+
+        This covers the case where session.space_config was lost (e.g. server
+        restart, session restore) but the config is still in the tool results.
+        """
+        for msg in reversed(session.history):
+            if msg["role"] != "tool":
+                continue
+            try:
+                result = json.loads(msg.get("content", "{}"))
+                if isinstance(result, dict) and "config" in result and isinstance(result["config"], dict):
+                    cfg = result["config"]
+                    if "tables" in cfg or "instructions" in cfg:
+                        return cfg
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+        return None
 
     def _extract_ui_hints(self, session: AgentSession) -> list[dict] | None:
         """Extract UI hint metadata from tool results in the current turn.

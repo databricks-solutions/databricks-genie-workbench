@@ -169,7 +169,9 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
 ### IDs
 - All IDs: exactly **32 lowercase hex characters** (UUID without hyphens)
 - Generate with `secrets.token_hex(16)`
-- IDs must be unique: sample_question IDs + benchmark IDs are one pool; all instruction IDs are another
+- **Question IDs**: All IDs in `config.sample_questions` and `benchmarks.questions` must be unique across both collections
+- **Instruction IDs**: All IDs across `text_instructions`, `example_question_sqls`, `sql_functions`, `join_specs`, and all `sql_snippets` types must be unique
+- **Column configs**: The combination of `(table_identifier, column_name)` must be unique within the space
 
 ### Sorting (API rejects unsorted arrays)
 | Collection | Sort key |
@@ -177,9 +179,11 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
 | `data_sources.tables` | `identifier` alphabetically |
 | `data_sources.tables[].column_configs` | `column_name` alphabetically |
 | `data_sources.metric_views` | `identifier` alphabetically |
+| `data_sources.metric_views[].column_configs` | `column_name` alphabetically |
 | `config.sample_questions` | `id` alphabetically |
 | `instructions.text_instructions` | `id` alphabetically |
 | `instructions.example_question_sqls` | `id` alphabetically |
+| `instructions.example_question_sqls[].parameters` | `name` alphabetically |
 | `instructions.sql_functions` | `(id, identifier)` tuple |
 | `instructions.join_specs` | `id` alphabetically |
 | `instructions.sql_snippets.filters` | `id` alphabetically |

@@ -288,8 +288,8 @@ TOOL_DEFINITIONS = [
                         "type": "array",
                         "items": {"type": "string"},
                         "description": (
-                            "Business rules injected into Genie's LLM prompt. Focus on: "
-                            "terminology definitions ('revenue' means net after discounts), "
+                            "Business rules injected into Genie's LLM prompt. Keep each instruction concise. "
+                            "Focus on: terminology definitions ('revenue' means net after discounts), "
                             "default assumptions (default to current year when unspecified), "
                             "fiscal calendar rules, data quality warnings, and cross-table business logic. "
                             "Do NOT duplicate what's already in measures, filters, expressions, or joins. "
@@ -301,7 +301,8 @@ TOOL_DEFINITIONS = [
                         "minItems": 3,
                         "description": (
                             "At least 3 complex example question-SQL pairs that teach Genie how to write SQL "
-                            "(few-shot learning). Make them non-trivial: multi-join, aggregations with "
+                            "(few-shot learning). Keep each SQL query concise. "
+                            "Make them non-trivial: multi-join, aggregations with "
                             "filters, date ranges, CASE expressions, etc."
                         ),
                         "items": {
@@ -2316,6 +2317,16 @@ _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _TABLE_ID_PATTERN = re.compile(r"^[^.]+\.[^.]+\.[^.]+$")
 
 
+_MAX_STRING_CHARS = 25_000        # per-string limit (API rejects above this)
+_MAX_GUIDANCE_BYTES = 64 * 1024   # 64 KB combined comment+instruction+usage_guidance
+_MAX_SERIALIZED_BYTES = 3_500_000 # 3.5 MB total serialized_space
+_MAX_TABLES = 30
+_MAX_INSTRUCTIONS = 100
+
+_SIZE_CHECK_FIELDS = {"description", "content", "question", "sql", "instruction", "synonyms", "usage_guidance", "comment"}
+_GUIDANCE_FIELDS = {"comment", "instruction", "usage_guidance"}
+
+
 def _validate_config(config: dict) -> dict:
     """Validate a serialized_space config. Returns errors and warnings."""
     errors = []
@@ -2346,14 +2357,32 @@ def _validate_config(config: dict) -> dict:
         error("data_sources.tables", "No tables defined")
     else:
         _check_sorted(tables, lambda x: x.get("identifier", ""), "identifier", "data_sources.tables", error)
-        if len(tables) > 25:
-            error("data_sources.tables", f"Maximum 25 tables allowed (found {len(tables)})")
+        if len(tables) > _MAX_TABLES:
+            error("data_sources.tables", f"Maximum {_MAX_TABLES} tables allowed (found {len(tables)})")
         elif len(tables) > 5:
             warning("data_sources.tables", f"{len(tables)} tables — recommend ≤5 for accuracy")
+        col_keys: set[tuple[str, str]] = set()
         for i, tbl in enumerate(tables):
             ident = tbl.get("identifier", "")
             if not _TABLE_ID_PATTERN.match(ident):
                 error(f"data_sources.tables[{i}].identifier", f"'{ident}' must be catalog.schema.table")
+            ccs = tbl.get("column_configs", [])
+            if ccs:
+                _check_sorted(ccs, lambda x: x.get("column_name", ""), "column_name", f"data_sources.tables[{i}].column_configs", error)
+            for cc in ccs:
+                key = (ident, cc.get("column_name", ""))
+                if key in col_keys:
+                    error(f"data_sources.tables[{i}].column_configs", f"Duplicate column config: {key}")
+                col_keys.add(key)
+
+    # metric_views
+    mvs = config.get("data_sources", {}).get("metric_views", [])
+    if mvs:
+        _check_sorted(mvs, lambda x: x.get("identifier", ""), "identifier", "data_sources.metric_views", error)
+        for i, mv in enumerate(mvs):
+            ccs = mv.get("column_configs", [])
+            if ccs:
+                _check_sorted(ccs, lambda x: x.get("column_name", ""), "column_name", f"data_sources.metric_views[{i}].column_configs", error)
 
     # text_instructions
     ti = config.get("instructions", {}).get("text_instructions", [])
@@ -2370,6 +2399,11 @@ def _validate_config(config: dict) -> dict:
             if not sql:
                 error(f"instructions.example_question_sqls[{i}].sql", "SQL must not be empty")
 
+    # sql_functions
+    sfs = config.get("instructions", {}).get("sql_functions", [])
+    if sfs:
+        _check_sorted(sfs, lambda x: (x.get("id", ""), x.get("identifier", "")), "(id, identifier)", "instructions.sql_functions", error)
+
     # join_specs
     jss = config.get("instructions", {}).get("join_specs", [])
     if jss:
@@ -2385,13 +2419,90 @@ def _validate_config(config: dict) -> dict:
         items = snippets.get(stype, [])
         if items:
             _check_sorted(items, lambda x: x.get("id", ""), "id", f"instructions.sql_snippets.{stype}", error)
+            for i, item in enumerate(items):
+                sql_val = item.get("sql", [])
+                if not sql_val or (isinstance(sql_val, list) and not any(isinstance(s, str) and s.strip() for s in sql_val)):
+                    error(f"instructions.sql_snippets.{stype}[{i}].sql", "SQL must not be empty")
 
-    # instruction count
-    total = len(eqs) + len(config.get("instructions", {}).get("sql_functions", [])) + (1 if ti else 0)
-    if total > 100:
-        error("instructions", f"Total instruction count {total} exceeds 100 limit")
+    # benchmarks
+    bench_questions = config.get("benchmarks", {}).get("questions", [])
+    if bench_questions:
+        _check_sorted(bench_questions, lambda x: x.get("id", ""), "id", "benchmarks.questions", error)
+        for i, bq in enumerate(bench_questions):
+            _check_id(f"benchmarks.questions[{i}].id", bq.get("id"), error)
+            answers = bq.get("answer", [])
+            if len(answers) != 1:
+                error(f"benchmarks.questions[{i}].answer", f"Must have exactly 1 answer (found {len(answers)})")
+            elif answers[0].get("format") != "SQL":
+                error(f"benchmarks.questions[{i}].answer[0].format", "Must be 'SQL'")
+
+    # ── ID uniqueness ──────────────────────────────────────────────────────
+    question_ids: list[str] = []
+    for sq in sqs:
+        if sq.get("id"):
+            question_ids.append(sq["id"])
+    for bq in bench_questions:
+        if bq.get("id"):
+            question_ids.append(bq["id"])
+    if len(question_ids) != len(set(question_ids)):
+        error("ids", "Duplicate IDs found across sample_questions and benchmarks.questions")
+
+    instruction_ids: list[str] = []
+    for item in ti:
+        if item.get("id"):
+            instruction_ids.append(item["id"])
+    for item in eqs:
+        if item.get("id"):
+            instruction_ids.append(item["id"])
+    for item in sfs:
+        if item.get("id"):
+            instruction_ids.append(item["id"])
+    for item in jss:
+        if item.get("id"):
+            instruction_ids.append(item["id"])
+    for stype in ("filters", "expressions", "measures"):
+        for item in snippets.get(stype, []):
+            if item.get("id"):
+                instruction_ids.append(item["id"])
+    if len(instruction_ids) != len(set(instruction_ids)):
+        error("ids", "Duplicate IDs found across instruction elements")
+
+    # instruction count (text_instructions block + SQL functions + example SQL queries)
+    total = len(eqs) + len(sfs) + (1 if ti else 0)
+    if total > _MAX_INSTRUCTIONS:
+        error("instructions", f"Total instruction count {total} exceeds {_MAX_INSTRUCTIONS} limit")
     elif total > 80:
-        warning("instructions", f"Instruction count {total}/100 — approaching limit")
+        warning("instructions", f"Instruction count {total}/{_MAX_INSTRUCTIONS} — approaching limit")
+
+    # ── Size / length limits ──────────────────────────────────────────────
+    oversized_strings = _check_string_sizes(config)
+    for path, size in oversized_strings:
+        error(path, f"String exceeds {_MAX_STRING_CHARS:,} char limit ({size:,} chars)")
+
+    guidance_bytes = _measure_guidance_fields(config)
+    if guidance_bytes > _MAX_GUIDANCE_BYTES:
+        error(
+            "instructions",
+            f"Combined comment+instruction+usage_guidance is {guidance_bytes:,} bytes "
+            f"(limit {_MAX_GUIDANCE_BYTES:,})"
+        )
+    elif guidance_bytes > _MAX_GUIDANCE_BYTES * 0.8:
+        warning(
+            "instructions",
+            f"Combined guidance fields at {guidance_bytes:,}/{_MAX_GUIDANCE_BYTES:,} bytes — approaching limit"
+        )
+
+    serialized_size = len(json.dumps(config).encode("utf-8"))
+    if serialized_size > _MAX_SERIALIZED_BYTES:
+        error(
+            "serialized_space",
+            f"Serialized config is {serialized_size:,} bytes (limit {_MAX_SERIALIZED_BYTES:,})"
+        )
+    elif serialized_size > _MAX_SERIALIZED_BYTES * 0.8:
+        warning(
+            "serialized_space",
+            f"Serialized config at {serialized_size:,}/{_MAX_SERIALIZED_BYTES:,} bytes — approaching limit"
+        )
 
     return {
         "valid": len(errors) == 0,
@@ -2400,6 +2511,35 @@ def _validate_config(config: dict) -> dict:
         "error_count": len(errors),
         "warning_count": len(warnings),
     }
+
+
+def _check_string_sizes(obj: Any, path: str = "", field_name: str = "") -> list[tuple[str, int]]:
+    """Walk the config tree and find strings in size-checked fields that exceed the char limit."""
+    violations: list[tuple[str, int]] = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            violations.extend(_check_string_sizes(v, f"{path}.{k}" if path else k, k))
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            violations.extend(_check_string_sizes(item, f"{path}[{i}]", field_name))
+    elif isinstance(obj, str) and field_name in _SIZE_CHECK_FIELDS:
+        if len(obj) > _MAX_STRING_CHARS:
+            violations.append((path, len(obj)))
+    return violations
+
+
+def _measure_guidance_fields(obj: Any, field_name: str = "") -> int:
+    """Sum the byte size of all comment, instruction, and usage_guidance string values."""
+    total = 0
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            total += _measure_guidance_fields(v, k)
+    elif isinstance(obj, list):
+        for item in obj:
+            total += _measure_guidance_fields(item, field_name)
+    elif isinstance(obj, str) and field_name in _GUIDANCE_FIELDS:
+        total += len(obj.encode("utf-8"))
+    return total
 
 
 def _check_id(path: str, id_val: Any, error_fn) -> None:

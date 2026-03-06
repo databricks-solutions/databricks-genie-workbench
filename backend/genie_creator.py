@@ -51,12 +51,24 @@ _SORT_REQUIREMENTS = {
 }
 
 
+_MAX_STRING_CHARS = 25_000        # per-string character limit (API enforced)
+_MAX_SERIALIZED_BYTES = 3_500_000 # 3.5 MB total
+_MAX_TABLES = 30
+_SIZE_CHECKED_FIELDS = frozenset({
+    "description", "content", "question", "sql",
+    "instruction", "synonyms", "usage_guidance", "comment",
+})
+
+
 def _enforce_constraints(config: dict) -> dict:
     """Enforce API constraints on the config.
 
     Fixes:
     - Text instructions: At most 1 allowed (keep first only)
     - Empty SQL snippets: Remove filters/expressions/measures with empty sql
+    - String values in size-checked fields truncated to <= 25,000 chars
+    - Tables capped at 30
+    - Serialized output capped at 3.5 MB (warning only)
     """
     import copy
     config = copy.deepcopy(config)
@@ -68,17 +80,21 @@ def _enforce_constraints(config: dict) -> dict:
         logger.warning(f"Truncating text_instructions from {len(text_instructions)} to 1")
         instructions["text_instructions"] = text_instructions[:1]
 
+    # Cap tables at 30
+    tables = config.get("data_sources", {}).get("tables", [])
+    if isinstance(tables, list) and len(tables) > _MAX_TABLES:
+        logger.warning("Truncating tables from %d to %d", len(tables), _MAX_TABLES)
+        config["data_sources"]["tables"] = tables[:_MAX_TABLES]
+
     # Remove sql_snippets with empty sql
     sql_snippets = instructions.get("sql_snippets", {})
     for snippet_type in ["filters", "expressions", "measures"]:
         items = sql_snippets.get(snippet_type, [])
         if isinstance(items, list):
-            # Filter out items with empty sql
             filtered = []
             for item in items:
                 if isinstance(item, dict):
                     sql_field = item.get("sql", [])
-                    # Check if sql is non-empty
                     if sql_field and (
                         (isinstance(sql_field, list) and any(s.strip() for s in sql_field if isinstance(s, str))) or
                         (isinstance(sql_field, str) and sql_field.strip())
@@ -93,7 +109,44 @@ def _enforce_constraints(config: dict) -> dict:
     # Normalize join relationship types to uppercase underscores
     _normalize_join_relationships(config)
 
+    # Truncate oversized strings in size-checked fields
+    _truncate_oversized_strings(config)
+
+    # Warn if total serialized size is close to / over limit
+    serialized_size = len(json.dumps(config).encode("utf-8"))
+    if serialized_size > _MAX_SERIALIZED_BYTES:
+        logger.error(
+            "Serialized config is %s bytes — exceeds 3.5 MB limit. "
+            "The API may reject this request.", f"{serialized_size:,}"
+        )
+
     return config
+
+
+def _truncate_oversized_strings(obj: any, field_name: str = "") -> None:
+    """Walk the config tree and truncate strings exceeding the character limit in-place."""
+    if isinstance(obj, dict):
+        for k in obj:
+            v = obj[k]
+            if isinstance(v, str) and k in _SIZE_CHECKED_FIELDS:
+                if len(v) > _MAX_STRING_CHARS:
+                    logger.warning(
+                        "Truncating %s from %d to %d chars", k, len(v), _MAX_STRING_CHARS,
+                    )
+                    obj[k] = v[:_MAX_STRING_CHARS]
+            else:
+                _truncate_oversized_strings(v, k)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if isinstance(item, str) and field_name in _SIZE_CHECKED_FIELDS:
+                if len(item) > _MAX_STRING_CHARS:
+                    logger.warning(
+                        "Truncating %s[%d] from %d to %d chars",
+                        field_name, i, len(item), _MAX_STRING_CHARS,
+                    )
+                    obj[i] = item[:_MAX_STRING_CHARS]
+            else:
+                _truncate_oversized_strings(item, field_name)
 
 
 _RT_PATTERN = re.compile(r"--rt=FROM_RELATIONSHIP_TYPE_([^-]+)--")
@@ -244,6 +297,8 @@ def create_genie_space(
         PermissionError: If none of the candidate paths are writable
         TimeoutError: If the request timed out
     """
+    import time as _time
+
     if not display_name or not display_name.strip():
         raise ValueError("Display name is required")
     display_name = display_name.strip()
@@ -255,9 +310,12 @@ def create_genie_space(
             "Set it to your SQL Warehouse ID."
         )
 
+    t0 = _time.monotonic()
     constrained_config = _enforce_constraints(merged_config)
     cleaned_config = _clean_config(constrained_config)
     serialized_space = json.dumps(cleaned_config)
+    t_prep = _time.monotonic() - t0
+    logger.info("Config prep took %.2fs (serialized %d bytes)", t_prep, len(serialized_space))
 
     client = get_workspace_client()
     host = get_databricks_host()
@@ -269,6 +327,7 @@ def create_genie_space(
         logger.info(f"Attempting to create Genie Space '{display_name}' in {target_path}")
 
         try:
+            t_api = _time.monotonic()
             response = client.api_client.do(
                 method="POST",
                 path="/api/2.0/genie/spaces",
@@ -280,6 +339,7 @@ def create_genie_space(
                     "serialized_space": serialized_space,
                 },
             )
+            t_api_done = _time.monotonic() - t_api
 
             genie_space_id = response.get("space_id")
             if not genie_space_id:
@@ -287,7 +347,7 @@ def create_genie_space(
                 raise ValueError(f"API did not return a space_id. Response: {response}")
 
             space_url = f"{host}/genie/rooms/{genie_space_id}"
-            logger.info(f"Created Genie Space {genie_space_id} in {target_path}")
+            logger.info("Created Genie Space %s in %s (API call %.2fs)", genie_space_id, target_path, t_api_done)
 
             return {
                 "genie_space_id": genie_space_id,

@@ -223,30 +223,50 @@ When calling the create/update APIs, this object is passed as an escaped JSON st
 
 ## Validation Rules (Databricks Conversation API)
 
+Source: [official docs](https://docs.databricks.com/aws/en/genie/conversation-api#validation-rules-for-serialized_space)
+
 ### ID Rules
 
-- All IDs must be 32-character lowercase hexadecimal strings with no hyphens.
+- All IDs must be **32-character lowercase hexadecimal strings** with no hyphens.
 - IDs are required in: `config.sample_questions`, `instructions.text_instructions`, `instructions.example_question_sqls`, `instructions.sql_functions`, `instructions.join_specs`, `instructions.sql_snippets.filters`, `instructions.sql_snippets.expressions`, `instructions.sql_snippets.measures`, and `benchmarks.questions`.
-- All IDs in `serialized_space` must be unique.
+- **Question IDs**: All IDs in `config.sample_questions` and `benchmarks.questions` must be unique across both collections.
+- **Instruction IDs**: All IDs across `text_instructions`, `example_question_sqls`, `sql_functions`, `join_specs`, and all `sql_snippets` types must be unique.
+- **Column configs**: The combination of `(table_identifier, column_name)` must be unique within the space.
 
 ### Sorting Rules
 
-- `data_sources.tables` sorted by `identifier` (ascending).
-- `data_sources.tables[].column_configs` sorted by `column_name` (ascending).
-- `data_sources.metric_views` sorted by `identifier` (ascending).
-- `data_sources.metric_views[].column_configs` sorted by `column_name` (ascending).
-- `instructions.example_question_sqls[].parameters` sorted by `name` (ascending).
+The API rejects unsorted arrays.
+
+| Collection | Sort key |
+|---|---|
+| `data_sources.tables` | `identifier` (alphabetically) |
+| `data_sources.tables[].column_configs` | `column_name` (alphabetically) |
+| `data_sources.metric_views` | `identifier` (alphabetically) |
+| `data_sources.metric_views[].column_configs` | `column_name` (alphabetically) |
+| `config.sample_questions` | `id` (alphabetically) |
+| `instructions.text_instructions` | `id` (alphabetically) |
+| `instructions.example_question_sqls` | `id` (alphabetically) |
+| `instructions.sql_functions` | `(id, identifier)` tuple (alphabetically) |
+| `instructions.join_specs` | `id` (alphabetically) |
+| `instructions.sql_snippets.filters` | `id` (alphabetically) |
+| `instructions.sql_snippets.expressions` | `id` (alphabetically) |
+| `instructions.sql_snippets.measures` | `id` (alphabetically) |
+| `benchmarks.questions` | `id` (alphabetically) |
+| `instructions.example_question_sqls[].parameters` | `name` (alphabetically) |
 
 ### Size and Length Limits
 
-- `serialized_space` string must be <= 3.5 MB.
-- Combined size of `comment`, `instruction`, and `usage_guidance` fields must be <= 64 KB.
-- Any single string value inside `description`, `content`, `question`, `sql`, `instruction`, or `synonyms` must be <= 1 KB.
-- Each table identifier part (`catalog`, `schema`, `table`) must be <= 255 characters.
+- **String length**: Individual string elements are limited to **25,000 characters**.
+- **Array size**: Repeated fields are limited to **10,000 items**.
+- **Text instructions**: At most **1** text instruction is allowed per space.
+- **Tables and metric views**: Subject to workspace-specific limits (typically 30).
+- **SQL content**: Query text in `sql` and `join_specs.sql` fields is subject to length limits.
+- **Total instructions**: Max **100** (each example SQL + each function + 1 for text block).
 
 ### Content Constraints
 
 - Use schema version `2` for new spaces.
-- Maximum number of tables/metric views is workspace-dependent.
-- `benchmarks.questions[].answer` must contain exactly one item, and its `format` must be `SQL`.
+- Table identifiers must use three-level namespace format (`catalog.schema.table`).
+- `benchmarks.questions[].answer` must contain exactly one item, and its `format` must be `"SQL"`.
+- SQL snippets: filter, expression, and measure `sql` fields must not be empty.
 - Databricks guidance recommends at least 5 tested `example_question_sqls` and at least 5 benchmark questions.
