@@ -9,11 +9,14 @@ import logging
 from pathlib import Path
 from typing import AsyncGenerator
 
+import mlflow
+from mlflow.entities import SpanType
+
 from backend.services.llm_utils import get_llm_model
 from backend.services.auth import get_workspace_client
 from backend.services.create_agent_session import AgentSession
 from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call
-from backend.prompts_create import assemble_system_prompt
+from backend.prompts_create import assemble_system_prompt, detect_step
 
 logger = logging.getLogger(__name__)
 
@@ -52,22 +55,38 @@ class CreateGenieAgent:
         import asyncio
 
         session.add_message("user", user_message)
+        step = detect_step(session)
 
         yield {"event": "thinking", "data": {"message": "Processing..."}}
 
+        tools_used: list[str] = []
+        error_msg: str | None = None
+
         try:
-            for _ in range(MAX_TOOL_ROUNDS):
-                messages = self._build_messages(session)
+            for round_num in range(MAX_TOOL_ROUNDS):
+                # ── LLM call (traced) ─────────────────────────────────
+                with mlflow.start_span(name="llm_call", span_type=SpanType.LLM) as llm_span:
+                    messages = self._build_messages(session)
+                    llm_span.set_inputs({
+                        "model": self.model,
+                        "message_count": len(messages),
+                        "round": round_num,
+                        "session_id": session.session_id,
+                        "workflow_step": step,
+                    })
+                    response = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: self._call_llm(messages)
+                    )
+                    choice = response["choices"][0]
+                    message = choice["message"]
+                    finish_reason = choice.get("finish_reason", "stop")
+                    llm_span.set_outputs({
+                        "finish_reason": finish_reason,
+                        "has_tool_calls": bool(message.get("tool_calls")),
+                        "tool_count": len(message.get("tool_calls", [])),
+                        "response_preview": str(message.get("content", ""))[:200],
+                    })
 
-                response = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: self._call_llm(messages)
-                )
-
-                choice = response["choices"][0]
-                message = choice["message"]
-                finish_reason = choice.get("finish_reason", "stop")
-
-                # If the LLM wants to call tools
                 # Check for tool_calls regardless of finish_reason — some
                 # Claude endpoints report "tool_use" or "stop" instead of "tool_calls"
                 tool_calls = message.get("tool_calls")
@@ -105,9 +124,22 @@ class CreateGenieAgent:
 
                         yield {"event": "tool_call", "data": {"tool": tool_name, "args": tool_args}}
 
-                        result = await asyncio.get_event_loop().run_in_executor(
-                            None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
-                        )
+                        # ── Tool execution (traced) ───────────────────
+                        with mlflow.start_span(name=f"tool:{tool_name}", span_type=SpanType.TOOL) as tool_span:
+                            tool_span.set_inputs({
+                                "tool": tool_name,
+                                "args": tool_args,
+                                "session_id": session.session_id,
+                            })
+                            result = await asyncio.get_event_loop().run_in_executor(
+                                None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
+                            )
+                            tool_span.set_outputs({
+                                "success": "error" not in result,
+                                "result_keys": list(result.keys()),
+                            })
+
+                        tools_used.append(tool_name)
 
                         yield {"event": "tool_result", "data": {"tool": tool_name, "result": result}}
 
@@ -134,6 +166,7 @@ class CreateGenieAgent:
 
                         session.add_tool_result(tc["id"], json.dumps(result, default=str))
 
+                    step = detect_step(session)
                     continue  # Loop back for the LLM to process tool results
 
                 # LLM returned a text response — conversation turn is done
@@ -152,11 +185,19 @@ class CreateGenieAgent:
                 break
 
             else:
-                yield {"event": "error", "data": {"message": "Agent exceeded maximum tool rounds"}}
+                error_msg = "Agent exceeded maximum tool rounds"
+                yield {"event": "error", "data": {"message": error_msg}}
 
         except Exception as e:
             logger.exception("Create agent chat failed")
+            error_msg = str(e)
             yield {"event": "error", "data": {"message": str(e)}}
+
+        if tools_used:
+            logger.info(
+                "Agent turn complete: step=%s tools=%s error=%s",
+                step, tools_used, error_msg,
+            )
 
         yield {"event": "done", "data": {}}
 

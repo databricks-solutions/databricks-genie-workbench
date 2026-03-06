@@ -14,6 +14,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+import mlflow
+from mlflow.entities import SpanType
+
 from backend.services.auth import get_workspace_client, get_databricks_host
 from backend.services.uc_client import list_catalogs, list_schemas, list_tables
 from backend.sql_executor import execute_sql, get_sql_warehouse_id
@@ -811,6 +814,7 @@ def _discover_tables(catalog: str, schema: str) -> dict:
     return response
 
 
+@mlflow.trace(name="describe_table", span_type=SpanType.TOOL)
 def _describe_table(table_identifier: str) -> dict:
     """Get column metadata via the SDK.
 
@@ -889,6 +893,7 @@ def _describe_table(table_identifier: str) -> dict:
     return result_dict
 
 
+@mlflow.trace(name="profile_columns", span_type=SpanType.TOOL)
 def _profile_columns(table_identifier: str, columns: list[str] | None = None) -> dict:
     """Profile columns by querying distinct values and date ranges."""
     if not columns:
@@ -941,6 +946,7 @@ _NULL_STRINGS = {"null", "none", "na", "n/a", ""}
 _MAX_QUALITY_COLS_PER_QUERY = 20
 
 
+@mlflow.trace(name="assess_data_quality", span_type=SpanType.TOOL)
 def _assess_data_quality(table_identifiers: list[str]) -> dict:
     """Assess data quality across one or more tables in parallel.
 
@@ -1347,6 +1353,7 @@ _QUERY_HISTORY_TIMEOUT_S = 10
 _USAGE_COL_PATTERN = re.compile(r"`(\w+)`|(?:^|\.)(\w+)(?:\s|,|\)|$)", re.MULTILINE)
 
 
+@mlflow.trace(name="profile_table_usage", span_type=SpanType.TOOL)
 def _profile_table_usage(table_identifiers: list[str]) -> dict:
     """Profile table lineage and recent query patterns from system tables.
 
@@ -1632,6 +1639,7 @@ def _present_plan(
     return result
 
 
+@mlflow.trace(name="generate_config", span_type=SpanType.TOOL)
 def _generate_config(
     tables: list[dict],
     sample_questions: list[str] | None = None,
@@ -2288,6 +2296,7 @@ def _check_sorted(items: list, key_fn, key_name: str, path: str, error_fn) -> No
             return
 
 
+@mlflow.trace(name="create_space", span_type=SpanType.TOOL)
 def _create_space(display_name: str, config: dict, parent_path: str | None = None) -> dict:
     """Create the Genie space via the API.
 
@@ -2314,6 +2323,7 @@ def _create_space(display_name: str, config: dict, parent_path: str | None = Non
         return {"success": False, "error": str(e)}
 
 
+@mlflow.trace(name="update_space", span_type=SpanType.TOOL)
 def _update_space(space_id: str, config: dict) -> dict:
     """Update an existing Genie space with a new configuration."""
     try:
