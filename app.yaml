@@ -38,10 +38,12 @@ env:
     value: "databricks-claude-sonnet-4-6"
 
   # ---------------------------------------------------------------------------
-  # SQL Warehouse (required for GenieIQ benchmark execution)
+  # SQL Warehouse — pulled from the app resource named "sql-warehouse".
+  # Configure the warehouse resource in the Databricks Apps UI.
+  # Falls back to auto-detect if empty.
   # ---------------------------------------------------------------------------
   - name: SQL_WAREHOUSE_ID
-    value: ""  # Required: your SQL warehouse ID
+    valueFrom: sql-warehouse
 
   # ---------------------------------------------------------------------------
   # Genie Space target directory (where new spaces are created)

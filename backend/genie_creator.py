@@ -308,8 +308,8 @@ def create_genie_space(
     warehouse_id = get_sql_warehouse_id()
     if not warehouse_id:
         raise ValueError(
-            "SQL_WAREHOUSE_ID must be configured to create Genie Spaces. "
-            "Set it to your SQL Warehouse ID."
+            "No SQL warehouse available. Ensure you have access to at least "
+            "one running Pro or Serverless SQL warehouse."
         )
 
     t0 = _time.monotonic()

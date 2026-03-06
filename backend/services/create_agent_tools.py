@@ -1017,14 +1017,14 @@ def _profile_columns(table_identifier: str, columns: list[str] | None = None) ->
             col_type = col["type"].lower().split("<")[0].split("(")[0].strip()
             if col_type in string_types or col_type in date_types:
                 columns_to_profile.append(col["name"])
-        columns = columns_to_profile[:15]
+        columns = columns_to_profile[:10]
 
     profiles = {}
     for col_name in columns:
         try:
             result = execute_sql(
                 f"SELECT DISTINCT `{col_name}` FROM {table_identifier} "
-                f"WHERE `{col_name}` IS NOT NULL ORDER BY `{col_name}` LIMIT 21"
+                f"WHERE `{col_name}` IS NOT NULL ORDER BY `{col_name}` LIMIT 11"
             )
             if result.get("error"):
                 profiles[col_name] = {"error": result["error"]}
@@ -1032,8 +1032,8 @@ def _profile_columns(table_identifier: str, columns: list[str] | None = None) ->
 
             values = [row[0] for row in result.get("data", [])]
             profiles[col_name] = {
-                "distinct_values": values[:20],
-                "has_more": len(values) > 20,
+                "distinct_values": values[:10],
+                "has_more": len(values) > 10,
             }
         except Exception as e:
             profiles[col_name] = {"error": str(e)}
@@ -1552,14 +1552,14 @@ def _fetch_query_history(table_identifiers: list[str]) -> dict:
     )
     sql = (
         f"SELECT executed_by, "
-        f"SUBSTRING(statement_text, 1, 300) AS query_preview, "
+        f"SUBSTRING(statement_text, 1, 150) AS query_preview, "
         f"total_duration_ms, produced_rows "
         f"FROM system.query.history "
         f"WHERE start_time >= date_sub(current_date(), 7) "
         f"AND execution_status = 'FINISHED' "
         f"AND ({like_clauses}) "
         f"ORDER BY start_time DESC "
-        f"LIMIT 30"
+        f"LIMIT 10"
     )
     result = _execute_sql_throttled(sql)
     if result.get("error"):

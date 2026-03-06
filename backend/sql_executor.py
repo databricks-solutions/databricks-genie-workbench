@@ -59,8 +59,51 @@ def validate_sql_read_only(sql: str) -> None:
 
 
 def get_sql_warehouse_id() -> str | None:
-    """Get the SQL Warehouse ID from environment."""
-    return os.environ.get("SQL_WAREHOUSE_ID")
+    """Get the SQL Warehouse ID from environment or auto-detect one.
+
+    Priority:
+    1. SQL_WAREHOUSE_ID env var (explicit config)
+    2. Auto-detect: first running Pro/Serverless warehouse the user can access
+    """
+    configured = os.environ.get("SQL_WAREHOUSE_ID")
+    if configured:
+        return configured
+
+    return _auto_detect_warehouse()
+
+
+def _auto_detect_warehouse() -> str | None:
+    """Find a running SQL warehouse the current user has access to.
+
+    Prefers serverless > pro, running > starting. Returns None if nothing
+    is available.
+    """
+    try:
+        client = get_workspace_client()
+        warehouses = list(client.warehouses.list())
+    except Exception as e:
+        logger.warning("Failed to auto-detect SQL warehouse: %s", e)
+        return None
+
+    running = []
+    for wh in warehouses:
+        state = str(getattr(wh, "state", "")).upper()
+        if state != "RUNNING":
+            continue
+        is_serverless = getattr(wh, "enable_serverless_compute", False)
+        wh_type_str = str(getattr(wh, "warehouse_type", ""))
+        is_pro = wh_type_str == "PRO"
+        if is_serverless or is_pro:
+            running.append((is_serverless, wh))
+
+    if not running:
+        return None
+
+    # Prefer serverless over pro
+    running.sort(key=lambda x: (not x[0],))
+    chosen = running[0][1]
+    logger.info("Auto-detected SQL warehouse: %s (%s)", chosen.name, chosen.id)
+    return chosen.id
 
 
 def execute_sql(
@@ -75,7 +118,8 @@ def execute_sql(
 
     Args:
         sql: SQL statement to execute
-        warehouse_id: Optional warehouse ID (defaults to SQL_WAREHOUSE_ID env var)
+        warehouse_id: Optional warehouse ID (defaults to SQL_WAREHOUSE_ID env var,
+            or auto-detects a running warehouse)
         row_limit: Maximum rows to return
 
     Returns:
@@ -94,7 +138,7 @@ def execute_sql(
             "data": [],
             "row_count": 0,
             "truncated": False,
-            "error": "SQL_WAREHOUSE_ID not configured",
+            "error": "No SQL warehouse available. Check that you have access to at least one running Pro or Serverless warehouse.",
         }
 
     # Validate SQL is read-only before execution

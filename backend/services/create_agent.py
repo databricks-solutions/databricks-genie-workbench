@@ -191,13 +191,23 @@ class CreateGenieAgent:
                         try:
                             tool_args = json.loads(fn["arguments"])
                         except json.JSONDecodeError:
-                            tool_args = {}
+                            args_preview = fn.get("arguments", "")[:200]
+                            args_len = len(fn.get("arguments", ""))
+                            logger.error(
+                                "JSONDecodeError parsing %s args (%d chars, preview: %s). "
+                                "Likely truncated due to max_tokens. Attempting repair.",
+                                tool_name, args_len, args_preview,
+                            )
+                            tool_args = self._try_repair_json(fn.get("arguments", ""))
+                            # Fix the stored history so the next LLM call doesn't
+                            # send invalid JSON in the conversation, which causes 400.
+                            fn["arguments"] = json.dumps(tool_args)
 
-                        if tool_name == "generate_config":
+                        if tool_name in ("generate_config", "present_plan"):
                             injected = self._backfill_generate_config_args(session, tool_args)
                             if injected:
                                 fn["arguments"] = json.dumps(tool_args)
-                                logger.info("Backfilled generate_config args from session: %s", ", ".join(injected))
+                                logger.info("Backfilled %s args from session: %s", tool_name, ", ".join(injected))
 
                         yield {"event": "tool_call", "data": {"tool": tool_name, "args": tool_args}}
 
@@ -293,6 +303,71 @@ class CreateGenieAgent:
 
         yield {"event": "done", "data": {}}
 
+    _TOOL_RESULT_CHAR_LIMIT = 6000
+    _COMPRESSIBLE_TOOLS = frozenset({
+        "describe_table", "profile_columns", "profile_table_usage",
+        "assess_data_quality", "test_sql",
+    })
+
+    @classmethod
+    def _compress_tool_result(cls, tool_name: str, content: str) -> str:
+        """Trim large tool results to keep the conversation within token limits.
+
+        Only compresses results from data-heavy profiling tools; leaves
+        plan/config tool results untouched since those are needed verbatim.
+        """
+        if tool_name not in cls._COMPRESSIBLE_TOOLS:
+            return content
+        if len(content) <= cls._TOOL_RESULT_CHAR_LIMIT:
+            return content
+
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return content[:cls._TOOL_RESULT_CHAR_LIMIT] + "\n...(truncated)"
+
+        if tool_name == "describe_table":
+            # Keep column metadata but cap sample rows
+            if "sample_rows" in data:
+                data["sample_rows"] = data["sample_rows"][:2]
+            if "columns" in data and len(data["columns"]) > 30:
+                data["columns"] = data["columns"][:30]
+                data["_note"] = "Showing first 30 columns only"
+
+        elif tool_name == "profile_columns":
+            # Limit distinct values per column
+            for col, profile in data.get("profiles", {}).items():
+                vals = profile.get("distinct_values", [])
+                if len(vals) > 8:
+                    profile["distinct_values"] = vals[:8]
+                    profile["has_more"] = True
+
+        elif tool_name == "profile_table_usage":
+            # Trim query history per table
+            for tbl, info in data.get("tables", {}).items():
+                qs = info.get("recent_queries", [])
+                if len(qs) > 3:
+                    info["recent_queries"] = qs[:3]
+
+        elif tool_name == "assess_data_quality":
+            # Only keep the summary, drop per-column detail if large
+            for tbl, info in data.get("tables", {}).items():
+                if isinstance(info, dict) and "columns" in info:
+                    cols = info["columns"]
+                    if len(cols) > 20:
+                        info["columns"] = {k: v for i, (k, v) in enumerate(cols.items()) if i < 20}
+                        info["_note"] = "Showing first 20 columns only"
+
+        elif tool_name == "test_sql":
+            # Cap data rows
+            if "data" in data:
+                data["data"] = data.get("data", [])[:3]
+
+        compressed = json.dumps(data, default=str)
+        if len(compressed) > cls._TOOL_RESULT_CHAR_LIMIT:
+            return compressed[:cls._TOOL_RESULT_CHAR_LIMIT] + "\n...(truncated)"
+        return compressed
+
     def _build_messages(self, session: AgentSession) -> list[dict]:
         """Build the full message list for the LLM call.
 
@@ -322,11 +397,12 @@ class CreateGenieAgent:
         for msg in session.history:
             if msg["role"] == "tool":
                 tool_name = tc_id_to_name.get(msg["tool_call_id"], "unknown")
+                raw_content = msg.get("content") or "{}"
                 messages.append({
                     "role": "tool",
                     "tool_call_id": msg["tool_call_id"],
                     "name": tool_name,
-                    "content": msg.get("content") or "{}",
+                    "content": self._compress_tool_result(tool_name, raw_content),
                 })
             elif msg["role"] == "assistant" and msg.get("tool_calls"):
                 tc_content = (msg.get("content") or "").strip() or None
@@ -407,7 +483,7 @@ class CreateGenieAgent:
         body = {
             "messages": messages,
             "tools": TOOL_DEFINITIONS,
-            "max_tokens": 4096,
+            "max_tokens": 16384,
             "stream": True,
         }
 
@@ -470,6 +546,67 @@ class CreateGenieAgent:
             if chunk is _sentinel:
                 break
             yield chunk
+
+    @staticmethod
+    def _try_repair_json(s: str) -> dict:
+        """Attempt to repair truncated JSON from an LLM tool call.
+
+        The LLM output was cut off mid-JSON (due to max_tokens). Try
+        progressively closing open brackets/braces to recover partial data.
+        """
+        if not s or not s.strip():
+            return {}
+        s = s.strip()
+
+        # Try as-is first
+        try:
+            return json.loads(s)
+        except json.JSONDecodeError:
+            pass
+
+        # Find last complete value by trimming trailing partial tokens
+        # Remove trailing comma or partial key
+        for trim_char in (",", ":"):
+            idx = s.rfind(trim_char)
+            if idx > 0:
+                candidate = s[:idx]
+                # Close all open brackets/braces
+                open_brackets = 0
+                open_braces = 0
+                in_string = False
+                escape = False
+                for c in candidate:
+                    if escape:
+                        escape = False
+                        continue
+                    if c == "\\":
+                        escape = True
+                        continue
+                    if c == '"' and not escape:
+                        in_string = not in_string
+                        continue
+                    if in_string:
+                        continue
+                    if c == "[":
+                        open_brackets += 1
+                    elif c == "]":
+                        open_brackets -= 1
+                    elif c == "{":
+                        open_braces += 1
+                    elif c == "}":
+                        open_braces -= 1
+
+                suffix = "]" * max(open_brackets, 0) + "}" * max(open_braces, 0)
+                try:
+                    result = json.loads(candidate + suffix)
+                    if isinstance(result, dict):
+                        logger.info("Repaired truncated JSON (%d chars → %d keys)", len(s), len(result))
+                        return result
+                except json.JSONDecodeError:
+                    continue
+
+        logger.warning("Could not repair truncated JSON (%d chars)", len(s))
+        return {}
 
     @staticmethod
     def _backfill_generate_config_args(session: AgentSession, tool_args: dict) -> list[str]:

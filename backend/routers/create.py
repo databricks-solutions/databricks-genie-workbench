@@ -3,7 +3,7 @@
 """
 import json
 import logging
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -122,7 +122,7 @@ class AgentChatRequest(BaseModel):
 
 
 @router.post("/agent/chat")
-async def agent_chat(body: AgentChatRequest):
+async def agent_chat(body: AgentChatRequest, request: Request):
     """Conversational endpoint for the Create Genie agent.
 
     Returns a streaming SSE response with typed events:
@@ -138,6 +138,7 @@ async def agent_chat(body: AgentChatRequest):
     from backend.services.create_agent_session import (
         create_session, get_session_async, persist_session,
     )
+    from backend.services.auth import set_obo_user_token, clear_obo_user_token
 
     agent = get_create_agent()
 
@@ -152,12 +153,21 @@ async def agent_chat(body: AgentChatRequest):
     if body.selections:
         user_message += f"\n\n[User selections: {json.dumps(body.selections)}]"
 
+    # Capture the user token so the streaming generator can re-establish
+    # the OBO context (ContextVars don't propagate into async generators
+    # that outlive the middleware's call_next).
+    user_token = getattr(request.state, "user_token", "")
+
     async def event_stream():
-        yield _sse_event("session", {"session_id": session.session_id})
-        async for event in agent.chat(session, user_message):
-            yield _sse_event(event["event"], event["data"])
-        # Persist session to Lakebase after the turn completes
-        await persist_session(session)
+        if user_token:
+            set_obo_user_token(user_token)
+        try:
+            yield _sse_event("session", {"session_id": session.session_id})
+            async for event in agent.chat(session, user_message):
+                yield _sse_event(event["event"], event["data"])
+            await persist_session(session)
+        finally:
+            clear_obo_user_token()
 
     return StreamingResponse(
         event_stream(),

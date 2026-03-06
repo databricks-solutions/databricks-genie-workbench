@@ -2214,13 +2214,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       )
     }
 
-    let isLastAssistant = false
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant" && !messages[i].is_thinking) {
-        isLastAssistant = messages[i] === msg
-        break
-      }
-    }
     return (
       <div key={msg.id} className="flex items-start gap-3 mx-4 my-3">
         <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center flex-shrink-0 mt-0.5">
