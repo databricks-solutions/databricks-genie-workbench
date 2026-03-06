@@ -324,13 +324,29 @@ export interface AgentUIElement {
 
 export type AgentEventType =
   | "session"
+  | "step"
   | "thinking"
   | "tool_call"
   | "tool_result"
+  | "message_delta"
   | "message"
   | "created"
+  | "updated"
   | "error"
   | "done"
+
+export interface AgentStep {
+  step: string
+  label: string
+  index: number
+  total: number
+}
+
+export interface AgentThinking {
+  message: string
+  step: string
+  round: number
+}
 
 export interface AgentSSEEvent {
   event: AgentEventType

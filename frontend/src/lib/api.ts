@@ -613,11 +613,14 @@ export async function createWizardSpace(payload: {
 
 export interface AgentChatCallbacks {
   onSession: (sessionId: string) => void
-  onThinking: () => void
+  onStep: (step: string, label: string, index: number, total: number) => void
+  onThinking: (message: string, step: string, round: number) => void
   onToolCall: (tool: string, args: Record<string, unknown>) => void
   onToolResult: (tool: string, result: Record<string, unknown>) => void
+  onMessageDelta: (token: string) => void
   onMessage: (content: string, uiElements?: Record<string, unknown>[] | null) => void
   onCreated: (spaceId: string, url: string, displayName: string) => void
+  onUpdated: (spaceId: string, url: string) => void
   onError: (message: string) => void
   onDone: () => void
 }
@@ -667,11 +670,14 @@ export function streamAgentChat(
             const data = JSON.parse(dataStr)
             switch (eventType) {
               case "session": callbacks.onSession(data.session_id); break
-              case "thinking": callbacks.onThinking(); break
+              case "step": callbacks.onStep(data.step, data.label, data.index, data.total); break
+              case "thinking": callbacks.onThinking(data.message, data.step, data.round); break
               case "tool_call": callbacks.onToolCall(data.tool, data.args); break
               case "tool_result": callbacks.onToolResult(data.tool, data.result); break
+              case "message_delta": callbacks.onMessageDelta(data.content); break
               case "message": callbacks.onMessage(data.content, data.ui_elements); break
               case "created": callbacks.onCreated(data.space_id, data.url, data.display_name); break
+              case "updated": callbacks.onUpdated(data.space_id, data.url); break
               case "error": callbacks.onError(data.message); break
               case "done": callbacks.onDone(); break
             }

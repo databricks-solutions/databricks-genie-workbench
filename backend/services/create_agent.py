@@ -4,10 +4,14 @@ Uses a tool-calling loop: the LLM decides which tools to call and when,
 guided by the system prompt (SKILL.md workflow + schema reference).
 """
 
+import asyncio
 import json
 import logging
+import time
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Generator
+
+import requests as http_client
 
 import mlflow
 from mlflow.entities import SpanType
@@ -21,6 +25,33 @@ from backend.prompts_create import assemble_system_prompt, detect_step
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 15
+
+STEP_LABELS: dict[str, str] = {
+    "requirements": "Understanding requirements",
+    "data_sources": "Exploring data sources",
+    "inspection": "Inspecting tables",
+    "plan": "Building plan",
+    "config_create": "Generating configuration",
+    "post_creation": "Finalizing space",
+}
+
+STEP_THINKING: dict[str, str] = {
+    "requirements": "Understanding your requirements…",
+    "data_sources": "Exploring your data catalog…",
+    "inspection": "Analyzing table structure and data quality…",
+    "plan": "Designing your Genie Space plan…",
+    "config_create": "Generating the configuration…",
+    "post_creation": "Finalizing your Genie Space…",
+}
+
+STEP_ORDER = [
+    "requirements",
+    "data_sources",
+    "inspection",
+    "plan",
+    "config_create",
+    "post_creation",
+]
 
 
 class CreateGenieAgent:
@@ -44,75 +75,107 @@ class CreateGenieAgent:
         """Process a user message and stream agent events.
 
         Yields dicts with:
-            {"event": "thinking",    "data": {"message": str}}
-            {"event": "tool_call",   "data": {"tool": str, "args": dict}}
-            {"event": "tool_result", "data": {"tool": str, "result": dict}}
-            {"event": "message",     "data": {"content": str, "ui_elements": list | None}}
-            {"event": "created",     "data": {"space_id": str, "url": str}}
-            {"event": "error",       "data": {"message": str}}
-            {"event": "done",        "data": {}}
+            {"event": "thinking",      "data": {"message": str}}
+            {"event": "tool_call",     "data": {"tool": str, "args": dict}}
+            {"event": "tool_result",   "data": {"tool": str, "result": dict}}
+            {"event": "message_delta", "data": {"content": str}}
+            {"event": "message",       "data": {"content": str, "ui_elements": list | None}}
+            {"event": "created",       "data": {"space_id": str, "url": str}}
+            {"event": "error",         "data": {"message": str}}
+            {"event": "done",          "data": {}}
         """
-        import asyncio
-
         session.add_message("user", user_message)
         step = detect_step(session)
+        step_idx = STEP_ORDER.index(step) if step in STEP_ORDER else 0
 
-        yield {"event": "thinking", "data": {"message": "Processing..."}}
+        yield {"event": "step", "data": {
+            "step": step,
+            "label": STEP_LABELS.get(step, step),
+            "index": step_idx,
+            "total": len(STEP_ORDER),
+        }}
+        yield {"event": "thinking", "data": {
+            "message": STEP_THINKING.get(step, "Processing…"),
+            "step": step,
+            "round": 0,
+        }}
 
         tools_used: list[str] = []
         error_msg: str | None = None
 
         try:
             for round_num in range(MAX_TOOL_ROUNDS):
-                # ── LLM call (traced) ─────────────────────────────────
-                with mlflow.start_span(name="llm_call", span_type=SpanType.LLM) as llm_span:
-                    messages = self._build_messages(session)
-                    llm_span.set_inputs({
-                        "model": self.model,
-                        "message_count": len(messages),
+                if round_num > 0:
+                    yield {"event": "thinking", "data": {
+                        "message": "Processing tool results…",
+                        "step": step,
                         "round": round_num,
-                        "session_id": session.session_id,
-                        "workflow_step": step,
-                    })
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: self._call_llm(messages)
-                    )
-                    choice = response["choices"][0]
-                    message = choice["message"]
-                    finish_reason = choice.get("finish_reason", "stop")
+                    }}
+
+                messages = self._build_messages(session)
+
+                content_parts: list[str] = []
+                tool_calls_acc: dict[int, dict] = {}
+                llm_span = mlflow.start_span(name="llm_call", span_type=SpanType.LLM)
+                llm_span.set_inputs({
+                    "model": self.model,
+                    "message_count": len(messages),
+                    "round": round_num,
+                    "session_id": session.session_id,
+                    "workflow_step": step,
+                })
+
+                try:
+                    async for chunk in self._async_stream_llm(messages):
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
+                        delta = choices[0].get("delta", {})
+
+                        if delta.get("content"):
+                            token = delta["content"]
+                            content_parts.append(token)
+                            yield {"event": "message_delta", "data": {"content": token}}
+
+                        if delta.get("tool_calls"):
+                            for tc_delta in delta["tool_calls"]:
+                                idx = tc_delta.get("index", 0)
+                                if idx not in tool_calls_acc:
+                                    fn = tc_delta.get("function", {})
+                                    tool_calls_acc[idx] = {
+                                        "id": tc_delta.get("id", ""),
+                                        "function": {
+                                            "name": fn.get("name", ""),
+                                            "arguments": fn.get("arguments", ""),
+                                        },
+                                    }
+                                else:
+                                    if tc_delta.get("id"):
+                                        tool_calls_acc[idx]["id"] = tc_delta["id"]
+                                    fn = tc_delta.get("function", {})
+                                    if fn.get("name"):
+                                        tool_calls_acc[idx]["function"]["name"] = fn["name"]
+                                    if fn.get("arguments"):
+                                        tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
+                finally:
+                    accumulated_content = "".join(content_parts)
                     llm_span.set_outputs({
-                        "finish_reason": finish_reason,
-                        "has_tool_calls": bool(message.get("tool_calls")),
-                        "tool_count": len(message.get("tool_calls", [])),
-                        "response_preview": str(message.get("content", ""))[:200],
+                        "has_tool_calls": bool(tool_calls_acc),
+                        "tool_count": len(tool_calls_acc),
+                        "response_preview": accumulated_content[:200],
                     })
+                    llm_span.end()
 
-                # Check for tool_calls regardless of finish_reason — some
-                # Claude endpoints report "tool_use" or "stop" instead of "tool_calls"
-                tool_calls = message.get("tool_calls")
-                if tool_calls:
-                    raw_content = message.get("content")
-                    # Normalize content — Claude can return a list of blocks
-                    if isinstance(raw_content, list):
-                        raw_content = " ".join(
-                            b.get("text", "") if isinstance(b, dict) else str(b)
-                            for b in raw_content
-                        ).strip()
+                if tool_calls_acc:
+                    tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
 
-                    # Always store content as a string — None breaks some
-                    # serving endpoints when the message is sent back
                     assistant_msg = {
                         "role": "assistant",
-                        "content": raw_content or "",
+                        "content": accumulated_content or "",
                         "tool_calls": tool_calls,
                     }
                     session.history.append(assistant_msg)
-                    session.last_active = __import__("time").time()
-
-                    # Surface reasoning text so the user sees WHY the agent
-                    # is about to call tools, not just the tool names.
-                    if raw_content:
-                        yield {"event": "message", "data": {"content": raw_content, "ui_elements": None}}
+                    session.last_active = time.time()
 
                     for tc in tool_calls:
                         fn = tc["function"]
@@ -124,7 +187,6 @@ class CreateGenieAgent:
 
                         yield {"event": "tool_call", "data": {"tool": tool_name, "args": tool_args}}
 
-                        # ── Tool execution (traced) ───────────────────
                         with mlflow.start_span(name=f"tool:{tool_name}", span_type=SpanType.TOOL) as tool_span:
                             tool_span.set_inputs({
                                 "tool": tool_name,
@@ -143,7 +205,6 @@ class CreateGenieAgent:
 
                         yield {"event": "tool_result", "data": {"tool": tool_name, "result": result}}
 
-                        # Track space creation
                         if tool_name == "create_space" and result.get("success"):
                             session.space_id = result.get("space_id")
                             session.space_url = result.get("space_url")
@@ -153,35 +214,35 @@ class CreateGenieAgent:
                                 "display_name": result.get("display_name", ""),
                             }}
 
-                        # Track space update
                         if tool_name == "update_space" and result.get("success"):
                             yield {"event": "updated", "data": {
                                 "space_id": result["space_id"],
                                 "url": result["url"],
                             }}
 
-                        # Track generated/updated config
                         if tool_name in ("generate_config", "update_config") and "config" in result:
                             session.space_config = result["config"]
 
                         session.add_tool_result(tc["id"], json.dumps(result, default=str))
 
-                    step = detect_step(session)
-                    continue  # Loop back for the LLM to process tool results
+                    new_step = detect_step(session)
+                    if new_step != step:
+                        step = new_step
+                        step_idx = STEP_ORDER.index(step) if step in STEP_ORDER else 0
+                        yield {"event": "step", "data": {
+                            "step": step,
+                            "label": STEP_LABELS.get(step, step),
+                            "index": step_idx,
+                            "total": len(STEP_ORDER),
+                        }}
+                    else:
+                        step = new_step
+                    continue
 
-                # LLM returned a text response — conversation turn is done
-                raw_content = message.get("content", "")
-                if isinstance(raw_content, list):
-                    raw_content = " ".join(
-                        b.get("text", "") if isinstance(b, dict) else str(b)
-                        for b in raw_content
-                    ).strip()
-                content = raw_content or ""
-                session.add_message("assistant", content)
-
+                # Text-only response — conversation turn is done
+                session.add_message("assistant", accumulated_content)
                 ui_elements = self._extract_ui_hints(session)
-
-                yield {"event": "message", "data": {"content": content, "ui_elements": ui_elements}}
+                yield {"event": "message", "data": {"content": accumulated_content, "ui_elements": ui_elements}}
                 break
 
             else:
@@ -288,36 +349,58 @@ class CreateGenieAgent:
         for idx, msg in reversed(inserts):
             session.history.insert(idx, msg)
 
-    def _call_llm(self, messages: list[dict]) -> dict:
-        """Call the LLM serving endpoint with tools."""
+    def _stream_llm(self, messages: list[dict]) -> Generator[dict, None, None]:
+        """Stream LLM response chunks from the serving endpoint (sync).
+
+        Yields parsed SSE data dicts with OpenAI-compatible streaming format.
+        """
         client = get_workspace_client()
+        host = (client.config.host or "").rstrip("/")
+        token = client.config.token
 
         body = {
             "messages": messages,
             "tools": TOOL_DEFINITIONS,
             "max_tokens": 4096,
+            "stream": True,
         }
 
-        logger.info(f"Calling LLM with {len(messages)} messages and {len(TOOL_DEFINITIONS)} tools")
-        for i, m in enumerate(messages):
-            role = m["role"]
-            content = m.get("content", "")
-            if isinstance(content, list):
-                types = [b.get("type", "?") for b in content]
-                logger.info(f"  msg[{i}] role={role} content_blocks={types}")
-            else:
-                logger.info(f"  msg[{i}] role={role} content='{str(content)[:60]}'")
+        url = f"{host}/serving-endpoints/{self.model}/invocations"
+        logger.info(f"Streaming LLM call to {self.model} with {len(messages)} messages")
 
-        response = client.api_client.do(
-            method="POST",
-            path=f"/serving-endpoints/{self.model}/invocations",
-            body=body,
-        )
+        with http_client.post(
+            url,
+            json=body,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            stream=True,
+            timeout=120,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    yield json.loads(data)
+                except json.JSONDecodeError:
+                    continue
 
-        if not isinstance(response, dict) or "choices" not in response:
-            raise ValueError(f"Unexpected LLM response: {type(response)}")
+    async def _async_stream_llm(self, messages: list[dict]) -> AsyncGenerator[dict, None]:
+        """Async wrapper that bridges the sync streaming generator to async."""
+        loop = asyncio.get_event_loop()
+        gen = self._stream_llm(messages)
+        _sentinel = object()
 
-        return response
+        while True:
+            chunk = await loop.run_in_executor(None, lambda: next(gen, _sentinel))
+            if chunk is _sentinel:
+                break
+            yield chunk
 
     def _extract_ui_hints(self, session: AgentSession) -> list[dict] | None:
         """Extract UI hint metadata from tool results in the current turn.

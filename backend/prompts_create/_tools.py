@@ -12,6 +12,8 @@ Good:
 Bad:
 > *(calls discover_tables with no explanation)*
 
+**Exception:** For `present_plan`, keep the accompanying text very brief (1 sentence). The plan card itself is the content — don't summarize it in markdown.
+
 **Tool sequence guidelines:**
 - `describe_table` → always first when exploring a new table
 - `assess_data_quality` + `profile_table_usage` → call together after describe_table

@@ -125,8 +125,12 @@ Present a **complete plan** for user review in a single, well-structured message
 
    These should match the audience level. For executives: "What were our top 5 products by revenue this quarter?" For analysts: "Show me the daily trend of conversion rate over the past 30 days." Incorporate business context (fiscal definitions, terminology).
 
-**Format the plan clearly** using markdown. End with:
-> "Does this look good? I can adjust any section, or proceed to building the configuration."
+**IMPORTANT:** Call the `present_plan` tool with ALL structured data. Do NOT write the plan out as a markdown text block — the frontend renders the tool result as an interactive card with collapsible sections and inline editing. A duplicate markdown summary is redundant and clutters the chat.
+
+After calling `present_plan`, say something brief like:
+> "Here's the plan — click any item to edit it inline, add or remove items. When you're ready, choose an action below."
+
+Do NOT add a verbose summary of the plan's contents (purpose, audience, table stats, etc.) — the plan card already shows everything.
 
 **Important:** The user must approve the plan before you move to generation. If they request changes, regenerate the affected sections.
 

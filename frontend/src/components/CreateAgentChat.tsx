@@ -37,7 +37,7 @@ import {
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { streamAgentChat } from "@/lib/api"
-import type { AgentChatMessage, AgentUIElement } from "@/types"
+import type { AgentChatMessage, AgentUIElement, AgentStep } from "@/types"
 
 interface CreateAgentChatProps {
   onCreated: (spaceId: string, displayName: string) => void
@@ -66,6 +66,15 @@ const ELEMENT_ICONS: Record<string, typeof Database> = {
   table_selection: Table2,
   warehouse_selection: Server,
 }
+
+const STEP_META = [
+  { key: "requirements", label: "Requirements" },
+  { key: "data_sources", label: "Data sources" },
+  { key: "inspection", label: "Inspection" },
+  { key: "plan", label: "Plan" },
+  { key: "config_create", label: "Config" },
+  { key: "post_creation", label: "Create" },
+]
 
 const COMBOBOX_THRESHOLD = 15
 
@@ -143,7 +152,7 @@ function currentStep(p: BuildProgress): number {
 
 interface EditablePlan {
   sample_questions: string[]
-  text_instructions: string[]
+  text_instructions: string
   joins: Record<string, string>[]
   measures: Record<string, string>[]
   filters: Record<string, string>[]
@@ -154,9 +163,10 @@ interface EditablePlan {
 
 function planFromResult(result: Record<string, unknown>): EditablePlan {
   const s = (result.sections as Record<string, unknown[]>) || {}
+  const tiArr = (s.text_instructions as string[]) || []
   return {
     sample_questions: [...((s.sample_questions as string[]) || [])],
-    text_instructions: [...((s.text_instructions as string[]) || [])],
+    text_instructions: tiArr.join("\n"),
     joins: ((s.joins as Record<string, string>[]) || []).map((j) => ({ ...j })),
     measures: ((s.measures as Record<string, string>[]) || []).map((m) => ({ ...m })),
     filters: ((s.filters as Record<string, string>[]) || []).map((f) => ({ ...f })),
@@ -213,6 +223,10 @@ function loadState(): PersistedState | null {
     // Migrate editedPlan: ensure benchmarks array exists
     if (parsed.editedPlan && !Array.isArray(parsed.editedPlan.benchmarks)) {
       parsed.editedPlan.benchmarks = []
+    }
+    // Migrate text_instructions from string[] to single string
+    if (parsed.editedPlan && Array.isArray((parsed.editedPlan as any).text_instructions)) {
+      parsed.editedPlan.text_instructions = ((parsed.editedPlan as any).text_instructions as string[]).join("\n")
     }
     // Reconstruct editedPlan from messages if missing
     if (!parsed.editedPlan && parsed.messages) {
@@ -285,6 +299,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [businessContextDraft, setBusinessContextDraft] = useState("")
   const [expandedPlanSections, setExpandedPlanSections] = useState<Set<string>>(new Set(["sample_questions"]))
   const [agentStatus, setAgentStatus] = useState<string | null>(null)
+  const [agentStep, setAgentStep] = useState<AgentStep | null>(null)
   const [editedPlan, setEditedPlan] = useState<EditablePlan | null>(restored.current?.editedPlan ?? null)
   const [editingPlanItem, setEditingPlanItem] = useState<string | null>(null)
   const [autoPilot, setAutoPilot] = useState(false)
@@ -294,6 +309,12 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const stopRef = useRef<(() => void) | null>(null)
+
+  // Streaming message state — accumulate tokens in a ref and flush to React
+  // state on an animation-frame schedule to keep renders at ~60 fps.
+  const streamingContentRef = useRef("")
+  const streamingMsgIdRef = useRef<string | null>(null)
+  const streamingRafRef = useRef<number | null>(null)
 
   // Persist key state to sessionStorage on change
   useEffect(() => {
@@ -367,13 +388,40 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         }
       }
 
+      const flushStreamingContent = () => {
+        const id = streamingMsgIdRef.current
+        const content = streamingContentRef.current
+        if (!id) return
+        setMessages((prev) =>
+          prev.map((m) => (m.id === id ? { ...m, content } : m)),
+        )
+      }
+
       stopRef.current = streamAgentChat(text.trim(), sessionId, selections ?? null, {
         onSession: (sid) => setSessionId(sid),
-        onThinking: () => {
-          setAgentStatus("Processing...")
+        onStep: (step, label, index, total) => {
+          setAgentStep({ step, label, index, total })
+        },
+        onThinking: (message, _step, _round) => {
+          setAgentStatus(message)
         },
         onToolCall: (tool, args) => {
           setAgentStatus(getStatusText(tool, args))
+
+          // Finalize any in-flight streaming message before showing tool calls
+          if (streamingMsgIdRef.current) {
+            if (streamingRafRef.current) {
+              cancelAnimationFrame(streamingRafRef.current)
+              streamingRafRef.current = null
+            }
+            const id = streamingMsgIdRef.current
+            const content = streamingContentRef.current
+            setMessages((prev) =>
+              prev.map((m) => (m.id === id ? { ...m, content } : m)),
+            )
+            streamingContentRef.current = ""
+            streamingMsgIdRef.current = null
+          }
 
           const toolMsg: AgentChatMessage = {
             id: nextId(),
@@ -451,7 +499,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                 expressions: plan.expressions.length,
                 exampleSqls: plan.example_sqls.length,
                 joins: plan.joins.length,
-                textInstruction: plan.text_instructions.length > 0,
+                textInstruction: plan.text_instructions.trim().length > 0,
               },
             }))
           }
@@ -484,17 +532,52 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
           setAgentStatus("Thinking...")
         },
+        onMessageDelta: (token) => {
+          setAgentStatus(null)
+          streamingContentRef.current += token
+
+          if (!streamingMsgIdRef.current) {
+            const id = nextId()
+            streamingMsgIdRef.current = id
+            setMessages((prev) => [
+              ...prev,
+              { id, role: "assistant", content: token, timestamp: Date.now() },
+            ])
+          } else if (!streamingRafRef.current) {
+            streamingRafRef.current = requestAnimationFrame(() => {
+              flushStreamingContent()
+              streamingRafRef.current = null
+            })
+          }
+        },
         onMessage: (content, uiElements) => {
           pendingToolCalls = []
           setAgentStatus(null)
-          const assistantMsg: AgentChatMessage = {
-            id: nextId(),
-            role: "assistant",
-            content,
-            timestamp: Date.now(),
-            ui_elements: uiElements as AgentUIElement[] | null | undefined,
+
+          if (streamingRafRef.current) {
+            cancelAnimationFrame(streamingRafRef.current)
+            streamingRafRef.current = null
           }
-          setMessages((prev) => [...prev, assistantMsg])
+
+          const streamId = streamingMsgIdRef.current
+          if (streamId) {
+            // Finalize the streaming message with full content and ui_elements
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === streamId
+                  ? { ...m, content: content || streamingContentRef.current, ui_elements: uiElements as AgentUIElement[] | null | undefined }
+                  : m,
+              ),
+            )
+            streamingContentRef.current = ""
+            streamingMsgIdRef.current = null
+          } else {
+            // Fallback: no preceding deltas (e.g. reasoning text before tool calls)
+            setMessages((prev) => [
+              ...prev,
+              { id: nextId(), role: "assistant", content, timestamp: Date.now(), ui_elements: uiElements as AgentUIElement[] | null | undefined },
+            ])
+          }
         },
         onCreated: (spaceId, url, displayName) => {
           setMessages((prev) => [
@@ -515,8 +598,19 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             title: p.title || displayName,
           }))
         },
+        onUpdated: (_spaceId, _url) => {
+          // Space updated — no special UI handling needed
+        },
         onError: (message) => {
           setAgentStatus(null)
+          // Clean up any in-flight streaming message
+          if (streamingRafRef.current) {
+            cancelAnimationFrame(streamingRafRef.current)
+            streamingRafRef.current = null
+          }
+          streamingContentRef.current = ""
+          streamingMsgIdRef.current = null
+
           setMessages((prev) => [
             ...prev,
             {
@@ -529,7 +623,15 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         },
         onDone: () => {
           setAgentStatus(null)
+          setAgentStep(null)
           setIsStreaming(false)
+          // Clean up streaming refs
+          if (streamingRafRef.current) {
+            cancelAnimationFrame(streamingRafRef.current)
+            streamingRafRef.current = null
+          }
+          streamingContentRef.current = ""
+          streamingMsgIdRef.current = null
           pendingToolCalls = []
           setQueuedMessage((queued) => {
             if (queued) {
@@ -559,7 +661,14 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     stopRef.current?.()
     setIsStreaming(false)
     setAgentStatus(null)
+    setAgentStep(null)
     setQueuedMessage(null)
+    if (streamingRafRef.current) {
+      cancelAnimationFrame(streamingRafRef.current)
+      streamingRafRef.current = null
+    }
+    streamingContentRef.current = ""
+    streamingMsgIdRef.current = null
   }
 
   const [showClearConfirm, setShowClearConfirm] = useState(false)
@@ -574,6 +683,13 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setSessionId(null)
     setIsStreaming(false)
     setAgentStatus(null)
+    setAgentStep(null)
+    if (streamingRafRef.current) {
+      cancelAnimationFrame(streamingRafRef.current)
+      streamingRafRef.current = null
+    }
+    streamingContentRef.current = ""
+    streamingMsgIdRef.current = null
     setExpandedTools(new Set())
     setUsedElements(new Set())
     setMultiSelections({})
@@ -667,11 +783,17 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   // Panel: business context management
   const addBusinessContext = () => {
     if (!businessContextDraft.trim()) return
-    setProgress((p) => ({ ...p, businessContext: [...p.businessContext, businessContextDraft.trim()] }))
+    const rule = businessContextDraft.trim()
+    setProgress((p) => ({ ...p, businessContext: [...p.businessContext, rule] }))
     setBusinessContextDraft("")
+    sendMessage(`Business rule to keep in mind: "${rule}"`)
   }
   const removeBusinessContext = (i: number) => {
+    const removed = progress.businessContext[i]
     setProgress((p) => ({ ...p, businessContext: p.businessContext.filter((_, j) => j !== i) }))
+    if (removed) {
+      sendMessage(`Please disregard the previous business rule: "${removed}"`)
+    }
   }
 
   // ─── Render helpers ───────────────────────────────────────────
@@ -1144,7 +1266,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
     const PLAN_SECTIONS: { key: string; label: string; description: string; Icon: typeof MessageSquare; count: number }[] = [
       { key: "sample_questions", label: "Sample Questions", description: "Click-to-ask suggestions shown to users in the Genie Space UI", Icon: MessageSquare, count: plan.sample_questions.length },
-      { key: "text_instructions", label: "Text Instructions", description: "Business rules and domain context that guide how Genie interprets questions", Icon: FileText, count: plan.text_instructions.length },
+      { key: "text_instructions", label: "Text Instructions", description: "Business rules and domain context that guide how Genie interprets questions", Icon: FileText, count: plan.text_instructions.trim() ? 1 : 0 },
       { key: "joins", label: "Joins", description: "Table relationships so Genie can combine data across tables", Icon: Link2, count: plan.joins.length },
       { key: "sql_expressions", label: "SQL Expressions", description: "Reusable measures, filters, and dimensions for common calculations", Icon: Code2, count: sqlExpressionCount },
       { key: "example_sqls", label: "Example SQL Queries", description: "Question-SQL pairs that teach Genie how to write correct queries", Icon: ListChecks, count: plan.example_sqls.length },
@@ -1163,7 +1285,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       ...plan.expressions.map((e, i) => ({ ...e, _type: "dimension" as const, _key: "expressions" as keyof EditablePlan, _idx: i })),
     ]
 
-    const totalItems = plan.sample_questions.length + (plan.benchmarks || []).length + plan.text_instructions.length + plan.joins.length + sqlExpressionCount + plan.example_sqls.length
+    const totalItems = plan.sample_questions.length + (plan.benchmarks || []).length + (plan.text_instructions.trim() ? 1 : 0) + plan.joins.length + sqlExpressionCount + plan.example_sqls.length
 
     const isEditing = (itemKey: string) => editingPlanItem === itemKey
     const startEdit = (itemKey: string) => setEditingPlanItem(itemKey)
@@ -1182,7 +1304,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
         <div className="divide-y divide-[var(--border-color)]">
           {PLAN_SECTIONS.map((sec) => {
-            const alwaysShow = ["sample_questions", "example_sqls", "benchmarks"]
+            const alwaysShow = ["sample_questions", "example_sqls", "benchmarks", "text_instructions"]
             if (sec.count === 0 && !alwaysShow.includes(sec.key)) return null
             const isOpen = expandedPlanSections.has(sec.key)
             const { Icon } = sec
@@ -1198,7 +1320,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                     <span className="font-medium text-primary block">{sec.label}</span>
                     {!isOpen && <span className="text-[10px] text-muted block truncate">{sec.description}</span>}
                   </div>
-                  <span className="text-[10px] text-muted bg-surface-secondary px-1.5 py-0.5 rounded-full flex-shrink-0">{sec.count}</span>
+                  {sec.key === "text_instructions" ? (
+                    sec.count > 0 ? <Check className="w-3.5 h-3.5 text-green-400 flex-shrink-0" /> : <span className="text-[10px] text-muted flex-shrink-0">empty</span>
+                  ) : (
+                    <span className="text-[10px] text-muted bg-surface-secondary px-1.5 py-0.5 rounded-full flex-shrink-0">{sec.count}</span>
+                  )}
                 </button>
 
                 {isOpen && (
@@ -1287,39 +1413,19 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                       </div>
                     )}
 
-                    {/* Text Instructions */}
+                    {/* Text Instructions — single editable block */}
                     {sec.key === "text_instructions" && (
-                      <div className="space-y-1">
-                        {plan.text_instructions.map((t, i) => {
-                          const itemKey = `ti-${i}`
-                          return isEditing(itemKey) ? (
-                            <div key={i} className="flex gap-1.5 items-start">
-                              <textarea
-                                autoFocus
-                                value={t}
-                                onChange={(e) => updatePlanList("text_instructions", i, e.target.value)}
-                                onBlur={stopEdit}
-                                rows={3}
-                                className="flex-1 bg-elevated border border-accent/30 rounded px-2 py-1 text-secondary resize-none focus:outline-none focus:ring-1 focus:ring-accent/40"
-                              />
-                              <button onClick={() => removePlanItem("text_instructions", i)} className="p-1 text-red-400 hover:text-red-300 flex-shrink-0">
-                                <Trash2 className="w-3 h-3" />
-                              </button>
-                            </div>
-                          ) : (
-                            <div key={i} className="flex items-start gap-2 group/item py-1 cursor-pointer hover:bg-elevated rounded px-1 -mx-1" onClick={() => startEdit(itemKey)}>
-                              <span className="text-muted select-none">&bull;</span>
-                              <span className="text-secondary flex-1">{t}</span>
-                              <Pencil className="w-3 h-3 text-muted opacity-0 group-hover/item:opacity-100 flex-shrink-0 mt-0.5" />
-                            </div>
-                          )
-                        })}
-                        <button
-                          onClick={() => addPlanItem("text_instructions", "")}
-                          className="flex items-center gap-1 text-accent hover:underline mt-1"
-                        >
-                          <Plus className="w-3 h-3" /> Add instruction
-                        </button>
+                      <div>
+                        <textarea
+                          value={plan.text_instructions}
+                          onChange={(e) => setEditedPlan((prev) => prev ? { ...prev, text_instructions: e.target.value } : prev)}
+                          rows={Math.max(8, plan.text_instructions.split("\n").length + 2)}
+                          placeholder="Business rules, terminology, default assumptions, data quality warnings..."
+                          className="w-full bg-elevated border border-default rounded px-3 py-2 text-secondary text-sm font-mono leading-relaxed resize-y focus:outline-none focus:ring-1 focus:ring-accent/40 focus:border-accent/30"
+                        />
+                        <p className="text-[10px] text-muted mt-1">
+                          Use ## headers to organize (Terminology, Default Assumptions, Data Quality, etc.)
+                        </p>
                       </div>
                     )}
 
@@ -2462,11 +2568,31 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                   : renderMessage(item.msg),
               )}
               {agentStatus && (
-                <div className="flex items-center gap-2.5 mx-4 my-2 py-1.5">
-                  <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center flex-shrink-0">
-                    <Loader2 className="w-4 h-4 text-accent animate-spin" />
+                <div className="mx-4 my-2 py-1.5 space-y-1.5">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-lg bg-accent/10 flex items-center justify-center flex-shrink-0">
+                      <Loader2 className="w-4 h-4 text-accent animate-spin" />
+                    </div>
+                    <span className="text-xs font-medium text-muted">{agentStatus}</span>
                   </div>
-                  <span className="text-xs font-medium text-muted">{agentStatus}</span>
+                  {agentStep && (
+                    <div className="ml-9 flex items-center gap-1.5">
+                      {STEP_META.map((s, i) => (
+                        <div
+                          key={s.key}
+                          className={`h-1 rounded-full transition-all duration-300 ${
+                            i < agentStep.index
+                              ? "w-5 bg-accent/40"
+                              : i === agentStep.index
+                                ? "w-7 bg-accent"
+                                : "w-5 bg-border"
+                          }`}
+                          title={s.label}
+                        />
+                      ))}
+                      <span className="ml-1.5 text-[10px] text-muted/60">{agentStep.label}</span>
+                    </div>
+                  )}
                 </div>
               )}
               <div ref={messagesEndRef} />
