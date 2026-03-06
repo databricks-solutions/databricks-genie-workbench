@@ -286,8 +286,22 @@ TOOL_DEFINITIONS = [
                             "type": "object",
                             "properties": {
                                 "question": {"type": "string"},
-                                "sql": {"type": "string", "description": "The full SQL query as a single string"},
+                                "sql": {"type": "string", "description": "The full SQL query as a single string. Use :param_name for parameterized values."},
                                 "usage_guidance": {"type": "string"},
+                                "parameters": {
+                                    "type": "array",
+                                    "description": "Parameters for parameterized SQL (using :param_name in the query). Always include a default_value — it teaches Genie what valid values look like so it can extract the real value from user questions.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": {"type": "string", "description": "Parameter name matching :name in the SQL"},
+                                            "type_hint": {"type": "string", "enum": ["STRING", "NUMBER", "DATE", "BOOLEAN"]},
+                                            "description": {"type": "string", "description": "What this parameter represents, with 2-3 REAL values from the data (e.g., 'The region. Values: North America, EMEA, APJ')"},
+                                            "default_value": {"type": "string", "description": "A REAL value from the data (e.g., 'North America'). Genie runs the query with this value, so it must produce valid results."},
+                                        },
+                                        "required": ["name", "type_hint", "default_value"],
+                                    },
+                                },
                             },
                             "required": ["question", "sql"],
                         },
@@ -1647,6 +1661,19 @@ def _generate_config(
             }
             if eq.get("usage_guidance"):
                 entry["usage_guidance"] = [eq["usage_guidance"]]
+            if eq.get("parameters"):
+                params = []
+                for p in eq["parameters"]:
+                    param_entry: dict[str, Any] = {
+                        "name": p["name"],
+                        "type_hint": p.get("type_hint", "STRING"),
+                    }
+                    if p.get("description"):
+                        param_entry["description"] = [p["description"]]
+                    if p.get("default_value"):
+                        param_entry["default_value"] = {"values": [p["default_value"]]}
+                    params.append(param_entry)
+                entry["parameters"] = params
             eq_items.append(entry)
         eq_items.sort(key=lambda x: x["id"])
         instructions["example_question_sqls"] = eq_items

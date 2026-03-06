@@ -66,6 +66,36 @@ Present a **complete plan** for user review in a single, well-structured message
    - Cover the most common question types for this domain (aggregations, filters, joins, time ranges)
    - Demonstrate business rules from text instructions applied in practice (e.g., if text instructions say "default to current year", the example SQL should show that)
 
+   **Use parameterized SQL** (`:param_name` syntax) when the question involves a user-supplied value that varies per query. This teaches Genie to generalize — when a user asks "show me sales for EMEA", Genie matches the pattern and extracts "EMEA" as the parameter value.
+
+   Use parameterized SQL when:
+   - The question filters by an entity: "Show sales for North America" → `WHERE region = :region_name`
+   - The question involves a threshold: "Show orders above $1000" → `WHERE amount > :min_amount`
+   - The question filters by a date: "Show data for January" → `WHERE month = :target_month`
+
+   Use hardcoded SQL when:
+   - The pattern is always the same: "What is total revenue?" → no parameters needed
+   - The value is a business rule, not user input: "default to current year" → `YEAR(CURRENT_DATE())` hardcoded
+   - The example teaches a structural pattern (GROUP BY, JOIN, window functions) where the value doesn't matter
+
+   **The question must be concrete — use the default value, not a placeholder.** Users ask "show me sales for North America", not "show me sales for a specific region". The parameterization lives in the SQL only. Genie learns the pattern and generalizes to other values from the parameter metadata.
+
+   **Every parameter MUST include `default_value` and `description` — both using REAL values from the data** (from `describe_table` or `profile_columns` results). The `default_value` gets used as the initial parameter value when Genie runs the query, so a fake value would produce wrong or empty results. The `description` should list 2-3 real distinct values so Genie knows the value domain.
+
+   Example:
+   ```
+   question: "Show sales for North America"
+   sql: "SELECT ... FROM ... WHERE region = :region_name"
+   parameters: [{
+     name: "region_name",
+     type_hint: "STRING",
+     description: "The sales region. Values: North America, EMEA, APJ, LATAM",
+     default_value: "North America"
+   }]
+   ```
+
+   Aim for a mix: ~3-5 hardcoded examples for structural patterns, ~2-5 parameterized examples for entity-specific queries.
+
    Incorporate patterns from `profile_table_usage` query history where available — real query patterns make better few-shot examples than synthetic ones. Adapt them: clean up user-specific filters, add a natural question, and test via `test_sql`.
 
 5. **Filters** — reusable WHERE clause snippets for common filter patterns (suggest based on data inspection)
