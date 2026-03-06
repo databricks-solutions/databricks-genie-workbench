@@ -2185,7 +2185,11 @@ def _check_sorted(items: list, key_fn, key_name: str, path: str, error_fn) -> No
 
 
 def _create_space(display_name: str, config: dict, parent_path: str | None = None) -> dict:
-    """Create the Genie space via the API."""
+    """Create the Genie space via the API.
+
+    Path resolution is automatic: configured directory -> /Shared/.
+    On permission errors the next candidate is tried transparently.
+    """
     try:
         result = create_genie_space(
             display_name=display_name,
@@ -2197,6 +2201,7 @@ def _create_space(display_name: str, config: dict, parent_path: str | None = Non
             "space_id": result["genie_space_id"],
             "display_name": result["display_name"],
             "space_url": result["space_url"],
+            "parent_path": result.get("parent_path", ""),
         }
     except (ValueError, PermissionError, TimeoutError) as e:
         return {"success": False, "error": str(e)}

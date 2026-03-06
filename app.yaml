@@ -44,11 +44,12 @@ env:
     value: ""  # Required: your SQL warehouse ID
 
   # ---------------------------------------------------------------------------
-  # Genie Space target directory (required for creating new Genie Spaces)
-  # e.g. /Workspace/Users/you@company.com/
+  # Genie Space target directory (where new spaces are created)
+  # Defaults to /Shared/ which is writable by most service principals.
+  # Override to a specific folder if needed (e.g. /Workspace/Shared/Analytics/).
   # ---------------------------------------------------------------------------
   - name: GENIE_TARGET_DIRECTORY
-    value: ""
+    value: "/Shared/"
 
   # ---------------------------------------------------------------------------
   # Local dev auth (only used when running outside Databricks Apps)

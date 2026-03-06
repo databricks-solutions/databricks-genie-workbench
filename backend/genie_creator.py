@@ -138,22 +138,51 @@ def _clean_config(obj: any, key: str | None = None) -> any:
         return obj
 
 
+_FALLBACK_DIR = "/Shared/"
+
+
 def get_target_directory() -> str:
-    """Get the target directory for new Genie Spaces.
+    """Get the configured target directory for new Genie Spaces.
 
-    Returns:
-        The workspace path from GENIE_TARGET_DIRECTORY env var
-
-    Raises:
-        ValueError: If GENIE_TARGET_DIRECTORY is not configured
+    Returns GENIE_TARGET_DIRECTORY if set, otherwise ``/Shared/``.
     """
     target_dir = os.environ.get("GENIE_TARGET_DIRECTORY", "").strip()
-    if not target_dir:
-        raise ValueError(
-            "GENIE_TARGET_DIRECTORY must be configured. "
-            "Set it to a workspace path like /Workspace/Users/you@company.com/"
-        )
-    return target_dir
+    return target_dir if target_dir else _FALLBACK_DIR
+
+
+def _build_path_candidates(explicit_path: str | None) -> list[str]:
+    """Build an ordered list of parent paths to try.
+
+    Priority:
+    1. Explicitly provided path (from the agent/user)
+    2. GENIE_TARGET_DIRECTORY env var (if different from #1)
+    3. /Shared/ as a last-resort fallback
+
+    Duplicates are removed while preserving order.
+    """
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(p: str) -> None:
+        normalized = p.rstrip("/") + "/"
+        if normalized not in seen:
+            seen.add(normalized)
+            candidates.append(normalized)
+
+    if explicit_path and explicit_path.strip():
+        _add(explicit_path.strip())
+
+    env_dir = os.environ.get("GENIE_TARGET_DIRECTORY", "").strip()
+    if env_dir:
+        _add(env_dir)
+
+    _add(_FALLBACK_DIR)
+    return candidates
+
+
+def _is_permission_error(e: Exception) -> bool:
+    s = str(e).lower()
+    return "403" in s or "permission" in s or "forbidden" in s
 
 
 def create_genie_space(
@@ -163,39 +192,28 @@ def create_genie_space(
 ) -> dict:
     """Create a new Genie Space with the given configuration.
 
+    Attempts creation with a fallback chain of parent paths.  If the
+    primary path returns a permission error, the next candidate is
+    tried automatically (configured directory -> /Shared/).
+
     Args:
         display_name: The display name for the new Genie Space
         merged_config: The merged configuration dict (from optimization)
         parent_path: Optional workspace path for the parent directory.
-                    If not provided, uses GENIE_TARGET_DIRECTORY env var.
+                    If not provided, uses GENIE_TARGET_DIRECTORY or /Shared/.
 
     Returns:
-        dict with:
-            - genie_space_id: ID of the created space
-            - display_name: Display name of the space
-            - space_url: URL to access the space in Databricks
+        dict with genie_space_id, display_name, space_url, parent_path
 
     Raises:
-        ValueError: If configuration is invalid or parent_path not provided
-        PermissionError: If the app doesn't have write permission
+        ValueError: If configuration is invalid
+        PermissionError: If none of the candidate paths are writable
+        TimeoutError: If the request timed out
     """
-    # Resolve parent path
-    if parent_path:
-        target_path = parent_path.strip()
-    else:
-        target_path = get_target_directory()
-
-    # Ensure path ends with /
-    if not target_path.endswith("/"):
-        target_path += "/"
-
-    # Validate display name
     if not display_name or not display_name.strip():
         raise ValueError("Display name is required")
-
     display_name = display_name.strip()
 
-    # Get warehouse ID (required by API)
     warehouse_id = get_sql_warehouse_id()
     if not warehouse_id:
         raise ValueError(
@@ -203,70 +221,66 @@ def create_genie_space(
             "Set it to your SQL Warehouse ID."
         )
 
-    # Enforce API constraints (text_instructions limit, empty sql removal, etc.)
     constrained_config = _enforce_constraints(merged_config)
-
-    # Clean up config for API compatibility (type fixes, sorting)
     cleaned_config = _clean_config(constrained_config)
-
-    # Serialize the config to JSON string (API expects serialized_space as string)
     serialized_space = json.dumps(cleaned_config)
 
     client = get_workspace_client()
     host = get_databricks_host()
 
-    logger.info(f"Creating Genie Space with title: {display_name}")
-    logger.info(f"Parent path: {target_path}")
-    logger.info(f"Warehouse ID: {warehouse_id}")
-    logger.info(f"Workspace host: {host}")
-    logger.info(f"Serialized space length: {len(serialized_space)} chars")
+    candidates = _build_path_candidates(parent_path)
+    last_error: Exception | None = None
 
-    try:
-        response = client.api_client.do(
-            method="POST",
-            path="/api/2.0/genie/spaces",
-            body={
-                "title": display_name,
-                "description": f"Optimized Genie Space created from GenieRx",
-                "parent_path": target_path,
-                "warehouse_id": warehouse_id,
-                "serialized_space": serialized_space,
-            },
-        )
+    for target_path in candidates:
+        logger.info(f"Attempting to create Genie Space '{display_name}' in {target_path}")
 
-        logger.info(f"API response keys: {list(response.keys()) if isinstance(response, dict) else response}")
-
-        # Extract the space ID from response (API returns space_id)
-        genie_space_id = response.get("space_id")
-        if not genie_space_id:
-            logger.error(f"No space_id in response. Full response: {response}")
-            raise ValueError(f"API did not return a space_id. Response: {response}")
-
-        # Build the URL to the new space
-        space_url = f"{host}/genie/rooms/{genie_space_id}"
-
-        logger.info(f"Created Genie Space: {genie_space_id}")
-        logger.info(f"Space URL: {space_url}")
-
-        return {
-            "genie_space_id": genie_space_id,
-            "display_name": display_name,
-            "space_url": space_url,
-        }
-
-    except Exception as e:
-        error_str = str(e).lower()
-        logger.error(f"Failed to create Genie Space: {e}")
-
-        # Map common errors to user-friendly messages
-        if "403" in error_str or "permission" in error_str or "forbidden" in error_str:
-            raise PermissionError(
-                "Cannot create Genie Space. Ensure the app has write permission "
-                "to the target directory."
+        try:
+            response = client.api_client.do(
+                method="POST",
+                path="/api/2.0/genie/spaces",
+                body={
+                    "title": display_name,
+                    "description": "Optimized Genie Space created from GenieRx",
+                    "parent_path": target_path,
+                    "warehouse_id": warehouse_id,
+                    "serialized_space": serialized_space,
+                },
             )
-        elif "400" in error_str or "invalid" in error_str:
-            raise ValueError(f"The configuration is invalid: {e}")
-        elif "timeout" in error_str:
-            raise TimeoutError("Request timed out. Please try again.")
-        else:
+
+            genie_space_id = response.get("space_id")
+            if not genie_space_id:
+                logger.error(f"No space_id in response: {response}")
+                raise ValueError(f"API did not return a space_id. Response: {response}")
+
+            space_url = f"{host}/genie/rooms/{genie_space_id}"
+            logger.info(f"Created Genie Space {genie_space_id} in {target_path}")
+
+            return {
+                "genie_space_id": genie_space_id,
+                "display_name": display_name,
+                "space_url": space_url,
+                "parent_path": target_path,
+            }
+
+        except Exception as e:
+            last_error = e
+            if _is_permission_error(e) and target_path != candidates[-1]:
+                logger.warning(
+                    f"Permission denied for {target_path}, trying next candidate"
+                )
+                continue
+
+            error_str = str(e).lower()
+            if "400" in error_str or "invalid" in error_str:
+                raise ValueError(f"The configuration is invalid: {e}")
+            if "timeout" in error_str:
+                raise TimeoutError("Request timed out. Please try again.")
+            if _is_permission_error(e):
+                break
             raise
+
+    raise PermissionError(
+        f"Cannot create Genie Space — no writable directory found. "
+        f"Tried: {', '.join(candidates)}. "
+        f"Grant the app's service principal 'Can Manage' on a workspace folder."
+    )
