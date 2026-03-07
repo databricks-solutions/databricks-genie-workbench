@@ -110,7 +110,6 @@ async def get_space_detail(space_id: str) -> dict:
     try:
         client = get_workspace_client()
 
-        # Fetch space metadata, with SP fallback for scope errors
         try:
             space = client.api_client.do(
                 method="GET",

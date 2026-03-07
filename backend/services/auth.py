@@ -114,8 +114,11 @@ def get_workspace_client() -> WorkspaceClient:
 def get_service_principal_client() -> WorkspaceClient:
     """Get the service principal client (bypasses OBO).
 
-    Use for API calls that require scopes the OBO token may lack
-    (e.g., Genie API requires 'genie' scope).
+    Used for:
+    - App-level operations (Lakebase persistence, background tasks)
+    - Fallback when OBO token lacks required scopes (e.g., Genie API
+      requires 'genie' scope which user authorization may not provide
+      until the consent flow is triggered)
     """
     return _get_default_client()
 
