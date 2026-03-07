@@ -3,7 +3,7 @@
  * Tabs: Score | Analysis | Optimize | History
  */
 import { useState, useEffect } from "react"
-import { ArrowLeft, Star, RefreshCw, Zap, BarChart2, Brain, Settings2, Clock } from "lucide-react"
+import { ArrowLeft, Star, RefreshCw, Zap, BarChart2, Brain, Settings2, Clock, ExternalLink } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory } from "@/lib/api"
 import { getScoreColor } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint } from "@/types"
@@ -25,10 +25,11 @@ type Tab = "score" | "analysis" | "optimize" | "history"
 interface SpaceDetailProps {
   spaceId: string
   displayName: string
+  spaceUrl?: string
   onBack: () => void
 }
 
-export function SpaceDetail({ spaceId, displayName, onBack }: SpaceDetailProps) {
+export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDetailProps) {
   const [activeTab, setActiveTab] = useState<Tab>("score")
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
   const [isStarred, setIsStarred] = useState(false)
@@ -119,7 +120,19 @@ export function SpaceDetail({ spaceId, displayName, onBack }: SpaceDetailProps) 
               {isScanning ? "Scanning..." : "Run IQ Scan"}
             </button>
           </div>
-          <p className="text-xs text-muted mt-1 font-mono">{spaceId}</p>
+          {spaceUrl ? (
+            <a
+              href={spaceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-muted mt-1 font-mono hover:text-accent transition-colors inline-flex items-center gap-1"
+            >
+              {spaceId}
+              <ExternalLink className="w-3 h-3 flex-shrink-0" />
+            </a>
+          ) : (
+            <p className="text-xs text-muted mt-1 font-mono">{spaceId}</p>
+          )}
         </div>
       </div>
 

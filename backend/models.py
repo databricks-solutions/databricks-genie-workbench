@@ -213,6 +213,7 @@ class SpaceListItem(BaseModel):
     maturity: str | None = None
     is_starred: bool = False
     last_scanned: str | None = None  # ISO datetime
+    space_url: str | None = None
 
 
 class SpaceScanRequest(BaseModel):

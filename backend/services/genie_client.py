@@ -12,11 +12,17 @@ import time
 
 from dotenv import load_dotenv
 
-from backend.services.auth import get_workspace_client, is_running_on_databricks_apps
+from backend.services.auth import get_workspace_client, get_service_principal_client, is_running_on_databricks_apps
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+def _is_scope_error(e: Exception) -> bool:
+    """Check if exception is a missing OAuth scope error."""
+    msg = str(e).lower()
+    return "scope" in msg or "insufficient_scope" in msg
 
 
 def get_genie_space(
@@ -44,23 +50,33 @@ def get_genie_space(
 
     # Use SDK's API client - handles OBO auth automatically
     client = get_workspace_client()
-    
+
     # Log diagnostic info for debugging
     logger.info(f"Fetching Genie Space: {genie_space_id}")
     logger.info(f"Running on Databricks Apps: {is_running_on_databricks_apps()}")
     logger.info(f"Workspace host: {client.config.host}")
     logger.info(f"Auth type: {client.config.auth_type}")
-    
+
     try:
-        response = client.api_client.do(
-            method="GET",
-            path=f"/api/2.0/genie/spaces/{genie_space_id}",
-            query={"include_serialized_space": "true"},
-        )
-        return response
+        return _get_space_with_client(client, genie_space_id)
     except Exception as e:
+        if _is_scope_error(e):
+            logger.info("OBO token lacks genie scope, retrying with service principal")
+            sp_client = get_service_principal_client()
+            if sp_client is not client:
+                return _get_space_with_client(sp_client, genie_space_id)
         logger.error(f"Failed to fetch Genie Space {genie_space_id}: {e}")
         raise ValueError(f"Unable to get space [{genie_space_id}]. {e}")
+
+
+def _get_space_with_client(client, genie_space_id: str) -> dict:
+    """Fetch a single Genie space using the given client."""
+    response = client.api_client.do(
+        method="GET",
+        path=f"/api/2.0/genie/spaces/{genie_space_id}",
+        query={"include_serialized_space": "true"},
+    )
+    return response
 
 
 def list_genie_spaces() -> list[dict]:
@@ -70,8 +86,20 @@ def list_genie_spaces() -> list[dict]:
     Raises an Exception on failure (callers should handle as appropriate).
     """
     client = get_workspace_client()
-    spaces = []
+    try:
+        return _list_spaces_with_client(client)
+    except Exception as e:
+        if _is_scope_error(e):
+            logger.info("OBO token lacks genie scope, retrying with service principal")
+            sp_client = get_service_principal_client()
+            if sp_client is not client:
+                return _list_spaces_with_client(sp_client)
+        raise
 
+
+def _list_spaces_with_client(client) -> list[dict]:
+    """Paginate through all Genie Spaces using the given client."""
+    spaces = []
     page_token = None
     while True:
         params = {"page_size": 100}
@@ -84,7 +112,7 @@ def list_genie_spaces() -> list[dict]:
             query=params,
         )
 
-        items = response.get("genie_spaces", [])
+        items = response.get("spaces", [])
         spaces.extend(items)
 
         page_token = response.get("next_page_token")

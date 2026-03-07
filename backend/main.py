@@ -184,6 +184,10 @@ if FRONTEND_DIST.exists():
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
+        # Serve static files from dist/ (e.g. favicon.svg) if they exist
+        static_file = FRONTEND_DIST / full_path
+        if static_file.is_file():
+            return FileResponse(static_file)
         return FileResponse(FRONTEND_DIST / "index.html")
 
 else:

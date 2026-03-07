@@ -111,6 +111,15 @@ def get_workspace_client() -> WorkspaceClient:
     return _get_default_client()
 
 
+def get_service_principal_client() -> WorkspaceClient:
+    """Get the service principal client (bypasses OBO).
+
+    Use for API calls that require scopes the OBO token may lack
+    (e.g., Genie API requires 'genie' scope).
+    """
+    return _get_default_client()
+
+
 def get_databricks_host() -> str:
     """Get the Databricks workspace host URL (without trailing slash)."""
     client = _get_default_client()

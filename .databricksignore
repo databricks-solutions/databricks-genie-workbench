@@ -22,19 +22,10 @@ __pycache__/
 .env.local
 .env.*
 
-# Frontend SOURCE files (not needed - only the built dist/ is needed)
+# Frontend files excluded from deployment
 frontend/node_modules/
-frontend/src/
-frontend/public/
-frontend/*.json
-frontend/*.ts
-frontend/*.js
-frontend/*.html
-frontend/*.md
+frontend/dist/
 frontend/.vite/
-
-# DO NOT ignore frontend/dist - it must be deployed!
-# The React build lives there
 
 # Test and scratch files
 tests/
