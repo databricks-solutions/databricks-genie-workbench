@@ -358,7 +358,7 @@ async def query_genie(request: GenieQueryRequest):
 @router.get("/checklist")
 async def get_checklist():
     """Get the checklist markdown documentation."""
-    docs_path = Path(__file__).parent.parent / "docs" / "checklist-by-schema.md"
+    docs_path = Path(__file__).parent.parent.parent / "docs" / "checklist-by-schema.md"
     try:
         content = docs_path.read_text()
         return {"content": content}
