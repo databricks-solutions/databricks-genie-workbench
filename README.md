@@ -1,6 +1,14 @@
 # Genie Workbench
 
-Genie Workbench combines GenieRx (LLM-powered analysis and optimization of Genie Spaces) and GenieIQ (org-wide scoring with Lakebase persistence) into a single Databricks App.
+Genie Workbench is a unified developer tool for creating, scoring, and optimizing Databricks Genie Spaces. The tool helps Genie developers by:
+
+* Creating Genie spaces from scratch using an agent that gathers business logic, profiles data sources, and generates the initial configuration
+* Scoring space quality on a 0–100 rubric across categorized best-practice dimensions with a four-stage maturity model
+* Optimizing configurations through a benchmark-driven loop that compares Genie's generated SQL against expected answers and automatically recommends improvements
+* Tracking history of every configuration change and score over time, stored in Lakebase
+* Versioning and rollback of Genie space configurations, which Genie does not natively support
+* Managing multiple spaces across projects and stakeholders from a single dashboard
+* Providing scientific proof of lift via MLflow experiment tracking on every benchmark run
 
 ## Deployment
 
@@ -8,8 +16,8 @@ This app is deployed as a [Databricks App](https://docs.databricks.com/aws/en/de
 
 ### Prerequisites
 
-- [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) installed and authenticated (`databricks auth login`)
-- A Databricks workspace with Apps enabled
+* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) installed and authenticated (`databricks auth login`)
+* A Databricks workspace with Apps enabled
 
 ### 1. Clone the repo
 
@@ -38,6 +46,7 @@ databricks apps deploy <app-name> \
 ```
 
 During deployment, Databricks Apps automatically:
+
 1. Runs `npm install` (detects root `package.json`, which chains into `frontend/`)
 2. Runs `pip install -r requirements.txt`
 3. Runs `npm run build` (builds the React frontend to `frontend/dist/`)
@@ -47,17 +56,18 @@ During deployment, Databricks Apps automatically:
 
 After deploying, grant the app's service principal access to required resources:
 
-- **Workspace Directory** — Can Manage (for creating Genie Spaces)
-- **Unity Catalog/Schema** — USE CATALOG, USE SCHEMA, SELECT
-- **LLM Serving Endpoint** — Can Query
-- **SQL Warehouse** — Can Use
-- **Genie Space(s)** — Can Edit
+* **Workspace Directory** — Can Manage (for creating Genie Spaces)
+* **Unity Catalog/Schema** — USE CATALOG, USE SCHEMA, SELECT
+* **LLM Serving Endpoint** — Can Query
+* **SQL Warehouse** — Can Use
+* **Genie Space(s)** — Can Edit
 
 See `app.yaml` for environment variable configuration (SQL warehouse, Lakebase, MLflow, etc.).
 
 ### Iterating on changes
 
 After the initial deploy, use the sync + deploy cycle:
+
 1. Edit code locally
 2. `databricks sync --watch` picks up changes automatically
 3. Re-run `databricks apps deploy` to trigger a new deployment
@@ -65,7 +75,6 @@ After the initial deploy, use the sync + deploy cycle:
 ## How to get help
 
 Databricks support doesn't cover this content. For questions or bugs, please open a GitHub issue and the team will help on a best effort basis.
-
 
 ## License
 
