@@ -1,63 +1,66 @@
-# REPO NAME 
+# Genie Workbench
 
-```
-Placeholder
+Genie Workbench combines GenieRx (LLM-powered analysis and optimization of Genie Spaces) and GenieIQ (org-wide scoring with Lakebase persistence) into a single Databricks App.
 
-Fill here a description at a functional level - what is this content doing
-```
+## Deployment
 
-## Video Overview
+This app is deployed as a [Databricks App](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/). The frontend (React/Vite) and backend (FastAPI) are built and served together — there is no separate local dev server.
 
-Include a GIF overview of what your project does. Use a service like Quicktime, Zoom or Loom to create the video, then convert to a GIF.
+### Prerequisites
 
+- [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) installed and authenticated (`databricks auth login`)
+- A Databricks workspace with Apps enabled
 
-## Installation
-
-### Local Development
-
-**1. Configure environment**
+### 1. Clone the repo
 
 ```bash
-cp .env.example .env.local
-# Edit .env.local — minimum required fields:
-# DATABRICKS_HOST, DATABRICKS_TOKEN
+git clone <repo-url>
+cd databricks-genie-workbench
 ```
 
-The only required fields to get started are `DATABRICKS_HOST` and `DATABRICKS_TOKEN`. Everything else (Lakebase, MLflow, SQL warehouse) is optional — the app falls back to in-memory storage without Lakebase.
+### 2. Create the app
 
-**2. Install Python deps**
+Create a new Databricks App via the workspace UI (**Compute > Apps > Create App**). Note the app name you choose (e.g. `genie-workbench`).
+
+### 3. Sync local files to the workspace
 
 ```bash
-uv sync
-# or: pip install -e .
+databricks sync --watch . /Workspace/Users/<your-email>/genie-workbench
 ```
 
-**3. Install frontend deps and build**
+This uploads your project files to a workspace folder and watches for changes. Files listed in `.gitignore` and `.databricksignore` are excluded (e.g. `node_modules/`, `dist/`, `.env`).
+
+### 4. Deploy the app
 
 ```bash
-cd frontend
-npm install
-npm run build
+databricks apps deploy <app-name> \
+  --source-code-path /Workspace/Users/<your-email>/genie-workbench
 ```
 
-**4. Run (two terminals)**
+During deployment, Databricks Apps automatically:
+1. Runs `npm install` (detects root `package.json`, which chains into `frontend/`)
+2. Runs `pip install -r requirements.txt`
+3. Runs `npm run build` (builds the React frontend to `frontend/dist/`)
+4. Starts the app via the command in `app.yaml` (`uvicorn backend.main:app`)
 
-```bash
-# Terminal 1 — backend (from repo root)
-uv run start-server
+### 5. Configure app resources
 
-# Terminal 2 — frontend
-cd frontend
-npm run dev
-```
+After deploying, grant the app's service principal access to required resources:
 
-The frontend runs at `http://localhost:5173` and proxies API requests to the backend at `http://localhost:8000`.
+- **Workspace Directory** — Can Manage (for creating Genie Spaces)
+- **Unity Catalog/Schema** — USE CATALOG, USE SCHEMA, SELECT
+- **LLM Serving Endpoint** — Can Query
+- **SQL Warehouse** — Can Use
+- **Genie Space(s)** — Can Edit
 
-**Notes:**
-- No Lakebase needed locally — scan results are stored in-memory and reset on server restart
-- `SQL_WAREHOUSE_ID` is only required if using the Optimize tab's benchmark runner
-- Leave `MLFLOW_EXPERIMENT_ID` empty to skip MLflow tracing
-- Alternatively, authenticate via `databricks auth login` (OAuth) and set `DATABRICKS_CONFIG_PROFILE=DEFAULT` instead of using a PAT
+See `app.yaml` for environment variable configuration (SQL warehouse, Lakebase, MLflow, etc.).
+
+### Iterating on changes
+
+After the initial deploy, use the sync + deploy cycle:
+1. Edit code locally
+2. `databricks sync --watch` picks up changes automatically
+3. Re-run `databricks apps deploy` to trigger a new deployment
 
 ## How to get help
 
