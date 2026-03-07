@@ -100,6 +100,17 @@ Defined in `app.yaml`. Key ones:
 
 Local dev uses `.env.local` (loaded first with override) then `.env`.
 
+## Dev/Test Workflow
+
+There is no local dev server — all testing is done by syncing code to Databricks and redeploying:
+
+1. Edit code locally
+2. `databricks sync --watch . /Workspace/Users/<email>/genie-workbench` picks up changes automatically
+3. Re-run `databricks apps deploy <app-name> --source-code-path /Workspace/Users/<email>/genie-workbench` to trigger a new deployment
+4. Test in the deployed Databricks App
+
+Do NOT suggest running `uvicorn` or `npm run dev` locally. The app depends on Databricks-managed resources (OBO auth, Lakebase, serving endpoints) that aren't available outside a Databricks App environment.
+
 ## Gotchas
 
 - **frontend/dist/ is gitignored but NOT databricksignored** — the built React app must be synced to workspace for deployment. Build before `databricks sync`.

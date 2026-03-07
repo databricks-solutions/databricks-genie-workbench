@@ -29,14 +29,14 @@ class GenieSpaceOptimizer:
     def _get_checklist_content(self) -> str:
         """Load the checklist markdown content."""
         if self._checklist_content is None:
-            checklist_path = Path(__file__).parent.parent / "docs" / "checklist-by-schema.md"
+            checklist_path = Path(__file__).parent.parent.parent / "docs" / "checklist-by-schema.md"
             self._checklist_content = checklist_path.read_text()
         return self._checklist_content
 
     def _get_schema_content(self) -> str:
         """Load the Genie Space schema documentation."""
         if self._schema_content is None:
-            schema_path = Path(__file__).parent.parent / "docs" / "genie-space-schema.md"
+            schema_path = Path(__file__).parent.parent.parent / "docs" / "genie-space-schema.md"
             self._schema_content = schema_path.read_text()
         return self._schema_content
 

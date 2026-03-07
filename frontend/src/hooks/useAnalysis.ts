@@ -925,6 +925,35 @@ export function useAnalysis() {
     }))
   }, [])
 
+  const resetOptimizeFlow = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      optimizeView: null,
+      selectedQuestions: [],
+      hasLabelingSession: false,
+      labelingCurrentIndex: 0,
+      labelingGeneratedSql: {},
+      labelingGenieResults: {},
+      labelingExpectedResults: {},
+      labelingCorrectAnswers: {},
+      labelingFeedbackTexts: {},
+      labelingProcessingErrors: {},
+      isProcessingBenchmarks: false,
+      benchmarkProcessingProgress: null,
+      optimizationSuggestions: null,
+      optimizationSummary: null,
+      isOptimizing: false,
+      selectedSuggestions: new Set<number>(),
+      previewConfig: null,
+      previewSummary: null,
+      isGeneratingPreview: false,
+      isCreatingGenie: false,
+      genieCreateError: null,
+      createdGenieResult: null,
+      error: null,
+    }))
+  }, [])
+
   const reset = useCallback(() => {
     setState(initialState)
   }, [])
@@ -986,6 +1015,7 @@ export function useAnalysis() {
       processBenchmarksAndGoToLabeling,
       cancelBenchmarkProcessing,
       reset,
+      resetOptimizeFlow,
     },
   }
 }

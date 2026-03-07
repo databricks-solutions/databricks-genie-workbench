@@ -294,7 +294,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
               <div className="text-center py-12 text-muted">
                 <Settings2 className="w-12 h-12 mx-auto mb-4 opacity-30" />
                 <p>Run IQ Scan first, then come back to optimize based on findings.</p>
-                <button onClick={() => { actions.reset(); actions.goToBenchmarks() }} className="mt-4 px-4 py-2 rounded-lg border border-accent/40 text-accent text-sm hover:bg-accent/10 transition-colors">
+                <button onClick={() => { actions.resetOptimizeFlow(); actions.goToBenchmarks() }} className="mt-4 px-4 py-2 rounded-lg border border-accent/40 text-accent text-sm hover:bg-accent/10 transition-colors">
                   Start Optimize Flow
                 </button>
               </div>
