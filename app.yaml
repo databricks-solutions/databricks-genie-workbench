@@ -73,6 +73,24 @@ env:
     value: ""  # e.g. genie-workbench-sz
 
 # ---------------------------------------------------------------------------
+# User Authorization Scopes (OBO)
+# These must be configured in the Databricks Apps UI, NOT in this file.
+# Navigate to: Compute > Apps > [app] > Edit > User Authorization > +Add Scope
+#
+# Required scopes:
+#   sql                          — SQL warehouse queries
+#   dashboards.genie             — Genie Space API (/api/2.0/genie/spaces/*)
+#   serving.serving-endpoints    — LLM serving endpoint queries
+#   catalog.catalogs:read        — Unity Catalog catalog browsing
+#   catalog.schemas:read         — Unity Catalog schema browsing
+#   catalog.tables:read          — Unity Catalog table browsing
+#
+# Without these scopes, the OBO token will lack permissions and API calls
+# will fail. After adding scopes, users will see an OAuth consent prompt
+# on first access.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Service Principal authorization
 # The app runs under its own service principal identity.
 # Grant the SP access to the following resources after deploying:

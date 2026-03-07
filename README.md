@@ -52,9 +52,24 @@ During deployment, Databricks Apps automatically:
 3. Runs `npm run build` (builds the React frontend to `frontend/dist/`)
 4. Starts the app via the command in `app.yaml` (`uvicorn backend.main:app`)
 
-### 5. Configure app resources
+### 5. Configure user authorization scopes
 
-After deploying, grant the app's service principal access to required resources:
+The app uses OBO (On-Behalf-Of) auth so each user operates under their own identity. Add the following OAuth scopes in the Databricks Apps UI (**Compute > Apps > [app] > Edit > User Authorization > +Add Scope**):
+
+| Scope | Purpose |
+|---|---|
+| `sql` | SQL warehouse queries |
+| `dashboards.genie` | Genie Space API (`/api/2.0/genie/spaces/*`) |
+| `serving.serving-endpoints` | LLM serving endpoint queries |
+| `catalog.catalogs:read` | Unity Catalog catalog browsing |
+| `catalog.schemas:read` | Unity Catalog schema browsing |
+| `catalog.tables:read` | Unity Catalog table browsing |
+
+Also ensure the SQL Warehouse resource is configured: **Configure > App Resources > +Add Resource > SQL Warehouse** with key `sql-warehouse`.
+
+### 6. Configure service principal permissions
+
+Grant the app's service principal access to required resources:
 
 * **Workspace Directory** — Can Manage (for creating Genie Spaces)
 * **Unity Catalog/Schema** — USE CATALOG, USE SCHEMA, SELECT
