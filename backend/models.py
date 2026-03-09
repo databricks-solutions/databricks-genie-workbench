@@ -107,12 +107,40 @@ class OptimizationSuggestion(BaseModel):
     category: str  # instruction, sql_example, filter, expression, measure, etc.
 
 
+class ComparisonDiscrepancy(BaseModel):
+    """A single discrepancy found when comparing SQL results."""
+
+    type: str  # "column_mismatch", "extra_rows", "missing_rows", "value_diff", "error"
+    detail: str
+
+
+class ComparisonResult(BaseModel):
+    """Result of comparing Genie vs expected SQL results."""
+
+    match_type: str  # "exact", "value_match", "partial", "row_count_only", "mismatch"
+    confidence: float  # 0.0 - 1.0
+    auto_label: bool  # suggested label
+    discrepancies: list[ComparisonDiscrepancy]
+    summary: str  # human-readable explanation
+
+
 class LabelingFeedbackItem(BaseModel):
     """A single labeling feedback item from the benchmark session."""
 
     question_text: str = Field(..., min_length=1, max_length=MAX_TEXT_LENGTH)
     is_correct: bool | None
     feedback_text: str | None = Field(None, max_length=MAX_FEEDBACK_LENGTH)
+    auto_label: bool | None = None  # What the auto-comparator suggested
+    user_overrode_auto_label: bool = False  # Did user disagree with auto-label?
+    auto_comparison_summary: str | None = None  # Human-readable comparison summary
+
+
+class FailureDiagnosis(BaseModel):
+    """Diagnosis of why a benchmark question failed."""
+
+    question: str
+    failure_types: list[str]
+    explanation: str
 
 
 class OptimizationRequest(BaseModel):
@@ -139,6 +167,7 @@ class OptimizationResponse(BaseModel):
     suggestions: list[OptimizationSuggestion]
     summary: str
     trace_id: str
+    diagnosis: list[FailureDiagnosis] = []  # Failure diagnosis for incorrect questions
 
 
 class ConfigMergeRequest(BaseModel):

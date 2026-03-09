@@ -21,6 +21,7 @@ from backend.services.genie_client import get_serialized_space
 from backend.models import (
     AgentInput,
     AgentOutput,
+    ComparisonResult,
     ConfigMergeRequest,
     ConfigMergeResponse,
     GenieCreateRequest,
@@ -455,6 +456,45 @@ async def get_settings():
         databricks_host=get_databricks_host(),
         workspace_directory=os.environ.get("GENIE_TARGET_DIRECTORY", "").strip() or None,
     )
+
+
+class CompareResultsRequest(BaseModel):
+    """Request to compare Genie vs expected SQL results."""
+
+    genie_result: dict
+    expected_result: dict
+    genie_sql: str | None = None
+    expected_sql: str | None = None
+    question: str | None = None
+
+
+@router.post("/benchmark/compare", response_model=ComparisonResult)
+async def compare_benchmark_results(request: CompareResultsRequest):
+    """Compare Genie SQL results against expected SQL results.
+
+    Uses LLM-based semantic comparison considering SQL, results, and question context.
+    Returns a detailed comparison with match type, confidence,
+    discrepancies, and an auto-label suggestion.
+    """
+    import asyncio
+
+    from backend.services.result_comparator import compare_results
+
+    try:
+        # Run in thread pool since compare_results may call LLM (blocking I/O)
+        result = await asyncio.get_running_loop().run_in_executor(
+            None,
+            lambda: compare_results(
+                genie_result=request.genie_result,
+                expected_result=request.expected_result,
+                genie_sql=request.genie_sql,
+                expected_sql=request.expected_sql,
+                question=request.question,
+            ),
+        )
+        return result
+    except Exception as e:
+        raise _safe_error(e, 500, "Result comparison failed")
 
 
 @router.post("/optimize")
