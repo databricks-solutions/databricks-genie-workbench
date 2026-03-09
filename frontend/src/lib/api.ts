@@ -11,6 +11,7 @@ import type {
   GenieQueryResponse,
   SqlExecutionResult,
   AppSettings,
+  ComparisonResult,
   LabelingFeedbackItem,
   OptimizationResponse,
   OptimizationSuggestion,
@@ -321,6 +322,34 @@ export async function executeSql(
       }),
     },
     LONG_TIMEOUT // SQL execution can be slow
+  )
+}
+
+/**
+ * Compare Genie vs expected SQL results for auto-labeling.
+ * Uses LLM-based semantic comparison considering SQL and question context.
+ */
+export async function compareResults(
+  genieResult: SqlExecutionResult,
+  expectedResult: SqlExecutionResult,
+  genieSql?: string,
+  expectedSql?: string,
+  question?: string,
+): Promise<ComparisonResult> {
+  return fetchWithTimeout<ComparisonResult>(
+    `${API_BASE}/benchmark/compare`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        genie_result: genieResult,
+        expected_result: expectedResult,
+        genie_sql: genieSql ?? null,
+        expected_sql: expectedSql ?? null,
+        question: question ?? null,
+      }),
+    },
+    LONG_TIMEOUT // LLM-based comparison can take time
   )
 }
 

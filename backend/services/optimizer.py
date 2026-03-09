@@ -9,6 +9,7 @@ from mlflow.entities import SpanType
 from backend.services.llm_utils import call_serving_endpoint, get_llm_model, parse_json_from_llm_response
 from backend.models import (
     ConfigMergeResponse,
+    FailureDiagnosis,
     LabelingFeedbackItem,
     OptimizationResponse,
     OptimizationSuggestion,
@@ -40,6 +41,75 @@ class GenieSpaceOptimizer:
             self._schema_content = schema_path.read_text()
         return self._schema_content
 
+    def discover_missing_joins(self, space_data: dict) -> list[dict]:
+        """Scan tables for column patterns suggesting undeclared joins.
+
+        Looks for columns with _id, _key, _code, _fk suffixes that match
+        across tables but don't have existing join_specs.
+
+        Returns:
+            List of {left_table, right_table, join_column, confidence}
+        """
+        tables = space_data.get("data_sources", {}).get("tables", [])
+        if not tables:
+            return []
+
+        # Collect join-suggestive columns per table
+        join_suffixes = ("_id", "_key", "_code", "_fk")
+        table_columns: dict[str, set[str]] = {}
+        table_names: dict[str, str] = {}  # short name -> full qualified name
+
+        for table in tables:
+            table_name = table.get("table_name", "")
+            # Use the last part of qualified name as short name
+            short_name = table_name.split(".")[-1] if table_name else ""
+            if not short_name:
+                continue
+            table_names[short_name] = table_name
+
+            cols = set()
+            for col_config in table.get("column_configs", []):
+                col_name = col_config.get("column_name", "").lower()
+                if any(col_name.endswith(s) for s in join_suffixes):
+                    cols.add(col_name)
+            table_columns[short_name] = cols
+
+        # Collect existing join pairs to exclude
+        existing_joins: set[frozenset[str]] = set()
+        for join_spec in space_data.get("join_specs", []):
+            left = join_spec.get("left_table_name", "").split(".")[-1]
+            right = join_spec.get("right_table_name", "").split(".")[-1]
+            if left and right:
+                existing_joins.add(frozenset([left, right]))
+
+        # Find matching columns across table pairs
+        candidates = []
+        table_list = list(table_columns.keys())
+        for i, t1 in enumerate(table_list):
+            for t2 in table_list[i + 1:]:
+                # Skip if join already exists
+                if frozenset([t1, t2]) in existing_joins:
+                    continue
+
+                shared_cols = table_columns[t1] & table_columns[t2]
+                for col in shared_cols:
+                    # Determine confidence based on column name pattern
+                    if col.endswith("_id") or col.endswith("_fk"):
+                        confidence = "high"
+                    elif col.endswith("_key"):
+                        confidence = "medium"
+                    else:
+                        confidence = "low"
+
+                    candidates.append({
+                        "left_table": table_names[t1],
+                        "right_table": table_names[t2],
+                        "join_column": col,
+                        "confidence": confidence,
+                    })
+
+        return candidates
+
     @mlflow.trace(span_type=SpanType.LLM)
     def generate_optimizations(
         self,
@@ -53,7 +123,7 @@ class GenieSpaceOptimizer:
             labeling_feedback: List of labeling feedback items from the benchmark session
 
         Returns:
-            OptimizationResponse with suggestions and summary
+            OptimizationResponse with suggestions, summary, and diagnosis
         """
         # Convert feedback items to dicts for the prompt
         feedback_dicts = [
@@ -61,9 +131,17 @@ class GenieSpaceOptimizer:
                 "question_text": item.question_text,
                 "is_correct": item.is_correct,
                 "feedback_text": item.feedback_text,
+                "auto_label": item.auto_label,
+                "user_overrode_auto_label": item.user_overrode_auto_label,
+                "auto_comparison_summary": item.auto_comparison_summary,
             }
             for item in labeling_feedback
         ]
+
+        # Discover missing joins (QW3)
+        join_candidates = self.discover_missing_joins(space_data)
+        if join_candidates:
+            logger.info(f"Found {len(join_candidates)} potential missing join(s)")
 
         # Get checklist and schema content
         checklist_content = self._get_checklist_content()
@@ -75,6 +153,7 @@ class GenieSpaceOptimizer:
             labeling_feedback=feedback_dicts,
             checklist_content=checklist_content,
             schema_content=schema_content,
+            join_candidates=join_candidates if join_candidates else None,
         )
 
         # Call the LLM
@@ -94,6 +173,14 @@ class GenieSpaceOptimizer:
         ]
         summary = result.get("summary", "")
 
+        # Parse failure diagnosis (QW4)
+        diagnosis = []
+        for d in result.get("diagnosis", []):
+            try:
+                diagnosis.append(FailureDiagnosis(**d))
+            except Exception as e:
+                logger.warning(f"Failed to parse diagnosis item: {e}")
+
         # Get trace ID if available
         trace_id = ""
         if mlflow.get_current_active_span() is not None:
@@ -106,6 +193,7 @@ class GenieSpaceOptimizer:
             suggestions=suggestions,
             summary=summary,
             trace_id=trace_id,
+            diagnosis=diagnosis,
         )
 
     def merge_config(

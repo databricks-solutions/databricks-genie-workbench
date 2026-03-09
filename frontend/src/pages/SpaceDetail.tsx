@@ -248,6 +248,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
                 correctAnswers={state.labelingCorrectAnswers}
                 feedbackTexts={state.labelingFeedbackTexts}
                 processingErrors={state.labelingProcessingErrors}
+                comparisons={state.labelingComparisons}
                 onSetCurrentIndex={actions.setLabelingCurrentIndex}
                 onSetCorrectAnswer={actions.setLabelingCorrectAnswer}
                 onSetFeedbackText={actions.setLabelingFeedbackText}
@@ -267,13 +268,12 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
               <OptimizationPage
                 suggestions={state.optimizationSuggestions}
                 summary={state.optimizationSummary}
+                diagnosis={state.optimizationDiagnosis}
                 isLoading={state.isOptimizing}
                 error={state.error}
                 selectedSuggestions={state.selectedSuggestions}
                 onBack={actions.goToFeedback}
                 onToggleSuggestionSelection={actions.toggleSuggestionSelection}
-                onSelectAllByPriority={actions.selectAllByPriority}
-                onDeselectAllByPriority={actions.deselectAllByPriority}
                 onCreateNewGenie={actions.generatePreviewConfig}
               />
             ) : state.optimizeView === "preview" && state.spaceData ? (

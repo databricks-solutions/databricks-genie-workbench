@@ -14,6 +14,8 @@ import type {
   OptimizationSuggestion,
   SynthesisResult,
   GenieCreateResponse,
+  ComparisonResult,
+  FailureDiagnosis,
 } from "@/types"
 import {
   fetchSpace,
@@ -24,6 +26,7 @@ import {
   mergeConfig,
   queryGenie,
   executeSql,
+  compareResults,
   createGenieSpace as createGenieSpaceApi,
 } from "@/lib/api"
 import { getBenchmarkQuestions, getExpectedSql } from "@/lib/benchmarkUtils"
@@ -60,12 +63,15 @@ export interface AnalysisState {
   labelingCorrectAnswers: Record<string, boolean | null>
   labelingFeedbackTexts: Record<string, string>
   labelingProcessingErrors: Record<string, string>
+  // Auto-comparison state (QW1)
+  labelingComparisons: Record<string, ComparisonResult | null>
   // Benchmark processing state (upfront processing before labeling)
   isProcessingBenchmarks: boolean
   benchmarkProcessingProgress: { current: number; total: number } | null
   // Optimization state
   optimizationSuggestions: OptimizationSuggestion[] | null
   optimizationSummary: string | null
+  optimizationDiagnosis: FailureDiagnosis[]
   isOptimizing: boolean
   // Preview state
   selectedSuggestions: Set<number>  // Original indices of selected suggestions
@@ -110,12 +116,15 @@ const initialState: AnalysisState = {
   labelingCorrectAnswers: {},
   labelingFeedbackTexts: {},
   labelingProcessingErrors: {},
+  // Auto-comparison state (QW1)
+  labelingComparisons: {},
   // Benchmark processing state
   isProcessingBenchmarks: false,
   benchmarkProcessingProgress: null,
   // Optimization state
   optimizationSuggestions: null,
   optimizationSummary: null,
+  optimizationDiagnosis: [],
   isOptimizing: false,
   // Preview state
   selectedSuggestions: new Set<number>(),
@@ -594,7 +603,7 @@ export function useAnalysis() {
   }, [])
 
   const startOptimization = useCallback(() => {
-    const { genieSpaceId, spaceData, selectedQuestions, labelingCorrectAnswers, labelingFeedbackTexts } = state
+    const { genieSpaceId, spaceData, selectedQuestions, labelingCorrectAnswers, labelingFeedbackTexts, labelingComparisons } = state
     if (!spaceData) return
 
     setState((prev) => ({ ...prev, isOptimizing: true, error: null, optimizeView: "optimization" }))
@@ -602,13 +611,23 @@ export function useAnalysis() {
     // Get benchmark questions and build labeling feedback
     const allQuestions = getBenchmarkQuestions(spaceData)
 
-    // Build feedback items from selected questions
+    // Build feedback items from selected questions with auto-comparison context (QW1)
     const labelingFeedback = selectedQuestions.map(id => {
       const question = allQuestions.find(q => q.id === id)
+      const comparison = labelingComparisons[id]
+      const autoLabel = comparison?.auto_label ?? null
+      const userAnswer = labelingCorrectAnswers[id] ?? null
+
+      // User overrode if auto-label exists and doesn't match user's answer
+      const userOverrode = autoLabel !== null && userAnswer !== null && autoLabel !== userAnswer
+
       return {
         question_text: question?.question.join(" ") || "",
-        is_correct: labelingCorrectAnswers[id] ?? null,
+        is_correct: userAnswer,
         feedback_text: labelingFeedbackTexts[id] || null,
+        auto_label: autoLabel,
+        user_overrode_auto_label: userOverrode,
+        auto_comparison_summary: comparison?.summary || null,
       }
     })
 
@@ -625,6 +644,7 @@ export function useAnalysis() {
           ...prev,
           optimizationSuggestions: response.suggestions,
           optimizationSummary: response.summary,
+          optimizationDiagnosis: response.diagnosis || [],
           isOptimizing: false,
         }))
       },
@@ -637,7 +657,7 @@ export function useAnalysis() {
         }))
       }
     )
-  }, [state.genieSpaceId, state.spaceData, state.selectedQuestions, state.labelingCorrectAnswers, state.labelingFeedbackTexts])
+  }, [state.genieSpaceId, state.spaceData, state.selectedQuestions, state.labelingCorrectAnswers, state.labelingFeedbackTexts, state.labelingComparisons])
 
   const generatePreviewConfig = useCallback(async () => {
     const { spaceData, optimizationSuggestions, selectedSuggestions } = state
@@ -775,6 +795,7 @@ export function useAnalysis() {
       labelingCorrectAnswers: {},
       labelingFeedbackTexts: {},
       labelingProcessingErrors: {},
+      labelingComparisons: {},
     }))
   }, [])
 
@@ -887,6 +908,34 @@ export function useAnalysis() {
               },
             }))
           }
+
+          // Auto-compare results (QW1) — semantic LLM comparison with SQL + question context
+          const genieRes = genieExec.status === "fulfilled" ? genieExec.value : null
+          const expectedRes = expectedExec.status === "fulfilled" ? expectedExec.value : null
+          if (genieRes && expectedRes) {
+            try {
+              const questionText = question.question.join(" ")
+              const comparison = await compareResults(
+                genieRes,
+                expectedRes,
+                response.sql,
+                expectedSql ?? undefined,
+                questionText,
+              )
+              if (benchmarkProcessingCancelledRef.current) continue
+              setState((prev) => ({
+                ...prev,
+                labelingComparisons: { ...prev.labelingComparisons, [questionId]: comparison },
+                // Pre-fill the correct answer with auto-label
+                labelingCorrectAnswers: {
+                  ...prev.labelingCorrectAnswers,
+                  [questionId]: prev.labelingCorrectAnswers[questionId] ?? comparison.auto_label,
+                },
+              }))
+            } catch {
+              // Comparison failed — not critical, just skip auto-label
+            }
+          }
         } else {
           // Genie failed to generate SQL
           const errorMsg = response.error || "Genie did not generate SQL for this question"
@@ -938,10 +987,12 @@ export function useAnalysis() {
       labelingCorrectAnswers: {},
       labelingFeedbackTexts: {},
       labelingProcessingErrors: {},
+      labelingComparisons: {},
       isProcessingBenchmarks: false,
       benchmarkProcessingProgress: null,
       optimizationSuggestions: null,
       optimizationSummary: null,
+      optimizationDiagnosis: [],
       isOptimizing: false,
       selectedSuggestions: new Set<number>(),
       previewConfig: null,

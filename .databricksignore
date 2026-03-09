@@ -34,7 +34,8 @@ test_*.py
 /output/
 
 # Documentation (not needed at runtime)
-/docs/
+# Note: docs/*.md files are excluded by the *.md rule below,
+# with specific re-includes for runtime-needed files
 CLAUDE.md
 README.md
 
@@ -49,6 +50,8 @@ mlflow.db
 # Other non-runtime files
 *.md
 !backend/references/schema.md
+!docs/checklist-by-schema.md
+!docs/genie-space-schema.md
 CODEOWNERS.txt
 LICENSE.md
 NOTICE.md
