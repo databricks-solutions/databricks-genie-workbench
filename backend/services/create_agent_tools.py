@@ -1498,10 +1498,12 @@ def _profile_table_usage(table_identifiers: list[str]) -> dict:
             hist = {"error": str(e)}
 
     for tbl in table_identifiers:
-        tbl_short = tbl.split(".")[-1]
+        tbl_lower = tbl.lower()
+        tbl_short_lower = tbl.split(".")[-1].lower()
         tbl_hist = [
             q for q in hist.get("queries", [])
-            if tbl in q.get("query_preview", "") or tbl_short in q.get("query_preview", "")
+            if tbl_lower in q.get("query_preview", "").lower()
+            or tbl_short_lower in q.get("query_preview", "").lower()
         ]
         results.setdefault(tbl, {})["recent_queries"] = tbl_hist[:10]
 
@@ -1548,18 +1550,18 @@ def _fetch_query_history(table_identifiers: list[str]) -> dict:
         return {"queries": []}
 
     like_clauses = " OR ".join(
-        f"statement_text LIKE '%{tbl}%'" for tbl in table_identifiers
+        f"LOWER(statement_text) LIKE '%{tbl.lower()}%'" for tbl in table_identifiers
     )
     sql = (
         f"SELECT executed_by, "
-        f"SUBSTRING(statement_text, 1, 150) AS query_preview, "
+        f"SUBSTRING(statement_text, 1, 300) AS query_preview, "
         f"total_duration_ms, produced_rows "
         f"FROM system.query.history "
         f"WHERE start_time >= date_sub(current_date(), 7) "
         f"AND execution_status = 'FINISHED' "
         f"AND ({like_clauses}) "
         f"ORDER BY start_time DESC "
-        f"LIMIT 10"
+        f"LIMIT 50"
     )
     result = _execute_sql_throttled(sql)
     if result.get("error"):

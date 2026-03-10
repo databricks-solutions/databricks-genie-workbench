@@ -22,10 +22,10 @@ __pycache__/
 .env.local
 .env.*
 
-# Frontend files excluded from deployment
+# Frontend source/dev files (not needed at runtime)
 frontend/node_modules/
-frontend/dist/
 frontend/.vite/
+# NOTE: frontend/dist/ is NOT excluded — it contains the built React app
 
 # Test and scratch files
 tests/

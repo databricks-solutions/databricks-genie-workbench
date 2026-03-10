@@ -67,7 +67,14 @@ class CreateGenieAgent:
         session: AgentSession,
         user_message: str,
     ) -> AsyncGenerator[dict, None]:
-        """Process a user message and stream agent events.
+        """Process a user message (or empty continuation) and stream events.
+
+        Each call performs exactly ONE LLM inference + ONE tool batch, then
+        closes.  When the LLM requests tools, the ``done`` event carries
+        ``needs_continuation: true`` and the frontend immediately opens a
+        new stream with an empty message to start the next round.  This
+        keeps each HTTP response short enough to survive the Databricks
+        Apps reverse-proxy timeout (~120 s).
 
         Yields dicts with:
             {"event": "thinking",      "data": {"message": str}}
@@ -77,11 +84,24 @@ class CreateGenieAgent:
             {"event": "message",       "data": {"content": str, "ui_elements": list | None}}
             {"event": "created",       "data": {"space_id": str, "url": str}}
             {"event": "error",         "data": {"message": str}}
-            {"event": "done",          "data": {}}
+            {"event": "done",          "data": {"needs_continuation": bool}}
         """
-        session.add_message("user", user_message)
+        is_continuation = not user_message.strip()
+
+        if not is_continuation:
+            session.add_message("user", user_message)
+            session._continuation_count = 0
+        else:
+            cnt = getattr(session, "_continuation_count", 0) + 1
+            session._continuation_count = cnt
+            if cnt > MAX_TOOL_ROUNDS:
+                yield {"event": "error", "data": {"message": "Agent exceeded maximum tool rounds"}}
+                yield {"event": "done", "data": {"needs_continuation": False}}
+                return
+
         step = detect_step(session)
         step_idx = STEP_ORDER.index(step) if step in STEP_ORDER else 0
+        round_num = getattr(session, "_continuation_count", 0)
 
         yield {"event": "step", "data": {
             "step": step,
@@ -90,177 +110,161 @@ class CreateGenieAgent:
             "total": len(STEP_ORDER),
         }}
         yield {"event": "thinking", "data": {
-            "message": STEP_THINKING.get(step, "Processing…"),
+            "message": "Processing tool results…" if is_continuation else STEP_THINKING.get(step, "Processing…"),
             "step": step,
-            "round": 0,
+            "round": round_num,
         }}
 
         tools_used: list[str] = []
         error_msg: str | None = None
+        needs_continuation = False
 
         try:
-            for round_num in range(MAX_TOOL_ROUNDS):
-                if round_num > 0:
-                    yield {"event": "thinking", "data": {
-                        "message": "Processing tool results…",
+            messages = self._build_messages(session)
+
+            content_parts: list[str] = []
+            tool_calls_acc: dict[int, dict] = {}
+            tool_call_signaled = False
+
+            async for chunk in self._async_stream_llm(messages):
+                choices = chunk.get("choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].get("delta", {})
+
+                if delta.get("content"):
+                    token = delta["content"]
+                    content_parts.append(token)
+                    yield {"event": "message_delta", "data": {"content": token}}
+
+                if delta.get("tool_calls"):
+                    if not tool_call_signaled:
+                        tool_call_signaled = True
+                        yield {"event": "thinking", "data": {"message": "Planning next steps…", "step": step, "round": round_num}}
+                    for tc_delta in delta["tool_calls"]:
+                        idx = tc_delta.get("index", 0)
+                        if idx not in tool_calls_acc:
+                            fn = tc_delta.get("function", {})
+                            tool_calls_acc[idx] = {
+                                "id": tc_delta.get("id", ""),
+                                "type": "function",
+                                "function": {
+                                    "name": fn.get("name", ""),
+                                    "arguments": fn.get("arguments", ""),
+                                },
+                            }
+                        else:
+                            if tc_delta.get("id"):
+                                tool_calls_acc[idx]["id"] = tc_delta["id"]
+                            fn = tc_delta.get("function", {})
+                            if fn.get("name"):
+                                tool_calls_acc[idx]["function"]["name"] = fn["name"]
+                            if fn.get("arguments"):
+                                tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
+
+            accumulated_content = "".join(content_parts)
+
+            if tool_calls_acc:
+                for tc in tool_calls_acc.values():
+                    args_str = tc["function"].get("arguments", "")
+                    if not args_str or not args_str.strip():
+                        tc["function"]["arguments"] = "{}"
+                tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
+
+                tc_content = accumulated_content.strip() if accumulated_content else None
+                assistant_msg: dict = {
+                    "role": "assistant",
+                    "content": tc_content,
+                    "tool_calls": tool_calls,
+                }
+                session.history.append(assistant_msg)
+                session.last_active = time.time()
+
+                for tc in tool_calls:
+                    fn = tc["function"]
+                    tool_name = fn["name"]
+                    try:
+                        tool_args = json.loads(fn["arguments"])
+                    except json.JSONDecodeError:
+                        args_preview = fn.get("arguments", "")[:200]
+                        args_len = len(fn.get("arguments", ""))
+                        logger.error(
+                            "JSONDecodeError parsing %s args (%d chars, preview: %s). "
+                            "Likely truncated due to max_tokens. Attempting repair.",
+                            tool_name, args_len, args_preview,
+                        )
+                        tool_args = self._try_repair_json(fn.get("arguments", ""))
+                        fn["arguments"] = json.dumps(tool_args)
+
+                    if tool_name in ("generate_config", "present_plan"):
+                        injected = self._backfill_generate_config_args(session, tool_args)
+                        if injected:
+                            fn["arguments"] = json.dumps(tool_args)
+                            logger.info("Backfilled %s args from session: %s", tool_name, ", ".join(injected))
+
+                    yield {"event": "tool_call", "data": {"tool": tool_name, "args": tool_args}}
+
+                    if session.space_config is None and tool_name in (
+                        "update_config", "validate_config", "create_space", "update_space",
+                    ):
+                        recovered = self._recover_config_from_history(session)
+                        if recovered:
+                            session.space_config = recovered
+                            logger.info("Recovered space_config from session history for %s", tool_name)
+
+                    loop = asyncio.get_event_loop()
+                    future = loop.run_in_executor(
+                        None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
+                    )
+                    while not future.done():
+                        try:
+                            await asyncio.wait_for(asyncio.shield(future), timeout=3.0)
+                        except asyncio.TimeoutError:
+                            yield {"event": "heartbeat", "data": {"tool": tool_name}}
+                    result = future.result()
+
+                    tools_used.append(tool_name)
+
+                    yield {"event": "tool_result", "data": {"tool": tool_name, "result": result}}
+
+                    if tool_name == "create_space" and result.get("success"):
+                        session.space_id = result.get("space_id")
+                        session.space_url = result.get("space_url")
+                        yield {"event": "created", "data": {
+                            "space_id": result["space_id"],
+                            "url": result["space_url"],
+                            "display_name": result.get("display_name", ""),
+                        }}
+
+                    if tool_name == "update_space" and result.get("success"):
+                        yield {"event": "updated", "data": {
+                            "space_id": result["space_id"],
+                            "url": result["url"],
+                        }}
+
+                    if tool_name in ("generate_config", "update_config") and "config" in result:
+                        session.space_config = result["config"]
+
+                    session.add_tool_result(tc["id"], json.dumps(result, default=str))
+
+                new_step = detect_step(session)
+                if new_step != step:
+                    step = new_step
+                    step_idx = STEP_ORDER.index(step) if step in STEP_ORDER else 0
+                    yield {"event": "step", "data": {
                         "step": step,
-                        "round": round_num,
+                        "label": STEP_LABELS.get(step, step),
+                        "index": step_idx,
+                        "total": len(STEP_ORDER),
                     }}
 
-                messages = self._build_messages(session)
+                needs_continuation = True
 
-                content_parts: list[str] = []
-                tool_calls_acc: dict[int, dict] = {}
-
-                tool_call_signaled = False
-
-                async for chunk in self._async_stream_llm(messages):
-                    choices = chunk.get("choices", [])
-                    if not choices:
-                        continue
-                    delta = choices[0].get("delta", {})
-
-                    if delta.get("content"):
-                        token = delta["content"]
-                        content_parts.append(token)
-                        yield {"event": "message_delta", "data": {"content": token}}
-
-                    if delta.get("tool_calls"):
-                        if not tool_call_signaled:
-                            tool_call_signaled = True
-                            yield {"event": "thinking", "data": {"message": "Planning next steps…", "step": step, "round": round_num}}
-                        for tc_delta in delta["tool_calls"]:
-                            idx = tc_delta.get("index", 0)
-                            if idx not in tool_calls_acc:
-                                fn = tc_delta.get("function", {})
-                                tool_calls_acc[idx] = {
-                                    "id": tc_delta.get("id", ""),
-                                    "type": "function",
-                                    "function": {
-                                        "name": fn.get("name", ""),
-                                        "arguments": fn.get("arguments", ""),
-                                    },
-                                }
-                            else:
-                                if tc_delta.get("id"):
-                                    tool_calls_acc[idx]["id"] = tc_delta["id"]
-                                fn = tc_delta.get("function", {})
-                                if fn.get("name"):
-                                    tool_calls_acc[idx]["function"]["name"] = fn["name"]
-                                if fn.get("arguments"):
-                                    tool_calls_acc[idx]["function"]["arguments"] += fn["arguments"]
-
-                accumulated_content = "".join(content_parts)
-
-                if tool_calls_acc:
-                    for tc in tool_calls_acc.values():
-                        args_str = tc["function"].get("arguments", "")
-                        if not args_str or not args_str.strip():
-                            tc["function"]["arguments"] = "{}"
-                    tool_calls = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
-
-                    tc_content = accumulated_content.strip() if accumulated_content else None
-                    assistant_msg: dict = {
-                        "role": "assistant",
-                        "content": tc_content,
-                        "tool_calls": tool_calls,
-                    }
-                    session.history.append(assistant_msg)
-                    session.last_active = time.time()
-
-                    for tc in tool_calls:
-                        fn = tc["function"]
-                        tool_name = fn["name"]
-                        try:
-                            tool_args = json.loads(fn["arguments"])
-                        except json.JSONDecodeError:
-                            args_preview = fn.get("arguments", "")[:200]
-                            args_len = len(fn.get("arguments", ""))
-                            logger.error(
-                                "JSONDecodeError parsing %s args (%d chars, preview: %s). "
-                                "Likely truncated due to max_tokens. Attempting repair.",
-                                tool_name, args_len, args_preview,
-                            )
-                            tool_args = self._try_repair_json(fn.get("arguments", ""))
-                            # Fix the stored history so the next LLM call doesn't
-                            # send invalid JSON in the conversation, which causes 400.
-                            fn["arguments"] = json.dumps(tool_args)
-
-                        if tool_name in ("generate_config", "present_plan"):
-                            injected = self._backfill_generate_config_args(session, tool_args)
-                            if injected:
-                                fn["arguments"] = json.dumps(tool_args)
-                                logger.info("Backfilled %s args from session: %s", tool_name, ", ".join(injected))
-
-                        yield {"event": "tool_call", "data": {"tool": tool_name, "args": tool_args}}
-
-                        # Recover space_config from history if it was lost
-                        if session.space_config is None and tool_name in (
-                            "update_config", "validate_config", "create_space", "update_space",
-                        ):
-                            recovered = self._recover_config_from_history(session)
-                            if recovered:
-                                session.space_config = recovered
-                                logger.info("Recovered space_config from session history for %s", tool_name)
-
-                        loop = asyncio.get_event_loop()
-                        future = loop.run_in_executor(
-                            None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
-                        )
-                        while not future.done():
-                            try:
-                                await asyncio.wait_for(asyncio.shield(future), timeout=3.0)
-                            except asyncio.TimeoutError:
-                                yield {"event": "heartbeat", "data": {"tool": tool_name}}
-                        result = future.result()
-
-                        tools_used.append(tool_name)
-
-                        yield {"event": "tool_result", "data": {"tool": tool_name, "result": result}}
-
-                        if tool_name == "create_space" and result.get("success"):
-                            session.space_id = result.get("space_id")
-                            session.space_url = result.get("space_url")
-                            yield {"event": "created", "data": {
-                                "space_id": result["space_id"],
-                                "url": result["space_url"],
-                                "display_name": result.get("display_name", ""),
-                            }}
-
-                        if tool_name == "update_space" and result.get("success"):
-                            yield {"event": "updated", "data": {
-                                "space_id": result["space_id"],
-                                "url": result["url"],
-                            }}
-
-                        if tool_name in ("generate_config", "update_config") and "config" in result:
-                            session.space_config = result["config"]
-
-                        session.add_tool_result(tc["id"], json.dumps(result, default=str))
-
-                    new_step = detect_step(session)
-                    if new_step != step:
-                        step = new_step
-                        step_idx = STEP_ORDER.index(step) if step in STEP_ORDER else 0
-                        yield {"event": "step", "data": {
-                            "step": step,
-                            "label": STEP_LABELS.get(step, step),
-                            "index": step_idx,
-                            "total": len(STEP_ORDER),
-                        }}
-                    else:
-                        step = new_step
-                    continue
-
+            else:
                 # Text-only response — conversation turn is done
                 session.add_message("assistant", accumulated_content)
                 ui_elements = self._extract_ui_hints(session)
                 yield {"event": "message", "data": {"content": accumulated_content, "ui_elements": ui_elements}}
-                break
-
-            else:
-                error_msg = "Agent exceeded maximum tool rounds"
-                yield {"event": "error", "data": {"message": error_msg}}
 
         except Exception as e:
             logger.exception("Create agent chat failed")
@@ -269,11 +273,11 @@ class CreateGenieAgent:
 
         if tools_used:
             logger.info(
-                "Agent turn complete: step=%s tools=%s error=%s",
-                step, tools_used, error_msg,
+                "Agent round complete: round=%d step=%s tools=%s continuation=%s error=%s",
+                round_num, step, tools_used, needs_continuation, error_msg,
             )
 
-        yield {"event": "done", "data": {}}
+        yield {"event": "done", "data": {"needs_continuation": needs_continuation}}
 
     _TOOL_RESULT_CHAR_LIMIT = 3000
     _COMPRESSIBLE_TOOLS = frozenset({
@@ -564,9 +568,13 @@ class CreateGenieAgent:
         if tool_name == "profile_table_usage":
             parts = []
             for tbl, info in data.get("tables", {}).items():
-                freq = info.get("query_frequency", "?")
-                users = info.get("distinct_users", "?")
-                parts.append(f"  - {tbl}: {freq} queries, {users} users")
+                queries = info.get("recent_queries", [])
+                freq = len(queries)
+                users = len({q.get("executed_by") for q in queries if q.get("executed_by")})
+                lin = info.get("lineage", {})
+                up = len(lin.get("upstream", []))
+                down = len(lin.get("downstream", []))
+                parts.append(f"  - {tbl}: {freq} queries, {users} users, {up} upstream, {down} downstream")
             if parts:
                 return "Usage profiles:\n" + "\n".join(parts)
             return None

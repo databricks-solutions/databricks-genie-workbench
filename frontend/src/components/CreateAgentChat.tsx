@@ -310,6 +310,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const stopRef = useRef<(() => void) | null>(null)
+  const sessionIdRef = useRef<string | null>(sessionId)
 
   // Streaming message state — accumulate tokens in a ref and flush to React
   // state on an animation-frame schedule to keep renders at ~60 fps.
@@ -350,8 +351,9 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   const sendMessage = useCallback(
     (text: string, selections?: Record<string, unknown>) => {
-      if (!text.trim()) return
-      if (isStreaming) {
+      const isContinuation = text === ""
+      if (!isContinuation && !text.trim()) return
+      if (isStreaming && !isContinuation) {
         const trimmed = text.trim()
         queuedMessageRef.current = trimmed
         setQueuedMessage(trimmed)
@@ -359,14 +361,16 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         return
       }
 
-      const userMsg: AgentChatMessage = {
-        id: nextId(),
-        role: "user",
-        content: text.trim(),
-        timestamp: Date.now(),
+      if (!isContinuation) {
+        const userMsg: AgentChatMessage = {
+          id: nextId(),
+          role: "user",
+          content: text.trim(),
+          timestamp: Date.now(),
+        }
+        setMessages((prev) => [...prev, userMsg])
+        setInput("")
       }
-      setMessages((prev) => [...prev, userMsg])
-      setInput("")
       setIsStreaming(true)
 
       let pendingToolCalls: AgentChatMessage[] = []
@@ -405,8 +409,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         )
       }
 
-      stopRef.current = streamAgentChat(text.trim(), sessionId, selections ?? null, {
-        onSession: (sid) => setSessionId(sid),
+      stopRef.current = streamAgentChat(isContinuation ? "" : text.trim(), sessionIdRef.current, selections ?? null, {
+        onSession: (sid) => { sessionIdRef.current = sid; setSessionId(sid) },
         onStep: () => {},
         onThinking: (message, _step, _round) => {
           setAgentStatus(message)
@@ -627,9 +631,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             } as AgentChatMessage,
           ])
         },
-        onDone: () => {
+        onDone: (needsContinuation) => {
           setAgentStatus(null)
-          setIsStreaming(false)
           // Clean up streaming refs
           if (streamingRafRef.current) {
             cancelAnimationFrame(streamingRafRef.current)
@@ -638,6 +641,15 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           streamingContentRef.current = ""
           streamingMsgIdRef.current = null
           pendingToolCalls = []
+
+          if (needsContinuation && sessionIdRef.current) {
+            // Keep isStreaming=true — the agent loop continues in the
+            // next HTTP round.  sendMessage("") opens a new SSE stream.
+            requestAnimationFrame(() => sendMessage(""))
+            return
+          }
+
+          setIsStreaming(false)
           const pending = queuedMessageRef.current
           queuedMessageRef.current = null
           setQueuedMessage(null)
@@ -1350,7 +1362,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                                 onKeyDown={(e) => e.key === "Enter" && stopEdit()}
                                 className="flex-1 bg-elevated border border-accent/30 rounded px-2 py-1 text-secondary focus:outline-none focus:ring-1 focus:ring-accent/40"
                               />
-                              <button onClick={() => removePlanItem("sample_questions", i)} className="p-1 text-red-400 hover:text-red-300 flex-shrink-0">
+                              <button onMouseDown={(e) => e.preventDefault()} onClick={() => removePlanItem("sample_questions", i)} className="p-1 text-red-400 hover:text-red-300 flex-shrink-0">
                                 <Trash2 className="w-3 h-3" />
                               </button>
                             </div>
@@ -1435,7 +1447,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                       </div>
                     )}
 
-                    {/* Joins (read-only — complex structure) */}
+                    {/* Joins */}
                     {sec.key === "join_specs" && (
                       <div className="overflow-x-auto">
                         <table className="w-full text-left">
@@ -1445,6 +1457,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                               <th className="px-2 py-1.5 font-medium">Relationship</th>
                               <th className="px-2 py-1.5 font-medium">Right Table</th>
                               <th className="px-2 py-1.5 font-medium">Condition</th>
+                              <th className="px-2 py-1.5 w-8"></th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1453,7 +1466,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                               const rightShort = (j.right_table || "").split(".").pop() || j.right_table
                               const rel = j.relationship || "—"
                               return (
-                                <tr key={i} className="border-b border-default last:border-0">
+                                <tr key={i} className="border-b border-default last:border-0 group/join">
                                   <td className="px-2 py-1.5 font-mono text-primary">{leftShort}</td>
                                   <td className="px-2 py-1.5">
                                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 whitespace-nowrap">{rel}</span>
@@ -1461,6 +1474,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                                   <td className="px-2 py-1.5 font-mono text-primary">{rightShort}</td>
                                   <td className="px-2 py-1.5 font-mono text-secondary">
                                     {leftShort}.{j.left_column} = {rightShort}.{j.right_column}
+                                  </td>
+                                  <td className="px-2 py-1.5">
+                                    <button onClick={() => removePlanItem("join_specs", i)} className="p-1 text-red-400 hover:text-red-300 opacity-0 group-hover/join:opacity-100 transition-opacity">
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
                                   </td>
                                 </tr>
                               )

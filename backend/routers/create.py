@@ -116,8 +116,12 @@ async def create_space_endpoint(body: CreateSpaceRequest):
 # ── Agent chat (agentic create flow) ─────────────────────────────────────────
 
 class AgentChatRequest(BaseModel):
-    """Request body for the agent chat endpoint."""
-    message: str = Field(..., min_length=1, max_length=10000)
+    """Request body for the agent chat endpoint.
+
+    ``message`` may be empty for auto-continuation rounds (the frontend
+    sends an empty message to resume the agent loop after a tool batch).
+    """
+    message: str = Field("", max_length=10000)
     session_id: str | None = Field(None, description="Existing session ID. Omit to start a new session.")
     selections: dict | None = Field(None, description="UI selections from interactive elements")
 
@@ -142,6 +146,10 @@ async def agent_chat(body: AgentChatRequest, request: Request):
     from backend.services.auth import set_obo_user_token, clear_obo_user_token
 
     agent = get_create_agent()
+
+    is_continuation = not body.message.strip()
+    if is_continuation and not body.session_id:
+        raise HTTPException(status_code=400, detail="session_id is required for continuation")
 
     if body.session_id:
         session = await get_session_async(body.session_id)
