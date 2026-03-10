@@ -1,0 +1,41 @@
+# Databricks Apps configuration for genie-creator agent.
+#
+# Most complex agent: LLM tool-calling loop, session persistence,
+# UC discovery, SQL execution, Genie API writes.
+
+command:
+  - "uvicorn"
+  - "app:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+env:
+  # LLM serving endpoint (for tool-calling loop)
+  - name: LLM_MODEL
+    value: "databricks-claude-sonnet-4-6"
+
+  # SQL Warehouse for test_sql tool
+  - name: SQL_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+
+  # Genie Space target directory (where new spaces are created)
+  - name: GENIE_TARGET_DIRECTORY
+    value: "/Shared/"
+
+  # Lakebase PostgreSQL — for session persistence
+  - name: LAKEBASE_HOST
+    value: ""
+  - name: LAKEBASE_PORT
+    value: "5432"
+  - name: LAKEBASE_DATABASE
+    value: "databricks_postgres"
+  - name: LAKEBASE_INSTANCE_NAME
+    value: ""
+
+  # MLflow Tracing
+  - name: MLFLOW_TRACKING_URI
+    value: "databricks"
+  - name: MLFLOW_REGISTRY_URI
+    value: "databricks-uc"

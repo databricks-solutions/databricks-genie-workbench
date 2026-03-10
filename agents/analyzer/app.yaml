@@ -1,0 +1,27 @@
+# Databricks Apps configuration for genie-analyzer agent.
+#
+# LLM-powered deep analysis — needs LLM endpoint + SQL warehouse.
+# No Lakebase dependency (stateless analysis).
+
+command:
+  - "uvicorn"
+  - "app:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+env:
+  # LLM serving endpoint
+  - name: LLM_MODEL
+    value: "databricks-claude-sonnet-4-6"
+
+  # SQL Warehouse for execute_sql tool
+  - name: SQL_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+
+  # MLflow Tracing
+  - name: MLFLOW_TRACKING_URI
+    value: "databricks"
+  - name: MLFLOW_REGISTRY_URI
+    value: "databricks-uc"

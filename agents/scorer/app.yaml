@@ -1,0 +1,23 @@
+# Databricks Apps configuration for genie-scorer agent.
+#
+# IQ scoring for Genie Spaces — no LLM dependency, pure rule-based.
+# Needs Lakebase for score persistence and star tracking.
+
+command:
+  - "uvicorn"
+  - "app:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+env:
+  # Lakebase PostgreSQL — for score persistence and star tracking
+  - name: LAKEBASE_HOST
+    value: ""
+  - name: LAKEBASE_PORT
+    value: "5432"
+  - name: LAKEBASE_DATABASE
+    value: "databricks_postgres"
+  - name: LAKEBASE_INSTANCE_NAME
+    value: ""
