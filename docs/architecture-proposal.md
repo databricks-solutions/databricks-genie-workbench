@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-The Genie Workbench is a monolithic Databricks App (~10,000 lines backend) that hand-rolls OBO auth, tool-calling loops, SSE streaming, and SDK wrappers. Two FE-built libraries solve these exact problems:
+The Genie Workbench is a monolithic Databricks App (~10,200 lines backend) that hand-rolls OBO auth, tool-calling loops, SSE streaming, and SDK wrappers. Two FE-built libraries solve these exact problems:
 
 - **AI Dev Kit** (`databricks-tools-core`) — pre-built Python functions for SQL execution, Unity Catalog browsing, and warehouse management
 - **dbx-agent-app** — `@app_agent` decorator that auto-generates `/invocations` endpoints, agent cards, MCP servers, health checks, and handles OBO auth
@@ -58,7 +58,8 @@ This proposal refactors the Workbench into a **multi-agent system** where each c
 | Issue | Impact |
 |-------|--------|
 | `create_agent_tools.py` is 2,717 lines of hand-coded tool definitions + JSON schemas + dispatch table | Every new tool requires ~80 lines of boilerplate |
-| OBO auth in `services/auth.py` uses ContextVar + middleware — breaks in streaming generators | Streaming endpoints need manual `set_obo_user_token()` re-establishment |
+| OBO auth in `services/auth.py` (136 lines) uses ContextVar + middleware — breaks in streaming generators | Streaming endpoints need manual `set_obo_user_token()` re-establishment. Recent fix added `get_service_principal_client()` fallback for missing OAuth scopes |
+| `genie_client.py` (244 lines) duplicates SP-fallback pattern (`_is_scope_error`) in every API call | Each new Genie API function must remember to add scope-error retry logic |
 | `sql_executor.py` (220 lines) reimplements what `databricks-tools-core.sql` provides | Maintenance burden, no warehouse auto-detection improvements |
 | `uc_client.py` (60 lines) reimplements what `databricks-tools-core.unity_catalog` provides | Duplicated effort |
 | No agent discovery — other workspace apps can't call Workbench capabilities | Siloed functionality |
@@ -149,7 +150,7 @@ These files contain business logic specific to GenieIQ/GenieRx and move to their
 - `prompts_create/` — Dynamic prompt assembly (9 modules: core, data_sources, requirements, plan, etc.)
 - `references/schema.md` — Genie Space schema reference
 - `genie_creator.py` — Genie API write operations
-- `genie_client.py` — Genie API read operations
+- `genie_client.py` — Genie API read operations (including SP-fallback for missing OAuth scopes, added in PR #7)
 - `lakebase.py` — PostgreSQL persistence with in-memory fallback
 
 ---
@@ -197,10 +198,11 @@ async def discover_schemas(catalog: str) -> dict:
 
 **Impact:** ~580 lines of JSON schemas + 40-line dispatch table → auto-generated.
 
-### 2. OBO Auth Middleware → `request.user_context`
+### 2. OBO Auth Middleware + SP Fallback → `request.user_context`
 
-**Before** (main.py + auth.py):
+**Before** (main.py + auth.py + genie_client.py):
 ```python
+# main.py — ContextVar middleware
 class OBOAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         token = request.headers.get("x-forwarded-access-token", "")
@@ -212,6 +214,19 @@ class OBOAuthMiddleware(BaseHTTPMiddleware):
             clear_obo_user_token()
         return response
 
+# auth.py — SP fallback for scope errors (added in PR #7)
+def get_service_principal_client() -> WorkspaceClient:
+    """Bypass OBO for ops requiring scopes the user token lacks."""
+    return _get_default_client()
+
+# genie_client.py — every API function repeats this pattern
+try:
+    return _get_space_with_client(client, genie_space_id)
+except Exception as e:
+    if _is_scope_error(e):
+        sp_client = get_service_principal_client()
+        return _get_space_with_client(sp_client, genie_space_id)
+
 # In streaming generators:
 if user_token:
     set_obo_user_token(user_token)  # Must re-establish in generator!
@@ -222,11 +237,11 @@ if user_token:
 @app_agent(name="genie-scorer", ...)
 async def scorer(request: AgentRequest) -> AgentResponse:
     # request.user_context.access_token is automatically available
-    # No ContextVar management needed
+    # No ContextVar management, no SP fallback boilerplate
     ...
 ```
 
-**Impact:** ~30 lines of middleware + streaming workarounds → zero.
+**Impact:** ~30 lines of middleware + SP fallback pattern duplicated across every API call → zero.
 
 ### 3. UC Client + SQL Executor → `databricks-tools-core`
 
@@ -463,7 +478,11 @@ The React SPA currently hits `/api/spaces/*`, `/api/analysis/*`, `/api/create/*`
 1. **Supervisor proxy** (recommended): Supervisor exposes the same paths and routes to sub-agents. Zero frontend changes.
 2. **Direct sub-agent calls**: Frontend API client updated to call sub-agent URLs. Requires frontend changes but eliminates proxy latency.
 
-### 4. Shared Lakebase
+### 4. SP Fallback for OAuth Scope Gaps
+
+PRs #7/#8 added a `get_service_principal_client()` + `_is_scope_error()` pattern: when the user's OBO token lacks the `genie` OAuth scope, the code retries with the app's service principal. This pattern is currently duplicated in `genie_client.py` (`get_genie_space`, `list_genie_spaces`) and `routers/spaces.py` (`get_space_detail`). In the multi-agent model, `@app_agent` may handle this differently — we need to verify whether the framework supports automatic SP fallback or if we keep this pattern in the domain logic.
+
+### 5. Shared Lakebase
 
 Multiple agents need Lakebase access (scorer for scores/stars, creator for sessions). Each agent gets its own Lakebase credentials via `app.yaml` resource bindings. The shared `lakebase.py` module moves to a small shared library or gets duplicated per-agent (it's only 269 lines).
 
@@ -473,7 +492,7 @@ Multiple agents need Lakebase access (scorer for scores/stars, creator for sessi
 
 | Metric | Before | After |
 |--------|--------|-------|
-| Backend Python lines | ~10,115 | ~7,000 (30% reduction from eliminating boilerplate) |
+| Backend Python lines | ~10,178 | ~7,100 (30% reduction from eliminating boilerplate) |
 | Files deleted | 0 | 5 (routers + utility wrappers replaced by libraries) |
 | Tool definition boilerplate | ~580 lines JSON schemas | 0 (auto-generated from type hints) |
 | Dispatch table code | ~40 lines | 0 (auto-routing by `@app_agent`) |
