@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from backend.services.llm_utils import call_serving_endpoint, parse_json_from_llm_response, get_llm_model
+from backend.services.create_agent_tools import _test_sql
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,10 @@ def generate_plan(
                 results[section_name] = {}
 
     plan = _assemble(results, tables_context)
+
+    validated = _validate_plan_sqls(plan)
+    if validated:
+        errors.extend(validated)
 
     if errors:
         plan["_generation_warnings"] = errors
@@ -208,7 +213,7 @@ def _gen_sqls_benchmarks(shared: str) -> dict:
         "1. **example_sqls**: 5-8 question+SQL pairs that teach Genie query patterns.\n"
         "   - Use fully-qualified table names (catalog.schema.table)\n"
         "   - Use parameterized SQL (:param_name) when the question involves user-supplied values\n"
-        "   - Each parameter needs: name, type_hint (STRING/DATE/INTEGER/DECIMAL/BOOLEAN), "
+        "   - Each parameter needs: name, type_hint (STRING/NUMBER/DATE/BOOLEAN), "
         "default_value (real value from data), description\n"
         "   - The question should be concrete (use the default value, not a placeholder)\n"
         "   - Mix: ~3 hardcoded patterns + ~3-5 parameterized queries\n\n"
@@ -260,6 +265,81 @@ def _gen_analytics(shared: str) -> dict:
         max_tokens=1024,
     )
     return parse_json_from_llm_response(response)
+
+
+def _validate_plan_sqls(plan: dict) -> list[str]:
+    """Test all example_sqls and benchmark SQLs in parallel, removing failures.
+
+    Returns a list of warning strings for dropped items.
+    """
+    example_sqls: list[dict] = plan.get("example_sqls", [])
+    benchmarks: list[dict] = plan.get("benchmarks", [])
+
+    if not example_sqls and not benchmarks:
+        return []
+
+    tasks: list[tuple[str, int, str, list[dict] | None]] = []
+    for i, eq in enumerate(example_sqls):
+        sql = eq.get("sql", "")
+        params = eq.get("parameters")
+        if sql:
+            tasks.append(("example_sql", i, sql, params))
+
+    for i, bm in enumerate(benchmarks):
+        sql = bm.get("expected_sql", "")
+        if sql:
+            tasks.append(("benchmark", i, sql, None))
+
+    if not tasks:
+        return []
+
+    test_results: dict[tuple[str, int], dict] = {}
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {
+            pool.submit(_test_sql, sql, params): (kind, idx)
+            for kind, idx, sql, params in tasks
+        }
+        for future in as_completed(futures):
+            key = futures[future]
+            try:
+                test_results[key] = future.result()
+            except Exception as e:
+                test_results[key] = {"success": False, "error": str(e)}
+
+    warnings: list[str] = []
+
+    failed_example_idxs = set()
+    for (kind, idx), result in test_results.items():
+        if kind == "example_sql" and not result.get("success"):
+            failed_example_idxs.add(idx)
+            q = example_sqls[idx].get("question", "?")[:80]
+            err = result.get("error", "unknown")[:120]
+            warnings.append(f"Dropped example SQL #{idx+1} ({q}): {err}")
+
+    failed_bench_idxs = set()
+    for (kind, idx), result in test_results.items():
+        if kind == "benchmark" and not result.get("success"):
+            failed_bench_idxs.add(idx)
+            q = benchmarks[idx].get("question", "?")[:80]
+            err = result.get("error", "unknown")[:120]
+            warnings.append(f"Dropped benchmark #{idx+1} ({q}): {err}")
+
+    if failed_example_idxs:
+        plan["example_sqls"] = [eq for i, eq in enumerate(example_sqls) if i not in failed_example_idxs]
+    if failed_bench_idxs:
+        plan["benchmarks"] = [bm for i, bm in enumerate(benchmarks) if i not in failed_bench_idxs]
+
+    kept_ex = len(plan.get("example_sqls", []))
+    kept_bm = len(plan.get("benchmarks", []))
+    total_tested = len(tasks)
+    total_dropped = len(failed_example_idxs) + len(failed_bench_idxs)
+    logger.info(
+        "SQL validation: tested %d, dropped %d (kept %d examples, %d benchmarks)",
+        total_tested, total_dropped, kept_ex, kept_bm,
+    )
+
+    return warnings
 
 
 def _assemble(results: dict[str, dict], tables_context: list[dict]) -> dict:

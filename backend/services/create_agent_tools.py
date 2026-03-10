@@ -445,11 +445,39 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "generate_plan",
+            "description": (
+                "Generate the complete Genie Space plan using PARALLEL LLM calls (4x faster than "
+                "building it manually). Extracts table context and inspection findings from session "
+                "history automatically — you only need to pass user_requirements summarizing the "
+                "user's goals and business context. Returns the plan as a present_plan result for "
+                "user review. Use this INSTEAD of calling present_plan with manually constructed data."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_requirements": {
+                        "type": "string",
+                        "description": (
+                            "Summary of the user's goals, audience, business context, and any "
+                            "specific rules they mentioned. Include terminology definitions, "
+                            "fiscal calendars, default assumptions — anything the plan should reflect."
+                        ),
+                    },
+                },
+                "required": ["user_requirements"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "present_plan",
             "description": (
                 "Present a structured plan for the user to review BEFORE generating the config. "
                 "The frontend renders this as collapsible sections mirroring the Genie Space UI tabs. "
-                "Call this after the business logic checkpoint — the user must approve the plan before "
+                "Prefer generate_plan (parallel, faster) unless you need to manually construct "
+                "or revise specific plan sections. The user must approve the plan before "
                 "you call generate_config. Parameters are IDENTICAL to generate_config so the plan "
                 "is a 1:1 preview of what will be created."
             ),
@@ -831,6 +859,7 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
         "profile_columns": _profile_columns,
         "test_sql": _test_sql,
         "discover_warehouses": _discover_warehouses,
+        "generate_plan": _generate_plan_fallback,
         "present_plan": _present_plan,
         "get_config_schema": _get_config_schema,
         "generate_config": _generate_config,
@@ -1647,8 +1676,8 @@ def _substitute_params(sql: str, parameters: list[dict] | None) -> str:
         if not name:
             continue
         type_hint = param.get("type_hint", "STRING").upper()
-        if type_hint in ("NUMBER", "BOOLEAN"):
-            literal = value
+        if type_hint in ("NUMBER", "BOOLEAN", "INTEGER", "INT", "DECIMAL", "FLOAT", "DOUBLE", "BIGINT", "SMALLINT", "TINYINT"):
+            literal = str(value)
         else:
             literal = f"'{value}'"
         sql = re.sub(rf":{re.escape(name)}\b", literal, sql)
@@ -1733,6 +1762,21 @@ def _get_config_schema() -> dict:
     except FileNotFoundError:
         return {"error": "Schema reference file not found"}
     return {"schema_reference": content}
+
+
+def _generate_plan_fallback(**kwargs) -> dict:
+    """Fallback if generate_plan is called through normal dispatch.
+
+    The real implementation lives in create_agent.py which has access to
+    session history.  This returns an error nudging the agent to provide
+    the context manually via present_plan.
+    """
+    return {
+        "error": (
+            "generate_plan requires session context (handled by the agent). "
+            "If you see this, call present_plan with the plan data instead."
+        ),
+    }
 
 
 def _present_plan(
@@ -1910,9 +1954,12 @@ def _generate_config(
             if eq.get("parameters"):
                 params = []
                 for p in eq["parameters"]:
+                    raw_hint = p.get("type_hint", "STRING").upper()
+                    _NUMERIC_HINTS = {"INTEGER", "INT", "DECIMAL", "FLOAT", "DOUBLE", "BIGINT", "SMALLINT", "TINYINT"}
+                    normalized_hint = "NUMBER" if raw_hint in _NUMERIC_HINTS else raw_hint
                     param_entry: dict[str, Any] = {
                         "name": p["name"],
-                        "type_hint": p.get("type_hint", "STRING"),
+                        "type_hint": normalized_hint,
                     }
                     if p.get("description"):
                         param_entry["description"] = [p["description"]]

@@ -56,6 +56,7 @@ const TOOL_LABELS: Record<string, string> = {
   profile_columns: "Profiling columns",
   test_sql: "Testing SQL",
   discover_warehouses: "Finding warehouses",
+  generate_plan: "Generating plan (parallel)...",
   present_plan: "Preparing plan for review",
   get_config_schema: "Fetching config schema",
   generate_config: "Generating config",
@@ -233,7 +234,7 @@ function loadState(): PersistedState | null {
     if (!parsed.editedPlan && parsed.messages) {
       for (let i = parsed.messages.length - 1; i >= 0; i--) {
         const m = parsed.messages[i]
-        if (m.role === "tool" && m.tool_name === "present_plan" && m.tool_result && !m.tool_result.error) {
+        if (m.role === "tool" && (m.tool_name === "present_plan" || m.tool_name === "generate_plan") && m.tool_result && !m.tool_result.error) {
           parsed.editedPlan = planFromResult(m.tool_result as Record<string, unknown>)
           break
         }
@@ -389,6 +390,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           case "profile_columns": return tableName ? `Profiling ${tableName}...` : "Profiling data..."
           case "test_sql": return "Testing SQL..."
           case "discover_warehouses": return "Finding warehouses..."
+          case "generate_plan": return "Generating plan in parallel..."
           case "present_plan": return "Preparing plan..."
           case "get_config_schema": return "Fetching config schema..."
           case "generate_config": return "Generating configuration..."
@@ -493,7 +495,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
               return updated
             })
           }
-          if (tool === "present_plan" && !result.error) {
+          if ((tool === "present_plan" || tool === "generate_plan") && !result.error) {
             if (resolvedId) setExpandedTools((et) => new Set(et).add(resolvedId))
             const plan = planFromResult(result as Record<string, unknown>)
             setEditedPlan(plan)
@@ -1675,7 +1677,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   }
 
   const hasRichCard = (msg: AgentChatMessage): boolean =>
-    !!msg.tool_result && !msg.tool_result.error && (msg.tool_name === "describe_table" || msg.tool_name === "profile_columns" || msg.tool_name === "present_plan" || msg.tool_name === "test_sql" || msg.tool_name === "assess_data_quality" || msg.tool_name === "profile_table_usage")
+    !!msg.tool_result && !msg.tool_result.error && (msg.tool_name === "describe_table" || msg.tool_name === "profile_columns" || msg.tool_name === "present_plan" || msg.tool_name === "generate_plan" || msg.tool_name === "test_sql" || msg.tool_name === "assess_data_quality" || msg.tool_name === "profile_table_usage")
 
   const getToolSummary = (msg: AgentChatMessage): string | null => {
     if (!msg.tool_result || msg.tool_result.error) return null
@@ -1719,7 +1721,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   }
 
   const renderToolCall = (msg: AgentChatMessage) => {
-    if (msg.tool_name === "present_plan" && msg.tool_result && !msg.tool_result.error) {
+    if ((msg.tool_name === "present_plan" || msg.tool_name === "generate_plan") && msg.tool_result && !msg.tool_result.error) {
       return <div key={msg.id} className="mx-4 my-2">{renderPlanCard(msg.tool_result)}</div>
     }
     const isExpanded = expandedTools.has(msg.id)
@@ -1753,7 +1755,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           rich ? (
             msg.tool_name === "describe_table"
               ? renderDescribeCard(msg.tool_result)
-              : msg.tool_name === "present_plan"
+              : (msg.tool_name === "present_plan" || msg.tool_name === "generate_plan")
                 ? renderPlanCard(msg.tool_result)
                 : msg.tool_name === "test_sql"
                   ? renderTestSqlCard(msg.tool_result)

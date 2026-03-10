@@ -102,7 +102,7 @@ def detect_step(session: AgentSession) -> str:
         return "post_creation"
     if session.space_config:
         return "config_create"
-    if _has_tool(session.history, "present_plan"):
+    if _has_tool(session.history, "present_plan") or _has_tool(session.history, "generate_plan"):
         return "plan"
     if _has_tool(session.history, "describe_table"):
         return "inspection"

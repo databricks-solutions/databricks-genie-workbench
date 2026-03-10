@@ -14,7 +14,8 @@ from typing import AsyncGenerator, Generator
 from backend.services.llm_utils import get_llm_model
 from backend.services.auth import get_workspace_client
 from backend.services.create_agent_session import AgentSession
-from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call
+from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call, _present_plan
+from backend.services import plan_builder
 from backend.prompts_create import assemble_system_prompt, detect_step
 
 logger = logging.getLogger(__name__)
@@ -212,10 +213,16 @@ class CreateGenieAgent:
                             session.space_config = recovered
                             logger.info("Recovered space_config from session history for %s", tool_name)
 
-                    loop = asyncio.get_event_loop()
-                    future = loop.run_in_executor(
-                        None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
-                    )
+                    if tool_name == "generate_plan":
+                        loop = asyncio.get_event_loop()
+                        future = loop.run_in_executor(
+                            None, lambda a=tool_args: self._run_generate_plan(session, a)
+                        )
+                    else:
+                        loop = asyncio.get_event_loop()
+                        future = loop.run_in_executor(
+                            None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
+                        )
                     while not future.done():
                         try:
                             await asyncio.wait_for(asyncio.shield(future), timeout=3.0)
@@ -776,6 +783,81 @@ class CreateGenieAgent:
 
         logger.warning("Could not repair truncated JSON (%d chars)", len(s))
         return {}
+
+    @staticmethod
+    def _run_generate_plan(session: AgentSession, tool_args: dict) -> dict:
+        """Run parallel plan generation using plan_builder.
+
+        Extracts tables_context and inspection_summaries from session history,
+        then calls plan_builder.generate_plan() which makes 4 parallel LLM calls.
+        Wraps the result through _present_plan for frontend rendering.
+        """
+        tables_context = []
+        inspection_summaries: dict = {}
+
+        for msg in session.history:
+            if msg["role"] != "tool":
+                continue
+            try:
+                result = json.loads(msg.get("content", "{}"))
+                if not isinstance(result, dict):
+                    continue
+
+                # describe_table results → tables_context
+                table_id = result.get("table")
+                if table_id and "columns" in result:
+                    existing_ids = {t.get("table") or t.get("table_name") for t in tables_context}
+                    if table_id not in existing_ids:
+                        tables_context.append(result)
+
+                # assess_data_quality results
+                if "overall_assessment" in result and "table_details" in result:
+                    inspection_summaries["quality"] = result
+
+                # profile_table_usage results
+                if "tables" in result and any(
+                    "recent_queries" in t for t in result.get("tables", []) if isinstance(t, dict)
+                ):
+                    inspection_summaries["usage"] = result
+
+                # profile_columns results
+                if "profiles" in result:
+                    inspection_summaries["profiles"] = result
+
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+
+        user_requirements = tool_args.get("user_requirements", "")
+
+        if not tables_context:
+            return {
+                "error": "No table inspection data found in session. Run describe_table first.",
+                "hint": "Call describe_table on each table before calling generate_plan.",
+            }
+
+        logger.info(
+            "Running parallel plan generation: %d tables, %d inspection sections, requirements=%d chars",
+            len(tables_context), len(inspection_summaries), len(user_requirements),
+        )
+
+        raw_plan = plan_builder.generate_plan(tables_context, inspection_summaries, user_requirements)
+
+        if "error" in raw_plan and "tables" not in raw_plan:
+            return raw_plan
+
+        warnings = raw_plan.pop("_generation_warnings", None)
+
+        _PLAN_KEYS = {
+            "tables", "sample_questions", "text_instructions", "example_sqls",
+            "measures", "filters", "expressions", "join_specs", "benchmarks",
+            "metric_views",
+        }
+        plan_args = {k: v for k, v in raw_plan.items() if k in _PLAN_KEYS}
+
+        result = _present_plan(**plan_args)
+        if warnings:
+            result["_generation_warnings"] = warnings
+        return result
 
     @staticmethod
     def _backfill_generate_config_args(session: AgentSession, tool_args: dict) -> list[str]:
