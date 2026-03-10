@@ -1,0 +1,23 @@
+# Databricks Apps configuration for genie-optimizer agent.
+#
+# Optimization suggestions from benchmark feedback — needs LLM endpoint.
+# No Lakebase dependency (stateless).
+
+command:
+  - "uvicorn"
+  - "app:app"
+  - "--host"
+  - "0.0.0.0"
+  - "--port"
+  - "8000"
+
+env:
+  # LLM serving endpoint
+  - name: LLM_MODEL
+    value: "databricks-claude-sonnet-4-6"
+
+  # MLflow Tracing
+  - name: MLFLOW_TRACKING_URI
+    value: "databricks"
+  - name: MLFLOW_REGISTRY_URI
+    value: "databricks-uc"

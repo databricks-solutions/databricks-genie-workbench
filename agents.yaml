@@ -1,0 +1,49 @@
+# Multi-agent deployment configuration for Genie Workbench.
+#
+# Deploy all agents:
+#   dbx-agent-app deploy --config agents.yaml
+#
+# Deploy a single agent:
+#   dbx-agent-app deploy --config agents.yaml --agent scorer
+#
+# Each agent is a standalone Databricks App that exposes:
+#   - /invocations  (Responses Agent protocol)
+#   - /.well-known/agent.json  (A2A discovery)
+#   - /health  (liveness probe)
+#   - MCP server  (tool integration)
+
+project:
+  name: genie-workbench
+  workspace_path: /Workspace/Shared/apps
+
+agents:
+  - name: scorer
+    source: ./agents/scorer
+    description: "IQ scoring for Genie Spaces — scan, history, stars"
+
+  - name: analyzer
+    source: ./agents/analyzer
+    description: "LLM-powered deep analysis of Genie Space configurations"
+
+  - name: creator
+    source: ./agents/creator
+    description: "Conversational wizard for building new Genie Spaces"
+
+  - name: optimizer
+    source: ./agents/optimizer
+    description: "Optimization suggestions from benchmark labeling feedback"
+
+  - name: fixer
+    source: ./agents/fixer
+    description: "AI fix agent — generates and applies config patches"
+
+  - name: supervisor
+    source: .
+    description: "Supervisor — serves React SPA and routes to sub-agents"
+    depends_on: [scorer, analyzer, creator, optimizer, fixer]
+    url_env_map:
+      scorer: SCORER_URL
+      analyzer: ANALYZER_URL
+      creator: CREATOR_URL
+      optimizer: OPTIMIZER_URL
+      fixer: FIXER_URL
