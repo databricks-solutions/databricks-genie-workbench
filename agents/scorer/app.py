@@ -79,7 +79,12 @@ async def list_spaces(
     min_score: int | None = None,
     max_score: int | None = None,
 ) -> list[dict]:
-    """Source: backend/routers/spaces.py::list_spaces"""
+    """Source: backend/routers/spaces.py::list_spaces
+
+    Note (PR #6-#8): API response uses `space_id`/`title` fields (not `id`/`display_name`).
+    Returns `space_url` per item (host + /genie/rooms/{space_id}).
+    Uses SP fallback via get_service_principal_client() when OBO token lacks genie scope.
+    """
     raise NotImplementedError("Phase 2: move list_spaces logic here")
 
 
@@ -87,7 +92,10 @@ async def list_spaces(
     description="Get detailed space metadata with latest scan result and star status.",
 )
 async def get_space_detail(space_id: str) -> dict:
-    """Source: backend/routers/spaces.py::get_space_detail"""
+    """Source: backend/routers/spaces.py::get_space_detail
+
+    Note (PR #7): Includes SP fallback (_is_scope_error check) for Genie API calls.
+    """
     raise NotImplementedError("Phase 2: move get_space_detail logic here")
 
 
