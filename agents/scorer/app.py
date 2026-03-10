@@ -7,11 +7,20 @@ Extracted from:
 
 This agent has NO LLM dependency — it's pure rule-based scoring.
 Lowest-risk extraction target; validates the @app_agent pattern.
+
+Integration patterns used:
+  - Challenge 1 (OBO auth): obo_context() bridges @app_agent → monolith auth
+  - Challenge 4 (SP fallback): genie_api_call() retries with SP on scope errors
+  - Challenge 5 (Lakebase): init_pool(SCORER_DDL) for idempotent schema setup
 """
 
 from __future__ import annotations
 
 from dbx_agent_app import AgentRequest, AgentResponse, app_agent
+
+from agents._shared.auth_bridge import obo_context
+from agents._shared.sp_fallback import genie_api_call
+from agents._shared.lakebase_client import init_pool, SCORER_DDL
 
 
 @app_agent(
@@ -28,6 +37,14 @@ async def scorer(request: AgentRequest) -> AgentResponse:
     ...
 
 
+# ── Lifecycle ────────────────────────────────────────────────────────────────
+
+
+async def on_startup():
+    """Initialize Lakebase pool with scorer-specific DDL."""
+    await init_pool(SCORER_DDL)
+
+
 # ── Tools ────────────────────────────────────────────────────────────────────
 # Each tool maps to a current REST endpoint in backend/routers/spaces.py.
 # Domain logic lives in scanner.py (moved as-is from backend/services/).
@@ -40,12 +57,24 @@ async def scorer(request: AgentRequest) -> AgentResponse:
         "setup, SQL assets, optimization), and persists the result to Lakebase."
     ),
 )
-async def scan_space(space_id: str) -> dict:
-    """Source: backend/services/scanner.py::scan_space + backend/routers/spaces.py::trigger_scan"""
-    # Domain logic (scanner.calculate_score) moves here as-is.
-    # OBO auth: use request.user_context.access_token instead of ContextVar.
-    # Lakebase persistence: use local lakebase.py copy.
-    raise NotImplementedError("Phase 2: move scanner.py + lakebase.py here")
+async def scan_space(space_id: str, request: AgentRequest) -> dict:
+    """Source: backend/services/scanner.py::scan_space + backend/routers/spaces.py::trigger_scan
+
+    Integration pattern:
+        obo_context() sets up both monolith ContextVar and tools-core auth.
+        genie_api_call() auto-retries with SP on scope errors.
+        Domain logic (scanner.calculate_score) works unchanged.
+    """
+    with obo_context(request.user_context.access_token):
+        # Fetch space config (with automatic SP fallback for scope errors)
+        space_data = genie_api_call(
+            "GET",
+            f"/api/2.0/genie/spaces/{space_id}",
+            query={"include_serialized_space": "true"},
+        )
+        # TODO Phase 2: scanner.calculate_score(space_data)
+        # TODO Phase 2: save_scan_result(space_id, score)
+        raise NotImplementedError("Phase 2: move scanner.py + lakebase.py here")
 
 
 @scorer.tool(

@@ -448,43 +448,99 @@ This replaces the current "manual curl and check" testing with automated, repeat
 
 ---
 
-## Integration Challenges
+## Integration Challenges — Concrete Solutions
 
-### 1. OBO Tokens in Streaming Generators
+The three auth systems that need bridging:
+- **Monolith auth** (`backend/services/auth.py:25`): `_obo_client` ContextVar → `WorkspaceClient`
+- **`@app_agent`** (`dbx_agent_app/core/types.py:32`): `request.user_context` → `UserContext` with `.access_token`
+- **`databricks-tools-core`** (`databricks_tools_core/auth.py:35-36`): `_host_ctx`/`_token_ctx` ContextVars via `set_databricks_auth()`
 
-The creator agent's tool-calling loop needs the user's OBO token across multiple LLM rounds within a single SSE stream. `@app_agent` provides `request.user_context`, but we need to pass the token into the agent session and re-establish it per-round.
+### 1. OBO Auth Bridge → `agents/_shared/auth_bridge.py`
 
-**Solution:** Pass `user_context.access_token` into the agent session object. Each tool call creates a fresh `WorkspaceClient(token=session.access_token)`.
+**Problem:** Each agent receives `request.user_context` from `@app_agent`, but domain logic calls `get_workspace_client()` from the monolith's auth module. During migration, both patterns need to work. And `databricks-tools-core` functions use their own separate ContextVars.
 
-### 2. Complex Tool Schemas
-
-`generate_config` has 10+ nested parameters (tables with column configs, SQL snippets with expressions/measures/filters, etc.). The `@agent.tool()` decorator auto-generates schemas from type hints, but deeply nested structures need Pydantic models:
+**Solution:** `obo_context()` context manager that sets up all three auth systems in one `with` block:
 
 ```python
-class TableConfig(BaseModel):
-    identifier: str
-    description: str = ""
-    column_configs: list[ColumnConfig] = []
+from agents._shared.auth_bridge import obo_context
 
-@creator.tool(description="Generate a complete Genie Space configuration")
-async def generate_config(tables: list[TableConfig], ...) -> dict:
-    ...
+@scorer.tool(description="Run IQ scan on a Genie Space")
+async def scan_space(space_id: str, request: AgentRequest) -> dict:
+    with obo_context(request.user_context.access_token):
+        # All of these now work:
+        # - monolith's get_workspace_client() returns OBO client
+        # - databricks-tools-core functions use OBO token
+        result = scanner.calculate_score(space_id)
 ```
 
-### 3. Frontend Transparency
+For streaming generators, capture the token before the generator starts and re-enter `obo_context()` per-yield (same pattern as `backend/routers/create.py:125-198`).
 
-The React SPA currently hits `/api/spaces/*`, `/api/analysis/*`, `/api/create/*`. Two options:
+### 2. Complex Tool Schemas → `agents/creator/schemas.py`
 
-1. **Supervisor proxy** (recommended): Supervisor exposes the same paths and routes to sub-agents. Zero frontend changes.
-2. **Direct sub-agent calls**: Frontend API client updated to call sub-agent URLs. Requires frontend changes but eliminates proxy latency.
+**Problem:** `generate_config` has 11 parameters with 4-5 nesting levels. `@app_agent`'s schema generator only handles primitives. Hand-maintaining 200+ line JSON schemas is fragile.
 
-### 4. SP Fallback for OAuth Scope Gaps
+**Solution:** Pydantic models that auto-generate JSON Schema via `.model_json_schema()`, passed to `@creator.tool(parameters=...)`:
 
-PRs #7/#8 added a `get_service_principal_client()` + `_is_scope_error()` pattern: when the user's OBO token lacks the `genie` OAuth scope, the code retries with the app's service principal. This pattern is currently duplicated in `genie_client.py` (`get_genie_space`, `list_genie_spaces`) and `routers/spaces.py` (`get_space_detail`). In the multi-agent model, `@app_agent` may handle this differently — we need to verify whether the framework supports automatic SP fallback or if we keep this pattern in the domain logic.
+```python
+from agents.creator.schemas import GenerateConfigArgs
 
-### 5. Shared Lakebase
+@creator.tool(
+    description="Generate a Genie Space configuration",
+    parameters=GenerateConfigArgs.model_json_schema(),
+)
+async def generate_config(**kwargs) -> dict:
+    args = GenerateConfigArgs(**kwargs)  # Validate at runtime
+```
 
-Multiple agents need Lakebase access (scorer for scores/stars, creator for sessions). Each agent gets its own Lakebase credentials via `app.yaml` resource bindings. The shared `lakebase.py` module moves to a small shared library or gets duplicated per-agent (it's only 269 lines).
+Cuts ~580 lines of JSON schema to ~80 lines of Pydantic models, and the schema is always in sync with runtime validation.
+
+### 3. Frontend Transparency → `agents/supervisor/proxy.py`
+
+**Problem:** The React SPA makes 28 API calls to `/api/*` that route to 5 different sub-agents after decomposition. The frontend should not change.
+
+**Solution:** Ordered route table with prefix matching, glob support for path parameters, and SSE stream detection:
+
+```python
+ROUTE_TABLE = [
+    ("/api/spaces/*/fix", "FIXER_URL"),   # specific before general
+    ("/api/genie/create", "CREATOR_URL"),
+    ("/api/spaces",       "SCORER_URL"),
+    ("/api/analyze",      "ANALYZER_URL"),
+    ("/api/create",       "CREATOR_URL"),
+    # ... etc
+]
+```
+
+SSE streams are detected by `content-type: text/event-stream` and forwarded as chunked bytes. OBO headers pass through automatically.
+
+### 4. SP Fallback Decorator → `agents/_shared/sp_fallback.py`
+
+**Problem:** The `_is_scope_error()` + retry-with-SP pattern is duplicated across `genie_client.py` and `spaces.py`. Each agent that calls Genie APIs needs this pattern.
+
+**Solution:** `@with_sp_fallback` decorator and `genie_api_call()` convenience function:
+
+```python
+from agents._shared.sp_fallback import genie_api_call
+
+# One-liner with automatic SP fallback
+space = genie_api_call("GET", f"/api/2.0/genie/spaces/{space_id}",
+                       query={"include_serialized_space": "true"})
+```
+
+### 5. Shared Lakebase Pool → `agents/_shared/lakebase_client.py`
+
+**Problem:** Multiple agents need Lakebase (scorer for scores/stars, creator for sessions). Each runs as a separate Databricks App with its own credentials.
+
+**Solution:** Shared pool lifecycle + idempotent DDL per agent:
+
+```python
+from agents._shared.lakebase_client import init_pool, SCORER_DDL
+
+# At startup — creates tables if they don't exist
+await init_pool(SCORER_DDL)
+```
+
+Each agent initializes its own pool from its own env vars. Domain-specific query functions stay in each agent's module. The shared client manages pool lifecycle, credential generation, and DDL only.
 
 ---
 
@@ -521,7 +577,7 @@ Multiple agents need Lakebase access (scorer for scores/stars, creator for sessi
 
 ## Files in This PR
 
-### New files
+### New files — scaffolds + deployment
 - `docs/architecture-proposal.md` — this document
 - `agents.yaml` — multi-agent deployment config
 - `agents/scorer/app.py` — scorer agent scaffold
@@ -535,5 +591,19 @@ Multiple agents need Lakebase access (scorer for scores/stars, creator for sessi
 - `agents/fixer/app.py` — fixer agent scaffold
 - `agents/fixer/app.yaml` — fixer Databricks Apps config
 
-### No modified files
-This is a proposal PR — the existing monolith is untouched. All new files are additive.
+### New files — integration challenge solutions
+- `agents/_shared/__init__.py` — shared utilities package
+- `agents/_shared/auth_bridge.py` — Challenge 1: OBO auth context manager bridging all 3 auth systems
+- `agents/_shared/sp_fallback.py` — Challenge 4: SP fallback decorator for Genie API scope errors
+- `agents/_shared/lakebase_client.py` — Challenge 5: Shared Lakebase pool with idempotent DDL
+- `agents/creator/schemas.py` — Challenge 2: Pydantic models replacing ~580 lines of JSON schemas
+- `agents/supervisor/__init__.py` — supervisor package
+- `agents/supervisor/proxy.py` — Challenge 3: Frontend-transparent proxy with SSE support
+
+### Modified files
+- `agents/scorer/app.py` — wired up auth_bridge, sp_fallback, and lakebase_client imports
+- `agents/creator/app.py` — uses Pydantic schema override for generate_config/present_plan
+- `docs/architecture-proposal.md` — replaced placeholder challenge descriptions with concrete solutions
+
+### No changes to existing monolith
+The existing `backend/` code is untouched. All new files are additive.

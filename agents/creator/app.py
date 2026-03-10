@@ -26,9 +26,9 @@ LLM: Yes (tool-calling loop with Claude)
 
 from __future__ import annotations
 
-from pydantic import BaseModel
-
 from dbx_agent_app import AgentRequest, AgentResponse, app_agent
+
+from agents.creator.schemas import GenerateConfigArgs
 
 
 @app_agent(
@@ -139,56 +139,39 @@ async def get_config_schema() -> dict:
     raise NotImplementedError("Phase 6")
 
 
-class TableConfig(BaseModel):
-    """Pydantic model for deeply nested generate_config table arguments."""
-    identifier: str
-    description: str = ""
-    column_configs: list[dict] = []
-
-
 @creator.tool(
     description=(
         "Generate a complete Genie Space configuration from discovered "
         "tables, inspection data, and user requirements."
     ),
+    parameters=GenerateConfigArgs.model_json_schema(),
 )
-async def generate_config(
-    tables: list[dict],
-    sample_questions: list[str] | None = None,
-    text_instructions: list[str] | None = None,
-    example_sqls: list[dict] | None = None,
-    join_specs: list[dict] | None = None,
-    measures: list[dict] | None = None,
-    filters: list[dict] | None = None,
-    expressions: list[dict] | None = None,
-    benchmarks: list[dict] | None = None,
-    metric_views: list[dict] | None = None,
-) -> dict:
+async def generate_config(**kwargs) -> dict:
     """Source: backend/services/create_agent_tools.py::_generate_config (~lines 245-650)
 
     This is the largest tool implementation. The LLM provides content;
     this tool handles all structural formatting (JSON schema compliance,
     column config normalization, instruction budget enforcement).
+
+    Integration pattern (Challenge 2):
+        Pydantic model auto-generates the JSON Schema for @app_agent
+        registration, replacing ~580 lines of hand-written schema.
+        Runtime validation catches malformed LLM output early.
     """
+    args = GenerateConfigArgs(**kwargs)
+    # TODO Phase 6: move _generate_config implementation here
+    # args.tables, args.sample_questions, etc. are all validated
     raise NotImplementedError("Phase 6")
 
 
 @creator.tool(
     description="Present the space creation plan to the user for review before generating config.",
+    parameters=GenerateConfigArgs.model_json_schema(),
 )
-async def present_plan(
-    tables: list[dict],
-    sample_questions: list[str] | None = None,
-    text_instructions: list[str] | None = None,
-    example_sqls: list[dict] | None = None,
-    join_specs: list[dict] | None = None,
-    measures: list[dict] | None = None,
-    filters: list[dict] | None = None,
-    expressions: list[dict] | None = None,
-    benchmarks: list[dict] | None = None,
-    metric_views: list[dict] | None = None,
-) -> dict:
+async def present_plan(**kwargs) -> dict:
     """Source: backend/services/create_agent_tools.py::_present_plan"""
+    args = GenerateConfigArgs(**kwargs)
+    # TODO Phase 6: move _present_plan implementation here
     raise NotImplementedError("Phase 6")
 
 
