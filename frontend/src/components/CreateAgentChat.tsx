@@ -320,6 +320,12 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const stopRef = useRef<(() => void) | null>(null)
   const sessionIdRef = useRef<string | null>(sessionId)
 
+  // Auto-reconnect state: tracks consecutive connection failures so we can
+  // retry automatically (up to a limit) when the Databricks Apps proxy drops
+  // the SSE stream during long-running tool calls.
+  const reconnectCountRef = useRef(0)
+  const MAX_AUTO_RECONNECTS = 3
+
   // Streaming message state — accumulate tokens in a ref and flush to React
   // state on an animation-frame schedule to keep renders at ~60 fps.
   const streamingContentRef = useRef("")
@@ -419,7 +425,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       }
 
       stopRef.current = streamAgentChat(isContinuation ? "" : text.trim(), sessionIdRef.current, selections ?? null, {
-        onSession: (sid) => { sessionIdRef.current = sid; setSessionId(sid) },
+        onSession: (sid) => { sessionIdRef.current = sid; setSessionId(sid); reconnectCountRef.current = 0 },
         onStep: () => {},
         onThinking: (message, _step, _round) => {
           setAgentStatus(message)
@@ -507,9 +513,12 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             const plan = planFromResult(result as Record<string, unknown>)
             setEditedPlan(plan)
             setEditingPlanItem(null)
+            const suggestedName = (result as Record<string, unknown>).suggested_display_name as string | undefined
             setProgress((p) => ({
               ...p,
               planReady: true,
+              // Set title from LLM suggestion if user hasn't already named it
+              title: p.title || suggestedName || p.title,
               planSummary: {
                 questions: plan.sample_questions.length,
                 benchmarks: plan.benchmarks.length,
@@ -651,13 +660,42 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           streamingMsgIdRef.current = null
           pendingToolCalls = []
 
+          // Auto-reconnect on proxy/network disconnects (up to MAX_AUTO_RECONNECTS).
+          // The backend session is persisted and orphaned tool calls are healed,
+          // so resuming with an empty message picks up exactly where we left off.
+          if (needsContinuation === "connection_lost" && sessionIdRef.current) {
+            reconnectCountRef.current += 1
+            if (reconnectCountRef.current <= MAX_AUTO_RECONNECTS) {
+              const attempt = reconnectCountRef.current
+              setAgentStatus(`Reconnecting (attempt ${attempt}/${MAX_AUTO_RECONNECTS})...`)
+              setTimeout(() => sendMessage(""), 2000 * attempt)
+              return
+            }
+            // Exhausted retries — show error and stop
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: nextId(),
+                role: "assistant",
+                content: "Connection lost after multiple retries. Your session is saved — click Send to resume.",
+                timestamp: Date.now(),
+                is_error: true,
+              } as AgentChatMessage,
+            ])
+            reconnectCountRef.current = 0
+            setIsStreaming(false)
+            return
+          }
+
           if (needsContinuation && sessionIdRef.current) {
             // Keep isStreaming=true — the agent loop continues in the
             // next HTTP round.  sendMessage("") opens a new SSE stream.
+            reconnectCountRef.current = 0  // successful round — reset reconnect counter
             requestAnimationFrame(() => sendMessage(""))
             return
           }
 
+          reconnectCountRef.current = 0
           setIsStreaming(false)
           const pending = queuedMessageRef.current
           queuedMessageRef.current = null
@@ -707,6 +745,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     stopRef.current?.()
     setMessages([])
     setSessionId(null)
+    sessionIdRef.current = null
     setIsStreaming(false)
     setAgentStatus(null)
     if (streamingRafRef.current) {
@@ -726,8 +765,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setEditedPlan(null)
     setEditingPlanItem(null)
     setAutoPilot(false)
+    reconnectCountRef.current = 0
     queuedMessageRef.current = null
     setQueuedMessage(null)
+    setElementSearch({})
     setShowClearConfirm(false)
     sessionStorage.removeItem(STORAGE_KEY)
   }
@@ -1271,7 +1312,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   const approvePlanAndCreate = () => {
     if (!editedPlan) return
-    sendMessage("Plan approved — go ahead and create the space.", { edited_plan: editedPlan, action: "create" })
+    sendMessage("Plan approved — go ahead and create the space.", {
+      edited_plan: editedPlan,
+      action: "create",
+      display_name: progress.title || undefined,
+    })
   }
 
   const requestAIReview = () => {

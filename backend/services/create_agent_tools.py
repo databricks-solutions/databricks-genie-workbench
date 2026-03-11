@@ -44,6 +44,14 @@ _DATE_TYPES = {"date", "timestamp", "timestamp_ntz"}
 _NUMERIC_TYPES = {"int", "bigint", "smallint", "tinyint", "float", "double", "decimal"}
 _BOOLEAN_TYPES = {"boolean"}
 
+# Genie API accepts: STRING, INTEGER, DOUBLE, DECIMAL, DATE, BOOLEAN.
+# Map common LLM-generated aliases to valid values.
+_TYPE_HINT_MAP = {
+    "NUMBER": "INTEGER", "INT": "INTEGER", "BIGINT": "INTEGER",
+    "SMALLINT": "INTEGER", "TINYINT": "INTEGER",
+    "FLOAT": "DOUBLE", "TIMESTAMP": "DATE",
+}
+
 # Cap concurrent SQL statements to avoid overwhelming the warehouse.
 # 3 is safe for even a 2X-Small Pro warehouse; serverless could handle
 # much more but we design for the lowest common denominator.
@@ -704,12 +712,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "update_space",
-            "description": "Update an existing Genie space with a new configuration. Use this instead of create_space when the space has already been created and the user wants to modify it.",
+            "description": "Update an existing Genie space — config, display name, or both. Use this instead of create_space when the space has already been created. Supports renaming.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "space_id": {"type": "string", "description": "The ID of the existing Genie space to update"},
                     "config": {"type": "object", "description": "The validated serialized_space dict (optional — defaults to last generated config)"},
+                    "display_name": {"type": "string", "description": "New display name for the space (optional — only if renaming)"},
                 },
                 "required": ["space_id"],
             },
@@ -1017,8 +1026,11 @@ def _describe_table(table_identifier: str) -> dict:
         if host:
             uc_url = f"{host}/explore/data/{parts[0]}/{parts[1]}/{parts[2]}"
 
+    table_type = str(table_info.table_type) if table_info.table_type else None
+
     result_dict: dict[str, Any] = {
         "table": table_identifier,
+        "table_type": table_type,
         "comment": table_info.comment,
         "columns": columns,
         "column_count": len(columns),
@@ -1955,8 +1967,7 @@ def _generate_config(
                 params = []
                 for p in eq["parameters"]:
                     raw_hint = p.get("type_hint", "STRING").upper()
-                    _NUMERIC_HINTS = {"INTEGER", "INT", "DECIMAL", "FLOAT", "DOUBLE", "BIGINT", "SMALLINT", "TINYINT"}
-                    normalized_hint = "NUMBER" if raw_hint in _NUMERIC_HINTS else raw_hint
+                    normalized_hint = _TYPE_HINT_MAP.get(raw_hint, raw_hint)
                     param_entry: dict[str, Any] = {
                         "name": p["name"],
                         "type_hint": normalized_hint,
@@ -1966,6 +1977,7 @@ def _generate_config(
                     if p.get("default_value"):
                         param_entry["default_value"] = {"values": [p["default_value"]]}
                     params.append(param_entry)
+                params.sort(key=lambda x: x["name"])
                 entry["parameters"] = params
             eq_items.append(entry)
         eq_items.sort(key=lambda x: x["id"])
@@ -2730,21 +2742,25 @@ def _create_space(display_name: str, config: dict | None = None, parent_path: st
 
 
 @mlflow.trace(name="update_space", span_type=SpanType.TOOL)
-def _update_space(space_id: str, config: dict | None = None) -> dict:
-    """Update an existing Genie space with a new configuration."""
-    if not config:
-        return {"success": False, "error": "No config provided — call generate_config first"}
+def _update_space(space_id: str, config: dict | None = None, display_name: str | None = None) -> dict:
+    """Update an existing Genie space with a new configuration and/or name."""
+    if not config and not display_name:
+        return {"success": False, "error": "No config or display_name provided"}
     try:
         from backend.services.auth import get_workspace_client, get_databricks_host
         from backend.genie_creator import _enforce_constraints, _clean_config
 
-        constrained = _enforce_constraints(config)
-        cleaned = _clean_config(constrained)
-        serialized = json.dumps(cleaned)
+        body: dict[str, Any] = {}
+
+        if config:
+            constrained = _enforce_constraints(config)
+            cleaned = _clean_config(constrained)
+            body["serialized_space"] = json.dumps(cleaned)
+
+        if display_name:
+            body["display_name"] = display_name
 
         warehouse_id = get_sql_warehouse_id()
-
-        body: dict[str, Any] = {"serialized_space": serialized}
         if warehouse_id:
             body["warehouse_id"] = warehouse_id
 

@@ -4,9 +4,9 @@ STEP = """\
 ### Current Step: Inspect & Understand the Data
 
 After tables are selected, inspect them **autonomously** in this order:
-1. Call `describe_table` on each selected table (column metadata + ETL flagging)
-2. Call `assess_data_quality` **and** `profile_table_usage` together, each with ALL selected tables — they share the concurrency pool and run internally in parallel. Issue both tool calls in the **same** response so the user only waits once (~20-30 s for 3 tables).
-3. Call `profile_columns` on key columns worth profiling
+1. Call `describe_table` on each selected table AND each discovered metric view (column metadata + ETL flagging). Metric views use the same API as tables — treat them identically.
+2. Call `assess_data_quality` **and** `profile_table_usage` together, each with ALL selected tables AND metric views — they share the concurrency pool and run internally in parallel. Issue both tool calls in the **same** response so the user only waits once (~20-30 s for 3 tables).
+3. Call `profile_columns` on key columns worth profiling — include metric view columns too (they often have pre-aggregated KPIs worth profiling)
 
 The user doesn't need to approve each step — run them all autonomously.
 

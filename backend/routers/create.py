@@ -159,8 +159,10 @@ async def agent_chat(body: AgentChatRequest, request: Request):
         session = create_session()
 
     user_message = body.message
-    if body.selections:
-        user_message += f"\n\n[User selections: {json.dumps(body.selections)}]"
+    selections = body.selections
+    if selections:
+        # Embed selections in message for LLM context (non-fast paths)
+        user_message += f"\n\n[User selections: {json.dumps(selections)}]"
 
     # Capture the user token so the streaming generator can re-establish
     # the OBO context (ContextVars don't propagate into async generators
@@ -176,7 +178,7 @@ async def agent_chat(body: AgentChatRequest, request: Request):
             yield _sse_event("session", {"session_id": session.session_id})
 
             async with session._lock:
-                agent_iter = agent.chat(session, user_message).__aiter__()
+                agent_iter = agent.chat(session, user_message, selections=selections).__aiter__()
                 next_coro = None
                 while True:
                     if next_coro is None:

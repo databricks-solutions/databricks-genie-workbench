@@ -312,15 +312,17 @@ def _gen_questions_instructions(shared: str) -> dict:
     prompt = (
         "You are creating sample questions and text instructions for a Databricks Genie Space.\n\n"
         "Based on the context below, generate:\n"
-        "1. **sample_questions**: 5-8 natural-language questions a business user would ask\n"
-        "2. **text_instructions**: Domain knowledge for the Genie agent, organized under "
+        "1. **suggested_display_name**: A concise, professional name for the Genie Space "
+        "(e.g., 'NYC Taxi Revenue Performance', 'TPC-H Sales Analytics', 'Customer Support Dashboard')\n"
+        "2. **sample_questions**: EXACTLY 5 natural-language questions a business user would ask\n"
+        "3. **text_instructions**: Domain knowledge for the Genie agent, organized under "
         "category headers (## Terminology, ## Default Assumptions, ## Data Quality Warnings, etc.)\n\n"
         "Text instructions should contain ONLY business logic and terminology — NOT SQL formulas, "
         "filter expressions, or join definitions (those go in other sections).\n"
         "CRITICAL: Only reference category names, tiers, statuses, and labels that appear in the "
         "Column Profiles section below. Do NOT invent terms — use real data values.\n\n"
         "Return ONLY valid JSON:\n"
-        '{"sample_questions": ["..."], "text_instructions": ["## Terminology\\n- ...", "## Default Assumptions\\n- ..."]}\n\n'
+        '{"suggested_display_name": "...", "sample_questions": ["..."], "text_instructions": ["## Terminology\\n- ...", "## Default Assumptions\\n- ..."]}\n\n'
         f"Context:\n{shared}"
     )
     return _call_llm_section(prompt, max_tokens=3000, section_name="questions/instructions")
@@ -338,7 +340,7 @@ def _gen_example_sqls(shared: str) -> dict:
         "Generate EXACTLY 5 question+SQL pairs that teach Genie how to write correct queries.\n"
         "   - Use fully-qualified table names (catalog.schema.table)\n"
         "   - Use parameterized SQL (:param_name) when the question involves user-supplied values\n"
-        "   - Each parameter needs: name, type_hint (STRING/NUMBER/DATE/BOOLEAN), "
+        "   - Each parameter needs: name, type_hint (STRING/INTEGER/DOUBLE/DECIMAL/DATE/BOOLEAN), "
         "default_value (real value from data), description\n"
         "   - The question should be concrete (use the default value, not a placeholder)\n"
         "   - Mix: ~2 hardcoded patterns + ~3 parameterized queries\n"
@@ -628,6 +630,8 @@ def _assemble(results: dict[str, dict], tables_context: list[dict]) -> dict:
     qi = results.get("questions", {})
     plan["sample_questions"] = qi.get("sample_questions", [])
     plan["text_instructions"] = qi.get("text_instructions", [])
+    if qi.get("suggested_display_name"):
+        plan["suggested_display_name"] = qi["suggested_display_name"]
 
     plan["example_sqls"] = results.get("example_sqls", {}).get("example_sqls", [])
     plan["benchmarks"] = results.get("benchmarks", {}).get("benchmarks", [])

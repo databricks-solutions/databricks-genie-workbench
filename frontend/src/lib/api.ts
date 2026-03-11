@@ -622,7 +622,7 @@ export interface AgentChatCallbacks {
   onCreated: (spaceId: string, url: string, displayName: string) => void
   onUpdated: (spaceId: string, url: string) => void
   onError: (message: string) => void
-  onDone: (needsContinuation?: boolean) => void
+  onDone: (needsContinuation?: boolean | "connection_lost") => void
 }
 
 export function streamAgentChat(
@@ -687,10 +687,9 @@ export function streamAgentChat(
     })
     .catch((error) => {
       if (error.name !== "AbortError") {
-        // Network error or proxy disconnect — show the user an error instead
-        // of silently retrying (which could loop infinitely if the backend is down).
-        callbacks.onError("Connection interrupted. Your session is saved — click Send to resume.")
-        callbacks.onDone(false)
+        // Network error or proxy disconnect — signal as a connection drop so
+        // the UI can auto-reconnect (distinct from backend error events).
+        callbacks.onDone("connection_lost")
       }
     })
 
