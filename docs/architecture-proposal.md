@@ -477,9 +477,9 @@ For streaming generators, capture the token before the generator starts and re-e
 
 ### 2. Complex Tool Schemas → `agents/creator/schemas.py`
 
-**Problem:** `generate_config` has 11 parameters with 4-5 nesting levels. `@app_agent`'s schema generator only handles primitives. Hand-maintaining 200+ line JSON schemas is fragile.
+**Problem:** `generate_config` has 11 parameters with 4-5 nesting levels (tables → column configs, example SQLs → parameters, etc.). `@app_agent`'s schema generator only handles primitives. The monolith defines these schemas as **~580 lines of hand-written JSON** in `create_agent_tools.py` — brittle, hard to maintain, and easy to get out of sync with the runtime code.
 
-**Solution:** Pydantic models that auto-generate JSON Schema via `.model_json_schema()`, passed to `@creator.tool(parameters=...)`:
+**Solution:** **~80 lines of Pydantic models** that auto-generate the equivalent JSON Schema via `.model_json_schema()` and double as runtime validation:
 
 ```python
 from agents.creator.schemas import GenerateConfigArgs
@@ -492,7 +492,7 @@ async def generate_config(**kwargs) -> dict:
     args = GenerateConfigArgs(**kwargs)  # Validate at runtime
 ```
 
-Cuts ~580 lines of JSON schema to ~80 lines of Pydantic models, and the schema is always in sync with runtime validation.
+580 lines of hand-maintained JSON → 80 lines of Pydantic models. Schema and validation are always in sync because they come from the same source.
 
 ### 3. Frontend Transparency → `agents/supervisor/proxy.py`
 
