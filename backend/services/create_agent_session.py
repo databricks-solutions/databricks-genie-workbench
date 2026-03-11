@@ -4,6 +4,7 @@ Maintains conversation history and accumulated state per session.
 Persists to Lakebase (PostgreSQL) when available, falls back to in-memory.
 """
 
+import asyncio
 import json
 import time
 import logging
@@ -25,6 +26,8 @@ class AgentSession:
     space_config: dict | None = None
     space_id: str | None = None
     space_url: str | None = None
+    continuation_count: int = 0
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
     def add_message(self, role: str, content: str) -> None:
         self.history.append({"role": role, "content": content})

@@ -91,18 +91,17 @@ class CreateGenieAgent:
 
         if not is_continuation:
             session.add_message("user", user_message)
-            session._continuation_count = 0
+            session.continuation_count = 0
         else:
-            cnt = getattr(session, "_continuation_count", 0) + 1
-            session._continuation_count = cnt
-            if cnt > MAX_TOOL_ROUNDS:
+            session.continuation_count += 1
+            if session.continuation_count > MAX_TOOL_ROUNDS:
                 yield {"event": "error", "data": {"message": "Agent exceeded maximum tool rounds"}}
                 yield {"event": "done", "data": {"needs_continuation": False}}
                 return
 
         step = detect_step(session)
         step_idx = STEP_ORDER.index(step) if step in STEP_ORDER else 0
-        round_num = getattr(session, "_continuation_count", 0)
+        round_num = session.continuation_count
 
         yield {"event": "step", "data": {
             "step": step,
@@ -213,11 +212,26 @@ class CreateGenieAgent:
                             session.space_config = recovered
                             logger.info("Recovered space_config from session history for %s", tool_name)
 
-                    if tool_name == "generate_plan":
-                        loop = asyncio.get_event_loop()
-                        future = loop.run_in_executor(
-                            None, lambda a=tool_args: self._run_generate_plan(session, a)
+                    if tool_name in ("generate_plan", "present_plan"):
+                        plan_item_count = sum(
+                            len(v) for v in tool_args.values() if isinstance(v, list)
                         )
+                        use_parallel = (
+                            tool_name == "generate_plan"
+                            or plan_item_count < 15
+                        )
+                        if use_parallel:
+                            if tool_name == "present_plan":
+                                logger.info("Redirecting sparse present_plan (%d items) to parallel generate_plan", plan_item_count)
+                            loop = asyncio.get_event_loop()
+                            future = loop.run_in_executor(
+                                None, lambda a=tool_args: self._run_generate_plan(session, a)
+                            )
+                        else:
+                            loop = asyncio.get_event_loop()
+                            future = loop.run_in_executor(
+                                None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
+                            )
                     else:
                         loop = asyncio.get_event_loop()
                         future = loop.run_in_executor(
@@ -265,7 +279,11 @@ class CreateGenieAgent:
                         "total": len(STEP_ORDER),
                     }}
 
-                needs_continuation = True
+                _STOP_TOOLS = {"generate_plan", "present_plan", "create_space", "update_space"}
+                if _STOP_TOOLS.intersection(tools_used):
+                    needs_continuation = False
+                else:
+                    needs_continuation = True
 
             else:
                 # Text-only response — conversation turn is done
@@ -351,11 +369,10 @@ class CreateGenieAgent:
             return compressed[:cls._TOOL_RESULT_CHAR_LIMIT] + "\n...(truncated)"
         return compressed
 
-    _INSPECTION_TOOLS = frozenset({
+    _COMPRESSIBLE_TOOLS_SET = frozenset({
         "describe_table", "profile_columns", "profile_table_usage",
         "assess_data_quality", "test_sql",
     })
-    _POST_INSPECTION_STEPS = frozenset({"plan", "config_create", "post_creation"})
 
     def _build_messages(self, session: AgentSession) -> list[dict]:
         """Build the full message list for the LLM call.
@@ -369,14 +386,11 @@ class CreateGenieAgent:
         3. Orphaned tool_use blocks: if the user stopped the stream mid-tool-call,
            inject synthetic "cancelled" results so Claude doesn't reject the history
 
-        When the workflow has moved past inspection (plan step or later),
-        old inspection tool-call/result pairs are replaced with a compact
-        summary to cut context size by ~70%.
+        Individual tool results are compressed (capped at 3000 chars) for
+        data-heavy tools, but the full conversation history is always
+        preserved so the LLM can see which tools have already been called.
         """
         self._heal_orphaned_tool_calls(session)
-
-        step = detect_step(session)
-        compact = step in self._POST_INSPECTION_STEPS
 
         prompt = assemble_system_prompt(session, self._get_schema_content())
         messages: list[dict] = [{"role": "system", "content": prompt}]
@@ -387,16 +401,50 @@ class CreateGenieAgent:
                 for tc in msg["tool_calls"]:
                     tc_id_to_name[tc["id"]] = tc["function"]["name"]
 
-        if compact:
-            messages = self._build_compacted_messages(
-                session, messages, tc_id_to_name,
-            )
-        else:
-            messages = self._build_full_messages(
-                session, messages, tc_id_to_name,
-            )
+        messages = self._build_full_messages(
+            session, messages, tc_id_to_name,
+        )
 
+        messages = self._sanitize_messages(messages)
         return messages
+
+    @staticmethod
+    def _sanitize_messages(messages: list[dict]) -> list[dict]:
+        """Fix message structure issues that cause Claude API 400 errors.
+
+        - Merges consecutive assistant messages (without tool/user in between)
+        - Ensures conversation ends with a user message (required by Databricks
+          Claude endpoint — no assistant prefill support)
+        """
+        if len(messages) < 2:
+            return messages
+
+        sanitized: list[dict] = [messages[0]]
+
+        for msg in messages[1:]:
+            prev = sanitized[-1]
+
+            if (
+                msg["role"] == "assistant"
+                and prev["role"] == "assistant"
+                and not prev.get("tool_calls")
+                and not msg.get("tool_calls")
+            ):
+                prev_content = prev.get("content") or ""
+                new_content = msg.get("content") or ""
+                merged = (prev_content + "\n\n" + new_content).strip()
+                prev["content"] = merged
+                logger.warning("Merged consecutive assistant messages (%d + %d chars)", len(prev_content), len(new_content))
+                continue
+
+            sanitized.append(msg)
+
+        last = sanitized[-1]
+        if last["role"] != "user":
+            sanitized.append({"role": "user", "content": "Continue."})
+            logger.info("Appended 'Continue.' user message — endpoint requires user-last")
+
+        return sanitized
 
     def _build_full_messages(
         self,
@@ -441,175 +489,6 @@ class CreateGenieAgent:
                     "content": msg.get("content") or " ",
                 })
         return messages
-
-    def _build_compacted_messages(
-        self,
-        session: AgentSession,
-        messages: list[dict],
-        tc_id_to_name: dict[str, str],
-    ) -> list[dict]:
-        """Build messages with inspection-phase tool results compacted.
-
-        Replaces verbose tool call/result pairs from profiling tools with
-        a single summary message, cutting context by ~70% for post-inspection
-        steps (plan, config_create, post_creation).
-        """
-        inspection_findings: list[str] = []
-        skip_tool_ids: set[str] = set()
-
-        # First pass: collect inspection tool results into summaries
-        for msg in session.history:
-            if msg["role"] == "tool":
-                tool_name = tc_id_to_name.get(msg["tool_call_id"], "unknown")
-                if tool_name in self._INSPECTION_TOOLS:
-                    skip_tool_ids.add(msg["tool_call_id"])
-                    summary = self._summarize_tool_result(tool_name, msg.get("content") or "{}")
-                    if summary:
-                        inspection_findings.append(summary)
-
-        # Also mark assistant messages whose tool_calls are ALL inspection tools
-        # so we can skip those too
-        skip_assistant_indices: set[int] = set()
-        for i, msg in enumerate(session.history):
-            if msg["role"] == "assistant" and msg.get("tool_calls"):
-                tc_ids = {tc["id"] for tc in msg["tool_calls"]}
-                if tc_ids and tc_ids.issubset(skip_tool_ids):
-                    skip_assistant_indices.add(i)
-
-        # Inject the compacted summary after the last user message before
-        # the first skipped block
-        summary_injected = False
-
-        for i, msg in enumerate(session.history):
-            if msg["role"] == "tool":
-                if msg["tool_call_id"] in skip_tool_ids:
-                    # Inject summary right before we start skipping
-                    if not summary_injected and inspection_findings:
-                        summary_text = (
-                            "Here is a summary of the data inspection findings:\n\n"
-                            + "\n\n".join(inspection_findings)
-                        )
-                        messages.append({"role": "assistant", "content": summary_text})
-                        summary_injected = True
-                    continue
-                tool_name = tc_id_to_name.get(msg["tool_call_id"], "unknown")
-                raw_content = msg.get("content") or "{}"
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": msg["tool_call_id"],
-                    "name": tool_name,
-                    "content": self._compress_tool_result(tool_name, raw_content),
-                })
-            elif i in skip_assistant_indices:
-                continue
-            elif msg["role"] == "assistant" and msg.get("tool_calls"):
-                # Mixed: some inspection, some not — keep only non-inspection calls
-                kept_tcs = [tc for tc in msg["tool_calls"] if tc["id"] not in skip_tool_ids]
-                if not kept_tcs:
-                    continue
-                tc_content = (msg.get("content") or "").strip() or None
-                normalized_tcs = []
-                for tc in kept_tcs:
-                    normalized_tcs.append({
-                        "id": tc["id"],
-                        "type": "function",
-                        "function": {
-                            "name": tc["function"]["name"],
-                            "arguments": tc["function"].get("arguments") or "{}",
-                        },
-                    })
-                tc_msg: dict = {"role": "assistant", "content": tc_content, "tool_calls": normalized_tcs}
-                messages.append(tc_msg)
-            elif msg["role"] == "assistant":
-                content = msg.get("content") or ""
-                if not content.strip():
-                    continue
-                messages.append({"role": "assistant", "content": content})
-            else:
-                messages.append({
-                    "role": msg["role"],
-                    "content": msg.get("content") or " ",
-                })
-
-        # If we collected findings but never injected (edge case), append now
-        if not summary_injected and inspection_findings:
-            summary_text = (
-                "Here is a summary of the data inspection findings:\n\n"
-                + "\n\n".join(inspection_findings)
-            )
-            messages.append({"role": "assistant", "content": summary_text})
-
-        return messages
-
-    @staticmethod
-    def _summarize_tool_result(tool_name: str, content: str) -> str | None:
-        """Extract a compact summary from an inspection tool result."""
-        try:
-            data = json.loads(content)
-        except (json.JSONDecodeError, TypeError):
-            return None
-
-        if tool_name == "describe_table":
-            table = data.get("table_name", "?")
-            cols = data.get("columns", [])
-            col_names = [c.get("name", "?") for c in cols[:50]]
-            row_count = data.get("row_count", "?")
-            return (
-                f"**{table}**: {len(cols)} columns ({', '.join(col_names)}), "
-                f"~{row_count} rows"
-            )
-
-        if tool_name == "profile_columns":
-            parts = []
-            for col, profile in data.get("profiles", {}).items():
-                dtype = profile.get("data_type", "?")
-                nulls = profile.get("null_pct", "?")
-                distinct = profile.get("distinct_count", "?")
-                vals = profile.get("distinct_values", [])[:5]
-                vals_str = ", ".join(str(v) for v in vals)
-                parts.append(f"  - {col} ({dtype}): {distinct} distinct, {nulls}% null, samples=[{vals_str}]")
-            if parts:
-                return "Column profiles:\n" + "\n".join(parts)
-            return None
-
-        if tool_name == "profile_table_usage":
-            parts = []
-            for tbl, info in data.get("tables", {}).items():
-                queries = info.get("recent_queries", [])
-                freq = len(queries)
-                users = len({q.get("executed_by") for q in queries if q.get("executed_by")})
-                lin = info.get("lineage", {})
-                up = len(lin.get("upstream", []))
-                down = len(lin.get("downstream", []))
-                parts.append(f"  - {tbl}: {freq} queries, {users} users, {up} upstream, {down} downstream")
-            if parts:
-                return "Usage profiles:\n" + "\n".join(parts)
-            return None
-
-        if tool_name == "assess_data_quality":
-            parts = []
-            for tbl, info in data.get("tables", {}).items():
-                if isinstance(info, dict):
-                    score = info.get("overall_score", info.get("quality_score", "?"))
-                    issues = info.get("issues", [])
-                    issue_str = "; ".join(str(i) for i in issues[:3]) if issues else "none"
-                    parts.append(f"  - {tbl}: score={score}, issues: {issue_str}")
-            if parts:
-                return "Data quality:\n" + "\n".join(parts)
-            return None
-
-        if tool_name == "test_sql":
-            status = "OK" if data.get("success") or "data" in data else "FAILED"
-            query = data.get("query", data.get("sql", "?"))[:120]
-            row_ct = len(data.get("data", []))
-            cols = data.get("columns", [])
-            col_str = ", ".join(str(c) for c in cols[:10]) if cols else "?"
-            error = data.get("error", "")
-            if error:
-                return f"SQL test ({status}): `{query}` → error: {error[:200]}"
-            return f"SQL test ({status}): `{query}` → {row_ct} rows, columns=[{col_str}]"
-
-        return None
 
     @staticmethod
     def _heal_orphaned_tool_calls(session: AgentSession) -> None:
@@ -693,9 +572,11 @@ class CreateGenieAgent:
 
         try:
             if not resp.ok:
-                error_body = resp.text[:500]
+                error_body = resp.text[:1000]
                 logger.error("LLM endpoint returned %s: %s", resp.status_code, error_body)
-                resp.raise_for_status()
+                raise RuntimeError(
+                    f"LLM endpoint returned {resp.status_code}: {error_body[:300]}"
+                )
 
             resp.encoding = "utf-8"
             for line in resp.iter_lines(decode_unicode=True):
@@ -853,6 +734,15 @@ class CreateGenieAgent:
             "metric_views",
         }
         plan_args = {k: v for k, v in raw_plan.items() if k in _PLAN_KEYS}
+
+        total_items = sum(len(v) for v in plan_args.values() if isinstance(v, list))
+        if total_items == 0:
+            logger.error("generate_plan produced an empty plan. raw_plan keys: %s, warnings: %s", list(raw_plan.keys()), warnings)
+            return {
+                "error": "Plan generation produced empty results. This usually means the parallel LLM calls failed.",
+                "details": warnings or "No warnings captured — check server logs.",
+                "hint": "Try again, or use present_plan with manually constructed data.",
+            }
 
         result = _present_plan(**plan_args)
         if warnings:

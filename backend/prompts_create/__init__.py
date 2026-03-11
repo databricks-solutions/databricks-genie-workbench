@@ -93,6 +93,41 @@ def _has_tool(history: list[dict], tool_name: str) -> bool:
     return False
 
 
+def _has_tool_result(history: list[dict], tool_name: str) -> bool:
+    """Check if a tool was called AND has a non-cancelled result in history."""
+    call_ids_for_tool: set[str] = set()
+    for msg in history:
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            for tc in msg["tool_calls"]:
+                if tc.get("function", {}).get("name") == tool_name:
+                    call_ids_for_tool.add(tc["id"])
+
+    if not call_ids_for_tool:
+        return False
+
+    for msg in history:
+        if msg.get("role") == "tool" and msg.get("tool_call_id") in call_ids_for_tool:
+            content = msg.get("content", "")
+            if '"cancelled"' not in content:
+                return True
+    return False
+
+
+def _inspection_complete(history: list[dict]) -> bool:
+    """Check if describe_table ran AND at least one follow-up inspection tool
+    (assess_data_quality or profile_table_usage) has a real result.
+
+    This distinguishes "just started inspecting" from "inspection is done,
+    ready for plan generation."
+    """
+    if not _has_tool_result(history, "describe_table"):
+        return False
+    return (
+        _has_tool_result(history, "assess_data_quality")
+        or _has_tool_result(history, "profile_table_usage")
+    )
+
+
 def detect_step(session: AgentSession) -> str:
     """Infer which workflow step the agent is in from session state + tool history.
 
@@ -103,6 +138,8 @@ def detect_step(session: AgentSession) -> str:
     if session.space_config:
         return "config_create"
     if _has_tool(session.history, "present_plan") or _has_tool(session.history, "generate_plan"):
+        return "plan"
+    if _inspection_complete(session.history):
         return "plan"
     if _has_tool(session.history, "describe_table"):
         return "inspection"

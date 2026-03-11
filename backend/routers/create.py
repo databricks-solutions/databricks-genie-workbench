@@ -175,21 +175,22 @@ async def agent_chat(body: AgentChatRequest, request: Request):
         try:
             yield _sse_event("session", {"session_id": session.session_id})
 
-            agent_iter = agent.chat(session, user_message).__aiter__()
-            next_coro = None
-            while True:
-                if next_coro is None:
-                    next_coro = asyncio.ensure_future(agent_iter.__anext__())
-                try:
-                    event = await asyncio.wait_for(
-                        asyncio.shield(next_coro), timeout=_KEEPALIVE_INTERVAL
-                    )
-                    next_coro = None
-                    yield _sse_event(event["event"], event["data"])
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-                except StopAsyncIteration:
-                    break
+            async with session._lock:
+                agent_iter = agent.chat(session, user_message).__aiter__()
+                next_coro = None
+                while True:
+                    if next_coro is None:
+                        next_coro = asyncio.ensure_future(agent_iter.__anext__())
+                    try:
+                        event = await asyncio.wait_for(
+                            asyncio.shield(next_coro), timeout=_KEEPALIVE_INTERVAL
+                        )
+                        next_coro = None
+                        yield _sse_event(event["event"], event["data"])
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                    except StopAsyncIteration:
+                        break
 
             await persist_session(session)
         finally:

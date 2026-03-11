@@ -237,6 +237,48 @@ def test_concurrent_access():
     _sessions.pop("test-123", None)
 
 
+def test_partial_inspection():
+    """Test: describe_table only (no quality/usage) should stay in inspection."""
+    session = AgentSession(session_id="test-partial")
+    session.history.append({
+        "role": "user", "content": "Create a space",
+    })
+    session.history.append({
+        "role": "assistant",
+        "content": "Inspecting...",
+        "tool_calls": [{
+            "id": "call_desc_0", "type": "function",
+            "function": {"name": "describe_table", "arguments": "{}"},
+        }],
+    })
+    session.history.append({
+        "role": "tool", "tool_call_id": "call_desc_0",
+        "content": json.dumps({"table": "t1", "columns": [{"name": "a"}]}),
+    })
+    step = detect_step(session)
+    print(f"\n=== PARTIAL INSPECTION (describe_table only) ===")
+    print(f"Step: '{step}' — {'CORRECT (stays in inspection)' if step == 'inspection' else 'WRONG!'}")
+    return step == "inspection"
+
+
+def test_cancelled_results():
+    """Test: cancelled tool results should NOT count as completed."""
+    session = build_mock_session_after_inspection()
+    # Replace the assess_data_quality result with a cancelled one
+    for msg in session.history:
+        if msg.get("role") == "tool" and msg.get("tool_call_id") == "call_quality":
+            msg["content"] = json.dumps({"cancelled": True})
+    # Also replace profile_table_usage result
+    for msg in session.history:
+        if msg.get("role") == "tool" and msg.get("tool_call_id") == "call_usage":
+            msg["content"] = json.dumps({"cancelled": True})
+
+    step = detect_step(session)
+    print(f"\n=== CANCELLED RESULTS (both quality+usage cancelled) ===")
+    print(f"Step: '{step}' — {'CORRECT (stays in inspection)' if step == 'inspection' else 'WRONG!'}")
+    return step == "inspection"
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("DIAGNOSIS: Agent repeating inspection in auto-pilot mode")
@@ -247,35 +289,19 @@ if __name__ == "__main__":
     test_history_completeness()
     test_continuation_count_persistence()
     test_concurrent_access()
+    p1 = test_partial_inspection()
+    p2 = test_cancelled_results()
 
     print("\n" + "=" * 60)
-    print("DIAGNOSIS SUMMARY")
+    print("RESULTS")
     print("=" * 60)
-    if step == "inspection":
-        print("""
-PRIMARY ROOT CAUSE (Hypothesis B confirmed):
-  detect_step() returns 'inspection' even after ALL inspection tools
-  have completed. It only advances to 'plan' when present_plan or
-  generate_plan was called — but those tools are only suggested by
-  the PLAN step prompt, which the LLM never sees because it's stuck
-  in the INSPECTION step.
-
-  Result: The LLM receives the inspection prompt every continuation
-  round. The prompt says "Call describe_table on each selected table"
-  and the LLM follows the instruction, even though results already
-  exist in history.
-
-SECONDARY ISSUE (Hypothesis A):
-  No session locking. If the SSE proxy timeout kills a connection
-  mid-tool-execution and the frontend immediately continues, two
-  requests can mutate the same session simultaneously, causing
-  partial/duplicate history entries.
-
-PROPOSED FIX:
-  1. Improve detect_step() to recognize when inspection is COMPLETE
-     (describe_table + assess_data_quality/profile_table_usage all
-     have results) and advance to 'plan' automatically.
-  2. Add session locking to prevent concurrent mutations.
-""")
+    all_pass = (step == "plan") and p1 and p2
+    if all_pass:
+        print("ALL TESTS PASSED")
+        print("  - Full inspection → step='plan' (was: 'inspection' before fix)")
+        print("  - Partial inspection → stays in 'inspection'")
+        print("  - Cancelled results → stays in 'inspection'")
+        print("  - Session locking added via asyncio.Lock")
+        print("  - continuation_count is now a proper dataclass field")
     else:
-        print(f"Step is '{step}' — Hypothesis B NOT confirmed. Investigate further.")
+        print("SOME TESTS FAILED — review output above")

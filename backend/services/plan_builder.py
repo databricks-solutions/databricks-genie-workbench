@@ -197,12 +197,16 @@ def _gen_questions_instructions(shared: str) -> dict:
         f"Context:\n{shared}"
     )
 
-    response = call_serving_endpoint(
-        [{"role": "user", "content": prompt}],
-        model=get_llm_model(),
-        max_tokens=1024,
-    )
-    return parse_json_from_llm_response(response)
+    try:
+        response = call_serving_endpoint(
+            [{"role": "user", "content": prompt}],
+            model=get_llm_model(),
+            max_tokens=2048,
+        )
+        return parse_json_from_llm_response(response)
+    except Exception as e:
+        logger.exception("questions/instructions generation failed")
+        raise RuntimeError(f"questions/instructions LLM call failed: {e}") from e
 
 
 def _gen_sqls_benchmarks(shared: str) -> dict:
@@ -262,7 +266,7 @@ def _gen_analytics(shared: str) -> dict:
     response = call_serving_endpoint(
         [{"role": "user", "content": prompt}],
         model=get_llm_model(),
-        max_tokens=1024,
+        max_tokens=2048,
     )
     return parse_json_from_llm_response(response)
 
