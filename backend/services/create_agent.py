@@ -691,21 +691,26 @@ class CreateGenieAgent:
                     if table_id not in existing_ids:
                         tables_context.append(result)
 
-                # assess_data_quality results
-                if "overall_assessment" in result and "table_details" in result:
+                # assess_data_quality results — returns {"tables": {...}, "summary": {"tables_assessed": N, ...}}
+                summary_val = result.get("summary")
+                if isinstance(summary_val, dict) and "tables_assessed" in summary_val:
                     inspection_summaries["quality"] = result
 
-                # profile_table_usage results
-                if "tables" in result and any(
-                    "recent_queries" in t for t in result.get("tables", []) if isinstance(t, dict)
+                # profile_table_usage results — tables is a dict keyed by table id
+                # (discover_tables also has "tables" but as a list — guard with isinstance)
+                tables_val = result.get("tables")
+                if isinstance(tables_val, dict) and any(
+                    "recent_queries" in v for v in tables_val.values() if isinstance(v, dict)
                 ):
                     inspection_summaries["usage"] = result
 
-                # profile_columns results
-                if "profiles" in result:
-                    inspection_summaries["profiles"] = result
+                # profile_columns results — accumulate across tables
+                if "profiles" in result and result.get("table"):
+                    if "profiles" not in inspection_summaries:
+                        inspection_summaries["profiles"] = {}
+                    inspection_summaries["profiles"][result["table"]] = result["profiles"]
 
-            except (json.JSONDecodeError, KeyError, TypeError):
+            except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
                 continue
 
         user_requirements = tool_args.get("user_requirements", "")
@@ -790,6 +795,29 @@ class CreateGenieAgent:
                 tool_args["tables"] = list(tables_by_id.values())
                 injected.append(f"tables({len(tables_by_id)})")
 
+        # --- Extract user's edited plan from selections (preferred source) ---
+        # Selections are embedded by routers/create.py as "[User selections: <json>]"
+        # at the end of the user message. We only check the most recent user message.
+        _SELECTIONS_MARKER = "[User selections: "
+        edited_plan: dict | None = None
+        last_user_msg = next(
+            (m for m in reversed(session.history) if m["role"] == "user"), None
+        )
+        if last_user_msg:
+            content = last_user_msg.get("content", "")
+            idx = content.find(_SELECTIONS_MARKER)
+            if idx >= 0:
+                # Extract JSON between marker and the closing "]" — find the matching
+                # bracket by parsing forward from the marker, not using rindex which
+                # could match a "]" inside the user's own message text.
+                json_start = idx + len(_SELECTIONS_MARKER)
+                try:
+                    sel = json.loads(content[json_start:].rstrip().removesuffix("]"))
+                    if isinstance(sel, dict) and "edited_plan" in sel:
+                        edited_plan = sel["edited_plan"]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+
         # --- Extract plan data from the most recent present_plan result ---
         plan_sections: dict | None = None
         for msg in reversed(session.history):
@@ -803,7 +831,19 @@ class CreateGenieAgent:
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
 
+        # Merge: edited_plan overrides plan_sections where present
+        merged: dict = {}
         if plan_sections:
+            merged.update(plan_sections)
+        if edited_plan:
+            # text_instructions comes as a single string from frontend; convert to list
+            if "text_instructions" in edited_plan:
+                ti = edited_plan["text_instructions"]
+                if isinstance(ti, str):
+                    edited_plan["text_instructions"] = [ti] if ti.strip() else []
+            merged.update({k: v for k, v in edited_plan.items() if v})
+
+        if merged:
             mapping = {
                 "tables": "tables",
                 "sample_questions": "sample_questions",
@@ -816,13 +856,14 @@ class CreateGenieAgent:
                 "benchmarks": "benchmarks",
                 "metric_views": "metric_views",
             }
+            source = "edited_plan" if edited_plan else "plan_sections"
             for plan_key, arg_key in mapping.items():
                 if arg_key not in tool_args:
-                    val = plan_sections.get(plan_key)
+                    val = merged.get(plan_key)
                     if val:
                         tool_args[arg_key] = val
                         count = len(val) if isinstance(val, list) else 1
-                        injected.append(f"{arg_key}({count})")
+                        injected.append(f"{arg_key}({count}|{source})")
 
         return injected
 

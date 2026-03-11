@@ -120,17 +120,17 @@ export default function App() {
           <AdminDashboard onSelectSpace={handleSelectSpace} />
         )}
 
-        {currentView === "create" && (
-          <div>
-            <div className="mb-4">
-              <h1 className="text-2xl font-bold text-primary">Create Genie Space</h1>
-              <p className="text-muted text-sm mt-1">
-                AI-guided creation with live progress tracking — describe what you need and fill in details as you go
-              </p>
-            </div>
-            <CreateAgentChat onCreated={handleCreated} />
+        {/* CreateAgentChat stays mounted (hidden when inactive) so SSE streams
+            and component state survive navigation to other pages. */}
+        <div className={currentView === "create" ? undefined : "hidden"}>
+          <div className="mb-4">
+            <h1 className="text-2xl font-bold text-primary">Create Genie Space</h1>
+            <p className="text-muted text-sm mt-1">
+              AI-guided creation with live progress tracking — describe what you need and fill in details as you go
+            </p>
           </div>
-        )}
+          <CreateAgentChat onCreated={handleCreated} />
+        </div>
       </main>
     </div>
   )

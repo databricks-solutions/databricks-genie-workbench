@@ -687,10 +687,10 @@ export function streamAgentChat(
     })
     .catch((error) => {
       if (error.name !== "AbortError") {
-        // Proxy disconnect or network error — assume we need continuation.
-        // The session state is persisted server-side so the next round
-        // picks up where we left off.
-        callbacks.onDone(true)
+        // Network error or proxy disconnect — show the user an error instead
+        // of silently retrying (which could loop infinitely if the backend is down).
+        callbacks.onError("Connection interrupted. Your session is saved — click Send to resume.")
+        callbacks.onDone(false)
       }
     })
 

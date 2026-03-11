@@ -250,6 +250,13 @@ function loadState(): PersistedState | null {
 
 const INSPECTION_TOOLS = new Set(["describe_table", "profile_columns", "assess_data_quality", "profile_table_usage"])
 
+// Plan sections that always appear in the review UI even when empty (so users
+// know they exist and can add items manually).
+const ALWAYS_SHOW_PLAN_SECTIONS = new Set([
+  "sample_questions", "example_sqls", "benchmarks",
+  "text_instructions", "join_specs", "sql_expressions",
+])
+
 type RenderItem =
   | { type: "message"; msg: AgentChatMessage }
   | { type: "inspection_group"; msgs: AgentChatMessage[]; id: string }
@@ -1324,8 +1331,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
         <div className="divide-y divide-[var(--border-color)]">
           {PLAN_SECTIONS.map((sec) => {
-            const alwaysShow = ["sample_questions", "example_sqls", "benchmarks", "text_instructions"]
-            if (sec.count === 0 && !alwaysShow.includes(sec.key)) return null
+            if (sec.count === 0 && !ALWAYS_SHOW_PLAN_SECTIONS.has(sec.key)) return null
             const isOpen = expandedPlanSections.has(sec.key)
             const { Icon } = sec
             return (
