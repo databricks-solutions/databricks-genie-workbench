@@ -8,11 +8,8 @@ STEP = """\
 Once approved:
 1. Call `discover_warehouses` to find SQL warehouses
 2. **Auto-select the best warehouse** (prefer running serverless). Mention which one you picked — the user can override.
-3. Before calling `generate_config`, confirm column settings with the user in a concise summary:
-   - **Excluded columns**: list them with reasons (ETL metadata, irrelevant, etc.)
-   - **Format assistance & entity matching**: note that these are ON by default for all non-excluded columns. Call out any columns where you'd recommend disabling them (e.g., high-cardinality ID columns where entity matching adds no value).
-   The user can adjust before you proceed.
-4. Call `generate_config` → `validate_config` in sequence. If `generate_config` fails, call `get_config_schema` to review the expected parameter shapes, then retry.
+3. Call `generate_config` with **minimal arguments** — just pass `tables` if you need to override column settings. The system automatically injects all plan data (sample_questions, text_instructions, example_sqls, etc.) from the approved plan. Do NOT regenerate the plan data as arguments — this wastes time and tokens.
+4. Call `validate_config` immediately after. If `generate_config` fails, call `get_config_schema` to review the expected parameter shapes, then retry.
 5. If validation fails, fix and re-validate automatically
 6. Call `create_space` immediately and share the URL
 

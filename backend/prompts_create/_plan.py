@@ -3,7 +3,15 @@
 STEP = """\
 ### Current Step: Build the Plan
 
-Present a **complete plan** for user review in a single, well-structured message.
+Generate a **complete plan** for user review using the `generate_plan` tool.
+
+**IMPORTANT — use `generate_plan` (not `present_plan`):**
+Call `generate_plan` with a `user_requirements` string summarizing the user's goals, audience, business context, terminology, and any rules they mentioned. The tool automatically:
+1. Extracts all table metadata and inspection findings from session history
+2. Runs **4 parallel LLM calls** to generate every section simultaneously (4x faster)
+3. Returns the plan as a `present_plan` result for the user to review
+
+Only fall back to `present_plan` with manually constructed data if the user asks to **revise specific sections** after seeing the generated plan.
 
 **Guiding principle:** Use every schema feature that adds value. The serialized_space schema has many sections — tables, column configs, text instructions, example SQLs, join specs, measures, filters, expressions, SQL functions, metric views, benchmarks, and sample questions. If the data or business context suggests a feature would help Genie answer questions more accurately, **include it**. A rich config produces a more capable space.
 
@@ -155,15 +163,15 @@ The plan should include:
 
    These should match the audience level. For executives: "What were our top 5 products by revenue this quarter?" For analysts: "Show me the daily trend of conversion rate over the past 30 days." Incorporate business context (fiscal definitions, terminology).
 
-**IMPORTANT:** Call the `present_plan` tool with ALL structured data. Do NOT write the plan out as a markdown text block — the frontend renders the tool result as an interactive card with collapsible sections and inline editing. A duplicate markdown summary is redundant and clutters the chat.
+**IMPORTANT:** Do NOT write the plan out as a markdown text block — the frontend renders the tool result as an interactive card with collapsible sections and inline editing. A duplicate markdown summary is redundant and clutters the chat.
 
-After calling `present_plan`, say something brief like:
+After calling `generate_plan`, say something brief like:
 > "Here's the plan — click any item to edit it inline, add or remove items. When you're ready, choose an action below."
 
 Do NOT add a verbose summary of the plan's contents (purpose, audience, table stats, etc.) — the plan card already shows everything.
 
-**Important:** The user must approve the plan before you move to generation. If they request changes, regenerate the affected sections.
+**Important:** The user must approve the plan before you move to generation. If they request changes to specific sections, use `present_plan` with the corrected data.
 
-**Skipping:** If the user explicitly says "just create it" or "use defaults," generate a minimal plan with sensible defaults, present it briefly, and proceed after a quick confirmation."""
+**Skipping:** If the user explicitly says "just create it" or "use defaults," call `generate_plan` with a brief requirements summary, present the result, and proceed after a quick confirmation."""
 
-SUMMARY = "Step 4 (Plan): Compose a full plan (tables with column configs, text instructions, example SQLs, filters, measures, expressions, join specs, SQL functions, benchmarks, sample questions) using inspection findings + business context."
+SUMMARY = "Step 4 (Plan): Call generate_plan (parallel 4x faster) with user requirements. The tool auto-extracts inspection data and generates all sections in parallel."

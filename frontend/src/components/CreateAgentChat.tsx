@@ -56,6 +56,7 @@ const TOOL_LABELS: Record<string, string> = {
   profile_columns: "Profiling columns",
   test_sql: "Testing SQL",
   discover_warehouses: "Finding warehouses",
+  generate_plan: "Generating plan (parallel)...",
   present_plan: "Preparing plan for review",
   get_config_schema: "Fetching config schema",
   generate_config: "Generating config",
@@ -233,7 +234,7 @@ function loadState(): PersistedState | null {
     if (!parsed.editedPlan && parsed.messages) {
       for (let i = parsed.messages.length - 1; i >= 0; i--) {
         const m = parsed.messages[i]
-        if (m.role === "tool" && m.tool_name === "present_plan" && m.tool_result && !m.tool_result.error) {
+        if (m.role === "tool" && (m.tool_name === "present_plan" || m.tool_name === "generate_plan") && m.tool_result && !m.tool_result.error) {
           parsed.editedPlan = planFromResult(m.tool_result as Record<string, unknown>)
           break
         }
@@ -248,6 +249,13 @@ function loadState(): PersistedState | null {
 // ─── Message grouping ──────────────────────────────────────────
 
 const INSPECTION_TOOLS = new Set(["describe_table", "profile_columns", "assess_data_quality", "profile_table_usage"])
+
+// Plan sections that always appear in the review UI even when empty (so users
+// know they exist and can add items manually).
+const ALWAYS_SHOW_PLAN_SECTIONS = new Set([
+  "sample_questions", "example_sqls", "benchmarks",
+  "text_instructions", "join_specs", "sql_expressions",
+])
 
 type RenderItem =
   | { type: "message"; msg: AgentChatMessage }
@@ -310,6 +318,13 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const stopRef = useRef<(() => void) | null>(null)
+  const sessionIdRef = useRef<string | null>(sessionId)
+
+  // Auto-reconnect state: tracks consecutive connection failures so we can
+  // retry automatically (up to a limit) when the Databricks Apps proxy drops
+  // the SSE stream during long-running tool calls.
+  const reconnectCountRef = useRef(0)
+  const MAX_AUTO_RECONNECTS = 3
 
   // Streaming message state — accumulate tokens in a ref and flush to React
   // state on an animation-frame schedule to keep renders at ~60 fps.
@@ -350,8 +365,9 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   const sendMessage = useCallback(
     (text: string, selections?: Record<string, unknown>) => {
-      if (!text.trim()) return
-      if (isStreaming) {
+      const isContinuation = text === ""
+      if (!isContinuation && !text.trim()) return
+      if (isStreaming && !isContinuation) {
         const trimmed = text.trim()
         queuedMessageRef.current = trimmed
         setQueuedMessage(trimmed)
@@ -359,14 +375,16 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         return
       }
 
-      const userMsg: AgentChatMessage = {
-        id: nextId(),
-        role: "user",
-        content: text.trim(),
-        timestamp: Date.now(),
+      if (!isContinuation) {
+        const userMsg: AgentChatMessage = {
+          id: nextId(),
+          role: "user",
+          content: text.trim(),
+          timestamp: Date.now(),
+        }
+        setMessages((prev) => [...prev, userMsg])
+        setInput("")
       }
-      setMessages((prev) => [...prev, userMsg])
-      setInput("")
       setIsStreaming(true)
 
       let pendingToolCalls: AgentChatMessage[] = []
@@ -385,6 +403,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           case "profile_columns": return tableName ? `Profiling ${tableName}...` : "Profiling data..."
           case "test_sql": return "Testing SQL..."
           case "discover_warehouses": return "Finding warehouses..."
+          case "generate_plan": return "Generating plan in parallel..."
           case "present_plan": return "Preparing plan..."
           case "get_config_schema": return "Fetching config schema..."
           case "generate_config": return "Generating configuration..."
@@ -405,8 +424,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         )
       }
 
-      stopRef.current = streamAgentChat(text.trim(), sessionId, selections ?? null, {
-        onSession: (sid) => setSessionId(sid),
+      stopRef.current = streamAgentChat(isContinuation ? "" : text.trim(), sessionIdRef.current, selections ?? null, {
+        onSession: (sid) => { sessionIdRef.current = sid; setSessionId(sid); reconnectCountRef.current = 0 },
         onStep: () => {},
         onThinking: (message, _step, _round) => {
           setAgentStatus(message)
@@ -489,14 +508,17 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
               return updated
             })
           }
-          if (tool === "present_plan" && !result.error) {
+          if ((tool === "present_plan" || tool === "generate_plan") && !result.error) {
             if (resolvedId) setExpandedTools((et) => new Set(et).add(resolvedId))
             const plan = planFromResult(result as Record<string, unknown>)
             setEditedPlan(plan)
             setEditingPlanItem(null)
+            const suggestedName = (result as Record<string, unknown>).suggested_display_name as string | undefined
             setProgress((p) => ({
               ...p,
               planReady: true,
+              // Set title from LLM suggestion if user hasn't already named it
+              title: p.title || suggestedName || p.title,
               planSummary: {
                 questions: plan.sample_questions.length,
                 benchmarks: plan.benchmarks.length,
@@ -627,9 +649,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             } as AgentChatMessage,
           ])
         },
-        onDone: () => {
+        onDone: (needsContinuation) => {
           setAgentStatus(null)
-          setIsStreaming(false)
           // Clean up streaming refs
           if (streamingRafRef.current) {
             cancelAnimationFrame(streamingRafRef.current)
@@ -638,6 +659,44 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           streamingContentRef.current = ""
           streamingMsgIdRef.current = null
           pendingToolCalls = []
+
+          // Auto-reconnect on proxy/network disconnects (up to MAX_AUTO_RECONNECTS).
+          // The backend session is persisted and orphaned tool calls are healed,
+          // so resuming with an empty message picks up exactly where we left off.
+          if (needsContinuation === "connection_lost" && sessionIdRef.current) {
+            reconnectCountRef.current += 1
+            if (reconnectCountRef.current <= MAX_AUTO_RECONNECTS) {
+              const attempt = reconnectCountRef.current
+              setAgentStatus(`Reconnecting (attempt ${attempt}/${MAX_AUTO_RECONNECTS})...`)
+              setTimeout(() => sendMessage(""), 2000 * attempt)
+              return
+            }
+            // Exhausted retries — show error and stop
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: nextId(),
+                role: "assistant",
+                content: "Connection lost after multiple retries. Your session is saved — click Send to resume.",
+                timestamp: Date.now(),
+                is_error: true,
+              } as AgentChatMessage,
+            ])
+            reconnectCountRef.current = 0
+            setIsStreaming(false)
+            return
+          }
+
+          if (needsContinuation && sessionIdRef.current) {
+            // Keep isStreaming=true — the agent loop continues in the
+            // next HTTP round.  sendMessage("") opens a new SSE stream.
+            reconnectCountRef.current = 0  // successful round — reset reconnect counter
+            requestAnimationFrame(() => sendMessage(""))
+            return
+          }
+
+          reconnectCountRef.current = 0
+          setIsStreaming(false)
           const pending = queuedMessageRef.current
           queuedMessageRef.current = null
           setQueuedMessage(null)
@@ -686,6 +745,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     stopRef.current?.()
     setMessages([])
     setSessionId(null)
+    sessionIdRef.current = null
     setIsStreaming(false)
     setAgentStatus(null)
     if (streamingRafRef.current) {
@@ -705,8 +765,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setEditedPlan(null)
     setEditingPlanItem(null)
     setAutoPilot(false)
+    reconnectCountRef.current = 0
     queuedMessageRef.current = null
     setQueuedMessage(null)
+    setElementSearch({})
     setShowClearConfirm(false)
     sessionStorage.removeItem(STORAGE_KEY)
   }
@@ -1250,7 +1312,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   const approvePlanAndCreate = () => {
     if (!editedPlan) return
-    sendMessage("Plan approved — go ahead and create the space.", { edited_plan: editedPlan, action: "create" })
+    sendMessage("Plan approved — go ahead and create the space.", {
+      edited_plan: editedPlan,
+      action: "create",
+      display_name: progress.title || undefined,
+    })
   }
 
   const requestAIReview = () => {
@@ -1310,8 +1376,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
         <div className="divide-y divide-[var(--border-color)]">
           {PLAN_SECTIONS.map((sec) => {
-            const alwaysShow = ["sample_questions", "example_sqls", "benchmarks", "text_instructions"]
-            if (sec.count === 0 && !alwaysShow.includes(sec.key)) return null
+            if (sec.count === 0 && !ALWAYS_SHOW_PLAN_SECTIONS.has(sec.key)) return null
             const isOpen = expandedPlanSections.has(sec.key)
             const { Icon } = sec
             return (
@@ -1350,7 +1415,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                                 onKeyDown={(e) => e.key === "Enter" && stopEdit()}
                                 className="flex-1 bg-elevated border border-accent/30 rounded px-2 py-1 text-secondary focus:outline-none focus:ring-1 focus:ring-accent/40"
                               />
-                              <button onClick={() => removePlanItem("sample_questions", i)} className="p-1 text-red-400 hover:text-red-300 flex-shrink-0">
+                              <button onMouseDown={(e) => e.preventDefault()} onClick={() => removePlanItem("sample_questions", i)} className="p-1 text-red-400 hover:text-red-300 flex-shrink-0">
                                 <Trash2 className="w-3 h-3" />
                               </button>
                             </div>
@@ -1435,7 +1500,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                       </div>
                     )}
 
-                    {/* Joins (read-only — complex structure) */}
+                    {/* Joins */}
                     {sec.key === "join_specs" && (
                       <div className="overflow-x-auto">
                         <table className="w-full text-left">
@@ -1445,6 +1510,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                               <th className="px-2 py-1.5 font-medium">Relationship</th>
                               <th className="px-2 py-1.5 font-medium">Right Table</th>
                               <th className="px-2 py-1.5 font-medium">Condition</th>
+                              <th className="px-2 py-1.5 w-8"></th>
                             </tr>
                           </thead>
                           <tbody>
@@ -1453,7 +1519,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                               const rightShort = (j.right_table || "").split(".").pop() || j.right_table
                               const rel = j.relationship || "—"
                               return (
-                                <tr key={i} className="border-b border-default last:border-0">
+                                <tr key={i} className="border-b border-default last:border-0 group/join">
                                   <td className="px-2 py-1.5 font-mono text-primary">{leftShort}</td>
                                   <td className="px-2 py-1.5">
                                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 whitespace-nowrap">{rel}</span>
@@ -1461,6 +1527,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                                   <td className="px-2 py-1.5 font-mono text-primary">{rightShort}</td>
                                   <td className="px-2 py-1.5 font-mono text-secondary">
                                     {leftShort}.{j.left_column} = {rightShort}.{j.right_column}
+                                  </td>
+                                  <td className="px-2 py-1.5">
+                                    <button onClick={() => removePlanItem("join_specs", i)} className="p-1 text-red-400 hover:text-red-300 opacity-0 group-hover/join:opacity-100 transition-opacity">
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
                                   </td>
                                 </tr>
                               )
@@ -1657,7 +1728,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   }
 
   const hasRichCard = (msg: AgentChatMessage): boolean =>
-    !!msg.tool_result && !msg.tool_result.error && (msg.tool_name === "describe_table" || msg.tool_name === "profile_columns" || msg.tool_name === "present_plan" || msg.tool_name === "test_sql" || msg.tool_name === "assess_data_quality" || msg.tool_name === "profile_table_usage")
+    !!msg.tool_result && !msg.tool_result.error && (msg.tool_name === "describe_table" || msg.tool_name === "profile_columns" || msg.tool_name === "present_plan" || msg.tool_name === "generate_plan" || msg.tool_name === "test_sql" || msg.tool_name === "assess_data_quality" || msg.tool_name === "profile_table_usage")
 
   const getToolSummary = (msg: AgentChatMessage): string | null => {
     if (!msg.tool_result || msg.tool_result.error) return null
@@ -1701,7 +1772,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   }
 
   const renderToolCall = (msg: AgentChatMessage) => {
-    if (msg.tool_name === "present_plan" && msg.tool_result && !msg.tool_result.error) {
+    if ((msg.tool_name === "present_plan" || msg.tool_name === "generate_plan") && msg.tool_result && !msg.tool_result.error) {
       return <div key={msg.id} className="mx-4 my-2">{renderPlanCard(msg.tool_result)}</div>
     }
     const isExpanded = expandedTools.has(msg.id)
@@ -1735,7 +1806,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           rich ? (
             msg.tool_name === "describe_table"
               ? renderDescribeCard(msg.tool_result)
-              : msg.tool_name === "present_plan"
+              : (msg.tool_name === "present_plan" || msg.tool_name === "generate_plan")
                 ? renderPlanCard(msg.tool_result)
                 : msg.tool_name === "test_sql"
                   ? renderTestSqlCard(msg.tool_result)

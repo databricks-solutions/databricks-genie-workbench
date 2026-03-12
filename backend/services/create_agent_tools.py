@@ -44,6 +44,14 @@ _DATE_TYPES = {"date", "timestamp", "timestamp_ntz"}
 _NUMERIC_TYPES = {"int", "bigint", "smallint", "tinyint", "float", "double", "decimal"}
 _BOOLEAN_TYPES = {"boolean"}
 
+# Genie API accepts: STRING, INTEGER, DOUBLE, DECIMAL, DATE, BOOLEAN.
+# Map common LLM-generated aliases to valid values.
+_TYPE_HINT_MAP = {
+    "NUMBER": "INTEGER", "INT": "INTEGER", "BIGINT": "INTEGER",
+    "SMALLINT": "INTEGER", "TINYINT": "INTEGER",
+    "FLOAT": "DOUBLE", "TIMESTAMP": "DATE",
+}
+
 # Cap concurrent SQL statements to avoid overwhelming the warehouse.
 # 3 is safe for even a 2X-Small Pro warehouse; serverless could handle
 # much more but we design for the lowest common denominator.
@@ -445,11 +453,39 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "generate_plan",
+            "description": (
+                "Generate the complete Genie Space plan using PARALLEL LLM calls (4x faster than "
+                "building it manually). Extracts table context and inspection findings from session "
+                "history automatically — you only need to pass user_requirements summarizing the "
+                "user's goals and business context. Returns the plan as a present_plan result for "
+                "user review. Use this INSTEAD of calling present_plan with manually constructed data."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "user_requirements": {
+                        "type": "string",
+                        "description": (
+                            "Summary of the user's goals, audience, business context, and any "
+                            "specific rules they mentioned. Include terminology definitions, "
+                            "fiscal calendars, default assumptions — anything the plan should reflect."
+                        ),
+                    },
+                },
+                "required": ["user_requirements"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "present_plan",
             "description": (
                 "Present a structured plan for the user to review BEFORE generating the config. "
                 "The frontend renders this as collapsible sections mirroring the Genie Space UI tabs. "
-                "Call this after the business logic checkpoint — the user must approve the plan before "
+                "Prefer generate_plan (parallel, faster) unless you need to manually construct "
+                "or revise specific plan sections. The user must approve the plan before "
                 "you call generate_config. Parameters are IDENTICAL to generate_config so the plan "
                 "is a 1:1 preview of what will be created."
             ),
@@ -676,12 +712,13 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "update_space",
-            "description": "Update an existing Genie space with a new configuration. Use this instead of create_space when the space has already been created and the user wants to modify it.",
+            "description": "Update an existing Genie space — config, display name, or both. Use this instead of create_space when the space has already been created. Supports renaming.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "space_id": {"type": "string", "description": "The ID of the existing Genie space to update"},
                     "config": {"type": "object", "description": "The validated serialized_space dict (optional — defaults to last generated config)"},
+                    "display_name": {"type": "string", "description": "New display name for the space (optional — only if renaming)"},
                 },
                 "required": ["space_id"],
             },
@@ -831,6 +868,7 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
         "profile_columns": _profile_columns,
         "test_sql": _test_sql,
         "discover_warehouses": _discover_warehouses,
+        "generate_plan": _generate_plan_fallback,
         "present_plan": _present_plan,
         "get_config_schema": _get_config_schema,
         "generate_config": _generate_config,
@@ -988,8 +1026,11 @@ def _describe_table(table_identifier: str) -> dict:
         if host:
             uc_url = f"{host}/explore/data/{parts[0]}/{parts[1]}/{parts[2]}"
 
+    table_type = str(table_info.table_type) if table_info.table_type else None
+
     result_dict: dict[str, Any] = {
         "table": table_identifier,
+        "table_type": table_type,
         "comment": table_info.comment,
         "columns": columns,
         "column_count": len(columns),
@@ -1498,10 +1539,12 @@ def _profile_table_usage(table_identifiers: list[str]) -> dict:
             hist = {"error": str(e)}
 
     for tbl in table_identifiers:
-        tbl_short = tbl.split(".")[-1]
+        tbl_lower = tbl.lower()
+        tbl_short_lower = tbl.split(".")[-1].lower()
         tbl_hist = [
             q for q in hist.get("queries", [])
-            if tbl in q.get("query_preview", "") or tbl_short in q.get("query_preview", "")
+            if tbl_lower in q.get("query_preview", "").lower()
+            or tbl_short_lower in q.get("query_preview", "").lower()
         ]
         results.setdefault(tbl, {})["recent_queries"] = tbl_hist[:10]
 
@@ -1548,18 +1591,18 @@ def _fetch_query_history(table_identifiers: list[str]) -> dict:
         return {"queries": []}
 
     like_clauses = " OR ".join(
-        f"statement_text LIKE '%{tbl}%'" for tbl in table_identifiers
+        f"LOWER(statement_text) LIKE '%{tbl.lower()}%'" for tbl in table_identifiers
     )
     sql = (
         f"SELECT executed_by, "
-        f"SUBSTRING(statement_text, 1, 150) AS query_preview, "
+        f"SUBSTRING(statement_text, 1, 300) AS query_preview, "
         f"total_duration_ms, produced_rows "
         f"FROM system.query.history "
         f"WHERE start_time >= date_sub(current_date(), 7) "
         f"AND execution_status = 'FINISHED' "
         f"AND ({like_clauses}) "
         f"ORDER BY start_time DESC "
-        f"LIMIT 10"
+        f"LIMIT 50"
     )
     result = _execute_sql_throttled(sql)
     if result.get("error"):
@@ -1645,8 +1688,8 @@ def _substitute_params(sql: str, parameters: list[dict] | None) -> str:
         if not name:
             continue
         type_hint = param.get("type_hint", "STRING").upper()
-        if type_hint in ("NUMBER", "BOOLEAN"):
-            literal = value
+        if type_hint in ("NUMBER", "BOOLEAN", "INTEGER", "INT", "DECIMAL", "FLOAT", "DOUBLE", "BIGINT", "SMALLINT", "TINYINT"):
+            literal = str(value)
         else:
             literal = f"'{value}'"
         sql = re.sub(rf":{re.escape(name)}\b", literal, sql)
@@ -1731,6 +1774,21 @@ def _get_config_schema() -> dict:
     except FileNotFoundError:
         return {"error": "Schema reference file not found"}
     return {"schema_reference": content}
+
+
+def _generate_plan_fallback(**kwargs) -> dict:
+    """Fallback if generate_plan is called through normal dispatch.
+
+    The real implementation lives in create_agent.py which has access to
+    session history.  This returns an error nudging the agent to provide
+    the context manually via present_plan.
+    """
+    return {
+        "error": (
+            "generate_plan requires session context (handled by the agent). "
+            "If you see this, call present_plan with the plan data instead."
+        ),
+    }
 
 
 def _present_plan(
@@ -1908,15 +1966,18 @@ def _generate_config(
             if eq.get("parameters"):
                 params = []
                 for p in eq["parameters"]:
+                    raw_hint = p.get("type_hint", "STRING").upper()
+                    normalized_hint = _TYPE_HINT_MAP.get(raw_hint, raw_hint)
                     param_entry: dict[str, Any] = {
                         "name": p["name"],
-                        "type_hint": p.get("type_hint", "STRING"),
+                        "type_hint": normalized_hint,
                     }
                     if p.get("description"):
                         param_entry["description"] = [p["description"]]
                     if p.get("default_value"):
                         param_entry["default_value"] = {"values": [p["default_value"]]}
                     params.append(param_entry)
+                params.sort(key=lambda x: x["name"])
                 entry["parameters"] = params
             eq_items.append(entry)
         eq_items.sort(key=lambda x: x["id"])
@@ -2681,21 +2742,25 @@ def _create_space(display_name: str, config: dict | None = None, parent_path: st
 
 
 @mlflow.trace(name="update_space", span_type=SpanType.TOOL)
-def _update_space(space_id: str, config: dict | None = None) -> dict:
-    """Update an existing Genie space with a new configuration."""
-    if not config:
-        return {"success": False, "error": "No config provided — call generate_config first"}
+def _update_space(space_id: str, config: dict | None = None, display_name: str | None = None) -> dict:
+    """Update an existing Genie space with a new configuration and/or name."""
+    if not config and not display_name:
+        return {"success": False, "error": "No config or display_name provided"}
     try:
         from backend.services.auth import get_workspace_client, get_databricks_host
         from backend.genie_creator import _enforce_constraints, _clean_config
 
-        constrained = _enforce_constraints(config)
-        cleaned = _clean_config(constrained)
-        serialized = json.dumps(cleaned)
+        body: dict[str, Any] = {}
+
+        if config:
+            constrained = _enforce_constraints(config)
+            cleaned = _clean_config(constrained)
+            body["serialized_space"] = json.dumps(cleaned)
+
+        if display_name:
+            body["display_name"] = display_name
 
         warehouse_id = get_sql_warehouse_id()
-
-        body: dict[str, Any] = {"serialized_space": serialized}
         if warehouse_id:
             body["warehouse_id"] = warehouse_id
 

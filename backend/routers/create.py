@@ -116,8 +116,12 @@ async def create_space_endpoint(body: CreateSpaceRequest):
 # ── Agent chat (agentic create flow) ─────────────────────────────────────────
 
 class AgentChatRequest(BaseModel):
-    """Request body for the agent chat endpoint."""
-    message: str = Field(..., min_length=1, max_length=10000)
+    """Request body for the agent chat endpoint.
+
+    ``message`` may be empty for auto-continuation rounds (the frontend
+    sends an empty message to resume the agent loop after a tool batch).
+    """
+    message: str = Field("", max_length=10000)
     session_id: str | None = Field(None, description="Existing session ID. Omit to start a new session.")
     selections: dict | None = Field(None, description="UI selections from interactive elements")
 
@@ -143,6 +147,10 @@ async def agent_chat(body: AgentChatRequest, request: Request):
 
     agent = get_create_agent()
 
+    is_continuation = not body.message.strip()
+    if is_continuation and not body.session_id:
+        raise HTTPException(status_code=400, detail="session_id is required for continuation")
+
     if body.session_id:
         session = await get_session_async(body.session_id)
         if session is None:
@@ -151,8 +159,10 @@ async def agent_chat(body: AgentChatRequest, request: Request):
         session = create_session()
 
     user_message = body.message
-    if body.selections:
-        user_message += f"\n\n[User selections: {json.dumps(body.selections)}]"
+    selections = body.selections
+    if selections:
+        # Embed selections in message for LLM context (non-fast paths)
+        user_message += f"\n\n[User selections: {json.dumps(selections)}]"
 
     # Capture the user token so the streaming generator can re-establish
     # the OBO context (ContextVars don't propagate into async generators
@@ -167,21 +177,22 @@ async def agent_chat(body: AgentChatRequest, request: Request):
         try:
             yield _sse_event("session", {"session_id": session.session_id})
 
-            agent_iter = agent.chat(session, user_message).__aiter__()
-            next_coro = None
-            while True:
-                if next_coro is None:
-                    next_coro = asyncio.ensure_future(agent_iter.__anext__())
-                try:
-                    event = await asyncio.wait_for(
-                        asyncio.shield(next_coro), timeout=_KEEPALIVE_INTERVAL
-                    )
-                    next_coro = None
-                    yield _sse_event(event["event"], event["data"])
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
-                except StopAsyncIteration:
-                    break
+            async with session._lock:
+                agent_iter = agent.chat(session, user_message, selections=selections).__aiter__()
+                next_coro = None
+                while True:
+                    if next_coro is None:
+                        next_coro = asyncio.ensure_future(agent_iter.__anext__())
+                    try:
+                        event = await asyncio.wait_for(
+                            asyncio.shield(next_coro), timeout=_KEEPALIVE_INTERVAL
+                        )
+                        next_coro = None
+                        yield _sse_event(event["event"], event["data"])
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+                    except StopAsyncIteration:
+                        break
 
             await persist_session(session)
         finally:
