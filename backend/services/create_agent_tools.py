@@ -17,7 +17,7 @@ from typing import Any
 import mlflow
 from mlflow.entities import SpanType
 
-from backend.services.auth import get_workspace_client, get_databricks_host
+from backend.services.auth import get_workspace_client, get_databricks_host, run_in_context
 from backend.services.uc_client import list_catalogs, list_schemas, list_tables
 from backend.sql_executor import execute_sql, get_sql_warehouse_id
 from backend.genie_creator import create_genie_space
@@ -1109,7 +1109,7 @@ def _assess_data_quality(table_identifiers: list[str]) -> dict:
 
     with ThreadPoolExecutor(max_workers=min(len(table_identifiers), _SQL_CONCURRENCY)) as pool:
         futures = {
-            pool.submit(_assess_single_table, tbl): tbl
+            pool.submit(run_in_context(_assess_single_table, tbl)): tbl
             for tbl in table_identifiers
         }
         for future in as_completed(futures):
@@ -1258,7 +1258,7 @@ def _run_null_metrics(
         col_quality.update(run_batch(batches[0]))
     else:
         with ThreadPoolExecutor(max_workers=min(len(batches), _SQL_CONCURRENCY)) as pool:
-            futures = {pool.submit(run_batch, b): b for b in batches}
+            futures = {pool.submit(run_in_context(run_batch, b)): b for b in batches}
             for future in as_completed(futures):
                 try:
                     col_quality.update(future.result())
@@ -1306,7 +1306,7 @@ def _run_casing_checks(
         issues.update(run_batch(batches[0]))
     else:
         with ThreadPoolExecutor(max_workers=min(len(batches), _SQL_CONCURRENCY)) as pool:
-            futures = {pool.submit(run_batch, b): b for b in batches}
+            futures = {pool.submit(run_in_context(run_batch, b)): b for b in batches}
             for future in as_completed(futures):
                 try:
                     issues.update(future.result())
@@ -1515,9 +1515,9 @@ def _profile_table_usage(table_identifiers: list[str]) -> dict:
 
     with ThreadPoolExecutor(max_workers=min(len(table_identifiers) + 1, _SQL_CONCURRENCY)) as pool:
         lineage_futures = {
-            pool.submit(_fetch_lineage, tbl): tbl for tbl in table_identifiers
+            pool.submit(run_in_context(_fetch_lineage, tbl)): tbl for tbl in table_identifiers
         }
-        history_future = pool.submit(_fetch_query_history, table_identifiers)
+        history_future = pool.submit(run_in_context(_fetch_query_history, table_identifiers))
 
         for future in as_completed(lineage_futures):
             tbl = lineage_futures[future]

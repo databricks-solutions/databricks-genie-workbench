@@ -469,6 +469,8 @@ async def stream_optimizations(request: OptimizationRequest):
     import asyncio
     import concurrent.futures
 
+    from backend.services.auth import run_in_context
+
     logger.info(f"Received streaming optimization request for space: {request.genie_space_id}")
     logger.info(f"Feedback items count: {len(request.labeling_feedback)}")
 
@@ -485,7 +487,7 @@ async def stream_optimizations(request: OptimizationRequest):
                 labeling_feedback=request.labeling_feedback,
             )
 
-        future = loop.run_in_executor(executor, run_optimizer)
+        future = loop.run_in_executor(executor, run_in_context(run_optimizer))
         start_time = asyncio.get_event_loop().time()
         heartbeat_interval = 15  # seconds
 

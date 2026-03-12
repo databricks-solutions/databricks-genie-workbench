@@ -8,6 +8,7 @@ UC, serving endpoints) execute under the user's identity and permissions.
 Locally, falls back to PAT token or CLI profile (singleton client).
 """
 
+import contextvars
 import logging
 import os
 from contextvars import ContextVar
@@ -134,3 +135,16 @@ def get_llm_api_key() -> str:
     """Get the API key for LLM serving endpoints."""
     client = get_workspace_client()
     return client.config.token or os.environ.get("DATABRICKS_TOKEN", "")
+
+
+def run_in_context(fn, *args, **kwargs):
+    """Capture current contextvars and return a zero-arg callable that
+    runs fn(*args, **kwargs) in that snapshot.
+
+    Python <3.12 does not propagate contextvars into thread-pool threads.
+    Use with loop.run_in_executor or ThreadPoolExecutor.submit:
+
+        await loop.run_in_executor(None, run_in_context(handle_tool_call, n, a, cfg))
+    """
+    ctx = contextvars.copy_context()
+    return lambda: ctx.run(fn, *args, **kwargs)

@@ -21,6 +21,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
+from backend.services.auth import run_in_context
 from backend.services.llm_utils import call_serving_endpoint, parse_json_from_llm_response, get_llm_model
 from backend.services.create_agent_tools import _test_sql
 
@@ -66,7 +67,7 @@ def generate_plan(
 
     with ThreadPoolExecutor(max_workers=_CONCURRENCY) as pool:
         futures = {
-            pool.submit(fn, **kwargs): name
+            pool.submit(run_in_context(fn, **kwargs)): name
             for name, fn, kwargs in section_specs
         }
         for future in as_completed(futures):
@@ -507,7 +508,7 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
     with ThreadPoolExecutor(max_workers=_VALIDATION_CONCURRENCY) as pool:
         # Phase 1: initial test pass
         futures = {
-            pool.submit(_test_sql, sql, params): (kind, idx)
+            pool.submit(run_in_context(_test_sql, sql, params)): (kind, idx)
             for kind, idx, sql, params in tasks
         }
         for future in as_completed(futures):
@@ -533,7 +534,7 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
                 for kind, idx in needs_repair
             ]
             repair_futures = {
-                pool.submit(_repair_unbound_sql, item, kind, shared_context): (kind, idx)
+                pool.submit(run_in_context(_repair_unbound_sql, item, kind, shared_context)): (kind, idx)
                 for kind, idx, item in repair_items
             }
             for future in as_completed(repair_futures):
@@ -554,7 +555,7 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
                     for (kind, idx), item in repaired.items()
                 ]
                 retest_futures = {
-                    pool.submit(_test_sql, sql, params): (kind, idx)
+                    pool.submit(run_in_context(_test_sql, sql, params)): (kind, idx)
                     for kind, idx, sql, params in retest_tasks
                 }
                 for future in as_completed(retest_futures):

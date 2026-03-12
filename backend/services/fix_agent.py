@@ -13,7 +13,7 @@ from typing import AsyncGenerator
 
 from backend.services.llm_utils import call_serving_endpoint, get_llm_model
 from backend.services.genie_client import get_genie_space, get_serialized_space
-from backend.services.auth import get_workspace_client
+from backend.services.auth import get_workspace_client, run_in_context
 from backend.models import OptimizationSuggestion
 from backend.prompts import get_fix_agent_prompt
 
@@ -239,7 +239,7 @@ async def _apply_config_to_databricks(space_id: str, new_config: dict) -> None:
         )
 
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _do_apply)
+    await loop.run_in_executor(None, run_in_context(_do_apply))
 
 
 # Lazy singleton
