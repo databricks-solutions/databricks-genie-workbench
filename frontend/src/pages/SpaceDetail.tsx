@@ -3,7 +3,7 @@
  * Tabs: Score | Analysis | Optimize | History
  */
 import { useState, useEffect } from "react"
-import { ArrowLeft, Star, RefreshCw, Zap, BarChart2, Brain, Settings2, Clock, ExternalLink } from "lucide-react"
+import { ArrowLeft, Star, RefreshCw, Zap, Eye, BarChart2, Brain, Settings2, Clock, ExternalLink } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory } from "@/lib/api"
 import { getScoreColor } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint } from "@/types"
@@ -19,8 +19,9 @@ import { FeedbackPage } from "@/components/FeedbackPage"
 import { OptimizationPage } from "@/components/OptimizationPage"
 import { PreviewPage } from "@/components/PreviewPage"
 import { useAnalysis } from "@/hooks/useAnalysis"
+import { SpaceOverview } from "@/components/SpaceOverview"
 
-type Tab = "score" | "analysis" | "optimize" | "history"
+type Tab = "overview" | "score" | "analysis" | "optimize" | "history"
 
 interface SpaceDetailProps {
   spaceId: string
@@ -30,7 +31,7 @@ interface SpaceDetailProps {
 }
 
 export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDetailProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("score")
+  const [activeTab, setActiveTab] = useState<Tab>("overview")
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
   const [isStarred, setIsStarred] = useState(false)
   const [isScanning, setIsScanning] = useState(false)
@@ -74,6 +75,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
   }, [activeTab, spaceId])
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: "overview", label: "Overview", icon: <Eye className="w-4 h-4" /> },
     { id: "score", label: "Score", icon: <BarChart2 className="w-4 h-4" /> },
     { id: "analysis", label: "Analysis", icon: <Brain className="w-4 h-4" /> },
     { id: "optimize", label: "Optimize", icon: <Settings2 className="w-4 h-4" /> },
@@ -156,6 +158,10 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
 
       {/* Tab content */}
       <div>
+        {activeTab === "overview" && (
+          <SpaceOverview spaceData={state.spaceData} isLoading={state.isLoading} />
+        )}
+
         {activeTab === "score" && (
           <IQScoreTab
             scanResult={scanResult}
