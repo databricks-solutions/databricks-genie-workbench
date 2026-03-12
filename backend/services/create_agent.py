@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import AsyncGenerator, Generator
 
 from backend.services.llm_utils import get_llm_model
-from backend.services.auth import get_workspace_client
+from backend.services.auth import get_workspace_client, run_in_context
 from backend.services.create_agent_session import AgentSession
 from backend.services.create_agent_tools import TOOL_DEFINITIONS, handle_tool_call, _present_plan
 from backend.services import plan_builder
@@ -250,17 +250,17 @@ class CreateGenieAgent:
                                 logger.info("Redirecting sparse present_plan (%d items) to parallel generate_plan", plan_item_count)
                             loop = asyncio.get_event_loop()
                             future = loop.run_in_executor(
-                                None, lambda a=tool_args: self._run_generate_plan(session, a)
+                                None, run_in_context(self._run_generate_plan, session, tool_args)
                             )
                         else:
                             loop = asyncio.get_event_loop()
                             future = loop.run_in_executor(
-                                None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
+                                None, run_in_context(handle_tool_call, tool_name, tool_args, session.space_config)
                             )
                     else:
                         loop = asyncio.get_event_loop()
                         future = loop.run_in_executor(
-                            None, lambda n=tool_name, a=tool_args: handle_tool_call(n, a, session.space_config)
+                            None, run_in_context(handle_tool_call, tool_name, tool_args, session.space_config)
                         )
                     while not future.done():
                         try:
@@ -308,7 +308,7 @@ class CreateGenieAgent:
                                 update_args["display_name"] = dn
                             yield {"event": "tool_call", "data": {"tool": "update_space", "args": update_args}}
                             u_result = await loop.run_in_executor(
-                                None, lambda: handle_tool_call("update_space", update_args, config)
+                                None, run_in_context(handle_tool_call, "update_space", update_args, config)
                             )
                             yield {"event": "tool_result", "data": {"tool": "update_space", "result": u_result}}
                             tools_used.append("update_space")
@@ -322,7 +322,7 @@ class CreateGenieAgent:
                             # New space: validate → create
                             yield {"event": "tool_call", "data": {"tool": "validate_config", "args": {}}}
                             v_result = await loop.run_in_executor(
-                                None, lambda: handle_tool_call("validate_config", {}, config)
+                                None, run_in_context(handle_tool_call, "validate_config", {}, config)
                             )
                             yield {"event": "tool_result", "data": {"tool": "validate_config", "result": v_result}}
                             tools_used.append("validate_config")
@@ -722,7 +722,7 @@ class CreateGenieAgent:
 
         yield {"event": "tool_call", "data": {"tool": "create_space", "args": {"display_name": display_name}}}
         result = await loop.run_in_executor(
-            None, lambda: handle_tool_call("create_space", {"display_name": display_name}, config)
+            None, run_in_context(handle_tool_call, "create_space", {"display_name": display_name}, config)
         )
 
         # If creation failed with a config error, try LLM-assisted repair once
@@ -732,12 +732,12 @@ class CreateGenieAgent:
                 yield {"event": "tool_result", "data": {"tool": "create_space", "result": {"repairing": True, "original_error": err}}}
                 yield {"event": "thinking", "data": {"message": "Config rejected by API — repairing automatically...", "step": "create", "round": 0}}
 
-                fixed = await loop.run_in_executor(None, lambda: self._repair_config(config, err))
+                fixed = await loop.run_in_executor(None, run_in_context(self._repair_config, config, err))
                 if fixed:
                     config = fixed
                     session.space_config = config
                     result = await loop.run_in_executor(
-                        None, lambda: handle_tool_call("create_space", {"display_name": display_name}, config)
+                        None, run_in_context(handle_tool_call, "create_space", {"display_name": display_name}, config)
                     )
 
         yield {"event": "tool_result", "data": {"tool": "create_space", "result": result}}
@@ -794,7 +794,7 @@ class CreateGenieAgent:
             # Step 1: generate_config
             yield {"event": "tool_call", "data": {"tool": "generate_config", "args": {"tables": f"({len(config_args.get('tables', []))} tables)"}}}
             config_result = await loop.run_in_executor(
-                None, lambda: handle_tool_call("generate_config", config_args, session.space_config)
+                None, run_in_context(handle_tool_call, "generate_config", config_args, session.space_config)
             )
             yield {"event": "tool_result", "data": {"tool": "generate_config", "result": config_result}}
 
@@ -813,7 +813,7 @@ class CreateGenieAgent:
                     update_args["display_name"] = display_name
                 yield {"event": "tool_call", "data": {"tool": "update_space", "args": update_args}}
                 u_result = await loop.run_in_executor(
-                    None, lambda: handle_tool_call("update_space", update_args, config)
+                    None, run_in_context(handle_tool_call, "update_space", update_args, config)
                 )
                 yield {"event": "tool_result", "data": {"tool": "update_space", "result": u_result}}
                 if u_result.get("success"):
@@ -825,7 +825,7 @@ class CreateGenieAgent:
                 # Step 2: validate_config
                 yield {"event": "tool_call", "data": {"tool": "validate_config", "args": {}}}
                 validate_result = await loop.run_in_executor(
-                    None, lambda: handle_tool_call("validate_config", {}, config)
+                    None, run_in_context(handle_tool_call, "validate_config", {}, config)
                 )
                 yield {"event": "tool_result", "data": {"tool": "validate_config", "result": validate_result}}
 
@@ -923,13 +923,19 @@ class CreateGenieAgent:
             resp.close()
 
     async def _async_stream_llm(self, messages: list[dict]) -> AsyncGenerator[dict, None]:
-        """Async wrapper that bridges the sync streaming generator to async."""
+        """Async wrapper that bridges the sync streaming generator to async.
+
+        Captures context once and reuses across all iterations (can't use
+        run_in_context here because we need a single shared ctx for the generator).
+        """
+        import contextvars as _cv
         loop = asyncio.get_event_loop()
+        ctx = _cv.copy_context()
         gen = self._stream_llm(messages)
         _sentinel = object()
 
         while True:
-            chunk = await loop.run_in_executor(None, lambda: next(gen, _sentinel))
+            chunk = await loop.run_in_executor(None, lambda: ctx.run(next, gen, _sentinel))
             if chunk is _sentinel:
                 break
             yield chunk
