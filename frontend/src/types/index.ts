@@ -123,16 +123,39 @@ export interface OptimizationSuggestion {
   category: string
 }
 
+export interface ComparisonDiscrepancy {
+  type: string // "column_mismatch", "extra_rows", "missing_rows", "value_diff", "error"
+  detail: string
+}
+
+export interface ComparisonResult {
+  match_type: string // "exact", "value_match", "partial", "row_count_only", "mismatch"
+  confidence: number // 0.0 - 1.0
+  auto_label: boolean // suggested label
+  discrepancies: ComparisonDiscrepancy[]
+  summary: string // human-readable explanation
+}
+
 export interface LabelingFeedbackItem {
   question_text: string
   is_correct: boolean | null
   feedback_text: string | null
+  auto_label?: boolean | null
+  user_overrode_auto_label?: boolean
+  auto_comparison_summary?: string | null
+}
+
+export interface FailureDiagnosis {
+  question: string
+  failure_types: string[]
+  explanation: string
 }
 
 export interface OptimizationResponse {
   suggestions: OptimizationSuggestion[]
   summary: string
   trace_id: string
+  diagnosis: FailureDiagnosis[]
 }
 
 export interface ConfigMergeResponse {

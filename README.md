@@ -33,10 +33,14 @@ Create a new Databricks App via the workspace UI (**Compute > Apps > Create App*
 ### 3. Sync local files to the workspace
 
 ```bash
+# One-shot sync
+databricks sync . /Workspace/Users/<your-email>/genie-workbench
+
+# Continuous sync (watches for changes)
 databricks sync --watch . /Workspace/Users/<your-email>/genie-workbench
 ```
 
-This uploads your project files to a workspace folder and watches for changes. Files listed in `.gitignore` and `.databricksignore` are excluded (e.g. `node_modules/`, `dist/`, `.env`).
+This uploads your project files to a workspace folder. Files listed in `.gitignore` and `.databricksignore` are excluded (e.g. `node_modules/`, `dist/`, `.env`). Use `--watch` to keep syncing automatically as you make changes.
 
 ### 4. Deploy the app
 

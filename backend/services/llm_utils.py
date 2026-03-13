@@ -4,6 +4,8 @@ import json
 import logging
 import os
 
+import httpx
+
 from backend.services.auth import get_workspace_client
 
 logger = logging.getLogger(__name__)
@@ -18,39 +20,63 @@ def call_serving_endpoint(
     messages: list[dict],
     model: str | None = None,
     max_tokens: int | None = None,
+    timeout: float = 600,
 ) -> str:
-    """Call the LLM serving endpoint using the SDK's API client.
+    """Call the LLM serving endpoint using httpx with explicit timeout.
 
-    Uses the SDK's api_client.do() which handles OBO authentication
-    automatically on Databricks Apps.
+    Uses httpx instead of the SDK's api_client.do() to avoid opaque retry
+    behavior on 429 (rate limit) responses that can cause silent 5-minute hangs.
 
     Args:
         messages: List of chat messages in OpenAI format
         model: Model name to use. Defaults to LLM_MODEL env var.
         max_tokens: Optional max tokens for response.
+        timeout: Per-request timeout in seconds (default 600s / 10 min).
 
     Returns:
         The assistant's response content
 
     Raises:
+        RuntimeError: If rate limited (429) or other HTTP error
         ValueError: If response format is unexpected or content is empty
     """
     if model is None:
         model = get_llm_model()
 
     client = get_workspace_client()
+    host = client.config.host.rstrip("/")
 
+    # Use SDK auth machinery to get proper headers for any auth type
+    # (PAT, oauth-m2m service principal, OBO user token, etc.)
+    auth_headers = client.config.authenticate()
+
+    url = f"{host}/serving-endpoints/{model}/invocations"
     body: dict = {"messages": messages}
     if max_tokens is not None:
         body["max_tokens"] = max_tokens
 
     logger.info(f"Calling serving endpoint: {model}")
 
-    response = client.api_client.do(
-        method="POST",
-        path=f"/serving-endpoints/{model}/invocations",
-        body=body,
+    resp = httpx.post(
+        url,
+        json=body,
+        headers=auth_headers,
+        timeout=timeout,
     )
+
+    if resp.status_code == 429:
+        retry_after = resp.headers.get("Retry-After", "unknown")
+        raise RuntimeError(
+            f"Rate limited by serving endpoint (429). Retry-After: {retry_after}s. "
+            "Reduce prompt size or wait before retrying."
+        )
+
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"Serving endpoint returned {resp.status_code}: {resp.text[:500]}"
+        )
+
+    response = resp.json()
 
     # Response is in OpenAI-compatible format
     if not isinstance(response, dict):

@@ -4,7 +4,7 @@
  */
 
 import { useState, useMemo } from "react"
-import { ArrowLeft, ChevronLeft, ChevronRight, ChevronDown, GitCompare, Check, AlertCircle } from "lucide-react"
+import { ArrowLeft, ChevronLeft, ChevronRight, ChevronDown, GitCompare, Check, AlertCircle, CheckCircle2, XCircle, AlertTriangle, Info } from "lucide-react"
 import { format as formatSqlLib } from "sql-formatter"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -12,7 +12,38 @@ import { SqlCodeBlock } from "@/components/SqlCodeBlock"
 import { SqlDiffView } from "@/components/SqlDiffView"
 import { DataTable } from "@/components/DataTable"
 import { getSelectedBenchmarkQuestions, getExpectedSql } from "@/lib/benchmarkUtils"
-import type { SqlExecutionResult } from "@/types"
+import type { SqlExecutionResult, ComparisonResult } from "@/types"
+
+/** Classify a match_type into a semantic group for consistent styling. */
+function matchGroup(matchType: string): "success" | "partial" | "failure" {
+  if (matchType === "exact" || matchType === "value_match" || matchType === "correct") return "success"
+  if (matchType === "partial") return "partial"
+  return "failure"
+}
+
+const MATCH_GROUP_CONFIG = {
+  success: {
+    borderClass: "border-l-green-500 bg-green-500/5",
+    iconColor: "text-green-500",
+    badgeClass: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+  },
+  partial: {
+    borderClass: "border-l-amber-500 bg-amber-500/5",
+    iconColor: "text-amber-500",
+    badgeClass: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+  },
+  failure: {
+    borderClass: "border-l-red-500 bg-red-500/5",
+    iconColor: "text-red-500",
+    badgeClass: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+  },
+} as const
+
+const MATCH_TYPE_LABELS: Record<string, string> = {
+  exact: "Exact Match",
+  correct: "Correct",
+  value_match: "Value Match",
+}
 
 interface LabelingPageProps {
   genieSpaceId: string
@@ -26,6 +57,8 @@ interface LabelingPageProps {
   correctAnswers: Record<string, boolean | null>
   feedbackTexts: Record<string, string>
   processingErrors: Record<string, string>
+  // Auto-comparison state (QW1)
+  comparisons: Record<string, ComparisonResult | null>
   // Actions
   onSetCurrentIndex: (index: number) => void
   onSetCorrectAnswer: (questionId: string, answer: boolean | null) => void
@@ -46,6 +79,8 @@ export function LabelingPage({
   correctAnswers,
   feedbackTexts,
   processingErrors,
+  // Auto-comparison state (QW1)
+  comparisons,
   // Actions
   onSetCurrentIndex,
   onSetCorrectAnswer,
@@ -98,6 +133,7 @@ export function LabelingPage({
   const expectedResult = currentQuestion ? expectedResults[currentQuestion.id] ?? null : null
   const isCorrect = currentQuestion ? correctAnswers[currentQuestion.id] ?? null : null
   const feedbackText = currentQuestion ? feedbackTexts[currentQuestion.id] ?? '' : ''
+  const comparison = currentQuestion ? comparisons[currentQuestion.id] ?? null : null
 
   // Format SQL using sql-formatter library for consistent display
   const formatSql = (sql: string): string => {
@@ -284,60 +320,144 @@ export function LabelingPage({
         </Card>
       )}
 
-      {/* Labeling Feedback Box */}
-      <Card className={!genieResult && !currentError ? 'opacity-50' : ''}>
-        <CardContent className="py-4 px-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-primary">Label This Question</h3>
-            {!genieResult && !currentError && (
-              <span className="text-xs text-muted">No results available</span>
-            )}
-          </div>
-          <div className="flex flex-col md:flex-row gap-4">
-            {/* Question 1: Was Genie's output correct? */}
-            <div>
-              <label className="text-sm text-secondary mb-2 block">Was Genie's output correct?</label>
-              <div className="flex gap-2">
-                <button
-                  onClick={() => currentQuestion && onSetCorrectAnswer(currentQuestion.id, true)}
-                  disabled={!genieResult && !currentError}
-                  className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
-                    isCorrect === true
-                      ? 'border-accent bg-accent/10 text-accent'
-                      : 'border-default text-secondary hover:border-strong'
-                  } disabled:cursor-not-allowed disabled:hover:border-default`}
-                >
-                  Yes
-                </button>
-                <button
-                  onClick={() => currentQuestion && onSetCorrectAnswer(currentQuestion.id, false)}
-                  disabled={!genieResult && !currentError}
-                  className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
-                    isCorrect === false
-                      ? 'border-accent bg-accent/10 text-accent'
-                      : 'border-default text-secondary hover:border-strong'
-                  } disabled:cursor-not-allowed disabled:hover:border-default`}
-                >
-                  No
-                </button>
+      {/* Comparison + Labeling Card (combined) */}
+      {comparison ? (() => {
+        const group = matchGroup(comparison.match_type)
+        const groupConfig = MATCH_GROUP_CONFIG[group]
+        const Icon = group === "success" ? CheckCircle2 : group === "partial" ? AlertTriangle : XCircle
+        const badgeLabel = MATCH_TYPE_LABELS[comparison.match_type]
+          ?? (group === "partial" ? `Partial (${Math.round(comparison.confidence * 100)}%)` : "Incorrect")
+
+        return (
+        <Card className={`border-l-4 ${groupConfig.borderClass}`}>
+          <CardContent className="py-4 px-4">
+            {/* Header row: icon + title + badge */}
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Icon className={`w-4 h-4 ${groupConfig.iconColor}`} />
+                <h3 className="text-sm font-semibold text-primary">Auto-Assessment</h3>
               </div>
+              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${groupConfig.badgeClass}`}>
+                {badgeLabel}
+              </span>
             </div>
 
-            {/* Question 2: What did Genie get wrong? */}
-            <div className="flex-1">
-              <label className="text-sm text-secondary mb-2 block">If not, what did Genie get wrong?</label>
-              <textarea
-                value={feedbackText}
-                onChange={(e) => currentQuestion && onSetFeedbackText(currentQuestion.id, e.target.value)}
-                placeholder="Describe what was incorrect..."
-                disabled={!genieResult && !currentError}
-                className="w-full p-2 text-sm rounded-lg border border-default bg-surface text-primary placeholder:text-muted resize-none focus:outline-none focus:ring-2 focus:ring-accent/50 transition-colors disabled:cursor-not-allowed disabled:bg-elevated"
-                rows={2}
-              />
+            {/* Summary */}
+            <p className="text-sm text-secondary mb-2">{comparison.summary}</p>
+
+            {/* Discrepancies */}
+            {comparison.discrepancies.length > 0 && (
+              <ul className="space-y-1 mb-3">
+                {comparison.discrepancies.map((d, i) => (
+                  <li key={i} className="flex items-start gap-2 text-xs text-muted">
+                    <Info className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                    <span>{d.detail}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {/* Agree / Disagree controls */}
+            <div className="flex items-center gap-3 mt-3 pt-3 border-t border-default/50">
+              <span className="text-xs text-muted mr-1">Do you agree?</span>
+              <button
+                onClick={() => currentQuestion && onSetCorrectAnswer(currentQuestion.id, comparison.auto_label)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                  isCorrect === comparison.auto_label
+                    ? 'border-green-500 bg-green-500/10 text-green-600 dark:text-green-400'
+                    : 'border-default text-secondary hover:border-green-400 hover:text-green-600 dark:hover:text-green-400'
+                }`}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Agree
+              </button>
+              <button
+                onClick={() => currentQuestion && onSetCorrectAnswer(currentQuestion.id, !comparison.auto_label)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                  isCorrect !== null && isCorrect !== comparison.auto_label
+                    ? 'border-red-500 bg-red-500/10 text-red-600 dark:text-red-400'
+                    : 'border-default text-secondary hover:border-red-400 hover:text-red-600 dark:hover:text-red-400'
+                }`}
+              >
+                <XCircle className="w-3.5 h-3.5" />
+                Disagree
+              </button>
+              {isCorrect !== null && isCorrect !== comparison.auto_label && (
+                <span className="text-xs text-amber-500 font-medium ml-auto">
+                  Overriding to: {isCorrect ? "Correct" : "Incorrect"}
+                </span>
+              )}
             </div>
-          </div>
-        </CardContent>
-      </Card>
+
+            {/* Feedback textarea — shown when user disagrees */}
+            {isCorrect !== null && isCorrect !== comparison.auto_label && (
+              <div className="mt-3">
+                <textarea
+                  value={feedbackText}
+                  onChange={(e) => currentQuestion && onSetFeedbackText(currentQuestion.id, e.target.value)}
+                  placeholder="What did the auto-assessment get wrong?"
+                  className="w-full p-2 text-sm rounded-lg border border-default bg-surface text-primary placeholder:text-muted resize-none focus:outline-none focus:ring-2 focus:ring-accent/50 transition-colors"
+                  rows={2}
+                  autoFocus
+                />
+              </div>
+            )}
+          </CardContent>
+        </Card>
+        )
+      })() : (
+        /* Fallback: manual labeling when no comparison is available */
+        <Card className={!genieResult && !currentError ? 'opacity-50' : ''}>
+          <CardContent className="py-4 px-4">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-semibold text-primary">Label This Question</h3>
+              {!genieResult && !currentError && (
+                <span className="text-xs text-muted">No results available</span>
+              )}
+            </div>
+            <div className="flex flex-col md:flex-row gap-4">
+              <div>
+                <label className="text-sm text-secondary mb-2 block">Was Genie's output correct?</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => currentQuestion && onSetCorrectAnswer(currentQuestion.id, true)}
+                    disabled={!genieResult && !currentError}
+                    className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                      isCorrect === true
+                        ? 'border-accent bg-accent/10 text-accent'
+                        : 'border-default text-secondary hover:border-strong'
+                    } disabled:cursor-not-allowed disabled:hover:border-default`}
+                  >
+                    Yes
+                  </button>
+                  <button
+                    onClick={() => currentQuestion && onSetCorrectAnswer(currentQuestion.id, false)}
+                    disabled={!genieResult && !currentError}
+                    className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
+                      isCorrect === false
+                        ? 'border-accent bg-accent/10 text-accent'
+                        : 'border-default text-secondary hover:border-strong'
+                    } disabled:cursor-not-allowed disabled:hover:border-default`}
+                  >
+                    No
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1">
+                <label className="text-sm text-secondary mb-2 block">If not, what did Genie get wrong?</label>
+                <textarea
+                  value={feedbackText}
+                  onChange={(e) => currentQuestion && onSetFeedbackText(currentQuestion.id, e.target.value)}
+                  placeholder="Describe what was incorrect..."
+                  disabled={!genieResult && !currentError}
+                  className="w-full p-2 text-sm rounded-lg border border-default bg-surface text-primary placeholder:text-muted resize-none focus:outline-none focus:ring-2 focus:ring-accent/50 transition-colors disabled:cursor-not-allowed disabled:bg-elevated"
+                  rows={2}
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Side-by-side Output Display */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">

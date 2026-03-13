@@ -1,110 +1,177 @@
 /**
  * OptimizationPage component displaying AI-generated optimization suggestions.
- * Organized in a two-level collapsible hierarchy: Priority > Category.
+ * Organized by optimization lever (QW5) with failure diagnosis (QW4).
  */
 
 import { useMemo } from "react"
-import { ArrowLeft, Loader2, Sparkles, AlertTriangle, Eye } from "lucide-react"
+import { ArrowLeft, Loader2, Sparkles, AlertTriangle, Eye, Stethoscope } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { AccordionItem } from "@/components/ui/accordion"
 import { SuggestionCard } from "@/components/SuggestionCard"
-import type { OptimizationSuggestion } from "@/types"
+import type { OptimizationSuggestion, FailureDiagnosis } from "@/types"
 
 interface OptimizationPageProps {
   suggestions: OptimizationSuggestion[] | null
   summary: string | null
+  diagnosis: FailureDiagnosis[]
   isLoading: boolean
   error: string | null
   selectedSuggestions: Set<number>
   onBack: () => void
   onToggleSuggestionSelection: (index: number) => void
-  onSelectAllByPriority: (priority: string) => void
-  onDeselectAllByPriority: (priority: string) => void
   onCreateNewGenie: () => void
 }
 
 type SuggestionItem = { suggestion: OptimizationSuggestion; originalIndex: number }
-type CategoryGroup = { category: string; items: SuggestionItem[] }
-type PriorityGroup = { categories: CategoryGroup[]; count: number; selectedCount: number }
+
+// Lever-based grouping (QW5)
+const LEVER_ORDER = [
+  {
+    key: "data_model",
+    label: "Data Model",
+    description: "Fix data model issues before adjusting instructions",
+    categories: ["description", "synonym", "column_discovery"],
+  },
+  {
+    key: "joins",
+    label: "Joins & Relationships",
+    description: "Ensure tables are properly connected",
+    categories: ["join_spec"],
+  },
+  {
+    key: "sql_assets",
+    label: "SQL Assets",
+    description: "Improve filters, expressions, measures, and examples",
+    categories: ["filter", "expression", "measure", "sql_example"],
+  },
+  {
+    key: "instructions",
+    label: "Instructions",
+    description: "Fine-tune text instructions last — structural fixes have more impact",
+    categories: ["instruction"],
+  },
+] as const
+
+interface LeverGroup {
+  items: SuggestionItem[]
+  highCount: number
+  mediumCount: number
+  lowCount: number
+  selectedCount: number
+}
 
 const PRIORITY_CONFIG = {
   high: {
-    label: "High Priority",
+    label: "High",
     dotColor: "bg-red-500",
-    textColor: "text-red-700 dark:text-red-400",
-    defaultOpen: true,
+    badgeClass: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
   },
   medium: {
-    label: "Medium Priority",
+    label: "Medium",
     dotColor: "bg-amber-500",
-    textColor: "text-amber-700 dark:text-amber-400",
-    defaultOpen: true,
+    badgeClass: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
   },
   low: {
-    label: "Low Priority",
+    label: "Low",
     dotColor: "bg-blue-500",
-    textColor: "text-blue-700 dark:text-blue-400",
-    defaultOpen: false,
+    badgeClass: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
   },
 } as const
+
+// Failure category color scheme — each category maps to a shared color
+const FAILURE_COLORS = {
+  table_column: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+  join: "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400",
+  logic: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+  interpretation: "bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400",
+  config: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+} as const
+
+// Failure type display labels
+const FAILURE_TYPE_LABELS: Record<string, { label: string; color: string }> = {
+  wrong_table: { label: "Wrong Table", color: FAILURE_COLORS.table_column },
+  wrong_column: { label: "Wrong Column", color: FAILURE_COLORS.table_column },
+  missing_column: { label: "Missing Column", color: FAILURE_COLORS.table_column },
+  wrong_table_for_metric: { label: "Wrong Table for Metric", color: FAILURE_COLORS.table_column },
+  missing_join_spec: { label: "Missing Join", color: FAILURE_COLORS.join },
+  wrong_join: { label: "Wrong Join", color: FAILURE_COLORS.join },
+  cartesian_product: { label: "Cartesian Product", color: FAILURE_COLORS.join },
+  wrong_aggregation: { label: "Wrong Aggregation", color: FAILURE_COLORS.logic },
+  wrong_filter: { label: "Wrong Filter", color: FAILURE_COLORS.logic },
+  missing_filter: { label: "Missing Filter", color: FAILURE_COLORS.logic },
+  wrong_grouping: { label: "Wrong Grouping", color: FAILURE_COLORS.logic },
+  wrong_date_handling: { label: "Date Handling", color: FAILURE_COLORS.interpretation },
+  entity_mismatch: { label: "Entity Mismatch", color: FAILURE_COLORS.interpretation },
+  ambiguous_query: { label: "Ambiguous Query", color: FAILURE_COLORS.interpretation },
+  missing_description: { label: "Missing Description", color: FAILURE_COLORS.config },
+  missing_synonym: { label: "Missing Synonym", color: FAILURE_COLORS.config },
+  misleading_instruction: { label: "Misleading Instruction", color: FAILURE_COLORS.config },
+}
 
 export function OptimizationPage({
   suggestions,
   summary,
+  diagnosis,
   isLoading,
   error,
   selectedSuggestions,
   onBack,
   onToggleSuggestionSelection,
-  onSelectAllByPriority,
-  onDeselectAllByPriority,
   onCreateNewGenie,
 }: OptimizationPageProps) {
-  // Group suggestions by priority then category with original indices
-  const groupedSuggestions = useMemo(() => {
-    if (!suggestions) {
-      return {
-        high: { categories: [], count: 0, selectedCount: 0 },
-        medium: { categories: [], count: 0, selectedCount: 0 },
-        low: { categories: [], count: 0, selectedCount: 0 },
+  // Group suggestions by lever then priority (QW5)
+  const leverGroups = useMemo(() => {
+    const result: Record<string, LeverGroup> = {}
+    for (const lever of LEVER_ORDER) {
+      result[lever.key] = { items: [], highCount: 0, mediumCount: 0, lowCount: 0, selectedCount: 0 }
+    }
+    // "other" for categories not matching any lever
+    result["other"] = { items: [], highCount: 0, mediumCount: 0, lowCount: 0, selectedCount: 0 }
+
+    if (!suggestions) return result
+
+    // Build a category -> lever key map
+    const categoryToLever: Record<string, string> = {}
+    for (const lever of LEVER_ORDER) {
+      for (const cat of lever.categories) {
+        categoryToLever[cat] = lever.key
       }
     }
 
-    const priorities = ["high", "medium", "low"] as const
-    const result: Record<(typeof priorities)[number], PriorityGroup> = {
-      high: { categories: [], count: 0, selectedCount: 0 },
-      medium: { categories: [], count: 0, selectedCount: 0 },
-      low: { categories: [], count: 0, selectedCount: 0 },
-    }
-
-    // Build category maps for each priority
-    const categoryMaps = {
-      high: new Map<string, SuggestionItem[]>(),
-      medium: new Map<string, SuggestionItem[]>(),
-      low: new Map<string, SuggestionItem[]>(),
-    }
-
     suggestions.forEach((suggestion, index) => {
-      const priority = suggestion.priority as (typeof priorities)[number]
-      const category = suggestion.category || "Other"
-      const map = categoryMaps[priority]
-
-      if (!map.has(category)) map.set(category, [])
-      map.get(category)!.push({ suggestion, originalIndex: index })
-      result[priority].count++
-      if (selectedSuggestions.has(index)) result[priority].selectedCount++
+      const leverKey = categoryToLever[suggestion.category] || "other"
+      const group = result[leverKey]
+      const item: SuggestionItem = { suggestion, originalIndex: index }
+      group.items.push(item)
+      if (suggestion.priority === "high") group.highCount++
+      else if (suggestion.priority === "medium") group.mediumCount++
+      else group.lowCount++
+      if (selectedSuggestions.has(index)) group.selectedCount++
     })
 
-    // Convert maps to sorted arrays
-    for (const priority of priorities) {
-      result[priority].categories = Array.from(categoryMaps[priority].entries())
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([category, items]) => ({ category, items }))
+    // Sort items within each lever by priority (high > medium > low)
+    const priorityOrder = { high: 0, medium: 1, low: 2 }
+    for (const group of Object.values(result)) {
+      group.items.sort((a, b) =>
+        (priorityOrder[a.suggestion.priority as keyof typeof priorityOrder] ?? 3) -
+        (priorityOrder[b.suggestion.priority as keyof typeof priorityOrder] ?? 3)
+      )
     }
 
     return result
   }, [suggestions, selectedSuggestions])
+
+  // Derive priority counts from the already-memoized lever groups (avoids .filter() in render)
+  const priorityCounts = useMemo(() => {
+    const counts = { high: 0, medium: 0, low: 0 }
+    for (const group of Object.values(leverGroups)) {
+      counts.high += group.highCount
+      counts.medium += group.mediumCount
+      counts.low += group.lowCount
+    }
+    return counts
+  }, [leverGroups])
 
   const totalCount = suggestions?.length || 0
   const selectedCount = selectedSuggestions.size
@@ -179,36 +246,56 @@ export function OptimizationPage({
         </Card>
       )}
 
+      {/* Failure Diagnosis section (QW4) */}
+      {diagnosis && diagnosis.length > 0 && !isLoading && (
+        <Card className="border-amber-200 dark:border-amber-800/50">
+          <CardContent className="py-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Stethoscope className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+              <h3 className="font-medium text-primary text-sm">Failure Diagnosis</h3>
+              <span className="text-xs text-muted">({diagnosis.length} question{diagnosis.length !== 1 ? "s" : ""} analyzed)</span>
+            </div>
+            <div className="space-y-3">
+              {diagnosis.map((d, i) => (
+                <div key={i} className="p-3 rounded-lg bg-elevated">
+                  <p className="text-sm font-medium text-primary mb-2">
+                    {d.question}
+                  </p>
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {d.failure_types.map((ft) => {
+                      const config = FAILURE_TYPE_LABELS[ft] || { label: ft, color: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300" }
+                      return (
+                        <span key={ft} className={`text-xs px-2 py-0.5 rounded-full font-medium ${config.color}`}>
+                          {config.label}
+                        </span>
+                      )
+                    })}
+                  </div>
+                  <p className="text-xs text-muted">{d.explanation}</p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Stats and Create button */}
       {suggestions && suggestions.length > 0 && !isLoading && (
         <div className="space-y-4">
-          {/* Priority stats */}
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex gap-4 flex-wrap">
-              {groupedSuggestions.high.count > 0 && (
-                <div className="flex items-center gap-2 text-sm">
-                  <div className="w-3 h-3 rounded-full bg-red-500" />
-                  <span className="text-secondary">
-                    {groupedSuggestions.high.count} high priority
-                  </span>
-                </div>
-              )}
-              {groupedSuggestions.medium.count > 0 && (
-                <div className="flex items-center gap-2 text-sm">
-                  <div className="w-3 h-3 rounded-full bg-amber-500" />
-                  <span className="text-secondary">
-                    {groupedSuggestions.medium.count} medium priority
-                  </span>
-                </div>
-              )}
-              {groupedSuggestions.low.count > 0 && (
-                <div className="flex items-center gap-2 text-sm">
-                  <div className="w-3 h-3 rounded-full bg-blue-500" />
-                  <span className="text-secondary">
-                    {groupedSuggestions.low.count} low priority
-                  </span>
-                </div>
-              )}
+              {Object.entries(PRIORITY_CONFIG).map(([priority, config]) => {
+                const count = priorityCounts[priority as keyof typeof priorityCounts]
+                if (count === 0) return null
+                return (
+                  <div key={priority} className="flex items-center gap-2 text-sm">
+                    <div className={`w-3 h-3 rounded-full ${config.dotColor}`} />
+                    <span className="text-secondary">
+                      {count} {priority} priority
+                    </span>
+                  </div>
+                )
+              })}
             </div>
 
             {/* Selection count and Create button */}
@@ -227,23 +314,21 @@ export function OptimizationPage({
         </div>
       )}
 
-      {/* Suggestions grouped by priority then category - collapsible accordions */}
+      {/* Suggestions grouped by lever (QW5) */}
       {suggestions && suggestions.length > 0 && !isLoading && (
         <div className="space-y-4">
-          {(["high", "medium", "low"] as const).map((priority) => {
-            const group = groupedSuggestions[priority]
-            if (group.count === 0) return null
-
-            const config = PRIORITY_CONFIG[priority]
+          {LEVER_ORDER.map((lever) => {
+            const group = leverGroups[lever.key]
+            if (!group || group.items.length === 0) return null
 
             return (
               <AccordionItem
-                key={priority}
-                defaultOpen={config.defaultOpen}
-                icon={<div className={`w-3 h-3 rounded-full ${config.dotColor}`} />}
+                key={lever.key}
+                defaultOpen={true}
+                icon={<div className="w-2 h-2 rounded-full bg-accent" />}
                 title={
-                  <span className={config.textColor}>
-                    {config.label} ({group.count})
+                  <span className="text-primary">
+                    {lever.label} ({group.items.length})
                     {group.selectedCount > 0 && (
                       <span className="ml-2 text-xs font-normal text-muted">
                         {group.selectedCount} selected
@@ -260,7 +345,14 @@ export function OptimizationPage({
                       variant="ghost"
                       size="sm"
                       className="h-7 px-2 text-xs"
-                      onClick={() => onSelectAllByPriority(priority)}
+                      onClick={() => {
+                        // Select all items in this lever
+                        group.items.forEach(({ originalIndex }) => {
+                          if (!selectedSuggestions.has(originalIndex)) {
+                            onToggleSuggestionSelection(originalIndex)
+                          }
+                        })
+                      }}
                     >
                       Select All
                     </Button>
@@ -268,42 +360,68 @@ export function OptimizationPage({
                       variant="ghost"
                       size="sm"
                       className="h-7 px-2 text-xs"
-                      onClick={() => onDeselectAllByPriority(priority)}
+                      onClick={() => {
+                        // Deselect all items in this lever
+                        group.items.forEach(({ originalIndex }) => {
+                          if (selectedSuggestions.has(originalIndex)) {
+                            onToggleSuggestionSelection(originalIndex)
+                          }
+                        })
+                      }}
                     >
                       Deselect All
                     </Button>
                   </div>
                 }
               >
-                <div className="space-y-2">
-                  {group.categories.map(({ category, items }) => (
-                    <AccordionItem
-                      key={`${priority}-${category}`}
-                      defaultOpen={true}
-                      title={
-                        <span className="text-sm text-secondary">
-                          {category} ({items.length})
-                        </span>
-                      }
-                      className="border-transparent bg-black/5 dark:bg-white/5"
-                    >
-                      <div className="space-y-3">
-                        {items.map(({ suggestion, originalIndex }) => (
-                          <SuggestionCard
-                            key={`${priority}-${category}-${originalIndex}`}
-                            suggestion={suggestion}
-                            selectionEnabled={true}
-                            isSelected={selectedSuggestions.has(originalIndex)}
-                            onToggleSelection={() => onToggleSuggestionSelection(originalIndex)}
-                          />
-                        ))}
-                      </div>
-                    </AccordionItem>
-                  ))}
+                <div className="space-y-1">
+                  <p className="text-xs text-muted mb-3">{lever.description}</p>
+                  <div className="space-y-3">
+                    {group.items.map(({ suggestion, originalIndex }) => (
+                      <SuggestionCard
+                        key={`${lever.key}-${originalIndex}`}
+                        suggestion={suggestion}
+                        selectionEnabled={true}
+                        isSelected={selectedSuggestions.has(originalIndex)}
+                        onToggleSelection={() => onToggleSuggestionSelection(originalIndex)}
+                      />
+                    ))}
+                  </div>
                 </div>
               </AccordionItem>
             )
           })}
+
+          {/* "Other" lever for uncategorized suggestions */}
+          {leverGroups["other"] && leverGroups["other"].items.length > 0 && (
+            <AccordionItem
+              key="other"
+              defaultOpen={true}
+              icon={<div className="w-2 h-2 rounded-full bg-gray-400" />}
+              title={
+                <span className="text-primary">
+                  Other ({leverGroups["other"].items.length})
+                  {leverGroups["other"].selectedCount > 0 && (
+                    <span className="ml-2 text-xs font-normal text-muted">
+                      {leverGroups["other"].selectedCount} selected
+                    </span>
+                  )}
+                </span>
+              }
+            >
+              <div className="space-y-3">
+                {leverGroups["other"].items.map(({ suggestion, originalIndex }) => (
+                  <SuggestionCard
+                    key={`other-${originalIndex}`}
+                    suggestion={suggestion}
+                    selectionEnabled={true}
+                    isSelected={selectedSuggestions.has(originalIndex)}
+                    onToggleSelection={() => onToggleSuggestionSelection(originalIndex)}
+                  />
+                ))}
+              </div>
+            </AccordionItem>
+          )}
         </div>
       )}
 
