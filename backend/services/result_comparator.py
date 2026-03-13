@@ -6,11 +6,11 @@ Uses a two-phase approach:
    column name similarity, value equivalence, and overall correctness
 """
 
-import json
 import logging
 import math
 
 from backend.models import ComparisonDiscrepancy, ComparisonResult
+from backend.services.llm_utils import call_serving_endpoint, get_llm_model, parse_json_from_llm_response
 
 logger = logging.getLogger(__name__)
 
@@ -170,8 +170,6 @@ Output JSON:
 For discrepancy types use: "value_diff", "missing_column", "extra_rows", "missing_rows", "sql_error", "different_interpretation", "rounding", "column_alias".
 Only include discrepancies for actual issues — omit trivial differences like column aliases."""
 
-    return prompt
-
 
 def compare_results(
     genie_result: dict,
@@ -201,8 +199,6 @@ def compare_results(
 
     # Phase 2: LLM-based semantic comparison
     try:
-        from backend.services.llm_utils import call_serving_endpoint, get_llm_model, parse_json_from_llm_response
-
         prompt = _build_comparison_prompt(
             question=question,
             genie_sql=genie_sql,

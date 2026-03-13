@@ -107,6 +107,16 @@ class OptimizationSuggestion(BaseModel):
     category: str  # instruction, sql_example, filter, expression, measure, etc.
 
 
+class CompareResultsRequest(BaseModel):
+    """Request to compare Genie vs expected SQL results."""
+
+    genie_result: dict
+    expected_result: dict
+    genie_sql: str | None = None
+    expected_sql: str | None = None
+    question: str | None = None
+
+
 class ComparisonDiscrepancy(BaseModel):
     """A single discrepancy found when comparing SQL results."""
 

@@ -21,6 +21,7 @@ from backend.services.genie_client import get_serialized_space
 from backend.models import (
     AgentInput,
     AgentOutput,
+    CompareResultsRequest,
     ComparisonResult,
     ConfigMergeRequest,
     ConfigMergeResponse,
@@ -458,16 +459,6 @@ async def get_settings():
     )
 
 
-class CompareResultsRequest(BaseModel):
-    """Request to compare Genie vs expected SQL results."""
-
-    genie_result: dict
-    expected_result: dict
-    genie_sql: str | None = None
-    expected_sql: str | None = None
-    question: str | None = None
-
-
 @router.post("/benchmark/compare", response_model=ComparisonResult)
 async def compare_benchmark_results(request: CompareResultsRequest):
     """Compare Genie SQL results against expected SQL results.
@@ -478,13 +469,15 @@ async def compare_benchmark_results(request: CompareResultsRequest):
     """
     import asyncio
 
+    from backend.services.auth import run_in_context
     from backend.services.result_comparator import compare_results
 
     try:
         # Run in thread pool since compare_results may call LLM (blocking I/O)
         result = await asyncio.get_running_loop().run_in_executor(
             None,
-            lambda: compare_results(
+            run_in_context(
+                compare_results,
                 genie_result=request.genie_result,
                 expected_result=request.expected_result,
                 genie_sql=request.genie_sql,

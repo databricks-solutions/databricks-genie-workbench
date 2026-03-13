@@ -577,31 +577,6 @@ export function useAnalysis() {
     setState((prev) => ({ ...prev, selectedSuggestions: new Set<number>() }))
   }, [])
 
-  const selectAllByPriority = useCallback((priority: string) => {
-    setState((prev) => {
-      if (!prev.optimizationSuggestions) return prev
-      const indices = prev.optimizationSuggestions
-        .map((s, i) => (s.priority === priority ? i : -1))
-        .filter((i) => i !== -1)
-      return { ...prev, selectedSuggestions: new Set([...prev.selectedSuggestions, ...indices]) }
-    })
-  }, [])
-
-  const deselectAllByPriority = useCallback((priority: string) => {
-    setState((prev) => {
-      if (!prev.optimizationSuggestions) return prev
-      const indicesToRemove = new Set(
-        prev.optimizationSuggestions
-          .map((s, i) => (s.priority === priority ? i : -1))
-          .filter((i) => i !== -1)
-      )
-      return {
-        ...prev,
-        selectedSuggestions: new Set([...prev.selectedSuggestions].filter((i) => !indicesToRemove.has(i))),
-      }
-    })
-  }, [])
-
   const startOptimization = useCallback(() => {
     const { genieSpaceId, spaceData, selectedQuestions, labelingCorrectAnswers, labelingFeedbackTexts, labelingComparisons } = state
     if (!spaceData) return
@@ -1040,8 +1015,6 @@ export function useAnalysis() {
       toggleSuggestionSelection,
       selectAllSuggestions,
       deselectAllSuggestions,
-      selectAllByPriority,
-      deselectAllByPriority,
       toggleChecklist,
       toggleSettings,
       toggleSectionExpanded,
