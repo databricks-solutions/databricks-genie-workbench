@@ -161,20 +161,32 @@ export type OptimizeView = "benchmarks" | "labeling" | "feedback" | "optimizatio
 
 // ===== GenieIQ / Workbench Types =====
 
-export type MaturityLevel = "Optimized" | "Proficient" | "Developing" | "Basic" | "Nascent"
+export type MaturityStage = "Optimized" | "Proficient" | "Developing" | "Basic" | "Nascent"
+
+export interface CriterionResult {
+  id: string
+  stage: string
+  description: string
+  passed: boolean
+  value: number | null
+  points_earned: number
+  points_possible: number
+}
 
 export interface ScoreBreakdown {
-  foundation: number    // 0-30
-  data_setup: number    // 0-25
-  sql_assets: number    // 0-25
-  optimization: number  // 0-20
+  nascent: number
+  basic: number
+  developing: number
+  proficient: number
+  optimized: number
 }
 
 export interface ScanResult {
   space_id: string
   score: number
-  maturity: MaturityLevel
+  maturity: string
   breakdown: ScoreBreakdown
+  criteria_results: CriterionResult[]
   findings: string[]
   next_steps: string[]
   scanned_at: string
@@ -184,10 +196,33 @@ export interface SpaceListItem {
   space_id: string
   display_name: string
   score: number | null
-  maturity: MaturityLevel | null
+  maturity: string | null
   is_starred: boolean
   last_scanned: string | null
   space_url: string | null
+}
+
+export interface MaturityConfigStage {
+  name: string
+  range: [number, number]
+  key_question: string
+  description: string
+}
+
+export interface MaturityConfigCriterion {
+  id: string
+  stage: string
+  type: "boolean" | "count"
+  points: number
+  enabled: boolean
+  description: string
+  scale?: { min: number; target: number; max: number }
+}
+
+export interface MaturityConfig {
+  version: number
+  stages: MaturityConfigStage[]
+  criteria: MaturityConfigCriterion[]
 }
 
 export interface StarToggleRequest {
@@ -229,7 +264,7 @@ export interface LeaderboardEntry {
   space_id: string
   display_name: string
   score: number
-  maturity: MaturityLevel
+  maturity: string
   last_scanned: string | null
 }
 
@@ -242,7 +277,7 @@ export interface AlertItem {
 
 export interface ScoreHistoryPoint {
   score: number
-  maturity: MaturityLevel
+  maturity: string
   scanned_at: string
 }
 

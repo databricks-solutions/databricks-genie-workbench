@@ -177,8 +177,8 @@ class GenieCreateResponse(BaseModel):
 
 # ===== GenieIQ Models =====
 
-class MaturityLevel(str, Enum):
-    """Maturity level for a Genie Space."""
+class MaturityStage(str, Enum):
+    """Maturity stage for a Genie Space."""
     OPTIMIZED = "Optimized"
     PROFICIENT = "Proficient"
     DEVELOPING = "Developing"
@@ -186,20 +186,33 @@ class MaturityLevel(str, Enum):
     NASCENT = "Nascent"
 
 
+class CriterionResult(BaseModel):
+    """Result of evaluating a single maturity criterion."""
+    id: str
+    stage: str
+    description: str
+    passed: bool
+    value: float | None = None
+    points_earned: int = 0
+    points_possible: int = 0
+
+
 class ScoreBreakdown(BaseModel):
-    """Score breakdown by dimension."""
-    foundation: int = Field(0, ge=0, le=30, description="Foundation score (0-30)")
-    data_setup: int = Field(0, ge=0, le=25, description="Data Setup score (0-25)")
-    sql_assets: int = Field(0, ge=0, le=25, description="SQL Assets score (0-25)")
-    optimization: int = Field(0, ge=0, le=20, description="Optimization score (0-20)")
+    """Score breakdown by maturity stage."""
+    nascent: int = Field(0, ge=0, description="Nascent stage score")
+    basic: int = Field(0, ge=0, description="Basic stage score")
+    developing: int = Field(0, ge=0, description="Developing stage score")
+    proficient: int = Field(0, ge=0, description="Proficient stage score")
+    optimized: int = Field(0, ge=0, description="Optimized stage score")
 
 
 class ScanResult(BaseModel):
     """IQ scan result for a Genie Space."""
     space_id: str
     score: int = Field(..., ge=0, le=100)
-    maturity: MaturityLevel
+    maturity: str  # Stage name from config (e.g., "Nascent", "Developing", "Optimized")
     breakdown: ScoreBreakdown
+    criteria_results: list[CriterionResult] = Field(default_factory=list)
     findings: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
     scanned_at: str  # ISO datetime string

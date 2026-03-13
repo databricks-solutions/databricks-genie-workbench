@@ -17,6 +17,8 @@ dependencies = [
     "streamlit>=1.40.0",
     "asyncpg>=0.29",
     "psycopg2-binary",
+    "mcp>=1.26.0",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]

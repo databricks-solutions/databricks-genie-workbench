@@ -1,11 +1,13 @@
-"""Admin router - org-wide statistics, leaderboard, and alerts."""
+"""Admin router - org-wide statistics, leaderboard, alerts, and maturity config."""
 
 import logging
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from backend.services.lakebase import get_all_scan_summaries
 from backend.services.genie_client import list_genie_spaces
+from backend.services.maturity_config import get_active_config, get_default_config, save_admin_overrides
 from backend.models import AdminDashboardStats, LeaderboardEntry, AlertItem
 
 logger = logging.getLogger(__name__)
@@ -124,3 +126,54 @@ async def get_alerts(score_threshold: int = 40) -> list[AlertItem]:
     except Exception as e:
         logger.exception(f"Failed to get alerts: {e}")
         raise HTTPException(status_code=500, detail="Failed to get alerts")
+
+
+# ===== Maturity Config =====
+
+
+class MaturityConfigUpdate(BaseModel):
+    """Request body for updating the maturity config."""
+    config: dict
+
+
+@router.get("/maturity-config")
+async def get_maturity_config() -> dict:
+    """Get the active maturity config (default + admin overrides)."""
+    try:
+        config = await get_active_config()
+        default = get_default_config()
+        return {
+            "active": config,
+            "default": default,
+        }
+    except Exception as e:
+        logger.exception(f"Failed to get maturity config: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get maturity config")
+
+
+@router.put("/maturity-config")
+async def update_maturity_config(request: MaturityConfigUpdate) -> dict:
+    """Update admin overrides for the maturity config.
+
+    The request body contains partial overrides that are merged with
+    the default config. Send only the fields you want to change.
+    """
+    try:
+        await save_admin_overrides(request.config)
+        active = await get_active_config()
+        return {"status": "saved", "active": active}
+    except Exception as e:
+        logger.exception(f"Failed to update maturity config: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update maturity config")
+
+
+@router.post("/maturity-config/reset")
+async def reset_maturity_config() -> dict:
+    """Reset maturity config to defaults (remove all admin overrides)."""
+    try:
+        await save_admin_overrides({})
+        default = get_default_config()
+        return {"status": "reset", "active": default}
+    except Exception as e:
+        logger.exception(f"Failed to reset maturity config: {e}")
+        raise HTTPException(status_code=500, detail="Failed to reset maturity config")
