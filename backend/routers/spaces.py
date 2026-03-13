@@ -23,6 +23,7 @@ from backend.models import (
     StarToggleRequest,
     ScanResult,
     ScoreBreakdown,
+    CriterionResult,
     FixRequest,
 )
 
@@ -154,6 +155,7 @@ async def trigger_scan(space_id: str) -> ScanResult:
             score=scan_data["score"],
             maturity=scan_data["maturity"],
             breakdown=ScoreBreakdown(**scan_data["breakdown"]),
+            criteria_results=[CriterionResult(**cr) for cr in scan_data.get("criteria_results", [])],
             findings=scan_data.get("findings", []),
             next_steps=scan_data.get("next_steps", []),
             scanned_at=scan_data["scanned_at"],

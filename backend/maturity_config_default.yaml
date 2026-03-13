@@ -1,0 +1,188 @@
+# Genie Space Maturity Curve — Default Configuration
+#
+# This is the default scoring config shipped with the Workbench.
+# Admins can override any part via the Admin Settings UI.
+# See docs/genie-space-maturity.md for the full framework.
+#
+# How it works:
+#   - Each criterion has a registered check function in the scanner (keyed by id).
+#   - Admins can adjust: enabled, points, scale thresholds, and stage ranges.
+#   - Adding new check functions requires a code change in scanner.py.
+
+version: 1
+
+stages:
+  - name: Nascent
+    range: [0, 29]
+    key_question: "Can Genie see my data?"
+    description: "Tables attached but minimal configuration. Answers are unpredictable."
+
+  - name: Basic
+    range: [30, 49]
+    key_question: "Does Genie understand my domain?"
+    description: "Some instructions and table descriptions. Genie is starting to understand context."
+
+  - name: Developing
+    range: [50, 69]
+    key_question: "Does Genie speak my language?"
+    description: "Instructions, sample questions, and joins defined. Genie understands the domain."
+
+  - name: Proficient
+    range: [70, 84]
+    key_question: "Are Genie's answers consistent?"
+    description: "Trusted SQL queries and expressions added. Reliable, metrics-accurate answers."
+
+  - name: Optimized
+    range: [85, 100]
+    key_question: "Is Genie ready for everyone?"
+    description: "Full SQL coverage, benchmarks, and feedback loops. Production-grade self-service."
+
+criteria:
+  # --- Nascent stage ---
+  - id: tables_attached
+    stage: Nascent
+    type: boolean
+    points: 10
+    enabled: true
+    description: "At least one table is attached to the space"
+
+  - id: table_count
+    stage: Nascent
+    type: count
+    points: 10
+    enabled: true
+    description: "Number of tables attached (2-10 ideal range)"
+    scale:
+      min: 1
+      target: 5
+      max: 10
+
+  - id: columns_exist
+    stage: Nascent
+    type: boolean
+    points: 5
+    enabled: true
+    description: "Tables have columns defined"
+
+  # --- Basic stage ---
+  - id: instructions_defined
+    stage: Basic
+    type: boolean
+    points: 5
+    enabled: true
+    description: "General text instructions are set for the space"
+
+  - id: table_descriptions
+    stage: Basic
+    type: boolean
+    points: 5
+    enabled: true
+    description: "Tables have descriptions or comments"
+
+  - id: column_descriptions
+    stage: Basic
+    type: count
+    points: 5
+    enabled: true
+    description: "Proportion of columns with descriptions"
+    scale:
+      min: 0.0
+      target: 0.8
+      max: 1.0
+
+  # --- Developing stage ---
+  - id: instruction_quality
+    stage: Developing
+    type: count
+    points: 5
+    enabled: true
+    description: "Text instructions have meaningful content (>50 chars)"
+    scale:
+      min: 0
+      target: 2
+      max: 5
+
+  - id: sample_questions
+    stage: Developing
+    type: count
+    points: 5
+    enabled: true
+    description: "Number of example SQL questions defined"
+    scale:
+      min: 0
+      target: 5
+      max: 10
+
+  - id: joins_defined
+    stage: Developing
+    type: boolean
+    points: 5
+    enabled: true
+    description: "Join specifications configured for multi-table spaces"
+
+  - id: filter_snippets
+    stage: Developing
+    type: boolean
+    points: 5
+    enabled: true
+    description: "Filter snippets defined for common business segments"
+
+  # --- Proficient stage ---
+  - id: trusted_sql_queries
+    stage: Proficient
+    type: count
+    points: 10
+    enabled: true
+    description: "Number of example SQL queries"
+    scale:
+      min: 0
+      target: 10
+      max: 20
+
+  - id: expressions_defined
+    stage: Proficient
+    type: count
+    points: 5
+    enabled: true
+    description: "SQL expressions and measures for business metrics"
+    scale:
+      min: 0
+      target: 3
+      max: 10
+
+  - id: unity_catalog
+    stage: Proficient
+    type: boolean
+    points: 7
+    enabled: true
+    description: "All tables use fully-qualified Unity Catalog names"
+
+  # --- Optimized stage ---
+  - id: benchmark_questions
+    stage: Optimized
+    type: count
+    points: 8
+    enabled: true
+    description: "Benchmark questions for accuracy tracking"
+    scale:
+      min: 0
+      target: 10
+      max: 20
+
+  - id: sql_coverage
+    stage: Optimized
+    type: count
+    points: 5
+    enabled: true
+    description: "Breadth of SQL examples covering diverse patterns"
+    scale:
+      min: 0
+      target: 15
+      max: 30
+
+  - id: sql_functions
+    stage: Optimized
+    type: boolean
+    points: 5
+    enabled: true
+    description: "Custom SQL functions for complex business logic"

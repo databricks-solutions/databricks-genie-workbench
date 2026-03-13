@@ -20,7 +20,7 @@
 **CUJ 1: Quick Health Check (2 min)**
 > "Is my Genie Space in good shape?"
 
-Space List → click space → "Run IQ Scan" → see score (0-100), maturity label (Nascent / Basic / Developing / Proficient / Optimized), 4-dimension score breakdown, findings, and ranked next steps.
+Space List → click space → "Run IQ Scan" → see score (0-100), maturity level (Nascent / Basic / Developing / Proficient / Optimized), per-stage score breakdown, criteria results, and ranked next steps.
 
 **CUJ 2: Deep Analysis (5-15 min)**
 > "What specifically is wrong and why?"

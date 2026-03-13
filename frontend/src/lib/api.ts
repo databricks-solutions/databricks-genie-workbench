@@ -31,6 +31,7 @@ import type {
   UcTable,
   ValidateConfigResponse,
   CreateWizardSpaceResponse,
+  MaturityConfig,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -694,6 +695,26 @@ export function streamAgentChat(
     })
 
   return () => abortController.abort()
+}
+
+// ── Maturity Config ──────────────────────────────────────────────────────────
+
+export async function getMaturityConfig(): Promise<{ active: MaturityConfig; default: MaturityConfig }> {
+  return fetchWithTimeout(`${API_BASE}/admin/maturity-config`, {}, DEFAULT_TIMEOUT)
+}
+
+export async function updateMaturityConfig(config: Record<string, unknown>): Promise<{ status: string; active: MaturityConfig }> {
+  return fetchWithTimeout(`${API_BASE}/admin/maturity-config`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ config }),
+  }, DEFAULT_TIMEOUT)
+}
+
+export async function resetMaturityConfig(): Promise<{ status: string; active: MaturityConfig }> {
+  return fetchWithTimeout(`${API_BASE}/admin/maturity-config/reset`, {
+    method: "POST",
+  }, DEFAULT_TIMEOUT)
 }
 
 export { ApiError }

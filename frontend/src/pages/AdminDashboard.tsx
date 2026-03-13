@@ -2,10 +2,13 @@
  * AdminDashboard - Org-wide statistics, leaderboard, and critical alerts.
  */
 import { useState, useEffect } from "react"
-import { TrendingUp, TrendingDown, AlertTriangle, Award, BarChart2, RefreshCw } from "lucide-react"
+import { TrendingUp, TrendingDown, AlertTriangle, Award, BarChart2, RefreshCw, Settings } from "lucide-react"
 import { getAdminDashboard, getLeaderboard, getAlerts } from "@/lib/api"
 import { getScoreColor } from "@/lib/utils"
+import { MaturityConfigEditor } from "@/pages/MaturityConfigEditor"
 import type { AdminDashboardStats, LeaderboardEntry, AlertItem } from "@/types"
+
+type AdminTab = "overview" | "config"
 
 interface AdminDashboardProps {
   onSelectSpace?: (spaceId: string, displayName: string) => void
@@ -29,6 +32,7 @@ function ScoreBadge({ score }: { score: number }) {
 }
 
 export function AdminDashboard({ onSelectSpace }: AdminDashboardProps) {
+  const [tab, setTab] = useState<AdminTab>("overview")
   const [stats, setStats] = useState<AdminDashboardStats | null>(null)
   const [leaderboard, setLeaderboard] = useState<{ top: LeaderboardEntry[]; bottom: LeaderboardEntry[] } | null>(null)
   const [alerts, setAlerts] = useState<AlertItem[]>([])
@@ -84,14 +88,47 @@ export function AdminDashboard({ onSelectSpace }: AdminDashboardProps) {
           <h2 className="text-2xl font-display font-bold text-primary">Admin Dashboard</h2>
           <p className="text-muted mt-1">Org-wide Genie Space health</p>
         </div>
-        <button onClick={loadData} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-default bg-surface hover:bg-surface-secondary text-sm text-secondary transition-colors">
-          <RefreshCw className="w-4 h-4" />
-          Refresh
+        <div className="flex items-center gap-2">
+          {tab === "overview" && (
+            <button onClick={loadData} className="flex items-center gap-2 px-3 py-2 rounded-lg border border-default bg-surface hover:bg-surface-secondary text-sm text-secondary transition-colors">
+              <RefreshCw className="w-4 h-4" />
+              Refresh
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex items-center gap-1 border-b border-default">
+        <button
+          onClick={() => setTab("overview")}
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            tab === "overview"
+              ? "border-accent text-accent"
+              : "border-transparent text-muted hover:text-secondary"
+          }`}
+        >
+          <BarChart2 className="w-4 h-4" />
+          Overview
+        </button>
+        <button
+          onClick={() => setTab("config")}
+          className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
+            tab === "config"
+              ? "border-accent text-accent"
+              : "border-transparent text-muted hover:text-secondary"
+          }`}
+        >
+          <Settings className="w-4 h-4" />
+          Scoring Config
         </button>
       </div>
 
-      {/* Stats */}
-      {stats && (
+      {/* Config tab */}
+      {tab === "config" && <MaturityConfigEditor />}
+
+      {/* Overview tab - Stats */}
+      {tab === "overview" && stats && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard label="Total Spaces" value={stats.total_spaces} icon={<BarChart2 className="w-4 h-4" />} />
           <StatCard label="Scanned" value={stats.scanned_spaces} sub={`${stats.total_spaces > 0 ? Math.round(stats.scanned_spaces / stats.total_spaces * 100) : 0}% coverage`} icon={<BarChart2 className="w-4 h-4" />} />
@@ -101,7 +138,7 @@ export function AdminDashboard({ onSelectSpace }: AdminDashboardProps) {
       )}
 
       {/* Maturity distribution */}
-      {stats && Object.keys(stats.maturity_distribution).length > 0 && (
+      {tab === "overview" && stats && Object.keys(stats.maturity_distribution).length > 0 && (
         <div className="bg-surface border border-default rounded-xl p-5">
           <h3 className="text-sm font-semibold text-secondary uppercase tracking-wide mb-4">Maturity Distribution</h3>
           <div className="space-y-2">
@@ -124,7 +161,7 @@ export function AdminDashboard({ onSelectSpace }: AdminDashboardProps) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      {tab === "overview" && <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Leaderboard */}
         {leaderboard && (
           <div className="bg-surface border border-default rounded-xl p-5">
@@ -195,7 +232,7 @@ export function AdminDashboard({ onSelectSpace }: AdminDashboardProps) {
             </div>
           </div>
         )}
-      </div>
+      </div>}
     </div>
   )
 }

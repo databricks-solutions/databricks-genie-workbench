@@ -1,199 +1,297 @@
-"""IQ scoring engine for Genie Space configurations."""
+"""Config-driven scoring engine for Genie Space maturity.
+
+Criteria check functions are registered by ID. The maturity config
+(YAML default + admin overrides) controls which criteria are active,
+their point weights, and stage thresholds.
+"""
 
 import logging
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
-from backend.services.genie_client import get_genie_space, get_serialized_space
-from backend.services.lakebase import save_scan_result, get_latest_score
+from backend.services.genie_client import get_serialized_space
+from backend.services.lakebase import save_scan_result
+from backend.services.maturity_config import get_active_config
 
 logger = logging.getLogger(__name__)
 
-# Maturity levels based on score
-MATURITY_LEVELS = [
-    (85, "Optimized"),
-    (70, "Proficient"),
-    (50, "Developing"),
-    (30, "Basic"),
-    (0, "Nascent"),
-]
+# Type for a criterion check function.
+# Takes space_data dict, returns:
+#   - bool for boolean criteria (pass/fail)
+#   - float for count criteria (raw value, scaled by config)
+CheckFn = Callable[[dict], bool | float]
+
+# --- Criterion check functions (keyed by criterion id) ---
+
+_CHECKS: dict[str, CheckFn] = {}
 
 
-def get_maturity_label(score: int) -> str:
-    """Return maturity label for a given score (0-100)."""
-    for threshold, label in MATURITY_LEVELS:
-        if score >= threshold:
-            return label
-    return "Nascent"
+def _register(criterion_id: str):
+    """Decorator to register a check function for a criterion ID."""
+    def decorator(fn: CheckFn) -> CheckFn:
+        _CHECKS[criterion_id] = fn
+        return fn
+    return decorator
 
 
-def calculate_score(space_data: dict) -> dict:
-    """Calculate IQ score for a Genie Space configuration.
+# Nascent stage checks
 
-    Returns a dict with:
-        - score: int (0-100)
-        - maturity: str
-        - breakdown: dict with dimension scores
-        - findings: list of finding strings
-        - next_steps: list of recommended actions
+@_register("tables_attached")
+def _tables_attached(space: dict) -> bool:
+    return len(space.get("data_sources", {}).get("tables", [])) > 0
+
+
+@_register("table_count")
+def _table_count(space: dict) -> float:
+    return float(len(space.get("data_sources", {}).get("tables", [])))
+
+
+@_register("columns_exist")
+def _columns_exist(space: dict) -> bool:
+    tables = space.get("data_sources", {}).get("tables", [])
+    return any(len(t.get("columns", [])) > 0 for t in tables)
+
+
+# Basic / Developing stage checks
+
+@_register("instructions_defined")
+def _instructions_defined(space: dict) -> bool:
+    return len(space.get("instructions", {}).get("text_instructions", [])) > 0
+
+
+@_register("instruction_quality")
+def _instruction_quality(space: dict) -> float:
+    texts = space.get("instructions", {}).get("text_instructions", [])
+    return float(sum(1 for t in texts if len(t.get("content", "")) > 50))
+
+
+@_register("sample_questions")
+def _sample_questions(space: dict) -> float:
+    return float(len(space.get("instructions", {}).get("example_question_sqls", [])))
+
+
+@_register("joins_defined")
+def _joins_defined(space: dict) -> bool:
+    return len(space.get("instructions", {}).get("join_specs", [])) > 0
+
+
+@_register("column_descriptions")
+def _column_descriptions(space: dict) -> float:
+    tables = space.get("data_sources", {}).get("tables", [])
+    total_cols = 0
+    described_cols = 0
+    for t in tables:
+        for col in t.get("columns", []):
+            total_cols += 1
+            if col.get("description") or col.get("comment"):
+                described_cols += 1
+    return described_cols / total_cols if total_cols > 0 else 0.0
+
+
+# Proficient stage checks
+
+@_register("trusted_sql_queries")
+def _trusted_sql_queries(space: dict) -> float:
+    return float(len(space.get("instructions", {}).get("example_question_sqls", [])))
+
+
+@_register("filter_snippets")
+def _filter_snippets(space: dict) -> bool:
+    return len(space.get("instructions", {}).get("sql_snippets", {}).get("filters", [])) > 0
+
+
+@_register("expressions_defined")
+def _expressions_defined(space: dict) -> float:
+    snippets = space.get("instructions", {}).get("sql_snippets", {})
+    return float(
+        len(snippets.get("expressions", []))
+        + len(snippets.get("measures", []))
+    )
+
+
+@_register("table_descriptions")
+def _table_descriptions(space: dict) -> bool:
+    tables = space.get("data_sources", {}).get("tables", [])
+    return any(t.get("description") or t.get("comment") for t in tables)
+
+
+# Optimized stage checks
+
+@_register("benchmark_questions")
+def _benchmark_questions(space: dict) -> float:
+    return float(len(space.get("benchmarks", {}).get("questions", [])))
+
+
+@_register("sql_coverage")
+def _sql_coverage(space: dict) -> float:
+    return float(len(space.get("instructions", {}).get("example_question_sqls", [])))
+
+
+@_register("unity_catalog")
+def _unity_catalog(space: dict) -> bool:
+    tables = space.get("data_sources", {}).get("tables", [])
+    if not tables:
+        return False
+    return all(
+        len(t.get("table_name", "").split(".")) == 3 or t.get("catalog")
+        for t in tables
+    )
+
+
+@_register("sql_functions")
+def _sql_functions(space: dict) -> bool:
+    return len(space.get("instructions", {}).get("sql_functions", [])) > 0
+
+
+# --- Scoring engine ---
+
+
+def _scale_count(value: float, scale: dict) -> float:
+    """Scale a count value to 0.0-1.0 based on config scale thresholds."""
+    target = scale.get("target", 1)
+    if target <= 0:
+        return 1.0 if value > 0 else 0.0
+    return min(value / target, 1.0)
+
+
+def get_maturity_stage(score: int, stages: list[dict]) -> str:
+    """Return the maturity stage name for a given score."""
+    for stage in reversed(stages):
+        low = stage["range"][0]
+        if score >= low:
+            return stage["name"]
+    return stages[0]["name"] if stages else "Unknown"
+
+
+def calculate_score(space_data: dict, config: dict) -> dict:
+    """Calculate maturity score using the provided config.
+
+    Returns a dict with score, maturity stage, breakdown by stage,
+    per-criterion results, findings, and next_steps.
     """
-    breakdown = {
-        "foundation": 0,
-        "data_setup": 0,
-        "sql_assets": 0,
-        "optimization": 0,
-    }
+    stages = config.get("stages", [])
+    criteria = config.get("criteria", [])
+
+    # Track points by stage
+    stage_points: dict[str, int] = {}
+    for stage in stages:
+        stage_points[stage["name"]] = 0
+
+    criteria_results = []
     findings = []
     next_steps = []
 
-    # --- Foundation (30 pts) ---
-    tables = space_data.get("data_sources", {}).get("tables", [])
+    for criterion in criteria:
+        if not criterion.get("enabled", True):
+            continue
 
-    if tables:
-        breakdown["foundation"] += 15
-    else:
-        findings.append("No tables configured")
-        next_steps.append("Add at least one table to your Genie Space")
+        cid = criterion["id"]
+        stage = criterion["stage"]
+        ctype = criterion["type"]
+        max_points = criterion["points"]
+        description = criterion["description"]
 
-    if tables:
-        tables_with_desc = [t for t in tables if t.get("description") or t.get("comment")]
-        if tables_with_desc:
-            breakdown["foundation"] += 10
+        check_fn = _CHECKS.get(cid)
+        if check_fn is None:
+            logger.warning("No check function registered for criterion: %s", cid)
+            continue
+
+        try:
+            result = check_fn(space_data)
+        except Exception as e:
+            logger.warning("Check %s failed: %s", cid, e)
+            result = False if ctype == "boolean" else 0.0
+
+        if ctype == "boolean":
+            passed = bool(result)
+            points = max_points if passed else 0
+            criteria_results.append({
+                "id": cid,
+                "stage": stage,
+                "description": description,
+                "passed": passed,
+                "value": None,
+                "points_earned": points,
+                "points_possible": max_points,
+            })
+            if not passed:
+                findings.append(f"Missing: {description}")
+                next_steps.append(description)
         else:
-            findings.append("Tables have no descriptions")
-            next_steps.append("Add descriptions to your tables to help Genie understand context")
+            # Count type — scale value
+            raw_value = float(result)
+            scale = criterion.get("scale", {"target": 1})
+            ratio = _scale_count(raw_value, scale)
+            points = round(max_points * ratio)
+            passed = points > 0
+            criteria_results.append({
+                "id": cid,
+                "stage": stage,
+                "description": description,
+                "passed": passed,
+                "value": raw_value,
+                "points_earned": points,
+                "points_possible": max_points,
+            })
+            if ratio < 1.0:
+                target = scale.get("target", 1)
+                findings.append(f"Below target: {description} ({raw_value:.0f}/{target})")
+                next_steps.append(f"Improve: {description}")
 
-        # Check column descriptions
-        has_col_descs = any(
-            any(col.get("description") or col.get("comment")
-                for col in t.get("columns", []))
-            for t in tables
-        )
-        if has_col_descs:
-            breakdown["foundation"] += 5
-        else:
-            findings.append("Columns have no descriptions")
-            next_steps.append("Add column descriptions to improve query accuracy")
+        if stage in stage_points:
+            stage_points[stage] += points
 
-    # --- Data Setup (25 pts) ---
-    # Unity Catalog check (catalog.schema.table format)
-    if tables:
-        uc_tables = [t for t in tables if len(t.get("table_name", "").split(".")) == 3
-                     or t.get("catalog")]
-        if uc_tables:
-            breakdown["data_setup"] += 10
-        else:
-            findings.append("Tables may not be using Unity Catalog")
-            next_steps.append("Use fully-qualified Unity Catalog table names (catalog.schema.table)")
+    total_score = sum(stage_points.values())
+    # Cap at 100
+    total_score = min(total_score, 100)
 
-        table_count = len(tables)
-        if 2 <= table_count <= 10:
-            breakdown["data_setup"] += 8
-        elif table_count == 1:
-            findings.append("Only 1 table configured - consider adding related tables")
-            next_steps.append("Add 2-5 related tables for better cross-table query capability")
-        elif table_count > 10:
-            findings.append("More than 10 tables may reduce Genie accuracy")
-            next_steps.append("Consider reducing to the most relevant 5-10 tables")
+    maturity = get_maturity_stage(total_score, stages)
 
-    filter_snippets = space_data.get("instructions", {}).get("sql_snippets", {}).get("filters", [])
-    if filter_snippets:
-        breakdown["data_setup"] += 7
-    else:
-        findings.append("No filter snippets defined")
-        next_steps.append("Add filter snippets for common time ranges and business segments")
-
-    # --- SQL Assets (25 pts) ---
-    example_sqls = space_data.get("instructions", {}).get("example_question_sqls", [])
-    if example_sqls:
-        breakdown["sql_assets"] += 10
-        if len(example_sqls) >= 3:
-            breakdown["sql_assets"] += 8
-        else:
-            findings.append(f"Only {len(example_sqls)} SQL example(s) - add at least 3")
-            next_steps.append("Add at least 3 example SQL questions covering diverse query patterns")
-    else:
-        findings.append("No example SQL questions configured")
-        next_steps.append("Add example SQL questions to teach Genie complex query patterns")
-
-    sql_functions = space_data.get("instructions", {}).get("sql_functions", [])
-    expressions = space_data.get("instructions", {}).get("sql_snippets", {}).get("expressions", [])
-    measures = space_data.get("instructions", {}).get("sql_snippets", {}).get("measures", [])
-
-    if sql_functions or expressions or measures:
-        breakdown["sql_assets"] += 7
-    else:
-        findings.append("No SQL functions, expressions, or measures configured")
-        next_steps.append("Add SQL functions or expression snippets for complex business logic")
-
-    # --- Optimization (20 pts) ---
-    benchmarks = space_data.get("benchmarks", {}).get("questions", [])
-    if benchmarks:
-        breakdown["optimization"] += 8
-    else:
-        findings.append("No benchmark questions configured")
-        next_steps.append("Add benchmark questions to measure and track Genie accuracy")
-
-    text_instructions = space_data.get("instructions", {}).get("text_instructions", [])
-    if text_instructions:
-        # Check if they have meaningful content
-        meaningful = [t for t in text_instructions if len(t.get("content", "")) > 50]
-        if meaningful:
-            breakdown["optimization"] += 7
-        else:
-            findings.append("Text instructions are too brief")
-            next_steps.append("Expand text instructions with business context and terminology")
-    else:
-        findings.append("No text instructions configured")
-        next_steps.append("Add text instructions to explain business context and terminology")
-
-    join_specs = space_data.get("instructions", {}).get("join_specs", [])
-    if join_specs:
-        breakdown["optimization"] += 5
-    else:
-        if len(tables) > 1:
-            findings.append("No join specifications for multi-table space")
-            next_steps.append("Add join specifications to help Genie correctly join your tables")
-
-    total_score = sum(breakdown.values())
-    maturity = get_maturity_label(total_score)
+    breakdown = {
+        "nascent": stage_points.get("Nascent", 0),
+        "basic": stage_points.get("Basic", 0),
+        "developing": stage_points.get("Developing", 0),
+        "proficient": stage_points.get("Proficient", 0),
+        "optimized": stage_points.get("Optimized", 0),
+    }
 
     return {
         "score": total_score,
         "maturity": maturity,
         "breakdown": breakdown,
-        "findings": findings[:5],  # Top 5 findings
-        "next_steps": next_steps[:5],  # Top 5 next steps
+        "criteria_results": criteria_results,
+        "findings": findings[:5],
+        "next_steps": next_steps[:5],
         "scanned_at": datetime.utcnow().isoformat(),
     }
 
 
 async def scan_space(space_id: str, user_token: Optional[str] = None) -> dict:
-    """Fetch space config, calculate IQ score, and persist to Lakebase.
+    """Fetch space config, calculate score using active maturity config, persist.
 
     Args:
         space_id: The Genie Space ID
-        user_token: Optional user token for OBO auth (not used directly, SDK handles this)
+        user_token: Optional user token for OBO auth
 
     Returns:
-        ScanResult dict with score, maturity, breakdown, findings, next_steps
+        Scan result dict with score, maturity, breakdown, criteria_results, findings, next_steps
     """
-    logger.info(f"Scanning space: {space_id}")
+    logger.info("Scanning space: %s", space_id)
 
     try:
         space_data = get_serialized_space(space_id)
     except Exception as e:
-        logger.error(f"Failed to fetch space {space_id}: {e}")
+        logger.error("Failed to fetch space %s: %s", space_id, e)
         raise ValueError(f"Cannot scan space {space_id}: {e}")
 
-    scan_result = calculate_score(space_data)
+    config = await get_active_config()
+    scan_result = calculate_score(space_data, config)
     scan_result["space_id"] = space_id
 
-    # Persist to Lakebase
     try:
         await save_scan_result(space_id, scan_result)
-        logger.info(f"Scan result saved for {space_id}: score={scan_result['score']}")
+        logger.info("Scan result saved for %s: score=%s", space_id, scan_result["score"])
     except Exception as e:
-        logger.warning(f"Failed to persist scan result for {space_id}: {e}")
+        logger.warning("Failed to persist scan result for %s: %s", space_id, e)
 
     return scan_result

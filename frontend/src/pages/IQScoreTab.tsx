@@ -63,10 +63,11 @@ export function IQScoreTab({ scanResult, onScan, isScanning, spaceId, spaceConfi
       <div className="bg-surface border border-default rounded-xl p-5">
         <h3 className="text-sm font-semibold text-secondary uppercase tracking-wide mb-4">Score Breakdown</h3>
         <div className="space-y-4">
-          <DimensionBar label="Foundation" score={breakdown.foundation} max={30} color="bg-blue-500" />
-          <DimensionBar label="Data Setup" score={breakdown.data_setup} max={25} color="bg-emerald-500" />
-          <DimensionBar label="SQL Assets" score={breakdown.sql_assets} max={25} color="bg-purple-500" />
-          <DimensionBar label="Optimization" score={breakdown.optimization} max={20} color="bg-amber-500" />
+          <DimensionBar label="Nascent" score={breakdown.nascent} max={25} color="bg-red-500" />
+          <DimensionBar label="Basic" score={breakdown.basic} max={15} color="bg-orange-500" />
+          <DimensionBar label="Developing" score={breakdown.developing} max={20} color="bg-yellow-500" />
+          <DimensionBar label="Proficient" score={breakdown.proficient} max={22} color="bg-blue-500" />
+          <DimensionBar label="Optimized" score={breakdown.optimized} max={18} color="bg-emerald-500" />
         </div>
       </div>
 
