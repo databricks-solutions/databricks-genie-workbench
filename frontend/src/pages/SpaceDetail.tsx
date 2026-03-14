@@ -1,18 +1,15 @@
 /**
  * SpaceDetail - Unified 4-tab detail view for a Genie Space.
- * Tabs: Score | Analysis | Optimize | History
+ * Tabs: Overview | Score | Optimize | History
  */
 import { useState, useEffect } from "react"
-import { ArrowLeft, Star, RefreshCw, Zap, Eye, BarChart2, Brain, Settings2, Clock, ExternalLink } from "lucide-react"
-import { scanSpace, toggleStar, getSpaceHistory } from "@/lib/api"
+import { ArrowLeft, Star, Eye, BarChart2, Settings2, Clock, ExternalLink } from "lucide-react"
+import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail } from "@/lib/api"
 import { getScoreColor } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint } from "@/types"
 import { IQScoreTab } from "./IQScoreTab"
 import { HistoryTab } from "./HistoryTab"
-// GenieRx components used in Analysis/Optimize tabs
-import { IngestPhase } from "@/components/IngestPhase"
-import { AnalysisPhase } from "@/components/AnalysisPhase"
-import { SummaryPhase } from "@/components/SummaryPhase"
+// Optimization components
 import { BenchmarksPage } from "@/components/BenchmarksPage"
 import { LabelingPage } from "@/components/LabelingPage"
 import { FeedbackPage } from "@/components/FeedbackPage"
@@ -21,7 +18,7 @@ import { PreviewPage } from "@/components/PreviewPage"
 import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
 
-type Tab = "overview" | "score" | "analysis" | "optimize" | "history"
+type Tab = "overview" | "score" | "optimize" | "history"
 
 interface SpaceDetailProps {
   spaceId: string
@@ -39,10 +36,29 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
 
   const { state, actions } = useAnalysis()
 
+  // Load space data + persisted score on mount
   useEffect(() => {
-    // Preload the space in the analysis hook
     if (spaceId) {
       actions.handleFetchSpace(spaceId)
+
+      // Load latest persisted scan result
+      getSpaceDetail(spaceId)
+        .then((detail) => {
+          setIsStarred(detail.is_starred)
+          if (detail.scan_result) {
+            setScanResult({
+              space_id: spaceId,
+              score: detail.scan_result.score,
+              maturity: detail.scan_result.maturity,
+              breakdown: detail.scan_result.breakdown,
+              checks: detail.scan_result.checks ?? {},
+              findings: detail.scan_result.findings ?? [],
+              next_steps: detail.scan_result.next_steps ?? [],
+              scanned_at: detail.scan_result.scanned_at ?? "",
+            })
+          }
+        })
+        .catch((e) => console.error("Failed to load space detail:", e))
     }
   }, [spaceId])
 
@@ -77,7 +93,6 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "overview", label: "Overview", icon: <Eye className="w-4 h-4" /> },
     { id: "score", label: "Score", icon: <BarChart2 className="w-4 h-4" /> },
-    { id: "analysis", label: "Analysis", icon: <Brain className="w-4 h-4" /> },
     { id: "optimize", label: "Optimize", icon: <Settings2 className="w-4 h-4" /> },
     { id: "history", label: "History", icon: <Clock className="w-4 h-4" /> },
   ]
@@ -113,14 +128,6 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
             ) : (
               <span className="text-muted text-sm">Not scanned yet</span>
             )}
-            <button
-              onClick={handleScan}
-              disabled={isScanning}
-              className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-default hover:border-accent/40 hover:text-accent text-muted transition-colors disabled:opacity-50 ml-2"
-            >
-              {isScanning ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
-              {isScanning ? "Scanning..." : "Run IQ Scan"}
-            </button>
           </div>
           {spaceUrl ? (
             <a
@@ -170,61 +177,6 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
             spaceId={spaceId}
             spaceConfig={state.spaceData ?? undefined}
           />
-        )}
-
-        {activeTab === "analysis" && (
-          <div className="space-y-4">
-            {(state.phase === "input" || state.phase === "ingest") && !state.spaceData ? (
-              <div className="text-center py-12 text-muted">
-                {state.isLoading ? (
-                  <><RefreshCw className="w-8 h-8 mx-auto mb-3 animate-spin opacity-40" /><p>Loading space configuration...</p></>
-                ) : state.error ? (
-                  <p className="text-red-400">{state.error}</p>
-                ) : (
-                  <p>Space data unavailable.</p>
-                )}
-              </div>
-            ) : (state.phase === "input" || state.phase === "ingest") ? (
-              <IngestPhase
-                genieSpaceId={spaceId}
-                spaceData={state.spaceData!}
-                sections={state.sections}
-                sectionAnalyses={state.sectionAnalyses}
-                isLoading={state.isLoading}
-                analysisProgress={state.analysisProgress}
-                selectedSections={state.selectedSections}
-                onToggleSectionSelection={actions.toggleSectionSelection}
-                onSelectAllSections={actions.selectAllSections}
-                onDeselectAllSections={actions.deselectAllSections}
-                onAnalyzeAllSections={actions.analyzeAllSections}
-                onGoToSection={actions.goToSection}
-              />
-            ) : state.phase === "analysis" ? (
-              <AnalysisPhase
-                genieSpaceId={spaceId}
-                sections={state.sections}
-                sectionAnalyses={state.sectionAnalyses}
-                analysisViewIndex={state.analysisViewIndex}
-                isLoading={state.isLoading}
-                error={state.error}
-                onAnalyzeSection={actions.analyzeCurrentSection}
-                onSetAnalysisViewIndex={actions.setAnalysisViewIndex}
-                onGoToSummary={actions.goToSummary}
-              />
-            ) : (
-              <SummaryPhase
-                genieSpaceId={spaceId}
-                sectionAnalyses={state.sectionAnalyses}
-                selectedSections={state.selectedSections}
-                expandedSections={state.expandedSections}
-                onToggleSection={actions.toggleSectionExpanded}
-                onExpandAll={actions.expandAllSections}
-                onCollapseAll={actions.collapseAllSections}
-                synthesis={state.synthesis}
-                isFullAnalysis={state.isFullAnalysis}
-              />
-            )}
-          </div>
         )}
 
         {activeTab === "optimize" && (

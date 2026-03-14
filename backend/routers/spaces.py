@@ -1,5 +1,6 @@
 """Spaces router - org-wide Genie Space listing with IQ scoring."""
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -14,6 +15,7 @@ from backend.services.lakebase import (
     get_score_history,
     star_space,
     get_starred_spaces,
+    is_space_starred,
     get_all_scan_summaries,
 )
 from backend.services.scanner import scan_space
@@ -129,14 +131,16 @@ async def get_space_detail(space_id: str) -> dict:
             else:
                 raise
 
-        # Get latest score
-        score_data = await get_latest_score(space_id)
-        starred_ids = await get_starred_spaces()
+        # Get latest score and star status concurrently
+        score_data, starred = await asyncio.gather(
+            get_latest_score(space_id),
+            is_space_starred(space_id),
+        )
 
         return {
             "space": space,
             "scan_result": score_data,
-            "is_starred": space_id in set(starred_ids),
+            "is_starred": starred,
         }
     except Exception as e:
         logger.exception(f"Failed to get space detail: {e}")
@@ -154,6 +158,7 @@ async def trigger_scan(space_id: str) -> ScanResult:
             score=scan_data["score"],
             maturity=scan_data["maturity"],
             breakdown=ScoreBreakdown(**scan_data["breakdown"]),
+            checks=scan_data.get("checks", {}),
             findings=scan_data.get("findings", []),
             next_steps=scan_data.get("next_steps", []),
             scanned_at=scan_data["scanned_at"],

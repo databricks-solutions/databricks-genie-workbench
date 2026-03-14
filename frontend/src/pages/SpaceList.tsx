@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { Star, RefreshCw, Search, LayoutGrid, AlertTriangle, Zap, Plus, ExternalLink } from "lucide-react"
 import { listSpaces, scanSpace, toggleStar } from "@/lib/api"
-import { getScoreHex } from "@/lib/utils"
+import { getScoreHex, MATURITY_COLORS } from "@/lib/utils"
 import type { SpaceListItem, ScanResult } from "@/types"
 
 interface SpaceListProps {
@@ -15,14 +15,7 @@ interface SpaceListProps {
 function MaturityBadge({ maturity }: { maturity: string | null }) {
   if (!maturity) return <span className="text-xs text-muted">Not scanned</span>
 
-  const colors: Record<string, string> = {
-    Optimized: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
-    Proficient: "bg-blue-500/20 text-blue-400 border-blue-500/30",
-    Developing: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
-    Basic: "bg-orange-500/20 text-orange-400 border-orange-500/30",
-    Nascent: "bg-red-500/20 text-red-400 border-red-500/30",
-  }
-  const cls = colors[maturity] || "bg-surface-secondary text-muted border-default"
+  const cls = MATURITY_COLORS[maturity]?.badge || "bg-surface-secondary text-muted border-default"
   return (
     <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${cls}`}>
       {maturity}

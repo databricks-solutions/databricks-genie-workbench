@@ -4,7 +4,7 @@
 import { useState, useEffect } from "react"
 import { TrendingUp, TrendingDown, AlertTriangle, Award, BarChart2, RefreshCw } from "lucide-react"
 import { getAdminDashboard, getLeaderboard, getAlerts } from "@/lib/api"
-import { getScoreColor } from "@/lib/utils"
+import { getScoreColor, MATURITY_COLORS } from "@/lib/utils"
 import type { AdminDashboardStats, LeaderboardEntry, AlertItem } from "@/types"
 
 interface AdminDashboardProps {
@@ -96,7 +96,7 @@ export function AdminDashboard({ onSelectSpace }: AdminDashboardProps) {
           <StatCard label="Total Spaces" value={stats.total_spaces} icon={<BarChart2 className="w-4 h-4" />} />
           <StatCard label="Scanned" value={stats.scanned_spaces} sub={`${stats.total_spaces > 0 ? Math.round(stats.scanned_spaces / stats.total_spaces * 100) : 0}% coverage`} icon={<BarChart2 className="w-4 h-4" />} />
           <StatCard label="Avg Score" value={stats.avg_score} icon={<TrendingUp className="w-4 h-4" />} />
-          <StatCard label="Critical" value={stats.critical_count} sub="score < 40" icon={<AlertTriangle className="w-4 h-4" />} />
+          <StatCard label="Critical" value={stats.critical_count} sub="score ≤ 20" icon={<AlertTriangle className="w-4 h-4" />} />
         </div>
       )}
 
@@ -107,7 +107,7 @@ export function AdminDashboard({ onSelectSpace }: AdminDashboardProps) {
           <div className="space-y-2">
             {Object.entries(stats.maturity_distribution).sort((a, b) => b[1] - a[1]).map(([label, count]) => {
               const pct = stats.scanned_spaces > 0 ? (count / stats.scanned_spaces) * 100 : 0
-              const color = label === "Optimized" ? "bg-emerald-500" : label === "Proficient" ? "bg-blue-500" : label === "Developing" ? "bg-yellow-500" : label === "Basic" ? "bg-orange-500" : "bg-red-500"
+              const color = MATURITY_COLORS[label]?.bar || "bg-red-500"
               return (
                 <div key={label}>
                   <div className="flex justify-between text-sm mb-1">

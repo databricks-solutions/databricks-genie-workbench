@@ -49,7 +49,7 @@ async def get_dashboard() -> AdminDashboardStats:
 
         scores = [s["score"] for s in scan_summaries]
         avg_score = sum(scores) / len(scores) if scores else 0.0
-        critical_count = sum(1 for s in scores if s < 40)
+        critical_count = sum(1 for s in scores if s <= 20)
 
         maturity_dist: dict[str, int] = {}
         for s in scan_summaries:
@@ -100,7 +100,7 @@ async def get_leaderboard(top_n: int = 5) -> dict:
 
 
 @router.get("/alerts")
-async def get_alerts(score_threshold: int = 40) -> list[AlertItem]:
+async def get_alerts(score_threshold: int = 21) -> list[AlertItem]:
     """Get spaces with critical scores (below threshold)."""
     try:
         all_spaces = _list_genie_spaces_safe()
