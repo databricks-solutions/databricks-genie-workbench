@@ -115,7 +115,7 @@ export type OptimizeView = "benchmarks" | "labeling" | "feedback" | "optimizatio
 
 // ===== GenieIQ / Workbench Types =====
 
-export type MaturityLevel = "Optimized" | "Trusted" | "Calibrated" | "Configured" | "Connected"
+export type MaturityLevel = "Trusted" | "Calibrated" | "Configured" | "Connected"
 
 export interface ScoreBreakdown {
   connected: number    // 0-20
@@ -135,7 +135,7 @@ export interface CheckDetail {
 export interface ScanResult {
   space_id: string
   score: number
-  maturity: MaturityLevel
+  maturity: string
   breakdown: ScoreBreakdown
   checks: Record<string, CheckDetail[]>
   findings: string[]
@@ -147,7 +147,7 @@ export interface SpaceListItem {
   space_id: string
   display_name: string
   score: number | null
-  maturity: MaturityLevel | null
+  maturity: string | null
   is_starred: boolean
   last_scanned: string | null
   space_url: string | null
@@ -192,7 +192,7 @@ export interface LeaderboardEntry {
   space_id: string
   display_name: string
   score: number
-  maturity: MaturityLevel
+  maturity: string
   last_scanned: string | null
 }
 
@@ -205,7 +205,7 @@ export interface AlertItem {
 
 export interface ScoreHistoryPoint {
   score: number
-  maturity: MaturityLevel
+  maturity: string
   scanned_at: string
 }
 

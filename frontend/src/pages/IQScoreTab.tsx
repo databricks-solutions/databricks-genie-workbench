@@ -1,11 +1,12 @@
 /**
- * IQScoreTab - 5 donut rings + expandable check details + recommendations with inline fix agent.
+ * IQScoreTab - Maturity S-curve + side-by-side check columns + recommendations with inline fix agent.
  */
 import { useState, useRef, useEffect } from "react"
-import { Zap, RefreshCw, TrendingUp, Check, X, CheckCircle, AlertCircle, Code2, ChevronDown, ChevronRight, Square } from "lucide-react"
+import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, Code2, ChevronDown, ChevronRight, Square } from "lucide-react"
 import { streamFixAgent } from "@/lib/api"
-import { MATURITY_COLORS } from "@/lib/utils"
-import type { ScanResult, ScoreBreakdown, CheckDetail, FixAgentEvent, FixPatch } from "@/types"
+import { getScoreHex, MATURITY_COLORS } from "@/lib/utils"
+import { MaturityCurve } from "@/components/MaturityCurve"
+import type { ScanResult, CheckDetail, FixAgentEvent, FixPatch } from "@/types"
 
 interface IQScoreTabProps {
   scanResult: ScanResult | null
@@ -15,67 +16,20 @@ interface IQScoreTabProps {
   spaceConfig?: Record<string, unknown>
 }
 
-const TIERS: { key: keyof ScoreBreakdown; label: string }[] = [
-  { key: "connected",  label: "Connected" },
-  { key: "configured", label: "Configured" },
-  { key: "calibrated", label: "Calibrated" },
-  { key: "trusted",    label: "Trusted" },
-  { key: "optimized",  label: "Optimized" },
-]
+/** Ordered tier keys for flattening checks (Connected first → Optimized last). */
+const CHECK_TIER_ORDER = ["connected", "configured", "calibrated", "trusted", "optimized"] as const
 
-function DonutRing({ score, max, color, label, selected, onClick }: {
-  score: number; max: number; color: string; label: string; selected: boolean; onClick: () => void
-}) {
-  const radius = 36
-  const stroke = 6
-  const circumference = 2 * Math.PI * radius
-  const pct = max > 0 ? score / max : 0
-  const dashOffset = circumference * (1 - pct)
-  const size = (radius + stroke) * 2
-
-  return (
-    <button
-      onClick={onClick}
-      className={`flex flex-col items-center gap-2 p-3 rounded-xl transition-all cursor-pointer ${
-        selected ? "bg-surface-secondary ring-2 ring-accent/40 scale-105" : "hover:bg-surface-secondary/50"
-      }`}
-    >
-      <div className="relative" style={{ width: size, height: size }}>
-        <svg className="w-full h-full -rotate-90" viewBox={`0 0 ${size} ${size}`}>
-          <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke="currentColor" strokeWidth={stroke} className="text-surface-secondary" />
-          <circle cx={size/2} cy={size/2} r={radius} fill="none" stroke={color} strokeWidth={stroke}
-            strokeDasharray={circumference} strokeDashoffset={dashOffset} strokeLinecap="round"
-            style={{ transition: "stroke-dashoffset 0.7s ease" }} />
-        </svg>
-        <span className="absolute inset-0 flex items-center justify-center text-lg font-bold text-primary">{score}</span>
-      </div>
-      <span className="text-xs font-medium text-secondary">{label}</span>
-    </button>
-  )
-}
-
-function CheckRow({ check }: { check: CheckDetail }) {
-  return (
-    <div className="flex items-center gap-3 py-2">
-      {check.passed ? (
-        <div className="w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
-          <Check className="w-3 h-3 text-emerald-400" />
-        </div>
-      ) : (
-        <div className="w-5 h-5 rounded-full bg-red-500/20 flex items-center justify-center flex-shrink-0">
-          <X className="w-3 h-3 text-red-400" />
-        </div>
-      )}
-      <span className="flex-1 text-sm text-secondary">{check.label}</span>
-      <span className={`text-sm font-mono font-medium ${check.passed ? "text-emerald-400" : "text-muted"}`}>
-        {check.points}/{check.max_points}
-      </span>
-    </div>
-  )
+/** Map tier key → display label for the color dot. */
+const TIER_LABELS: Record<string, string> = {
+  connected: "Connected",
+  configured: "Configured",
+  calibrated: "Calibrated",
+  trusted: "Trusted",
+  optimized: "Trusted",
 }
 
 export function IQScoreTab({ scanResult, onScan, isScanning, spaceId, spaceConfig }: IQScoreTabProps) {
-  const [selectedTier, setSelectedTier] = useState<string | null>(null)
+  const [checksExpanded, setChecksExpanded] = useState(false)
 
   // Inline fix agent state
   const [fixEvents, setFixEvents] = useState<FixAgentEvent[]>([])
@@ -111,7 +65,6 @@ export function IQScoreTab({ scanResult, onScan, isScanning, spaceId, spaceConfi
           setFixRunning(false)
           if (event.diff?.patches) {
             setFixPatches(event.diff.patches)
-            // Auto-rescan to show improved score
             if (event.diff.patches.length > 0) {
               onScan()
             }
@@ -147,57 +100,116 @@ export function IQScoreTab({ scanResult, onScan, isScanning, spaceId, spaceConfi
     )
   }
 
-  const { breakdown, checks } = scanResult
-  const activeTier = TIERS.find(t => t.key === selectedTier)
-  const activeTierColors = activeTier ? MATURITY_COLORS[activeTier.label] : null
-  const activeChecks = selectedTier && checks?.[selectedTier]?.length ? checks[selectedTier] : []
-  const missingChecks = selectedTier && (!checks || !checks[selectedTier]?.length)
+  // Flatten all checks, split into passed/failed
+  const passedChecks: { check: CheckDetail; tierKey: string }[] = []
+  const failedChecks: { check: CheckDetail; tierKey: string }[] = []
+  for (const key of CHECK_TIER_ORDER) {
+    for (const c of (scanResult.checks?.[key] ?? [])) {
+      ;(c.passed ? passedChecks : failedChecks).push({ check: c, tierKey: key })
+    }
+  }
+  const totalChecks = passedChecks.length + failedChecks.length
+
+  const maturityColors = MATURITY_COLORS[scanResult.maturity]
   const fixAgentActive = fixRunning || fixCompleted || fixError
 
   return (
     <div className="space-y-6">
-      {/* Donut rings */}
+      {/* Maturity Curve */}
       <div className="bg-surface border border-default rounded-xl p-5">
-        <h3 className="text-sm font-semibold text-secondary uppercase tracking-wide mb-4">Score Breakdown</h3>
-        <div className="flex items-start justify-around">
-          {TIERS.map(tier => {
-            const colors = MATURITY_COLORS[tier.label]
-            return (
-              <DonutRing
-                key={tier.key}
-                score={breakdown[tier.key]}
-                max={20}
-                color={colors.hex}
-                label={tier.label}
-                selected={selectedTier === tier.key}
-                onClick={() => setSelectedTier(selectedTier === tier.key ? null : tier.key)}
-              />
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Expanded check details */}
-      {activeTier && activeTierColors && activeChecks.length > 0 && (
-        <div className={`border rounded-xl p-5 ${activeTierColors.bg} ${activeTierColors.border}`}>
-          <h3 className="text-sm font-semibold text-primary mb-3 flex items-center gap-2">
-            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: activeTierColors.hex }} />
-            {activeTier.label} — {breakdown[activeTier.key]}/20
-          </h3>
-          <div className="divide-y divide-default/50">
-            {activeChecks.map((check, i) => <CheckRow key={i} check={check} />)}
+        {/* Score header */}
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-semibold text-secondary uppercase tracking-wide">Maturity Curve</h3>
+          <div className="flex items-center gap-3">
+            {maturityColors && (
+              <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${maturityColors.badge}`}>
+                {scanResult.maturity}
+              </span>
+            )}
+            <span className="text-2xl font-bold" style={{ color: getScoreHex(scanResult.score) }}>
+              {scanResult.score}
+            </span>
           </div>
         </div>
-      )}
 
-      {/* Hint when checks data is missing (old scan) */}
-      {activeTier && activeTierColors && missingChecks && (
-        <div className={`border rounded-xl p-5 ${activeTierColors.bg} ${activeTierColors.border}`}>
-          <p className="text-sm text-muted text-center">
+        {/* S-curve visualization */}
+        <MaturityCurve score={scanResult.score} maturity={scanResult.maturity} optimizationPoints={scanResult.breakdown.optimized} />
+
+        {/* Expandable check list — two columns: passed / not passed */}
+        {totalChecks > 0 && (
+          <div className="mt-3 pt-3 border-t border-default">
+            <button
+              onClick={() => setChecksExpanded(!checksExpanded)}
+              className="flex items-center gap-2 w-full text-left group"
+            >
+              {checksExpanded
+                ? <ChevronDown className="w-4 h-4 text-muted" />
+                : <ChevronRight className="w-4 h-4 text-muted" />
+              }
+              <span className="text-sm font-medium text-secondary group-hover:text-primary transition-colors">
+                {passedChecks.length}/{totalChecks} checks passed — {scanResult.score}/100 points
+              </span>
+            </button>
+
+            {checksExpanded && (
+              <div className="grid grid-cols-2 gap-6 mt-3">
+                {/* Passed column */}
+                <div>
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-500 mb-2">
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    Passed ({passedChecks.length})
+                  </div>
+                  <div className="space-y-0.5">
+                    {passedChecks.map(({ check, tierKey }, i) => {
+                      const color = MATURITY_COLORS[TIER_LABELS[tierKey] ?? "Connected"]?.hex ?? "#6b7280"
+                      return (
+                        <div key={i} className="flex items-center gap-2 py-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+                          <span className="flex-1 text-sm text-secondary truncate">{check.label}</span>
+                          <span className="text-xs font-mono text-emerald-500">{check.points}/{check.max_points}</span>
+                        </div>
+                      )
+                    })}
+                    {passedChecks.length === 0 && (
+                      <p className="text-xs text-muted py-2">No checks passed yet</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Not passed column */}
+                <div>
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-red-400 mb-2">
+                    <AlertCircle className="w-3.5 h-3.5" />
+                    Not Passed ({failedChecks.length})
+                  </div>
+                  <div className="space-y-0.5">
+                    {failedChecks.map(({ check, tierKey }, i) => {
+                      const color = MATURITY_COLORS[TIER_LABELS[tierKey] ?? "Connected"]?.hex ?? "#6b7280"
+                      return (
+                        <div key={i} className="flex items-center gap-2 py-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+                          <span className="flex-1 text-sm text-muted truncate">{check.label}</span>
+                          <span className="text-xs font-mono text-muted">{check.points}/{check.max_points}</span>
+                        </div>
+                      )
+                    })}
+                    {failedChecks.length === 0 && (
+                      <p className="text-xs text-emerald-500 py-2">All checks passed!</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Hint when no check data (old scan) */}
+        {totalChecks === 0 && (
+          <p className="mt-4 text-sm text-muted text-center">
             Check details not available for this scan. Run a new IQ Scan to see individual checks.
           </p>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* Recommendations + inline fix agent */}
       {scanResult.next_steps.length > 0 && (

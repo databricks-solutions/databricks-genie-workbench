@@ -137,7 +137,6 @@ class GenieCreateResponse(BaseModel):
 
 class MaturityLevel(str, Enum):
     """Maturity level for a Genie Space."""
-    OPTIMIZED = "Optimized"
     TRUSTED = "Trusted"
     CALIBRATED = "Calibrated"
     CONFIGURED = "Configured"

@@ -1,7 +1,7 @@
 """IQ scoring engine for Genie Space configurations.
 
-5-tier maturity curve: Connected → Configured → Calibrated → Trusted → Optimized
-14 rules, 100 total points (20 per tier).
+4-tier maturity curve: Connected → Configured → Calibrated → Trusted
+14 rules, 100 total points.
 """
 
 import logging
@@ -13,12 +13,11 @@ from backend.services.lakebase import save_scan_result, get_latest_score, get_la
 
 logger = logging.getLogger(__name__)
 
-# Maturity levels based on score (5 tiers × 20 pts = 100)
+# Maturity levels based on score (4-tier maturity curve)
 MATURITY_LEVELS = [
-    (81, "Optimized"),
-    (61, "Trusted"),
-    (41, "Calibrated"),
-    (21, "Configured"),
+    (76, "Trusted"),
+    (51, "Calibrated"),
+    (26, "Configured"),
     (0, "Connected"),
 ]
 
