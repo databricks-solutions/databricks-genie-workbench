@@ -30,6 +30,12 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   QUEUED: "secondary",
 }
 
+function fmtAccuracy(v: number | null): string {
+  if (v == null) return "—"
+  const n = Number(v)
+  return `${(n > 1 ? n : n * 100).toFixed(0)}%`
+}
+
 export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) {
   const [runs, setRuns] = useState<GSORunSummary[]>([])
   const [loading, setLoading] = useState(true)
@@ -82,9 +88,7 @@ export function RunHistoryTable({ spaceId, onSelectRun }: RunHistoryTableProps) 
                     </Badge>
                   </TableCell>
                   <TableCell className="text-sm">
-                    {run.best_accuracy != null
-                      ? `${(run.best_accuracy * 100).toFixed(0)}%`
-                      : "—"}
+                    {fmtAccuracy(run.best_accuracy)}
                   </TableCell>
                   <TableCell className="text-sm text-muted">
                     {run.triggered_by ?? "—"}

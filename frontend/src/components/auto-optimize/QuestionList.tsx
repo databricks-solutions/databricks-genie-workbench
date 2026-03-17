@@ -1,27 +1,26 @@
 import { useState } from "react"
 import { CheckCircle, XCircle, Search } from "lucide-react"
-import type { GSOQuestionResult } from "@/types"
+import type { GSOQuestionDetail } from "@/types"
 
 interface QuestionListProps {
-  questions: GSOQuestionResult[]
+  questions: GSOQuestionDetail[]
   selectedId: string | null
   onSelect: (id: string) => void
 }
 
 type Filter = "all" | "passing" | "failing"
 
-function isPassing(q: GSOQuestionResult): boolean {
-  return q.failure_type == null || q.failure_type === ""
-}
-
 export function QuestionList({ questions, selectedId, onSelect }: QuestionListProps) {
   const [search, setSearch] = useState("")
   const [filter, setFilter] = useState<Filter>("all")
 
   const filtered = questions.filter((q) => {
-    if (search && !q.question_id.toLowerCase().includes(search.toLowerCase())) return false
-    if (filter === "passing" && !isPassing(q)) return false
-    if (filter === "failing" && isPassing(q)) return false
+    if (search) {
+      const s = search.toLowerCase()
+      if (!q.question.toLowerCase().includes(s) && !q.question_id.toLowerCase().includes(s)) return false
+    }
+    if (filter === "passing" && !q.passed) return false
+    if (filter === "failing" && q.passed) return false
     return true
   })
 
@@ -68,24 +67,30 @@ export function QuestionList({ questions, selectedId, onSelect }: QuestionListPr
           <p className="text-xs text-muted py-4 text-center">No questions match</p>
         ) : (
           filtered.map((q) => {
-            const pass = isPassing(q)
             const isSelected = q.question_id === selectedId
             return (
               <button
-                key={q.question_id + q.judge}
+                key={q.question_id}
                 onClick={() => onSelect(q.question_id)}
-                className={`w-full flex items-start gap-2 px-3 py-2 rounded-lg text-left text-sm transition-colors ${
+                className={`w-full flex items-start gap-2 px-3 py-2.5 rounded-lg text-left transition-colors ${
                   isSelected
                     ? "bg-accent/10 border border-accent/20"
                     : "hover:bg-elevated border border-transparent"
                 }`}
               >
-                {pass ? (
+                {q.passed ? (
                   <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
                 ) : (
                   <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
                 )}
-                <span className="text-primary truncate">{q.question_id}</span>
+                <div className="min-w-0">
+                  <p className="text-sm text-primary truncate leading-snug">
+                    {q.question || q.question_id}
+                  </p>
+                  {q.question && (
+                    <p className="text-xs text-muted truncate mt-0.5">{q.question_id}</p>
+                  )}
+                </div>
               </button>
             )
           })

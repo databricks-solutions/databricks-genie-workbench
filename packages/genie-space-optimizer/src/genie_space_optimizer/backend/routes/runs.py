@@ -1339,28 +1339,44 @@ def _resolve_deployment_status(
 
 
 @router.get("/runs/{run_id}", response_model=PipelineRun, operation_id="getRun")
-def get_run(run_id: str, ws: Dependencies.UserClient, sp_ws: Dependencies.Client, config: Dependencies.Config):
+def get_run(
+    run_id: str,
+    ws: Dependencies.UserClient,
+    sp_ws: Dependencies.Client,
+    config: Dependencies.Config,
+    session: Dependencies.Session,
+):
     """Run status with 5 user-facing pipeline steps and lever detail."""
-    from genie_space_optimizer.optimization.state import (
-        load_iterations,
-        load_patches,
-        load_run,
-        load_stages,
+    from genie_space_optimizer.optimization.state import load_run
+    from ..gso_read_through import (
+        load_iterations_with_fallback,
+        load_patches_with_fallback,
+        load_stages_with_fallback,
     )
 
     spark = get_spark()
+    # Always load run from Delta (authoritative for status)
     run_data = load_run(spark, run_id, config.catalog, config.schema_name)
     if not run_data:
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
 
     run_data = _reconcile_single_run(spark, run_data, sp_ws, config.catalog, config.schema_name)
 
-    stages_df = load_stages(spark, run_id, config.catalog, config.schema_name)
+    # For completed runs, try Lakebase first for stages/iterations/patches
+    is_active = run_data.get("status", "") in ("QUEUED", "IN_PROGRESS")
+
+    stages_df = load_stages_with_fallback(
+        session, spark, run_id, config.catalog, config.schema_name, is_active=is_active,
+    )
     stages_rows = stages_df.to_dict("records") if not stages_df.empty else []
 
-    iters_df = load_iterations(spark, run_id, config.catalog, config.schema_name)
+    iters_df = load_iterations_with_fallback(
+        session, spark, run_id, config.catalog, config.schema_name, is_active=is_active,
+    )
     iters_rows = iters_df.to_dict("records") if not iters_df.empty else []
-    patches_df = load_patches(spark, run_id, config.catalog, config.schema_name)
+    patches_df = load_patches_with_fallback(
+        session, spark, run_id, config.catalog, config.schema_name, is_active=is_active,
+    )
     patches_rows = patches_df.to_dict("records") if not patches_df.empty else []
 
     baseline_iter = next((r for r in iters_rows if r.get("iteration") == 0), None)
@@ -1444,13 +1460,12 @@ def get_comparison(
     ws: Dependencies.UserClient,
     sp_ws: Dependencies.Client,
     config: Dependencies.Config,
+    session: Dependencies.Session,
 ):
     """Side-by-side original vs optimized config with per-dimension scores."""
     from genie_space_optimizer.common.genie_client import fetch_space_config
-    from genie_space_optimizer.optimization.state import (
-        load_iterations,
-        load_run,
-    )
+    from genie_space_optimizer.optimization.state import load_run
+    from ..gso_read_through import load_iterations_with_fallback
 
     spark = get_spark()
     run_data = load_run(spark, run_id, config.catalog, config.schema_name)
@@ -1458,6 +1473,7 @@ def get_comparison(
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
 
     space_id = run_data.get("space_id", "")
+    is_active = run_data.get("status", "") in ("QUEUED", "IN_PROGRESS")
 
     original_snapshot = run_data.get("config_snapshot")
     if isinstance(original_snapshot, str):
@@ -1475,7 +1491,9 @@ def get_comparison(
     except Exception:
         current_ss = {}
 
-    iters_df = load_iterations(spark, run_id, config.catalog, config.schema_name)
+    iters_df = load_iterations_with_fallback(
+        session, spark, run_id, config.catalog, config.schema_name, is_active=is_active,
+    )
     iters_rows = iters_df.to_dict("records") if not iters_df.empty else []
 
     baseline_scores = {}

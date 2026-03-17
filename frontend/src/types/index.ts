@@ -457,6 +457,8 @@ export interface GSOPipelineRun {
   completedAt: string | null
   baselineScore: number | null
   optimizedScore: number | null
+  baselineIteration: number | null
+  bestIteration: number | null
   steps: GSOPipelineStep[]
   convergenceReason: string | null
 }
@@ -478,4 +480,29 @@ export interface GSOQuestionResult {
   value: string
   failure_type: string | null
   confidence: number | null
+}
+
+export interface GSOQuestionDetail {
+  question_id: string
+  question: string
+  generated_sql: string | null
+  expected_sql: string | null
+  passed: boolean
+  match_type: string | null
+}
+
+export interface GSOSchemaAccessStatus {
+  catalog: string
+  schema_name: string
+  read_granted: boolean
+  grant_sql: string | null
+}
+
+export interface GSOPermissionCheck {
+  sp_display_name: string
+  sp_application_id: string
+  sp_has_manage: boolean
+  schemas: GSOSchemaAccessStatus[]
+  can_start: boolean
+  errors: string[]
 }

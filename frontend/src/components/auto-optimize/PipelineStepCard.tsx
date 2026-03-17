@@ -6,6 +6,7 @@ interface PipelineStepCardProps {
   status: string
   durationSeconds: number | null
   description: string
+  summary?: string | null
 }
 
 const STATUS_STYLES: Record<string, { bg: string; text: string; extra?: string }> = {
@@ -23,7 +24,7 @@ function formatDuration(seconds: number | null): string {
   return `${m}m ${s}s`
 }
 
-export function PipelineStepCard({ stepNumber, name, status, durationSeconds, description }: PipelineStepCardProps) {
+export function PipelineStepCard({ stepNumber, name, status, durationSeconds, description, summary }: PipelineStepCardProps) {
   const style = STATUS_STYLES[status] ?? STATUS_STYLES.pending
 
   return (
@@ -43,6 +44,9 @@ export function PipelineStepCard({ stepNumber, name, status, durationSeconds, de
           <span className="text-xs text-muted ml-auto">{formatDuration(durationSeconds)}</span>
         </div>
         <p className="text-xs text-muted">{description}</p>
+        {summary && (
+          <p className="text-xs text-muted italic mt-1">{summary}</p>
+        )}
       </div>
     </div>
   )

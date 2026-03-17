@@ -1,8 +1,8 @@
 import { Badge } from "@/components/ui/badge"
-import type { GSOQuestionResult } from "@/types"
+import type { GSOQuestionDetail } from "@/types"
 
 interface QuestionDetailProps {
-  question: GSOQuestionResult | null
+  question: GSOQuestionDetail | null
 }
 
 export function QuestionDetail({ question }: QuestionDetailProps) {
@@ -14,40 +14,52 @@ export function QuestionDetail({ question }: QuestionDetailProps) {
     )
   }
 
-  const pass = question.failure_type == null || question.failure_type === ""
-
   return (
     <div className="space-y-5">
       {/* Header */}
+      <div className="flex items-center gap-3">
+        <Badge variant={question.passed ? "success" : "danger"}>
+          {question.passed ? "Pass" : "Fail"}
+        </Badge>
+        {question.match_type && (
+          <span className="text-xs text-muted font-mono">{question.match_type}</span>
+        )}
+      </div>
+
+      {/* Question text */}
       <div>
-        <h3 className="text-sm font-semibold text-primary mb-2">{question.question_id}</h3>
-        <div className="flex items-center gap-3">
-          <Badge variant={pass ? "success" : "danger"}>
-            {pass ? "Pass" : "Fail"}
-          </Badge>
-          <span className="text-xs text-muted">Judge: {question.judge}</span>
-          {question.confidence != null && (
-            <span className="text-xs text-muted">
-              Confidence: {(question.confidence * 100).toFixed(0)}%
-            </span>
-          )}
+        <h4 className="text-xs font-semibold text-muted uppercase tracking-wider mb-2">Question</h4>
+        <div className="rounded-lg border border-default bg-elevated px-4 py-3 text-sm text-primary">
+          {question.question || question.question_id}
         </div>
       </div>
 
-      {/* Failure type */}
-      {question.failure_type && (
-        <div>
-          <h4 className="text-xs font-medium text-muted mb-1">Failure Type</h4>
-          <p className="text-sm text-primary">{question.failure_type}</p>
-        </div>
-      )}
-
-      {/* Value (SQL or text) */}
+      {/* SQL comparison */}
       <div>
-        <h4 className="text-xs font-medium text-muted mb-2">Value</h4>
-        <pre className="rounded-lg bg-elevated border border-default p-4 text-xs font-mono text-primary overflow-x-auto whitespace-pre-wrap">
-          {question.value}
-        </pre>
+        <h4 className="text-xs font-semibold text-muted uppercase tracking-wider mb-3">Response</h4>
+        <div className="grid grid-cols-2 gap-3">
+          {/* Model output */}
+          <div className="rounded-lg border border-default overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-2 bg-elevated border-b border-default">
+              <span className="text-xs font-medium text-muted">Model output</span>
+              <span className="text-xs text-muted/60 font-mono">SQL</span>
+            </div>
+            <pre className="p-3 text-xs font-mono text-primary overflow-x-auto whitespace-pre-wrap min-h-[80px] bg-surface">
+              {question.generated_sql ?? "—"}
+            </pre>
+          </div>
+
+          {/* Ground truth */}
+          <div className="rounded-lg border border-default overflow-hidden">
+            <div className="flex items-center justify-between px-3 py-2 bg-elevated border-b border-default">
+              <span className="text-xs font-medium text-muted">Ground truth SQL answer</span>
+              <span className="text-xs text-muted/60 font-mono">SQL</span>
+            </div>
+            <pre className="p-3 text-xs font-mono text-primary overflow-x-auto whitespace-pre-wrap min-h-[80px] bg-surface">
+              {question.expected_sql ?? "—"}
+            </pre>
+          </div>
+        </div>
       </div>
     </div>
   )

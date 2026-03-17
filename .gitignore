@@ -6,6 +6,7 @@ databricks.yml
 /output
 .cursor/
 .codex/
+context/
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

@@ -40,6 +40,8 @@ import type {
   GSOPipelineRun,
   GSOIterationResult,
   GSOQuestionResult,
+  GSOQuestionDetail,
+  GSOPermissionCheck,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -735,8 +737,12 @@ export function streamAgentChat(
 
 // ===== Auto-Optimize (GSO) API =====
 
-export async function getAutoOptimizeHealth(): Promise<{ configured: boolean }> {
-  return fetchWithTimeout<{ configured: boolean }>(`${API_BASE}/auto-optimize/health`)
+export async function getAutoOptimizeHealth(): Promise<{ configured: boolean; issues: string[] }> {
+  return fetchWithTimeout<{ configured: boolean; issues: string[] }>(`${API_BASE}/auto-optimize/health`)
+}
+
+export async function getAutoOptimizePermissions(spaceId: string): Promise<GSOPermissionCheck> {
+  return fetchWithTimeout<GSOPermissionCheck>(`${API_BASE}/auto-optimize/permissions/${spaceId}`)
 }
 
 export async function triggerAutoOptimize(request: GSOTriggerRequest): Promise<GSOTriggerResponse> {
@@ -779,6 +785,14 @@ export async function discardAutoOptimize(runId: string): Promise<{ status: stri
   )
 }
 
+export async function getActiveRunForSpace(
+  spaceId: string
+): Promise<{ hasActiveRun: boolean; activeRunId: string | null; activeRunStatus: string | null }> {
+  return fetchWithTimeout<{ hasActiveRun: boolean; activeRunId: string | null; activeRunStatus: string | null }>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/active-run`
+  )
+}
+
 export async function getAutoOptimizeRunsForSpace(spaceId: string): Promise<GSORunSummary[]> {
   return fetchWithTimeout<GSORunSummary[]>(`${API_BASE}/auto-optimize/spaces/${spaceId}/runs`)
 }
@@ -791,6 +805,16 @@ export async function getAutoOptimizeAsiResults(runId: string, iteration: number
   return fetchWithTimeout<GSOQuestionResult[]>(
     `${API_BASE}/auto-optimize/runs/${runId}/asi-results?iteration=${iteration}`
   )
+}
+
+export async function getAutoOptimizeQuestionResults(runId: string, iteration: number): Promise<GSOQuestionDetail[]> {
+  try {
+    return await fetchWithTimeout<GSOQuestionDetail[]>(
+      `${API_BASE}/auto-optimize/runs/${runId}/question-results?iteration=${iteration}`
+    )
+  } catch {
+    return []
+  }
 }
 
 export { ApiError }

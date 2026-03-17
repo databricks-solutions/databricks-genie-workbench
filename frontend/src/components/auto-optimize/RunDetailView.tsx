@@ -8,18 +8,16 @@ import { QuestionDetail } from "@/components/auto-optimize/QuestionDetail"
 import { PipelineDetailsModal } from "@/components/auto-optimize/PipelineDetailsModal"
 import {
   getAutoOptimizeRun,
-  getAutoOptimizeAsiResults,
-  applyAutoOptimize,
-  discardAutoOptimize,
+  getAutoOptimizeQuestionResults,
 } from "@/lib/api"
-import type { GSOPipelineRun, GSOQuestionResult } from "@/types"
+import type { GSOPipelineRun, GSOQuestionDetail } from "@/types"
 
 interface RunDetailViewProps {
   runId: string
   onBack: () => void
 }
 
-const ACTIONABLE_STATUSES = new Set(["CONVERGED", "STALLED", "MAX_ITERATIONS"])
+type EvalTab = "baseline" | "final"
 
 const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger" | "info" | "secondary"> = {
   CONVERGED: "success",
@@ -36,65 +34,59 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
 
 export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
   const [run, setRun] = useState<GSOPipelineRun | null>(null)
-  const [questions, setQuestions] = useState<GSOQuestionResult[]>([])
+  const [activeTab, setActiveTab] = useState<EvalTab>("final")
+  const [baselineQuestions, setBaselineQuestions] = useState<GSOQuestionDetail[]>([])
+  const [finalQuestions, setFinalQuestions] = useState<GSOQuestionDetail[]>([])
   const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null)
   const [showPipeline, setShowPipeline] = useState(false)
-  const [applying, setApplying] = useState(false)
-  const [discarding, setDiscarding] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
-  // Fetch run detail
   useEffect(() => {
     getAutoOptimizeRun(runId)
       .then((r) => {
         setRun(r)
-        // Fetch ASI results for the best iteration (last completed step)
-        const completedSteps = (r.steps ?? []).filter((s) => s.status === "completed")
-        const bestIter = completedSteps.length > 0 ? completedSteps[completedSteps.length - 1].stepNumber : 0
-        return getAutoOptimizeAsiResults(runId, bestIter)
+        const fetches: Promise<void>[] = []
+        if (r.baselineIteration != null) {
+          fetches.push(
+            getAutoOptimizeQuestionResults(runId, r.baselineIteration)
+              .then(setBaselineQuestions)
+              .catch(() => {})
+          )
+        }
+        if (r.bestIteration != null) {
+          fetches.push(
+            getAutoOptimizeQuestionResults(runId, r.bestIteration)
+              .then(setFinalQuestions)
+              .catch(() => {})
+          )
+        }
+        return Promise.all(fetches)
       })
-      .then(setQuestions)
       .catch(() => {})
   }, [runId])
 
+  useEffect(() => {
+    setSelectedQuestionId(null)
+  }, [activeTab])
+
+  const questions = activeTab === "baseline" ? baselineQuestions : finalQuestions
   const selectedQuestion = questions.find((q) => q.question_id === selectedQuestionId) ?? null
 
-  const passingCount = questions.filter(
-    (q) => q.failure_type == null || q.failure_type === ""
-  ).length
+  const passingCount = questions.filter((q) => q.passed).length
   const totalCount = questions.length
 
-  async function handleApply() {
-    setApplying(true)
-    setError(null)
-    try {
-      await applyAutoOptimize(runId)
-      onBack()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to apply")
-    } finally {
-      setApplying(false)
-    }
-  }
-
-  async function handleDiscard() {
-    setDiscarding(true)
-    setError(null)
-    try {
-      await discardAutoOptimize(runId)
-      onBack()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to discard")
-    } finally {
-      setDiscarding(false)
-    }
-  }
+  const baselinePassing = baselineQuestions.filter((q) => q.passed).length
+  const finalPassing = finalQuestions.filter((q) => q.passed).length
 
   if (!run) {
     return <div className="py-8 text-center text-muted text-sm">Loading run details...</div>
   }
 
-  const canAct = ACTIONABLE_STATUSES.has(run.status)
+  const baselineAccuracy = baselineQuestions.length > 0
+    ? Math.round((baselinePassing / baselineQuestions.length) * 100)
+    : null
+  const finalAccuracy = finalQuestions.length > 0
+    ? Math.round((finalPassing / finalQuestions.length) * 100)
+    : null
 
   return (
     <div className="space-y-4">
@@ -126,16 +118,46 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <ScoreSummary baselineScore={run.baselineScore} optimizedScore={run.optimizedScore} />
-          <button
-            onClick={() => setShowPipeline(true)}
-            className="p-2 rounded-lg border border-default hover:bg-elevated text-muted hover:text-primary transition-colors"
-            title="Pipeline Details"
-          >
-            <Settings2 className="w-4 h-4" />
-          </button>
-        </div>
+        <button
+          onClick={() => setShowPipeline(true)}
+          className="p-2 rounded-lg border border-default hover:bg-elevated text-muted hover:text-primary transition-colors"
+          title="Pipeline Details"
+        >
+          <Settings2 className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Score summary cards */}
+      <ScoreSummary baselineScore={run.baselineScore} optimizedScore={run.optimizedScore} />
+
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-default">
+        <button
+          onClick={() => setActiveTab("baseline")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === "baseline"
+              ? "border-accent text-accent"
+              : "border-transparent text-muted hover:text-primary"
+          }`}
+        >
+          Baseline Evaluation
+          {baselineAccuracy != null && (
+            <span className="ml-2 text-xs opacity-75">({baselineAccuracy}%)</span>
+          )}
+        </button>
+        <button
+          onClick={() => setActiveTab("final")}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+            activeTab === "final"
+              ? "border-accent text-accent"
+              : "border-transparent text-muted hover:text-primary"
+          }`}
+        >
+          Final Evaluation
+          {finalAccuracy != null && (
+            <span className="ml-2 text-xs opacity-75">({finalAccuracy}%)</span>
+          )}
+        </button>
       </div>
 
       {/* Two-column layout */}
@@ -143,11 +165,17 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
         {/* Left sidebar: Question list */}
         <Card className="col-span-1">
           <CardContent className="p-4 h-full">
-            <QuestionList
-              questions={questions}
-              selectedId={selectedQuestionId}
-              onSelect={setSelectedQuestionId}
-            />
+            {questions.length === 0 ? (
+              <div className="flex items-center justify-center h-full text-muted text-sm">
+                No evaluation results available
+              </div>
+            ) : (
+              <QuestionList
+                questions={questions}
+                selectedId={selectedQuestionId}
+                onSelect={setSelectedQuestionId}
+              />
+            )}
           </CardContent>
         </Card>
 
@@ -159,28 +187,7 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
         </Card>
       </div>
 
-      {/* Apply / Discard buttons */}
-      {canAct && (
-        <div className="flex items-center gap-3">
-          <button
-            onClick={handleApply}
-            disabled={applying || discarding}
-            className="px-5 py-2.5 rounded-lg bg-emerald-500 text-white font-semibold hover:bg-emerald-600 disabled:opacity-50 transition-colors"
-          >
-            {applying ? "Applying..." : "Apply Optimization"}
-          </button>
-          <button
-            onClick={handleDiscard}
-            disabled={applying || discarding}
-            className="px-5 py-2.5 rounded-lg border border-default text-primary font-semibold hover:bg-elevated disabled:opacity-50 transition-colors"
-          >
-            {discarding ? "Discarding..." : "Discard"}
-          </button>
-          {error && <span className="text-sm text-danger">{error}</span>}
-        </div>
-      )}
-
-      {/* Pipeline Details Modal (Layer 3) */}
+      {/* Pipeline Details Modal */}
       <PipelineDetailsModal runId={runId} isOpen={showPipeline} onClose={() => setShowPipeline(false)} />
     </div>
   )

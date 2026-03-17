@@ -3,8 +3,8 @@
  * Tabs: Score | Analysis | Optimize | History
  */
 import { useState, useEffect } from "react"
-import { ArrowLeft, Star, RefreshCw, Zap, Eye, BarChart2, Brain, Settings2, Clock, ExternalLink, Rocket } from "lucide-react"
-import { scanSpace, toggleStar, getSpaceHistory } from "@/lib/api"
+import { ArrowLeft, Star, RefreshCw, Zap, Eye, BarChart2, Brain, Settings2, Clock, ExternalLink, Rocket, Play } from "lucide-react"
+import { scanSpace, toggleStar, getSpaceHistory, getActiveRunForSpace } from "@/lib/api"
 import { getScoreColor } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint } from "@/types"
 import { IQScoreTab } from "./IQScoreTab"
@@ -37,6 +37,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
   const [isStarred, setIsStarred] = useState(false)
   const [isScanning, setIsScanning] = useState(false)
   const [history, setHistory] = useState<ScoreHistoryPoint[]>([])
+  const [hasActiveOptRun, setHasActiveOptRun] = useState(false)
 
   const { state, actions } = useAnalysis()
   const { handleFetchSpace } = actions
@@ -47,6 +48,13 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
       handleFetchSpace(spaceId)
     }
   }, [spaceId, handleFetchSpace])
+
+  // Check for active optimization run (for banner on overview)
+  useEffect(() => {
+    getActiveRunForSpace(spaceId)
+      .then((res) => setHasActiveOptRun(res.hasActiveRun))
+      .catch(() => {})
+  }, [spaceId])
 
   const handleScan = async () => {
     setIsScanning(true)
@@ -162,7 +170,24 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
       {/* Tab content */}
       <div>
         {activeTab === "overview" && (
-          <SpaceOverview spaceData={state.spaceData} isLoading={state.isLoading} />
+          <>
+            {hasActiveOptRun && (
+              <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3 mb-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-primary">Optimization in progress</h3>
+                  <p className="text-xs text-muted mt-0.5">An Auto-Optimize run is currently running for this space.</p>
+                </div>
+                <button
+                  onClick={() => setActiveTab("auto-optimize")}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shrink-0"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  View Run
+                </button>
+              </div>
+            )}
+            <SpaceOverview spaceData={state.spaceData} isLoading={state.isLoading} />
+          </>
         )}
 
         {activeTab === "score" && (

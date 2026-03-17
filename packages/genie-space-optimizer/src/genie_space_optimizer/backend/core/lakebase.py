@@ -136,6 +136,9 @@ def validate_db(engine: Engine, db_config: DatabaseConfig) -> None:
 
 def initialize_models(engine: Engine) -> None:
     """Create all SQLModel tables."""
+    # Import models so SQLModel.metadata registers them before create_all
+    import genie_space_optimizer.backend.models_db  # noqa: F401
+
     logger.info("Initializing database models")
     SQLModel.metadata.create_all(engine)
     logger.info("Database models initialized successfully")
@@ -171,9 +174,13 @@ class _LakebaseDependency(LifespanDependency):
             engine.dispose()
 
     @staticmethod
-    def __call__(request: Request) -> Generator[Session, None, None]:
-        with Session(bind=request.app.state.engine) as session:
+    def __call__(request: Request) -> Generator[Session | None, None, None]:
+        engine = getattr(request.app.state, "engine", None)
+        if engine is None:
+            yield None
+            return
+        with Session(bind=engine) as session:
             yield session
 
 
-LakebaseDependency: TypeAlias = Annotated[Session, _LakebaseDependency.depends()]
+LakebaseDependency: TypeAlias = Annotated[Session | None, _LakebaseDependency.depends()]

@@ -97,6 +97,20 @@ async def load_gso_asi_results(run_id: str, iteration: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def load_gso_iteration_rows(run_id: str, iteration: int) -> str | None:
+    """Load the rows_json column for a specific iteration."""
+    if not _lakebase_available or _pool is None:
+        return None
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT rows_json FROM gso.genie_opt_iterations WHERE run_id = $1 AND iteration = $2",
+            run_id,
+            iteration,
+        )
+        return row["rows_json"] if row else None
+
+
 async def load_gso_suggestions(run_id: str) -> list[dict]:
     """Load optimization suggestions for a run."""
     if not _lakebase_available or _pool is None:

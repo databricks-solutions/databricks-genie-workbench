@@ -52,6 +52,12 @@ mlflow.db
 !backend/references/schema.md
 !docs/checklist-by-schema.md
 !docs/genie-space-schema.md
+deploy.sh
+deploy-config.sh
+databricks.yml
+.env.deploy
+.env.deploy.template
+.build/
 CODEOWNERS.txt
 LICENSE.md
 NOTICE.md
