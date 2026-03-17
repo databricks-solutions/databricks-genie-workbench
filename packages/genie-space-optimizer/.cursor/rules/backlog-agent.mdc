@@ -1,0 +1,122 @@
+---
+alwaysApply: true
+---
+
+# Backlog-Driven Development Protocol
+
+This project uses a structured backlog (`docs/backlog.yml`) paired with a
+progress tracker (`docs/agent-progress.json`) to enable incremental,
+multi-session feature development. Any agent session — whether human or AI —
+follows the same protocol.
+
+## Session Lifecycle
+
+Every session follows five phases: **Orient → Pick → Execute → Verify → Close**.
+
+### Phase 1: Orient (start of every session)
+
+Before writing any code, get your bearings:
+
+1. Run `pwd` to confirm you are in the project root.
+2. Read `docs/agent-progress.json` — check `task_status` for what is done,
+   in-progress, or pending. Read the last 2-3 entries in `sessions[]` to
+   understand recent context.
+3. Run `git log --oneline -15` to see recent commits.
+4. Run `apx dev status` (or MCP `status`) to check if dev servers are running.
+   If not, start them with `apx dev start`.
+5. Run `apx dev check` to verify the codebase has no pre-existing errors.
+
+### Phase 2: Pick (choose exactly ONE task)
+
+1. Open `docs/backlog.yml` and find the highest-priority feature with
+   `status: backlog` or `status: ready`.
+2. Within that feature, find the first task where `status: pending` in
+   `docs/agent-progress.json` (respect task ordering — earlier IDs first).
+3. If a task has `depends_on` references, verify those features/tasks are done.
+4. **Work on exactly ONE task per session.** Do not start a second task.
+   If you finish early and the session has capacity, use remaining time to
+   improve test coverage or documentation for the task you just completed.
+
+### Phase 3: Execute (implement the task)
+
+1. Read the task's `detail` field in `backlog.yml` — it lists the exact files
+   to modify and what changes to make.
+2. Read the `current_state` section of the parent feature for context on how
+   the system works today.
+3. Read the `target_state` section for the intended end state.
+4. Read the `references` for external documentation links.
+5. Implement the change incrementally:
+   - Make small, logical changes.
+   - Run `apx dev check` after each significant change.
+   - If the change touches the backend API, verify the OpenAPI client
+     regenerates correctly (happens automatically with dev servers running).
+   - If the change touches the frontend, use browser tools (native or
+     Playwright MCP) to visually verify.
+6. **Do not edit `agent-progress.json` task entries to remove or weaken
+   acceptance criteria.** You may only change `status` and `passes` fields.
+
+### Phase 4: Verify (test before marking done)
+
+1. Read the `acceptance_criteria` for the parent feature in `backlog.yml`.
+2. For each criterion relevant to your task, verify it passes:
+   - Backend: run the relevant API endpoint manually or via test.
+   - Frontend: use browser automation to verify UI behavior.
+   - Run `apx dev check` one final time.
+3. Only mark a task as `passes: true` after genuine verification.
+   **It is unacceptable to mark a task as passing without testing.**
+
+### Phase 5: Close (leave clean state for next session)
+
+1. **Update `docs/agent-progress.json`:**
+   - Set the task's `status` to `"done"` and `passes` to `true`.
+   - Append a new entry to `sessions[]`:
+     ```json
+     {
+       "session_id": "<ISO-8601 timestamp>",
+       "task_id": "2a",
+       "feature": "lever-acknowledgement-ui",
+       "summary": "Extended TriggerRequest with optional levers field...",
+       "files_changed": ["src/.../models.py"],
+       "blockers": [],
+       "next_task": "2b"
+     }
+     ```
+2. **Commit to git** with a descriptive message prefixed by the task ID:
+   ```
+   [2a] Extend TriggerRequest with levers field
+
+   Added optional `levers: list[int] | None` to TriggerRequest.
+   Backend defaults to [1,2,3,4,5] when None. Wired through
+   to submit_optimization() in job_launcher.py.
+   ```
+3. **Verify clean state:** `apx dev check` passes, dev servers are healthy,
+   no uncommitted changes remain.
+
+## Rules
+
+- **One task per session.** This prevents half-finished work and context
+  overflow. A task should be completable within a single context window.
+- **Never skip Orient.** Even if you think you know the state, read the
+  progress file and git log. Prior sessions may have left blockers.
+- **Never remove or edit acceptance criteria.** They are the contract.
+- **Always commit before ending.** The next session starts from HEAD.
+- **Log blockers honestly.** If something is blocked (permissions, missing
+  API, unclear spec), record it in the session entry's `blockers` array
+  rather than guessing or hacking around it.
+- **Respect task dependencies.** If task 1d depends on 1a-1c, don't start
+  1d until those are marked `passes: true`.
+- **Feature status progression:**
+  - `backlog` → `ready` (when all dependencies met)
+  - `ready` → `in_progress` (when first task starts)
+  - `in_progress` → `review` (when all tasks pass)
+  - `review` → `done` (after human review)
+
+## Quick Reference
+
+| File | Purpose |
+|------|---------|
+| `docs/backlog.yml` | Feature specs, tasks, acceptance criteria (source of truth) |
+| `docs/agent-progress.json` | Machine-readable task status + session log (agent state) |
+| `.cursor/rules/project.mdc` | Project conventions, DI patterns, dev commands |
+| `CLAUDE.md` | Claude Code / CLI agent instructions |
+| `git log` | Commit history (supplements progress file) |

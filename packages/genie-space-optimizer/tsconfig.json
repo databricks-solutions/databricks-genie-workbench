@@ -1,0 +1,34 @@
+{
+    "compilerOptions": {
+      "incremental": true,
+      "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+      "target": "ESNext",
+      "useDefineForClassFields": true,
+      "lib": ["ESNext", "DOM", "DOM.Iterable"],
+      "module": "ESNext",
+      "skipLibCheck": true,
+  
+      /* Bundler mode */
+      "moduleResolution": "bundler",
+      "allowImportingTsExtensions": true,
+      // a lot of components use type imports without using the `verbatimModuleSyntax` flag,
+      // so we need to disable it to allow for type imports
+      "verbatimModuleSyntax": false,
+      "moduleDetection": "force",
+      "noEmit": true,
+      "jsx": "react-jsx",
+  
+      /* Linting */
+      "strict": true,
+      "noUnusedLocals": true,
+      "noUnusedParameters": true,
+      "noFallthroughCasesInSwitch": true,
+      "noUncheckedSideEffectImports": true,
+  
+      "baseUrl": ".",
+      "paths": {
+        "@/*": ["./src/genie_space_optimizer/ui/*"]
+      }
+    },
+    "include": ["src/genie_space_optimizer/ui", "vite.config.ts", ".apx", "src/genie_space_optimizer/ui/types/vite-env.d.ts"]
+  }
