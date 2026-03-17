@@ -1,0 +1,68 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# version file
+src/genie_space_optimizer/_version.py
+
+# metadata file
+src/genie_space_optimizer/_metadata.py
+
+# build files
+dist
+
+# js-related
+node_modules/
+.tanstack
+
+# env files
+.env
+.env.local
+.env.*
+
+# mac
+.DS_Store
+
+# DABs 
+.databricks
+
+# apx
+.apx/
+
+# pytest cache
+.pytest_cache/
+
+# Build artifacts
+.build/
+
+# UI dist folder
+src/genie_space_optimizer/__dist__/
+
+# docs
+docs/building-genai-apps-with-mlflow.md
+docs/mlflow-genai-feature-map.md
+docs/testrun
+docs/testrun1.txt
+docs/testrun2.txt
+docs/testrun2_annotated.md
+docs/testrun3.txt
+docs/testrun4.txt
+docs/testrun5.txt
+docs/testrun6.txt
+docs/testrun7.txt
+docs/benchmarkqustions
+docs/testconfig
+docs/genie_logo.png
+docs/genie_logo.jpg
+docs/genie_space_config_raw.json
+docs/genie_space_config.json
+
+# MLflow
+mlflow.db

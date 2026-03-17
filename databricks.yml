@@ -1,0 +1,175 @@
+bundle:
+  name: "genie-space-optimizer"
+
+variables:
+  app_name:
+    description: "Databricks App name (must be unique in your workspace)"
+    default: "genie-space-optimizer"
+  catalog:
+    description: "Unity Catalog name for storing optimization state tables"
+    default: "main"
+  gold_schema:
+    description: "Schema within the catalog for optimization tables"
+    default: "genie_optimization"
+  warehouse_id:
+    description: "SQL Warehouse ID for query execution"
+  deploy_profile:
+    default: "DEFAULT"
+
+sync:
+  include:
+    - .build
+    - .build/**
+    - src/genie_space_optimizer/jobs
+    - src/genie_space_optimizer/jobs/**
+
+artifacts:
+  default:
+    build: apx build && rm -f .build/.gitignore && python resources/patch_app_yml.py .build/app.yml --catalog ${var.catalog} --schema ${var.gold_schema} --warehouse-id ${var.warehouse_id} && cp .build/genie_space_optimizer-*.whl .build/genie_space_optimizer-0.0.0-py3-none-any.whl && echo "databricks-connect>=15.0.0" >> .build/requirements.txt
+
+resources:
+  apps:
+    genie-space-optimizer-app:
+      name: ${var.app_name}
+      description: "genie-space-optimizer created with apx"
+      source_code_path: ./.build
+      user_api_scopes:
+        - "dashboards.genie"
+        - "files.files"
+        - "catalog.catalogs:read"
+        - "catalog.schemas:read"
+        - "catalog.tables:read"
+        - "sql"
+      config:
+        env:
+          - name: GENIE_SPACE_OPTIMIZER_CATALOG
+            value: ${var.catalog}
+          - name: GENIE_SPACE_OPTIMIZER_SCHEMA
+            value: ${var.gold_schema}
+          - name: GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID
+            value: ${var.warehouse_id}
+          - name: GENIE_SPACE_OPTIMIZER_JOB_ID
+            value: ${resources.jobs.genie-space-optimizer-runner.id}
+      resources:
+        - name: "sql-warehouse"
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: "CAN_USE"
+      permissions:
+        - user_name: "users"
+          level: "CAN_USE"
+
+  jobs:
+    genie-space-optimizer-runner:
+      name: "genie-space-optimizer-job"
+      description: >-
+        Persistent DAG optimization runner managed by Genie Space Optimizer app
+        (preflight -> baseline_eval -> enrichment -> lever_loop -> finalize -> deploy).
+        SP executes with granted privileges on user schemas.
+      max_concurrent_runs: 20
+      queue:
+        enabled: true
+      tags:
+        app: "genie-space-optimizer"
+        managed-by: "databricks-bundle"
+        pattern: "persistent-dag"
+      parameters:
+        - name: run_id
+          default: ""
+        - name: space_id
+          default: ""
+        - name: domain
+          default: "default"
+        - name: catalog
+          default: ""
+        - name: schema
+          default: ""
+        - name: apply_mode
+          default: "genie_config"
+        - name: levers
+          default: "[1,2,3,4,5]"
+        - name: max_iterations
+          default: "5"
+        - name: triggered_by
+          default: ""
+        - name: experiment_name
+          default: ""
+        - name: deploy_target
+          default: ""
+        - name: warehouse_id
+          default: ""
+      tasks:
+        - task_key: preflight
+          notebook_task:
+            notebook_path: ./src/genie_space_optimizer/jobs/run_preflight.py
+            base_parameters:
+              run_id: "{{job.parameters.run_id}}"
+              space_id: "{{job.parameters.space_id}}"
+              domain: "{{job.parameters.domain}}"
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              apply_mode: "{{job.parameters.apply_mode}}"
+              levers: "{{job.parameters.levers}}"
+              max_iterations: "{{job.parameters.max_iterations}}"
+              experiment_name: "{{job.parameters.experiment_name}}"
+              deploy_target: "{{job.parameters.deploy_target}}"
+              warehouse_id: "{{job.parameters.warehouse_id}}"
+          environment_key: default
+          timeout_seconds: 7200
+          max_retries: 0
+        - task_key: baseline_eval
+          depends_on:
+            - task_key: preflight
+          notebook_task:
+            notebook_path: ./src/genie_space_optimizer/jobs/run_baseline.py
+          environment_key: default
+          timeout_seconds: 7200
+          max_retries: 0
+        - task_key: enrichment
+          depends_on:
+            - task_key: baseline_eval
+          notebook_task:
+            notebook_path: ./src/genie_space_optimizer/jobs/run_enrichment.py
+          environment_key: default
+          timeout_seconds: 7200
+          max_retries: 0
+        - task_key: lever_loop
+          depends_on:
+            - task_key: enrichment
+          notebook_task:
+            notebook_path: ./src/genie_space_optimizer/jobs/run_lever_loop.py
+          environment_key: default
+          timeout_seconds: 7200
+          max_retries: 0
+        - task_key: finalize
+          depends_on:
+            - task_key: lever_loop
+          notebook_task:
+            notebook_path: ./src/genie_space_optimizer/jobs/run_finalize.py
+          environment_key: default
+          timeout_seconds: 7200
+          max_retries: 0
+        - task_key: deploy
+          depends_on:
+            - task_key: finalize
+          notebook_task:
+            notebook_path: ./src/genie_space_optimizer/jobs/run_deploy.py
+          environment_key: default
+          timeout_seconds: 7200
+          max_retries: 0
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - .build/genie_space_optimizer-0.0.0-py3-none-any.whl
+              - "mlflow[databricks]>=3.10.1"
+              - "databricks-sdk>=0.40.0"
+      permissions:
+        - group_name: "users"
+          level: "CAN_VIEW"
+
+targets:
+  dev:
+    mode: development
+    default: true

@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Production GenAI with MLflow &mdash; Patterns &amp; Architecture</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #0a0e19;
+    --surface: #111827;
+    --surface-2: #1a2236;
+    --surface-3: #1f2b42;
+    --border: #1e2d4a;
+    --border-light: #2a3f66;
+    --text: #e2e8f0;
+    --text-dim: #8b9dc3;
+    --text-muted: #5a6e8f;
+    --accent: #06b6d4;
+    --accent-glow: rgba(6,182,212,0.15);
+    --green: #10b981;
+    --green-glow: rgba(16,185,129,0.12);
+    --amber: #f59e0b;
+    --amber-glow: rgba(245,158,11,0.1);
+    --purple: #a78bfa;
+    --purple-glow: rgba(167,139,250,0.1);
+    --rose: #f43f5e;
+    --rose-glow: rgba(244,63,94,0.1);
+    --blue: #3b82f6;
+    --blue-glow: rgba(59,130,246,0.1);
+    --code-bg: #0d1321;
+    --slide-max: 1200px;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body { font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif; background:var(--bg); color:var(--text); line-height:1.65; overflow-x:hidden; }
+
+  /* NAV */
+  nav { position:fixed;top:0;left:0;right:0;z-index:100;background:rgba(10,14,25,0.9);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:0 2rem;height:52px;display:flex;align-items:center;justify-content:space-between; }
+  nav .brand { font-weight:700;font-size:0.82rem;letter-spacing:0.04em;color:var(--accent);display:flex;align-items:center;gap:0.5rem;white-space:nowrap; }
+  nav .brand svg { width:18px;height:18px;flex-shrink:0; }
+  nav .nav-links { display:flex;gap:0.15rem;overflow-x:auto;scrollbar-width:none; }
+  nav .nav-links::-webkit-scrollbar { display:none; }
+  nav .nav-links a { color:var(--text-dim);text-decoration:none;font-size:0.68rem;font-weight:500;padding:0.3rem 0.55rem;border-radius:6px;white-space:nowrap;transition:all .2s; }
+  nav .nav-links a:hover, nav .nav-links a.active { color:var(--text);background:var(--surface-2); }
+
+  /* SLIDE */
+  .slide { min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:5rem 2rem 3rem;position:relative; }
+  .slide-inner { max-width:var(--slide-max);margin:0 auto;width:100%; }
+  .slide-number { position:absolute;top:4.2rem;right:2rem;font-size:0.6rem;font-weight:700;color:var(--text-muted);letter-spacing:0.06em; }
+
+  /* TITLE */
+  .title-slide { text-align:center; }
+  .title-slide::before { content:'';position:absolute;top:12%;left:50%;transform:translateX(-50%);width:800px;height:800px;background:radial-gradient(circle,rgba(6,182,212,0.06) 0%,rgba(167,139,250,0.03) 40%,transparent 70%);border-radius:50%;pointer-events:none; }
+  .title-slide h1 { font-size:clamp(2rem,4.5vw,3.5rem);font-weight:800;line-height:1.12;letter-spacing:-0.03em;background:linear-gradient(135deg,#e2e8f0 0%,#06b6d4 50%,#a78bfa 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:0.6rem; }
+  .title-slide .byline { font-size:0.85rem;color:var(--text-muted);font-weight:500;margin-bottom:0.4rem;letter-spacing:0.02em; }
+  .title-slide .subtitle { font-size:1.05rem;color:var(--text-dim);font-weight:400;max-width:680px;margin:0 auto 2.5rem;line-height:1.6; }
+
+  /* HEADING */
+  .chapter-label { font-size:0.66rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;margin-bottom:0.35rem; }
+  .slide h2 { font-size:clamp(1.4rem,3vw,2.1rem);font-weight:800;line-height:1.2;letter-spacing:-0.02em;margin-bottom:1.4rem; }
+
+  /* INSIGHT (replaces narrative) */
+  .insight { position:relative;padding:0.9rem 1.15rem;background:var(--surface);border-left:3px solid var(--accent);border-radius:0 10px 10px 0;margin-bottom:1.2rem;font-size:0.88rem;color:var(--text-dim);line-height:1.7; }
+  .insight em { color:var(--text); }
+  .insight strong { color:var(--text);font-weight:600; }
+  .insight code { font-family:'JetBrains Mono',monospace;font-size:0.78rem;background:var(--surface-2);padding:0.1rem 0.3rem;border-radius:3px;color:var(--accent); }
+
+  /* CODE */
+  .code-block { background:var(--code-bg);border:1px solid var(--border);border-radius:10px;margin-bottom:1.2rem;overflow:hidden; }
+  .code-header { display:flex;align-items:center;gap:0.5rem;padding:0.35rem 0.85rem;background:rgba(255,255,255,0.02);border-bottom:1px solid var(--border);font-size:0.62rem;font-weight:600;color:var(--text-dim);letter-spacing:0.04em;text-transform:uppercase; }
+  .code-header .dot { width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:0.6; }
+  .code-block pre { padding:0.7rem 1rem;overflow-x:auto;font-family:'JetBrains Mono',monospace;font-size:0.72rem;line-height:1.65;color:#c9d6e8; }
+  .code-block pre .kw { color:#c792ea; } .code-block pre .fn { color:#82aaff; }
+  .code-block pre .str { color:#c3e88d; } .code-block pre .cmt { color:#546e7a;font-style:italic; }
+  .code-block pre .num { color:#f78c6c; } .code-block pre .dec { color:#ffcb6b; }
+
+  /* PRINCIPLE BOX */
+  .principle { display:flex;gap:0.6rem;padding:0.85rem 1rem;background:var(--accent-glow);border:1px solid rgba(6,182,212,0.2);border-radius:10px;margin-bottom:1.2rem;font-size:0.82rem;line-height:1.6; }
+  .principle-icon { flex-shrink:0;width:18px;height:18px;margin-top:3px;color:var(--accent); }
+  .principle strong { color:var(--accent); }
+
+  /* CODEBASE REF */
+  .codebase-ref { padding:0.8rem 1rem;background:var(--green-glow);border:1px solid rgba(16,185,129,0.18);border-radius:10px;margin-bottom:1.2rem;font-size:0.76rem;line-height:1.6; }
+  .codebase-ref .ref-title { font-weight:700;color:var(--green);font-size:0.64rem;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:0.35rem;display:flex;align-items:center;gap:0.3rem; }
+  .codebase-ref .ref-title svg { width:12px;height:12px; }
+  .codebase-ref ul { list-style:none;padding:0; }
+  .codebase-ref li { padding:0.25rem 0;border-top:1px solid rgba(16,185,129,0.08);color:var(--text-dim); }
+  .codebase-ref li:first-child { border-top:none;padding-top:0; }
+  .codebase-ref code { font-family:'JetBrains Mono',monospace;font-size:0.7rem;color:var(--green);background:rgba(16,185,129,0.08);padding:0.1rem 0.3rem;border-radius:3px; }
+
+  /* GRID */
+  .two-col { display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;margin-bottom:1.2rem; }
+  @media(max-width:850px) { .two-col { grid-template-columns:1fr; } }
+
+  /* FLOW DIAGRAMS */
+  .flow { display:flex;align-items:center;justify-content:center;gap:0;padding:1.2rem 0;margin-bottom:1.2rem;flex-wrap:wrap; }
+  .fbox { display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:0.65rem 0.9rem;border-radius:10px;border:1.5px solid var(--border);background:var(--surface);min-width:100px;transition:all .3s;position:relative; }
+  .fbox:hover { border-color:var(--accent);transform:translateY(-2px);box-shadow:0 4px 20px var(--accent-glow); }
+  .fbox .fi { margin-bottom:0.25rem; }
+  .fbox .fi svg { width:20px;height:20px; }
+  .fbox .fl { font-size:0.68rem;font-weight:600;color:var(--text);line-height:1.3; }
+  .fbox .fs { font-size:0.56rem;color:var(--text-dim);margin-top:0.1rem; }
+  .farr { padding:0 0.2rem;color:var(--border-light); }
+  .farr svg { width:22px;height:22px; }
+  .fbox.c { border-color:rgba(6,182,212,0.3);background:rgba(6,182,212,0.05); }
+  .fbox.c .fi svg { color:var(--accent); }
+  .fbox.g { border-color:rgba(16,185,129,0.3);background:rgba(16,185,129,0.05); }
+  .fbox.g .fi svg { color:var(--green); }
+  .fbox.a { border-color:rgba(245,158,11,0.3);background:rgba(245,158,11,0.05); }
+  .fbox.a .fi svg { color:var(--amber); }
+  .fbox.p { border-color:rgba(167,139,250,0.3);background:rgba(167,139,250,0.05); }
+  .fbox.p .fi svg { color:var(--purple); }
+  .fbox.r { border-color:rgba(244,63,94,0.3);background:rgba(244,63,94,0.05); }
+  .fbox.r .fi svg { color:var(--rose); }
+  .fbox.b { border-color:rgba(59,130,246,0.3);background:rgba(59,130,246,0.05); }
+  .fbox.b .fi svg { color:var(--blue); }
+  .fbox.w { border-width:2.5px; }
+
+  /* ARCHITECTURE DIAGRAM */
+  .arch { display:grid;grid-template-columns:1fr;gap:0.6rem;margin-bottom:1.5rem; }
+  .arch-layer { display:flex;align-items:center;gap:0.5rem;padding:0.65rem 1rem;border-radius:10px;border:1px solid var(--border);background:var(--surface);transition:all .3s; }
+  .arch-layer:hover { border-color:var(--border-light);background:var(--surface-2); }
+  .arch-layer .al-icon { flex-shrink:0;width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center; }
+  .arch-layer .al-icon svg { width:16px;height:16px; }
+  .arch-layer .al-body { flex:1;min-width:0; }
+  .arch-layer .al-title { font-size:0.75rem;font-weight:700;color:var(--text); }
+  .arch-layer .al-desc { font-size:0.62rem;color:var(--text-dim);line-height:1.4; }
+  .arch-layer .al-apis { display:flex;flex-wrap:wrap;gap:0.3rem;margin-top:0.3rem; }
+  .arch-layer .al-api { font-size:0.55rem;font-family:'JetBrains Mono',monospace;padding:0.12rem 0.35rem;border-radius:4px;font-weight:500; }
+
+  /* TAG CLOUD */
+  .tags { display:flex;flex-wrap:wrap;gap:0.35rem;padding:0.6rem 0;margin-bottom:0.8rem; }
+  .tags .tag { display:inline-flex;align-items:center;gap:0.25rem;padding:0.25rem 0.55rem;border-radius:6px;font-size:0.62rem;font-weight:600;font-family:'JetBrains Mono',monospace;border:1px solid var(--border);background:var(--surface);transition:all .2s; }
+  .tags .tag:hover { border-color:var(--accent);background:var(--accent-glow); }
+  .tags .tag .tk { color:var(--text-dim); }
+  .tags .tag .tv { color:var(--accent); }
+
+  /* SCORER PANEL */
+  .scorers { display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-bottom:1.2rem; }
+  @media(max-width:700px) { .scorers { grid-template-columns:repeat(2,1fr); } }
+  .sc { padding:0.65rem 0.75rem;border-radius:10px;border:1px solid var(--border);background:var(--surface);transition:all .3s;position:relative;overflow:hidden; }
+  .sc::before { content:'';position:absolute;top:0;left:0;right:0;height:2.5px;border-radius:10px 10px 0 0; }
+  .sc.code::before { background:var(--accent); }
+  .sc.llm::before { background:var(--purple); }
+  .sc:hover { border-color:var(--border-light);transform:translateY(-2px);box-shadow:0 4px 16px rgba(0,0,0,.3); }
+  .sc .sn { font-size:0.7rem;font-weight:700;color:var(--text);margin-bottom:0.15rem; }
+  .sc .sd { font-size:0.57rem;color:var(--text-dim);line-height:1.4;margin-bottom:0.3rem; }
+  .sc .sb { display:inline-block;font-size:0.5rem;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;padding:0.1rem 0.35rem;border-radius:4px; }
+  .sc.code .sb { background:var(--accent-glow);color:var(--accent); }
+  .sc.llm .sb { background:var(--purple-glow);color:var(--purple); }
+
+  /* METRIC BARS */
+  .metric-bars { display:grid;gap:0.5rem;margin-bottom:1.2rem; }
+  .mbar { display:grid;grid-template-columns:130px 1fr 50px;align-items:center;gap:0.6rem;font-size:0.68rem; }
+  .mbar .ml { color:var(--text-dim);font-weight:500;text-align:right; }
+  .mbar .mt { position:relative;height:22px;background:var(--surface);border-radius:6px;overflow:hidden;border:1px solid var(--border); }
+  .mbar .mb { height:100%;border-radius:5px;transition:width 1.5s ease; }
+  .mbar .mv { font-weight:700;font-family:'JetBrains Mono',monospace;font-size:0.65rem; }
+
+  /* GATE PIPELINE */
+  .gates { display:flex;align-items:stretch;gap:0;margin-bottom:1.2rem;justify-content:center; }
+  .gate { display:flex;flex-direction:column;align-items:center;padding:0.85rem 1rem;border:1.5px solid var(--border);background:var(--surface);border-radius:12px;min-width:130px;text-align:center;transition:all .3s; }
+  .gate:hover { transform:translateY(-3px); }
+  .gate .gn { font-size:0.52rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.3rem; }
+  .gate .gi { margin-bottom:0.25rem; }
+  .gate .gi svg { width:26px;height:26px; }
+  .gate .gt { font-size:0.75rem;font-weight:700;color:var(--text); }
+  .gate .gd { font-size:0.55rem;color:var(--text-dim);margin-top:0.15rem;line-height:1.4; }
+  .gate .gv { margin-top:0.4rem;padding:0.18rem 0.55rem;border-radius:6px;font-size:0.55rem;font-weight:700; }
+  .gate.ok { border-color:rgba(16,185,129,0.3); }
+  .gate.ok .gn,.gate.ok .gi svg { color:var(--green); }
+  .gate.ok .gv { background:var(--green-glow);color:var(--green); }
+  .gate.ko { border-color:rgba(244,63,94,0.3); }
+  .gate.ko .gn,.gate.ko .gi svg { color:var(--rose); }
+  .gate.ko .gv { background:var(--rose-glow);color:var(--rose); }
+  .gconn { display:flex;flex-direction:column;align-items:center;justify-content:center;padding:0 0.4rem; }
+  .gconn svg { width:26px;height:26px;color:var(--border-light); }
+  .gconn span { font-size:0.48rem;font-weight:600;color:var(--text-muted); }
+
+  /* SPAN TREE */
+  .spans { padding:0.9rem 1.1rem;background:var(--surface);border:1px solid var(--border);border-radius:12px;margin-bottom:1.2rem;font-family:'JetBrains Mono',monospace;font-size:0.7rem; }
+  .sp { display:flex;align-items:center;gap:0.45rem;padding:0.3rem 0; }
+  .sp.d1 { padding-left:1.6rem; }
+  .sp.d2 { padding-left:3.2rem; }
+  .spd { width:8px;height:8px;border-radius:50%;flex-shrink:0; }
+  .spn { color:var(--text);font-weight:600; }
+  .spm { color:var(--text-dim);font-size:0.6rem; }
+  .spt { margin-left:auto;font-size:0.58rem;color:var(--text-muted);background:var(--surface-2);padding:0.08rem 0.35rem;border-radius:4px; }
+
+  /* LOOP */
+  .loop { position:relative;width:320px;height:320px;margin:1.2rem auto; }
+  .loop-center { position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center; }
+  .loop-center .lt { font-size:0.8rem;font-weight:800;color:var(--text); }
+  .loop-center .ls { font-size:0.58rem;color:var(--text-dim); }
+  .ln { position:absolute;display:flex;flex-direction:column;align-items:center;text-align:center;width:96px;transition:all .3s; }
+  .ln:hover { transform:scale(1.08); }
+  .ln .li { width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid var(--border);background:var(--surface);margin-bottom:0.25rem; }
+  .ln .li svg { width:16px;height:16px; }
+  .ln .ll { font-size:0.58rem;font-weight:600;color:var(--text);line-height:1.3; }
+  .loop svg.ring { position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:230px;height:230px; }
+
+  /* BEFORE/AFTER */
+  .ba { display:grid;grid-template-columns:1fr auto 1fr;gap:0.8rem;margin-bottom:1.2rem;align-items:start; }
+  .bac { padding:0.85rem;border-radius:10px;border:1.5px solid var(--border);background:var(--surface); }
+  .bac.bf { border-color:rgba(244,63,94,0.25); }
+  .bac.af { border-color:rgba(16,185,129,0.25); }
+  .bac .bl { font-size:0.58rem;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.4rem; }
+  .bac.bf .bl { color:var(--rose); }
+  .bac.af .bl { color:var(--green); }
+  .bac p { font-size:0.75rem;color:var(--text-dim);line-height:1.55; }
+  .bac code { font-family:'JetBrains Mono',monospace;font-size:0.68rem;background:var(--surface-2);padding:0.08rem 0.25rem;border-radius:3px; }
+  .ba-div { display:flex;align-items:center;justify-content:center;padding-top:1.5rem;color:var(--text-muted);font-size:1.4rem;font-weight:800; }
+  @media(max-width:700px) { .ba { grid-template-columns:1fr; } .ba-div { padding-top:0; } }
+
+  /* DATASET VISUAL */
+  .dsv { display:flex;align-items:center;gap:0.8rem;padding:0.85rem;margin-bottom:1.2rem;background:var(--surface);border:1px solid var(--border);border-radius:12px; }
+  .dsv table { flex:1;border-collapse:collapse;font-size:0.63rem;font-family:'JetBrains Mono',monospace; }
+  .dsv th { text-align:left;padding:0.25rem 0.45rem;font-weight:700;color:var(--accent);border-bottom:1px solid var(--border);font-size:0.58rem; }
+  .dsv td { padding:0.25rem 0.45rem;color:var(--text-dim);border-bottom:1px solid rgba(30,45,74,0.4); }
+  .dsv tr:hover td { background:var(--surface-2); }
+  .dsv .badge { display:inline-block;padding:0.08rem 0.28rem;border-radius:3px;font-size:0.52rem;font-weight:700; }
+  .dsv .badge.t { background:var(--accent-glow);color:var(--accent); }
+  .dsv .badge.m { background:var(--purple-glow);color:var(--purple); }
+  .dsv .darr { flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:0.15rem;color:var(--text-muted);font-size:0.52rem;font-weight:600; }
+  .dsv .darr svg { width:22px;height:22px;color:var(--green); }
+  .dsv .uc { flex-shrink:0;padding:0.7rem 0.85rem;border:1.5px dashed rgba(16,185,129,0.3);border-radius:10px;background:var(--green-glow);text-align:center;min-width:110px; }
+  .dsv .uc svg { width:26px;height:26px;color:var(--green);margin-bottom:0.15rem; }
+  .dsv .ucl { font-size:0.62rem;font-weight:700;color:var(--green); }
+  .dsv .ucn { font-size:0.55rem;color:var(--text-dim);font-family:'JetBrains Mono',monospace; }
+
+  /* VERSION CHAIN */
+  .vchain { display:flex;align-items:center;justify-content:center;gap:0;margin-bottom:1.2rem;flex-wrap:wrap; }
+  .vnode { text-align:center;padding:0.5rem 0.7rem;border-radius:10px;border:1.5px solid var(--border);background:var(--surface);min-width:80px;transition:all .3s; }
+  .vnode:hover { transform:translateY(-2px); }
+  .vnode .vn { font-size:0.65rem;font-weight:700;color:var(--text); }
+  .vnode .vs { font-size:0.55rem;color:var(--text-dim); }
+  .vnode .vp { font-size:0.9rem;font-weight:800;margin-top:0.15rem; }
+  .vnode.best { border-color:rgba(16,185,129,0.4);border-width:2.5px; }
+  .vnode.best .vp { color:var(--green); }
+  .vnode.champ { border-color:rgba(245,158,11,0.4);background:var(--amber-glow);border-width:2.5px; }
+  .vnode.champ .vn { color:var(--amber); }
+  .varr { padding:0 0.15rem;color:var(--border-light); }
+  .varr svg { width:20px;height:20px; }
+
+  /* LINK TABLE */
+  .ltable { width:100%;border-collapse:collapse;margin-bottom:1.2rem;font-size:0.7rem; }
+  .ltable th { text-align:left;padding:0.4rem 0.6rem;font-size:0.58rem;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-dim);border-bottom:1.5px solid var(--border); }
+  .ltable td { padding:0.35rem 0.6rem;border-bottom:1px solid var(--border);color:var(--text-dim); }
+  .ltable tr:hover td { background:var(--surface); }
+  .ltable code { font-family:'JetBrains Mono',monospace;font-size:0.66rem;color:var(--accent);background:var(--accent-glow);padding:0.05rem 0.28rem;border-radius:3px; }
+
+  /* EPILOGUE CARDS */
+  .epcards { display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:0.7rem;margin-bottom:1.5rem; }
+  .epc { padding:0.9rem;border-radius:12px;border:1px solid var(--border);background:var(--surface);transition:all .3s;position:relative;overflow:hidden; }
+  .epc:hover { border-color:var(--accent);transform:translateY(-3px);box-shadow:0 8px 24px rgba(0,0,0,.3); }
+  .epc .en { font-size:1.8rem;font-weight:900;color:var(--surface-3);position:absolute;top:-0.2rem;right:0.4rem;line-height:1; }
+  .epc .et { font-size:0.78rem;font-weight:700;color:var(--text);margin-bottom:0.3rem; }
+  .epc .ed { font-size:0.68rem;color:var(--text-dim);line-height:1.5; }
+  .epc code { font-family:'JetBrains Mono',monospace;font-size:0.65rem;color:var(--accent);background:var(--accent-glow);padding:0.08rem 0.25rem;border-radius:3px; }
+
+  /* CLOSING */
+  .closing { text-align:center;padding:2.2rem 2rem;background:linear-gradient(135deg,var(--accent-glow),var(--purple-glow));border-radius:16px;border:1px solid var(--border);margin-top:1rem; }
+  .closing p { font-size:1rem;max-width:680px;margin:0 auto;line-height:1.7;color:var(--text-dim); }
+  .closing strong { color:var(--text); }
+
+  .scroll-hint { position:absolute;bottom:1.2rem;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:0.2rem;color:var(--text-dim);font-size:0.6rem;font-weight:500;opacity:0.35;animation:bounce 2s infinite; }
+  @keyframes bounce { 0%,100%{ transform:translateX(-50%) translateY(0); } 50%{ transform:translateX(-50%) translateY(5px); } }
+
+  /* STAT CARDS */
+  .stats { display:grid;grid-template-columns:repeat(4,1fr);gap:0.5rem;margin-bottom:1.2rem; }
+  @media(max-width:700px) { .stats { grid-template-columns:repeat(2,1fr); } }
+  .stat { padding:0.7rem 0.8rem;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center; }
+  .stat .sv { font-size:1.5rem;font-weight:800;line-height:1; }
+  .stat .sl { font-size:0.58rem;color:var(--text-dim);margin-top:0.2rem;font-weight:500; }
+
+  /* SECTION DIVIDER */
+  .divider { display:flex;align-items:center;gap:0.6rem;margin-bottom:0.8rem; }
+  .divider::after { content:'';flex:1;height:1px;background:var(--border); }
+  .divider span { font-size:0.58rem;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-muted);white-space:nowrap; }
+
+  /* ARROW */
+  .arr { padding:0 0.2rem;color:var(--border-light); }
+  .arr svg { width:22px;height:22px; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v7.527a2 2 0 0 1-.211.896L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.069-10.127A2 2 0 0 1 14 9.527V2"/><path d="M8.5 2h7"/></svg>
+    MLflow GenAI Patterns
+  </div>
+  <div class="nav-links">
+    <a href="#title">Overview</a>
+    <a href="#arch">Architecture</a>
+    <a href="#ch2">Experiments</a>
+    <a href="#ch3">Datasets</a>
+    <a href="#ch4">Scorers</a>
+    <a href="#ch5">Tracing</a>
+    <a href="#ch6">Evaluate</a>
+    <a href="#ch7">Versioning</a>
+    <a href="#ch8">Gates</a>
+    <a href="#ch9">Human Loop</a>
+    <a href="#ch10">UI</a>
+    <a href="#epilogue">Principles</a>
+  </div>
+</nav>
+
+<!-- ═══════════════ TITLE ═══════════════ -->
+<section class="slide title-slide" id="title">
+  <div class="slide-inner">
+    <p class="byline">Production Patterns &amp; Architecture</p>
+    <h1>Building GenAI Applications with&nbsp;MLflow</h1>
+    <p class="subtitle">How we built a full-stack evaluation, optimization, and human-review pipeline for Databricks Genie Spaces &mdash; using MLflow as the GenAI lifecycle backbone.</p>
+
+    <div class="stats">
+      <div class="stat"><div class="sv" style="color:var(--accent)">9</div><div class="sl">Custom Scorers</div></div>
+      <div class="stat"><div class="sv" style="color:var(--amber)">3</div><div class="sl">Evaluation Gates</div></div>
+      <div class="stat"><div class="sv" style="color:var(--purple)">5</div><div class="sl">Optimization Levers</div></div>
+      <div class="stat"><div class="sv" style="color:var(--green)">1</div><div class="sl">Closed Feedback Loop</div></div>
+    </div>
+
+    <!-- System overview flow -->
+    <div class="flow" style="margin-top:0.5rem">
+      <div class="fbox a"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 1 7 7c0 3-2 5.5-4 7.5L12 22l-3-5.5C7 14.5 5 12 5 9a7 7 0 0 1 7-7z"/><circle cx="12" cy="9" r="2"/></svg></div><div class="fl">Genie Space</div><div class="fs">AI SQL assistant</div></div>
+      <div class="farr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="fbox c"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg></div><div class="fl">Evaluate</div><div class="fs">9 judges</div></div>
+      <div class="farr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="fbox p"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.5 4.5H18l-3.5 2.5 1.5 4.5L12 12l-4 2.5 1.5-4.5L6 7.5h4.5z"/></svg></div><div class="fl">Diagnose</div><div class="fs">cluster failures</div></div>
+      <div class="farr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="fbox g"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></div><div class="fl">Optimize</div><div class="fs">5 levers</div></div>
+      <div class="farr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="fbox r"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div><div class="fl">3-Gate Verify</div><div class="fs">slice &rarr; P0 &rarr; full</div></div>
+      <div class="farr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="fbox a"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div><div class="fl">Human Review</div><div class="fs">labeling session</div></div>
+    </div>
+  </div>
+  <div class="scroll-hint">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+    scroll
+  </div>
+</section>
+
+<!-- ═══════════════ ARCHITECTURE OVERVIEW ═══════════════ -->
+<section class="slide" id="arch">
+  <span class="slide-number">00 / 10</span>
+  <div class="slide-inner">
+    <div class="chapter-label" style="color:var(--accent)">Architecture</div>
+    <h2>MLflow as the GenAI Lifecycle Backbone</h2>
+    <div class="insight">MLflow provides <strong>nine capabilities</strong> that map directly to production GenAI needs. We use every one of them &mdash; not because they're available, but because each solves a specific problem that would otherwise require custom infrastructure.</div>
+
+    <div class="arch">
+      <div class="arch-layer">
+        <div class="al-icon" style="background:var(--accent-glow)"><svg viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M3 3h18v18H3z"/><path d="M3 9h18M9 3v18"/></svg></div>
+        <div class="al-body">
+          <div class="al-title">Organize &mdash; Experiments</div>
+          <div class="al-desc">Scoped per user + domain. Tagged with business context for searchability.</div>
+          <div class="al-apis"><span class="al-api" style="background:var(--accent-glow);color:var(--accent)">set_experiment()</span><span class="al-api" style="background:var(--accent-glow);color:var(--accent)">set_experiment_tags()</span></div>
+        </div>
+      </div>
+      <div class="arch-layer">
+        <div class="al-icon" style="background:var(--green-glow)"><svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></div>
+        <div class="al-body">
+          <div class="al-title">Ground Truth &mdash; Evaluation Datasets</div>
+          <div class="al-desc">UC-backed benchmark tables with upsert semantics. Human corrections auto-merge.</div>
+          <div class="al-apis"><span class="al-api" style="background:var(--green-glow);color:var(--green)">genai.datasets.create_dataset()</span><span class="al-api" style="background:var(--green-glow);color:var(--green)">merge_records()</span></div>
+        </div>
+      </div>
+      <div class="arch-layer">
+        <div class="al-icon" style="background:var(--amber-glow)"><svg viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2"><path d="M12 3l1.5 4.5H18l-3.5 2.5 1.5 4.5L12 12l-4 2.5 1.5-4.5L6 7.5h4.5z"/></svg></div>
+        <div class="al-body">
+          <div class="al-title">Measure &mdash; Custom Scorers (9 judges)</div>
+          <div class="al-desc">CODE judges for deterministic checks, LLM judges for semantic assessment. Structured Feedback with root-cause metadata.</div>
+          <div class="al-apis"><span class="al-api" style="background:var(--amber-glow);color:var(--amber)">@scorer</span><span class="al-api" style="background:var(--amber-glow);color:var(--amber)">Feedback(metadata={...})</span></div>
+        </div>
+      </div>
+      <div class="arch-layer">
+        <div class="al-icon" style="background:var(--purple-glow)"><svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+        <div class="al-body">
+          <div class="al-title">Observe &mdash; Tracing</div>
+          <div class="al-desc">Every predict call and LLM strategy decision captured as a trace with business-context tags.</div>
+          <div class="al-apis"><span class="al-api" style="background:var(--purple-glow);color:var(--purple)">@mlflow.trace</span><span class="al-api" style="background:var(--purple-glow);color:var(--purple)">start_span()</span><span class="al-api" style="background:var(--purple-glow);color:var(--purple)">update_current_trace()</span></div>
+        </div>
+      </div>
+      <div class="arch-layer">
+        <div class="al-icon" style="background:var(--rose-glow)"><svg viewBox="0 0 24 24" fill="none" stroke="var(--rose)" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg></div>
+        <div class="al-body">
+          <div class="al-title">Execute &mdash; genai.evaluate()</div>
+          <div class="al-desc">One call orchestrates predict + score + trace + aggregate. Retry logic with sequential fallback for production.</div>
+          <div class="al-apis"><span class="al-api" style="background:var(--rose-glow);color:var(--rose)">genai.evaluate()</span><span class="al-api" style="background:var(--rose-glow);color:var(--rose)">start_run()</span></div>
+        </div>
+      </div>
+      <div class="arch-layer">
+        <div class="al-icon" style="background:var(--blue-glow)"><svg viewBox="0 0 24 24" fill="none" stroke="var(--blue)" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></div>
+        <div class="al-body">
+          <div class="al-title">Version &mdash; LoggedModel + Aliases</div>
+          <div class="al-desc">Configuration-as-model: snapshot, compare, promote champion, rollback. Not weights &mdash; Genie Space config.</div>
+          <div class="al-apis"><span class="al-api" style="background:var(--blue-glow);color:var(--blue)">create_logged_model()</span><span class="al-api" style="background:var(--blue-glow);color:var(--blue)">set_logged_model_alias()</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ CH 2 ═══════════════ -->
+<section class="slide" id="ch2">
+  <span class="slide-number">01 / 10</span>
+  <div class="slide-inner">
+    <div class="chapter-label" style="color:var(--accent)">Pattern 1</div>
+    <h2>Experiment Design &mdash; Searchable by Intent</h2>
+    <div class="insight">Every optimization campaign creates a <strong>dedicated experiment</strong>, scoped to the user and domain. Generous tagging at creation time means every downstream run, trace, and artifact is automatically discoverable by business context.</div>
+    <div class="tags">
+      <span class="tag"><span class="tk">genie.space_id</span> <span class="tv">= 01ef8a...</span></span>
+      <span class="tag"><span class="tk">genie.domain</span> <span class="tv">= sales</span></span>
+      <span class="tag"><span class="tk">genie.pipeline_version</span> <span class="tv">= 2.4.1</span></span>
+      <span class="tag"><span class="tk">genie.catalog</span> <span class="tv">= prod_analytics</span></span>
+      <span class="tag"><span class="tk">genie.schema</span> <span class="tv">= gold</span></span>
+    </div>
+    <div class="code-block"><div class="code-header"><span class="dot"></span>Python</div>
+<pre>mlflow.<span class="fn">set_experiment</span>(<span class="str">f"/Users/{user_email}/genie-optimization/{domain}"</span>)
+mlflow.<span class="fn">set_experiment_tags</span>({
+    <span class="str">"genie.space_id"</span>: space_id, <span class="str">"genie.domain"</span>: domain,
+    <span class="str">"genie.pipeline_version"</span>: __version__,
+    <span class="str">"genie.catalog"</span>: catalog, <span class="str">"genie.schema"</span>: schema,
+})</pre></div>
+    <div class="principle"><svg class="principle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg><div><strong>Principle:</strong> An experiment is a <em>searchable project</em>, not a folder. Tags are free. Stamp every experiment with business context upfront.</div></div>
+    <div class="codebase-ref"><div class="ref-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg> Implementation</div><ul><li><code>preflight.py:1187-1207</code> &mdash; Preflight creates and tags the experiment before any work starts.</li></ul></div>
+  </div>
+</section>
+
+<!-- ═══════════════ CH 3 ═══════════════ -->
+<section class="slide" id="ch3">
+  <span class="slide-number">02 / 10</span>
+  <div class="slide-inner">
+    <div class="chapter-label" style="color:var(--green)">Pattern 2</div>
+    <h2>Evaluation Datasets &mdash; Living Ground Truth</h2>
+    <div class="insight"><code>merge_records</code> is an <strong>upsert</strong>: updated benchmarks get new versions, unchanged ones stay untouched, and human corrections persist across runs. The dataset is a living document backed by Unity Catalog &mdash; with access control, lineage, and SQL queryability for free.</div>
+    <div class="dsv">
+      <table><tr><th>question</th><th>expected_sql</th><th>asset</th></tr>
+      <tr><td>Total sales last Q?</td><td style="color:#c3e88d">SELECT SUM(rev)...</td><td><span class="badge t">TABLE</span></td></tr>
+      <tr><td>Revenue by region?</td><td style="color:#c3e88d">SELECT region...</td><td><span class="badge m">MV</span></td></tr>
+      <tr><td>Top 10 customers?</td><td style="color:#c3e88d">SELECT name...</td><td><span class="badge t">TABLE</span></td></tr>
+      </table>
+      <div class="darr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>merge_records</div>
+      <div class="uc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg><div class="ucl">Unity Catalog</div><div class="ucn">genie_benchmarks_sales</div></div>
+    </div>
+    <div class="code-block"><div class="code-header"><span class="dot"></span>Python &mdash; Upsert benchmarks</div>
+<pre>eval_dataset = mlflow.genai.datasets.<span class="fn">create_dataset</span>(name=<span class="str">"catalog.schema.genie_benchmarks_sales"</span>)
+eval_dataset.<span class="fn">merge_records</span>(records)  <span class="cmt"># upsert &mdash; never overwrite</span></pre></div>
+    <div class="principle"><svg class="principle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg><div><strong>Principle:</strong> Don't manage eval data yourself. Let MLflow + UC handle versioning and governance. Benchmark updates should be cheap and safe.</div></div>
+    <div class="codebase-ref"><div class="ref-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg> Implementation</div><ul>
+      <li><code>evaluation.py:2752-2821</code> &mdash; <code>_persist_benchmarks_to_uc_dataset()</code></li>
+      <li><code>benchmarks.py:513-551</code> &mdash; <code>build_eval_records()</code></li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- ═══════════════ CH 4 ═══════════════ -->
+<section class="slide" id="ch4">
+  <span class="slide-number">03 / 10</span>
+  <div class="slide-inner">
+    <div class="chapter-label" style="color:var(--amber)">Pattern 3</div>
+    <h2>9-Judge Scorer Panel</h2>
+    <div class="insight">Quality isn't one number. We run <strong>9 focused scorers</strong> &mdash; 3 deterministic CODE judges and 6 LLM judges &mdash; each returning structured <code>Feedback</code> with root-cause metadata. The difference between "score dropped" and "column <code>rev</code> in <code>sales_table</code> needs an alias to <code>revenue</code>."</div>
+    <div class="scorers">
+      <div class="sc code"><div class="sn">syntax_validity</div><div class="sd">SQL parses &amp; compiles in Spark</div><span class="sb">CODE</span></div>
+      <div class="sc code"><div class="sn">asset_routing</div><div class="sd">Correct asset type (TABLE / MV / TVF)</div><span class="sb">CODE</span></div>
+      <div class="sc code"><div class="sn">result_correctness</div><div class="sd">GT vs Genie result hash match</div><span class="sb">CODE</span></div>
+      <div class="sc llm"><div class="sn">schema_accuracy</div><div class="sd">Correct tables, columns, joins</div><span class="sb">LLM</span></div>
+      <div class="sc llm"><div class="sn">logical_accuracy</div><div class="sd">SQL logic equivalence</div><span class="sb">LLM</span></div>
+      <div class="sc llm"><div class="sn">semantic_equivalence</div><div class="sd">Answers the same question</div><span class="sb">LLM</span></div>
+      <div class="sc llm"><div class="sn">completeness</div><div class="sd">All requested dimensions present</div><span class="sb">LLM</span></div>
+      <div class="sc llm"><div class="sn">response_quality</div><div class="sd">Overall answer quality</div><span class="sb">LLM</span></div>
+      <div class="sc llm"><div class="sn">arbiter</div><div class="sd">Meta-judge: Genie right despite failures?</div><span class="sb">LLM</span></div>
+    </div>
+    <div class="ba">
+      <div class="bac bf"><div class="bl">Without structured metadata</div><p><code>schema_accuracy: 0.72</code><br><br>"Score dropped. No idea why."</p></div>
+      <div class="ba-div">&rarr;</div>
+      <div class="bac af"><div class="bl">With structured Feedback</div><p><code>failure_type: column_mismatch</code><br><code>blame_set: [sales_table.revenue]</code><br><code>fix: alias 'rev' &rarr; 'revenue'</code><br><br>"Exact root cause + suggested fix."</p></div>
+    </div>
+    <div class="principle"><svg class="principle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg><div><strong>Principle:</strong> Build a <em>panel</em> of small, focused scorers. Return structured <code>Feedback</code> with metadata &mdash; not numbers. Your future self debugging regressions will thank you.</div></div>
+    <div class="codebase-ref"><div class="ref-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg> Implementation</div><ul>
+      <li><code>scorers/asset_routing.py</code> &mdash; CODE judge with result-match override</li>
+      <li><code>scorers/schema_accuracy.py</code> &mdash; LLM judge factory with ASI metadata</li>
+      <li><code>scorers/__init__.py:93-123</code> &mdash; <code>make_all_scorers()</code> assembles all 9</li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- ═══════════════ CH 5 ═══════════════ -->
+<section class="slide" id="ch5">
+  <span class="slide-number">04 / 10</span>
+  <div class="slide-inner">
+    <div class="chapter-label" style="color:var(--purple)">Pattern 4</div>
+    <h2>Tracing &mdash; Business-Context Observability</h2>
+    <div class="insight"><code>@mlflow.trace</code> captures every predict call. <code>start_span</code> traces multi-step LLM reasoning as a span tree. The key insight: tag traces with <strong>business context</strong> (question_id, iteration, lever) &mdash; not just technical metadata.</div>
+
+    <div class="divider"><span>Example Span Tree &mdash; Strategy Generation</span></div>
+    <div class="spans">
+      <div class="sp d0"><span class="spd" style="background:var(--accent);box-shadow:0 0 8px var(--accent-glow)"></span><span class="spn">generate_holistic_strategy</span><span class="spm">&nbsp;&mdash; 2 hard clusters, 1 soft</span><span class="spt">12.4s</span></div>
+      <div class="sp d1"><span class="spd" style="background:var(--amber)"></span><span class="spn">phase_1a_triage</span><span class="spm">&nbsp;&rarr; 3 action groups</span><span class="spt">4.2s</span></div>
+      <div class="sp d1"><span class="spd" style="background:var(--purple)"></span><span class="spn">phase_1b_detail_AG1</span><span class="spm">&nbsp;&rarr; lever 2: column descriptions</span><span class="spt">2.8s</span></div>
+      <div class="sp d1"><span class="spd" style="background:var(--purple)"></span><span class="spn">phase_1b_detail_AG2</span><span class="spm">&nbsp;&rarr; lever 3: join conditions</span><span class="spt">3.1s</span></div>
+      <div class="sp d1"><span class="spd" style="background:var(--purple)"></span><span class="spn">phase_1b_detail_AG3</span><span class="spm">&nbsp;&rarr; lever 1: instructions</span><span class="spt">2.3s</span></div>
+    </div>
+
+    <div class="two-col">
+      <div class="code-block"><div class="code-header"><span class="dot"></span>@mlflow.trace &mdash; predict</div>
+<pre><span class="dec">@mlflow.trace</span>
+<span class="kw">def</span> <span class="fn">genie_predict_fn</span>(question, **kwargs):
+    mlflow.<span class="fn">update_current_trace</span>(tags={
+        <span class="str">"question_id"</span>: kwargs[<span class="str">"question_id"</span>],
+        <span class="str">"genie.iteration"</span>: <span class="fn">str</span>(iteration),
+        <span class="str">"genie.lever"</span>: <span class="fn">str</span>(lever),
+    })
+    result = <span class="fn">run_genie_query</span>(w, space_id, question)
+    <span class="kw">return</span> {<span class="str">"response"</span>: result[<span class="str">"sql"</span>]}</pre></div>
+      <div class="code-block"><div class="code-header"><span class="dot"></span>start_span &mdash; LLM reasoning</div>
+<pre><span class="kw">with</span> mlflow.<span class="fn">start_span</span>(<span class="str">"strategy"</span>) <span class="kw">as</span> s:
+    s.<span class="fn">set_inputs</span>({<span class="str">"clusters"</span>: <span class="fn">len</span>(c)})
+    <span class="kw">with</span> mlflow.<span class="fn">start_span</span>(<span class="str">"triage"</span>) <span class="kw">as</span> t:
+        triage = <span class="fn">call_llm_for_triage</span>(c)
+        t.<span class="fn">set_outputs</span>({<span class="str">"AGs"</span>: <span class="fn">len</span>(triage)})
+    <span class="kw">for</span> ag <span class="kw">in</span> triage:
+        <span class="kw">with</span> mlflow.<span class="fn">start_span</span>(<span class="str">f"detail_{ag}"</span>):
+            <span class="fn">call_llm_for_details</span>(ag)</pre></div>
+    </div>
+    <div class="principle"><svg class="principle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg><div><strong>Principle:</strong> <code>@mlflow.trace</code> is the single highest-ROI investment in a GenAI app. Tag with business context. Use <code>start_span</code> for multi-step LLM chains.</div></div>
+    <div class="codebase-ref"><div class="ref-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg> Implementation</div><ul>
+      <li><code>evaluation.py:1296-1330</code> &mdash; <code>@mlflow.trace</code> on predict with business tags</li>
+      <li><code>optimizer.py:5382-5450</code> &mdash; Two-phase span tree: triage + per-AG detail</li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- ═══════════════ CH 6 ═══════════════ -->
+<section class="slide" id="ch6">
+  <span class="slide-number">05 / 10</span>
+  <div class="slide-inner">
+    <div class="chapter-label" style="color:var(--rose)">Pattern 5</div>
+    <h2>The Evaluation Pipeline</h2>
+    <div class="insight"><code>mlflow.genai.evaluate()</code> orchestrates: benchmarks &rarr; predict &rarr; score &rarr; trace &rarr; aggregate. One call. In production, we wrap it with <strong>retry logic and sequential fallback</strong> for transient API failures.</div>
+    <div class="flow">
+      <div class="fbox g"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></div><div class="fl">Benchmarks</div><div class="fs">30 questions</div></div>
+      <div class="farr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="fbox p"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div><div class="fl">predict_fn</div><div class="fs">@mlflow.trace</div></div>
+      <div class="farr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="fbox a"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l1.5 4.5H18l-3.5 2.5 1.5 4.5L12 12l-4 2.5 1.5-4.5L6 7.5h4.5z"/></svg></div><div class="fl">9 Scorers</div><div class="fs">CODE + LLM</div></div>
+      <div class="farr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="fbox c"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div><div class="fl">Metrics</div><div class="fs">per-judge agg</div></div>
+      <div class="farr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="fbox b"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/></svg></div><div class="fl">Artifacts</div><div class="fs">failure reports</div></div>
+    </div>
+
+    <div class="divider"><span>Example metric output</span></div>
+    <div class="metric-bars">
+      <div class="mbar"><span class="ml">syntax_validity</span><div class="mt"><div class="mb" style="width:95%;background:linear-gradient(90deg,var(--green),#34d399)"></div></div><span class="mv" style="color:var(--green)">95%</span></div>
+      <div class="mbar"><span class="ml">schema_accuracy</span><div class="mt"><div class="mb" style="width:82%;background:linear-gradient(90deg,var(--accent),var(--accent-bright))"></div></div><span class="mv" style="color:var(--accent)">82%</span></div>
+      <div class="mbar"><span class="ml">logical_accuracy</span><div class="mt"><div class="mb" style="width:78%;background:linear-gradient(90deg,var(--purple),#c4b5fd)"></div></div><span class="mv" style="color:var(--purple)">78%</span></div>
+      <div class="mbar"><span class="ml">result_correctness</span><div class="mt"><div class="mb" style="width:71%;background:linear-gradient(90deg,var(--amber),#fbbf24)"></div></div><span class="mv" style="color:var(--amber)">71%</span></div>
+      <div class="mbar"><span class="ml">asset_routing</span><div class="mt"><div class="mb" style="width:90%;background:linear-gradient(90deg,var(--green),#34d399)"></div></div><span class="mv" style="color:var(--green)">90%</span></div>
+    </div>
+
+    <div class="code-block"><div class="code-header"><span class="dot"></span>Production retry pattern</div>
+<pre><span class="kw">for</span> attempt <span class="kw">in</span> <span class="fn">range</span>(<span class="num">1</span>, MAX_ATTEMPTS + <span class="num">1</span>):
+    <span class="kw">try</span>:
+        result = mlflow.genai.<span class="fn">evaluate</span>(predict_fn=predict_fn, data=data, scorers=scorers)
+        <span class="kw">break</span>
+    <span class="kw">except</span> Exception <span class="kw">as</span> exc:
+        <span class="kw">if</span> <span class="fn">is_retryable</span>(exc) <span class="kw">and</span> attempt < MAX_ATTEMPTS:
+            os.environ[<span class="str">"MLFLOW_GENAI_EVAL_MAX_WORKERS"</span>] = <span class="str">"1"</span>  <span class="cmt"># sequential fallback</span>
+            <span class="kw">continue</span>
+        <span class="kw">raise</span></pre></div>
+    <div class="codebase-ref"><div class="ref-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg> Implementation</div><ul>
+      <li><code>evaluation.py:3150-3163</code> &mdash; <code>run_evaluation()</code></li>
+      <li><code>evaluation.py:2526-2588</code> &mdash; <code>_run_evaluate_with_retries()</code></li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- ═══════════════ CH 7 ═══════════════ -->
+<section class="slide" id="ch7">
+  <span class="slide-number">06 / 10</span>
+  <div class="slide-inner">
+    <div class="chapter-label" style="color:var(--blue)">Pattern 6</div>
+    <h2>Configuration-as-Model Versioning</h2>
+    <div class="insight">In GenAI, the "model" isn't weights &mdash; it's a <strong>Genie Space configuration</strong>: instructions, table metadata, column descriptions, join conditions. <code>LoggedModel</code> versions this configuration. Aliases give promotion semantics. Linked metrics give a quality dashboard.</div>
+
+    <div class="divider"><span>Version progression</span></div>
+    <div class="vchain">
+      <div class="vnode"><div class="vn">iter_0</div><div class="vs">baseline</div><div class="vp" style="color:var(--rose)">62%</div></div>
+      <div class="varr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="vnode"><div class="vn">iter_1</div><div class="vs">+instructions</div><div class="vp" style="color:var(--amber)">71%</div></div>
+      <div class="varr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="vnode"><div class="vn">iter_2</div><div class="vs">+columns</div><div class="vp" style="color:var(--accent)">78%</div></div>
+      <div class="varr"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="vnode best"><div class="vn">iter_3</div><div class="vs">+joins</div><div class="vp">85%</div></div>
+      <div class="varr"><svg viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg></div>
+      <div class="vnode champ"><div class="vn">champion</div><div class="vs">alias &rarr; iter_3</div><div class="vp" style="color:var(--amber)">&#9733;</div></div>
+    </div>
+
+    <div class="code-block"><div class="code-header"><span class="dot"></span>Snapshot &rarr; promote &rarr; rollback</div>
+<pre><span class="cmt"># Version each iteration</span>
+model = mlflow.<span class="fn">create_logged_model</span>(name=<span class="str">f"genie_space_{space_id}"</span>,
+    params={<span class="str">"iteration"</span>: <span class="fn">str</span>(i), <span class="str">"patch_count"</span>: <span class="fn">str</span>(n)}, tags={<span class="str">"domain"</span>: domain})
+
+<span class="cmt"># Promote best</span>
+mlflow.<span class="fn">set_logged_model_alias</span>(model_id=best_id, alias=<span class="str">"champion"</span>)
+
+<span class="cmt"># Rollback</span>
+config = json.<span class="fn">loads</span>(mlflow.<span class="fn">get_logged_model</span>(model_id).params[<span class="str">"model_space_config"</span>])
+<span class="fn">patch_space_config</span>(w, space_id, config)</pre></div>
+    <div class="principle"><svg class="principle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg><div><strong>Principle:</strong> Version your configuration, not just your code. Aliases give promotion. You'll need rollback sooner than you think.</div></div>
+    <div class="codebase-ref"><div class="ref-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg> Implementation</div><ul>
+      <li><code>models.py:50-127</code> &mdash; <code>snapshot_config()</code></li>
+      <li><code>models.py:130-195</code> &mdash; <code>promote_best_model()</code></li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- ═══════════════ CH 8 ═══════════════ -->
+<section class="slide" id="ch8">
+  <span class="slide-number">07 / 10</span>
+  <div class="slide-inner">
+    <div class="chapter-label" style="color:var(--green)">Pattern 7</div>
+    <h2>The 3-Gate Verification System</h2>
+    <div class="insight">After applying patches, the pipeline runs <strong>three progressively broader evaluation gates</strong>. If any gate detects regressions, it rolls back. Each gate logs structured feedback directly on traces &mdash; creating a complete investigation record.</div>
+    <div class="gates">
+      <div class="gate ok">
+        <div class="gn">Gate 1</div>
+        <div class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+        <div class="gt">Slice</div>
+        <div class="gd">Only patched questions</div>
+        <div class="gv">PASS +3.2%</div>
+      </div>
+      <div class="gconn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg><span>if pass</span></div>
+      <div class="gate ok">
+        <div class="gn">Gate 2</div>
+        <div class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+        <div class="gt">P0</div>
+        <div class="gd">Critical questions only</div>
+        <div class="gv">PASS no regressions</div>
+      </div>
+      <div class="gconn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg><span>if pass</span></div>
+      <div class="gate ok">
+        <div class="gn">Gate 3</div>
+        <div class="gi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
+        <div class="gt">Full</div>
+        <div class="gd">All benchmarks</div>
+        <div class="gv">PASS 85%</div>
+      </div>
+    </div>
+    <div class="code-block"><div class="code-header"><span class="dot"></span>Gate + root-cause feedback on traces</div>
+<pre>mlflow.<span class="fn">log_feedback</span>(trace_id=tid, name=<span class="str">"gate_slice"</span>, value=<span class="num">True</span>,
+    rationale=<span class="str">"Lever 4 slice: pass. Schema accuracy +3.2%"</span>,
+    source=AssessmentSource(source_type=<span class="str">"CODE"</span>, source_id=<span class="str">"genie_space_optimizer/gate"</span>),
+    metadata={<span class="str">"gate_type"</span>: <span class="str">"slice"</span>, <span class="str">"lever"</span>: <span class="num">4</span>, <span class="str">"iteration"</span>: <span class="num">3</span>})
+
+<span class="cmt"># Root-cause analysis on failing traces</span>
+mlflow.<span class="fn">log_feedback</span>(trace_id=tid, name=<span class="str">"asi_schema_accuracy"</span>, value=<span class="num">False</span>,
+    rationale=<span class="str">"Add alias 'rev' to column 'revenue'"</span>,
+    metadata={<span class="str">"failure_type"</span>: <span class="str">"column_mismatch"</span>, <span class="str">"blame_set"</span>: [<span class="str">"sales_table.revenue"</span>]})</pre></div>
+    <div class="principle"><svg class="principle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg><div><strong>Principle:</strong> Traces are living documents. Annotate them with what you <em>concluded</em>. <code>log_feedback</code> turns traces from logs into investigation tools.</div></div>
+    <div class="codebase-ref"><div class="ref-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg> Implementation</div><ul>
+      <li><code>evaluation.py:5607-5630</code> &mdash; <code>log_gate_feedback_on_traces()</code></li>
+      <li><code>evaluation.py:5633+</code> &mdash; <code>log_asi_feedback_on_traces()</code></li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- ═══════════════ CH 9 ═══════════════ -->
+<section class="slide" id="ch9">
+  <span class="slide-number">08 / 10</span>
+  <div class="slide-inner">
+    <div class="chapter-label" style="color:var(--amber)">Pattern 8</div>
+    <h2>Closed-Loop Human Review</h2>
+    <div class="insight">Automated judges are imperfect. We use MLflow Labeling Sessions to create <strong>structured review forms</strong> populated with failure traces. Corrections flow back automatically at the start of the next run &mdash; no custom UI needed.</div>
+    <div class="loop">
+      <svg class="ring" viewBox="0 0 240 240">
+        <defs><marker id="ah" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0 0L8 3L0 6" fill="none" stroke="#2a3f66" stroke-width="1.5"/></marker></defs>
+        <path d="M120 20A100 100 0 0 1 220 120" fill="none" stroke="#2a3f66" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+        <path d="M220 120A100 100 0 0 1 120 220" fill="none" stroke="#2a3f66" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+        <path d="M120 220A100 100 0 0 1 20 120" fill="none" stroke="#2a3f66" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+        <path d="M20 120A100 100 0 0 1 120 20" fill="none" stroke="#2a3f66" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+      </svg>
+      <div class="loop-center"><div class="lt">Closed Loop</div><div class="ls">corrections auto-flow<br>to next run</div></div>
+      <div class="ln" style="top:-10px;left:50%;transform:translateX(-50%)"><div class="li" style="border-color:rgba(244,63,94,0.3)"><svg viewBox="0 0 24 24" fill="none" stroke="var(--rose)" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg></div><div class="ll">Evaluate</div></div>
+      <div class="ln" style="top:50%;right:-15px;transform:translateY(-50%)"><div class="li" style="border-color:rgba(167,139,250,0.3)"><svg viewBox="0 0 24 24" fill="none" stroke="var(--purple)" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div><div class="ll">Trace<br>Failures</div></div>
+      <div class="ln" style="bottom:-10px;left:50%;transform:translateX(-50%)"><div class="li" style="border-color:rgba(245,158,11,0.3)"><svg viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div><div class="ll">Human<br>Review</div></div>
+      <div class="ln" style="top:50%;left:-15px;transform:translateY(-50%)"><div class="li" style="border-color:rgba(16,185,129,0.3)"><svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></div><div class="ll">Sync to<br>Dataset</div></div>
+    </div>
+    <div class="code-block"><div class="code-header"><span class="dot"></span>Review schemas + session creation</div>
+<pre><span class="fn">create_label_schema</span>(name=<span class="str">"judge_verdict_accuracy"</span>, type=<span class="str">"feedback"</span>,
+    input=InputCategorical(options=[<span class="str">"Correct"</span>,<span class="str">"Wrong - answer is fine"</span>,<span class="str">"Benchmark wrong"</span>,<span class="str">"Ambiguous"</span>]))
+
+session = <span class="fn">create_labeling_session</span>(name=<span class="str">f"review_{domain}"</span>,
+    label_schemas=[<span class="str">"judge_verdict_accuracy"</span>, <span class="str">"corrected_expected_sql"</span>])
+session.<span class="fn">add_traces</span>(traces_df)
+
+<span class="cmt"># Next run &mdash; corrections auto-ingest</span>
+session.<span class="fn">sync</span>(dataset_name=benchmark_table)</pre></div>
+    <div class="codebase-ref"><div class="ref-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg> Implementation</div><ul>
+      <li><code>labeling.py:39-130</code> &mdash; <code>ensure_labeling_schemas()</code></li>
+      <li><code>labeling.py:160-230</code> &mdash; <code>create_review_session()</code></li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- ═══════════════ CH 10 ═══════════════ -->
+<section class="slide" id="ch10">
+  <span class="slide-number">09 / 10</span>
+  <div class="slide-inner">
+    <div class="chapter-label" style="color:var(--purple)">Pattern 9</div>
+    <h2>Bridging MLflow &amp; Your Application UI</h2>
+    <div class="insight">Users shouldn't have to know MLflow exists to benefit from it. We surface experiment links, run links, and labeling session links directly in the React frontend &mdash; and pre-create experiments with OBO credentials so click-through never 403s.</div>
+    <div class="flow">
+      <div class="fbox p" style="min-width:140px"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg></div><div class="fl">App UI</div><div class="fs">React frontend</div></div>
+      <div class="farr" style="flex-direction:column;gap:0.15rem"><svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg><span style="font-size:0.52rem;font-weight:600;color:var(--green)">deep links</span></div>
+      <div class="fbox c" style="min-width:140px"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v7.527a2 2 0 0 1-.211.896L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.069-10.127A2 2 0 0 1 14 9.527V2"/><path d="M8.5 2h7"/></svg></div><div class="fl">MLflow UI</div><div class="fs">experiments &amp; traces</div></div>
+      <div class="farr" style="flex-direction:column;gap:0.15rem"><svg viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg><span style="font-size:0.52rem;font-weight:600;color:var(--amber)">review links</span></div>
+      <div class="fbox a" style="min-width:140px"><div class="fi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div><div class="fl">Review App</div><div class="fs">labeling sessions</div></div>
+    </div>
+    <div class="ltable-wrap">
+    <table class="ltable">
+      <tr><th>Category</th><th>What's surfaced</th><th>Color</th></tr>
+      <tr><td style="color:var(--purple)"><strong>Genie</strong></td><td>Space URL, warehouse</td><td><span style="color:var(--purple)">purple</span></td></tr>
+      <tr><td style="color:var(--blue)"><strong>Jobs</strong></td><td>Optimization job run</td><td><span style="color:var(--blue)">blue</span></td></tr>
+      <tr><td style="color:var(--green)"><strong>MLflow</strong></td><td>Experiment, per-iteration runs, trace explorer</td><td><span style="color:var(--green)">emerald</span></td></tr>
+      <tr><td style="color:var(--accent)"><strong>Review</strong></td><td>Labeling session URL</td><td><span style="color:var(--accent)">teal</span></td></tr>
+      <tr><td style="color:var(--amber)"><strong>Data</strong></td><td>UC dataset, benchmark table</td><td><span style="color:var(--amber)">amber</span></td></tr>
+    </table>
+    </div>
+    <div class="principle"><svg class="principle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg><div><strong>Principle:</strong> Surface MLflow links in your own UI. Handle permissions with OBO tokens so click-through just works. The infrastructure should be invisible to end users.</div></div>
+    <div class="codebase-ref"><div class="ref-title"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg> Implementation</div><ul>
+      <li><code>ui/components/ResourceLinks.tsx:20-59</code> &mdash; <code>categoryConfig</code></li>
+      <li><code>ui/components/IterationExplorer.tsx:740+</code> &mdash; <code>MLflowLinks</code></li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- ═══════════════ EPILOGUE ═══════════════ -->
+<section class="slide" id="epilogue">
+  <div class="slide-inner">
+    <div class="chapter-label" style="color:var(--rose)">Takeaways</div>
+    <h2>Design Principles for Production GenAI</h2>
+    <div class="epcards">
+      <div class="epc"><span class="en">1</span><div class="et">Trace first, build second</div><div class="ed">Add <code>@mlflow.trace</code> on your predict function before anything else. Observability compounds.</div></div>
+      <div class="epc"><span class="en">2</span><div class="et">Version prompts immediately</div><div class="ed">Even a rough draft. Version 1 in a registry beats a string buried in source code.</div></div>
+      <div class="epc"><span class="en">3</span><div class="et">Create eval data early</div><div class="ed">Even 5 benchmarks. You cannot improve what you cannot measure.</div></div>
+      <div class="epc"><span class="en">4</span><div class="et">Feedback over numbers</div><div class="ed">Structured <code>Feedback</code> with metadata is the difference between "broke" and "here's the fix."</div></div>
+      <div class="epc"><span class="en">5</span><div class="et">LoggedModel everything</div><div class="ed">Config, prompts, system state &mdash; version it all. Rollback is when, not if.</div></div>
+    </div>
+    <div class="closing">
+      <p>"MLflow isn't a model training tool that happens to support GenAI. It's a <strong>GenAI lifecycle platform</strong> &mdash; experiments, prompts, datasets, evaluation, tracing, versioning, human review &mdash; that happens to also support model training. Treat it as the latter, and <strong>everything clicks</strong>."</p>
+    </div>
+  </div>
+</section>
+
+<script>
+  const links=document.querySelectorAll('nav .nav-links a'),secs=document.querySelectorAll('.slide');
+  new IntersectionObserver(e=>e.forEach(x=>{if(x.isIntersecting){links.forEach(l=>l.classList.remove('active'));const a=document.querySelector(`nav a[href="#${x.target.id}"]`);if(a)a.classList.add('active')}}),{threshold:.3}).observe(document.querySelector('.slide'));
+  secs.forEach(s=>new IntersectionObserver(e=>e.forEach(x=>{if(x.isIntersecting){links.forEach(l=>l.classList.remove('active'));const a=document.querySelector(`nav a[href="#${x.target.id}"]`);if(a)a.classList.add('active')}}),{threshold:.3}).observe(s));
+
+  const fo=new IntersectionObserver(e=>e.forEach(x=>{if(x.isIntersecting){x.target.style.opacity='1';x.target.style.transform='translateY(0)'}}),{threshold:.08});
+  document.querySelectorAll('.flow,.scorers,.gates,.loop,.spans,.ba,.dsv,.code-block,.principle,.codebase-ref,.ltable,.epcards,.metric-bars,.arch,.vchain,.stats,.tags').forEach(el=>{el.style.opacity='0';el.style.transform='translateY(18px)';el.style.transition='opacity .6s ease,transform .6s ease';fo.observe(el)});
+
+  // Animate metric bars on scroll
+  const mo=new IntersectionObserver(e=>e.forEach(x=>{if(x.isIntersecting){x.target.querySelectorAll('.mb').forEach(b=>{const w=b.style.width;b.style.width='0';requestAnimationFrame(()=>requestAnimationFrame(()=>b.style.width=w))})}}),{threshold:.3});
+  document.querySelectorAll('.metric-bars').forEach(el=>mo.observe(el));
+</script>
+</body>
+</html>
