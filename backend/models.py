@@ -136,37 +136,26 @@ class GenieCreateResponse(BaseModel):
 # ===== GenieIQ Models =====
 
 class MaturityLevel(str, Enum):
-    """Maturity level for a Genie Space."""
+    """Maturity level for a Genie Space (3-tier)."""
+    NOT_READY = "Not Ready"
+    READY_TO_OPTIMIZE = "Ready to Optimize"
     TRUSTED = "Trusted"
-    CALIBRATED = "Calibrated"
-    CONFIGURED = "Configured"
-    CONNECTED = "Connected"
-
-
-class ScoreBreakdown(BaseModel):
-    """Score breakdown by maturity tier."""
-    connected: int = Field(0, ge=0, le=20, description="Connected score (0-20)")
-    configured: int = Field(0, ge=0, le=20, description="Configured score (0-20)")
-    calibrated: int = Field(0, ge=0, le=20, description="Calibrated score (0-20)")
-    trusted: int = Field(0, ge=0, le=20, description="Trusted score (0-20)")
-    optimized: int = Field(0, ge=0, le=20, description="Optimized score (0-20)")
 
 
 class CheckDetail(BaseModel):
     """A single scoring check result."""
     label: str
-    points: int
-    max_points: int
     passed: bool
 
 
 class ScanResult(BaseModel):
     """IQ scan result for a Genie Space."""
     space_id: str
-    score: int = Field(..., ge=0, le=100)
+    score: int = Field(..., ge=0, le=15)
+    total: int = 15
     maturity: MaturityLevel
-    breakdown: ScoreBreakdown
-    checks: dict[str, list[CheckDetail]] = Field(default_factory=dict)
+    optimization_accuracy: float | None = None  # 0.0-1.0, None if never optimized
+    checks: list[CheckDetail] = Field(default_factory=list)
     findings: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
     scanned_at: str  # ISO datetime string
@@ -178,6 +167,7 @@ class SpaceListItem(BaseModel):
     display_name: str
     score: int | None = None
     maturity: str | None = None
+    optimization_accuracy: float | None = None  # 0.0-1.0, None if never optimized
     is_starred: bool = False
     last_scanned: str | None = None  # ISO datetime
     space_url: str | None = None

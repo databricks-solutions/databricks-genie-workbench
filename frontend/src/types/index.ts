@@ -115,29 +115,20 @@ export type OptimizeView = "benchmarks" | "labeling" | "feedback" | "optimizatio
 
 // ===== GenieIQ / Workbench Types =====
 
-export type MaturityLevel = "Trusted" | "Calibrated" | "Configured" | "Connected"
-
-export interface ScoreBreakdown {
-  connected: number    // 0-20
-  configured: number   // 0-20
-  calibrated: number   // 0-20
-  trusted: number      // 0-20
-  optimized: number    // 0-20
-}
+export type MaturityLevel = "Trusted" | "Ready to Optimize" | "Not Ready"
 
 export interface CheckDetail {
   label: string
-  points: number
-  max_points: number
   passed: boolean
 }
 
 export interface ScanResult {
   space_id: string
   score: number
+  total: number
   maturity: string
-  breakdown: ScoreBreakdown
-  checks: Record<string, CheckDetail[]>
+  optimization_accuracy: number | null  // 0.0-1.0, null if never optimized
+  checks: CheckDetail[]
   findings: string[]
   next_steps: string[]
   scanned_at: string
@@ -148,6 +139,7 @@ export interface SpaceListItem {
   display_name: string
   score: number | null
   maturity: string | null
+  optimization_accuracy: number | null  // 0.0-1.0, null if never optimized
   is_starred: boolean
   last_scanned: string | null
   space_url: string | null

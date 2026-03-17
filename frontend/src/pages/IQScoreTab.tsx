@@ -2,9 +2,9 @@
  * IQScoreTab - Maturity S-curve + side-by-side check columns + recommendations with inline fix agent.
  */
 import { useState, useRef, useEffect } from "react"
-import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, Code2, ChevronDown, ChevronRight, Square } from "lucide-react"
+import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, Code2, ChevronDown, ChevronRight, Square, Check, X } from "lucide-react"
 import { streamFixAgent } from "@/lib/api"
-import { getScoreHex, MATURITY_COLORS } from "@/lib/utils"
+import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import { MaturityCurve } from "@/components/MaturityCurve"
 import type { ScanResult, CheckDetail, FixAgentEvent, FixPatch } from "@/types"
 
@@ -14,18 +14,6 @@ interface IQScoreTabProps {
   isScanning: boolean
   spaceId: string
   spaceConfig?: Record<string, unknown>
-}
-
-/** Ordered tier keys for flattening checks (Connected first → Optimized last). */
-const CHECK_TIER_ORDER = ["connected", "configured", "calibrated", "trusted", "optimized"] as const
-
-/** Map tier key → display label for the color dot. */
-const TIER_LABELS: Record<string, string> = {
-  connected: "Connected",
-  configured: "Configured",
-  calibrated: "Calibrated",
-  trusted: "Trusted",
-  optimized: "Trusted",
 }
 
 export function IQScoreTab({ scanResult, onScan, isScanning, spaceId, spaceConfig }: IQScoreTabProps) {
@@ -100,15 +88,14 @@ export function IQScoreTab({ scanResult, onScan, isScanning, spaceId, spaceConfi
     )
   }
 
-  // Flatten all checks, split into passed/failed
-  const passedChecks: { check: CheckDetail; tierKey: string }[] = []
-  const failedChecks: { check: CheckDetail; tierKey: string }[] = []
-  for (const key of CHECK_TIER_ORDER) {
-    for (const c of (scanResult.checks?.[key] ?? [])) {
-      ;(c.passed ? passedChecks : failedChecks).push({ check: c, tierKey: key })
-    }
-  }
-  const totalChecks = passedChecks.length + failedChecks.length
+  // Flat checks list — handle both new (array) and old (dict) formats
+  const allChecks: CheckDetail[] = Array.isArray(scanResult.checks)
+    ? scanResult.checks
+    : Object.values(scanResult.checks as unknown as Record<string, CheckDetail[]>).flat()
+  const passedChecks = allChecks.filter(c => c.passed)
+  const failedChecks = allChecks.filter(c => !c.passed)
+  const totalChecks = allChecks.length
+  const total = scanResult.total ?? 15
 
   const maturityColors = MATURITY_COLORS[scanResult.maturity]
   const fixAgentActive = fixRunning || fixCompleted || fixError
@@ -120,20 +107,15 @@ export function IQScoreTab({ scanResult, onScan, isScanning, spaceId, spaceConfi
         {/* Score header */}
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-sm font-semibold text-secondary uppercase tracking-wide">Maturity Curve</h3>
-          <div className="flex items-center gap-3">
-            {maturityColors && (
-              <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${maturityColors.badge}`}>
-                {scanResult.maturity}
-              </span>
-            )}
-            <span className="text-2xl font-bold" style={{ color: getScoreHex(scanResult.score) }}>
-              {scanResult.score}
+          {maturityColors && (
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${maturityColors.badge}`}>
+              {scanResult.maturity}
             </span>
-          </div>
+          )}
         </div>
 
         {/* S-curve visualization */}
-        <MaturityCurve score={scanResult.score} maturity={scanResult.maturity} optimizationPoints={scanResult.breakdown.optimized} />
+        <MaturityCurve score={scanResult.score} total={total} maturity={scanResult.maturity} />
 
         {/* Expandable check list — two columns: passed / not passed */}
         {totalChecks > 0 && (
@@ -147,7 +129,9 @@ export function IQScoreTab({ scanResult, onScan, isScanning, spaceId, spaceConfi
                 : <ChevronRight className="w-4 h-4 text-muted" />
               }
               <span className="text-sm font-medium text-secondary group-hover:text-primary transition-colors">
-                {passedChecks.length}/{totalChecks} checks passed — {scanResult.score}/100 points
+                {passedChecks.length}/{totalChecks} checks passed
+                {" · "}
+                {getOptimizationLabel(scanResult.optimization_accuracy)}
               </span>
             </button>
 
@@ -160,16 +144,12 @@ export function IQScoreTab({ scanResult, onScan, isScanning, spaceId, spaceConfi
                     Passed ({passedChecks.length})
                   </div>
                   <div className="space-y-0.5">
-                    {passedChecks.map(({ check, tierKey }, i) => {
-                      const color = MATURITY_COLORS[TIER_LABELS[tierKey] ?? "Connected"]?.hex ?? "#6b7280"
-                      return (
-                        <div key={i} className="flex items-center gap-2 py-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
-                          <span className="flex-1 text-sm text-secondary truncate">{check.label}</span>
-                          <span className="text-xs font-mono text-emerald-500">{check.points}/{check.max_points}</span>
-                        </div>
-                      )
-                    })}
+                    {passedChecks.map((check, i) => (
+                      <div key={i} className="flex items-center gap-2 py-1.5">
+                        <Check className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                        <span className="flex-1 text-sm text-secondary truncate">{check.label}</span>
+                      </div>
+                    ))}
                     {passedChecks.length === 0 && (
                       <p className="text-xs text-muted py-2">No checks passed yet</p>
                     )}
@@ -183,16 +163,12 @@ export function IQScoreTab({ scanResult, onScan, isScanning, spaceId, spaceConfi
                     Not Passed ({failedChecks.length})
                   </div>
                   <div className="space-y-0.5">
-                    {failedChecks.map(({ check, tierKey }, i) => {
-                      const color = MATURITY_COLORS[TIER_LABELS[tierKey] ?? "Connected"]?.hex ?? "#6b7280"
-                      return (
-                        <div key={i} className="flex items-center gap-2 py-1.5">
-                          <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
-                          <span className="flex-1 text-sm text-muted truncate">{check.label}</span>
-                          <span className="text-xs font-mono text-muted">{check.points}/{check.max_points}</span>
-                        </div>
-                      )
-                    })}
+                    {failedChecks.map((check, i) => (
+                      <div key={i} className="flex items-center gap-2 py-1.5">
+                        <X className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                        <span className="flex-1 text-sm text-muted truncate">{check.label}</span>
+                      </div>
+                    ))}
                     {failedChecks.length === 0 && (
                       <p className="text-xs text-emerald-500 py-2">All checks passed!</p>
                     )}

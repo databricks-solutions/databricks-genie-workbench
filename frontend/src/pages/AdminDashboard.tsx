@@ -24,8 +24,8 @@ function StatCard({ label, value, sub, icon }: { label: string; value: string | 
   )
 }
 
-function ScoreBadge({ score }: { score: number }) {
-  return <span className={`font-bold text-lg ${getScoreColor(score)}`}>{score}</span>
+function ScoreBadge({ score, maturity }: { score: number; maturity?: string }) {
+  return <span className={`font-bold text-lg ${getScoreColor(maturity)}`}>{score}</span>
 }
 
 export function AdminDashboard({ onSelectSpace }: AdminDashboardProps) {
@@ -96,7 +96,7 @@ export function AdminDashboard({ onSelectSpace }: AdminDashboardProps) {
           <StatCard label="Total Spaces" value={stats.total_spaces} icon={<BarChart2 className="w-4 h-4" />} />
           <StatCard label="Scanned" value={stats.scanned_spaces} sub={`${stats.total_spaces > 0 ? Math.round(stats.scanned_spaces / stats.total_spaces * 100) : 0}% coverage`} icon={<BarChart2 className="w-4 h-4" />} />
           <StatCard label="Avg Score" value={stats.avg_score} icon={<TrendingUp className="w-4 h-4" />} />
-          <StatCard label="Critical" value={stats.critical_count} sub="score ≤ 20" icon={<AlertTriangle className="w-4 h-4" />} />
+          <StatCard label="Critical" value={stats.critical_count} sub="Not Ready" icon={<AlertTriangle className="w-4 h-4" />} />
         </div>
       )}
 
@@ -141,7 +141,7 @@ export function AdminDashboard({ onSelectSpace }: AdminDashboardProps) {
                 >
                   <span className="w-5 text-xs text-muted font-medium">{i + 1}</span>
                   <span className="flex-1 text-sm text-primary truncate">{entry.display_name}</span>
-                  <ScoreBadge score={entry.score} />
+                  <ScoreBadge score={entry.score} maturity={entry.maturity} />
                 </div>
               ))}
             </div>
@@ -160,7 +160,7 @@ export function AdminDashboard({ onSelectSpace }: AdminDashboardProps) {
                     >
                       <span className="w-5 text-xs text-muted font-medium">{i + 1}</span>
                       <span className="flex-1 text-sm text-primary truncate">{entry.display_name}</span>
-                      <ScoreBadge score={entry.score} />
+                      <ScoreBadge score={entry.score} maturity={entry.maturity} />
                     </div>
                   ))}
                 </div>

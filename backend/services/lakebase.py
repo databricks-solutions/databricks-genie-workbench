@@ -139,7 +139,7 @@ async def save_scan_result(space_id: str, scan_result: dict) -> None:
             space_id,
             scan_result["score"],
             scan_result["maturity"],
-            json.dumps(scan_result.get("breakdown", {})),
+            json.dumps({"optimization_accuracy": scan_result.get("optimization_accuracy")}),
             json.dumps(scan_result.get("findings", [])),
             json.dumps(scan_result.get("next_steps", [])),
             datetime.fromisoformat(scan_result["scanned_at"]),
@@ -166,10 +166,12 @@ async def get_latest_score(space_id: str) -> Optional[dict]:
         """, space_id)
         if not row:
             return None
+        extra = json.loads(row["breakdown"])
         return {
             "score": row["score"],
+            "total": 15,
             "maturity": row["maturity"],
-            "breakdown": json.loads(row["breakdown"]),
+            "optimization_accuracy": extra.get("optimization_accuracy"),
             "findings": json.loads(row["findings"]),
             "next_steps": json.loads(row["next_steps"]),
             "scanned_at": row["scanned_at"].isoformat(),

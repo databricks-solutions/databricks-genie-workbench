@@ -5,7 +5,7 @@
 import { useState, useEffect } from "react"
 import { ArrowLeft, Star, Eye, BarChart2, Settings2, Clock, ExternalLink } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail } from "@/lib/api"
-import { getScoreColor } from "@/lib/utils"
+import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint } from "@/types"
 import { IQScoreTab } from "./IQScoreTab"
 import { HistoryTab } from "./HistoryTab"
@@ -49,9 +49,10 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
             setScanResult({
               space_id: spaceId,
               score: detail.scan_result.score,
+              total: detail.scan_result.total ?? 15,
               maturity: detail.scan_result.maturity,
-              breakdown: detail.scan_result.breakdown,
-              checks: detail.scan_result.checks ?? {},
+              optimization_accuracy: detail.scan_result.optimization_accuracy ?? null,
+              checks: detail.scan_result.checks ?? [],
               findings: detail.scan_result.findings ?? [],
               next_steps: detail.scan_result.next_steps ?? [],
               scanned_at: detail.scan_result.scanned_at ?? "",
@@ -97,8 +98,6 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
     { id: "history", label: "History", icon: <Clock className="w-4 h-4" /> },
   ]
 
-  const scoreColor = getScoreColor(scanResult?.score)
-
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -119,10 +118,11 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
           <div className="flex items-center gap-3 mt-2">
             {scanResult ? (
               <>
-                <span className={`text-3xl font-bold ${scoreColor}`}>{scanResult.score}</span>
-                <span className="text-muted text-sm">/100</span>
-                <span className="text-xs px-2 py-0.5 rounded-full border border-current opacity-70 font-medium">
+                <span className={`text-xs font-medium px-2 py-0.5 rounded-full border ${MATURITY_COLORS[scanResult.maturity]?.badge ?? "bg-surface-secondary text-muted border-default"}`}>
                   {scanResult.maturity}
+                </span>
+                <span className="text-muted text-sm">
+                  {scanResult.score}/15 checks · {getOptimizationLabel(scanResult.optimization_accuracy)}
                 </span>
               </>
             ) : (

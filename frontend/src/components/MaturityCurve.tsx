@@ -1,54 +1,37 @@
 /**
- * MaturityCurve — SVG S-curve visualization showing 4 maturity tiers
- * plus a bonus "Optimized" milestone at the end, with a pulsing "You Are Here" marker.
+ * MaturityCurve — SVG S-curve visualization showing 3 maturity tiers
+ * with colored area bands under the curve and a pulsing "You Are Here" marker.
  * Theme-aware: uses currentColor + Tailwind classes for light/dark mode.
  */
 import { useRef, useEffect, useState } from "react"
 
 interface MaturityCurveProps {
-  score: number              // 0-100
+  score: number              // 0-15
+  total: number              // 15
   maturity: string           // current tier label
-  optimizationPoints: number // 0-20, from breakdown.optimized
 }
 
-/** 4 maturity tiers positioned along the first 80% of the curve. */
+/** 3 maturity tiers — pct is center of each zone for label placement. */
 const TIERS = [
-  { label: "Connected",  tagline: "Can Genie see my data?",            color: "#ef4444", threshold: 0,  pct: 0.20 },
-  { label: "Configured", tagline: "Does Genie speak my language?",     color: "#eab308", threshold: 26, pct: 0.40 },
-  { label: "Calibrated", tagline: "Are Genie's answers consistent?",   color: "#3b82f6", threshold: 51, pct: 0.60 },
-  { label: "Trusted",    tagline: "Is Genie ready for everyone?",      color: "#10b981", threshold: 76, pct: 0.80 },
+  { label: "Not Ready",          tagline: "Configuration checks still failing",       color: "#ef4444", pct: 1/6 },
+  { label: "Ready to Optimize",  tagline: "All config checks pass — run benchmarks",  color: "#3b82f6", pct: 3/6 },
+  { label: "Trusted",            tagline: "Benchmarked and verified",                  color: "#10b981", pct: 5/6 },
 ]
 
-/** Bonus 5th milestone — Optimized — at the curve's end. */
-const OPTIMIZED = {
-  label: "Optimized",
-  tagline: "Is Genie battle-tested?",
-  color: "#a855f7", // purple — distinct from tier colors
-  pct: 0.98,
-}
+/** Boundary percentages for the 3 tier zones. */
+const ZONE_BOUNDARIES = [0, 1/3, 2/3, 1.0]
 
 // Compact S-curve: flat bottom-left → steep rise → flat top-right
-const CURVE_D = "M 60,195 C 130,195 200,190 350,110 C 500,30 570,22 740,22"
-const AREA_D  = `${CURVE_D} L 740,210 L 60,210 Z`
+// S-curve with room below for labels
+const CURVE_D = "M 60,170 C 130,170 200,165 350,90 C 500,15 570,8 740,8"
+const AREA_D  = `${CURVE_D} L 740,185 L 60,185 Z`
 
-/** Build a 4-pointed sparkle path centered at (cx, cy) with given radius. */
-function sparklePath(cx: number, cy: number, r: number): string {
-  const ir = r * 0.35 // inner radius
-  const pts: string[] = []
-  for (let i = 0; i < 8; i++) {
-    const angle = -Math.PI / 2 + (i * Math.PI) / 4
-    const rad = i % 2 === 0 ? r : ir
-    pts.push(`${cx + rad * Math.cos(angle)},${cy + rad * Math.sin(angle)}`)
-  }
-  return `M ${pts.join(" L ")} Z`
-}
-
-export function MaturityCurve({ score, maturity, optimizationPoints }: MaturityCurveProps) {
+export function MaturityCurve({ score, total, maturity }: MaturityCurveProps) {
   const measureRef = useRef<SVGPathElement>(null)
   const [pathLen, setPathLen]   = useState(0)
-  const [pts, setPts]           = useState<{ x: number; y: number }[]>([])
-  const [optPt, setOptPt]       = useState<{ x: number; y: number } | null>(null)
-  const [mPos, setMPos]         = useState({ x: 60, y: 195 })
+  const [zoneBounds, setZoneBounds] = useState<number[]>([])
+  const [tierPts, setTierPts]   = useState<{ x: number; y: number }[]>([])
+  const [mPos, setMPos]         = useState({ x: 60, y: 170 })
   const [drawn, setDrawn]       = useState(false)
 
   useEffect(() => {
@@ -58,18 +41,34 @@ export function MaturityCurve({ score, maturity, optimizationPoints }: MaturityC
     const len = path.getTotalLength()
     setPathLen(len)
 
-    setPts(TIERS.map(t => {
+    // Compute x-coordinates at zone boundaries for clip paths
+    setZoneBounds(ZONE_BOUNDARIES.map(pct => path.getPointAtLength(len * pct).x))
+
+    // Compute label positions at zone centers
+    setTierPts(TIERS.map(t => {
       const p = path.getPointAtLength(len * t.pct)
       return { x: p.x, y: p.y }
     }))
 
-    const op = path.getPointAtLength(len * OPTIMIZED.pct)
-    setOptPt({ x: op.x, y: op.y })
-
-    const pct = Math.max(0, Math.min(100, score)) / 100
+    // Non-linear score-to-position mapping:
+    // 0-12 → first third (Not Ready)
+    // 13   → middle third (Ready to Optimize)
+    // 14   → middle third (optimized but < 85%)
+    // 15   → final third (Trusted)
+    let pct: number
+    if (score <= 12) {
+      pct = (score / 12) * (1/3)
+    } else if (score === 13) {
+      pct = 1/3 + (1/3) * 0.5
+    } else if (score === 14) {
+      pct = 1/3 + (1/3) * 0.85
+    } else {
+      pct = 2/3 + (1/3) * 0.85
+    }
+    pct = Math.max(0, Math.min(1, pct))
     const m = path.getPointAtLength(len * pct)
     setMPos({ x: m.x, y: m.y })
-  }, [score])
+  }, [score, total])
 
   useEffect(() => {
     if (pathLen > 0 && !drawn) {
@@ -78,33 +77,33 @@ export function MaturityCurve({ score, maturity, optimizationPoints }: MaturityC
     }
   }, [pathLen, drawn])
 
-  // Hide "YOU ARE HERE" text when marker is too close to any milestone
-  const allPts = optPt ? [...pts, optPt] : pts
-  const showMarkerLabel = allPts.length > 0 && !allPts.some(
-    p => Math.hypot(p.x - mPos.x, p.y - mPos.y) < 70
-  )
+  // Determine which tier index is "reached" based on maturity
+  const reachedIndex = maturity === "Trusted" ? 2 : maturity === "Ready to Optimize" ? 1 : 0
 
-  const optimizedReached = optimizationPoints >= 20
+  // Fixed Y positions for bottom-aligned labels
+  const labelY1 = 205  // tier name
+  const labelY2 = 218  // tagline
 
   return (
-    <div className="w-full" role="img" aria-label={`Maturity curve: score ${score}, level ${maturity}`}>
-      <svg viewBox="0 0 800 225" className="w-full">
+    <div className="w-full" role="img" aria-label={`Maturity curve: score ${score}/${total}, level ${maturity}`}>
+      <svg viewBox="0 0 800 230" className="w-full">
         <defs>
           <filter id="mc-glow"><feGaussianBlur stdDeviation="6" /></filter>
 
-          {/* Gradient now extends through purple for the Optimized zone */}
+          {/* Gradient stroke for the S-curve line */}
           <linearGradient id="mc-stroke" x1="60" y1="0" x2="740" y2="0" gradientUnits="userSpaceOnUse">
             <stop offset="0%"   stopColor="#ef4444" />
-            <stop offset="25%"  stopColor="#eab308" />
-            <stop offset="50%"  stopColor="#3b82f6" />
-            <stop offset="75%"  stopColor="#10b981" />
-            <stop offset="100%" stopColor="#a855f7" />
+            <stop offset="33%"  stopColor="#3b82f6" />
+            <stop offset="67%"  stopColor="#10b981" />
+            <stop offset="100%" stopColor="#10b981" />
           </linearGradient>
 
-          <linearGradient id="mc-area" x1="400" y1="22" x2="400" y2="210" gradientUnits="userSpaceOnUse">
-            <stop offset="0%"   stopColor="#3b82f6" stopOpacity="0.08" />
-            <stop offset="100%" stopColor="#ef4444" stopOpacity="0.01" />
-          </linearGradient>
+          {/* Clip paths for each tier's horizontal zone */}
+          {zoneBounds.length === 4 && TIERS.map((tier, i) => (
+            <clipPath key={tier.label} id={`mc-zone-${i}`}>
+              <rect x={zoneBounds[i]} y="0" width={zoneBounds[i + 1] - zoneBounds[i]} height="230" />
+            </clipPath>
+          ))}
         </defs>
 
         {/* Hidden path for measurement */}
@@ -112,18 +111,22 @@ export function MaturityCurve({ score, maturity, optimizationPoints }: MaturityC
 
         {/* Faint guide lines */}
         <g className="text-muted">
-          <line x1="60" y1="195" x2="740" y2="195" stroke="currentColor" strokeWidth="0.5" opacity="0.25" />
-          <line x1="60" y1="22"  x2="740" y2="22"  stroke="currentColor" strokeWidth="0.5" opacity="0.25" />
+          <line x1="60" y1="185" x2="740" y2="185" stroke="currentColor" strokeWidth="0.5" opacity="0.25" />
         </g>
 
-        {pathLen > 0 && (
+        {pathLen > 0 && zoneBounds.length === 4 && (
           <>
-            {/* Area fill under curve */}
-            <path
-              d={AREA_D} fill="url(#mc-area)"
-              opacity={drawn ? 1 : 0}
-              style={{ transition: "opacity 0.8s ease 0.5s" }}
-            />
+            {/* 3 colored area fills under the curve, one per tier */}
+            {TIERS.map((tier, i) => (
+              <path
+                key={tier.label}
+                d={AREA_D}
+                fill={tier.color}
+                opacity={drawn ? 0.12 : 0}
+                clipPath={`url(#mc-zone-${i})`}
+                style={{ transition: `opacity 0.6s ease ${0.3 + i * 0.1}s` }}
+              />
+            ))}
 
             {/* Glow (blurred copy) */}
             <path
@@ -142,13 +145,10 @@ export function MaturityCurve({ score, maturity, optimizationPoints }: MaturityC
               style={{ transition: "stroke-dashoffset 1.4s cubic-bezier(0.4, 0, 0.2, 1)" }}
             />
 
-            {/* ── 4 maturity-tier milestones ── */}
-            {pts.map((pt, i) => {
+            {/* ── Tier labels aligned to bottom of graph ── */}
+            {tierPts.map((pt, i) => {
               const tier = TIERS[i]
-              const reached = score >= tier.threshold
-              const labelsAbove = pt.y > 140
-              const ly1 = labelsAbove ? pt.y - 18 : pt.y + 20
-              const ly2 = labelsAbove ? pt.y - 32 : pt.y + 34
+              const reached = i <= reachedIndex
 
               return (
                 <g
@@ -156,20 +156,8 @@ export function MaturityCurve({ score, maturity, optimizationPoints }: MaturityC
                   opacity={drawn ? 1 : 0}
                   style={{ transition: `opacity 0.4s ease ${0.7 + i * 0.15}s` }}
                 >
-                  {reached && (
-                    <circle cx={pt.x} cy={pt.y} r={10}
-                      fill="none" stroke={tier.color} strokeWidth="1" opacity="0.25"
-                    />
-                  )}
-                  <circle cx={pt.x} cy={pt.y} r={5}
-                    fill={reached ? tier.color : "currentColor"}
-                    stroke={reached ? tier.color : "currentColor"}
-                    strokeWidth="1.5"
-                    className={reached ? undefined : "text-muted"}
-                    opacity={reached ? 1 : 0.4}
-                  />
                   <text
-                    x={pt.x} y={ly1} textAnchor="middle"
+                    x={pt.x} y={labelY1} textAnchor="middle"
                     fill={reached ? tier.color : "currentColor"}
                     className={reached ? undefined : "text-muted"}
                     fontSize="11" fontWeight="600"
@@ -178,7 +166,7 @@ export function MaturityCurve({ score, maturity, optimizationPoints }: MaturityC
                     {tier.label}
                   </text>
                   <text
-                    x={pt.x} y={ly2} textAnchor="middle"
+                    x={pt.x} y={labelY2} textAnchor="middle"
                     fill="currentColor" className="text-muted"
                     fontSize="9" opacity="0.8"
                     fontFamily="system-ui, -apple-system, sans-serif"
@@ -188,58 +176,6 @@ export function MaturityCurve({ score, maturity, optimizationPoints }: MaturityC
                 </g>
               )
             })}
-
-            {/* ── Optimized bonus milestone (star + dashed ring) ── */}
-            {optPt && (
-              <g
-                opacity={drawn ? 1 : 0}
-                style={{ transition: "opacity 0.4s ease 1.3s" }}
-              >
-                {/* Dashed outer ring — always visible to hint at the bonus */}
-                <circle cx={optPt.x} cy={optPt.y} r={12}
-                  fill="none"
-                  stroke={optimizedReached ? OPTIMIZED.color : "currentColor"}
-                  className={optimizedReached ? undefined : "text-muted"}
-                  strokeWidth="1"
-                  strokeDasharray="3 2.5"
-                  opacity={optimizedReached ? 0.5 : 0.3}
-                />
-
-                {/* Sparkle shape instead of a plain circle */}
-                <path
-                  d={sparklePath(optPt.x, optPt.y, 6)}
-                  fill={optimizedReached ? OPTIMIZED.color : "currentColor"}
-                  className={optimizedReached ? undefined : "text-muted"}
-                  opacity={optimizedReached ? 1 : 0.35}
-                />
-
-                {/* Glow ring when reached */}
-                {optimizedReached && (
-                  <circle cx={optPt.x} cy={optPt.y} r={16}
-                    fill="none" stroke={OPTIMIZED.color} strokeWidth="1" opacity="0.15"
-                  />
-                )}
-
-                {/* Label */}
-                <text
-                  x={optPt.x} y={optPt.y + 20} textAnchor="middle"
-                  fill={optimizedReached ? OPTIMIZED.color : "currentColor"}
-                  className={optimizedReached ? undefined : "text-muted"}
-                  fontSize="11" fontWeight="600"
-                  fontFamily="system-ui, -apple-system, sans-serif"
-                >
-                  Optimized
-                </text>
-                <text
-                  x={optPt.x} y={optPt.y + 34} textAnchor="middle"
-                  fill="currentColor" className="text-muted"
-                  fontSize="9" opacity="0.8"
-                  fontFamily="system-ui, -apple-system, sans-serif"
-                >
-                  {OPTIMIZED.tagline}
-                </text>
-              </g>
-            )}
 
             {/* ── "You Are Here" marker ── */}
             <g opacity={drawn ? 1 : 0} style={{ transition: "opacity 0.5s ease 1.4s" }}>
@@ -252,17 +188,15 @@ export function MaturityCurve({ score, maturity, optimizationPoints }: MaturityC
                 <animate attributeName="opacity"  values="0.12;0.02;0.12" dur="2.5s" repeatCount="indefinite" />
               </circle>
               <circle cx={mPos.x} cy={mPos.y} r={4.5} fill="currentColor" className="text-primary" />
-              {showMarkerLabel && (
-                <text
-                  x={mPos.x}
-                  y={mPos.y > 40 ? mPos.y - 18 : mPos.y + 26}
-                  textAnchor="middle" fill="currentColor" className="text-primary"
-                  fontSize="10" fontWeight="700" letterSpacing="0.5"
-                  fontFamily="system-ui, -apple-system, sans-serif"
-                >
-                  YOU ARE HERE
-                </text>
-              )}
+              <text
+                x={mPos.x}
+                y={mPos.y - 16}
+                textAnchor="middle" fill="currentColor" className="text-primary"
+                fontSize="10" fontWeight="700" letterSpacing="0.5"
+                fontFamily="system-ui, -apple-system, sans-serif"
+              >
+                YOU ARE HERE
+              </text>
             </g>
           </>
         )}
