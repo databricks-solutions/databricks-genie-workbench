@@ -62,3 +62,12 @@ sql/
 .databricks/
 .gitleaksignore
 .gitignore
+
+# GSO subtree — exclude non-runtime files
+packages/genie-space-optimizer/node_modules/
+packages/genie-space-optimizer/.build/
+packages/genie-space-optimizer/.databricks/
+packages/genie-space-optimizer/src/genie_space_optimizer/__dist__/
+packages/genie-space-optimizer/browser-test-output/
+packages/genie-space-optimizer/tests/
+packages/genie-space-optimizer/.git/

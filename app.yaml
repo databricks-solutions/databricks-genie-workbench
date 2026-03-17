@@ -72,6 +72,18 @@ env:
   - name: LAKEBASE_INSTANCE_NAME
     value: ""  # e.g. genie-workbench-sz
 
+  # ---------------------------------------------------------------------------
+  # Auto-Optimize (GSO Engine)
+  # ---------------------------------------------------------------------------
+  - name: GSO_CATALOG
+    value: ""
+  - name: GSO_SCHEMA
+    value: "genie_space_optimizer"
+  - name: GSO_JOB_ID
+    value: ""
+  - name: GSO_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+
 # ---------------------------------------------------------------------------
 # User Authorization Scopes (OBO)
 # These must be configured in the Databricks Apps UI, NOT in this file.

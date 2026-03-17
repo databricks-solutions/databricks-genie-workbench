@@ -277,6 +277,7 @@ export function useAnalysis() {
         analysisProgress: null,
       }))
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps to avoid re-render on every state change
   }, [state.sections, state.spaceData, state.selectedSections])
 
   const analyzeSingleSection = useCallback(
@@ -313,6 +314,7 @@ export function useAnalysis() {
         }))
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps avoid re-render on every state change
     [state.sections, state.spaceData]
   )
 
@@ -632,6 +634,7 @@ export function useAnalysis() {
         }))
       }
     )
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps avoid re-render on every state change
   }, [state.genieSpaceId, state.spaceData, state.selectedQuestions, state.labelingCorrectAnswers, state.labelingFeedbackTexts, state.labelingComparisons])
 
   const generatePreviewConfig = useCallback(async () => {
@@ -670,6 +673,7 @@ export function useAnalysis() {
         isGeneratingPreview: false,
       }))
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps avoid re-render on every state change
   }, [state.spaceData, state.optimizationSuggestions, state.selectedSuggestions])
 
   const createGenieSpace = useCallback(async (displayName: string) => {
@@ -699,6 +703,7 @@ export function useAnalysis() {
         genieCreateError: err instanceof Error ? err.message : "Failed to create Genie Space",
       }))
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps avoid re-render on every state change
   }, [state.previewConfig])
 
   const clearSpaceData = useCallback(() => {
@@ -938,6 +943,7 @@ export function useAnalysis() {
         hasLabelingSession: true,
       }))
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps avoid re-render on every state change
   }, [state.genieSpaceId, state.spaceData, state.selectedQuestions, state.labelingGeneratedSql])
 
   const cancelBenchmarkProcessing = useCallback(() => {

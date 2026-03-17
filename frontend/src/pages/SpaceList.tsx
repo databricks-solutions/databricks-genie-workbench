@@ -112,7 +112,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
     setSpaces(prev => prev.map(s => s.space_id === space.space_id ? { ...s, is_starred: newStarred } : s))
     try {
       await toggleStar(space.space_id, newStarred)
-    } catch (e) {
+    } catch {
       // Revert
       setSpaces(prev => prev.map(s => s.space_id === space.space_id ? { ...s, is_starred: !newStarred } : s))
     }

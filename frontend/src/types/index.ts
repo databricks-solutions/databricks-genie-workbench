@@ -390,3 +390,92 @@ export interface AgentChatMessage {
   is_error?: boolean
   created_space?: { space_id: string; url: string; display_name: string }
 }
+
+// ============================================================================
+// Auto-Optimize (GSO) Types
+// ============================================================================
+
+// apply_mode supports three values: "genie_config" (default),
+// "uc_artifact" (UC-level changes only), "both" (config + UC).
+// The UI currently only exposes "genie_config" and disables "both".
+export interface GSOTriggerRequest {
+  space_id: string
+  apply_mode?: "genie_config" | "uc_artifact" | "both"
+  levers?: number[]
+  deploy_target?: string
+}
+
+export interface GSOTriggerResponse {
+  runId: string
+  jobRunId: string
+  jobUrl: string | null
+  status: string
+}
+
+export interface GSOLeverInfo {
+  id: number
+  name: string
+  description: string
+}
+
+export interface GSORunStatus {
+  runId: string
+  status: string
+  spaceId: string
+  startedAt: string | null
+  completedAt: string | null
+  baselineScore: number | null
+  optimizedScore: number | null
+  convergenceReason: string | null
+}
+
+export interface GSORunSummary {
+  run_id: string
+  space_id: string
+  status: string
+  started_at: string
+  completed_at: string | null
+  best_accuracy: number | null
+  best_iteration: number | null
+  convergence_reason: string | null
+  triggered_by: string | null
+}
+
+export interface GSOPipelineStep {
+  stepNumber: number
+  name: string
+  status: string
+  durationSeconds: number | null
+  summary: string | null
+}
+
+export interface GSOPipelineRun {
+  runId: string
+  spaceId: string
+  status: string
+  startedAt: string
+  completedAt: string | null
+  baselineScore: number | null
+  optimizedScore: number | null
+  steps: GSOPipelineStep[]
+  convergenceReason: string | null
+}
+
+export interface GSOIterationResult {
+  iteration: number
+  lever: number | null
+  eval_scope: string
+  overall_accuracy: number
+  total_questions: number
+  correct_count: number
+  scores_json: string
+  thresholds_met: boolean
+}
+
+export interface GSOQuestionResult {
+  question_id: string
+  judge: string
+  value: string
+  failure_type: string | null
+  confidence: number | null
+}

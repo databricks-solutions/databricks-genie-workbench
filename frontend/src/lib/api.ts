@@ -32,6 +32,14 @@ import type {
   UcTable,
   ValidateConfigResponse,
   CreateWizardSpaceResponse,
+  GSOTriggerRequest,
+  GSOTriggerResponse,
+  GSOLeverInfo,
+  GSORunStatus,
+  GSORunSummary,
+  GSOPipelineRun,
+  GSOIterationResult,
+  GSOQuestionResult,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -723,6 +731,66 @@ export function streamAgentChat(
     })
 
   return () => abortController.abort()
+}
+
+// ===== Auto-Optimize (GSO) API =====
+
+export async function getAutoOptimizeHealth(): Promise<{ configured: boolean }> {
+  return fetchWithTimeout<{ configured: boolean }>(`${API_BASE}/auto-optimize/health`)
+}
+
+export async function triggerAutoOptimize(request: GSOTriggerRequest): Promise<GSOTriggerResponse> {
+  return fetchWithTimeout<GSOTriggerResponse>(
+    `${API_BASE}/auto-optimize/trigger`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+    LONG_TIMEOUT
+  )
+}
+
+export async function getAutoOptimizeRun(runId: string): Promise<GSOPipelineRun> {
+  return fetchWithTimeout<GSOPipelineRun>(`${API_BASE}/auto-optimize/runs/${runId}`)
+}
+
+export async function getAutoOptimizeStatus(runId: string): Promise<GSORunStatus> {
+  return fetchWithTimeout<GSORunStatus>(`${API_BASE}/auto-optimize/runs/${runId}/status`)
+}
+
+export async function getAutoOptimizeLevers(): Promise<GSOLeverInfo[]> {
+  return fetchWithTimeout<GSOLeverInfo[]>(`${API_BASE}/auto-optimize/levers`)
+}
+
+export async function applyAutoOptimize(runId: string): Promise<{ status: string; runId: string; message: string }> {
+  return fetchWithTimeout<{ status: string; runId: string; message: string }>(
+    `${API_BASE}/auto-optimize/runs/${runId}/apply`,
+    { method: "POST", headers: { "Content-Type": "application/json" } },
+    LONG_TIMEOUT
+  )
+}
+
+export async function discardAutoOptimize(runId: string): Promise<{ status: string; runId: string; message: string }> {
+  return fetchWithTimeout<{ status: string; runId: string; message: string }>(
+    `${API_BASE}/auto-optimize/runs/${runId}/discard`,
+    { method: "POST", headers: { "Content-Type": "application/json" } },
+    DEFAULT_TIMEOUT
+  )
+}
+
+export async function getAutoOptimizeRunsForSpace(spaceId: string): Promise<GSORunSummary[]> {
+  return fetchWithTimeout<GSORunSummary[]>(`${API_BASE}/auto-optimize/spaces/${spaceId}/runs`)
+}
+
+export async function getAutoOptimizeIterations(runId: string): Promise<GSOIterationResult[]> {
+  return fetchWithTimeout<GSOIterationResult[]>(`${API_BASE}/auto-optimize/runs/${runId}/iterations`)
+}
+
+export async function getAutoOptimizeAsiResults(runId: string, iteration: number): Promise<GSOQuestionResult[]> {
+  return fetchWithTimeout<GSOQuestionResult[]>(
+    `${API_BASE}/auto-optimize/runs/${runId}/asi-results?iteration=${iteration}`
+  )
 }
 
 export { ApiError }

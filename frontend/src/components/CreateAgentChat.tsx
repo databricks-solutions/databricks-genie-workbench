@@ -200,6 +200,7 @@ function loadState(): PersistedState | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as PersistedState
     // Migrate old schema (string) -> schemas (string[])
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy migration code
     const p = parsed.progress as any
     if (p && !Array.isArray(p.schemas)) {
       p.schemas = p.schema ? [p.schema] : []
@@ -222,12 +223,17 @@ function loadState(): PersistedState | null {
       parsed.editedPlan.benchmarks = []
     }
     // Migrate text_instructions from string[] to single string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy migration
     if (parsed.editedPlan && Array.isArray((parsed.editedPlan as any).text_instructions)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       parsed.editedPlan.text_instructions = ((parsed.editedPlan as any).text_instructions as string[]).join("\n")
     }
     // Migrate joins → join_specs
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- legacy migration
     if (parsed.editedPlan && (parsed.editedPlan as any).joins && !parsed.editedPlan.join_specs) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       parsed.editedPlan.join_specs = (parsed.editedPlan as any).joins
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       delete (parsed.editedPlan as any).joins
     }
     // Reconstruct editedPlan from messages if missing
@@ -289,26 +295,28 @@ function groupMessages(msgs: AgentChatMessage[]): RenderItem[] {
 // ─── Component ─────────────────────────────────────────────────
 
 export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
-  const restored = useRef(loadState())
+  // Use lazy initializer to avoid reading a ref during render (react-hooks/refs).
+  // useState(() => ...) only runs once, same as the old useRef pattern.
+  const [restored] = useState(() => loadState())
 
-  const [messages, setMessages] = useState<AgentChatMessage[]>(restored.current?.messages ?? [])
+  const [messages, setMessages] = useState<AgentChatMessage[]>(restored?.messages ?? [])
   const [input, setInput] = useState("")
-  const [sessionId, setSessionId] = useState<string | null>(restored.current?.sessionId ?? null)
+  const [sessionId, setSessionId] = useState<string | null>(restored?.sessionId ?? null)
   const [isStreaming, setIsStreaming] = useState(false)
   const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set())
   const [copiedConfig, setCopiedConfig] = useState(false)
   const [usedElements, setUsedElements] = useState<Set<string>>(
-    new Set(restored.current?.usedElements ?? []),
+    new Set(restored?.usedElements ?? []),
   )
   const [multiSelections, setMultiSelections] = useState<Record<string, Set<string>>>({})
-  const [progress, setProgress] = useState<BuildProgress>(restored.current?.progress ?? EMPTY_PROGRESS)
+  const [progress, setProgress] = useState<BuildProgress>(restored?.progress ?? EMPTY_PROGRESS)
   const [panelOpen] = useState(true)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
   const [businessContextDraft, setBusinessContextDraft] = useState("")
   const [expandedPlanSections, setExpandedPlanSections] = useState<Set<string>>(new Set(["sample_questions"]))
   const [agentStatus, setAgentStatus] = useState<string | null>(null)
-  const [editedPlan, setEditedPlan] = useState<EditablePlan | null>(restored.current?.editedPlan ?? null)
+  const [editedPlan, setEditedPlan] = useState<EditablePlan | null>(restored?.editedPlan ?? null)
   const [editingPlanItem, setEditingPlanItem] = useState<string | null>(null)
   const [autoPilot, setAutoPilot] = useState(false)
   const [elementSearch, setElementSearch] = useState<Record<string, string>>({})
@@ -362,6 +370,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   }
 
   // ─── Send message + SSE streaming ─────────────────────────────
+
+  // Ref breaks the circular dependency: onDone callbacks inside sendMessage
+  // need to call sendMessage itself for reconnection/continuation.
+  const sendMessageRef = useRef<(text: string, selections?: Record<string, unknown>) => void>(() => {})
 
   const sendMessage = useCallback(
     (text: string, selections?: Record<string, unknown>) => {
@@ -427,7 +439,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       stopRef.current = streamAgentChat(isContinuation ? "" : text.trim(), sessionIdRef.current, selections ?? null, {
         onSession: (sid) => { sessionIdRef.current = sid; setSessionId(sid); reconnectCountRef.current = 0 },
         onStep: () => {},
-        onThinking: (message, _step, _round) => {
+        onThinking: (message) => {
           setAgentStatus(message)
         },
         onToolCall: (tool, args) => {
@@ -538,7 +550,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           if (tool === "describe_table" && result.table && !result.error) {
             const parts = (result.table as string).split(".")
             if (parts.length === 3) {
-              const [cat, sch, _tbl] = parts
+              const [cat, sch] = parts
               const fullName = result.table as string
               setProgress((p) => ({
                 ...p,
@@ -626,7 +638,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             title: p.title || displayName,
           }))
         },
-        onUpdated: (_spaceId, _url) => {
+        onUpdated: () => {
           // Space updated — no special UI handling needed
         },
         onError: (message) => {
@@ -668,7 +680,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             if (reconnectCountRef.current <= MAX_AUTO_RECONNECTS) {
               const attempt = reconnectCountRef.current
               setAgentStatus(`Reconnecting (attempt ${attempt}/${MAX_AUTO_RECONNECTS})...`)
-              setTimeout(() => sendMessage(""), 2000 * attempt)
+              setTimeout(() => sendMessageRef.current(""), 2000 * attempt)
               return
             }
             // Exhausted retries — show error and stop
@@ -691,7 +703,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             // Keep isStreaming=true — the agent loop continues in the
             // next HTTP round.  sendMessage("") opens a new SSE stream.
             reconnectCountRef.current = 0  // successful round — reset reconnect counter
-            requestAnimationFrame(() => sendMessage(""))
+            requestAnimationFrame(() => sendMessageRef.current(""))
             return
           }
 
@@ -701,13 +713,16 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           queuedMessageRef.current = null
           setQueuedMessage(null)
           if (pending) {
-            requestAnimationFrame(() => sendMessage(pending))
+            requestAnimationFrame(() => sendMessageRef.current(pending))
           }
         },
       })
     },
-    [sessionId, isStreaming],
+    [isStreaming],
   )
+
+  // Sync ref so onDone callbacks always call the latest sendMessage
+  useEffect(() => { sendMessageRef.current = sendMessage }, [sendMessage])
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -1330,7 +1345,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   // ─── Plan card renderer ──────────────────────────────────────
 
-  const renderPlanCard = (_result: Record<string, unknown>) => {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const renderPlanCard = (_result?: Record<string, unknown>) => {
     const plan = editedPlan
     if (!plan) return null
 

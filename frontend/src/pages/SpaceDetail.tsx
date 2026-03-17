@@ -3,7 +3,7 @@
  * Tabs: Score | Analysis | Optimize | History
  */
 import { useState, useEffect } from "react"
-import { ArrowLeft, Star, RefreshCw, Zap, Eye, BarChart2, Brain, Settings2, Clock, ExternalLink } from "lucide-react"
+import { ArrowLeft, Star, RefreshCw, Zap, Eye, BarChart2, Brain, Settings2, Clock, ExternalLink, Rocket } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory } from "@/lib/api"
 import { getScoreColor } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint } from "@/types"
@@ -20,8 +20,9 @@ import { OptimizationPage } from "@/components/OptimizationPage"
 import { PreviewPage } from "@/components/PreviewPage"
 import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
+import { AutoOptimizeTab } from "@/components/auto-optimize/AutoOptimizeTab"
 
-type Tab = "overview" | "score" | "analysis" | "optimize" | "history"
+type Tab = "overview" | "score" | "analysis" | "optimize" | "auto-optimize" | "history"
 
 interface SpaceDetailProps {
   spaceId: string
@@ -38,13 +39,14 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
   const [history, setHistory] = useState<ScoreHistoryPoint[]>([])
 
   const { state, actions } = useAnalysis()
+  const { handleFetchSpace } = actions
 
   useEffect(() => {
     // Preload the space in the analysis hook
     if (spaceId) {
-      actions.handleFetchSpace(spaceId)
+      handleFetchSpace(spaceId)
     }
-  }, [spaceId])
+  }, [spaceId, handleFetchSpace])
 
   const handleScan = async () => {
     setIsScanning(true)
@@ -79,6 +81,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
     { id: "score", label: "Score", icon: <BarChart2 className="w-4 h-4" /> },
     { id: "analysis", label: "Analysis", icon: <Brain className="w-4 h-4" /> },
     { id: "optimize", label: "Optimize", icon: <Settings2 className="w-4 h-4" /> },
+    { id: "auto-optimize", label: "Auto-Optimize", icon: <Rocket className="w-4 h-4" /> },
     { id: "history", label: "History", icon: <Clock className="w-4 h-4" /> },
   ]
 
@@ -306,6 +309,10 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === "auto-optimize" && (
+          <AutoOptimizeTab spaceId={spaceId} />
         )}
 
         {activeTab === "history" && (

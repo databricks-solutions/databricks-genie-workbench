@@ -16,3 +16,6 @@ requests>=2.31.0
 streamlit>=1.40.0
 asyncpg>=0.29
 psycopg2-binary
+
+# GSO integration (databricks-connect is optional [spark] extra, not pulled in)
+-e ./packages/genie-space-optimizer
