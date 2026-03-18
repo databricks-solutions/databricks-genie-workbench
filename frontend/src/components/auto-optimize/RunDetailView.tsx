@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { ArrowLeft, Settings2 } from "lucide-react"
+import { ArrowLeft, Cog } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ScoreSummary } from "@/components/auto-optimize/ScoreSummary"
@@ -71,21 +71,24 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
   const questions = activeTab === "baseline" ? baselineQuestions : finalQuestions
   const selectedQuestion = questions.find((q) => q.question_id === selectedQuestionId) ?? null
 
-  const passingCount = questions.filter((q) => q.passed).length
-  const totalCount = questions.length
+  const nonExcluded = questions.filter((q) => q.passed !== null)
+  const passingCount = nonExcluded.filter((q) => q.passed === true).length
+  const totalCount = nonExcluded.length
 
-  const baselinePassing = baselineQuestions.filter((q) => q.passed).length
-  const finalPassing = finalQuestions.filter((q) => q.passed).length
+  const baselineNonExcluded = baselineQuestions.filter((q) => q.passed !== null)
+  const baselinePassing = baselineNonExcluded.filter((q) => q.passed === true).length
+  const finalNonExcluded = finalQuestions.filter((q) => q.passed !== null)
+  const finalPassing = finalNonExcluded.filter((q) => q.passed === true).length
 
   if (!run) {
     return <div className="py-8 text-center text-muted text-sm">Loading run details...</div>
   }
 
-  const baselineAccuracy = baselineQuestions.length > 0
-    ? Math.round((baselinePassing / baselineQuestions.length) * 100)
+  const baselineAccuracy = baselineNonExcluded.length > 0
+    ? Math.round((baselinePassing / baselineNonExcluded.length) * 100)
     : null
-  const finalAccuracy = finalQuestions.length > 0
-    ? Math.round((finalPassing / finalQuestions.length) * 100)
+  const finalAccuracy = finalNonExcluded.length > 0
+    ? Math.round((finalPassing / finalNonExcluded.length) * 100)
     : null
 
   return (
@@ -123,7 +126,7 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
           className="p-2 rounded-lg border border-default hover:bg-elevated text-muted hover:text-primary transition-colors"
           title="Pipeline Details"
         >
-          <Settings2 className="w-4 h-4" />
+          <Cog className="w-4 h-4" />
         </button>
       </div>
 

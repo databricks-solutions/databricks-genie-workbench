@@ -42,6 +42,7 @@ import type {
   GSOQuestionResult,
   GSOQuestionDetail,
   GSOPermissionCheck,
+  GSOPatch,
 } from "@/types"
 
 const API_BASE = "/api"
@@ -811,6 +812,26 @@ export async function getAutoOptimizeQuestionResults(runId: string, iteration: n
   try {
     return await fetchWithTimeout<GSOQuestionDetail[]>(
       `${API_BASE}/auto-optimize/runs/${runId}/question-results?iteration=${iteration}`
+    )
+  } catch {
+    return []
+  }
+}
+
+export async function getAutoOptimizePatches(runId: string): Promise<GSOPatch[]> {
+  try {
+    return await fetchWithTimeout<GSOPatch[]>(
+      `${API_BASE}/auto-optimize/runs/${runId}/patches`
+    )
+  } catch {
+    return []
+  }
+}
+
+export async function getAutoOptimizeSuggestions(runId: string): Promise<import("@/types").GSOSuggestion[]> {
+  try {
+    return await fetchWithTimeout<import("@/types").GSOSuggestion[]>(
+      `${API_BASE}/auto-optimize/runs/${runId}/suggestions`
     )
   } catch {
     return []

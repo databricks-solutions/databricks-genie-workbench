@@ -66,9 +66,18 @@ def _get_sp_application_id(ws: WorkspaceClient) -> str:
 
 
 def get_sp_principal_aliases(sp_ws: WorkspaceClient) -> set[str]:
-    """Return known principal aliases for the app service principal."""
+    """Return known principal aliases for the app service principal.
+
+    On Databricks Apps the SDK uses token-based auth so config.client_id is
+    empty — _get_sp_principal raises in that case.  We catch that and always
+    fall through to current_user.me() so application_id (the UUID stored in
+    the Genie ACL) is included in the alias set.
+    """
     aliases: set[str] = set()
-    aliases.add(_get_sp_principal(sp_ws).lower())
+    try:
+        aliases.add(_get_sp_principal(sp_ws).lower())
+    except Exception:
+        logger.debug("Could not resolve SP principal from config.client_id", exc_info=True)
     try:
         me = sp_ws.current_user.me()
         for attr in ("user_name", "display_name", "application_id", "id"):
@@ -188,7 +197,7 @@ def _probe_sp_required_access(
 
 
 def _sp_has_manage_from_rest_acl(acl_response: dict, sp_aliases: set[str]) -> bool:
-    """Extract SP CAN_MANAGE from a REST ACL dict."""
+    """Extract SP CAN_EDIT or CAN_MANAGE from a REST ACL dict."""
     from genie_space_optimizer.common.genie_client import _check_sp_manage_from_rest_acl
     return _check_sp_manage_from_rest_acl(acl_response, sp_aliases)
 
@@ -354,7 +363,7 @@ def get_permission_dashboard(
         if not sp_has_manage:
             sp_grant_instructions = (
                 f'Open the Genie Space "{title}" sharing dialog and add '
-                f'`{sp_human_name}` with CAN_MANAGE permission.'
+                f'`{sp_human_name}` with CAN_EDIT permission.'
             )
 
         schemas_out: list[SchemaPermission] = []

@@ -20,6 +20,15 @@ command:
   - "--port"
   - "8000"
 
+user_api_scopes:
+  - "sql"
+  - "dashboards.genie"
+  - "serving.serving-endpoints"
+  - "catalog.catalogs:read"
+  - "catalog.schemas:read"
+  - "catalog.tables:read"
+  - "files.files"
+
 env:
   # ---------------------------------------------------------------------------
   # MLflow Tracing
@@ -68,6 +77,8 @@ env:
     value: "genie-workbench-db"
   - name: LAKEBASE_INSTANCE_NAME
     value: "genie-workbench-db"
+  - name: LAKEBASE_HOST
+    valueFrom: lakebase-db
   - name: LAKEBASE_PORT
     value: "5432"
   - name: LAKEBASE_DATABASE

@@ -13,6 +13,7 @@
 #   GENIE_APP_NAME           (optional)  Databricks App name          [default: genie-workbench]
 #   GENIE_DEPLOY_PROFILE     (optional)  Databricks CLI profile       [default: DEFAULT]
 #   GENIE_LLM_MODEL          (optional)  LLM serving endpoint         [default: databricks-claude-sonnet-4-6]
+#   GENIE_DEPLOY_TARGET      (optional)  Bundle target                [auto-detected: dev or dev-lakebase]
 #
 # After sourcing, the following variables are available:
 #   APP_NAME, CATALOG, GSO_SCHEMA, WAREHOUSE_ID, PROFILE, LLM_MODEL,
@@ -37,6 +38,17 @@ WAREHOUSE_ID="${GENIE_WAREHOUSE_ID:-}"
 PROFILE="${GENIE_DEPLOY_PROFILE:-DEFAULT}"
 LLM_MODEL="${GENIE_LLM_MODEL:-databricks-claude-sonnet-4-6}"
 
+# Auto-detect deploy target: use dev-lakebase when the databricks.yml defines
+# a postgres_projects resource under that target (Lakebase persistence).
+# Explicit GENIE_DEPLOY_TARGET always wins.
+if [ -n "${GENIE_DEPLOY_TARGET:-}" ]; then
+    DEPLOY_TARGET="$GENIE_DEPLOY_TARGET"
+elif grep -q 'postgres_projects:' "$_CONFIG_DIR/databricks.yml" 2>/dev/null; then
+    DEPLOY_TARGET="dev-lakebase"
+else
+    DEPLOY_TARGET="dev"
+fi
+
 # ── Validate required values ─────────────────────────────────────────────
 if [ -z "$WAREHOUSE_ID" ]; then
     echo "ERROR: GENIE_WAREHOUSE_ID is required but not set." >&2
@@ -56,6 +68,9 @@ if [ -z "$CATALOG" ]; then
     echo "  export GENIE_CATALOG=<your-catalog>" >&2
     exit 1
 fi
+
+# ── Build bundle flags ───────────────────────────────────────────────────
+BUNDLE_TARGET_FLAGS=(--target "$DEPLOY_TARGET")
 
 # ── Build --var flags for databricks bundle ──────────────────────────────
 BUNDLE_VAR_FLAGS=(
@@ -78,5 +93,6 @@ _print_config() {
     echo "  │  GSO Schema:   ${CATALOG}.${GSO_SCHEMA}"
     echo "  │  Warehouse ID: $WAREHOUSE_ID"
     echo "  │  LLM Model:    $LLM_MODEL"
+    echo "  │  Target:       $DEPLOY_TARGET"
     echo "  └─────────────────────────────────────────────────────────┘"
 }

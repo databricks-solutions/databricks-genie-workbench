@@ -20,41 +20,57 @@ _pool = None
 _lakebase_available = False
 
 
+def _resolve_user(client) -> str:
+    """Resolve the current user's email from the Databricks SDK."""
+    try:
+        return client.current_user.me().user_name
+    except Exception:
+        return "databricks"
+
+
 def _generate_lakebase_credential() -> tuple[str, str] | None:
-    """Generate Lakebase OAuth credentials using the Databricks SDK.
+    """Generate Lakebase credentials using the Databricks SDK.
 
-    Uses whatever auth the SDK resolves (service principal in prod, CLI
-    profile locally). Returns (user_email, oauth_token) or None.
+    Supports two paths:
+    - Autoscaling postgres project: uses /api/2.0/postgres/generate-database-credential
+      (when LAKEBASE_ENDPOINT env var is set)
+    - Provisioned database instance: uses /api/2.0/database/credentials
+      (when LAKEBASE_INSTANCE_NAME env var is set)
+
+    Returns (user_email, token) or None.
     """
-    instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME")
-    if not instance_name:
-        return None
-
     try:
         from backend.services.auth import get_workspace_client
         client = get_workspace_client()
 
+        # Autoscaling postgres project: use postgres credential generation API
+        endpoint = os.environ.get("LAKEBASE_ENDPOINT")
+        if endpoint:
+            resp = client.api_client.do(
+                method="POST",
+                path="/api/2.0/postgres/generate-database-credential",
+                body={"endpoint": endpoint},
+            )
+            token = resp.get("token")
+            if token:
+                user = os.environ.get("LAKEBASE_USER") or _resolve_user(client)
+                logger.info(f"Generated Lakebase credential via postgres API (user={user})")
+                return user, token
+
+        # Provisioned database instance: use old credentials API
+        instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME")
+        if not instance_name:
+            return None
         resp = client.api_client.do(
             method="POST",
             path="/api/2.0/database/credentials",
-            body={
-                "request_id": "lakebase-pool",
-                "instance_names": [instance_name],
-            },
+            body={"request_id": "lakebase-pool", "instance_names": [instance_name]},
         )
         token = resp.get("token")
         if not token:
             logger.warning("Lakebase credential response missing token")
             return None
-
-        # Resolve username: SP identity or human user
-        user = os.environ.get("LAKEBASE_USER")
-        if not user:
-            try:
-                me = client.current_user.me()
-                user = me.user_name
-            except Exception:
-                user = "databricks"
+        user = os.environ.get("LAKEBASE_USER") or _resolve_user(client)
         logger.info(f"Generated Lakebase credential via SDK (user={user})")
         return user, token
     except Exception as e:

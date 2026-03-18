@@ -447,20 +447,93 @@ export interface GSOPipelineStep {
   status: string
   durationSeconds: number | null
   summary: string | null
+  inputs: Record<string, any> | null
+  outputs: Record<string, any> | null
+}
+
+export interface GSOStageEvent {
+  stage: string
+  status: string
+  durationSeconds: number | null
+  startedAt: string | null
+  completedAt: string | null
+  summary: string | null
+}
+
+export interface GSOResourceLink {
+  label: string
+  url: string
+  category: string
+}
+
+export interface GSOPatch {
+  iteration: number
+  lever: number | null
+  patch_type: string
+  target_object: string
+  scope: string
+  risk_level: string
+  status: string
+  command: string | null
+}
+
+export interface GSOPatchDetail {
+  patchType: string
+  scope: string
+  riskLevel: string
+  targetObject: string | null
+  rolledBack: boolean
+  rollbackReason: string | null
+  command: Record<string, any> | string | null
+  patch: Record<string, any> | string | null
+  appliedAt: string | null
+}
+
+export interface GSOLeverIteration {
+  iteration: number
+  status: string
+  patchCount: number
+  patchTypes: string[]
+  scoreBefore: number | null
+  scoreAfter: number | null
+  scoreDelta: number | null
+  judgeScores: Record<string, number | null>
+  mlflowRunId: string | null
+  rollbackReason: string | null
+  patches: GSOPatchDetail[]
+}
+
+export interface GSOLeverStatus {
+  lever: number
+  name: string
+  status: string
+  patchCount: number
+  scoreBefore: number | null
+  scoreAfter: number | null
+  scoreDelta: number | null
+  rollbackReason: string | null
+  patches: GSOPatchDetail[]
+  iterations: GSOLeverIteration[]
 }
 
 export interface GSOPipelineRun {
   runId: string
   spaceId: string
+  spaceName?: string
   status: string
   startedAt: string
   completedAt: string | null
+  initiatedBy?: string
   baselineScore: number | null
   optimizedScore: number | null
   baselineIteration: number | null
   bestIteration: number | null
   steps: GSOPipelineStep[]
+  stages: GSOStageEvent[]
+  levers: GSOLeverStatus[]
+  links: GSOResourceLink[]
   convergenceReason: string | null
+  deploymentStatus: string | null
 }
 
 export interface GSOIterationResult {
@@ -470,8 +543,23 @@ export interface GSOIterationResult {
   overall_accuracy: number
   total_questions: number
   correct_count: number
-  scores_json: string
+  scores_json: string | Record<string, number>
   thresholds_met: boolean
+  reflection_json?: string | Record<string, any> | null
+}
+
+export interface GSOSuggestion {
+  suggestionId: string
+  runId: string
+  spaceId: string
+  iteration: number | null
+  suggestionType: string
+  title: string
+  rationale: string | null
+  definition: string | null
+  affectedQuestions: string[]
+  estimatedImpact: string | null
+  status: string
 }
 
 export interface GSOQuestionResult {
@@ -487,8 +575,16 @@ export interface GSOQuestionDetail {
   question: string
   generated_sql: string | null
   expected_sql: string | null
-  passed: boolean
+  passed: boolean | null
   match_type: string | null
+  judge_verdicts?: Record<string, string>
+  excluded?: boolean
+  genie_sample?: string | null
+  gt_sample?: string | null
+  genie_columns?: string[]
+  gt_columns?: string[]
+  genie_rows?: number | null
+  gt_rows?: number | null
 }
 
 export interface GSOSchemaAccessStatus {

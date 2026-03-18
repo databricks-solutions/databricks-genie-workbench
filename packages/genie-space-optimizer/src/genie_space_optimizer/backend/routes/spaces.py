@@ -888,11 +888,11 @@ def do_start_optimization(
     from .settings import get_sp_principal_aliases
 
     sp_aliases = get_sp_principal_aliases(sp_ws)
-    if not sp_can_manage_space(sp_ws, space_id, sp_aliases):
+    if not sp_can_manage_space(ws, space_id, sp_aliases, sp_client=sp_ws):
         raise HTTPException(
             status_code=403,
             detail=(
-                f"The service principal does not have CAN_MANAGE on Genie Space {space_id}. "
+                f"The service principal does not have CAN_EDIT or CAN_MANAGE on Genie Space {space_id}. "
                 "Please grant access from the Settings page before starting optimization."
             ),
         )

@@ -693,7 +693,7 @@ function SpaceDetail() {
                     <>
                       Open the Genie Space sharing dialog and add{" "}
                       <CopyableInline text={spacePerms?.spDisplayName ?? ""} />{" "}
-                      with <strong>CAN_MANAGE</strong> permission.
+                      with <strong>CAN_EDIT</strong> permission.
                     </>
                   }
                   granted={hasSpaceAccess}

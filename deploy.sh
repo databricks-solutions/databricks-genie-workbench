@@ -5,32 +5,40 @@ set -euo pipefail
 # deploy.sh — deploy Genie Workbench bundle (app + GSO optimization job)
 # and apply post-deploy grants/permissions.
 #
-# Two modes:
+# Three modes:
 #   Full deploy (default):
 #     1. Pre-flight checks
 #     2. Build frontend
 #     3. Clean stale wheels from workspace
 #     4. Bundle deploy (terraform — creates/updates job + app resources)
-#     5. Resolve app SP + Grant UC permissions
-#     6. Resolve job ID + Grant job permissions
-#     7. Redeploy app (apps deploy --source-code-path)
-#     8. Verify deployment
+#     5. Full-sync files to workspace (ensures complete codebase)
+#     6. Resolve app SP + Grant UC permissions
+#     7. Resolve job ID + Grant job permissions
+#     8. Redeploy app (apps deploy --source-code-path)
+#     9. Verify deployment (including critical file checks)
 #
 #   Update mode (--update):
 #     1. Pre-flight checks
 #     2. Build frontend
 #     3. Sync files to workspace (no terraform)
 #     4. Resolve app SP + Grant UC permissions
-#     5. Redeploy app (apps deploy --source-code-path)
-#     6. Verify deployment
-#     Skips bundle deploy, wheel cleanup, and job permissions.
+#     5. Resolve job ID + Grant job permissions
+#     6. Redeploy app (apps deploy --source-code-path)
+#     7. Verify deployment
+#     Skips bundle deploy and wheel cleanup.
 #     Use for code-only changes when the app already exists.
+#
+#   Destroy mode (--destroy):
+#     1. Clean up runtime-created jobs
+#     2. Destroy the bundle (Terraform-managed app + job)
 #
 # Usage:
 #   export GENIE_WAREHOUSE_ID=<your-warehouse-id>   # required
 #   export GENIE_CATALOG=my_catalog                  # required
 #   ./deploy.sh                                      # full deploy
 #   ./deploy.sh --update                             # code-only update
+#   ./deploy.sh --destroy                            # destroy everything
+#   ./deploy.sh --destroy --auto-approve             # destroy without confirmation
 #
 # Or use a .env.deploy file (see deploy-config.sh for all options).
 # Any extra flags are forwarded to `databricks bundle deploy`.
@@ -38,15 +46,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# ── Parse --update flag ──────────────────────────────────────────────────
+# ── Parse flags ────────────────────────────────────────────────────────────
 UPDATE_ONLY=false
+DESTROY_MODE=false
 EXTRA_ARGS=()
 for arg in "$@"; do
-    if [ "$arg" = "--update" ]; then
-        UPDATE_ONLY=true
-    else
-        EXTRA_ARGS+=("$arg")
-    fi
+    case "$arg" in
+        --update)  UPDATE_ONLY=true ;;
+        --destroy) DESTROY_MODE=true ;;
+        *)         EXTRA_ARGS+=("$arg") ;;
+    esac
 done
 set -- "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
 
@@ -56,11 +65,83 @@ source "$SCRIPT_DIR/deploy-config.sh"
 # shellcheck source=scripts/preflight.sh
 source "$SCRIPT_DIR/scripts/preflight.sh"
 
+# ═══════════════════════════════════════════════════════════════════════════
+# DESTROY MODE
+# ═══════════════════════════════════════════════════════════════════════════
+if [ "$DESTROY_MODE" = "true" ]; then
+    echo "╔══════════════════════════════════════════════════════════════╗"
+    echo "║  Genie Workbench — Bundle Destroy                          ║"
+    echo "╚══════════════════════════════════════════════════════════════╝"
+    _print_config
+
+    # ── Step 1: Clean up runtime-created jobs ──────────────────────────
+    echo ""
+    echo "▸ Step 1/2: Cleaning up runtime-created jobs..."
+    RUNTIME_JOBS=$(
+        databricks jobs list --profile "$PROFILE" -o json 2>/dev/null \
+        | python3 -c "
+import sys, json
+jobs = json.load(sys.stdin)
+for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', [])):
+    tags = (j.get('settings') or {}).get('tags', {})
+    if tags.get('app') == '$APP_NAME' and (
+        tags.get('pattern') == 'deployment-job' or
+        tags.get('managed-by') == 'backend-job-launcher'
+    ):
+        print(j['job_id'])
+" 2>/dev/null || true
+    )
+
+    if [ -z "$RUNTIME_JOBS" ]; then
+        echo "  No runtime-created jobs found."
+    else
+        DELETED=0
+        for JID in $RUNTIME_JOBS; do
+            echo "  Deleting runtime job $JID..."
+            if databricks jobs delete "$JID" --profile "$PROFILE" 2>/dev/null; then
+                DELETED=$((DELETED + 1))
+            else
+                echo "  ⚠ Could not delete job $JID (may already be deleted)"
+            fi
+        done
+        echo "  ✓ Cleaned up $DELETED runtime job(s)"
+    fi
+
+    # ── Step 2: Destroy the bundle ─────────────────────────────────────
+    echo ""
+    echo "▸ Step 2/2: Destroying bundle (app + runner job)..."
+
+    # Ensure .build dir exists (bundle validate needs it for sync.include)
+    BUILD_STUB=false
+    if [ ! -d "$SCRIPT_DIR/.build" ]; then
+        mkdir -p "$SCRIPT_DIR/.build"
+        touch "$SCRIPT_DIR/.build/.keep"
+        BUILD_STUB=true
+    fi
+
+    databricks bundle destroy "${BUNDLE_VAR_FLAGS[@]}" "${BUNDLE_TARGET_FLAGS[@]}" --profile "$PROFILE" "$@"
+
+    # Clean up stub if we created it
+    if [ "$BUILD_STUB" = "true" ]; then
+        rm -rf "$SCRIPT_DIR/.build"
+    fi
+
+    echo "  ✓ Bundle destroyed"
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    echo "  Destroy complete."
+    echo "═══════════════════════════════════════════════════════════════"
+    exit 0
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DEPLOY / UPDATE MODE
+# ═══════════════════════════════════════════════════════════════════════════
 if [ "$UPDATE_ONLY" = "true" ]; then
     TOTAL_STEPS=7
     DEPLOY_LABEL="Code Update"
 else
-    TOTAL_STEPS=8
+    TOTAL_STEPS=9
     DEPLOY_LABEL="Bundle Deploy"
 fi
 
@@ -72,12 +153,13 @@ _print_config
 # ── Step 1: Pre-flight checks ─────────────────────────────────────────
 echo ""
 echo "▸ Step 1/$TOTAL_STEPS: Pre-flight checks..."
+_preflight_check_tools
 _preflight_check_profile "$PROFILE"
 
 # Resolve deployer email (needed for workspace paths)
 DEPLOYER=$(databricks current-user me --profile "$PROFILE" -o json \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['userName'])")
-WS_BUNDLE_PATH="/Workspace/Users/$DEPLOYER/.bundle/genie-workbench/dev/files"
+WS_BUNDLE_PATH="/Workspace/Users/$DEPLOYER/.bundle/genie-workbench/$DEPLOY_TARGET/files"
 
 _preflight_check_warehouse "$WAREHOUSE_ID" "$PROFILE"
 _preflight_check_catalog "$CATALOG" "$PROFILE"
@@ -89,6 +171,10 @@ STEP=2
 echo ""
 echo "▸ Step $STEP/$TOTAL_STEPS: Building frontend..."
 (cd "$SCRIPT_DIR/frontend" && npm install --silent && npm run build --silent)
+if [ ! -f "$SCRIPT_DIR/frontend/dist/index.html" ]; then
+    echo "  ✗ Frontend build failed — frontend/dist/index.html not found."
+    exit 1
+fi
 echo "  ✓ Frontend built"
 
 if [ "$UPDATE_ONLY" = "true" ]; then
@@ -96,7 +182,12 @@ if [ "$UPDATE_ONLY" = "true" ]; then
     STEP=3
     echo ""
     echo "▸ Step $STEP/$TOTAL_STEPS: Syncing files to workspace..."
+    # Full sync respects .databricksignore (which includes frontend/dist/)
     databricks sync . "$WS_BUNDLE_PATH" --profile "$PROFILE" --full
+    # frontend/dist/ is gitignored so databricks sync skips it — upload explicitly
+    echo "  Uploading frontend build artifacts..."
+    databricks workspace import-dir "$SCRIPT_DIR/frontend/dist" \
+        "$WS_BUNDLE_PATH/frontend/dist" --profile "$PROFILE" --overwrite
     echo "  ✓ Files synced to $WS_BUNDLE_PATH"
 else
     # ── Step 3 (full): Clean stale wheels from workspace ──────────────
@@ -120,8 +211,63 @@ else
     STEP=4
     echo ""
     echo "▸ Step $STEP/$TOTAL_STEPS: Deploying bundle..."
-    databricks bundle deploy "${BUNDLE_VAR_FLAGS[@]}" "$@"
+    databricks bundle deploy "${BUNDLE_VAR_FLAGS[@]}" "${BUNDLE_TARGET_FLAGS[@]}" --profile "$PROFILE" "$@"
     echo "  ✓ Bundle deployed"
+
+    # ── (dev-lakebase only) Wire postgres resource to app ─────────────────
+    if [ "$DEPLOY_TARGET" = "dev-lakebase" ]; then
+        PG_PROJECT="${APP_NAME}-db"
+        echo ""
+        echo "  Configuring autoscaling Lakebase resource on app..."
+
+        # Look up the auto-generated database resource name
+        DB_RESOURCE=$(databricks api get \
+            "/api/2.0/postgres/projects/$PG_PROJECT/branches/production/databases" \
+            --profile "$PROFILE" 2>/dev/null | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+dbs=d.get('databases',[])
+print(dbs[0].get('name','') if dbs else '')
+" 2>/dev/null)
+
+        if [ -n "$DB_RESOURCE" ]; then
+            PATCH_PAYLOAD=$(python3 -c "
+import json
+resources = [
+    {'name': 'sql-warehouse', 'sql_warehouse': {'id': '$WAREHOUSE_ID', 'permission': 'CAN_USE'}},
+    {'name': 'lakebase-db', 'postgres': {
+        'branch': 'projects/$PG_PROJECT/branches/production',
+        'database': '$DB_RESOURCE',
+        'permission': 'CAN_CONNECT_AND_CREATE'
+    }},
+]
+# Include user_api_scopes to prevent PATCH from resetting them to defaults
+scopes = ['sql', 'dashboards.genie', 'serving.serving-endpoints',
+           'catalog.catalogs:read', 'catalog.schemas:read',
+           'catalog.tables:read', 'files.files']
+print(json.dumps({'resources': resources, 'user_api_scopes': scopes}))
+")
+            databricks api patch "/api/2.0/apps/$APP_NAME" \
+                --profile "$PROFILE" --json "$PATCH_PAYLOAD" 2>/dev/null \
+            && echo "  ✓ Postgres resource wired to app (project=$PG_PROJECT, db=$DB_RESOURCE)" \
+            || echo "  ⚠ Could not wire postgres resource — LAKEBASE_HOST may not be injected"
+        else
+            echo "  ⚠ Could not find postgres database resource for $PG_PROJECT"
+        fi
+    fi
+
+    # ── Step 5 (full): Full-sync files to workspace ───────────────────
+    # Bundle deploy only uploads changed files (incremental). On a fresh
+    # workspace or after a destroy, most source files are missing. Do a
+    # full sync + explicit frontend/dist upload to guarantee completeness.
+    STEP=5
+    echo ""
+    echo "▸ Step $STEP/$TOTAL_STEPS: Full-syncing source files to workspace..."
+    databricks sync . "$WS_BUNDLE_PATH" --profile "$PROFILE" --full
+    # frontend/dist/ is gitignored so databricks sync skips it — upload explicitly
+    echo "  Uploading frontend build artifacts..."
+    databricks workspace import-dir "$SCRIPT_DIR/frontend/dist" \
+        "$WS_BUNDLE_PATH/frontend/dist" --profile "$PROFILE" --overwrite
+    echo "  ✓ Full sync complete"
 fi
 
 # ── Resolve app SP + Grant UC permissions ────────────────────────────────
@@ -168,7 +314,7 @@ for j in jobs:
     )
 else
     JOB_ID=$(
-        databricks bundle summary "${BUNDLE_VAR_FLAGS[@]}" -o json \
+        databricks bundle summary "${BUNDLE_VAR_FLAGS[@]}" "${BUNDLE_TARGET_FLAGS[@]}" --profile "$PROFILE" -o json \
         | python3 -c "
 import sys, json
 summary = json.load(sys.stdin)
@@ -243,6 +389,17 @@ databricks workspace import "$WS_BUNDLE_PATH/app.yaml" \
 echo "  ✓ app.yaml patched (GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>})" || \
 echo "  ⚠ Could not patch app.yaml — GSO config may not be set"
 
+# Sync _metadata.py — gitignored so bundle sync/databricks sync skip it,
+# but required at runtime for the genie_space_optimizer package to import.
+METADATA_SRC="$SCRIPT_DIR/packages/genie-space-optimizer/src/genie_space_optimizer/_metadata.py"
+METADATA_DST="$WS_BUNDLE_PATH/packages/genie-space-optimizer/src/genie_space_optimizer/_metadata.py"
+if [ -f "$METADATA_SRC" ]; then
+    databricks workspace import "$METADATA_DST" \
+        --profile "$PROFILE" --file "$METADATA_SRC" --format AUTO --overwrite 2>/dev/null && \
+    echo "  ✓ _metadata.py synced" || \
+    echo "  ⚠ Could not sync _metadata.py"
+fi
+
 # Ensure app compute is running before deploying
 APP_STATE=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json \
     | python3 -c "import sys,json; print(json.load(sys.stdin).get('compute_status',{}).get('state','UNKNOWN'))")
@@ -278,6 +435,33 @@ echo ""
 echo "▸ Step $STEP/$TOTAL_STEPS: Verifying deployment..."
 VERIFY_OK=true
 
+# Check critical files exist on workspace
+echo "  Checking critical files on workspace..."
+CRITICAL_FILES=(
+    "$WS_BUNDLE_PATH/backend/main.py"
+    "$WS_BUNDLE_PATH/backend/__init__.py"
+    "$WS_BUNDLE_PATH/requirements.txt"
+    "$WS_BUNDLE_PATH/frontend/dist/index.html"
+    "$WS_BUNDLE_PATH/app.yaml"
+)
+MISSING_FILES=()
+for f in "${CRITICAL_FILES[@]}"; do
+    if ! databricks workspace get-status "$f" --profile "$PROFILE" &>/dev/null; then
+        MISSING_FILES+=("$(basename "$f")")
+    fi
+done
+if [ ${#MISSING_FILES[@]} -gt 0 ]; then
+    echo "  ✗ Missing critical files on workspace: ${MISSING_FILES[*]}"
+    echo ""
+    echo "  This typically happens when bundle deploy does an incremental sync"
+    echo "  on a fresh workspace. The full-sync step should have fixed this."
+    echo ""
+    echo "  Remediation: re-run deploy or use --update mode."
+    VERIFY_OK=false
+else
+    echo "  ✓ All critical files present on workspace"
+fi
+
 # Check wheel exists on workspace
 WHL_LIST=""
 for CHECK_PATH in "$WS_BUNDLE_PATH/.build" "$WS_BUNDLE_PATH"; do
@@ -293,17 +477,51 @@ if [ -z "$WHL_LIST" ]; then
     VERIFY_OK=false
 fi
 
-# Check app deployment status
-APP_URL=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json \
-    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('url',''))" 2>/dev/null || true)
-APP_DEPLOY_STATE=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json \
-    | python3 -c "
+# Wait for deployment to settle and check status
+echo "  Waiting for app deployment to settle..."
+DEPLOY_STATE="IN_PROGRESS"
+for i in $(seq 1 18); do
+    sleep 10
+    APP_JSON=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null)
+    DEPLOY_STATE=$(echo "$APP_JSON" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 ad = d.get('active_deployment',{}) or d.get('pending_deployment',{})
 print(ad.get('status',{}).get('state','UNKNOWN'))
 " 2>/dev/null || echo "UNKNOWN")
-echo "  ✓ App deployment state: $APP_DEPLOY_STATE"
+    if [ "$DEPLOY_STATE" != "IN_PROGRESS" ]; then
+        break
+    fi
+    echo "    ... $DEPLOY_STATE (attempt $i/18)"
+done
+
+APP_URL=$(echo "$APP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('url',''))" 2>/dev/null || true)
+APP_STATUS=$(echo "$APP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('app_status',{}).get('state','UNKNOWN'))" 2>/dev/null || true)
+
+if [ "$DEPLOY_STATE" = "SUCCEEDED" ]; then
+    echo "  ✓ App deployment SUCCEEDED"
+elif [ "$DEPLOY_STATE" = "FAILED" ]; then
+    DEPLOY_MSG=$(echo "$APP_JSON" | python3 -c "
+import sys,json; d=json.load(sys.stdin)
+ad = d.get('active_deployment',{}) or d.get('pending_deployment',{})
+print(ad.get('status',{}).get('message','unknown error'))
+" 2>/dev/null || echo "unknown")
+    echo "  ✗ App deployment FAILED: $DEPLOY_MSG"
+    echo ""
+    echo "  Remediation:"
+    echo "    1. Check logs:  databricks apps logs $APP_NAME --profile $PROFILE"
+    echo "    2. Common causes:"
+    echo "       - Missing Python dependencies (check requirements.txt)"
+    echo "       - Import errors (check backend/main.py and its imports)"
+    echo "       - Missing frontend/dist/ (gitignored, must be built + uploaded)"
+    echo "    3. Fix the issue and re-run: ./deploy.sh --update"
+    VERIFY_OK=false
+elif [ "$DEPLOY_STATE" = "IN_PROGRESS" ]; then
+    echo "  ℹ App deployment still IN_PROGRESS after 3 minutes"
+    echo "  Check status:  databricks apps get $APP_NAME --profile $PROFILE"
+else
+    echo "  ℹ App deployment state: $DEPLOY_STATE"
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
@@ -322,6 +540,9 @@ echo ""
 if [ "$VERIFY_OK" = "true" ]; then
     echo "  Status: All checks passed ✓"
 else
-    echo "  Status: Some checks had warnings — review output above"
+    echo "  Status: DEPLOY FAILED — review errors above"
+    echo ""
+    echo "  Quick debug:"
+    echo "    databricks apps logs $APP_NAME --profile $PROFILE"
 fi
 echo "═══════════════════════════════════════════════════════════════"

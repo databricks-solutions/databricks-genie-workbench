@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { CheckCircle, XCircle, Search } from "lucide-react"
+import { CheckCircle, XCircle, MinusCircle, Search } from "lucide-react"
 import type { GSOQuestionDetail } from "@/types"
 
 interface QuestionListProps {
@@ -19,8 +19,8 @@ export function QuestionList({ questions, selectedId, onSelect }: QuestionListPr
       const s = search.toLowerCase()
       if (!q.question.toLowerCase().includes(s) && !q.question_id.toLowerCase().includes(s)) return false
     }
-    if (filter === "passing" && !q.passed) return false
-    if (filter === "failing" && q.passed) return false
+    if (filter === "passing" && q.passed !== true) return false
+    if (filter === "failing" && q.passed !== false) return false
     return true
   })
 
@@ -78,10 +78,12 @@ export function QuestionList({ questions, selectedId, onSelect }: QuestionListPr
                     : "hover:bg-elevated border border-transparent"
                 }`}
               >
-                {q.passed ? (
+                {q.passed === true ? (
                   <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                ) : (
+                ) : q.passed === false ? (
                   <XCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                ) : (
+                  <MinusCircle className="w-4 h-4 text-muted shrink-0 mt-0.5" />
                 )}
                 <div className="min-w-0">
                   <p className="text-sm text-primary truncate leading-snug">

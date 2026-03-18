@@ -6,6 +6,23 @@
 # with remediation steps and exits non-zero if the check fails.
 # ---------------------------------------------------------------------------
 
+_preflight_check_tools() {
+    echo "  Checking required tools..."
+    local missing=()
+    command -v databricks &>/dev/null || missing+=("databricks")
+    command -v python3 &>/dev/null    || missing+=("python3")
+    command -v node &>/dev/null       || missing+=("node")
+    command -v npm &>/dev/null        || missing+=("npm")
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo ""
+        echo "  ✗ Missing required tools: ${missing[*]}"
+        echo ""
+        echo "  Remediation: install the missing tools and re-run deploy.sh"
+        exit 1
+    fi
+    echo "  ✓ All required tools available (databricks, python3, node, npm)"
+}
+
 _preflight_check_profile() {
     local profile="$1"
     echo "  Checking CLI profile '$profile'..."

@@ -52,14 +52,24 @@ async def load_gso_stages(run_id: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-async def load_gso_iterations(run_id: str) -> list[dict]:
-    """Load evaluation iterations for a run."""
+async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -> list[dict]:
+    """Load evaluation iterations for a run.
+
+    By default excludes the large rows_json column for performance.
+    Pass include_rows_json=True when per-question detail is needed.
+    """
     if not _lakebase_available or _pool is None:
         return []
 
+    cols = "*" if include_rows_json else (
+        "run_id, iteration, lever, eval_scope, timestamp, mlflow_run_id, model_id, "
+        "overall_accuracy, total_questions, correct_count, scores_json, failures_json, "
+        "remaining_failures, arbiter_actions_json, repeatability_pct, repeatability_json, "
+        "thresholds_met, reflection_json"
+    )
     async with _pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT * FROM gso.genie_opt_iterations
+            f"""SELECT {cols} FROM gso.genie_opt_iterations
                WHERE run_id = $1
                ORDER BY iteration ASC""",
             run_id,
@@ -97,17 +107,31 @@ async def load_gso_asi_results(run_id: str, iteration: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-async def load_gso_iteration_rows(run_id: str, iteration: int) -> str | None:
-    """Load the rows_json column for a specific iteration."""
+async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str | None = "full") -> str | None:
+    """Load the rows_json column for a specific iteration and eval scope.
+
+    If eval_scope is None, returns the first row with non-null rows_json
+    for the given run_id and iteration (any scope).
+    """
     if not _lakebase_available or _pool is None:
         return None
 
     async with _pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT rows_json FROM gso.genie_opt_iterations WHERE run_id = $1 AND iteration = $2",
-            run_id,
-            iteration,
-        )
+        if eval_scope is not None:
+            row = await conn.fetchrow(
+                "SELECT rows_json FROM gso.genie_opt_iterations "
+                "WHERE run_id = $1 AND iteration = $2 AND eval_scope = $3",
+                run_id,
+                iteration,
+                eval_scope,
+            )
+        else:
+            row = await conn.fetchrow(
+                "SELECT rows_json FROM gso.genie_opt_iterations "
+                "WHERE run_id = $1 AND iteration = $2 AND rows_json IS NOT NULL",
+                run_id,
+                iteration,
+            )
         return row["rows_json"] if row else None
 
 
