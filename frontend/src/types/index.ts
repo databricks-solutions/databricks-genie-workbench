@@ -427,6 +427,9 @@ export interface GSORunStatus {
   baselineScore: number | null
   optimizedScore: number | null
   convergenceReason: string | null
+  stepsCompleted?: number | null
+  totalSteps?: number | null
+  currentStepName?: string | null
 }
 
 export interface GSORunSummary {

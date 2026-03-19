@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, useRef } from "react"
 import { X, TrendingUp, Pen } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
@@ -62,17 +62,59 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
   const [run, setRun] = useState<GSOPipelineRun | null>(null)
   const [iterations, setIterations] = useState<GSOIterationResult[]>([])
 
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   useEffect(() => {
     if (!isOpen) return
     setRun(null)
     setIterations([])
-    getAutoOptimizeRun(runId).then(setRun).catch(() => {})
-    getAutoOptimizeIterations(runId)
-      .then((its) => setIterations(its.filter((it) =>
-        String(it.eval_scope ?? "").toLowerCase() === "full" || it.iteration === 0
-      )))
-      .catch(() => {})
+
+    function fetchData() {
+      getAutoOptimizeRun(runId).then(setRun).catch(() => {})
+      getAutoOptimizeIterations(runId)
+        .then((its) => setIterations(its.filter((it) =>
+          String(it.eval_scope ?? "").toLowerCase() === "full" || it.iteration === 0
+        )))
+        .catch(() => {})
+    }
+
+    fetchData()
+
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }
   }, [runId, isOpen])
+
+  // Poll for live updates when run is not terminal
+  const TERMINAL = new Set(["CONVERGED", "STALLED", "MAX_ITERATIONS", "FAILED", "CANCELLED", "APPLIED", "DISCARDED"])
+  const runIsTerminal = run ? TERMINAL.has(run.status) : false
+
+  useEffect(() => {
+    if (!isOpen || runIsTerminal) {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+      return
+    }
+    pollRef.current = setInterval(() => {
+      getAutoOptimizeRun(runId).then(setRun).catch(() => {})
+      getAutoOptimizeIterations(runId)
+        .then((its) => setIterations(its.filter((it) =>
+          String(it.eval_scope ?? "").toLowerCase() === "full" || it.iteration === 0
+        )))
+        .catch(() => {})
+    }, 10000)
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }
+  }, [isOpen, runIsTerminal, runId])
 
   if (!isOpen) return null
 
@@ -86,9 +128,6 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
   const bNorm = baselineScore != null ? (baselineScore > 1 ? baselineScore : baselineScore * 100) : null
   const oNorm = optimizedScore != null ? (optimizedScore > 1 ? optimizedScore : optimizedScore * 100) : null
   const improvement = bNorm != null && oNorm != null ? oNorm - bNorm : null
-
-  const TERMINAL = new Set(["CONVERGED", "STALLED", "MAX_ITERATIONS", "FAILED", "CANCELLED", "APPLIED", "DISCARDED"])
-  const isTerminal = run ? TERMINAL.has(run.status) : false
 
   // Extract baseline judge scores from step 2 (Baseline Evaluation) outputs
   const baselineStep = run?.steps?.find((s) => s.stepNumber === 2)
@@ -172,7 +211,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
               )}
 
               {/* Main tabs: Summary / Iteration Explorer / Suggestions */}
-              {isTerminal && iterations.length > 0 && (
+              {runIsTerminal && iterations.length > 0 && (
                 <Tabs defaultValue="summary">
                   <TabsList>
                     <TabsTrigger value="summary">Summary</TabsTrigger>

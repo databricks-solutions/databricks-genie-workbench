@@ -257,47 +257,27 @@ python3 "$SCRIPT_DIR/scripts/grant_permissions.py" \
     --warehouse-id "$WAREHOUSE_ID"
 echo "  ✓ UC grants applied"
 
-# ── (dev-lakebase only) Setup GSO synced tables in Lakebase ──────────────
+# ── (dev-lakebase only) Setup GSO synced tables (CDF + instructions) ─────
 if [ "$DEPLOY_TARGET" = "dev-lakebase" ]; then
     STEP=$((STEP + 1))
     echo ""
-    echo "▸ Step $STEP/$TOTAL_STEPS: Setting up GSO synced tables in Lakebase..."
+    echo "▸ Step $STEP/$TOTAL_STEPS: Setting up GSO synced tables..."
 
-    # Poll until Lakebase branch is ready (project status is on the branch, not the project)
-    echo "  Waiting for Lakebase project to be ready..."
-    LB_STATE="UNKNOWN"
-    for i in $(seq 1 12); do
-        LB_STATE=$(databricks api get \
-            "/api/2.0/postgres/projects/${APP_NAME}-db/branches/production" \
-            --profile "$PROFILE" 2>/dev/null \
-            | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',{}).get('current_state','UNKNOWN'))" \
-            2>/dev/null || echo "UNKNOWN")
-        if [ "$LB_STATE" = "READY" ] || [ "$LB_STATE" = "ACTIVE" ]; then
-            echo "  ✓ Lakebase project is ready"
-            break
-        fi
-        echo "    ... $LB_STATE (attempt $i/12)"
-        sleep 10
-    done
-
-    if [ "$LB_STATE" = "READY" ] || [ "$LB_STATE" = "ACTIVE" ]; then
-        if DATABRICKS_CONFIG_PROFILE="$PROFILE" \
-            python3 "$SCRIPT_DIR/scripts/setup_synced_tables.py" \
-                --source-catalog "$CATALOG" \
-                --source-schema "$GSO_SCHEMA" \
-                --lakebase-catalog "$LAKEBASE_CATALOG" \
-                --lakebase-schema "gso" \
-                --warehouse-id "$WAREHOUSE_ID" \
-                --profile "$PROFILE" 2>&1; then
-            echo "  ✓ GSO synced tables ready in Lakebase"
-        else
-            echo "  ⚠ GSO synced tables setup failed (non-fatal — Lakebase is optional)"
-        fi
+    if DATABRICKS_CONFIG_PROFILE="$PROFILE" \
+        python3 "$SCRIPT_DIR/scripts/setup_synced_tables.py" \
+            --source-catalog "$CATALOG" \
+            --source-schema "$GSO_SCHEMA" \
+            --warehouse-id "$WAREHOUSE_ID" \
+            --profile "$PROFILE" 2>&1; then
+        echo "  ✓ CDF enabled on GSO tables"
     else
-        echo "  ⚠ Lakebase project not ready after 2 minutes (state: $LB_STATE)"
-        echo "  Skipping synced tables setup — run manually later:"
-        echo "    python3 scripts/setup_synced_tables.py --source-catalog $CATALOG --lakebase-catalog $LAKEBASE_CATALOG --profile $PROFILE --warehouse-id $WAREHOUSE_ID"
+        echo "  ⚠ GSO synced tables setup failed (non-fatal — Lakebase is optional)"
     fi
+
+    echo ""
+    echo "  NOTE: Synced tables must be created via Catalog Explorer UI."
+    echo "  After creating them, verify with:"
+    echo "    python3 scripts/setup_synced_tables.py --source-catalog $CATALOG --warehouse-id $WAREHOUSE_ID --profile $PROFILE --verify-only"
 fi
 
 # ── Resolve job ID + Grant job permissions ───────────────────────────────
@@ -608,4 +588,9 @@ else
     echo "  Quick debug:"
     echo "    databricks apps logs $APP_NAME --profile $PROFILE"
 fi
+echo ""
+echo "  NOTE: If you see 'Failed to list spaces' in the app, attach a"
+echo "  Lakebase PostgreSQL resource named 'postgres' in the Apps UI"
+echo "  with CAN_CONNECT_AND_CREATE permission. The app will auto-retry"
+echo "  schema creation — no redeploy needed."
 echo "═══════════════════════════════════════════════════════════════"

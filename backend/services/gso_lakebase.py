@@ -1,10 +1,27 @@
-"""GSO synced table reads from Lakebase (PostgreSQL)."""
+"""GSO synced table reads from Lakebase (PostgreSQL).
+
+Synced tables live in the same catalog/schema as the source Delta tables,
+with a `_synced` suffix (e.g. `genie_opt_runs_synced`).  In Postgres they
+appear under the schema matching GSO_SCHEMA (default `genie_space_optimizer`).
+"""
 
 import logging
+import os
 
 from backend.services.lakebase import _pool, _lakebase_available
 
 logger = logging.getLogger(__name__)
+
+# Postgres schema where synced tables appear — matches the UC schema name.
+_GSO_PG_SCHEMA = os.environ.get("GSO_SCHEMA", "genie_space_optimizer")
+
+# Synced tables are created with this suffix in the same UC schema.
+_SYNCED_SUFFIX = "_synced"
+
+
+def _tbl(name: str) -> str:
+    """Return the fully-qualified Postgres table reference for a synced table."""
+    return f'"{_GSO_PG_SCHEMA}"."{name}{_SYNCED_SUFFIX}"'
 
 
 async def load_gso_run(run_id: str) -> dict | None:
@@ -14,7 +31,7 @@ async def load_gso_run(run_id: str) -> dict | None:
 
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT * FROM gso.genie_opt_runs WHERE run_id = $1",
+            f"SELECT * FROM {_tbl('genie_opt_runs')} WHERE run_id = $1",
             run_id,
         )
         return dict(row) if row else None
@@ -27,9 +44,9 @@ async def load_gso_runs_for_space(space_id: str) -> list[dict]:
 
     async with _pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT run_id, space_id, status, started_at, completed_at,
+            f"""SELECT run_id, space_id, status, started_at, completed_at,
                       best_accuracy, best_iteration, convergence_reason, triggered_by
-               FROM gso.genie_opt_runs
+               FROM {_tbl('genie_opt_runs')}
                WHERE space_id = $1
                ORDER BY started_at DESC""",
             space_id,
@@ -44,7 +61,7 @@ async def load_gso_stages(run_id: str) -> list[dict]:
 
     async with _pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT * FROM gso.genie_opt_stages
+            f"""SELECT * FROM {_tbl('genie_opt_stages')}
                WHERE run_id = $1
                ORDER BY started_at ASC""",
             run_id,
@@ -69,7 +86,7 @@ async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -
     )
     async with _pool.acquire() as conn:
         rows = await conn.fetch(
-            f"""SELECT {cols} FROM gso.genie_opt_iterations
+            f"""SELECT {cols} FROM {_tbl('genie_opt_iterations')}
                WHERE run_id = $1
                ORDER BY iteration ASC""",
             run_id,
@@ -84,7 +101,7 @@ async def load_gso_patches(run_id: str) -> list[dict]:
 
     async with _pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT * FROM gso.genie_opt_patches
+            f"""SELECT * FROM {_tbl('genie_opt_patches')}
                WHERE run_id = $1
                ORDER BY iteration, lever, patch_index""",
             run_id,
@@ -99,7 +116,7 @@ async def load_gso_asi_results(run_id: str, iteration: int) -> list[dict]:
 
     async with _pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT * FROM gso.genie_eval_asi_results
+            f"""SELECT * FROM {_tbl('genie_eval_asi_results')}
                WHERE run_id = $1 AND iteration = $2""",
             run_id,
             iteration,
@@ -116,10 +133,11 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
     if not _lakebase_available or _pool is None:
         return None
 
+    tbl = _tbl('genie_opt_iterations')
     async with _pool.acquire() as conn:
         if eval_scope is not None:
             row = await conn.fetchrow(
-                "SELECT rows_json FROM gso.genie_opt_iterations "
+                f"SELECT rows_json FROM {tbl} "
                 "WHERE run_id = $1 AND iteration = $2 AND eval_scope = $3",
                 run_id,
                 iteration,
@@ -127,7 +145,7 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
             )
         else:
             row = await conn.fetchrow(
-                "SELECT rows_json FROM gso.genie_opt_iterations "
+                f"SELECT rows_json FROM {tbl} "
                 "WHERE run_id = $1 AND iteration = $2 AND rows_json IS NOT NULL",
                 run_id,
                 iteration,
@@ -142,7 +160,7 @@ async def load_gso_suggestions(run_id: str) -> list[dict]:
 
     async with _pool.acquire() as conn:
         rows = await conn.fetch(
-            """SELECT * FROM gso.genie_opt_suggestions
+            f"""SELECT * FROM {_tbl('genie_opt_suggestions')}
                WHERE run_id = $1
                ORDER BY created_at ASC""",
             run_id,

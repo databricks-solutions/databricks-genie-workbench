@@ -177,7 +177,7 @@ def trigger_optimization(
     sp_aliases = get_sp_principal_aliases(sp_ws)
     if not sp_can_manage_space(sp_ws, space_id, sp_aliases):
         raise PermissionError(
-            f"The service principal does not have CAN_EDIT or CAN_MANAGE on Genie Space {space_id}."
+            f"The service principal does not have CAN_MANAGE on Genie Space {space_id}."
         )
 
     from genie_space_optimizer.common.config import EXPERIMENT_PATH_TEMPLATE, format_mlflow_template

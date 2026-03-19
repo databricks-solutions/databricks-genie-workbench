@@ -1163,6 +1163,36 @@ async def get_run_status(run_id: str):
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
 
+    # Compute lightweight step progress from stages
+    stages = await gso_lakebase.load_gso_stages(run_id)
+    if not stages and _is_configured():
+        stages = _delta_query(
+            f"SELECT * FROM {_delta_table('genie_opt_stages')} "
+            f"WHERE run_id = '{run_id}' ORDER BY started_at ASC"
+        )
+    run_status_str = str(run.get("status", "")).upper()
+    steps_completed = 0
+    current_step_name = None
+    for step_def in _STEP_DEFINITIONS:
+        matching = [
+            s for s in (stages or [])
+            if any(
+                str(s.get("stage", "")).upper().startswith(p)
+                for p in step_def["stage_prefixes"]
+            )
+        ]
+        status = _derive_step_status(matching)
+        status = _normalize_step_status_for_terminal_run(
+            status=status, run_status=run_status_str,
+        )
+        if status == "completed":
+            steps_completed += 1
+        elif status == "running" and current_step_name is None:
+            current_step_name = step_def["name"]
+    if current_step_name is None and steps_completed < 6:
+        # Next pending step
+        current_step_name = _STEP_DEFINITIONS[steps_completed]["name"]
+
     return {
         "runId": run.get("run_id"),
         "status": run.get("status"),
@@ -1172,6 +1202,9 @@ async def get_run_status(run_id: str):
         "baselineScore": run.get("best_accuracy"),
         "optimizedScore": run.get("best_accuracy"),
         "convergenceReason": run.get("convergence_reason"),
+        "stepsCompleted": steps_completed,
+        "totalSteps": 6,
+        "currentStepName": current_step_name,
     }
 
 

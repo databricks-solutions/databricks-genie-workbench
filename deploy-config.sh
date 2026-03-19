@@ -14,11 +14,10 @@
 #   GENIE_DEPLOY_PROFILE     (optional)  Databricks CLI profile       [default: DEFAULT]
 #   GENIE_LLM_MODEL          (optional)  LLM serving endpoint         [default: databricks-claude-sonnet-4-6]
 #   GENIE_DEPLOY_TARGET      (optional)  Bundle target                [auto-detected: dev or dev-lakebase]
-#   GENIE_LAKEBASE_CATALOG   (optional)  Lakebase UC catalog name     [default: ${APP_NAME}-db]
 #
 # After sourcing, the following variables are available:
 #   APP_NAME, CATALOG, GSO_SCHEMA, WAREHOUSE_ID, PROFILE, LLM_MODEL,
-#   LAKEBASE_CATALOG, BUNDLE_VAR_FLAGS
+#   BUNDLE_VAR_FLAGS
 # ---------------------------------------------------------------------------
 
 # ── Load .env.deploy if present ──────────────────────────────────────────
@@ -38,7 +37,6 @@ GSO_SCHEMA="genie_space_optimizer"  # Fixed default — matches GSO convention
 WAREHOUSE_ID="${GENIE_WAREHOUSE_ID:-}"
 PROFILE="${GENIE_DEPLOY_PROFILE:-DEFAULT}"
 LLM_MODEL="${GENIE_LLM_MODEL:-databricks-claude-sonnet-4-6}"
-LAKEBASE_CATALOG="${GENIE_LAKEBASE_CATALOG:-${APP_NAME}-db}"
 
 # Auto-detect deploy target: use dev-lakebase when the databricks.yml defines
 # a postgres_projects resource under that target (Lakebase persistence).

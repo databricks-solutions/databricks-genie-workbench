@@ -662,13 +662,54 @@ git subtree push --prefix=packages/genie-space-optimizer gso <branch-name>
 git subtree pull --prefix=packages/genie-space-optimizer gso main --squash
 ```
 
+### Synced table architecture (same-schema with `_synced` suffix)
+
+GSO synced tables now live **in the same catalog/schema** as the source Delta
+tables, with a `_synced` suffix. For example:
+
+| Source Table | Synced Table |
+|---|---|
+| `{CATALOG}.genie_space_optimizer.genie_opt_runs` | `{CATALOG}.genie_space_optimizer.genie_opt_runs_synced` |
+
+In Lakebase PostgreSQL, these appear under the `genie_space_optimizer` schema:
+
+```sql
+SELECT * FROM "genie_space_optimizer"."genie_opt_runs_synced" WHERE run_id = $1;
+```
+
+**Why not a separate Lakebase catalog?** The Databricks SDK's
+`create_synced_database_table` does not support Lakebase Autoscaling
+project/branch fields — only the legacy `database_instance_name`. The raw REST
+API has a proto3 serialization bug where `databaseProjectName`/`databaseBranchName`
+require camelCase but `spec` fields require snake_case, and mixing both fails.
+Creating synced tables via the Catalog Explorer UI (which uses the correct
+internal API) works reliably.
+
+**Creating synced tables:**
+
+For each of the 8 source tables in `{CATALOG}.genie_space_optimizer`:
+
+1. Open Catalog Explorer → navigate to the source table
+2. Click **Create** → **Synced table**
+3. Name: `{table_name}_synced` (same schema)
+4. Database type: **Lakebase Serverless (Autoscaling)**
+5. Project: `genie-workbench-db`, Branch: `production`
+6. Sync mode: **Triggered**
+7. Verify primary key detection, then create
+
+Tables: `genie_opt_runs`, `genie_opt_stages`, `genie_opt_iterations`,
+`genie_opt_patches`, `genie_eval_asi_results`, `genie_opt_provenance`,
+`genie_opt_suggestions`, `genie_opt_data_access_grants`
+
+Docs: https://docs.databricks.com/aws/en/oltp/projects/sync-tables
+
 ### Adding new GSO Delta tables
 
 If the GSO adds new Delta tables in future versions:
 
 1. Enable CDF on the new table.
-2. Create a new synced table via the SDK.
-3. Add a read function to `backend/services/gso_lakebase.py`.
+2. Create a synced table via Catalog Explorer UI (same schema, `_synced` suffix).
+3. Add a read function to `backend/services/gso_lakebase.py` (uses `_tbl()` helper).
 4. Add/update the corresponding endpoint in `backend/routers/auto_optimize.py`.
 5. Update frontend types and API functions if the new table surfaces in the UI.
 
@@ -679,8 +720,7 @@ from databricks.sdk import WorkspaceClient
 
 w = WorkspaceClient()
 for table_name in ["genie_opt_runs", "genie_opt_stages", ...]:
-    status = w.database.get_synced_database_table(
-        name=f"<lakebase_catalog>.gso.{table_name}"
-    )
+    synced_name = f"<catalog>.genie_space_optimizer.{table_name}_synced"
+    status = w.database.get_synced_database_table(name=synced_name)
     print(f"{table_name}: {status.data_synchronization_status.detailed_state}")
 ```

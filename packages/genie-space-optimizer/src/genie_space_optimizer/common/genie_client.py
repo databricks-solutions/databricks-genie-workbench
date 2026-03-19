@@ -66,12 +66,7 @@ def get_space_permissions_rest(w: WorkspaceClient, space_id: str) -> dict | None
     try:
         resp = w.api_client.do("GET", f"/api/2.0/permissions/genie/{space_id}")
         return resp if isinstance(resp, dict) else None
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(
-            "get_space_permissions_rest failed for %s (auth=%s): %s",
-            space_id, getattr(w.config, 'auth_type', '?'), e,
-        )
+    except Exception:
         return None
 
 
@@ -100,7 +95,7 @@ def _check_user_edit_from_rest_acl(
 def _check_sp_manage_from_rest_acl(
     acl_response: dict, sp_aliases: set[str],
 ) -> bool:
-    """Return True if any SP alias has CAN_EDIT or CAN_MANAGE in a REST ACL response."""
+    """Return True if any SP alias has CAN_MANAGE in a REST ACL response."""
     sp_aliases_lower = {a.lower() for a in sp_aliases}
     for entry in acl_response.get("access_control_list", []):
         principal = (
@@ -110,7 +105,7 @@ def _check_sp_manage_from_rest_acl(
         if principal not in sp_aliases_lower:
             continue
         for p in entry.get("all_permissions", []):
-            if str(p.get("permission_level", "")) in EDITABLE_PERMISSIONS:
+            if str(p.get("permission_level", "")) == "CAN_MANAGE":
                 return True
     return False
 
@@ -264,28 +259,16 @@ def user_can_edit_space(
 def sp_can_manage_space(
     w: WorkspaceClient, space_id: str, sp_aliases: set[str],
     cached_perms: dict | None = None,
-    sp_client: WorkspaceClient | None = None,
 ) -> bool:
-    """Check whether a service principal has CAN_EDIT or CAN_MANAGE on a Genie space.
+    """Check whether a service principal has CAN_MANAGE on a Genie space.
 
-    Tries the REST ACL endpoint ``GET /api/2.0/permissions/genie/{id}`` with
-    ``w`` first (OBO client), then ``sp_client`` if provided.  Returns False
-    when neither client can retrieve the ACL — the previous serialized-space
-    probe was unreliable (CAN_VIEW is sufficient to fetch the space config,
-    producing false positives).
+    Uses REST API ``GET /api/2.0/permissions/genie/{id}``.
+    Accepts a pre-fetched REST dict via ``cached_perms``.
     """
-    # Try OBO client first, then SP client for the ACL fetch
-    acl_resp = cached_perms
+    acl_resp = cached_perms or get_space_permissions_rest(w, space_id)
     if acl_resp is None:
-        for client in ([w] if sp_client is None else [w, sp_client]):
-            acl_resp = get_space_permissions_rest(client, space_id)
-            if acl_resp is not None:
-                break
-
-    if acl_resp is not None:
-        return _check_sp_manage_from_rest_acl(acl_resp, sp_aliases)
-
-    return False
+        return False
+    return _check_sp_manage_from_rest_acl(acl_resp, sp_aliases)
 
 
 def fetch_space_config(w: WorkspaceClient, space_id: str) -> dict:

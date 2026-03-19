@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -19,6 +20,7 @@ _memory_store: dict = {
 
 _pool = None
 _lakebase_available = False
+_schema_retry_after: float = 0  # timestamp after which we retry schema creation
 
 
 def _generate_credential() -> tuple[str, str] | None:
@@ -88,7 +90,10 @@ async def _ensure_schema():
     """Idempotently create all Lakebase tables and indexes.
 
     Safe to call on every startup — uses CREATE TABLE IF NOT EXISTS.
+    On failure, marks Lakebase unavailable and schedules a retry so the
+    app self-heals once Lakebase permissions are fixed (e.g. resource attached).
     """
+    global _lakebase_available, _schema_retry_after
     if _pool is None:
         return
     try:
@@ -127,9 +132,24 @@ async def _ensure_schema():
                     first_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
                 )
             """)
+        _lakebase_available = True
         logger.info("Lakebase schema ready (3 tables)")
     except Exception as e:
-        logger.warning(f"Failed to ensure Lakebase schema: {e}")
+        logger.warning(f"Failed to ensure Lakebase schema: {e}. Falling back to in-memory storage.")
+        _lakebase_available = False
+        _schema_retry_after = time.monotonic() + 30  # retry after 30 seconds
+
+
+async def _maybe_retry_schema():
+    """If pool exists but schema failed, retry periodically (e.g. after Lakebase resource is attached)."""
+    global _schema_retry_after
+    if _lakebase_available or _pool is None:
+        return
+    if time.monotonic() < _schema_retry_after:
+        return
+    _schema_retry_after = time.monotonic() + 30  # prevent thundering herd
+    logger.info("Retrying Lakebase schema creation...")
+    await _ensure_schema()
 
 
 async def init_pool():
@@ -333,6 +353,7 @@ async def star_space(space_id: str, starred: bool) -> None:
 
 async def get_starred_spaces() -> list[str]:
     """Get all starred space IDs."""
+    await _maybe_retry_schema()
     if not _lakebase_available or _pool is None:
         return list(_memory_store["stars"])
 
@@ -356,6 +377,7 @@ async def record_space_seen(space_id: str) -> None:
 
 async def get_all_scan_summaries() -> list[dict]:
     """Get latest scan summary for all scanned spaces."""
+    await _maybe_retry_schema()
     if not _lakebase_available or _pool is None:
         return list(_memory_store["scans"].values())
 

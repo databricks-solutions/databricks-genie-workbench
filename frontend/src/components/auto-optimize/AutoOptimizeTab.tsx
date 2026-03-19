@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react"
-import { ExternalLink, Info, Play } from "lucide-react"
+import { Info, Play, Cog } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { OptimizationConfig } from "@/components/auto-optimize/OptimizationConfig"
@@ -9,6 +9,7 @@ import { ScoreSummary } from "@/components/auto-optimize/ScoreSummary"
 import { QuestionList } from "@/components/auto-optimize/QuestionList"
 import { QuestionDetail } from "@/components/auto-optimize/QuestionDetail"
 import { RunDetailView } from "@/components/auto-optimize/RunDetailView"
+import { PipelineDetailsModal } from "@/components/auto-optimize/PipelineDetailsModal"
 import {
   getAutoOptimizeHealth,
   getAutoOptimizeStatus,
@@ -16,6 +17,7 @@ import {
   getAutoOptimizePermissions,
   getAutoOptimizeIterations,
   getAutoOptimizeAsiResults,
+  getAutoOptimizeQuestionResults,
 } from "@/lib/api"
 import type { GSORunStatus, GSOPermissionCheck, GSOQuestionDetail } from "@/types"
 
@@ -63,6 +65,7 @@ export function AutoOptimizeTab({ spaceId }: AutoOptimizeTabProps) {
   const [questions, setQuestions] = useState<GSOQuestionDetail[]>([])
   const [totalQuestions, setTotalQuestions] = useState<number>(0)
   const [selectedQuestionId, setSelectedQuestionId] = useState<string | null>(null)
+  const [showPipeline, setShowPipeline] = useState(false)
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const latestIterRef = useRef<number>(-1)
 
@@ -118,9 +121,9 @@ export function AutoOptimizeTab({ spaceId }: AutoOptimizeTabProps) {
         })
         .catch(() => {})
 
-      // Poll iterations + ASI results (only full-scope evaluations)
+      // Poll iterations + question results
       getAutoOptimizeIterations(activeRunId!)
-        .then((iterations) => {
+        .then(async (iterations) => {
           if (iterations.length === 0) return
           // Get total questions from the first iteration that has it
           const withTotal = iterations.find((it) => it.total_questions > 0)
@@ -130,13 +133,12 @@ export function AutoOptimizeTab({ spaceId }: AutoOptimizeTabProps) {
           if (fullIters.length === 0) return
           const maxIter = Math.max(...fullIters.map((it) => it.iteration))
           latestIterRef.current = maxIter
-          return getAutoOptimizeAsiResults(activeRunId!, maxIter)
-        })
-        .then((results) => {
-          if (results) {
-            // Deduplicate by question_id (multiple judges per question) and map to GSOQuestionDetail shape
-            const seen = new Map<string, typeof results[0]>()
-            for (const r of results) {
+
+          // Try ASI results first (per-judge failure analysis)
+          const asiResults = await getAutoOptimizeAsiResults(activeRunId!, maxIter)
+          if (asiResults && asiResults.length > 0) {
+            const seen = new Map<string, typeof asiResults[0]>()
+            for (const r of asiResults) {
               if (!seen.has(r.question_id) || (r.failure_type == null)) {
                 seen.set(r.question_id, r)
               }
@@ -151,6 +153,13 @@ export function AutoOptimizeTab({ spaceId }: AutoOptimizeTabProps) {
                 match_type: null,
               }))
             )
+            return
+          }
+
+          // Fallback: use question-results (from rows_json in iterations table)
+          const questionResults = await getAutoOptimizeQuestionResults(activeRunId!, maxIter)
+          if (questionResults && questionResults.length > 0) {
+            setQuestions(questionResults)
           }
         })
         .catch(() => {})
@@ -261,6 +270,11 @@ export function AutoOptimizeTab({ spaceId }: AutoOptimizeTabProps) {
     const isTerminal = runStatus ? TERMINAL_STATUSES.has(runStatus.status) : false
     const assessedCount = questions.length
     const selectedQuestion = questions.find((q) => q.question_id === selectedQuestionId) ?? null
+    const stepsCompleted = runStatus?.stepsCompleted ?? 0
+    const totalSteps = runStatus?.totalSteps ?? 6
+    const progressPct = Math.round((stepsCompleted / totalSteps) * 100)
+    const allComplete = stepsCompleted === totalSteps
+    const currentStepName = runStatus?.currentStepName ?? null
 
     return (
       <div className="space-y-4">
@@ -294,6 +308,37 @@ export function AutoOptimizeTab({ spaceId }: AutoOptimizeTabProps) {
                 optimizedScore={runStatus.optimizedScore}
               />
             )}
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-muted">
+              {currentStepName && !allComplete ? (
+                <>{currentStepName}{!isTerminal && <span className="animate-pulse">...</span>}</>
+              ) : allComplete ? (
+                "All steps complete"
+              ) : (
+                "Starting optimization..."
+              )}
+            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted">{stepsCompleted}/{totalSteps} steps</span>
+              <button
+                onClick={() => setShowPipeline(true)}
+                className="p-1.5 rounded-lg border border-default hover:bg-elevated text-muted hover:text-primary transition-colors"
+                title="Pipeline Details"
+              >
+                <Cog className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+          <div className="h-1.5 rounded-full bg-elevated overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${allComplete ? "bg-emerald-500" : "bg-accent"}`}
+              style={{ width: `${progressPct}%` }}
+            />
           </div>
         </div>
 
@@ -333,21 +378,14 @@ export function AutoOptimizeTab({ spaceId }: AutoOptimizeTabProps) {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between">
-          <button
-            onClick={() => {
-              setSelectedRunId(activeRunId)
-              setView("detail")
-            }}
-            className="flex items-center gap-1.5 text-sm text-accent hover:underline"
-          >
-            <ExternalLink className="w-3.5 h-3.5" />
-            View Details
-          </button>
-          {!isTerminal && (
+        {!isTerminal && (
+          <div className="flex justify-end">
             <p className="text-xs text-muted animate-pulse">Polling every 5 seconds...</p>
-          )}
-        </div>
+          </div>
+        )}
+
+        {/* Pipeline Details Modal */}
+        <PipelineDetailsModal runId={activeRunId} isOpen={showPipeline} onClose={() => setShowPipeline(false)} />
       </div>
     )
   }

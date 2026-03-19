@@ -130,7 +130,7 @@ export function PermissionAlert({ permissions, loading, onRefresh }: PermissionA
             <>
               Open the Genie Space sharing dialog and add{" "}
               <CopyableText text={permissions.sp_display_name || "<service-principal>"} />{" "}
-              with <strong>CAN_EDIT</strong> permission.
+              with <strong>CAN_MANAGE</strong> permission.
             </>
           }
           granted={permissions.sp_has_manage}

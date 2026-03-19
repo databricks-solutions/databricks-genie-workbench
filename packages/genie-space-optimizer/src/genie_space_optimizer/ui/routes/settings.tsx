@@ -617,7 +617,7 @@ function SpacePermissionDetails({ space }: { space: SpacePermissions }) {
       <div className="rounded border p-3">
         <p className="mb-2 text-sm font-medium">Space Access</p>
         <div className="flex items-center gap-2">
-          <span className="text-sm">SP CAN_EDIT</span>
+          <span className="text-sm">SP CAN_MANAGE</span>
           {space.spHasManage ? (
             <Badge
               variant="outline"
