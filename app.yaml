@@ -69,16 +69,13 @@ env:
     value: ""
 
   # ---------------------------------------------------------------------------
-  # Lakebase PostgreSQL — auto-provisioned via bundle as app resource.
-  # Credentials auto-generated via Databricks SDK (SP).
-  # PGAPPNAME is used by the apx framework for Lakebase database config.
+  # Lakebase PostgreSQL — connect manually via Databricks Apps UI.
+  # Add a postgres resource named "postgres" in the Apps UI. The platform
+  # injects the host via valueFrom. The app auto-creates all required tables.
+  # Without Lakebase, the app uses in-memory storage (ephemeral).
   # ---------------------------------------------------------------------------
-  - name: PGAPPNAME
-    value: "genie-workbench-db"
-  - name: LAKEBASE_INSTANCE_NAME
-    value: "genie-workbench-db"
   - name: LAKEBASE_HOST
-    valueFrom: lakebase-db
+    valueFrom: postgres
   - name: LAKEBASE_PORT
     value: "5432"
   - name: LAKEBASE_DATABASE

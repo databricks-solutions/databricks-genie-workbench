@@ -214,46 +214,7 @@ else
     databricks bundle deploy "${BUNDLE_VAR_FLAGS[@]}" "${BUNDLE_TARGET_FLAGS[@]}" --profile "$PROFILE" "$@"
     echo "  ✓ Bundle deployed"
 
-    # ── (dev-lakebase only) Wire postgres resource to app ─────────────────
-    if [ "$DEPLOY_TARGET" = "dev-lakebase" ]; then
-        PG_PROJECT="${APP_NAME}-db"
-        echo ""
-        echo "  Configuring autoscaling Lakebase resource on app..."
-
-        # Look up the auto-generated database resource name
-        DB_RESOURCE=$(databricks api get \
-            "/api/2.0/postgres/projects/$PG_PROJECT/branches/production/databases" \
-            --profile "$PROFILE" 2>/dev/null | python3 -c "
-import sys,json; d=json.load(sys.stdin)
-dbs=d.get('databases',[])
-print(dbs[0].get('name','') if dbs else '')
-" 2>/dev/null)
-
-        if [ -n "$DB_RESOURCE" ]; then
-            PATCH_PAYLOAD=$(python3 -c "
-import json
-resources = [
-    {'name': 'sql-warehouse', 'sql_warehouse': {'id': '$WAREHOUSE_ID', 'permission': 'CAN_USE'}},
-    {'name': 'lakebase-db', 'postgres': {
-        'branch': 'projects/$PG_PROJECT/branches/production',
-        'database': '$DB_RESOURCE',
-        'permission': 'CAN_CONNECT_AND_CREATE'
-    }},
-]
-# Include user_api_scopes to prevent PATCH from resetting them to defaults
-scopes = ['sql', 'dashboards.genie', 'serving.serving-endpoints',
-           'catalog.catalogs:read', 'catalog.schemas:read',
-           'catalog.tables:read', 'files.files']
-print(json.dumps({'resources': resources, 'user_api_scopes': scopes}))
-")
-            databricks api patch "/api/2.0/apps/$APP_NAME" \
-                --profile "$PROFILE" --json "$PATCH_PAYLOAD" 2>/dev/null \
-            && echo "  ✓ Postgres resource wired to app (project=$PG_PROJECT, db=$DB_RESOURCE)" \
-            || echo "  ⚠ Could not wire postgres resource — LAKEBASE_HOST may not be injected"
-        else
-            echo "  ⚠ Could not find postgres database resource for $PG_PROJECT"
-        fi
-    fi
+    # NOTE: Lakebase resource wiring moved to post-deploy PATCH step (runs in both modes)
 
     # ── Step 5 (full): Full-sync files to workspace ───────────────────
     # Bundle deploy only uploads changed files (incremental). On a fresh
@@ -372,22 +333,20 @@ sed -i.bak "s|__GSO_CATALOG__|$CATALOG|" "$PATCHED_APP_YAML"
 if [ -n "$JOB_ID" ]; then
     sed -i.bak "s|__GSO_JOB_ID__|$JOB_ID|" "$PATCHED_APP_YAML"
 fi
+
 rm -f "${PATCHED_APP_YAML}.bak"
 
 # Validate all placeholders were resolved
-if grep -q '__GSO_' "$PATCHED_APP_YAML"; then
-    echo "  ✗ app.yaml still contains unresolved placeholders:"
-    grep '__GSO_' "$PATCHED_APP_YAML" | sed 's/^/      /'
-    echo ""
-    echo "  Remediation: Ensure GSO_CATALOG and GSO_JOB_ID are set."
-    rm -f "$PATCHED_APP_YAML"
-    exit 1
+UNRESOLVED=$(grep -c '__[A-Z_]*__' "$PATCHED_APP_YAML" || true)
+if [ "$UNRESOLVED" -gt 0 ]; then
+    echo "  ⚠ app.yaml has $UNRESOLVED unresolved placeholder(s):"
+    grep '__[A-Z_]*__' "$PATCHED_APP_YAML" | sed 's/^/      /'
 fi
 
 databricks workspace import "$WS_BUNDLE_PATH/app.yaml" \
     --profile "$PROFILE" --file "$PATCHED_APP_YAML" --format AUTO --overwrite 2>/dev/null && \
 echo "  ✓ app.yaml patched (GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>})" || \
-echo "  ⚠ Could not patch app.yaml — GSO config may not be set"
+echo "  ⚠ Could not patch app.yaml — config may not be set"
 
 # Sync _metadata.py — gitignored so bundle sync/databricks sync skip it,
 # but required at runtime for the genie_space_optimizer package to import.
@@ -424,6 +383,63 @@ if [ "$APP_STATE" != "ACTIVE" ]; then
 else
     echo "  ✓ App compute is already ACTIVE"
 fi
+
+# ── Set app scopes + resources, then deploy ──────────────────────────────
+# Merge existing resources (e.g. manually-added Lakebase) with required ones.
+echo "  Configuring app scopes and resources..."
+EXISTING_RESOURCES=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null \
+    | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('resources',[])))" 2>/dev/null || echo "[]")
+
+PATCH_PAYLOAD=$(python3 -c "
+import json
+scopes = ['sql', 'dashboards.genie', 'serving.serving-endpoints',
+           'catalog.catalogs:read', 'catalog.schemas:read',
+           'catalog.tables:read', 'files.files']
+
+# Start with existing resources that have full config (not empty stubs).
+# The PATCH API replaces all resources, so we must include everything.
+# Empty stubs like {'name': 'postgres'} are rejected — skip them.
+existing = json.loads('$EXISTING_RESOURCES')
+by_name = {}
+for r in existing:
+    has_config = any(k for k in r if k != 'name')
+    if has_config:
+        by_name[r['name']] = r
+
+# Ensure sql-warehouse is set with the correct ID
+by_name['sql-warehouse'] = {'name': 'sql-warehouse', 'sql_warehouse': {'id': '$WAREHOUSE_ID', 'permission': 'CAN_USE'}}
+
+# If there's a Lakebase postgres project, include it as a resource
+# This handles the case where Lakebase was added via UI but shows as
+# an empty stub in the GET response — we reconstruct from the project.
+if 'postgres' not in by_name and '$DEPLOY_TARGET' == 'dev-lakebase':
+    import subprocess, sys
+    try:
+        result = subprocess.run(
+            ['databricks', 'api', 'get',
+             '/api/2.0/postgres/projects/${APP_NAME}-db/branches/production/databases',
+             '--profile', '$PROFILE'],
+            capture_output=True, text=True, timeout=15)
+        if result.returncode == 0:
+            dbs = json.loads(result.stdout).get('databases', [])
+            if dbs:
+                by_name['postgres'] = {
+                    'name': 'postgres',
+                    'postgres': {
+                        'branch': dbs[0].get('parent', ''),
+                        'database': dbs[0].get('name', ''),
+                        'permission': 'CAN_CONNECT_AND_CREATE'
+                    }
+                }
+    except Exception:
+        pass
+
+print(json.dumps({'user_api_scopes': scopes, 'resources': list(by_name.values())}))
+")
+databricks api patch "/api/2.0/apps/$APP_NAME" \
+    --profile "$PROFILE" --json "$PATCH_PAYLOAD" 2>/dev/null && \
+    echo "  ✓ App scopes and resources configured" || \
+    echo "  ⚠ Could not configure app scopes/resources"
 
 databricks apps deploy "$APP_NAME" --profile "$PROFILE" \
     --source-code-path "$WS_BUNDLE_PATH" --no-wait

@@ -3,101 +3,150 @@
 Genie Workbench is a unified developer tool for creating, scoring, and optimizing Databricks Genie Spaces. The tool helps Genie developers by:
 
 * Creating Genie spaces from scratch using an agent that gathers business logic, profiles data sources, and generates the initial configuration
-* Scoring space quality on a 0–100 rubric across categorized best-practice dimensions with a four-stage maturity model
+* Scoring space quality on a 0-100 rubric across categorized best-practice dimensions with a four-stage maturity model
 * Optimizing configurations through a benchmark-driven loop that compares Genie's generated SQL against expected answers and automatically recommends improvements
 * Tracking history of every configuration change and score over time, stored in Lakebase
 * Versioning and rollback of Genie space configurations, which Genie does not natively support
 * Managing multiple spaces across projects and stakeholders from a single dashboard
 * Providing scientific proof of lift via MLflow experiment tracking on every benchmark run
 
-## Deployment
+## Architecture
 
-This app is deployed as a [Databricks App](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/). The frontend (React/Vite) and backend (FastAPI) are built and served together — there is no separate local dev server.
+The app is a FastAPI backend serving a React/Vite frontend, deployed as a [Databricks App](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/). User identity flows via OBO (On-Behalf-Of) auth so each user operates under their own Databricks permissions. Score history and session state are persisted in Lakebase (PostgreSQL), and the GSO optimization pipeline runs as a Databricks job managed by the bundle.
 
-### Prerequisites
+## Prerequisites
 
-* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) installed and authenticated (`databricks auth login`)
+* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) installed and authenticated
+* Node.js 18+ and npm
+* Python 3.11+
 * A Databricks workspace with Apps enabled
+* A SQL Warehouse (Serverless or Pro)
+* A Unity Catalog with CREATE SCHEMA permission
 
-### 1. Clone the repo
+## Quick Start
+
+The guided installer walks you through profile selection, catalog/warehouse discovery, and deployment:
 
 ```bash
 git clone <repo-url>
 cd databricks-genie-workbench
+./scripts/install.sh
 ```
 
-### 2. Create the app
+This writes a `.env.deploy` config file and runs `deploy.sh` automatically.
 
-Create a new Databricks App via the workspace UI (**Compute > Apps > Create App**). Note the app name you choose (e.g. `genie-workbench`).
+## Manual Deploy
 
-### 3. Sync local files to the workspace
+If you prefer non-interactive setup:
 
 ```bash
-# One-shot sync
-databricks sync . /Workspace/Users/<your-email>/genie-workbench
+# 1. Configure deployment
+cp .env.deploy.template .env.deploy
+# Edit .env.deploy — set GENIE_WAREHOUSE_ID and GENIE_CATALOG (both required)
 
-# Continuous sync (watches for changes)
-databricks sync --watch . /Workspace/Users/<your-email>/genie-workbench
+# 2. Deploy
+./deploy.sh
 ```
 
-This uploads your project files to a workspace folder. Files listed in `.gitignore` and `.databricksignore` are excluded (e.g. `node_modules/`, `dist/`, `.env`). Use `--watch` to keep syncing automatically as you make changes.
+### Configuration Reference
 
-### 4. Deploy the app
+Set these in `.env.deploy` or as environment variables:
+
+| Variable | Required | Default | Description |
+|---|---|---|---|
+| `GENIE_WAREHOUSE_ID` | Yes | | SQL Warehouse ID for query execution |
+| `GENIE_CATALOG` | Yes | | Unity Catalog name (must have CREATE SCHEMA permission) |
+| `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name |
+| `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile |
+| `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint name |
+| `GENIE_DEPLOY_TARGET` | No | auto-detected | Bundle target (`dev` or `dev-lakebase`) |
+
+The deploy target is auto-detected: `dev-lakebase` when `databricks.yml` defines a `postgres_projects` resource, `dev` otherwise.
+
+## Deploy Modes
+
+### Full Deploy (default)
+
+Creates or updates everything from scratch: app, job, UC schema, permissions, Lakebase.
 
 ```bash
-databricks apps deploy <app-name> \
-  --source-code-path /Workspace/Users/<your-email>/genie-workbench
+./deploy.sh
 ```
 
-During deployment, Databricks Apps automatically:
+**What it does (9 steps):**
 
-1. Runs `npm install` (detects root `package.json`, which chains into `frontend/`)
-2. Runs `pip install -r requirements.txt`
-3. Runs `npm run build` (builds the React frontend to `frontend/dist/`)
-4. Starts the app via the command in `app.yaml` (`uvicorn backend.main:app`)
+1. **Pre-flight checks** — validates tools, CLI profile, warehouse, catalog, app state
+2. **Build frontend** — `npm install` + `npm run build`, verifies `frontend/dist/index.html` exists
+3. **Clean stale wheels** — removes old GSO package wheels from workspace
+4. **Bundle deploy** — `databricks bundle deploy` (Terraform creates/updates app + job resources)
+5. **Full-sync files** — `databricks sync --full` + explicit `frontend/dist/` upload (gitignored files)
+6. **Grant UC permissions** — creates GSO schema/tables/volume, grants SP access
+7. **Configure job permissions** — resolves job ID, grants SP CAN_MANAGE
+8. **Redeploy app** — patches `app.yaml` with real GSO values, starts compute, triggers deployment
+9. **Verify** — checks critical files on workspace, waits for app to reach RUNNING state
 
-### 5. Configure user authorization scopes
+### Code Update (`--update`)
 
-The app uses OBO (On-Behalf-Of) auth so each user operates under their own identity. Add the following OAuth scopes in the Databricks Apps UI (**Compute > Apps > [app] > Edit > User Authorization > +Add Scope**):
+For code-only changes when the app and job already exist. Skips bundle deploy and wheel cleanup.
 
-| Scope | Purpose |
-|---|---|
-| `sql` | SQL warehouse queries |
-| `dashboards.genie` | Genie Space API (`/api/2.0/genie/spaces/*`) |
-| `serving.serving-endpoints` | LLM serving endpoint queries |
-| `catalog.catalogs:read` | Unity Catalog catalog browsing |
-| `catalog.schemas:read` | Unity Catalog schema browsing |
-| `catalog.tables:read` | Unity Catalog table browsing |
+```bash
+./deploy.sh --update
+```
 
-Also ensure the SQL Warehouse resource is configured: **Configure > App Resources > +Add Resource > SQL Warehouse** with key `sql-warehouse`.
+### Destroy (`--destroy`)
 
-### 6. Configure service principal permissions
+Tears down the app, job, Lakebase project, and all workspace files.
 
-Grant the app's service principal access to required resources:
+```bash
+./deploy.sh --destroy                # interactive confirmation
+./deploy.sh --destroy --auto-approve # skip confirmation
+```
 
-* **Workspace Directory** — Can Manage (for creating Genie Spaces)
-* **Unity Catalog/Schema** — USE CATALOG, USE SCHEMA, SELECT
-* **LLM Serving Endpoint** — Can Query
-* **SQL Warehouse** — Can Use
-* **Genie Space(s)** — Can Edit
+## Iterating on Changes
 
-See `app.yaml` for environment variable configuration (SQL warehouse, Lakebase, MLflow, etc.).
+After the initial deploy, use `--update` for fast code iteration:
 
-### Iterating on changes
+```bash
+# Edit code locally, then:
+./deploy.sh --update
+```
 
-After the initial deploy, use the sync + deploy cycle:
+This builds the frontend, syncs all files (including `frontend/dist/`), re-applies permissions, and redeploys the app. No Terraform changes.
 
-1. Edit code locally
-2. `databricks sync --watch` picks up changes automatically
-3. Re-run `databricks apps deploy` to trigger a new deployment
+## Troubleshooting
 
-## How to get help
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Could not import module "backend.main"` | Bundle deploy only synced changed files; backend source missing on workspace | Re-run `./deploy.sh` (full-sync in step 5 fixes this) or `./deploy.sh --update` |
+| `No dependencies file found` | `requirements.txt` not on workspace | Same as above — full-sync uploads it |
+| App shows blank page | `frontend/dist/` missing (gitignored, not synced by bundle) | Same as above — deploy.sh explicitly uploads `frontend/dist/` |
+| `Catalog 'X' is not accessible` | Wrong catalog for the target workspace | Check available catalogs: `databricks catalogs list --profile <profile>` |
+| `Invalid SQL warehouse resource` | Warehouse doesn't exist or deployer lacks CAN_USE | Verify with `databricks warehouses list --profile <profile>` |
+| `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps in the workspace |
+| `stat .build: no such file or directory` during destroy | Bundle validate needs `.build` dir from `sync.include` | Use `./deploy.sh --destroy` (auto-creates stub) |
+| App crashes on startup (Lakebase error) | Lakebase instance not yet provisioned or not wired to app | Check app resources in UI; Lakebase provisions automatically on `dev-lakebase` target |
+| Unresolved `__GSO_*__` placeholders | deploy.sh couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
+
+**Debug commands:**
+
+```bash
+# View app logs
+databricks apps logs <app-name> --profile <profile>
+
+# Check app status
+databricks apps get <app-name> --profile <profile>
+
+# List workspace files to verify sync
+databricks workspace list /Workspace/Users/<email>/.bundle/genie-workbench/<target>/files/backend --profile <profile>
+```
+
+## How to Get Help
 
 Databricks support doesn't cover this content. For questions or bugs, please open a GitHub issue and the team will help on a best effort basis.
 
 ## License
 
-&copy; 2025 Databricks, Inc. All rights reserved. The source in this notebook is provided subject to the Databricks License [https://databricks.com/db-license-source].  All included or referenced third party libraries are subject to the licenses set forth below.
+&copy; 2025 Databricks, Inc. All rights reserved. The source in this notebook is provided subject to the Databricks License [https://databricks.com/db-license-source]. All included or referenced third party libraries are subject to the licenses set forth below.
 
-| library                                | description             | license    | source                                              |
-|----------------------------------------|-------------------------|------------|-----------------------------------------------------|
+| library | description | license | source |
+|---|---|---|---|

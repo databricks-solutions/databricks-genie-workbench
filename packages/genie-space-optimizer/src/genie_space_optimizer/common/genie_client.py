@@ -268,32 +268,24 @@ def sp_can_manage_space(
 ) -> bool:
     """Check whether a service principal has CAN_EDIT or CAN_MANAGE on a Genie space.
 
-    Primary: reads the ACL via ``GET /api/2.0/permissions/genie/{id}`` using
-    ``w`` (preferably the user's OBO client that has the required scope).
-
-    Fallback: if the ACL fetch fails because neither client has the
-    ``access-management`` scope (common in Databricks Apps), attempts to fetch
-    the full serialized space config using ``sp_client``.  Fetching the
-    serialized space requires CAN_EDIT or CAN_MANAGE, so success is a reliable
-    proxy for the required permission level.
+    Tries the REST ACL endpoint ``GET /api/2.0/permissions/genie/{id}`` with
+    ``w`` first (OBO client), then ``sp_client`` if provided.  Returns False
+    when neither client can retrieve the ACL — the previous serialized-space
+    probe was unreliable (CAN_VIEW is sufficient to fetch the space config,
+    producing false positives).
     """
-    acl_resp = cached_perms or get_space_permissions_rest(w, space_id)
+    # Try OBO client first, then SP client for the ACL fetch
+    acl_resp = cached_perms
+    if acl_resp is None:
+        for client in ([w] if sp_client is None else [w, sp_client]):
+            acl_resp = get_space_permissions_rest(client, space_id)
+            if acl_resp is not None:
+                break
+
     if acl_resp is not None:
         return _check_sp_manage_from_rest_acl(acl_resp, sp_aliases)
 
-    # ACL fetch failed — typically because the Databricks Apps OBO token lacks the
-    # ``access-management`` scope required by ``GET /api/2.0/permissions/genie/{id}``,
-    # and the SP's M2M token also cannot call the Genie API without UC table grants.
-    # We cannot reliably verify Genie Space CAN_EDIT from inside a Databricks App.
-    # Default to True so the UI doesn't block users who have already granted CAN_EDIT;
-    # the optimizer will surface a clear error at runtime if the grant is truly missing.
-    import logging
-    logging.getLogger(__name__).info(
-        "sp_can_manage_space: ACL check unavailable (access-management scope not in Apps "
-        "OBO token) — defaulting to True for space %s. The optimizer will fail at runtime "
-        "if CAN_EDIT is not actually granted.", space_id,
-    )
-    return True
+    return False
 
 
 def fetch_space_config(w: WorkspaceClient, space_id: str) -> dict:
