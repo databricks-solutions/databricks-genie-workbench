@@ -129,7 +129,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     if not passed and tables:
         if table_count == 1:
             findings.append("Only 1 table configured — consider adding related tables")
-            next_steps.append("Add 2-5 related tables for better cross-table query capability")
+            next_steps.append("Add 2-5 related tables for better cross-table query capability (do this in Unity Catalog)")
         elif table_count > 10:
             findings.append("More than 10 tables may reduce Genie accuracy")
             next_steps.append("Consider reducing to the most relevant 5-10 tables")
@@ -186,7 +186,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     _check(checks, "Metric views exist", passed)
     if not passed:
         findings.append("No metric views configured")
-        next_steps.append("Add metric views for pre-aggregated business metrics")
+        next_steps.append("Add metric views for pre-aggregated business metrics (do this in Unity Catalog)")
 
     # --- Optimization checks (14-15) ---
 

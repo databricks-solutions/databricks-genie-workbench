@@ -305,4 +305,5 @@ export interface AgentChatMessage {
   is_thinking?: boolean
   is_error?: boolean
   created_space?: { space_id: string; url: string; display_name: string }
+  updated_space?: { space_id: string; url: string }
 }

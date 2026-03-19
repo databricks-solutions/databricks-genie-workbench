@@ -38,9 +38,12 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { streamAgentChat } from "@/lib/api"
 import type { AgentChatMessage, AgentUIElement } from "@/types"
+import type { FixAgentPrefill } from "@/App"
 
 interface CreateAgentChatProps {
-  onCreated: (spaceId: string, displayName: string) => void
+  onCreated: (spaceId: string, displayName: string, initialTab?: string) => void
+  prefill?: FixAgentPrefill | null
+  onPrefillConsumed?: () => void
 }
 
 let msgCounter = 0
@@ -133,6 +136,12 @@ const STEPS = [
   { key: "plan", label: "Plan", Icon: ListChecks, backtrackMsg: "Let's go back to the plan. I want to adjust questions, instructions, or benchmarks." },
   { key: "config", label: "Configuration", Icon: Settings, backtrackMsg: "Let's revisit the configuration before creating the space." },
   { key: "create", label: "Create Space", Icon: Rocket, backtrackMsg: "" },
+] as const
+
+const FIX_STEPS = [
+  { key: "analyze", label: "Analyze Issues", Icon: Search },
+  { key: "update_config", label: "Update Config", Icon: Settings },
+  { key: "apply", label: "Apply Changes", Icon: Rocket },
 ] as const
 
 function currentStep(p: BuildProgress): number {
@@ -288,8 +297,9 @@ function groupMessages(msgs: AgentChatMessage[]): RenderItem[] {
 
 // ─── Component ─────────────────────────────────────────────────
 
-export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
+export function CreateAgentChat({ onCreated, prefill, onPrefillConsumed }: CreateAgentChatProps) {
   const restored = useRef(loadState())
+  const prefillSpaceIdRef = useRef<string | null>(null)
 
   const [messages, setMessages] = useState<AgentChatMessage[]>(restored.current?.messages ?? [])
   const [input, setInput] = useState("")
@@ -313,6 +323,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [autoPilot, setAutoPilot] = useState(false)
   const [elementSearch, setElementSearch] = useState<Record<string, string>>({})
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null)
+  const [fixMode, setFixMode] = useState(false)
+  const fixModeRef = useRef(false)
+  const [fixStep, setFixStep] = useState(0) // 0=analyze, 1=update_config, 2=apply, 3=done
+  const [fixResult, setFixResult] = useState<{ spaceId: string; url: string } | null>(null)
   const queuedMessageRef = useRef<string | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -351,6 +365,67 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   useEffect(() => {
     if (!isStreaming) inputRef.current?.focus()
   }, [isStreaming])
+
+  // Shared session reset — used by both confirmClear and prefill
+  const resetSession = () => {
+    stopRef.current?.()
+    setMessages([])
+    setSessionId(null)
+    sessionIdRef.current = null
+    setIsStreaming(false)
+    setAgentStatus(null)
+    if (streamingRafRef.current) {
+      cancelAnimationFrame(streamingRafRef.current)
+      streamingRafRef.current = null
+    }
+    streamingContentRef.current = ""
+    streamingMsgIdRef.current = null
+    setExpandedTools(new Set())
+    setUsedElements(new Set())
+    setMultiSelections({})
+    setProgress(EMPTY_PROGRESS)
+    setEditingTitle(false)
+    setTitleDraft("")
+    setBusinessContextDraft("")
+    setExpandedPlanSections(new Set(["sample_questions"]))
+    setEditedPlan(null)
+    setEditingPlanItem(null)
+    setAutoPilot(false)
+    reconnectCountRef.current = 0
+    queuedMessageRef.current = null
+    setQueuedMessage(null)
+    setElementSearch({})
+    setShowClearConfirm(false)
+    setInput("")
+    setFixMode(false)
+    fixModeRef.current = false
+    setFixStep(0)
+    setFixResult(null)
+    sessionStorage.removeItem(STORAGE_KEY)
+  }
+
+  // Handle prefill from fix-with-agent flow
+  useEffect(() => {
+    if (!prefill) return
+    resetSession()
+
+    // Set prefill data
+    setInput(prefill.prompt)
+    prefillSpaceIdRef.current = prefill.spaceId
+    setFixMode(true)
+    fixModeRef.current = true
+    onPrefillConsumed?.()
+    // Focus input and auto-resize to show full prefill text
+    const tid = setTimeout(() => {
+      const el = inputRef.current
+      if (el) {
+        el.focus()
+        el.style.height = "auto"
+        el.style.height = Math.min(el.scrollHeight, 120) + "px"
+      }
+    }, 50)
+    return () => clearTimeout(tid)
+  }, [prefill])
 
   const toggleTool = (id: string) => {
     setExpandedTools((prev) => {
@@ -424,6 +499,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         )
       }
 
+      // Pass spaceId on the first message (new session) for fix/update flows
+      const spaceIdForRequest = !sessionIdRef.current ? prefillSpaceIdRef.current : null
+      if (spaceIdForRequest) prefillSpaceIdRef.current = null
+
       stopRef.current = streamAgentChat(isContinuation ? "" : text.trim(), sessionIdRef.current, selections ?? null, {
         onSession: (sid) => { sessionIdRef.current = sid; setSessionId(sid); reconnectCountRef.current = 0 },
         onStep: () => {},
@@ -432,6 +511,12 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         },
         onToolCall: (tool, args) => {
           setAgentStatus(getStatusText(tool, args))
+
+          // Advance fix-mode progress
+          if (fixModeRef.current) {
+            if (tool === "update_config") setFixStep((s) => Math.max(s, 1))
+            else if (tool === "update_space") setFixStep((s) => Math.max(s, 2))
+          }
 
           // Finalize any in-flight streaming message before showing tool calls
           if (streamingMsgIdRef.current) {
@@ -626,8 +711,21 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             title: p.title || displayName,
           }))
         },
-        onUpdated: (_spaceId, _url) => {
-          // Space updated — no special UI handling needed
+        onUpdated: (spaceId, url) => {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextId(),
+              role: "assistant",
+              content: "",
+              timestamp: Date.now(),
+              updated_space: { space_id: spaceId, url },
+            },
+          ])
+          if (fixModeRef.current) {
+            setFixStep(3)
+            setFixResult({ spaceId, url })
+          }
         },
         onError: (message) => {
           setAgentStatus(null)
@@ -704,7 +802,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             requestAnimationFrame(() => sendMessage(pending))
           }
         },
-      })
+      }, spaceIdForRequest)
     },
     [sessionId, isStreaming],
   )
@@ -741,37 +839,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setShowClearConfirm(true)
   }
 
-  const confirmClear = () => {
-    stopRef.current?.()
-    setMessages([])
-    setSessionId(null)
-    sessionIdRef.current = null
-    setIsStreaming(false)
-    setAgentStatus(null)
-    if (streamingRafRef.current) {
-      cancelAnimationFrame(streamingRafRef.current)
-      streamingRafRef.current = null
-    }
-    streamingContentRef.current = ""
-    streamingMsgIdRef.current = null
-    setExpandedTools(new Set())
-    setUsedElements(new Set())
-    setMultiSelections({})
-    setProgress(EMPTY_PROGRESS)
-    setEditingTitle(false)
-    setTitleDraft("")
-    setBusinessContextDraft("")
-    setExpandedPlanSections(new Set(["sample_questions"]))
-    setEditedPlan(null)
-    setEditingPlanItem(null)
-    setAutoPilot(false)
-    reconnectCountRef.current = 0
-    queuedMessageRef.current = null
-    setQueuedMessage(null)
-    setElementSearch({})
-    setShowClearConfirm(false)
-    sessionStorage.removeItem(STORAGE_KEY)
-  }
+  const confirmClear = () => resetSession()
 
   const handleCopyConfig = (config: Record<string, unknown>) => {
     navigator.clipboard.writeText(JSON.stringify(config, null, 2))
@@ -2255,9 +2323,44 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     </div>
   )
 
+  const renderUpdatedBanner = (space: { space_id: string; url: string }) => (
+    <div className="mx-4 my-4">
+      <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4">
+        <div className="flex items-center gap-3 mb-3">
+          <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+            <Check className="w-4 h-4 text-emerald-500" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-primary">Space Updated</p>
+            <p className="text-xs text-muted">Fixes have been applied successfully</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <a
+            href={space.url}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-accent text-white rounded-lg text-xs font-medium hover:bg-accent/90 transition-colors"
+          >
+            <ExternalLink className="w-3 h-3" />
+            Open Genie Space
+          </a>
+          <button
+            onClick={() => onCreated(space.space_id, "", "score")}
+            className="flex items-center gap-1.5 px-3 py-1.5 border border-default text-secondary rounded-lg text-xs font-medium hover:bg-elevated transition-colors"
+          >
+            <BarChart3 className="w-3 h-3" />
+            Re-scan IQ Score
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
   const renderMessage = (msg: AgentChatMessage) => {
     if (msg.role === "tool") return renderToolCall(msg)
     if (msg.created_space) return renderCreatedBanner(msg.created_space)
+    if (msg.updated_space) return renderUpdatedBanner(msg.updated_space)
     if (msg.role === "user") {
       return (
         <div key={msg.id} className="flex items-start gap-3 mx-4 my-3 justify-end">
@@ -2311,7 +2414,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       <div className="px-4 py-3 border-b border-default">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold text-primary uppercase tracking-wide">
-            Build Progress
+            {fixMode ? "Fix Progress" : "Build Progress"}
           </span>
           {messages.length > 0 && (
             <button
@@ -2328,8 +2431,38 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-1">
-        {/* Steps */}
-        {STEPS.map((s, i) => {
+        {/* Steps — fix mode vs create mode */}
+        {fixMode ? FIX_STEPS.map((s, i) => {
+          const done = i < fixStep
+          const active = i === fixStep && fixStep < 3
+          const { Icon } = s
+
+          return (
+            <div key={s.key} className="flex gap-3">
+              <div className="flex flex-col items-center">
+                <div
+                  className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 ${
+                    done
+                      ? "bg-emerald-500/20 text-emerald-500"
+                      : active
+                        ? "bg-accent/15 text-accent ring-2 ring-accent/40"
+                        : "bg-elevated text-muted"
+                  }`}
+                >
+                  {done ? <Check className="w-3 h-3" /> : <Icon className="w-3 h-3" />}
+                </div>
+                {i < FIX_STEPS.length - 1 && (
+                  <div className={`w-px flex-1 min-h-4 my-0.5 ${done ? "bg-emerald-500/40" : "bg-[var(--border-color)]"}`} />
+                )}
+              </div>
+              <div className="pb-3 flex-1 min-w-0">
+                <span className={`text-xs font-medium ${done ? "text-emerald-500" : active ? "text-accent" : "text-muted"}`}>
+                  {s.label}
+                </span>
+              </div>
+            </div>
+          )
+        }) : STEPS.map((s, i) => {
           const done = i < step
           const active = i === step
           const canBacktrack = done && !isStreaming && !!s.backtrackMsg
@@ -2571,7 +2704,26 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       </div>
 
       {/* Panel footer — space links */}
-      {progress.spaceId && progress.spaceUrl && (
+      {fixMode && fixResult ? (
+        <div className="border-t border-default px-4 py-3 flex gap-2">
+          <a
+            href={fixResult.url}
+            target="_blank"
+            rel="noreferrer"
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-accent bg-accent/5 border border-accent/20 rounded-lg hover:bg-accent/10 transition-colors"
+          >
+            <ExternalLink className="w-3 h-3" />
+            Open Space
+          </a>
+          <button
+            onClick={() => onCreated(fixResult.spaceId, "", "score")}
+            className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-secondary border border-default rounded-lg hover:bg-elevated transition-colors"
+          >
+            <BarChart3 className="w-3 h-3" />
+            Re-scan
+          </button>
+        </div>
+      ) : progress.spaceId && progress.spaceUrl ? (
         <div className="border-t border-default px-4 py-3 flex gap-2">
           <a
             href={progress.spaceUrl}
@@ -2589,7 +2741,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             Diagnose Space
           </button>
         </div>
-      )}
+      ) : null}
     </aside>
   )
 
@@ -2598,7 +2750,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   return (
     <div className="flex gap-4 h-[calc(100vh-13rem)]">
       {/* Chat column */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 gap-1">
         {/* Chat area */}
         <div className="flex-1 overflow-y-auto border border-default rounded-xl bg-surface">
           {messages.length === 0 ? (
@@ -2649,7 +2801,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
         {/* Queued message indicator */}
         {queuedMessage && (
-          <div className="mt-1.5 flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded-lg">
             <Clock className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
             <span className="text-xs text-amber-600 dark:text-amber-400 flex-1 truncate">
               Queued: &ldquo;{queuedMessage}&rdquo;
@@ -2665,7 +2817,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
         {/* Auto-pilot + Input area */}
         {messages.length > 0 && (
-          <div className="mt-2 flex items-center justify-between">
+          <div className="flex items-center justify-between">
             <label
               className={`flex items-center gap-2 cursor-pointer select-none ${isStreaming ? "opacity-40 pointer-events-none" : ""}`}
             >
@@ -2699,7 +2851,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             </label>
           </div>
         )}
-        <form onSubmit={handleSubmit} className={`${messages.length > 0 ? "mt-1" : "mt-2"} relative`}>
+        <form onSubmit={handleSubmit} className="relative">
           <textarea
             ref={inputRef}
             value={input}

@@ -499,17 +499,21 @@ export function streamAgentChat(
   sessionId: string | null,
   selections: Record<string, unknown> | null,
   callbacks: AgentChatCallbacks,
+  spaceId?: string | null,
 ): () => void {
   const abortController = new AbortController()
+
+  const body: Record<string, unknown> = {
+    message,
+    session_id: sessionId,
+    selections,
+  }
+  if (spaceId) body.space_id = spaceId
 
   fetch(`${API_BASE}/create/agent/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message,
-      session_id: sessionId,
-      selections,
-    }),
+    body: JSON.stringify(body),
     signal: abortController.signal,
   })
     .then(async (response) => {

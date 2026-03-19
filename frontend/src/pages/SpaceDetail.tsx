@@ -2,7 +2,7 @@
  * SpaceDetail - Unified 4-tab detail view for a Genie Space.
  * Tabs: Overview | Score | Optimize | History
  */
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { ArrowLeft, Star, Eye, BarChart2, Settings2, Clock, ExternalLink } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
@@ -19,16 +19,20 @@ import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
 
 type Tab = "overview" | "score" | "optimize" | "history"
+const VALID_TABS: readonly string[] = ["overview", "score", "optimize", "history"]
 
 interface SpaceDetailProps {
   spaceId: string
   displayName: string
   spaceUrl?: string
+  initialTab?: string
+  autoScan?: boolean
   onBack: () => void
+  onFixWithAgent?: (spaceId: string, displayName: string, spaceUrl: string | undefined, scanResult: ScanResult) => void
 }
 
-export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDetailProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("overview")
+export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoScan, onBack, onFixWithAgent }: SpaceDetailProps) {
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab && VALID_TABS.includes(initialTab) ? initialTab as Tab : "overview")
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
   const [isStarred, setIsStarred] = useState(false)
   const [isScanning, setIsScanning] = useState(false)
@@ -36,16 +40,20 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
 
   const { state, actions } = useAnalysis()
 
+  // Guard against getSpaceDetail overwriting a fresh scan result
+  const freshScanDoneRef = useRef(false)
+
   // Load space data + persisted score on mount
   useEffect(() => {
+    freshScanDoneRef.current = false
     if (spaceId) {
       actions.handleFetchSpace(spaceId)
 
-      // Load latest persisted scan result
+      // Load latest persisted scan result (skip if a fresh scan already completed)
       getSpaceDetail(spaceId)
         .then((detail) => {
           setIsStarred(detail.is_starred)
-          if (detail.scan_result) {
+          if (detail.scan_result && !freshScanDoneRef.current) {
             setScanResult({
               space_id: spaceId,
               score: detail.scan_result.score,
@@ -67,6 +75,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
     setIsScanning(true)
     try {
       const result = await scanSpace(spaceId)
+      freshScanDoneRef.current = true
       setScanResult(result)
     } catch (e) {
       console.error("Scan failed:", e)
@@ -84,6 +93,13 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
       setIsStarred(!newStarred)
     }
   }
+
+  // Auto-scan on mount when requested (e.g., returning from fix flow)
+  useEffect(() => {
+    if (autoScan && !isScanning) {
+      handleScan()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (activeTab === "history") {
@@ -176,6 +192,8 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, onBack }: SpaceDet
             isScanning={isScanning}
             spaceId={spaceId}
             spaceConfig={state.spaceData ?? undefined}
+            onFixWithAgent={onFixWithAgent && scanResult ? () => onFixWithAgent(spaceId, displayName, spaceUrl, scanResult) : undefined}
+            onRunOptimization={() => setActiveTab("optimize")}
           />
         )}
 
