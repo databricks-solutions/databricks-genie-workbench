@@ -760,6 +760,8 @@ def _run_description_enrichment(
                 etype = entity_type_for_column(col_name, data_type)
 
             try:
+                synonym_value = sections.pop("synonyms", "")
+
                 new_desc = update_sections(
                     cc.get("description"),
                     sections,
@@ -767,6 +769,15 @@ def _run_description_enrichment(
                     entity_type=etype,
                 )
                 cc["description"] = new_desc
+
+                if synonym_value:
+                    new_syns = [s.strip() for s in str(synonym_value).split(",") if s.strip()]
+                    existing = cc.get("synonyms") or []
+                    for s in new_syns:
+                        if s not in existing:
+                            existing.append(s)
+                    cc["synonyms"] = existing
+
                 col_enriched += 1
                 col_enriched_items.append(patch)
             except Exception:
