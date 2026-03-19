@@ -144,6 +144,10 @@ else
     TOTAL_STEPS=9
     DEPLOY_LABEL="Bundle Deploy"
 fi
+# Add a step for Lakebase synced tables if targeting dev-lakebase
+if [ "$DEPLOY_TARGET" = "dev-lakebase" ]; then
+    TOTAL_STEPS=$((TOTAL_STEPS + 1))
+fi
 
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║  Genie Workbench — $DEPLOY_LABEL$(printf '%*s' $((37 - ${#DEPLOY_LABEL})) '')║"
@@ -252,6 +256,49 @@ python3 "$SCRIPT_DIR/scripts/grant_permissions.py" \
     --schema "$GSO_SCHEMA" \
     --warehouse-id "$WAREHOUSE_ID"
 echo "  ✓ UC grants applied"
+
+# ── (dev-lakebase only) Setup GSO synced tables in Lakebase ──────────────
+if [ "$DEPLOY_TARGET" = "dev-lakebase" ]; then
+    STEP=$((STEP + 1))
+    echo ""
+    echo "▸ Step $STEP/$TOTAL_STEPS: Setting up GSO synced tables in Lakebase..."
+
+    # Poll until Lakebase branch is ready (project status is on the branch, not the project)
+    echo "  Waiting for Lakebase project to be ready..."
+    LB_STATE="UNKNOWN"
+    for i in $(seq 1 12); do
+        LB_STATE=$(databricks api get \
+            "/api/2.0/postgres/projects/${APP_NAME}-db/branches/production" \
+            --profile "$PROFILE" 2>/dev/null \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',{}).get('current_state','UNKNOWN'))" \
+            2>/dev/null || echo "UNKNOWN")
+        if [ "$LB_STATE" = "READY" ] || [ "$LB_STATE" = "ACTIVE" ]; then
+            echo "  ✓ Lakebase project is ready"
+            break
+        fi
+        echo "    ... $LB_STATE (attempt $i/12)"
+        sleep 10
+    done
+
+    if [ "$LB_STATE" = "READY" ] || [ "$LB_STATE" = "ACTIVE" ]; then
+        if DATABRICKS_CONFIG_PROFILE="$PROFILE" \
+            python3 "$SCRIPT_DIR/scripts/setup_synced_tables.py" \
+                --source-catalog "$CATALOG" \
+                --source-schema "$GSO_SCHEMA" \
+                --lakebase-catalog "$LAKEBASE_CATALOG" \
+                --lakebase-schema "gso" \
+                --warehouse-id "$WAREHOUSE_ID" \
+                --profile "$PROFILE" 2>&1; then
+            echo "  ✓ GSO synced tables ready in Lakebase"
+        else
+            echo "  ⚠ GSO synced tables setup failed (non-fatal — Lakebase is optional)"
+        fi
+    else
+        echo "  ⚠ Lakebase project not ready after 2 minutes (state: $LB_STATE)"
+        echo "  Skipping synced tables setup — run manually later:"
+        echo "    python3 scripts/setup_synced_tables.py --source-catalog $CATALOG --lakebase-catalog $LAKEBASE_CATALOG --profile $PROFILE --warehouse-id $WAREHOUSE_ID"
+    fi
+fi
 
 # ── Resolve job ID + Grant job permissions ───────────────────────────────
 STEP=$((STEP + 1))

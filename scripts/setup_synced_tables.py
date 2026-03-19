@@ -56,6 +56,7 @@ def get_params() -> dict:
                 "source_schema": dbutils.widgets.get("source_schema"),
                 "lakebase_catalog": dbutils.widgets.get("lakebase_catalog"),
                 "lakebase_schema": dbutils.widgets.get("lakebase_schema"),
+                "warehouse_id": None,
             }
     except Exception:
         pass
@@ -66,12 +67,21 @@ def get_params() -> dict:
     parser.add_argument("--source-schema", default="genie_space_optimizer", help="Schema containing GSO tables")
     parser.add_argument("--lakebase-catalog", required=True, help="Lakebase catalog name")
     parser.add_argument("--lakebase-schema", default="gso", help="Target schema in Lakebase")
+    parser.add_argument("--profile", default=None, help="Databricks CLI profile (sets DATABRICKS_CONFIG_PROFILE)")
+    parser.add_argument("--warehouse-id", default=None, help="SQL Warehouse ID (skips auto-detection)")
     args = parser.parse_args()
+
+    # Set profile env var before WorkspaceClient is constructed
+    if args.profile:
+        import os
+        os.environ["DATABRICKS_CONFIG_PROFILE"] = args.profile
+
     return {
         "source_catalog": args.source_catalog,
         "source_schema": args.source_schema,
         "lakebase_catalog": args.lakebase_catalog,
         "lakebase_schema": args.lakebase_schema,
+        "warehouse_id": args.warehouse_id,
     }
 
 
@@ -220,6 +230,7 @@ def main():
     source_schema = params["source_schema"]
     lakebase_catalog = params["lakebase_catalog"]
     lakebase_schema = params["lakebase_schema"]
+    explicit_warehouse_id = params.get("warehouse_id")
 
     if not source_catalog or not lakebase_catalog:
         print("ERROR: source_catalog and lakebase_catalog are required.")
@@ -230,13 +241,17 @@ def main():
 
     w = WorkspaceClient()
 
-    # Auto-detect a warehouse for SQL operations
-    warehouses = list(w.warehouses.list())
-    warehouse_id = warehouses[0].id if warehouses else None
-    if warehouse_id:
-        print(f"Using warehouse: {warehouse_id}")
+    # Use explicit warehouse ID if provided, otherwise auto-detect
+    if explicit_warehouse_id:
+        warehouse_id = explicit_warehouse_id
+        print(f"Using warehouse: {warehouse_id} (explicit)")
     else:
-        print("WARNING: No SQL warehouse found. CDF and verification steps may fail.")
+        warehouses = list(w.warehouses.list())
+        warehouse_id = warehouses[0].id if warehouses else None
+        if warehouse_id:
+            print(f"Using warehouse: {warehouse_id} (auto-detected)")
+        else:
+            print("WARNING: No SQL warehouse found. CDF and verification steps may fail.")
 
     enable_cdf(w, source_catalog, source_schema, warehouse_id)
     create_lakebase_schema(w, lakebase_catalog, lakebase_schema, warehouse_id)
