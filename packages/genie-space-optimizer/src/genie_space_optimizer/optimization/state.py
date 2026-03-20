@@ -78,7 +78,8 @@ PARTITIONED BY (space_id)
 COMMENT 'Genie Space optimization runs - one row per optimization attempt'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_OPT_STAGES_DDL = """\
@@ -100,7 +101,8 @@ PARTITIONED BY (run_id)
 COMMENT 'Optimization stage transitions - ordered timeline of what happened'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_OPT_ITERATIONS_DDL = """\
@@ -130,7 +132,8 @@ PARTITIONED BY (run_id)
 COMMENT 'Evaluation iteration results - scores and failures per eval pass'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_OPT_PATCHES_DDL = """\
@@ -159,7 +162,8 @@ PARTITIONED BY (run_id)
 COMMENT 'Patch audit trail - every metadata change applied to Genie Space'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_EVAL_ASI_RESULTS_DDL = """\
@@ -186,7 +190,8 @@ USING DELTA
 COMMENT 'Actionable Side Information from evaluation judges'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 TABLE_DATA_ACCESS_GRANTS = "genie_opt_data_access_grants"
@@ -206,7 +211,8 @@ USING DELTA
 COMMENT 'Tracks UC privileges granted to the app SP for accessing Genie space assets'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_OPT_PROVENANCE_DDL = """\
@@ -241,7 +247,8 @@ PARTITIONED BY (run_id)
 COMMENT 'End-to-end provenance: links every patch to originating judge verdicts and gate outcomes'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_OPT_SUGGESTIONS_DDL = """\
@@ -268,7 +275,8 @@ PARTITIONED BY (run_id)
 COMMENT 'Strategist improvement suggestions — proposed metric views and functions for human review'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _ALL_DDL: dict[str, str] = {

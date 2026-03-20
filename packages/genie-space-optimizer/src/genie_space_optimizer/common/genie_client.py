@@ -259,13 +259,18 @@ def user_can_edit_space(
 def sp_can_manage_space(
     w: WorkspaceClient, space_id: str, sp_aliases: set[str],
     cached_perms: dict | None = None,
+    sp_client: WorkspaceClient | None = None,
 ) -> bool:
     """Check whether a service principal has CAN_MANAGE on a Genie space.
 
     Uses REST API ``GET /api/2.0/permissions/genie/{id}``.
     Accepts a pre-fetched REST dict via ``cached_perms``.
+    Falls back to *sp_client* for the ACL fetch when the primary client
+    (typically OBO) lacks access-management scope.
     """
     acl_resp = cached_perms or get_space_permissions_rest(w, space_id)
+    if acl_resp is None and sp_client is not None:
+        acl_resp = get_space_permissions_rest(sp_client, space_id)
     if acl_resp is None:
         return False
     return _check_sp_manage_from_rest_acl(acl_resp, sp_aliases)

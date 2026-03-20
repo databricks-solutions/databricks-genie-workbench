@@ -12,7 +12,7 @@ set -euo pipefail
 #     3. Clean stale wheels from workspace
 #     4. Bundle deploy (terraform — creates/updates job + app resources)
 #     5. Full-sync files to workspace (ensures complete codebase)
-#     6. Resolve app SP + Grant UC permissions
+#     6. Resolve app SP + Grant UC permissions (+ enable CDF on GSO tables)
 #     7. Resolve job ID + Grant job permissions
 #     8. Redeploy app (apps deploy --source-code-path)
 #     9. Verify deployment (including critical file checks)
@@ -21,7 +21,7 @@ set -euo pipefail
 #     1. Pre-flight checks
 #     2. Build frontend
 #     3. Sync files to workspace (no terraform)
-#     4. Resolve app SP + Grant UC permissions
+#     4. Resolve app SP + Grant UC permissions (+ enable CDF on GSO tables)
 #     5. Resolve job ID + Grant job permissions
 #     6. Redeploy app (apps deploy --source-code-path)
 #     7. Verify deployment
@@ -144,10 +144,8 @@ else
     TOTAL_STEPS=9
     DEPLOY_LABEL="Bundle Deploy"
 fi
-# Add a step for Lakebase synced tables if targeting dev-lakebase
-if [ "$DEPLOY_TARGET" = "dev-lakebase" ]; then
-    TOTAL_STEPS=$((TOTAL_STEPS + 1))
-fi
+# CDF enablement is now handled by grant_permissions.py during table creation (Step 4/UC grants).
+# The separate synced-tables step has been removed to avoid cold-warehouse delays.
 
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║  Genie Workbench — $DEPLOY_LABEL$(printf '%*s' $((37 - ${#DEPLOY_LABEL})) '')║"
@@ -256,29 +254,6 @@ python3 "$SCRIPT_DIR/scripts/grant_permissions.py" \
     --schema "$GSO_SCHEMA" \
     --warehouse-id "$WAREHOUSE_ID"
 echo "  ✓ UC grants applied"
-
-# ── (dev-lakebase only) Setup GSO synced tables (CDF + instructions) ─────
-if [ "$DEPLOY_TARGET" = "dev-lakebase" ]; then
-    STEP=$((STEP + 1))
-    echo ""
-    echo "▸ Step $STEP/$TOTAL_STEPS: Setting up GSO synced tables..."
-
-    if DATABRICKS_CONFIG_PROFILE="$PROFILE" \
-        python3 "$SCRIPT_DIR/scripts/setup_synced_tables.py" \
-            --source-catalog "$CATALOG" \
-            --source-schema "$GSO_SCHEMA" \
-            --warehouse-id "$WAREHOUSE_ID" \
-            --profile "$PROFILE" 2>&1; then
-        echo "  ✓ CDF enabled on GSO tables"
-    else
-        echo "  ⚠ GSO synced tables setup failed (non-fatal — Lakebase is optional)"
-    fi
-
-    echo ""
-    echo "  NOTE: Synced tables must be created via Catalog Explorer UI."
-    echo "  After creating them, verify with:"
-    echo "    python3 scripts/setup_synced_tables.py --source-catalog $CATALOG --warehouse-id $WAREHOUSE_ID --profile $PROFILE --verify-only"
-fi
 
 # ── Resolve job ID + Grant job permissions ───────────────────────────────
 STEP=$((STEP + 1))

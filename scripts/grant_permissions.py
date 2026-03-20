@@ -150,6 +150,18 @@ def _ensure_tables(*, profile: str, catalog: str, schema: str, warehouse_id: str
             )
         else:
             print(f"[grant-permissions] Table ensured: {catalog}.{schema}.{table_name}")
+            cdf_stmt = (
+                f"ALTER TABLE {catalog}.{schema}.{table_name} "
+                f"SET TBLPROPERTIES (delta.enableChangeDataFeed = true)"
+            )
+            cdf_result = _sql_exec(
+                profile=profile, warehouse_id=warehouse_id, statement=cdf_stmt,
+            )
+            cdf_state = (cdf_result.get("status") or {}).get("state", "")
+            if cdf_state == "SUCCEEDED":
+                print(f"[grant-permissions] CDF enabled: {catalog}.{schema}.{table_name}")
+            else:
+                print(f"[grant-permissions] WARNING: CDF enablement failed for {table_name} (non-fatal)")
 
     if failed:
         raise RuntimeError(
