@@ -3,8 +3,8 @@
  * Tabs: Overview | Score | Optimize | History
  */
 import { useState, useEffect, useRef } from "react"
-import { ArrowLeft, Star, Eye, BarChart2, Settings2, Clock, ExternalLink } from "lucide-react"
-import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail } from "@/lib/api"
+import { ArrowLeft, Star, Eye, BarChart2, Settings2, Clock, ExternalLink, Rocket, Play } from "lucide-react"
+import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint } from "@/types"
 import { IQScoreTab } from "./IQScoreTab"
@@ -17,9 +17,10 @@ import { OptimizationPage } from "@/components/OptimizationPage"
 import { PreviewPage } from "@/components/PreviewPage"
 import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
+import { AutoOptimizeTab } from "@/components/auto-optimize/AutoOptimizeTab"
 
-type Tab = "overview" | "score" | "optimize" | "history"
-const VALID_TABS: readonly string[] = ["overview", "score", "optimize", "history"]
+type Tab = "overview" | "score" | "optimize" | "auto-optimize" | "history"
+const VALID_TABS: readonly string[] = ["overview", "score", "optimize", "auto-optimize", "history"]
 
 interface SpaceDetailProps {
   spaceId: string
@@ -37,6 +38,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
   const [isStarred, setIsStarred] = useState(false)
   const [isScanning, setIsScanning] = useState(false)
   const [history, setHistory] = useState<ScoreHistoryPoint[]>([])
+  const [hasActiveOptRun, setHasActiveOptRun] = useState(false)
 
   const { state, actions } = useAnalysis()
 
@@ -69,6 +71,12 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
         })
         .catch((e) => console.error("Failed to load space detail:", e))
     }
+  }, [spaceId])
+
+  useEffect(() => {
+    getActiveRunForSpace(spaceId)
+      .then((res) => setHasActiveOptRun(res.hasActiveRun))
+      .catch(() => {})
   }, [spaceId])
 
   const handleScan = async () => {
@@ -111,6 +119,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
     { id: "overview", label: "Overview", icon: <Eye className="w-4 h-4" /> },
     { id: "score", label: "Score", icon: <BarChart2 className="w-4 h-4" /> },
     { id: "optimize", label: "Optimize", icon: <Settings2 className="w-4 h-4" /> },
+    { id: "auto-optimize", label: "Auto-Optimize", icon: <Rocket className="w-4 h-4" /> },
     { id: "history", label: "History", icon: <Clock className="w-4 h-4" /> },
   ]
 
@@ -182,7 +191,24 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
       {/* Tab content */}
       <div>
         {activeTab === "overview" && (
-          <SpaceOverview spaceData={state.spaceData} isLoading={state.isLoading} />
+          <>
+            {hasActiveOptRun && (
+              <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3 mb-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-primary">Optimization in progress</h3>
+                  <p className="text-xs text-muted mt-0.5">An Auto-Optimize run is currently running for this space.</p>
+                </div>
+                <button
+                  onClick={() => setActiveTab("auto-optimize")}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shrink-0"
+                >
+                  <Play className="w-3.5 h-3.5" />
+                  View Run
+                </button>
+              </div>
+            )}
+            <SpaceOverview spaceData={state.spaceData} isLoading={state.isLoading} />
+          </>
         )}
 
         {activeTab === "score" && (
@@ -276,6 +302,10 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === "auto-optimize" && (
+          <AutoOptimizeTab spaceId={spaceId} />
         )}
 
         {activeTab === "history" && (
