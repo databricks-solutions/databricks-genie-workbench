@@ -1,27 +1,21 @@
 /**
- * Custom hook for managing the Genie Space analysis state.
+ * Custom hook for managing the Genie Space workspace state.
+ * Handles space data loading and the optimization workflow.
  */
 
 import { useState, useCallback, useRef } from "react"
 import type {
-  Phase,
-  AppMode,
   OptimizeView,
-  SectionInfo,
-  SectionAnalysis,
-  FetchSpaceResponse,
   SqlExecutionResult,
   OptimizationSuggestion,
-  SynthesisResult,
   GenieCreateResponse,
   ComparisonResult,
   FailureDiagnosis,
+  FetchSpaceResponse,
 } from "@/types"
 import {
   fetchSpace,
   parseSpaceJson,
-  analyzeSection,
-  analyzeAllSections as analyzeAllSectionsApi,
   streamOptimizations,
   mergeConfig,
   queryGenie,
@@ -32,29 +26,14 @@ import {
 import { getBenchmarkQuestions, getExpectedSql } from "@/lib/benchmarkUtils"
 
 export interface AnalysisState {
-  mode: AppMode | null
-  phase: Phase
-  optimizeView: OptimizeView | null
   genieSpaceId: string
   spaceData: Record<string, unknown> | null
-  sections: SectionInfo[]
-  currentSectionIndex: number
-  sectionAnalyses: SectionAnalysis[]
-  allSectionsAnalyzed: boolean
-  showChecklist: boolean
-  showSettings: boolean
   isLoading: boolean
   error: string | null
-  expandedSections: Record<string, boolean>
-  analysisProgress: { completed: number; total: number } | null
-  analyzingSection: number | null
-  selectedSections: number[]  // Indices of selected sections for analysis
-  analysisViewIndex: number  // Index within filtered analyzed sections list
+  // Optimize flow
+  optimizeView: OptimizeView | null
   selectedQuestions: string[]
   hasLabelingSession: boolean
-  // Cross-sectional analysis state
-  synthesis: SynthesisResult | null
-  isFullAnalysis: boolean
   // Labeling session state (persists across navigation)
   labelingCurrentIndex: number
   labelingGeneratedSql: Record<string, string>
@@ -85,29 +64,14 @@ export interface AnalysisState {
 }
 
 const initialState: AnalysisState = {
-  mode: null,
-  phase: "input",
-  optimizeView: null,
   genieSpaceId: "",
   spaceData: null,
-  sections: [],
-  currentSectionIndex: 0,
-  sectionAnalyses: [],
-  allSectionsAnalyzed: false,
-  showChecklist: false,
-  showSettings: false,
   isLoading: false,
   error: null,
-  expandedSections: {},
-  analysisProgress: null,
-  analyzingSection: null,
-  selectedSections: [],  // Will be populated when sections are loaded
-  analysisViewIndex: 0,
+  // Optimize flow
+  optimizeView: null,
   selectedQuestions: [],
   hasLabelingSession: false,
-  // Cross-sectional analysis state
-  synthesis: null,
-  isFullAnalysis: false,
   // Labeling session state
   labelingCurrentIndex: 0,
   labelingGeneratedSql: {},
@@ -141,26 +105,6 @@ export function useAnalysis() {
   const [state, setState] = useState<AnalysisState>(initialState)
   const benchmarkProcessingCancelledRef = useRef(false)
 
-  const setMode = useCallback((mode: AppMode | null) => {
-    setState((prev) => {
-      // If clearing mode or no space data, just update mode
-      if (!mode || !prev.spaceData) {
-        return { ...prev, mode }
-      }
-      // Space data loaded + mode selected → transition to ingest
-      return {
-        ...prev,
-        mode,
-        phase: "ingest",
-        optimizeView: mode === "optimize" ? "benchmarks" : null,
-      }
-    })
-  }, [])
-
-  const setPhase = useCallback((phase: Phase) => {
-    setState((prev) => ({ ...prev, phase, showChecklist: false, showSettings: false, optimizeView: null }))
-  }, [])
-
   const setError = useCallback((error: string | null) => {
     setState((prev) => ({ ...prev, error, isLoading: false }))
   }, [])
@@ -174,16 +118,10 @@ export function useAnalysis() {
 
     try {
       const response: FetchSpaceResponse = await fetchSpace(spaceId)
-      // Initialize selectedSections with all configured sections (where has_data is true)
-      const configuredIndices = response.sections
-        .map((s, i) => (s.has_data ? i : -1))
-        .filter((i) => i !== -1)
       setState((prev) => ({
         ...prev,
         genieSpaceId: response.genie_space_id,
         spaceData: response.space_data,
-        sections: response.sections,
-        selectedSections: configuredIndices,
         isLoading: false,
       }))
     } catch (err) {
@@ -200,16 +138,10 @@ export function useAnalysis() {
 
     try {
       const response: FetchSpaceResponse = await parseSpaceJson(jsonContent)
-      // Initialize selectedSections with all configured sections (where has_data is true)
-      const configuredIndices = response.sections
-        .map((s, i) => (s.has_data ? i : -1))
-        .filter((i) => i !== -1)
       setState((prev) => ({
         ...prev,
         genieSpaceId: response.genie_space_id,
         spaceData: response.space_data,
-        sections: response.sections,
-        selectedSections: configuredIndices,
         isLoading: false,
       }))
     } catch (err) {
@@ -221,281 +153,8 @@ export function useAnalysis() {
     }
   }, [])
 
-  const startAnalysis = useCallback(() => {
-    setState((prev) => ({
-      ...prev,
-      phase: "analysis",
-      currentSectionIndex: 0,
-      sectionAnalyses: [],
-      allSectionsAnalyzed: false,
-    }))
-  }, [])
-
-  const analyzeAllSections = useCallback(async () => {
-    const { sections, spaceData, selectedSections } = state
-    if (!spaceData || selectedSections.length === 0) return
-
-    // Filter sections to only analyze selected ones
-    const sectionsToAnalyze = selectedSections.map((i) => sections[i])
-
-    setState((prev) => ({
-      ...prev,
-      isLoading: true,
-      error: null,
-      analysisProgress: { completed: 0, total: sectionsToAnalyze.length },
-    }))
-
-    try {
-      const response = await analyzeAllSectionsApi(
-        sectionsToAnalyze,
-        spaceData,
-        (completed, total) =>
-          setState((prev) => ({ ...prev, analysisProgress: { completed, total } }))
-      )
-
-      // Map results back to original section indices (sparse array)
-      const sparseAnalyses: SectionAnalysis[] = []
-      selectedSections.forEach((sectionIndex, resultIndex) => {
-        sparseAnalyses[sectionIndex] = response.analyses[resultIndex]
-      })
-
-      setState((prev) => ({
-        ...prev,
-        sectionAnalyses: sparseAnalyses,
-        synthesis: response.synthesis,
-        isFullAnalysis: response.is_full_analysis,
-        allSectionsAnalyzed: true,
-        phase: "summary",
-        isLoading: false,
-        analysisProgress: null,
-      }))
-    } catch (err) {
-      setState((prev) => ({
-        ...prev,
-        error: err instanceof Error ? err.message : "Analysis failed",
-        isLoading: false,
-        analysisProgress: null,
-      }))
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps to avoid re-render on every state change
-  }, [state.sections, state.spaceData, state.selectedSections])
-
-  const analyzeSingleSection = useCallback(
-    async (index: number) => {
-      const { sections, spaceData } = state
-      if (!spaceData || index >= sections.length) return
-
-      setState((prev) => ({ ...prev, analyzingSection: index, error: null }))
-
-      try {
-        const section = sections[index]
-        const analysis = await analyzeSection({
-          section_name: section.name,
-          section_data: section.data,
-          full_space: spaceData,
-        })
-
-        setState((prev) => {
-          const newAnalyses = [...prev.sectionAnalyses]
-          newAnalyses[index] = analysis
-          return {
-            ...prev,
-            sectionAnalyses: newAnalyses,
-            currentSectionIndex: index,
-            phase: "analysis",
-            analyzingSection: null,
-          }
-        })
-      } catch (err) {
-        setState((prev) => ({
-          ...prev,
-          error: err instanceof Error ? err.message : "Analysis failed",
-          analyzingSection: null,
-        }))
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps avoid re-render on every state change
-    [state.sections, state.spaceData]
-  )
-
-  const analyzeCurrentSection = useCallback(async () => {
-    const { sections, currentSectionIndex, spaceData, sectionAnalyses } = state
-
-    if (!spaceData || currentSectionIndex >= sections.length) return
-
-    const section = sections[currentSectionIndex]
-
-    // Check if already analyzed
-    if (sectionAnalyses.length > currentSectionIndex) return
-
-    setState((prev) => ({ ...prev, isLoading: true, error: null }))
-
-    try {
-      const analysis = await analyzeSection({
-        section_name: section.name,
-        section_data: section.data,
-        full_space: spaceData,
-      })
-
-      setState((prev) => {
-        const newAnalyses = [...prev.sectionAnalyses, analysis]
-        const allDone = newAnalyses.length === prev.sections.length
-
-        return {
-          ...prev,
-          sectionAnalyses: newAnalyses,
-          allSectionsAnalyzed: allDone,
-          isLoading: false,
-        }
-      })
-    } catch (err) {
-      setState((prev) => ({
-        ...prev,
-        error: err instanceof Error ? err.message : "Analysis failed",
-        isLoading: false,
-      }))
-    }
-  }, [state])
-
-  const goToSection = useCallback((index: number) => {
-    setState((prev) => {
-      // Compute the view index within analyzed sections
-      const analyzedIndices = prev.sectionAnalyses
-        .map((a, i) => (a !== undefined ? i : -1))
-        .filter((i) => i !== -1)
-      const viewIndex = analyzedIndices.indexOf(index)
-      return {
-        ...prev,
-        phase: "analysis",
-        currentSectionIndex: index,
-        analysisViewIndex: viewIndex >= 0 ? viewIndex : 0,
-        showChecklist: false,
-        showSettings: false,
-      }
-    })
-  }, [])
-
-  const setAnalysisViewIndex = useCallback((index: number) => {
-    setState((prev) => {
-      // Get the list of analyzed section indices
-      const analyzedIndices = prev.sectionAnalyses
-        .map((a, i) => (a !== undefined ? i : -1))
-        .filter((i) => i !== -1)
-      // Clamp index to valid range
-      const clampedIndex = Math.max(0, Math.min(analyzedIndices.length - 1, index))
-      const originalIndex = analyzedIndices[clampedIndex] ?? prev.currentSectionIndex
-      return {
-        ...prev,
-        analysisViewIndex: clampedIndex,
-        currentSectionIndex: originalIndex,
-      }
-    })
-  }, [])
-
-  const goToAnalysis = useCallback(() => {
-    setState((prev) => {
-      const analyzedIndices = prev.sectionAnalyses
-        .map((a, i) => (a !== undefined ? i : -1))
-        .filter((i) => i !== -1)
-      const firstAnalyzedIndex = analyzedIndices[0] ?? 0
-      return {
-        ...prev,
-        phase: "analysis",
-        currentSectionIndex: firstAnalyzedIndex,
-        analysisViewIndex: 0,
-        showChecklist: false,
-        showSettings: false,
-        optimizeView: null,
-      }
-    })
-  }, [])
-
-  const nextSection = useCallback(() => {
-    setState((prev) => {
-      const nextIndex = prev.currentSectionIndex + 1
-      if (nextIndex >= prev.sections.length) {
-        return { ...prev, phase: "summary" }
-      }
-      return { ...prev, currentSectionIndex: nextIndex }
-    })
-  }, [])
-
-  const prevSection = useCallback(() => {
-    setState((prev) => ({
-      ...prev,
-      currentSectionIndex: Math.max(0, prev.currentSectionIndex - 1),
-    }))
-  }, [])
-
-  const goToSummary = useCallback(() => {
-    setState((prev) => ({ ...prev, phase: "summary", showChecklist: false, showSettings: false, optimizeView: null }))
-  }, [])
-
-  const goToIngest = useCallback(() => {
-    setState((prev) => ({ ...prev, phase: "ingest", showChecklist: false, showSettings: false, optimizeView: null }))
-  }, [])
-
-  const toggleChecklist = useCallback(() => {
-    setState((prev) => ({ ...prev, showChecklist: !prev.showChecklist, showSettings: false }))
-  }, [])
-
-  const toggleSettings = useCallback(() => {
-    setState((prev) => ({ ...prev, showSettings: !prev.showSettings, showChecklist: false }))
-  }, [])
-
-  const toggleSectionExpanded = useCallback((sectionName: string) => {
-    setState((prev) => ({
-      ...prev,
-      expandedSections: {
-        ...prev.expandedSections,
-        [sectionName]: !prev.expandedSections[sectionName],
-      },
-    }))
-  }, [])
-
-  const expandAllSections = useCallback(() => {
-    setState((prev) => ({
-      ...prev,
-      expandedSections: Object.fromEntries(
-        prev.sectionAnalyses.map((a) => [a.section_name, true])
-      ),
-    }))
-  }, [])
-
-  const collapseAllSections = useCallback(() => {
-    setState((prev) => ({
-      ...prev,
-      expandedSections: {},
-    }))
-  }, [])
-
-  const toggleSectionSelection = useCallback((index: number) => {
-    setState((prev) => {
-      const isSelected = prev.selectedSections.includes(index)
-      return {
-        ...prev,
-        selectedSections: isSelected
-          ? prev.selectedSections.filter((i) => i !== index)
-          : [...prev.selectedSections, index].sort((a, b) => a - b),
-      }
-    })
-  }, [])
-
-  const selectAllSections = useCallback(() => {
-    setState((prev) => {
-      const configuredIndices = prev.sections
-        .map((s, i) => (s.has_data ? i : -1))
-        .filter((i) => i !== -1)
-      return { ...prev, selectedSections: configuredIndices }
-    })
-  }, [])
-
-  const deselectAllSections = useCallback(() => {
-    setState((prev) => ({ ...prev, selectedSections: [] }))
-  }, [])
-
   const goToBenchmarks = useCallback(() => {
-    setState((prev) => ({ ...prev, optimizeView: "benchmarks", showChecklist: false, showSettings: false }))
+    setState((prev) => ({ ...prev, optimizeView: "benchmarks" }))
   }, [])
 
   const toggleQuestionSelection = useCallback((questionId: string) => {
@@ -522,8 +181,6 @@ export function useAnalysis() {
     setState((prev) => ({
       ...prev,
       optimizeView: "labeling",
-      showChecklist: false,
-      showSettings: false,
       hasLabelingSession: true,
     }))
   }, [])
@@ -532,8 +189,6 @@ export function useAnalysis() {
     setState((prev) => ({
       ...prev,
       optimizeView: "feedback",
-      showChecklist: false,
-      showSettings: false,
     }))
   }, [])
 
@@ -541,8 +196,6 @@ export function useAnalysis() {
     setState((prev) => ({
       ...prev,
       optimizeView: "optimization",
-      showChecklist: false,
-      showSettings: false,
     }))
   }, [])
 
@@ -550,8 +203,6 @@ export function useAnalysis() {
     setState((prev) => ({
       ...prev,
       optimizeView: "preview",
-      showChecklist: false,
-      showSettings: false,
     }))
   }, [])
 
@@ -634,7 +285,6 @@ export function useAnalysis() {
         }))
       }
     )
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps avoid re-render on every state change
   }, [state.genieSpaceId, state.spaceData, state.selectedQuestions, state.labelingCorrectAnswers, state.labelingFeedbackTexts, state.labelingComparisons])
 
   const generatePreviewConfig = useCallback(async () => {
@@ -673,7 +323,6 @@ export function useAnalysis() {
         isGeneratingPreview: false,
       }))
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps avoid re-render on every state change
   }, [state.spaceData, state.optimizationSuggestions, state.selectedSuggestions])
 
   const createGenieSpace = useCallback(async (displayName: string) => {
@@ -703,7 +352,6 @@ export function useAnalysis() {
         genieCreateError: err instanceof Error ? err.message : "Failed to create Genie Space",
       }))
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps avoid re-render on every state change
   }, [state.previewConfig])
 
   const clearSpaceData = useCallback(() => {
@@ -711,7 +359,6 @@ export function useAnalysis() {
       ...prev,
       genieSpaceId: "",
       spaceData: null,
-      sections: [],
     }))
   }, [])
 
@@ -894,7 +541,6 @@ export function useAnalysis() {
           const expectedRes = expectedExec.status === "fulfilled" ? expectedExec.value : null
           if (genieRes && expectedRes) {
             try {
-              const questionText = question.question.join(" ")
               const comparison = await compareResults(
                 genieRes,
                 expectedRes,
@@ -943,7 +589,6 @@ export function useAnalysis() {
         hasLabelingSession: true,
       }))
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- granular deps avoid re-render on every state change
   }, [state.genieSpaceId, state.spaceData, state.selectedQuestions, state.labelingGeneratedSql])
 
   const cancelBenchmarkProcessing = useCallback(() => {
@@ -993,23 +638,10 @@ export function useAnalysis() {
   return {
     state,
     actions: {
-      setMode,
-      setPhase,
       setError,
       setLoading,
       handleFetchSpace,
       handleParseJson,
-      startAnalysis,
-      analyzeAllSections,
-      analyzeSingleSection,
-      analyzeCurrentSection,
-      goToSection,
-      setAnalysisViewIndex,
-      goToAnalysis,
-      nextSection,
-      prevSection,
-      goToSummary,
-      goToIngest,
       goToBenchmarks,
       goToLabeling,
       goToFeedback,
@@ -1021,14 +653,6 @@ export function useAnalysis() {
       toggleSuggestionSelection,
       selectAllSuggestions,
       deselectAllSuggestions,
-      toggleChecklist,
-      toggleSettings,
-      toggleSectionExpanded,
-      expandAllSections,
-      collapseAllSections,
-      toggleSectionSelection,
-      selectAllSections,
-      deselectAllSections,
       toggleQuestionSelection,
       selectAllQuestions,
       deselectAllQuestions,
@@ -1049,4 +673,3 @@ export function useAnalysis() {
     },
   }
 }
-

@@ -231,11 +231,14 @@ async def _apply_config_to_databricks(space_id: str, new_config: dict) -> None:
     from backend.services.auth import get_workspace_client
 
     def _do_apply():
+        from backend.genie_creator import _enforce_constraints, _clean_config
+        constrained = _enforce_constraints(new_config)
+        cleaned = _clean_config(constrained)
         client = get_workspace_client()
         client.api_client.do(
-            method="PUT",
+            method="PATCH",
             path=f"/api/2.0/genie/spaces/{space_id}",
-            body={"serialized_space": json.dumps(new_config)},
+            body={"serialized_space": json.dumps(cleaned)},
         )
 
     loop = asyncio.get_event_loop()

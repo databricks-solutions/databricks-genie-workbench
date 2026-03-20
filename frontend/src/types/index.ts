@@ -1,85 +1,6 @@
 /**
- * TypeScript types matching the Python Pydantic models in agent_server/models.py
+ * TypeScript types matching the Python Pydantic models in backend/models.py
  */
-
-// Qualitative assessment category (replaces numeric scores)
-export type AssessmentCategory =
-  | "good_to_go"
-  | "quick_wins"
-  | "foundation_needed"
-
-export interface CompensatingStrength {
-  covering_section: string
-  covered_section: string
-  explanation: string
-}
-
-export interface SynthesisResult {
-  assessment: AssessmentCategory
-  assessment_rationale: string
-  compensating_strengths: CompensatingStrength[]
-  celebration_points: string[]
-  top_quick_wins: string[]
-}
-
-export interface ChecklistItem {
-  id: string
-  description: string
-  passed: boolean
-  details: string | null
-}
-
-export interface Finding {
-  category: "best_practice" | "warning" | "suggestion"
-  severity: "high" | "medium" | "low"
-  description: string
-  recommendation: string
-  reference: string
-}
-
-export interface SectionAnalysis {
-  section_name: string
-  checklist: ChecklistItem[]
-  findings: Finding[]
-  score: number
-  summary: string
-}
-
-export interface AgentOutput {
-  genie_space_id: string
-  analyses: SectionAnalysis[]
-  synthesis: SynthesisResult | null
-  overall_score: number
-  trace_id: string
-}
-
-// API request/response types
-export interface SectionInfo {
-  name: string
-  data: Record<string, unknown> | unknown[] | null
-  has_data: boolean
-}
-
-export interface FetchSpaceResponse {
-  genie_space_id: string
-  space_data: Record<string, unknown>
-  sections: SectionInfo[]
-}
-
-export interface AnalyzeSectionRequest {
-  section_name: string
-  section_data: Record<string, unknown> | unknown[] | null
-  full_space: Record<string, unknown>
-}
-
-export interface StreamProgress {
-  status: "fetching" | "analyzing" | "synthesizing" | "complete" | "result"
-  message?: string
-  section?: string
-  current?: number
-  total?: number
-  data?: AgentOutput
-}
 
 export interface GenieQueryResponse {
   sql: string | null
@@ -177,27 +98,37 @@ export interface GenieCreateResponse {
   space_url: string
 }
 
+// Space fetch/detail response types
+export interface FetchSpaceResponse {
+  genie_space_id: string
+  space_data: Record<string, unknown>
+}
+
+export interface SpaceDetailResponse {
+  space: Record<string, unknown>
+  scan_result: Omit<ScanResult, "space_id" | "scanned_at"> & { scanned_at?: string } | null
+  is_starred: boolean
+}
+
 // App state types
-export type AppMode = "analyze" | "optimize"
-export type Phase = "input" | "ingest" | "analysis" | "summary"
 export type OptimizeView = "benchmarks" | "labeling" | "feedback" | "optimization" | "preview"
 
 // ===== GenieIQ / Workbench Types =====
 
-export type MaturityLevel = "Optimized" | "Proficient" | "Developing" | "Basic" | "Nascent"
+export type MaturityLevel = "Trusted" | "Ready to Optimize" | "Not Ready"
 
-export interface ScoreBreakdown {
-  foundation: number    // 0-30
-  data_setup: number    // 0-25
-  sql_assets: number    // 0-25
-  optimization: number  // 0-20
+export interface CheckDetail {
+  label: string
+  passed: boolean
 }
 
 export interface ScanResult {
   space_id: string
   score: number
-  maturity: MaturityLevel
-  breakdown: ScoreBreakdown
+  total: number
+  maturity: string
+  optimization_accuracy: number | null  // 0.0-1.0, null if never optimized
+  checks: CheckDetail[]
   findings: string[]
   next_steps: string[]
   scanned_at: string
@@ -207,7 +138,8 @@ export interface SpaceListItem {
   space_id: string
   display_name: string
   score: number | null
-  maturity: MaturityLevel | null
+  maturity: string | null
+  optimization_accuracy: number | null  // 0.0-1.0, null if never optimized
   is_starred: boolean
   last_scanned: string | null
   space_url: string | null
@@ -252,7 +184,7 @@ export interface LeaderboardEntry {
   space_id: string
   display_name: string
   score: number
-  maturity: MaturityLevel
+  maturity: string
   last_scanned: string | null
 }
 
@@ -265,7 +197,7 @@ export interface AlertItem {
 
 export interface ScoreHistoryPoint {
   score: number
-  maturity: MaturityLevel
+  maturity: string
   scanned_at: string
 }
 
@@ -284,22 +216,6 @@ export interface BenchmarkQuestion {
     format: string
     content: string[]
   }[]
-}
-
-export interface AppState {
-  mode: AppMode | null
-  phase: Phase
-  optimizeView: OptimizeView | null
-  genieSpaceId: string
-  spaceData: Record<string, unknown> | null
-  sections: SectionInfo[]
-  currentSectionIndex: number
-  sectionAnalyses: SectionAnalysis[]
-  allSectionsAnalyzed: boolean
-  showChecklist: boolean
-  showSettings: boolean
-  isLoading: boolean
-  error: string | null
 }
 
 // ===== Create Wizard Types =====
@@ -389,6 +305,7 @@ export interface AgentChatMessage {
   is_thinking?: boolean
   is_error?: boolean
   created_space?: { space_id: string; url: string; display_name: string }
+  updated_space?: { space_id: string; url: string }
 }
 
 // ============================================================================

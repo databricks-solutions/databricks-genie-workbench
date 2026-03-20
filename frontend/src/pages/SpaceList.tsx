@@ -4,7 +4,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { Star, RefreshCw, Search, LayoutGrid, AlertTriangle, Zap, Plus, ExternalLink } from "lucide-react"
 import { listSpaces, scanSpace, toggleStar } from "@/lib/api"
-import { getScoreHex } from "@/lib/utils"
+import { getScoreHex, getOptimizationLabel } from "@/lib/utils"
 import type { SpaceListItem, ScanResult } from "@/types"
 
 interface SpaceListProps {
@@ -12,26 +12,14 @@ interface SpaceListProps {
   onCreateSpace?: () => void
 }
 
-function MaturityBadge({ maturity }: { maturity: string | null }) {
-  if (!maturity) return <span className="text-xs text-muted">Not scanned</span>
-
-  const colors: Record<string, string> = {
-    Optimized: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
-    Proficient: "bg-blue-500/20 text-blue-400 border-blue-500/30",
-    Developing: "bg-yellow-500/20 text-yellow-400 border-yellow-500/30",
-    Basic: "bg-orange-500/20 text-orange-400 border-orange-500/30",
-    Nascent: "bg-red-500/20 text-red-400 border-red-500/30",
-  }
-  const cls = colors[maturity] || "bg-surface-secondary text-muted border-default"
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded-full border font-medium ${cls}`}>
-      {maturity}
-    </span>
-  )
+const CIRCLE_LABELS: Record<string, string> = {
+  "Not Ready": "NOT\nREADY",
+  "Ready to Optimize": "READY",
+  "Trusted": "TRUSTED",
 }
 
-function ScoreRing({ score }: { score: number | null }) {
-  if (score === null) {
+function StatusCircle({ maturity }: { maturity: string | null }) {
+  if (!maturity) {
     return (
       <div className="w-14 h-14 rounded-full border-2 border-default flex items-center justify-center">
         <span className="text-xs text-muted">—</span>
@@ -39,26 +27,13 @@ function ScoreRing({ score }: { score: number | null }) {
     )
   }
 
-  const color = getScoreHex(score)
-  const radius = 22
-  const circumference = 2 * Math.PI * radius
-  const dashOffset = circumference * (1 - score / 100)
+  const color = getScoreHex(maturity)
+  const label = CIRCLE_LABELS[maturity] ?? maturity.toUpperCase()
 
   return (
-    <div className="relative w-14 h-14">
-      <svg className="w-full h-full -rotate-90" viewBox="0 0 56 56">
-        <circle cx="28" cy="28" r={radius} fill="none" stroke="currentColor" strokeWidth="3" className="text-surface-secondary" />
-        <circle
-          cx="28" cy="28" r={radius}
-          fill="none" stroke={color} strokeWidth="3"
-          strokeDasharray={circumference}
-          strokeDashoffset={dashOffset}
-          strokeLinecap="round"
-          style={{ transition: "stroke-dashoffset 0.5s ease" }}
-        />
-      </svg>
-      <span className="absolute inset-0 flex items-center justify-center text-sm font-bold text-primary">
-        {score}
+    <div className="w-14 h-14 rounded-full border-2 flex items-center justify-center" style={{ borderColor: color }}>
+      <span className="text-[9px] font-bold text-center leading-tight whitespace-pre-line" style={{ color }}>
+        {label}
       </span>
     </div>
   )
@@ -96,7 +71,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
       const result: ScanResult = await scanSpace(spaceId)
       setSpaces(prev => prev.map(s =>
         s.space_id === spaceId
-          ? { ...s, score: result.score, maturity: result.maturity, last_scanned: result.scanned_at }
+          ? { ...s, score: result.score, maturity: result.maturity, optimization_accuracy: result.optimization_accuracy, last_scanned: result.scanned_at }
           : s
       ))
     } catch (e) {
@@ -209,7 +184,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
               className="group bg-surface border border-default rounded-xl p-4 hover:border-accent/40 hover:bg-surface-secondary/50 cursor-pointer transition-all"
             >
               <div className="flex items-start gap-3">
-                <ScoreRing score={space.score} />
+                <StatusCircle maturity={space.maturity} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <h3 className="text-sm font-semibold text-primary truncate flex-1">
@@ -222,14 +197,17 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
                       <Star className={`w-4 h-4 ${space.is_starred ? "fill-amber-400 text-amber-400" : "text-muted hover:text-amber-400"}`} />
                     </button>
                   </div>
-                  <div className="mt-1">
-                    <MaturityBadge maturity={space.maturity} />
-                  </div>
-                  {space.last_scanned && (
-                    <p className="text-xs text-muted mt-2">
-                      Scanned {new Date(space.last_scanned).toLocaleDateString()}
-                    </p>
-                  )}
+                  <p className="text-xs text-muted mt-1.5">
+                    {space.score != null ? (
+                      <>
+                        {space.score}/15 checks passed
+                        {" · "}
+                        {getOptimizationLabel(space.optimization_accuracy)}
+                      </>
+                    ) : (
+                      "Not scanned"
+                    )}
+                  </p>
                 </div>
               </div>
               <div className="mt-3 pt-3 border-t border-default flex items-center justify-between">

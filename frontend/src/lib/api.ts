@@ -1,13 +1,8 @@
 /**
- * API client for communicating with the Genie Space Analyzer backend.
+ * API client for communicating with the Genie Workbench backend.
  */
 
 import type {
-  FetchSpaceResponse,
-  SectionAnalysis,
-  SectionInfo,
-  AnalyzeSectionRequest,
-  StreamProgress,
   GenieQueryResponse,
   SqlExecutionResult,
   AppSettings,
@@ -18,7 +13,8 @@ import type {
   ConfigMergeResponse,
   GenieCreateRequest,
   GenieCreateResponse,
-  SynthesisResult,
+  FetchSpaceResponse,
+  SpaceDetailResponse,
   SpaceListItem,
   ScanResult,
   ScoreHistoryPoint,
@@ -96,16 +92,6 @@ async function fetchWithTimeout<T>(
   }
 }
 
-async function handleResponse<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    const error = await response
-      .json()
-      .catch(() => ({ detail: response.statusText }))
-    throw new ApiError(error.detail || "An error occurred", response.status)
-  }
-  return response.json()
-}
-
 /**
  * Fetch a Genie Space by ID.
  */
@@ -138,160 +124,6 @@ export async function parseSpaceJson(
     },
     DEFAULT_TIMEOUT
   )
-}
-
-/**
- * Analyze a single section.
- */
-export async function analyzeSection(
-  request: AnalyzeSectionRequest
-): Promise<SectionAnalysis> {
-  return fetchWithTimeout<SectionAnalysis>(
-    `${API_BASE}/analyze/section`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
-    },
-    LONG_TIMEOUT // LLM operation
-  )
-}
-
-/**
- * Response from analyzing all sections with cross-sectional synthesis.
- */
-export interface AnalyzeAllResponse {
-  analyses: SectionAnalysis[]
-  synthesis: SynthesisResult | null
-  is_full_analysis: boolean
-}
-
-/**
- * Analyze all sections with cross-sectional synthesis.
- * Returns style detection, section analyses, and synthesis (for full analysis only).
- */
-export async function analyzeAllSections(
-  sections: SectionInfo[],
-  fullSpace: Record<string, unknown>,
-  onProgress?: (completed: number, total: number) => void
-): Promise<AnalyzeAllResponse> {
-  // Simulate progress updates during the request
-  const total = sections.length
-  let progressInterval: ReturnType<typeof setInterval> | null = null
-
-  if (onProgress) {
-    let current = 0
-    progressInterval = setInterval(() => {
-      if (current < total - 1) {
-        current++
-        onProgress(current, total)
-      }
-    }, 2000) // Update every 2 seconds
-  }
-
-  try {
-    const result = await fetchWithTimeout<AnalyzeAllResponse>(
-      `${API_BASE}/analyze/all`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sections: sections.map((s) => ({ name: s.name, data: s.data })),
-          full_space: fullSpace,
-        }),
-      },
-      LONG_TIMEOUT // LLM operation
-    )
-
-    // Final progress update
-    onProgress?.(total, total)
-    return result
-  } finally {
-    if (progressInterval) {
-      clearInterval(progressInterval)
-    }
-  }
-}
-
-/**
- * Stream analysis progress using Server-Sent Events.
- */
-export function streamAnalysis(
-  genieSpaceId: string,
-  onProgress: (progress: StreamProgress) => void,
-  onComplete: (result: StreamProgress) => void,
-  onError: (error: Error) => void
-): () => void {
-  const abortController = new AbortController()
-
-  fetch(`${API_BASE}/analyze/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ genie_space_id: genieSpaceId }),
-    signal: abortController.signal,
-  })
-    .then(async (response) => {
-      if (!response.ok) {
-        throw new ApiError("Stream request failed", response.status)
-      }
-
-      const reader = response.body?.getReader()
-      if (!reader) {
-        throw new Error("No response body")
-      }
-
-      const decoder = new TextDecoder()
-      let buffer = ""
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split("\n\n")
-        buffer = lines.pop() || ""
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(line.slice(6)) as StreamProgress
-              if (data.status === "result") {
-                onComplete(data)
-              } else {
-                onProgress(data)
-              }
-            } catch {
-              // Ignore parse errors
-            }
-          }
-        }
-      }
-    })
-    .catch((error) => {
-      if (error.name !== "AbortError") {
-        onError(error)
-      }
-    })
-
-  return () => abortController.abort()
-}
-
-/**
- * Get the checklist documentation.
- */
-export async function getChecklist(): Promise<string> {
-  const response = await fetch(`${API_BASE}/checklist`)
-  const data = await handleResponse<{ content: string }>(response)
-  return data.content
-}
-
-/**
- * Get the list of all section names.
- */
-export async function getSections(): Promise<string[]> {
-  const response = await fetch(`${API_BASE}/sections`)
-  const data = await handleResponse<{ sections: string[] }>(response)
-  return data.sections
 }
 
 /**
@@ -519,6 +351,14 @@ export async function listSpaces(params?: {
   return fetchWithTimeout<SpaceListItem[]>(url, {}, LONG_TIMEOUT)
 }
 
+export async function getSpaceDetail(spaceId: string): Promise<SpaceDetailResponse> {
+  return fetchWithTimeout<SpaceDetailResponse>(
+    `${API_BASE}/spaces/${spaceId}`,
+    {},
+    DEFAULT_TIMEOUT
+  )
+}
+
 export async function scanSpace(spaceId: string): Promise<ScanResult> {
   return fetchWithTimeout<ScanResult>(
     `${API_BASE}/spaces/${spaceId}/scan`,
@@ -670,17 +510,21 @@ export function streamAgentChat(
   sessionId: string | null,
   selections: Record<string, unknown> | null,
   callbacks: AgentChatCallbacks,
+  spaceId?: string | null,
 ): () => void {
   const abortController = new AbortController()
+
+  const body: Record<string, unknown> = {
+    message,
+    session_id: sessionId,
+    selections,
+  }
+  if (spaceId) body.space_id = spaceId
 
   fetch(`${API_BASE}/create/agent/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message,
-      session_id: sessionId,
-      selections,
-    }),
+    body: JSON.stringify(body),
     signal: abortController.signal,
   })
     .then(async (response) => {
@@ -839,4 +683,3 @@ export async function getAutoOptimizeSuggestions(runId: string): Promise<import(
 }
 
 export { ApiError }
-

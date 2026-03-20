@@ -1,5 +1,6 @@
 """Spaces router - org-wide Genie Space listing with IQ scoring."""
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -14,6 +15,7 @@ from backend.services.lakebase import (
     get_score_history,
     star_space,
     get_starred_spaces,
+    is_space_starred,
     get_all_scan_summaries,
 )
 from backend.services.scanner import scan_space
@@ -22,7 +24,6 @@ from backend.models import (
     SpaceScanRequest,
     StarToggleRequest,
     ScanResult,
-    ScoreBreakdown,
     FixRequest,
 )
 
@@ -72,6 +73,7 @@ async def list_spaces(
             score_data = await get_latest_score(space_id)
             score = score_data.get("score") if score_data else None
             maturity = score_data.get("maturity") if score_data else None
+            optimization_accuracy = score_data.get("optimization_accuracy") if score_data else None
             last_scanned = score_data.get("scanned_at") if score_data else None
 
             # Filter by score range
@@ -85,6 +87,7 @@ async def list_spaces(
                 display_name=display_name,
                 score=score,
                 maturity=maturity,
+                optimization_accuracy=optimization_accuracy,
                 is_starred=(space_id in starred_set),
                 last_scanned=last_scanned,
                 space_url=f"{host}/genie/rooms/{space_id}" if host else None,
@@ -129,14 +132,16 @@ async def get_space_detail(space_id: str) -> dict:
             else:
                 raise
 
-        # Get latest score
-        score_data = await get_latest_score(space_id)
-        starred_ids = await get_starred_spaces()
+        # Get latest score and star status concurrently
+        score_data, starred = await asyncio.gather(
+            get_latest_score(space_id),
+            is_space_starred(space_id),
+        )
 
         return {
             "space": space,
             "scan_result": score_data,
-            "is_starred": space_id in set(starred_ids),
+            "is_starred": starred,
         }
     except Exception as e:
         logger.exception(f"Failed to get space detail: {e}")
@@ -152,8 +157,10 @@ async def trigger_scan(space_id: str) -> ScanResult:
         return ScanResult(
             space_id=space_id,
             score=scan_data["score"],
+            total=scan_data.get("total", 15),
             maturity=scan_data["maturity"],
-            breakdown=ScoreBreakdown(**scan_data["breakdown"]),
+            optimization_accuracy=scan_data.get("optimization_accuracy"),
+            checks=scan_data.get("checks", []),
             findings=scan_data.get("findings", []),
             next_steps=scan_data.get("next_steps", []),
             scanned_at=scan_data["scanned_at"],

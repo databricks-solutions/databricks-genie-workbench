@@ -43,6 +43,20 @@ CREATE TABLE IF NOT EXISTS seen_spaces (
 );
 
 -- ---------------------------------------------------------------------------
+-- Optimization runs (tracks benchmark accuracy from the optimization workflow)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS optimization_runs (
+    id              SERIAL PRIMARY KEY,
+    space_id        VARCHAR(64) NOT NULL,
+    benchmark_total INTEGER NOT NULL,
+    benchmark_correct INTEGER NOT NULL,
+    accuracy        REAL NOT NULL,  -- benchmark_correct / benchmark_total
+    created_at      TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_optimization_runs_space_id ON optimization_runs(space_id);
+
+-- ---------------------------------------------------------------------------
 -- Grant permissions (update with your app's DB user before running)
 -- ---------------------------------------------------------------------------
 -- GRANT ALL ON ALL TABLES IN SCHEMA public TO genie_workbench_user;

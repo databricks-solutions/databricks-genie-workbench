@@ -16,6 +16,7 @@ _memory_store: dict = {
     "history": {},    # space_id -> list of ScanResult dicts (ordered by timestamp)
     "stars": set(),   # set of starred space_ids
     "seen": set(),    # set of seen space_ids
+    "optimization_runs": {},  # space_id -> latest optimization run dict
 }
 
 _pool = None
@@ -268,7 +269,7 @@ async def save_scan_result(space_id: str, scan_result: dict) -> None:
             space_id,
             scan_result["score"],
             scan_result["maturity"],
-            json.dumps(scan_result.get("breakdown", {})),
+            json.dumps({"optimization_accuracy": scan_result.get("optimization_accuracy")}),
             json.dumps(scan_result.get("findings", [])),
             json.dumps(scan_result.get("next_steps", [])),
             datetime.fromisoformat(scan_result["scanned_at"]),
@@ -295,10 +296,12 @@ async def get_latest_score(space_id: str) -> Optional[dict]:
         """, space_id)
         if not row:
             return None
+        extra = json.loads(row["breakdown"])
         return {
             "score": row["score"],
+            "total": 15,
             "maturity": row["maturity"],
-            "breakdown": json.loads(row["breakdown"]),
+            "optimization_accuracy": extra.get("optimization_accuracy"),
             "findings": json.loads(row["findings"]),
             "next_steps": json.loads(row["next_steps"]),
             "scanned_at": row["scanned_at"].isoformat(),
@@ -362,6 +365,18 @@ async def get_starred_spaces() -> list[str]:
         return [r["space_id"] for r in rows]
 
 
+async def is_space_starred(space_id: str) -> bool:
+    """Check if a single space is starred (O(1) vs fetching all)."""
+    if not _lakebase_available or _pool is None:
+        return space_id in _memory_store["stars"]
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT 1 FROM starred_spaces WHERE space_id = $1", space_id
+        )
+        return row is not None
+
+
 async def record_space_seen(space_id: str) -> None:
     """Record that a space has been seen."""
     if not _lakebase_available or _pool is None:
@@ -399,3 +414,52 @@ async def get_all_scan_summaries() -> list[dict]:
             }
             for r in rows
         ]
+
+
+async def save_optimization_run(space_id: str, benchmark_total: int, benchmark_correct: int) -> None:
+    """Save an optimization run result.
+
+    Called when the user completes the optimization workflow (labeling + suggestions).
+    """
+    accuracy = benchmark_correct / benchmark_total if benchmark_total > 0 else 0.0
+    run = {
+        "space_id": space_id,
+        "benchmark_total": benchmark_total,
+        "benchmark_correct": benchmark_correct,
+        "accuracy": accuracy,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+    if not _lakebase_available or _pool is None:
+        _memory_store["optimization_runs"][space_id] = run
+        return
+
+    async with _pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO optimization_runs (space_id, benchmark_total, benchmark_correct, accuracy)
+            VALUES ($1, $2, $3, $4)
+        """, space_id, benchmark_total, benchmark_correct, accuracy)
+
+
+async def get_latest_optimization_run(space_id: str) -> Optional[dict]:
+    """Get the latest optimization run for a space.
+
+    Returns dict with ``accuracy`` (float 0-1) and ``created_at``, or None.
+    """
+    if not _lakebase_available or _pool is None:
+        return _memory_store["optimization_runs"].get(space_id)
+
+    async with _pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT accuracy, created_at
+            FROM optimization_runs
+            WHERE space_id = $1
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, space_id)
+        if not row:
+            return None
+        return {
+            "accuracy": float(row["accuracy"]),
+            "created_at": row["created_at"].isoformat(),
+        }

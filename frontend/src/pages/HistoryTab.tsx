@@ -40,7 +40,7 @@ export function HistoryTab({ history }: HistoryTabProps) {
   const chartHeight = height - padding.top - padding.bottom
 
   const minScore = 0
-  const maxScore = 100
+  const maxScore = 15
 
   const points = history.map((h, i) => ({
     x: padding.left + (i / (history.length - 1)) * chartWidth,
@@ -52,9 +52,8 @@ export function HistoryTab({ history }: HistoryTabProps) {
 
   const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ")
 
-  // Score color based on latest
-  const lastScore = history[history.length - 1].score
-  const lineColor = getScoreHex(lastScore)
+  // Score color based on latest maturity
+  const lineColor = getScoreHex(history[history.length - 1].maturity)
 
   return (
     <div className="bg-surface border border-default rounded-xl p-5">
@@ -62,8 +61,8 @@ export function HistoryTab({ history }: HistoryTabProps) {
       <div className="overflow-x-auto">
         <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ minWidth: 300 }}>
           {/* Grid lines */}
-          {[0, 25, 50, 75, 100].map(score => {
-            const y = padding.top + chartHeight - (score / 100) * chartHeight
+          {[0, 5, 10, 15].map(score => {
+            const y = padding.top + chartHeight - (score / 15) * chartHeight
             return (
               <g key={score}>
                 <line x1={padding.left} y1={y} x2={padding.left + chartWidth} y2={y} stroke="currentColor" strokeOpacity="0.1" strokeDasharray="4 4" />
