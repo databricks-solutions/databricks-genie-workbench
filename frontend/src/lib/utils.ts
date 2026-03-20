@@ -5,23 +5,37 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-/** Returns a Tailwind text color class for a 0-100 IQ score. */
-export function getScoreColor(score: number | null | undefined): string {
-  if (score == null) return "text-muted"
-  if (score >= 85) return "text-emerald-400"
-  if (score >= 70) return "text-blue-400"
-  if (score >= 50) return "text-yellow-400"
-  if (score >= 30) return "text-orange-400"
-  return "text-red-400"
+/** Returns a Tailwind text color class based on maturity tier. */
+export function getScoreColor(maturity: string | null | undefined): string {
+  if (maturity == null) return "text-muted"
+  if (maturity === "Trusted") return "text-emerald-400"
+  if (maturity === "Ready to Optimize") return "text-blue-400"
+  return "text-red-400"  // Not Ready
 }
 
-/** Returns a hex color string for a 0-100 IQ score (for SVG strokes, etc.). */
-export function getScoreHex(score: number | null | undefined): string {
-  if (score == null) return "#6b7280"
-  if (score >= 85) return "#10b981"
-  if (score >= 70) return "#3b82f6"
-  if (score >= 50) return "#eab308"
-  if (score >= 30) return "#f97316"
-  return "#ef4444"
+/** Returns a hex color string based on maturity tier (for SVG strokes, etc.). */
+export function getScoreHex(maturity: string | null | undefined): string {
+  if (maturity == null) return "#6b7280"
+  if (maturity === "Trusted") return "#10b981"
+  if (maturity === "Ready to Optimize") return "#3b82f6"
+  return "#ef4444"  // Not Ready
 }
 
+/** Format optimization accuracy for display. */
+export function getOptimizationLabel(accuracy: number | null | undefined): string {
+  if (accuracy != null) return `${Math.round(accuracy * 100)}% benchmark accuracy`
+  return "Not yet optimized"
+}
+
+/** Maturity tier color definitions — single source of truth for all views. */
+export const MATURITY_COLORS: Record<string, { hex: string; bg: string; border: string; badge: string; bar: string }> = {
+  // 3-tier system
+  "Not Ready":          { hex: "#ef4444", bg: "bg-red-500/10",     border: "border-red-500/30",     badge: "bg-red-500/20 text-red-400 border-red-500/30",         bar: "bg-red-500" },
+  "Ready to Optimize":  { hex: "#3b82f6", bg: "bg-blue-500/10",    border: "border-blue-500/30",    badge: "bg-blue-500/20 text-blue-400 border-blue-500/30",       bar: "bg-blue-500" },
+  Trusted:              { hex: "#10b981", bg: "bg-emerald-500/10", border: "border-emerald-500/30", badge: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30", bar: "bg-emerald-500" },
+  // Backward compat: old tier names map to closest new tier colors
+  Connected:  { hex: "#ef4444", bg: "bg-red-500/10",     border: "border-red-500/30",     badge: "bg-red-500/20 text-red-400 border-red-500/30",         bar: "bg-red-500" },
+  Configured: { hex: "#ef4444", bg: "bg-red-500/10",     border: "border-red-500/30",     badge: "bg-red-500/20 text-red-400 border-red-500/30",         bar: "bg-red-500" },
+  Calibrated: { hex: "#3b82f6", bg: "bg-blue-500/10",    border: "border-blue-500/30",    badge: "bg-blue-500/20 text-blue-400 border-blue-500/30",       bar: "bg-blue-500" },
+  Optimized:  { hex: "#10b981", bg: "bg-emerald-500/10", border: "border-emerald-500/30", badge: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30", bar: "bg-emerald-500" },
+}

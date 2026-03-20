@@ -344,7 +344,7 @@ class CreateGenieAgent:
                         "total": len(STEP_ORDER),
                     }}
 
-                _STOP_TOOLS = {"generate_plan", "present_plan", "create_space", "update_space"}
+                _STOP_TOOLS = {"generate_plan", "present_plan", "create_space"}
                 if _STOP_TOOLS.intersection(tools_used):
                     needs_continuation = False
                 else:

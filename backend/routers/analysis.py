@@ -1,8 +1,8 @@
 """
-REST API endpoints for the Genie Space Analyzer.
+REST API endpoints for Genie Space operations.
 
-Provides endpoints for the React frontend to fetch spaces, analyze sections,
-and stream analysis progress.
+Provides endpoints for fetching/parsing spaces, optimization, Genie queries,
+SQL execution, benchmarking, and space creation.
 """
 
 import json
@@ -16,11 +16,8 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-from backend.services.analyzer import GenieSpaceAnalyzer, SECTIONS, get_analyzer
 from backend.services.genie_client import get_serialized_space
 from backend.models import (
-    AgentInput,
-    AgentOutput,
     CompareResultsRequest,
     ComparisonResult,
     ConfigMergeRequest,
@@ -31,11 +28,8 @@ from backend.models import (
     OptimizationRequest,
     OptimizationResponse,
     OptimizationSuggestion,
-    SectionAnalysis,
-    SynthesisResult,
 )
 from backend.services.optimizer import get_optimizer
-from backend.synthesizer import synthesize_analysis
 
 router = APIRouter(prefix="/api")
 
@@ -72,28 +66,12 @@ class FetchSpaceResponse(BaseModel):
 
     genie_space_id: str
     space_data: dict
-    sections: list[dict]  # List of {name, data, has_data}
 
 
 class ParseJsonRequest(BaseModel):
     """Request to parse pasted JSON."""
 
     json_content: str = Field(..., min_length=1, max_length=1_000_000)  # 1MB limit
-
-
-class AnalyzeSectionRequest(BaseModel):
-    """Request to analyze a single section."""
-    section_name: str
-    section_data: dict | list | None
-    full_space: dict
-
-
-class StreamAnalysisRequest(BaseModel):
-    """Request for streaming analysis."""
-
-    genie_space_id: str = Field(
-        ..., min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9\-_]+$"
-    )
 
 
 class GenieQueryRequest(BaseModel):
@@ -139,43 +117,18 @@ class SettingsResponse(BaseModel):
     workspace_directory: str | None
 
 
-class AnalyzeAllSectionsRequest(BaseModel):
-    """Request to analyze all sections with cross-sectional synthesis."""
-    sections: list[dict]  # List of {name, data} for sections to analyze
-    full_space: dict
-
-
-class AnalyzeAllSectionsResponse(BaseModel):
-    """Response with all section analyses and synthesis."""
-    analyses: list[SectionAnalysis]
-    synthesis: SynthesisResult | None  # Only present for full analysis
-    is_full_analysis: bool
-
-
 @router.post("/space/fetch", response_model=FetchSpaceResponse)
 async def fetch_space(request: FetchSpaceRequest):
     """Fetch and parse a Genie Space by ID.
-    
-    Returns the space data and list of sections with their data.
+
+    Returns the space data.
     """
     try:
         space_data = get_serialized_space(request.genie_space_id)
-        analyzer = get_analyzer()
-        all_sections = analyzer.get_all_sections(space_data)
-
-        sections = [
-            {
-                "name": name,
-                "data": data,
-                "has_data": data is not None
-            }
-            for name, data in all_sections
-        ]
 
         return FetchSpaceResponse(
             genie_space_id=request.genie_space_id,
             space_data=space_data,
-            sections=sections,
         )
     except Exception as e:
         raise _safe_error(e, 400, "Failed to fetch Genie space")
@@ -201,138 +154,31 @@ async def parse_space_json(request: ParseJsonRequest):
                     "Please ensure you are pasting valid JSON from the Databricks API response."
                 ),
             )
-        
+
         # Extract and parse the serialized_space field
         if "serialized_space" not in raw_response:
             raise HTTPException(
                 status_code=400,
                 detail="Invalid input: missing 'serialized_space' field"
             )
-        
+
         serialized = raw_response["serialized_space"]
         if isinstance(serialized, str):
             space_data = json.loads(serialized)
         else:
             space_data = serialized
-        
+
         # Generate placeholder ID
         genie_space_id = f"pasted-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-        
-        analyzer = get_analyzer()
-        all_sections = analyzer.get_all_sections(space_data)
-        
-        sections = [
-            {
-                "name": name,
-                "data": data,
-                "has_data": data is not None
-            }
-            for name, data in all_sections
-        ]
-        
+
         return FetchSpaceResponse(
             genie_space_id=genie_space_id,
             space_data=space_data,
-            sections=sections
         )
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
-
-
-@router.post("/analyze/section")
-async def analyze_section(request: AnalyzeSectionRequest) -> SectionAnalysis:
-    """Analyze a single section of the Genie Space."""
-    try:
-        analyzer = get_analyzer()
-        analysis = analyzer.analyze_section(
-            request.section_name,
-            request.section_data,
-            full_space=request.full_space,
-        )
-        return analysis
-    except Exception as e:
-        raise _safe_error(e, 500, "Section analysis failed")
-
-
-@router.post("/analyze/all", response_model=AnalyzeAllSectionsResponse)
-async def analyze_all_sections(request: AnalyzeAllSectionsRequest):
-    """Analyze all selected sections with cross-sectional synthesis.
-
-    Returns style detection (heuristic), section analyses (LLM),
-    and synthesis (LLM, for full analysis).
-
-    Full analysis = analyzed all CONFIGURED sections (sections with data).
-    This means a space with only tables configured gets full synthesis
-    when tables are analyzed, without being penalized for not having
-    metric views or other optional sections.
-    """
-    try:
-        analyzer = get_analyzer()
-        analyzer.start_session()
-
-        try:
-            # Analyze each section
-            analyses = []
-            for section in request.sections:
-                analysis = analyzer.analyze_section(
-                    section["name"],
-                    section.get("data"),
-                    full_space=request.full_space,
-                )
-                analyses.append(analysis)
-
-            # Determine configured sections in the full space
-            all_sections = analyzer.get_all_sections(request.full_space)
-            configured_section_names = {name for name, data in all_sections if data is not None}
-            analyzed_section_names = {s["name"] for s in request.sections}
-
-            # Full analysis = analyzed all configured sections
-            # (user analyzed everything they have set up)
-            is_full_analysis = configured_section_names <= analyzed_section_names
-
-            # Run synthesis for full analysis
-            synthesis = None
-            if is_full_analysis:
-                synthesis = synthesize_analysis(analyses, is_full_analysis)
-
-            return AnalyzeAllSectionsResponse(
-                analyses=analyses,
-                synthesis=synthesis,
-                is_full_analysis=is_full_analysis,
-            )
-        finally:
-            analyzer.end_session()
-    except Exception as e:
-        raise _safe_error(e, 500, "Analysis failed")
-
-
-@router.post("/analyze/stream")
-async def stream_analysis(request: StreamAnalysisRequest):
-    """Stream analysis progress for all sections.
-    
-    Returns Server-Sent Events with progress updates and final results.
-    """
-    def generate():
-        analyzer = get_analyzer()
-        input_obj = AgentInput(genie_space_id=request.genie_space_id)
-        gen = analyzer.predict_streaming(input_obj)
-        
-        result = None
-        try:
-            while True:
-                progress = next(gen)
-                yield f"data: {json.dumps(progress)}\n\n"
-        except StopIteration as e:
-            result = e.value
-        
-        if result:
-            from backend.services.analyzer import save_analysis_output
-            save_analysis_output(result)
-            yield f"data: {json.dumps({'status': 'result', 'data': result.model_dump()})}\n\n"
-    
-    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.post("/genie/query", response_model=GenieQueryResponse)
@@ -357,23 +203,6 @@ async def query_genie(request: GenieQueryRequest):
         raise _safe_error(e, 500, "Genie query failed")
 
 
-@router.get("/checklist")
-async def get_checklist():
-    """Get the checklist markdown documentation."""
-    docs_path = Path(__file__).parent.parent.parent / "docs" / "checklist-by-schema.md"
-    try:
-        content = docs_path.read_text()
-        return {"content": content}
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="Checklist documentation not found")
-
-
-@router.get("/sections")
-async def get_sections():
-    """Get the list of all section names."""
-    return {"sections": SECTIONS}
-
-
 @router.get("/debug/auth")
 async def debug_auth():
     """Debug endpoint to check authentication status.
@@ -391,7 +220,7 @@ async def debug_auth():
 
     try:
         client = get_workspace_client()
-        
+
         # Try to get current user/service principal to verify auth is working
         try:
             current_user = client.current_user.me()
@@ -401,7 +230,7 @@ async def debug_auth():
             }
         except Exception as e:
             user_info = {"error": str(e)}
-        
+
         return {
             "running_on_databricks_apps": is_running_on_databricks_apps(),
             "host": client.config.host,
@@ -503,6 +332,7 @@ async def stream_optimizations(request: OptimizationRequest):
     import concurrent.futures
 
     from backend.services.auth import run_in_context
+    from backend.services.lakebase import save_optimization_run
 
     logger.info(f"Received streaming optimization request for space: {request.genie_space_id}")
     logger.info(f"Feedback items count: {len(request.labeling_feedback)}")
@@ -534,6 +364,15 @@ async def stream_optimizations(request: OptimizationRequest):
                 logger.info(f"Generated {len(result.suggestions)} suggestions, sending complete event")
                 yield f"data: {json.dumps({'status': 'complete', 'data': result.model_dump()})}\n\n"
                 logger.info("Complete event sent")
+
+                # Persist optimization run for scoring
+                try:
+                    total = len(request.labeling_feedback)
+                    correct = sum(1 for f in request.labeling_feedback if f.is_correct is True)
+                    await save_optimization_run(request.genie_space_id, total, correct)
+                except Exception as e:
+                    logger.warning(f"Failed to save optimization run: {e}")
+
                 break
             except asyncio.TimeoutError:
                 # Still running - send heartbeat
@@ -601,4 +440,3 @@ async def create_genie_space(request: GenieCreateRequest):
         raise HTTPException(status_code=504, detail=str(e))
     except Exception as e:
         raise _safe_error(e, 500, "Failed to create Genie Space")
-

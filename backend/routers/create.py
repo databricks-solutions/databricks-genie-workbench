@@ -124,6 +124,7 @@ class AgentChatRequest(BaseModel):
     message: str = Field("", max_length=10000)
     session_id: str | None = Field(None, description="Existing session ID. Omit to start a new session.")
     selections: dict | None = Field(None, description="UI selections from interactive elements")
+    space_id: str | None = Field(None, description="Pre-seed session with existing space ID for fix/update flows")
 
 
 @router.post("/agent/chat")
@@ -157,6 +158,17 @@ async def agent_chat(body: AgentChatRequest, request: Request):
             raise HTTPException(status_code=404, detail="Session not found or expired")
     else:
         session = create_session()
+        if body.space_id:
+            session.space_id = body.space_id
+            # Pre-load existing space config so update_config works immediately
+            try:
+                from backend.services.genie_client import get_serialized_space
+                session.space_config = await asyncio.to_thread(
+                    get_serialized_space, body.space_id
+                )
+                logger.info("Pre-loaded space config for fix flow: %s", body.space_id)
+            except Exception as e:
+                logger.warning("Could not pre-load space config for %s: %s", body.space_id, e)
 
     user_message = body.message
     selections = body.selections

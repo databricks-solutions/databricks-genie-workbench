@@ -55,8 +55,6 @@ def _validate_mlflow_experiment() -> bool:
 
 _mlflow_configured = _validate_mlflow_experiment()
 
-import backend.services.analyzer  # noqa: F401 - enables MLflow tracing setup
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles

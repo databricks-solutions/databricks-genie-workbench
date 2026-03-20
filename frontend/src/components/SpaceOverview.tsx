@@ -304,8 +304,8 @@ export function SpaceOverview({ spaceData, isLoading }: SpaceOverviewProps) {
   ]
 
   return (
-    <div className="border border-default rounded-lg overflow-hidden bg-surface text-xs">
-      <div className="divide-y divide-[var(--border-color)]">
+    <div className="bg-surface border border-default rounded-xl overflow-hidden">
+      <div className="divide-y divide-default">
         {sections.map((sec) => {
           const isOpen = expandedSections.has(sec.key)
           const { Icon } = sec
@@ -313,28 +313,28 @@ export function SpaceOverview({ spaceData, isLoading }: SpaceOverviewProps) {
             <div key={sec.key}>
               <button
                 onClick={() => toggleSection(sec.key)}
-                className="flex items-center gap-2 w-full px-3 py-2.5 hover:bg-elevated transition-colors text-left"
+                className="flex items-center gap-3 w-full px-5 py-4 hover:bg-surface-secondary/50 transition-colors text-left"
               >
                 {isOpen ? (
-                  <ChevronDown className="w-3 h-3 text-muted" />
+                  <ChevronDown className="w-4 h-4 text-muted" />
                 ) : (
-                  <ChevronRight className="w-3 h-3 text-muted" />
+                  <ChevronRight className="w-4 h-4 text-muted" />
                 )}
-                <Icon className="w-3.5 h-3.5 text-accent" />
-                <span className="font-medium text-primary flex-1">{sec.label}</span>
+                <Icon className="w-4 h-4 text-accent" />
+                <span className="text-sm font-medium text-primary flex-1">{sec.label}</span>
                 {sec.key === "text_instructions" ? (
                   sec.count > 0 ? (
-                    <Check className="w-3.5 h-3.5 text-green-400 flex-shrink-0" />
+                    <Check className="w-4 h-4 text-green-400 flex-shrink-0" />
                   ) : (
-                    <span className="text-[10px] text-muted flex-shrink-0">empty</span>
+                    <span className="text-xs text-muted flex-shrink-0">empty</span>
                   )
                 ) : (
-                  <span className="text-[10px] text-muted bg-surface-secondary px-1.5 py-0.5 rounded-full flex-shrink-0">
+                  <span className="text-xs text-muted bg-surface-secondary px-2 py-0.5 rounded-full flex-shrink-0">
                     {sec.count}
                   </span>
                 )}
               </button>
-              {isOpen && <div className="px-3 pb-3">{sec.render()}</div>}
+              {isOpen && <div className="px-5 pb-5">{sec.render()}</div>}
             </div>
           )
         })}
