@@ -759,7 +759,7 @@ async def check_permissions(space_id: str):
     # Check SP CAN_MANAGE on the space
     sp_has_manage = False
     try:
-        from genie_space_optimizer.backend.routes.settings import get_sp_principal_aliases
+        from genie_space_optimizer.common.sp_permissions import get_sp_principal_aliases
         from genie_space_optimizer.common.genie_client import sp_can_manage_space
 
         sp_aliases = get_sp_principal_aliases(sp_ws)
@@ -779,7 +779,7 @@ async def check_permissions(space_id: str):
             extract_genie_space_table_refs,
             get_unique_schemas,
         )
-        from genie_space_optimizer.backend.routes.settings import _probe_sp_required_access
+        from genie_space_optimizer.common.sp_permissions import probe_sp_required_access
 
         ws = get_workspace_client()
         try:
@@ -790,7 +790,7 @@ async def check_permissions(space_id: str):
         unique_schemas = set(get_unique_schemas(refs))
 
         if unique_schemas:
-            read_granted, _write_granted = _probe_sp_required_access(sp_ws, unique_schemas)
+            read_granted, _write_granted = probe_sp_required_access(sp_ws, unique_schemas)
             # UC SQL requires the application_id (UUID), not the display name
             sp_name_for_grant = sp_application_id or sp_display_name or "<service-principal>"
 

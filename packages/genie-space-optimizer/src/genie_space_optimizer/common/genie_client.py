@@ -97,16 +97,26 @@ def _check_sp_manage_from_rest_acl(
 ) -> bool:
     """Return True if any SP alias has CAN_MANAGE in a REST ACL response."""
     sp_aliases_lower = {a.lower() for a in sp_aliases}
+    acl_principals = []
     for entry in acl_response.get("access_control_list", []):
         principal = (
             entry.get("user_name") or entry.get("group_name")
             or entry.get("service_principal_name") or ""
         ).lower()
+        acl_principals.append(principal)
         if principal not in sp_aliases_lower:
             continue
         for p in entry.get("all_permissions", []):
             if str(p.get("permission_level", "")) == "CAN_MANAGE":
+                logger.debug(
+                    "SP alias %r matched ACL principal %r with CAN_MANAGE",
+                    principal, principal,
+                )
                 return True
+    logger.debug(
+        "No SP alias matched CAN_MANAGE. SP aliases: %s, ACL principals: %s",
+        sp_aliases_lower, acl_principals,
+    )
     return False
 
 
@@ -265,15 +275,21 @@ def sp_can_manage_space(
 
     Uses REST API ``GET /api/2.0/permissions/genie/{id}``.
     Accepts a pre-fetched REST dict via ``cached_perms``.
-    Falls back to *sp_client* for the ACL fetch when the primary client
-    (typically OBO) lacks access-management scope.
+
+    Checks the primary client (typically OBO) first, then falls back to
+    *sp_client*.  The SP client is tried even when the primary client
+    returns a valid ACL, because OBO tokens may return a filtered view
+    that omits the service principal's own ACL entry.
     """
     acl_resp = cached_perms or get_space_permissions_rest(w, space_id)
-    if acl_resp is None and sp_client is not None:
-        acl_resp = get_space_permissions_rest(sp_client, space_id)
-    if acl_resp is None:
-        return False
-    return _check_sp_manage_from_rest_acl(acl_resp, sp_aliases)
+    if acl_resp is not None and _check_sp_manage_from_rest_acl(acl_resp, sp_aliases):
+        return True
+    # OBO ACL was empty or didn't show SP with CAN_MANAGE — try SP client
+    if sp_client is not None:
+        sp_acl = get_space_permissions_rest(sp_client, space_id)
+        if sp_acl is not None:
+            return _check_sp_manage_from_rest_acl(sp_acl, sp_aliases)
+    return False
 
 
 def fetch_space_config(w: WorkspaceClient, space_id: str) -> dict:
