@@ -17,7 +17,7 @@ _preflight_check_tools() {
         echo ""
         echo "  ✗ Missing required tools: ${missing[*]}"
         echo ""
-        echo "  Remediation: install the missing tools and re-run deploy.sh"
+        echo "  Remediation: install the missing tools and re-run scripts/deploy.sh"
         exit 1
     fi
     echo "  ✓ All required tools available (databricks, python3, node, npm)"
@@ -100,12 +100,12 @@ print(status)
             echo ""
             echo "  Remediation:"
             echo "    1. Wait for cleanup to complete (can take 5-10 minutes)"
-            echo "    2. Then re-run deploy.sh"
+            echo "    2. Then re-run scripts/deploy.sh"
             echo ""
             exit 1
         fi
         echo "  ✓ App exists (state: $app_status) — bundle will update it"
     else
-        echo "  ✓ App does not exist yet — bundle will create it"
+        echo "  ✓ App does not exist yet — deploy will create it"
     fi
 }

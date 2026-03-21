@@ -12,40 +12,79 @@ Genie Workbench is a unified developer tool for creating, scoring, and optimizin
 
 ## Architecture
 
-The app is a FastAPI backend serving a React/Vite frontend, deployed as a [Databricks App](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/). User identity flows via OBO (On-Behalf-Of) auth so each user operates under their own Databricks permissions. Score history and session state are persisted in Lakebase (PostgreSQL), and the GSO optimization pipeline runs as a Databricks job managed by the bundle.
+The app is a FastAPI backend serving a React/Vite frontend, deployed as a [Databricks App](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/). User identity flows via OBO (On-Behalf-Of) auth so each user operates under their own Databricks permissions. Score history and session state are persisted in Lakebase (PostgreSQL).
 
 ## Prerequisites
 
-* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) installed and authenticated
+* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.230+)
 * Node.js 18+ and npm
 * Python 3.11+
-* A Databricks workspace with Apps enabled
-* A SQL Warehouse (Serverless or Pro)
-* A Unity Catalog with CREATE SCHEMA permission
+* A Databricks workspace with:
+  * Apps enabled
+  * A SQL Warehouse (Serverless recommended)
+  * A Unity Catalog with CREATE SCHEMA permission
 
 ## Quick Start
 
-The guided installer walks you through profile selection, catalog/warehouse discovery, and deployment:
+### 1. Clone the repo
 
 ```bash
 git clone <repo-url>
 cd databricks-genie-workbench
+```
+
+### 2. Authenticate with Databricks CLI
+
+```bash
+databricks auth login --profile <workspace-profile>
+```
+
+> **Do NOT run `databricks bundle init`** — it overwrites the project configuration. The deploy scripts handle everything.
+
+### 3. Run the guided installer
+
+```bash
 ./scripts/install.sh
 ```
 
-This writes a `.env.deploy` config file and runs `deploy.sh` automatically.
+The installer will:
+1. Check prerequisites (CLI, Node, Python)
+2. Ask for your Databricks CLI profile
+3. Auto-discover catalogs and SQL warehouses
+4. Ask for app name and LLM model
+5. Write `.env.deploy` with your configuration
+6. Run `scripts/deploy.sh` to create and deploy the app
+7. Grant the app's service principal access to your Genie Spaces
 
-## Manual Deploy
+### 4. Attach Lakebase (optional but recommended)
+
+Without Lakebase, scan results and starred spaces are lost on app restart.
+
+1. Open **Databricks Apps UI** → your app → **Resources**
+2. Click **+ Add resource** → **PostgreSQL (Lakebase)**
+3. Name it `postgres` with **CAN_CONNECT_AND_CREATE** permission
+4. Save — the app auto-detects Lakebase and creates tables on next request (no redeploy needed)
+
+## Manual Setup (without installer)
 
 If you prefer non-interactive setup:
 
-```bash
-# 1. Configure deployment
-cp .env.deploy.template .env.deploy
-# Edit .env.deploy — set GENIE_WAREHOUSE_ID and GENIE_CATALOG (both required)
+### 1. Create `.env.deploy` in the project root
 
-# 2. Deploy
-./deploy.sh
+```bash
+cat > .env.deploy <<'EOF'
+GENIE_WAREHOUSE_ID=<your-sql-warehouse-id>
+GENIE_CATALOG=<your-catalog-name>
+GENIE_APP_NAME=genie-workbench
+GENIE_DEPLOY_PROFILE=genie-workbench
+GENIE_LLM_MODEL=databricks-claude-sonnet-4-6
+EOF
+```
+
+### 2. Deploy
+
+```bash
+./scripts/deploy.sh
 ```
 
 ### Configuration Reference
@@ -54,77 +93,77 @@ Set these in `.env.deploy` or as environment variables:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `GENIE_WAREHOUSE_ID` | Yes | | SQL Warehouse ID for query execution |
-| `GENIE_CATALOG` | Yes | | Unity Catalog name (must have CREATE SCHEMA permission) |
-| `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name |
-| `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile |
-| `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint name |
-| `GENIE_DEPLOY_TARGET` | No | auto-detected | Bundle target (`dev` or `dev-lakebase`) |
+| `GENIE_WAREHOUSE_ID` | Yes | — | SQL Warehouse ID (hex string from warehouse URL or detail page) |
+| `GENIE_CATALOG` | Yes | — | Unity Catalog name (you need CREATE SCHEMA permission) |
+| `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (must be unique in your workspace) |
+| `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
+| `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint for analysis |
 
-The deploy target is auto-detected: `dev-lakebase` when `databricks.yml` defines a `postgres_projects` resource, `dev` otherwise.
-
-## Deploy Modes
-
-### Full Deploy (default)
-
-Creates or updates everything from scratch: app, job, UC schema, permissions, Lakebase.
+## Deploy Commands
 
 ```bash
-./deploy.sh
+./scripts/deploy.sh                           # Full deploy: create app, sync code, configure, deploy
+./scripts/deploy.sh --update                  # Code-only update: sync + redeploy (faster)
+./scripts/deploy.sh --destroy                 # Delete the app and clean up jobs
+./scripts/deploy.sh --destroy --auto-approve  # Delete without confirmation prompt
 ```
 
-**What it does (9 steps):**
+### What `deploy.sh` does
+
+**Full deploy (8 steps):**
 
 1. **Pre-flight checks** — validates tools, CLI profile, warehouse, catalog, app state
-2. **Build frontend** — `npm install` + `npm run build`, verifies `frontend/dist/index.html` exists
-3. **Clean stale wheels** — removes old GSO package wheels from workspace
-4. **Bundle deploy** — `databricks bundle deploy` (Terraform creates/updates app + job resources)
-5. **Full-sync files** — `databricks sync --full` + explicit `frontend/dist/` upload (gitignored files)
-6. **Grant UC permissions** — creates GSO schema/tables/volume, grants SP access
-7. **Configure job permissions** — resolves job ID, grants SP CAN_MANAGE
-8. **Redeploy app** — patches `app.yaml` with real GSO values, starts compute, triggers deployment
-9. **Verify** — checks critical files on workspace, waits for app to reach RUNNING state
+2. **Build frontend** — `npm install` + `npm run build`
+3. **Create app** — `databricks apps create` (skipped if app already exists)
+4. **Sync files** — `databricks sync --full` + explicit `frontend/dist/` upload
+5. **Grant UC permissions** — creates GSO schema/tables, grants SP access
+6. **Configure job permissions** — finds optimization job, grants SP CAN_MANAGE
+7. **Redeploy app** — patches `app.yaml` with config values, configures scopes, deploys
+8. **Verify** — checks critical files, waits for deployment to succeed
 
-### Code Update (`--update`)
+**Code update** (`--update`) skips step 3 (app creation) — use for iterating on code changes.
 
-For code-only changes when the app and job already exist. Skips bundle deploy and wheel cleanup.
-
-```bash
-./deploy.sh --update
-```
-
-### Destroy (`--destroy`)
-
-Tears down the app, job, Lakebase project, and all workspace files.
+### Typical workflow
 
 ```bash
-./deploy.sh --destroy                # interactive confirmation
-./deploy.sh --destroy --auto-approve # skip confirmation
+# First time
+./scripts/deploy.sh
+
+# After code changes
+./scripts/deploy.sh --update
+
+# Tear down
+./scripts/deploy.sh --destroy
 ```
 
-## Iterating on Changes
+## Auto-Optimize (GSO Package)
 
-After the initial deploy, use `--update` for fast code iteration:
+The Auto-Optimize optimization job is created automatically during deploy. The deploy script builds the GSO wheel, uploads job notebooks, and creates the Databricks job — no separate deployment step needed.
 
-```bash
-# Edit code locally, then:
-./deploy.sh --update
-```
+If the job already exists (from a previous deploy), it is reused. To force recreation, delete the job in the Databricks UI and re-run `./scripts/deploy.sh --update`.
 
-This builds the frontend, syncs all files (including `frontend/dist/`), re-applies permissions, and redeploys the app. No Terraform changes.
+## Post-Deploy: Genie Space Access
+
+The app uses On-Behalf-Of (OBO) auth — users see only Genie Spaces they have permission to manage. The app's service principal also needs access for fallback operations:
+
+1. The installer grants SP access to your existing Genie Spaces
+2. For spaces created after install, share them with the app's service principal (CAN_MANAGE)
+3. The SP needs SELECT on schemas referenced by your Genie Spaces:
+   ```sql
+   GRANT SELECT ON SCHEMA <catalog>.<schema> TO `<service-principal-name>`
+   ```
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Could not import module "backend.main"` | Bundle deploy only synced changed files; backend source missing on workspace | Re-run `./deploy.sh` (full-sync in step 5 fixes this) or `./deploy.sh --update` |
-| `No dependencies file found` | `requirements.txt` not on workspace | Same as above — full-sync uploads it |
-| App shows blank page | `frontend/dist/` missing (gitignored, not synced by bundle) | Same as above — deploy.sh explicitly uploads `frontend/dist/` |
-| `Catalog 'X' is not accessible` | Wrong catalog for the target workspace | Check available catalogs: `databricks catalogs list --profile <profile>` |
-| `Invalid SQL warehouse resource` | Warehouse doesn't exist or deployer lacks CAN_USE | Verify with `databricks warehouses list --profile <profile>` |
-| `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps in the workspace |
-| `stat .build: no such file or directory` during destroy | Bundle validate needs `.build` dir from `sync.include` | Use `./deploy.sh --destroy` (auto-creates stub) |
-| App crashes on startup (Lakebase error) | Lakebase instance not yet provisioned or not wired to app | Check app resources in UI; Lakebase provisions automatically on `dev-lakebase` target |
+| App shows blank page | `frontend/dist/` missing (gitignored) | Re-run `./scripts/deploy.sh --update` |
+| `Could not import module "backend.main"` | Source files missing on workspace | Re-run `./scripts/deploy.sh --update` (full-sync uploads everything) |
+| `No dependencies file found` | `requirements.txt` not on workspace | Same — `./scripts/deploy.sh --update` |
+| "Failed to list spaces" | Lakebase not attached | Attach a `postgres` resource in Apps UI (see step 4 above) |
+| `Catalog 'X' is not accessible` | Wrong catalog or missing permissions | `databricks catalogs list --profile <profile>` |
+| `Invalid SQL warehouse resource` | Warehouse doesn't exist or no CAN_USE | `databricks warehouses list --profile <profile>` |
+| `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps |
 | Unresolved `__GSO_*__` placeholders | deploy.sh couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
 
 **Debug commands:**
@@ -137,7 +176,7 @@ databricks apps logs <app-name> --profile <profile>
 databricks apps get <app-name> --profile <profile>
 
 # List workspace files to verify sync
-databricks workspace list /Workspace/Users/<email>/.bundle/genie-workbench/<target>/files/backend --profile <profile>
+databricks workspace list /Workspace/Users/<email>/<app-name>/backend --profile <profile>
 ```
 
 ## How to Get Help

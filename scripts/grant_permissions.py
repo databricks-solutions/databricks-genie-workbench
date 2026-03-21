@@ -309,11 +309,23 @@ def main() -> int:
     schema_fqn = f"{args.catalog}.{args.schema}"
 
     # Catalog grants
-    _update_grants(
-        profile=args.profile, securable_type="catalog",
-        full_name=args.catalog, principal=principal,
-        add=sorted(SP_CATALOG_PRIVILEGES),
-    )
+    try:
+        _update_grants(
+            profile=args.profile, securable_type="catalog",
+            full_name=args.catalog, principal=principal,
+            add=sorted(SP_CATALOG_PRIVILEGES),
+        )
+    except Exception as err:
+        if "manage" in str(err).lower() or "permission" in str(err).lower():
+            print(
+                f"[grant-permissions] WARNING: Cannot grant USE_CATALOG on '{args.catalog}' — "
+                "you don't have MANAGE permission on this catalog.\n"
+                "  Ask a catalog owner/admin to run:\n"
+                f"    GRANT USE_CATALOG ON CATALOG `{args.catalog}` TO `{principal}`",
+                file=sys.stderr,
+            )
+        else:
+            raise
 
     # Schema grants
     try:
@@ -339,13 +351,20 @@ def main() -> int:
             catalog=args.catalog, schema=args.schema,
         )
     except Exception as err:
-        if "does not exist" in str(err).lower():
+        err_str = str(err).lower()
+        if "does not exist" in err_str:
             print(
                 f"[grant-permissions] WARNING: Verification skipped — {err}",
                 file=sys.stderr,
             )
             return 0
-        raise
+        # Don't hard-fail on verification — grants may have been partially applied
+        # (e.g. schema grants succeeded but catalog grant needs admin)
+        print(
+            f"[grant-permissions] WARNING: Grant verification incomplete — {err}\n"
+            "  The app may still work if the SP already has catalog access via group inheritance.",
+            file=sys.stderr,
+        )
 
     # Volume grants
     vol_fqn = f"{schema_fqn}.app_artifacts"

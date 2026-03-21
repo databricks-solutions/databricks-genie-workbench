@@ -2,75 +2,72 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# deploy.sh — deploy Genie Workbench bundle (app + GSO optimization job)
-# and apply post-deploy grants/permissions.
+# deploy.sh — deploy Genie Workbench app and configure permissions.
 #
 # Three modes:
 #   Full deploy (default):
 #     1. Pre-flight checks
 #     2. Build frontend
-#     3. Clean stale wheels from workspace
-#     4. Bundle deploy (terraform — creates/updates job + app resources)
-#     5. Full-sync files to workspace (ensures complete codebase)
-#     6. Resolve app SP + Grant UC permissions (+ enable CDF on GSO tables)
-#     7. Resolve job ID + Grant job permissions
-#     8. Redeploy app (apps deploy --source-code-path)
-#     9. Verify deployment (including critical file checks)
+#     3. Create app (if not exists)
+#     4. Full-sync files to workspace
+#     5. Resolve app SP + Grant UC permissions (+ enable CDF on GSO tables)
+#     6. Resolve job ID + Grant job permissions
+#     7. Redeploy app (apps deploy --source-code-path)
+#     8. Verify deployment
 #
 #   Update mode (--update):
 #     1. Pre-flight checks
 #     2. Build frontend
-#     3. Sync files to workspace (no terraform)
+#     3. Sync files to workspace
 #     4. Resolve app SP + Grant UC permissions (+ enable CDF on GSO tables)
 #     5. Resolve job ID + Grant job permissions
 #     6. Redeploy app (apps deploy --source-code-path)
 #     7. Verify deployment
-#     Skips bundle deploy and wheel cleanup.
+#     Skips app creation.
 #     Use for code-only changes when the app already exists.
 #
 #   Destroy mode (--destroy):
 #     1. Clean up runtime-created jobs
-#     2. Destroy the bundle (Terraform-managed app + job)
+#     2. Delete the app
 #
 # Usage:
 #   export GENIE_WAREHOUSE_ID=<your-warehouse-id>   # required
 #   export GENIE_CATALOG=my_catalog                  # required
-#   ./deploy.sh                                      # full deploy
-#   ./deploy.sh --update                             # code-only update
-#   ./deploy.sh --destroy                            # destroy everything
-#   ./deploy.sh --destroy --auto-approve             # destroy without confirmation
+#   ./scripts/deploy.sh                              # full deploy
+#   ./scripts/deploy.sh --update                     # code-only update
+#   ./scripts/deploy.sh --destroy                    # destroy everything
+#   ./scripts/deploy.sh --destroy --auto-approve     # destroy without confirmation
 #
 # Or use a .env.deploy file (see deploy-config.sh for all options).
-# Any extra flags are forwarded to `databricks bundle deploy`.
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Parse flags ────────────────────────────────────────────────────────────
 UPDATE_ONLY=false
 DESTROY_MODE=false
-EXTRA_ARGS=()
+AUTO_APPROVE=false
 for arg in "$@"; do
     case "$arg" in
-        --update)  UPDATE_ONLY=true ;;
-        --destroy) DESTROY_MODE=true ;;
-        *)         EXTRA_ARGS+=("$arg") ;;
+        --update)       UPDATE_ONLY=true ;;
+        --destroy)      DESTROY_MODE=true ;;
+        --auto-approve) AUTO_APPROVE=true ;;
     esac
 done
-set -- "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
 
 # shellcheck source=deploy-config.sh
 source "$SCRIPT_DIR/deploy-config.sh"
 
-# shellcheck source=scripts/preflight.sh
-source "$SCRIPT_DIR/scripts/preflight.sh"
+# shellcheck source=preflight.sh
+source "$SCRIPT_DIR/preflight.sh"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # DESTROY MODE
 # ═══════════════════════════════════════════════════════════════════════════
 if [ "$DESTROY_MODE" = "true" ]; then
     echo "╔══════════════════════════════════════════════════════════════╗"
-    echo "║  Genie Workbench — Bundle Destroy                          ║"
+    echo "║  Genie Workbench — Destroy                                   ║"
     echo "╚══════════════════════════════════════════════════════════════╝"
     _print_config
 
@@ -107,26 +104,30 @@ for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', [])):
         echo "  ✓ Cleaned up $DELETED runtime job(s)"
     fi
 
-    # ── Step 2: Destroy the bundle ─────────────────────────────────────
+    # ── Step 2: Delete the app ───────────────────────────────────────
     echo ""
-    echo "▸ Step 2/2: Destroying bundle (app + runner job)..."
-
-    # Ensure .build dir exists (bundle validate needs it for sync.include)
-    BUILD_STUB=false
-    if [ ! -d "$SCRIPT_DIR/.build" ]; then
-        mkdir -p "$SCRIPT_DIR/.build"
-        touch "$SCRIPT_DIR/.build/.keep"
-        BUILD_STUB=true
+    echo "▸ Step 2/2: Deleting app '$APP_NAME'..."
+    if databricks apps get "$APP_NAME" --profile "$PROFILE" &>/dev/null; then
+        if [ "$AUTO_APPROVE" != "true" ]; then
+            echo "  This will permanently delete the app and its compute."
+            echo -n "  Continue? [y/N]: "
+            read -r confirm
+            if [[ ! "$confirm" =~ ^[Yy] ]]; then
+                echo "  Cancelled."
+                exit 0
+            fi
+        fi
+        if databricks apps delete "$APP_NAME" --profile "$PROFILE" 2>/dev/null; then
+            echo "  ✓ App '$APP_NAME' deleted"
+        else
+            echo "  ✗ Could not delete app '$APP_NAME'."
+            echo "  Try deleting manually via the Databricks Apps UI."
+            exit 1
+        fi
+    else
+        echo "  App '$APP_NAME' does not exist — nothing to delete."
     fi
 
-    databricks bundle destroy "${BUNDLE_VAR_FLAGS[@]}" "${BUNDLE_TARGET_FLAGS[@]}" --profile "$PROFILE" "$@"
-
-    # Clean up stub if we created it
-    if [ "$BUILD_STUB" = "true" ]; then
-        rm -rf "$SCRIPT_DIR/.build"
-    fi
-
-    echo "  ✓ Bundle destroyed"
     echo ""
     echo "═══════════════════════════════════════════════════════════════"
     echo "  Destroy complete."
@@ -141,11 +142,9 @@ if [ "$UPDATE_ONLY" = "true" ]; then
     TOTAL_STEPS=7
     DEPLOY_LABEL="Code Update"
 else
-    TOTAL_STEPS=9
-    DEPLOY_LABEL="Bundle Deploy"
+    TOTAL_STEPS=8
+    DEPLOY_LABEL="Full Deploy"
 fi
-# CDF enablement is now handled by grant_permissions.py during table creation (Step 4/UC grants).
-# The separate synced-tables step has been removed to avoid cold-warehouse delays.
 
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║  Genie Workbench — $DEPLOY_LABEL$(printf '%*s' $((37 - ${#DEPLOY_LABEL})) '')║"
@@ -161,7 +160,7 @@ _preflight_check_profile "$PROFILE"
 # Resolve deployer email (needed for workspace paths)
 DEPLOYER=$(databricks current-user me --profile "$PROFILE" -o json \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['userName'])")
-WS_BUNDLE_PATH="/Workspace/Users/$DEPLOYER/.bundle/genie-workbench/$DEPLOY_TARGET/files"
+WS_PATH="/Workspace/Users/$DEPLOYER/$APP_NAME"
 
 _preflight_check_warehouse "$WAREHOUSE_ID" "$PROFILE"
 _preflight_check_catalog "$CATALOG" "$PROFILE"
@@ -172,8 +171,8 @@ echo "  ✓ All pre-flight checks passed"
 STEP=2
 echo ""
 echo "▸ Step $STEP/$TOTAL_STEPS: Building frontend..."
-(cd "$SCRIPT_DIR/frontend" && npm install --silent && npm run build --silent)
-if [ ! -f "$SCRIPT_DIR/frontend/dist/index.html" ]; then
+(cd "$PROJECT_DIR/frontend" && npm install --silent && npm run build --silent)
+if [ ! -f "$PROJECT_DIR/frontend/dist/index.html" ]; then
     echo "  ✗ Frontend build failed — frontend/dist/index.html not found."
     exit 1
 fi
@@ -184,52 +183,44 @@ if [ "$UPDATE_ONLY" = "true" ]; then
     STEP=3
     echo ""
     echo "▸ Step $STEP/$TOTAL_STEPS: Syncing files to workspace..."
-    # Full sync respects .databricksignore (which includes frontend/dist/)
-    databricks sync . "$WS_BUNDLE_PATH" --profile "$PROFILE" --full
+    databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full
     # frontend/dist/ is gitignored so databricks sync skips it — upload explicitly
     echo "  Uploading frontend build artifacts..."
-    databricks workspace import-dir "$SCRIPT_DIR/frontend/dist" \
-        "$WS_BUNDLE_PATH/frontend/dist" --profile "$PROFILE" --overwrite
-    echo "  ✓ Files synced to $WS_BUNDLE_PATH"
+    databricks workspace import-dir "$PROJECT_DIR/frontend/dist" \
+        "$WS_PATH/frontend/dist" --profile "$PROFILE" --overwrite
+    echo "  ✓ Files synced to $WS_PATH"
 else
-    # ── Step 3 (full): Clean stale wheels from workspace ──────────────
+    # ── Step 3 (full): Create app if not exists ──────────────────────
     STEP=3
     echo ""
-    echo "▸ Step $STEP/$TOTAL_STEPS: Cleaning stale wheels from workspace..."
-    STALE_COUNT=0
-    for whl in $(databricks workspace list "$WS_BUNDLE_PATH/.build" --profile "$PROFILE" 2>/dev/null \
-        | grep "\.whl" | awk '{print $NF}'); do
-        echo "  Deleting: $(basename "$whl")"
-        databricks workspace delete "$whl" --profile "$PROFILE" 2>/dev/null || true
-        STALE_COUNT=$((STALE_COUNT + 1))
-    done
-    if [ "$STALE_COUNT" -gt 0 ]; then
-        echo "  ✓ Removed $STALE_COUNT stale wheel(s)"
+    echo "▸ Step $STEP/$TOTAL_STEPS: Creating app (if not exists)..."
+    if databricks apps get "$APP_NAME" --profile "$PROFILE" &>/dev/null; then
+        echo "  ✓ App '$APP_NAME' already exists"
     else
-        echo "  ✓ No stale wheels found"
+        echo "  Creating app '$APP_NAME'..."
+        APP_CREATE_JSON=$(python3 -c "import json; print(json.dumps({'name': '$APP_NAME', 'description': 'Genie Workbench - Create, score, and optimize Genie Spaces'}))")
+        if databricks apps create --json "$APP_CREATE_JSON" --profile "$PROFILE" --no-wait 2>/dev/null; then
+            echo "  ✓ App created (compute starting in background)"
+        else
+            echo "  ✗ Could not create app '$APP_NAME'."
+            echo ""
+            echo "  Remediation:"
+            echo "    1. Check if the app name is available"
+            echo "    2. Ensure you have permission to create apps"
+            echo "    3. Try creating manually in the Databricks Apps UI"
+            exit 1
+        fi
     fi
 
-    # ── Step 4 (full): Deploy the bundle ──────────────────────────────
+    # ── Step 4 (full): Full-sync files to workspace ───────────────────
     STEP=4
     echo ""
-    echo "▸ Step $STEP/$TOTAL_STEPS: Deploying bundle..."
-    databricks bundle deploy "${BUNDLE_VAR_FLAGS[@]}" "${BUNDLE_TARGET_FLAGS[@]}" --profile "$PROFILE" "$@"
-    echo "  ✓ Bundle deployed"
-
-    # NOTE: Lakebase resource wiring moved to post-deploy PATCH step (runs in both modes)
-
-    # ── Step 5 (full): Full-sync files to workspace ───────────────────
-    # Bundle deploy only uploads changed files (incremental). On a fresh
-    # workspace or after a destroy, most source files are missing. Do a
-    # full sync + explicit frontend/dist upload to guarantee completeness.
-    STEP=5
-    echo ""
-    echo "▸ Step $STEP/$TOTAL_STEPS: Full-syncing source files to workspace..."
-    databricks sync . "$WS_BUNDLE_PATH" --profile "$PROFILE" --full
+    echo "▸ Step $STEP/$TOTAL_STEPS: Syncing files to workspace..."
+    databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full
     # frontend/dist/ is gitignored so databricks sync skips it — upload explicitly
     echo "  Uploading frontend build artifacts..."
-    databricks workspace import-dir "$SCRIPT_DIR/frontend/dist" \
-        "$WS_BUNDLE_PATH/frontend/dist" --profile "$PROFILE" --overwrite
+    databricks workspace import-dir "$PROJECT_DIR/frontend/dist" \
+        "$WS_PATH/frontend/dist" --profile "$PROFILE" --overwrite
     echo "  ✓ Full sync complete"
 fi
 
@@ -247,7 +238,7 @@ if [ -z "$SP_CLIENT_ID" ]; then
 fi
 echo "  ✓ SP client ID: $SP_CLIENT_ID"
 
-python3 "$SCRIPT_DIR/scripts/grant_permissions.py" \
+python3 "$SCRIPT_DIR/grant_permissions.py" \
     --profile "$PROFILE" \
     --app-name "$APP_NAME" \
     --catalog "$CATALOG" \
@@ -255,53 +246,20 @@ python3 "$SCRIPT_DIR/scripts/grant_permissions.py" \
     --warehouse-id "$WAREHOUSE_ID"
 echo "  ✓ UC grants applied"
 
-# ── Resolve job ID + Grant job permissions ───────────────────────────────
+# ── Set up GSO optimization job ──────────────────────────────────────────
 STEP=$((STEP + 1))
 echo ""
-echo "▸ Step $STEP/$TOTAL_STEPS: Resolving job ID and configuring permissions..."
+echo "▸ Step $STEP/$TOTAL_STEPS: Setting up optimization job..."
 
-if [ "$UPDATE_ONLY" = "true" ]; then
-    # In update mode, find the job by name (bundle state may be stale)
-    JOB_ID=$(
-        databricks jobs list --profile "$PROFILE" -o json 2>/dev/null \
-        | python3 -c "
-import sys, json
-data = json.load(sys.stdin)
-jobs = data if isinstance(data, list) else data.get('jobs', [])
-for j in jobs:
-    name = (j.get('settings') or {}).get('name', '')
-    if 'gso-optimization' in name.lower():
-        print(j.get('job_id', ''))
-        break
-" 2>/dev/null || true
-    )
-else
-    JOB_ID=$(
-        databricks bundle summary "${BUNDLE_VAR_FLAGS[@]}" "${BUNDLE_TARGET_FLAGS[@]}" --profile "$PROFILE" -o json \
-        | python3 -c "
-import sys, json
-summary = json.load(sys.stdin)
-job = summary.get('resources',{}).get('jobs',{}).get('gso-optimization-runner',{})
-print(job.get('id',''))
-"
-    )
-fi
+# Find existing job or create one (builds wheel, uploads notebooks, creates job)
+if JOB_ID=$(python3 "$SCRIPT_DIR/ensure_gso_job.py" \
+    --profile "$PROFILE" \
+    --catalog "$CATALOG" \
+    --schema "$GSO_SCHEMA" \
+    --app-name "$APP_NAME" \
+    --project-dir "$PROJECT_DIR"); then
 
-if [ -z "$JOB_ID" ]; then
-    echo "  ⚠ Could not find optimization job."
-    echo "  The job will be created on the next full bundle deploy."
-else
-    # Validate the job actually exists on the workspace
-    if ! databricks jobs get "$JOB_ID" --profile "$PROFILE" &>/dev/null; then
-        echo "  ✗ Job $JOB_ID does not exist on workspace."
-        echo ""
-        echo "  Remediation:"
-        echo "    1. Run a full deploy (without --update) to recreate the job"
-        echo "    2. Or manually create the job and update GSO_JOB_ID"
-        exit 1
-    fi
-    echo "  ✓ Job ID: $JOB_ID (verified on workspace)"
-
+    # Grant job permissions to deployer and SP
     PERM_PAYLOAD=$(python3 -c "
 import json
 acl = [
@@ -314,10 +272,12 @@ print(json.dumps({'access_control_list': acl}))
     if databricks api put "/api/2.0/permissions/jobs/$JOB_ID" --profile "$PROFILE" --json "$PERM_PAYLOAD" 2>/dev/null; then
         echo "  ✓ Job permissions updated (owner=$DEPLOYER, SP=CAN_MANAGE, users=CAN_VIEW)"
     else
-        echo "  ✗ Could not set job permissions on job $JOB_ID."
-        echo "  The app SP will not be able to trigger optimization runs."
-        exit 1
+        echo "  ⚠ Could not set job permissions — SP may not be able to trigger optimization runs."
     fi
+else
+    echo "  ⚠ Could not set up optimization job. Auto-Optimize will not be available."
+    echo "  You can retry by re-running: ./scripts/deploy.sh --update"
+    JOB_ID=""
 fi
 
 # ── Redeploy app (ensures freshest code) ─────────────────────────────────
@@ -327,10 +287,10 @@ echo "▸ Step $STEP/$TOTAL_STEPS: Redeploying app with freshest code..."
 
 # Patch app.yaml on workspace with real GSO values before apps deploy.
 # apps deploy reads app.yaml and uses it as the complete env config,
-# overwriting whatever the bundle set. So we must inject the real values.
+# overwriting whatever was previously set. So we must inject the real values.
 echo "  Patching app.yaml on workspace with GSO config..."
 PATCHED_APP_YAML="/tmp/app.yaml.patched"
-cp "$SCRIPT_DIR/app.yaml" "$PATCHED_APP_YAML"
+cp "$PROJECT_DIR/app.yaml" "$PATCHED_APP_YAML"
 sed -i.bak "s|__GSO_CATALOG__|$CATALOG|" "$PATCHED_APP_YAML"
 if [ -n "$JOB_ID" ]; then
     sed -i.bak "s|__GSO_JOB_ID__|$JOB_ID|" "$PATCHED_APP_YAML"
@@ -345,15 +305,15 @@ if [ "$UNRESOLVED" -gt 0 ]; then
     grep '__[A-Z_]*__' "$PATCHED_APP_YAML" | sed 's/^/      /'
 fi
 
-databricks workspace import "$WS_BUNDLE_PATH/app.yaml" \
+databricks workspace import "$WS_PATH/app.yaml" \
     --profile "$PROFILE" --file "$PATCHED_APP_YAML" --format AUTO --overwrite 2>/dev/null && \
 echo "  ✓ app.yaml patched (GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>})" || \
 echo "  ⚠ Could not patch app.yaml — config may not be set"
 
-# Sync _metadata.py — gitignored so bundle sync/databricks sync skip it,
+# Sync _metadata.py — gitignored so sync skips it,
 # but required at runtime for the genie_space_optimizer package to import.
-METADATA_SRC="$SCRIPT_DIR/packages/genie-space-optimizer/src/genie_space_optimizer/_metadata.py"
-METADATA_DST="$WS_BUNDLE_PATH/packages/genie-space-optimizer/src/genie_space_optimizer/_metadata.py"
+METADATA_SRC="$PROJECT_DIR/packages/genie-space-optimizer/src/genie_space_optimizer/_metadata.py"
+METADATA_DST="$WS_PATH/packages/genie-space-optimizer/src/genie_space_optimizer/_metadata.py"
 if [ -f "$METADATA_SRC" ]; then
     databricks workspace import "$METADATA_DST" \
         --profile "$PROFILE" --file "$METADATA_SRC" --format AUTO --overwrite 2>/dev/null && \
@@ -411,31 +371,6 @@ for r in existing:
 # Ensure sql-warehouse is set with the correct ID
 by_name['sql-warehouse'] = {'name': 'sql-warehouse', 'sql_warehouse': {'id': '$WAREHOUSE_ID', 'permission': 'CAN_USE'}}
 
-# If there's a Lakebase postgres project, include it as a resource
-# This handles the case where Lakebase was added via UI but shows as
-# an empty stub in the GET response — we reconstruct from the project.
-if 'postgres' not in by_name and '$DEPLOY_TARGET' == 'dev-lakebase':
-    import subprocess, sys
-    try:
-        result = subprocess.run(
-            ['databricks', 'api', 'get',
-             '/api/2.0/postgres/projects/${APP_NAME}-db/branches/production/databases',
-             '--profile', '$PROFILE'],
-            capture_output=True, text=True, timeout=15)
-        if result.returncode == 0:
-            dbs = json.loads(result.stdout).get('databases', [])
-            if dbs:
-                by_name['postgres'] = {
-                    'name': 'postgres',
-                    'postgres': {
-                        'branch': dbs[0].get('parent', ''),
-                        'database': dbs[0].get('name', ''),
-                        'permission': 'CAN_CONNECT_AND_CREATE'
-                    }
-                }
-    except Exception:
-        pass
-
 print(json.dumps({'user_api_scopes': scopes, 'resources': list(by_name.values())}))
 ")
 databricks api patch "/api/2.0/apps/$APP_NAME" \
@@ -444,8 +379,8 @@ databricks api patch "/api/2.0/apps/$APP_NAME" \
     echo "  ⚠ Could not configure app scopes/resources"
 
 databricks apps deploy "$APP_NAME" --profile "$PROFILE" \
-    --source-code-path "$WS_BUNDLE_PATH" --no-wait
-echo "  ✓ App deployment triggered from $WS_BUNDLE_PATH"
+    --source-code-path "$WS_PATH" --no-wait
+echo "  ✓ App deployment triggered from $WS_PATH"
 
 # ── Verify deployment ────────────────────────────────────────────────────
 STEP=$((STEP + 1))
@@ -456,11 +391,11 @@ VERIFY_OK=true
 # Check critical files exist on workspace
 echo "  Checking critical files on workspace..."
 CRITICAL_FILES=(
-    "$WS_BUNDLE_PATH/backend/main.py"
-    "$WS_BUNDLE_PATH/backend/__init__.py"
-    "$WS_BUNDLE_PATH/requirements.txt"
-    "$WS_BUNDLE_PATH/frontend/dist/index.html"
-    "$WS_BUNDLE_PATH/app.yaml"
+    "$WS_PATH/backend/main.py"
+    "$WS_PATH/backend/__init__.py"
+    "$WS_PATH/requirements.txt"
+    "$WS_PATH/frontend/dist/index.html"
+    "$WS_PATH/app.yaml"
 )
 MISSING_FILES=()
 for f in "${CRITICAL_FILES[@]}"; do
@@ -471,28 +406,10 @@ done
 if [ ${#MISSING_FILES[@]} -gt 0 ]; then
     echo "  ✗ Missing critical files on workspace: ${MISSING_FILES[*]}"
     echo ""
-    echo "  This typically happens when bundle deploy does an incremental sync"
-    echo "  on a fresh workspace. The full-sync step should have fixed this."
-    echo ""
     echo "  Remediation: re-run deploy or use --update mode."
     VERIFY_OK=false
 else
     echo "  ✓ All critical files present on workspace"
-fi
-
-# Check wheel exists on workspace
-WHL_LIST=""
-for CHECK_PATH in "$WS_BUNDLE_PATH/.build" "$WS_BUNDLE_PATH"; do
-    WHL_LIST=$(databricks workspace list "$CHECK_PATH" --profile "$PROFILE" 2>/dev/null \
-        | grep "\.whl" || true)
-    if [ -n "$WHL_LIST" ]; then
-        echo "  ✓ Wheel on workspace: $(echo "$WHL_LIST" | awk '{print $NF}' | head -1)"
-        break
-    fi
-done
-if [ -z "$WHL_LIST" ]; then
-    echo "  ⚠ No wheel found on workspace"
-    VERIFY_OK=false
 fi
 
 # Wait for deployment to settle and check status
@@ -532,7 +449,7 @@ print(ad.get('status',{}).get('message','unknown error'))
     echo "       - Missing Python dependencies (check requirements.txt)"
     echo "       - Import errors (check backend/main.py and its imports)"
     echo "       - Missing frontend/dist/ (gitignored, must be built + uploaded)"
-    echo "    3. Fix the issue and re-run: ./deploy.sh --update"
+    echo "    3. Fix the issue and re-run: ./scripts/deploy.sh --update"
     VERIFY_OK=false
 elif [ "$DEPLOY_STATE" = "IN_PROGRESS" ]; then
     echo "  ℹ App deployment still IN_PROGRESS after 3 minutes"

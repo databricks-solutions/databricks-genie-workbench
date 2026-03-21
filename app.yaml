@@ -101,7 +101,7 @@ env:
 # ---------------------------------------------------------------------------
 # Recommended: Use the bundle deploy for automated setup:
 #   ./scripts/install.sh        # Guided first-time setup
-#   ./deploy.sh                 # Subsequent deploys
+#   ./scripts/deploy.sh          # Subsequent deploys
 #
 # The bundle (databricks.yml) automatically:
 #   - Configures all OAuth scopes (no UI clicks needed)

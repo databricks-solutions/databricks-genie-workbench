@@ -10,7 +10,7 @@ set -euo pipefail
 #   3. Asks for catalog (with auto-discovery)
 #   4. Asks for SQL Warehouse (with auto-discovery)
 #   5. Asks for LLM model
-#   6. Lakebase info (auto-provisioned by bundle with --target dev-lakebase)
+#   6. Lakebase info (attach manually via Apps UI after deploy)
 #   7. Asks for app name
 #   8. Writes .env.deploy
 #   9. Runs deploy.sh
@@ -73,7 +73,7 @@ _prompt_yn() {
 # ══════════════════════════════════════════════════════════════════════════
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║            Genie Workbench — Guided Installer               ║${NC}"
+echo -e "${BOLD}║            Genie Workbench — Guided Installer                ║${NC}"
 echo -e "${BOLD}║                                                              ║${NC}"
 echo -e "${BOLD}║  Creates and configures:                                     ║${NC}"
 echo -e "${BOLD}║    • Databricks App (with OAuth scopes)                      ║${NC}"
@@ -233,11 +233,12 @@ _header "Step 6: Lakebase (PostgreSQL)"
 
 APP_NAME_DEFAULT="genie-workbench"
 
-_info "Lakebase is available as an optional deployment target."
-_info "To deploy with Lakebase, use: ./deploy.sh --target dev-lakebase"
-_info "Without Lakebase, the app uses in-memory storage (data lost on restart)."
+_info "Lakebase provides persistent storage for scan history and starred spaces."
+_info "Without it, the app uses in-memory storage (data lost on restart)."
 echo ""
-_info "The default deploy (./deploy.sh) works on ALL workspaces without Lakebase."
+_info "After deploy, attach a Lakebase resource in the Databricks Apps UI:"
+_info "  Apps → $APP_NAME_DEFAULT → Resources → + Add → PostgreSQL (Lakebase)"
+_info "  Name it 'postgres' with CAN_CONNECT_AND_CREATE permission."
 
 # ══════════════════════════════════════════════════════════════════════════
 # Step 7: App name
@@ -282,9 +283,9 @@ _header "Step 9: Deploying"
 _prompt_yn DO_DEPLOY "Run deploy now?" "Y"
 
 if [ "$DO_DEPLOY" = "Y" ]; then
-    "$PROJECT_DIR/deploy.sh"
+    "$SCRIPT_DIR/deploy.sh"
 else
-    _info "Skipping deploy. Run ./deploy.sh when ready."
+    _info "Skipping deploy. Run ./scripts/deploy.sh when ready."
     exit 0
 fi
 
