@@ -1,0 +1,384 @@
+
+========================================================================================================================
+[2026-03-11 14:46:26 UTC] [TASK-3 LEVER_LOOP] Resolved Upstream Task Values
+========================================================================================================================
+[2026-03-11 14:46:26 UTC] [TASK-3 LEVER_LOOP] Inputs
+{
+  "run_id": "ef15b862-d3f2-4153-b4fa-d4ff99e0e880",
+  "space_id": "01f11abecc5715d8a6ced469ab4a8e7e",
+  "domain": "databricks_job_and_usage_analytics",
+  "catalog": "main",
+  "schema": "genie_optimization",
+  "experiment_name": "/Shared/genie-space-optimizer/01f11abecc5715d8a6ced469ab4a8e7e/databricks_job_and_usage_analytics",
+  "max_iterations": 5,
+  "levers": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "apply_mode": "genie_config",
+  "baseline_accuracy": 87.5,
+  "baseline_thresholds_met": false,
+  "baseline_model_id": "m-d6fb5a5ca1784197bd22ab6c152622ce",
+  "triggered_by": "prashanth.subrahmanyam@databricks.com"
+}
+
+
+========================================================================================================================
+[2026-03-11 14:46:29 UTC] [TASK-3 LEVER_LOOP] Loaded Benchmarks
+========================================================================================================================
+[2026-03-11 14:46:29 UTC] [TASK-3 LEVER_LOOP] Benchmark dataset
+{
+  "uc_schema": "main.genie_optimization",
+  "domain": "databricks_job_and_usage_analytics",
+  "benchmark_count": 25
+}
+
+
+========================================================================================================================
+[2026-03-11 14:46:29 UTC] [TASK-3 LEVER_LOOP] Preparing Lever Loop Config (Stage 2.5)
+========================================================================================================================
+No config snapshot found in run row for ef15b862-d3f2-4153-b4fa-d4ff99e0e880 — fetching from API.
+[UC_METADATA] REST get_columns_for_tables_rest: 8 refs, 8 succeeded, 181 column rows
+
+==============================================================
+  PREPARE LEVER LOOP — GENIE SPACE INVENTORY
+==============================================================
+
+-- GENIE SPACE INVENTORY ---------------------------
+  Tables: 8 (prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_system_gold.dim_job, prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_system_gold.dim_job_task, prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_system_gold.dim_node_type, prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_system_gold.dim_pipeline, prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_system_gold.fact_job_run_timeline, prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_system_gold.fact_job_task_run_timeline, prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_system_gold.fact_usage, prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_system_gold.mv_job_performance)
+  Total columns: 181 (visible: 181, hidden: 0)
+  UC column metadata: 181 columns fetched across 8 tables
+  STRING columns eligible for entity matching: 120
+  Columns already with format assistance: 161
+  Columns already with value dictionary: 120 of 120 max slots
+----------------------------------------------------
+
+[PROMPT MATCHING] Starting auto-config — tables: 7, metric_views: 1, total data sources: 8
+
+-- FORMAT ASSISTANCE -------------------------------
+  Enabled format assistance on 0 columns
+  Skipped (already enabled): 161
+----------------------------------------------------
+
+-- ENTITY MATCHING (Value Dictionary) --------------
+  STRING columns scored for entity matching: 0
+  Slots used: 120 existing + 0 new = 120 / 120 max
+----------------------------------------------------
+
+-- PROMPT MATCHING -----------------------------------------------------------
+  |  Total changes:               0
+  |  Format assistance:           0 columns
+  |  Entity matching:             0 columns
+  |  Tables patched:              []
+  |  Genie API PATCH sent:        NO
+  |  Config refreshed:            N/A
+------------------------------------------------------------------------------
+[2026-03-11 14:46:34 UTC] [TASK-3 LEVER_LOOP] Config prepared
+{
+  "config_keys": [
+    "_functions",
+    "_instructions",
+    "_metric_views",
+    "_parsed_space",
+    "_tables",
+    "_uc_columns",
+    "description",
+    "parent_path",
+    "serialized_space",
+    "space_id",
+    "title",
+    "warehouse_id"
+  ],
+  "uc_columns_count": 181
+}
+
+
+========================================================================================================================
+[2026-03-11 14:46:35 UTC] [TASK-3 LEVER_LOOP] Running _run_lever_loop (4 phases print below)
+========================================================================================================================
+
+-- LEVER LOOP — PROACTIVE ENRICHMENT -----------------------------------------
+  |  Space ID:                    01f11abecc5715d8a6ced469ab4a8e7e
+  |  UC columns:                  181
+------------------------------------------------------------------------------
+
+-- DESCRIPTION ENRICHMENT ----------------------------------------------------
+  |  Eligible columns:            0
+  |  Columns enriched:            0
+  |  Columns skipped:             0
+  |  Eligible tables:             0
+  |  Tables enriched:             0
+  |  Tables skipped:              0
+  |  Genie API PATCH sent:        NO
+------------------------------------------------------------------------------
+
+-- JOIN DISCOVERY ------------------------------------------------------------
+  |  Existing join specs:         0
+  |  FK constraint candidates:    0
+  |  Execution-proven candidates: 3
+  |  Merged candidates:           3
+  |  Already defined:             0
+  |  Type-incompatible:           0
+  |  New joins applied:           3
+|
+|  fact_job_run_timeline <-> dim_job ON `jrt`.`workspace_id` = `j`.`workspace_id` AND `jrt`.`job_id` (freq=6, agreed)
+|  fact_usage <-> dim_job ON `u`.`workspace_id` = `j`.`workspace_id` AND `u`.`usage_metad (freq=2, agreed)
+|  dim_job <-> dim_job_task ON `jt`.`workspace_id` = `j`.`workspace_id` AND `jt`.`job_id` = (freq=1, single_source)
+  |  Genie API PATCH sent:        YES
+------------------------------------------------------------------------------
+
+-- SPACE METADATA ENRICHMENT -------------------------------------------------
+  |  Description:                 already present
+  |  Sample questions:            already present (8)
+  |  Status:                      No enrichment needed
+------------------------------------------------------------------------------
+
+-- PROACTIVE INSTRUCTION SEEDING ---------------------------------------------
+  |  Instructions:                generated (1352 chars)
+|      PURPOSE:
+- This space serves platform engineering and FinOps teams analyzing Databricks job execution performance, task-level run details, compute configurations, pipeline definitions, and billable us...
+------------------------------------------------------------------------------
+
+-- PROACTIVE ENRICHMENT — SUMMARY --------------------------------------------
+  |  Descriptions enriched:       0
+  |  Joins discovered:            3
+  |  Space metadata:              description=unchanged, questions=unchanged
+  |  Instructions seeded:         yes
+------------------------------------------------------------------------------
+
+-- LEVER LOOP — PRE-LOOP SETUP -----------------------------------------------
+{"ts": "2026-03-11 14:48:27.601", "level": "ERROR", "logger": "pyspark.sql.connect.logging", "msg": "GRPC Error received", "context": {}, "exception": {"class": "_MultiThreadedRendezvous", "msg": "<_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.INTERNAL\n\tdetails = \"[MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION] Resolved attribute(s) \"total_runs\" missing from \"job_id\", \"job_name\", \"run_id\", \"run_name\", \"result_state\", \"termination_code\", \"outcome_category\", \"is_success\", \"trigger_type\", \"run_type\", \"workspace_id\", \"workspace_name\", \"run_date\", \"year\", \"month\", \"week_of_year\", \"day_of_week\", \"hour_of_day\", \"total_runs\", \"successful_runs\", \"failed_runs\", \"timed_out_runs\", \"cancelled_runs\", \"success_rate\", \"failure_rate\", \"timeout_rate\", \"avg_duration_minutes\", \"p50_duration_minutes\", \"p95_duration_minutes\", \"p99_duration_minutes\", \"max_duration_minutes\", \"total_runtime_hours\", \"unique_jobs\", \"unique_workspaces\", \"runs_today\", \"failures_today\", \"runs_last_7_days\", \"success_rate_7d\" in operator !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration_minutes#91298) AS avg_duration_minutes#91270, measure(success_rate#91295) AS avg_success_rate#91271, measure(total_runs#91267L) AS measure(total_runs)#91417L]. Attribute(s) with the same name appear in the operation: \"total_runs\".\nPlease check if the right attribute(s) are used. SQLSTATE: 42704; line 1 pos 374;\nGlobalLimit 1\n+- LocalLimit 1\n   +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\n      +- SubqueryAlias _vgt\n         +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\n            +- Sort [measure(total_runs)#91417L DESC NULLS LAST], true\n               +- !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration...\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"[MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION] Resolved attribute(s) \\\"total_runs\\\" missing from \\\"job_id\\\", \\\"job_name\\\", \\\"run_id\\\", \\\"run_name\\\", \\\"result_state\\\", \\\"termination_code\\\", \\\"outcome_category\\\", \\\"is_success\\\", \\\"trigger_type\\\", \\\"run_type\\\", \\\"workspace_id\\\", \\\"workspace_name\\\", \\\"run_date\\\", \\\"year\\\", \\\"month\\\", \\\"week_of_year\\\", \\\"day_of_week\\\", \\\"hour_of_day\\\", \\\"total_runs\\\", \\\"successful_runs\\\", \\\"failed_runs\\\", \\\"timed_out_runs\\\", \\\"cancelled_runs\\\", \\\"success_rate\\\", \\\"failure_rate\\\", \\\"timeout_rate\\\", \\\"avg_duration_minutes\\\", \\\"p50_duration_minutes\\\", \\\"p95_duration_minutes\\\", \\\"p99_duration_minutes\\\", \\\"max_duration_minutes\\\", \\\"total_runtime_hours\\\", \\\"unique_jobs\\\", \\\"unique_workspaces\\\", \\\"runs_today\\\", \\\"failures_today\\\", \\\"runs_last_7_days\\\", \\\"success_rate_7d\\\" in operator !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration_minutes#91298) AS avg_duration_minutes#91270, measure(success_rate#91295) AS avg_success_rate#91271, measure(total_runs#91267L) AS measure(total_runs)#91417L]. Attribute(s) with the same name appear in the operation: \\\"total_runs\\\".\\nPlease check if the right attribute(s) are used. SQLSTATE: 42704; line 1 pos 374;\\nGlobalLimit 1\\n+- LocalLimit 1\\n   +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\\n      +- SubqueryAlias _vgt\\n         +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\\n            +- Sort [measure(total_runs)#91417L DESC NULLS LAST], true\\n               +- !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration...\", grpc_status:13, created_time:\"2026-03-11T14:48:27.600302008+00:00\"}\"\n>", "stacktrace": [{"class": null, "method": "_execute_and_fetch_as_iterator", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/core.py", "line": "2099"}, {"class": null, "method": "__next__", "file": "<frozen _collections_abc>", "line": "356"}, {"class": null, "method": "send", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "143"}, {"class": null, "method": "_has_next", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "204"}, {"class": null, "method": "_has_next", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "176"}, {"class": null, "method": "_call_iter", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "313"}, {"class": null, "method": "_call_iter", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "285"}, {"class": null, "method": "<lambda>", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "177"}, {"class": null, "method": "__iter__", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/core.py", "line": "696"}, {"class": null, "method": "__next__", "file": "/databricks/python/lib/python3.12/site-packages/grpc/_channel.py", "line": "543"}, {"class": null, "method": "_next", "file": "/databricks/python/lib/python3.12/site-packages/grpc/_channel.py", "line": "969"}]}}
+{"ts": "2026-03-11 14:48:27.601", "level": "ERROR", "logger": "pyspark.sql.connect.logging", "msg": "GRPC Error received", "context": {}, "exception": {"class": "_MultiThreadedRendezvous", "msg": "<_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.INTERNAL\n\tdetails = \"[MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION] Resolved attribute(s) \"total_runs\" missing from \"job_id\", \"job_name\", \"run_id\", \"run_name\", \"result_state\", \"termination_code\", \"outcome_category\", \"is_success\", \"trigger_type\", \"run_type\", \"workspace_id\", \"workspace_name\", \"run_date\", \"year\", \"month\", \"week_of_year\", \"day_of_week\", \"hour_of_day\", \"total_runs\", \"successful_runs\", \"failed_runs\", \"timed_out_runs\", \"cancelled_runs\", \"success_rate\", \"failure_rate\", \"timeout_rate\", \"avg_duration_minutes\", \"p50_duration_minutes\", \"p95_duration_minutes\", \"p99_duration_minutes\", \"max_duration_minutes\", \"total_runtime_hours\", \"unique_jobs\", \"unique_workspaces\", \"runs_today\", \"failures_today\", \"runs_last_7_days\", \"success_rate_7d\" in operator !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration_minutes#91298) AS avg_duration_minutes#91270, measure(success_rate#91295) AS avg_success_rate#91271, measure(total_runs#91267L) AS measure(total_runs)#91417L]. Attribute(s) with the same name appear in the operation: \"total_runs\".\nPlease check if the right attribute(s) are used. SQLSTATE: 42704; line 1 pos 374;\nGlobalLimit 1\n+- LocalLimit 1\n   +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\n      +- SubqueryAlias _vgt\n         +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\n            +- Sort [measure(total_runs)#91417L DESC NULLS LAST], true\n               +- !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration...\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"[MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION] Resolved attribute(s) \\\"total_runs\\\" missing from \\\"job_id\\\", \\\"job_name\\\", \\\"run_id\\\", \\\"run_name\\\", \\\"result_state\\\", \\\"termination_code\\\", \\\"outcome_category\\\", \\\"is_success\\\", \\\"trigger_type\\\", \\\"run_type\\\", \\\"workspace_id\\\", \\\"workspace_name\\\", \\\"run_date\\\", \\\"year\\\", \\\"month\\\", \\\"week_of_year\\\", \\\"day_of_week\\\", \\\"hour_of_day\\\", \\\"total_runs\\\", \\\"successful_runs\\\", \\\"failed_runs\\\", \\\"timed_out_runs\\\", \\\"cancelled_runs\\\", \\\"success_rate\\\", \\\"failure_rate\\\", \\\"timeout_rate\\\", \\\"avg_duration_minutes\\\", \\\"p50_duration_minutes\\\", \\\"p95_duration_minutes\\\", \\\"p99_duration_minutes\\\", \\\"max_duration_minutes\\\", \\\"total_runtime_hours\\\", \\\"unique_jobs\\\", \\\"unique_workspaces\\\", \\\"runs_today\\\", \\\"failures_today\\\", \\\"runs_last_7_days\\\", \\\"success_rate_7d\\\" in operator !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration_minutes#91298) AS avg_duration_minutes#91270, measure(success_rate#91295) AS avg_success_rate#91271, measure(total_runs#91267L) AS measure(total_runs)#91417L]. Attribute(s) with the same name appear in the operation: \\\"total_runs\\\".\\nPlease check if the right attribute(s) are used. SQLSTATE: 42704; line 1 pos 374;\\nGlobalLimit 1\\n+- LocalLimit 1\\n   +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\\n      +- SubqueryAlias _vgt\\n         +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\\n            +- Sort [measure(total_runs)#91417L DESC NULLS LAST], true\\n               +- !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration...\", grpc_status:13, created_time:\"2026-03-11T14:48:27.600302008+00:00\"}\"\n>", "stacktrace": [{"class": null, "method": "_execute_and_fetch_as_iterator", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/core.py", "line": "2099"}, {"class": null, "method": "__next__", "file": "<frozen _collections_abc>", "line": "356"}, {"class": null, "method": "send", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "143"}, {"class": null, "method": "_has_next", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "204"}, {"class": null, "method": "_has_next", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "176"}, {"class": null, "method": "_call_iter", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "313"}, {"class": null, "method": "_call_iter", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "285"}, {"class": null, "method": "<lambda>", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "177"}, {"class": null, "method": "__iter__", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/core.py", "line": "696"}, {"class": null, "method": "__next__", "file": "/databricks/python/lib/python3.12/site-packages/grpc/_channel.py", "line": "543"}, {"class": null, "method": "_next", "file": "/databricks/python/lib/python3.12/site-packages/grpc/_channel.py", "line": "969"}]}}
+{"ts": "2026-03-11 14:48:27.601", "level": "ERROR", "logger": "pyspark.sql.connect.logging", "msg": "GRPC Error received", "context": {}, "exception": {"class": "_MultiThreadedRendezvous", "msg": "<_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.INTERNAL\n\tdetails = \"[MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION] Resolved attribute(s) \"total_runs\" missing from \"job_id\", \"job_name\", \"run_id\", \"run_name\", \"result_state\", \"termination_code\", \"outcome_category\", \"is_success\", \"trigger_type\", \"run_type\", \"workspace_id\", \"workspace_name\", \"run_date\", \"year\", \"month\", \"week_of_year\", \"day_of_week\", \"hour_of_day\", \"total_runs\", \"successful_runs\", \"failed_runs\", \"timed_out_runs\", \"cancelled_runs\", \"success_rate\", \"failure_rate\", \"timeout_rate\", \"avg_duration_minutes\", \"p50_duration_minutes\", \"p95_duration_minutes\", \"p99_duration_minutes\", \"max_duration_minutes\", \"total_runtime_hours\", \"unique_jobs\", \"unique_workspaces\", \"runs_today\", \"failures_today\", \"runs_last_7_days\", \"success_rate_7d\" in operator !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration_minutes#91298) AS avg_duration_minutes#91270, measure(success_rate#91295) AS avg_success_rate#91271, measure(total_runs#91267L) AS measure(total_runs)#91417L]. Attribute(s) with the same name appear in the operation: \"total_runs\".\nPlease check if the right attribute(s) are used. SQLSTATE: 42704; line 1 pos 374;\nGlobalLimit 1\n+- LocalLimit 1\n   +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\n      +- SubqueryAlias _vgt\n         +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\n            +- Sort [measure(total_runs)#91417L DESC NULLS LAST], true\n               +- !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration...\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"[MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION] Resolved attribute(s) \\\"total_runs\\\" missing from \\\"job_id\\\", \\\"job_name\\\", \\\"run_id\\\", \\\"run_name\\\", \\\"result_state\\\", \\\"termination_code\\\", \\\"outcome_category\\\", \\\"is_success\\\", \\\"trigger_type\\\", \\\"run_type\\\", \\\"workspace_id\\\", \\\"workspace_name\\\", \\\"run_date\\\", \\\"year\\\", \\\"month\\\", \\\"week_of_year\\\", \\\"day_of_week\\\", \\\"hour_of_day\\\", \\\"total_runs\\\", \\\"successful_runs\\\", \\\"failed_runs\\\", \\\"timed_out_runs\\\", \\\"cancelled_runs\\\", \\\"success_rate\\\", \\\"failure_rate\\\", \\\"timeout_rate\\\", \\\"avg_duration_minutes\\\", \\\"p50_duration_minutes\\\", \\\"p95_duration_minutes\\\", \\\"p99_duration_minutes\\\", \\\"max_duration_minutes\\\", \\\"total_runtime_hours\\\", \\\"unique_jobs\\\", \\\"unique_workspaces\\\", \\\"runs_today\\\", \\\"failures_today\\\", \\\"runs_last_7_days\\\", \\\"success_rate_7d\\\" in operator !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration_minutes#91298) AS avg_duration_minutes#91270, measure(success_rate#91295) AS avg_success_rate#91271, measure(total_runs#91267L) AS measure(total_runs)#91417L]. Attribute(s) with the same name appear in the operation: \\\"total_runs\\\".\\nPlease check if the right attribute(s) are used. SQLSTATE: 42704; line 1 pos 374;\\nGlobalLimit 1\\n+- LocalLimit 1\\n   +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\\n      +- SubqueryAlias _vgt\\n         +- Project [job_id#91272, job_name#91273, total_runs#91267L, successful_runs#91268L, failed_runs#91269L, avg_duration_minutes#91270, avg_success_rate#91271]\\n            +- Sort [measure(total_runs)#91417L DESC NULLS LAST], true\\n               +- !Aggregate [job_id#91272, job_name#91273], [job_id#91272, job_name#91273, measure(total_runs#91290L) AS total_runs#91267L, measure(successful_runs#91291L) AS successful_runs#91268L, measure(failed_runs#91292L) AS failed_runs#91269L, measure(avg_duration...\", grpc_status:13, created_time:\"2026-03-11T14:48:27.600302008+00:00\"}\"\n>", "stacktrace": [{"class": null, "method": "_execute_and_fetch_as_iterator", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/core.py", "line": "2099"}, {"class": null, "method": "__next__", "file": "<frozen _collections_abc>", "line": "356"}, {"class": null, "method": "send", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "143"}, {"class": null, "method": "_has_next", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "204"}, {"class": null, "method": "_has_next", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "176"}, {"class": null, "method": "_call_iter", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "313"}, {"class": null, "method": "_call_iter", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "285"}, {"class": null, "method": "<lambda>", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "177"}, {"class": null, "method": "__iter__", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/core.py", "line": "696"}, {"class": null, "method": "__next__", "file": "/databricks/python/lib/python3.12/site-packages/grpc/_channel.py", "line": "543"}, {"class": null, "method": "_next", "file": "/databricks/python/lib/python3.12/site-packages/grpc/_channel.py", "line": "969"}]}}
+
+-- PROACTIVE BENCHMARK EXAMPLE SQLs ------------------------------------------
+  |  Mined proposals:             24
+  |  Applied:                     24
+|  [1] Which top 5 workspaces have the highest total list cost?
+|  [2] Compare the success rate of jobs triggered by CRON versus ONETIME triggers.
+|  [3] Which node types have the highest core count and how much memory do they have?
+|  [4] What are the top 10 jobs with the highest number of cancelled runs?
+|  [5] How does DBU consumption compare between the COMPUTE_TIME and STORAGE_SPACE usag
+|  [6] What is the total DBU consumption and list cost broken down by SKU name?
+|  [7] Which workspaces have the highest number of failed or errored job runs in the la
+|  [8] Show me the details of all failed job runs including job name, run ID, terminati
+|  [9] How many total job runs were there per result state?
+|  [10] What are the most expensive jobs and their costs?
+|  [11] List all distinct pipeline types available in the system.
+|  [12] Which jobs have the most task-level failures (result state FAILED or ERROR) and 
+|  [13] Which jobs have runs that exceeded 15 minutes in duration?
+|  [14] Which jobs have been deleted and when were they deleted?
+|  [15] Which usage records have a list cost greater than 1.0?
+|  [16] What is the percentage of tagged versus untagged usage records and their associa
+|  [17] What are the details of pipelines that use Photon and are serverless?
+|  [18] What is the distribution of task run result states across all job task runs?
+|  [19] List all distinct job names and their creator IDs.
+|  [20] What is the daily total list cost trend over all available usage dates?
+|  [21] How many tasks does each job have, and which jobs have the most tasks?
+|  [22] Which are the top 10 jobs by average run duration in minutes?
+|  [23] How does the number of job runs per day change over time?
+|  [24] What is the average and maximum run duration in minutes for each trigger type, a
+------------------------------------------------------------------------------
+
+-- PRE-LOOP SETUP — COMPLETE -------------------------------------------------
+  |  Reference SQLs:              25
+  |  Reference hashes:            24
+  |  Arbiter corrections:         0
+  |  Mined examples:              24
+  |  Starting lever:              0
+  |  Iteration counter:           0
+  |  Baseline accuracy:           87.5%
+------------------------------------------------------------------------------
+
+-- LEVER LOOP — ADAPTIVE ITERATION -------------------------------------------
+  |  Max iterations:              5
+  |  Lever order:                 [1, 2, 3, 4, 5]
+------------------------------------------------------------------------------
+
+-- Failure Analysis ----------------------------------------------------------
+  |  Total rows loaded:           25
+  |  Arbiter verdicts:            both_correct=16  genie_correct=5  ground_truth_correct=3  skipped=1
+  |  Excluded (fully correct):    6 question(s)
+  |  Soft signals (correct but judges failed): 15 question(s)
+  |    Soft signal question IDs:  databricks_job_and_usage_analytics_gs_020, databricks_job_an
+
+... [*** WARNING: max output size exceeded, skipping output. ***] ...
+
+ LocalLimit 1\n   +- Project [job_id#281917, job_name#281918, total_runs#281912L, successful_runs#281913L, failed_runs#281914L, avg_duration_minutes#281915, success_rate#281916]\n      +- SubqueryAlias _vgt\n         +- Project [job_id#281917, job_name#281918, total_runs#281912L, successful_runs#281913L, failed_runs#281914L, avg_duration_minutes#281915, success_rate#281916]\n            +- Sort [measure(total_runs)#282062L DESC NULLS LAST], true\n               +- !Aggregate [job_id#281917, job_name#281918], [job_id#281917, job_name#281918, measure(total_runs#281935L) AS total_runs#281912L, measure(successful_runs#281936L) AS successful_runs#281913L, measure(failed_runs#281937L) AS failed_runs#...\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"[MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION] Resolved attribute(s) \\\"total_runs\\\" missing from \\\"job_id\\\", \\\"job_name\\\", \\\"run_id\\\", \\\"run_name\\\", \\\"result_state\\\", \\\"termination_code\\\", \\\"outcome_category\\\", \\\"is_success\\\", \\\"trigger_type\\\", \\\"run_type\\\", \\\"workspace_id\\\", \\\"workspace_name\\\", \\\"run_date\\\", \\\"year\\\", \\\"month\\\", \\\"week_of_year\\\", \\\"day_of_week\\\", \\\"hour_of_day\\\", \\\"total_runs\\\", \\\"successful_runs\\\", \\\"failed_runs\\\", \\\"timed_out_runs\\\", \\\"cancelled_runs\\\", \\\"success_rate\\\", \\\"failure_rate\\\", \\\"timeout_rate\\\", \\\"avg_duration_minutes\\\", \\\"p50_duration_minutes\\\", \\\"p95_duration_minutes\\\", \\\"p99_duration_minutes\\\", \\\"max_duration_minutes\\\", \\\"total_runtime_hours\\\", \\\"unique_jobs\\\", \\\"unique_workspaces\\\", \\\"runs_today\\\", \\\"failures_today\\\", \\\"runs_last_7_days\\\", \\\"success_rate_7d\\\" in operator !Aggregate [job_id#281917, job_name#281918], [job_id#281917, job_name#281918, measure(total_runs#281935L) AS total_runs#281912L, measure(successful_runs#281936L) AS successful_runs#281913L, measure(failed_runs#281937L) AS failed_runs#281914L, measure(avg_duration_minutes#281943) AS avg_duration_minutes#281915, measure(success_rate#281940) AS success_rate#281916, measure(total_runs#281912L) AS measure(total_runs)#282062L]. Attribute(s) with the same name appear in the operation: \\\"total_runs\\\".\\nPlease check if the right attribute(s) are used. SQLSTATE: 42704; line 1 pos 370;\\nGlobalLimit 1\\n+- LocalLimit 1\\n   +- Project [job_id#281917, job_name#281918, total_runs#281912L, successful_runs#281913L, failed_runs#281914L, avg_duration_minutes#281915, success_rate#281916]\\n      +- SubqueryAlias _vgt\\n         +- Project [job_id#281917, job_name#281918, total_runs#281912L, successful_runs#281913L, failed_runs#281914L, avg_duration_minutes#281915, success_rate#281916]\\n            +- Sort [measure(total_runs)#282062L DESC NULLS LAST], true\\n               +- !Aggregate [job_id#281917, job_name#281918], [job_id#281917, job_name#281918, measure(total_runs#281935L) AS total_runs#281912L, measure(successful_runs#281936L) AS successful_runs#281913L, measure(failed_runs#281937L) AS failed_runs#...\", grpc_status:13, created_time:\"2026-03-11T14:59:28.08089486+00:00\"}\"\n>", "stacktrace": [{"class": null, "method": "_execute_and_fetch_as_iterator", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/core.py", "line": "2099"}, {"class": null, "method": "__next__", "file": "<frozen _collections_abc>", "line": "356"}, {"class": null, "method": "send", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "143"}, {"class": null, "method": "_has_next", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "204"}, {"class": null, "method": "_has_next", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "176"}, {"class": null, "method": "_call_iter", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "313"}, {"class": null, "method": "_call_iter", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "285"}, {"class": null, "method": "<lambda>", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "177"}, {"class": null, "method": "__iter__", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/core.py", "line": "696"}, {"class": null, "method": "__next__", "file": "/databricks/python/lib/python3.12/site-packages/grpc/_channel.py", "line": "543"}, {"class": null, "method": "_next", "file": "/databricks/python/lib/python3.12/site-packages/grpc/_channel.py", "line": "969"}]}}
+{"ts": "2026-03-11 14:59:28.081", "level": "ERROR", "logger": "pyspark.sql.connect.logging", "msg": "GRPC Error received", "context": {}, "exception": {"class": "_MultiThreadedRendezvous", "msg": "<_MultiThreadedRendezvous of RPC that terminated with:\n\tstatus = StatusCode.INTERNAL\n\tdetails = \"[MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION] Resolved attribute(s) \"total_runs\" missing from \"job_id\", \"job_name\", \"run_id\", \"run_name\", \"result_state\", \"termination_code\", \"outcome_category\", \"is_success\", \"trigger_type\", \"run_type\", \"workspace_id\", \"workspace_name\", \"run_date\", \"year\", \"month\", \"week_of_year\", \"day_of_week\", \"hour_of_day\", \"total_runs\", \"successful_runs\", \"failed_runs\", \"timed_out_runs\", \"cancelled_runs\", \"success_rate\", \"failure_rate\", \"timeout_rate\", \"avg_duration_minutes\", \"p50_duration_minutes\", \"p95_duration_minutes\", \"p99_duration_minutes\", \"max_duration_minutes\", \"total_runtime_hours\", \"unique_jobs\", \"unique_workspaces\", \"runs_today\", \"failures_today\", \"runs_last_7_days\", \"success_rate_7d\" in operator !Aggregate [job_id#281917, job_name#281918], [job_id#281917, job_name#281918, measure(total_runs#281935L) AS total_runs#281912L, measure(successful_runs#281936L) AS successful_runs#281913L, measure(failed_runs#281937L) AS failed_runs#281914L, measure(avg_duration_minutes#281943) AS avg_duration_minutes#281915, measure(success_rate#281940) AS success_rate#281916, measure(total_runs#281912L) AS measure(total_runs)#282062L]. Attribute(s) with the same name appear in the operation: \"total_runs\".\nPlease check if the right attribute(s) are used. SQLSTATE: 42704; line 1 pos 370;\nGlobalLimit 1\n+- LocalLimit 1\n   +- Project [job_id#281917, job_name#281918, total_runs#281912L, successful_runs#281913L, failed_runs#281914L, avg_duration_minutes#281915, success_rate#281916]\n      +- SubqueryAlias _vgt\n         +- Project [job_id#281917, job_name#281918, total_runs#281912L, successful_runs#281913L, failed_runs#281914L, avg_duration_minutes#281915, success_rate#281916]\n            +- Sort [measure(total_runs)#282062L DESC NULLS LAST], true\n               +- !Aggregate [job_id#281917, job_name#281918], [job_id#281917, job_name#281918, measure(total_runs#281935L) AS total_runs#281912L, measure(successful_runs#281936L) AS successful_runs#281913L, measure(failed_runs#281937L) AS failed_runs#...\"\n\tdebug_error_string = \"UNKNOWN:Error received from peer  {grpc_message:\"[MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION] Resolved attribute(s) \\\"total_runs\\\" missing from \\\"job_id\\\", \\\"job_name\\\", \\\"run_id\\\", \\\"run_name\\\", \\\"result_state\\\", \\\"termination_code\\\", \\\"outcome_category\\\", \\\"is_success\\\", \\\"trigger_type\\\", \\\"run_type\\\", \\\"workspace_id\\\", \\\"workspace_name\\\", \\\"run_date\\\", \\\"year\\\", \\\"month\\\", \\\"week_of_year\\\", \\\"day_of_week\\\", \\\"hour_of_day\\\", \\\"total_runs\\\", \\\"successful_runs\\\", \\\"failed_runs\\\", \\\"timed_out_runs\\\", \\\"cancelled_runs\\\", \\\"success_rate\\\", \\\"failure_rate\\\", \\\"timeout_rate\\\", \\\"avg_duration_minutes\\\", \\\"p50_duration_minutes\\\", \\\"p95_duration_minutes\\\", \\\"p99_duration_minutes\\\", \\\"max_duration_minutes\\\", \\\"total_runtime_hours\\\", \\\"unique_jobs\\\", \\\"unique_workspaces\\\", \\\"runs_today\\\", \\\"failures_today\\\", \\\"runs_last_7_days\\\", \\\"success_rate_7d\\\" in operator !Aggregate [job_id#281917, job_name#281918], [job_id#281917, job_name#281918, measure(total_runs#281935L) AS total_runs#281912L, measure(successful_runs#281936L) AS successful_runs#281913L, measure(failed_runs#281937L) AS failed_runs#281914L, measure(avg_duration_minutes#281943) AS avg_duration_minutes#281915, measure(success_rate#281940) AS success_rate#281916, measure(total_runs#281912L) AS measure(total_runs)#282062L]. Attribute(s) with the same name appear in the operation: \\\"total_runs\\\".\\nPlease check if the right attribute(s) are used. SQLSTATE: 42704; line 1 pos 370;\\nGlobalLimit 1\\n+- LocalLimit 1\\n   +- Project [job_id#281917, job_name#281918, total_runs#281912L, successful_runs#281913L, failed_runs#281914L, avg_duration_minutes#281915, success_rate#281916]\\n      +- SubqueryAlias _vgt\\n         +- Project [job_id#281917, job_name#281918, total_runs#281912L, successful_runs#281913L, failed_runs#281914L, avg_duration_minutes#281915, success_rate#281916]\\n            +- Sort [measure(total_runs)#282062L DESC NULLS LAST], true\\n               +- !Aggregate [job_id#281917, job_name#281918], [job_id#281917, job_name#281918, measure(total_runs#281935L) AS total_runs#281912L, measure(successful_runs#281936L) AS successful_runs#281913L, measure(failed_runs#281937L) AS failed_runs#...\", grpc_status:13, created_time:\"2026-03-11T14:59:28.08089486+00:00\"}\"\n>", "stacktrace": [{"class": null, "method": "_execute_and_fetch_as_iterator", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/core.py", "line": "2099"}, {"class": null, "method": "__next__", "file": "<frozen _collections_abc>", "line": "356"}, {"class": null, "method": "send", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "143"}, {"class": null, "method": "_has_next", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "204"}, {"class": null, "method": "_has_next", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "176"}, {"class": null, "method": "_call_iter", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "313"}, {"class": null, "method": "_call_iter", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "285"}, {"class": null, "method": "<lambda>", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/reattach.py", "line": "177"}, {"class": null, "method": "__iter__", "file": "/databricks/python/lib/python3.12/site-packages/pyspark/sql/connect/client/core.py", "line": "696"}, {"class": null, "method": "__next__", "file": "/databricks/python/lib/python3.12/site-packages/grpc/_channel.py", "line": "543"}, {"class": null, "method": "_next", "file": "/databricks/python/lib/python3.12/site-packages/grpc/_channel.py", "line": "969"}]}}
+Rejecting add_example_sql that failed validation: EXECUTION_ERROR: [MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION] Resolved attribute(s) "total_runs" missing from "job_id", "job_name", "run_id", "run_name", "result_state", "termination_code", "outcome_category", "is_success", "trigger_type", "run_type", "workspace_id", "workspace_name", "run_date", "yea — SELECT job_id, job_name, MEASURE(total_runs) AS total_runs, MEASURE(successful_runs) AS successful_runs, MEASURE(failed_
+
+-- [AG2] Proposals (9 total) -------------------------------------------------
+|
+|  Proposal 1 / 9  [AG2]
+|    Type:                    update_description
+|    Lever:                   1
+|    Table:                   prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_system_gold.dim_job_task
+|    Rationale:               Strategy: The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always joi
+|    Table sections proposed:
+|      relationships: "Always JOIN to dim_job ON workspace_id AND job_id to retrieve job name when answering questions abou"
+|    Status:                  OK
+|
+|  Proposal 2 / 9  [AG2]
+|    Type:                    update_column_description
+|    Lever:                   1
+|    Table:                   prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_system_gold.dim_job_task
+|    Column:                  task_key
+|    Rationale:               Strategy: The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always joi
+|    Sections proposed:
+|      definition: "The reference key for a task in a job. Only unique within a single job. Use COUNT(DISTINCT task_key)"
+|      synonyms: "['task name', 'task identifier']"
+|    Status:                  OK
+|
+|  Proposal 3 / 9  [AG2]
+|    Type:                    add_join_spec
+|    Lever:                   4
+|    Rationale:               Strategy: The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always joi
+|    Status:                  OK
+|
+|  Proposal 4 / 9  [AG2]
+|    Type:                    rewrite_instruction
+|    Lever:                   5
+|    Rationale:               Strategy: The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always joi
+|    Value (preview):         PURPOSE:\n- This Genie Space provides analytics on Databricks platform operations including job execution, task performance, pipeline configuration, compute resources, and billing/usage data.\n\nASSET ROUTING:\n- For simple COUNT, SUM, AVG, GROUP BY queries on job runs (e.g., runs per result_state, 
+|    Status:                  OK
+|
+|  Proposal 5 / 9  [AG2_EX1]
+|    Type:                    add_example_sql
+|    Lever:                   5
+|    Rationale:               Strategy: The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always joi
+|    Value (preview):         Which workspaces have the highest number of failed or errored job runs in the last 7 days, and what is their failure rate?
+|    Status:                  OK
+|
+|  Proposal 6 / 9  [AG2_EX3]
+|    Type:                    add_example_sql
+|    Lever:                   5
+|    Rationale:               Strategy: The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always joi
+|    Value (preview):         How many tasks does each job have, and which jobs have the most tasks?
+|    Status:                  OK
+|
+|  Proposal 7 / 9  [AG2_EX4]
+|    Type:                    add_example_sql
+|    Lever:                   5
+|    Rationale:               Strategy: The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always joi
+|    Value (preview):         Which are the top 10 jobs by average run duration in minutes?
+|    Status:                  OK
+|
+|  Proposal 8 / 9  [AG2_EX5]
+|    Type:                    add_example_sql
+|    Lever:                   5
+|    Rationale:               Strategy: The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always joi
+|    Value (preview):         How many total job runs were there per result state?
+|    Status:                  OK
+|
+|  Proposal 9 / 9  [AG2_EX6]
+|    Type:                    add_example_sql
+|    Lever:                   5
+|    Rationale:               Strategy: The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always joi
+|    Value (preview):         What are the top 10 jobs with the highest number of cancelled runs?
+|    Status:                  OK
+|
+|  --- Summary ---
+|    Valid proposals:         9 of 9
+|    Proceeding with 9 patch(es)
+------------------------------------------------------------------------------
+
+-- Patch Provenance ----------------------------------------------------------
+|  P001 [AG2] lever=1 (Tables & Columns) type=update_description root_cause=The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always join dim_job for job names, to include all measures in performance summaries, and to avoid filtering out NULLs unless explicitly asked.
+|  P002 [AG2] lever=1 (Tables & Columns) type=update_column_description root_cause=The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always join dim_job for job names, to include all measures in performance summaries, and to avoid filtering out NULLs unless explicitly asked.
+|  P003 [AG2] lever=4 (Join Specifications) type=add_join_spec root_cause=The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always join dim_job for job names, to include all measures in performance summaries, and to avoid filtering out NULLs unless explicitly asked.
+|  P004 [AG2] lever=5 (Genie Space Instructions) type=rewrite_instruction root_cause=The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always join dim_job for job names, to include all measures in performance summaries, and to avoid filtering out NULLs unless explicitly asked.
+|  P005 [AG2] lever=5 (Genie Space Instructions) type=add_example_sql root_cause=The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always join dim_job for job names, to include all measures in performance summaries, and to avoid filtering out NULLs unless explicitly asked.
+|  P006 [AG2] lever=5 (Genie Space Instructions) type=add_example_sql root_cause=The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always join dim_job for job names, to include all measures in performance summaries, and to avoid filtering out NULLs unless explicitly asked.
+|  P007 [AG2] lever=5 (Genie Space Instructions) type=add_example_sql root_cause=The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always join dim_job for job names, to include all measures in performance summaries, and to avoid filtering out NULLs unless explicitly asked.
+|  P008 [AG2] lever=5 (Genie Space Instructions) type=add_example_sql root_cause=The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always join dim_job for job names, to include all measures in performance summaries, and to avoid filtering out NULLs unless explicitly asked.
+|  P009 [AG2] lever=5 (Genie Space Instructions) type=add_example_sql root_cause=The model over-routes to mv_job_performance metric view and adds unnecessary IS NOT NULL filters; it needs instructions to prefer fact_job_run_timeline for simple aggregations, to always join dim_job for job names, to include all measures in performance summaries, and to avoid filtering out NULLs unless explicitly asked.
+------------------------------------------------------------------------------
+Lever 1: skipping locked sections ['relationships'] (allowed: ['best_for', 'definition', 'grain', 'purpose', 'scd', 'synonyms', 'values'])
+Lever 1 tried to update locked sections on table prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_system_gold.dim_job_task — skipped
+PATCH attempt 1/3 failed for space 01f11abecc5715d8a6ced469ab4a8e7e: Failed to parse export proto: `jt`.`workspace_id` = `j`.`workspace_id` AND `jt`.`job_id` = `j`.`job_id` (of class java.lang.String)
+PATCH attempt 2/3 failed for space 01f11abecc5715d8a6ced469ab4a8e7e: Failed to parse export proto: `jt`.`workspace_id` = `j`.`workspace_id` AND `jt`.`job_id` = `j`.`job_id` (of class java.lang.String)
+PATCH attempt 3/3 failed for space 01f11abecc5715d8a6ced469ab4a8e7e: Failed to parse export proto: `jt`.`workspace_id` = `j`.`workspace_id` AND `jt`.`job_id` = `j`.`job_id` (of class java.lang.String)
+Failed to PATCH Genie Space config after 2 retries — patches were NOT deployed remotely
+Traceback (most recent call last):
+  File "/local_disk0/.ephemeral_nfs/envs/pythonEnv-8e88fb04-f6a2-4b02-aa32-9bc2fe5332f1/lib/python3.12/site-packages/genie_space_optimizer/optimization/applier.py", line 1570, in apply_patch_set
+    patch_space_config(w, space_id, config)
+  File "/local_disk0/.ephemeral_nfs/envs/pythonEnv-8e88fb04-f6a2-4b02-aa32-9bc2fe5332f1/lib/python3.12/site-packages/genie_space_optimizer/common/genie_client.py", line 734, in patch_space_config
+    raise last_exc  # type: ignore[misc]
+    ^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/envs/pythonEnv-8e88fb04-f6a2-4b02-aa32-9bc2fe5332f1/lib/python3.12/site-packages/genie_space_optimizer/common/genie_client.py", line 709, in patch_space_config
+    raw_resp = w.api_client.do(
+               ^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/envs/pythonEnv-8e88fb04-f6a2-4b02-aa32-9bc2fe5332f1/lib/python3.12/site-packages/databricks/sdk/core.py", line 91, in do
+    return self._api_client.do(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/envs/pythonEnv-8e88fb04-f6a2-4b02-aa32-9bc2fe5332f1/lib/python3.12/site-packages/databricks/sdk/_base_client.py", line 199, in do
+    response = call(
+               ^^^^^
+  File "/local_disk0/.ephemeral_nfs/envs/pythonEnv-8e88fb04-f6a2-4b02-aa32-9bc2fe5332f1/lib/python3.12/site-packages/databricks/sdk/retries.py", line 60, in wrapper
+    raise err
+  File "/local_disk0/.ephemeral_nfs/envs/pythonEnv-8e88fb04-f6a2-4b02-aa32-9bc2fe5332f1/lib/python3.12/site-packages/databricks/sdk/retries.py", line 39, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/local_disk0/.ephemeral_nfs/envs/pythonEnv-8e88fb04-f6a2-4b02-aa32-9bc2fe5332f1/lib/python3.12/site-packages/databricks/sdk/_base_client.py", line 301, in _perform
+    raise error from None
+databricks.sdk.errors.platform.InvalidParameterValue: Failed to parse export proto: `jt`.`workspace_id` = `j`.`workspace_id` AND `jt`.`job_id` = `j`.`job_id` (of class java.lang.String)
+
+!! [AG2] PATCH DEPLOY FAILED !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  |  Error:                       Failed to parse export proto: `jt`.`workspace_id` = `j`.`workspace_id` AND `jt`.`job_id` = `j`.`job_id` (of class java.lang.String)
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+== OPTIMIZATION RUN SUMMARY ==================================================
+  |  Space ID:                    01f11abecc5715d8a6ced469ab4a8e7e
+  |  Run ID:                      ef15b862-d3f2-4153-b4fa-d4ff99e0e880
+  |  Baseline accuracy:           87.5%
+  |  Final accuracy:              87.5%
+  |  Net improvement:             +0.0%
+  |  Iterations:                  2
+  |  Best iteration:              0
+|
+|  --- Proactive Changes (pre-lever-loop) ---
+  |  Column descriptions added:   0
+  |  Table descriptions added:    0
+  |  Join specs discovered:       3
+  |  Space description:           unchanged
+  |  Sample questions:            unchanged
+  |  Instructions seeded:         generated (1352 chars)
+  |  Benchmark examples mined:    24
+|
+|  --- Lever Loop Changes ---
+  |  Action groups attempted:     2
+  |  Action groups accepted:      0
+  |  Action groups rolled back:   0
+  |  Levers used:                 [1, 4, 5]
+  |  Status:                      No lever loop changes were accepted
+|
+|  --- Final Scores ---
+|  asset_routing:               88.0
+|  completeness:                88.0
+|  logical_accuracy:            88.0
+|  response_quality:            64.0
+|  result_correctness:          87.5
+|  schema_accuracy:             88.0
+|  semantic_equivalence:        84.0
+|  syntax_validity:             100.0
+==============================================================================
+[2026-03-11 15:00:16 UTC] [TASK-3 LEVER_LOOP] Lever loop finished
+{
+  "accuracy": 87.5,
+  "iteration_counter": 2,
+  "best_iteration": 0,
+  "levers_attempted": [
+    1,
+    4,
+    5,
+    1,
+    4,
+    5
+  ],
+  "levers_accepted": [],
+  "levers_rolled_back": []
+}

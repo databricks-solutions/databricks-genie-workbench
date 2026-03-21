@@ -1,0 +1,82 @@
+[project]
+name = "genie-space-optimizer"
+dynamic = ["version"]
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "pydantic-settings>=2.11.0",
+    "uvicorn>=0.34.0",
+    "databricks-sdk>=0.40.0",
+    "mlflow[databricks]>=3.4.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "pandas>=2.0",
+    "sqlmodel>=0.0.27",
+    "psycopg[binary,pool]>=3.2.11",
+    "sqlglot>=29.0.1",
+]
+
+[project.optional-dependencies]
+spark = ["databricks-connect>=15.0.0"]
+
+[dependency-groups]
+dev = [
+    "ty>=0.0.12",
+    "pytest>=8.0",
+    "httpx>=0.27.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ty.src]
+include = ["src/**"]
+exclude = [
+    "genie_space_optimizer/genie_optimizer_skills/**",
+    ".venv/**",
+]
+
+[[tool.ty.overrides]]
+include = ["src/genie_space_optimizer/optimization/**"]
+
+[tool.ty.overrides.rules]
+possibly-missing-attribute = "ignore"
+
+[tool.apx.metadata]
+app-name = "genie-space-optimizer"
+app-slug = "genie_space_optimizer"
+app-entrypoint = "genie_space_optimizer.backend.app:app"
+api-prefix = "/api/genie"
+metadata-path = "src/genie_space_optimizer/_metadata.py"
+
+[tool.apx.ui]
+root = "src/genie_space_optimizer/ui"
+
+[tool.apx.ui.registries]
+"@animate-ui" = "https://animate-ui.com/r/{name}.json"
+"@ai-elements" = "https://registry.ai-sdk.dev/{name}.json"
+"@svgl" = "https://svgl.app/r/{name}.json"
+
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+[tool.uv-dynamic-versioning]
+vcs = "git"
+fallback-version = "0.1.0"
+
+[tool.hatch.build.hooks.version]
+path = "src/genie_space_optimizer/_version.py"
+template = '''
+version = "{version}"
+'''
+
+[tool.hatch.build]
+artifacts = ["src/genie_space_optimizer/__dist__", "src/genie_space_optimizer/_metadata.py"]
+exclude = ["src/genie_space_optimizer/ui"]

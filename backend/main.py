@@ -69,6 +69,7 @@ from backend.routers.spaces import router as spaces_router
 from backend.routers.admin import router as admin_router
 from backend.routers.auth import router as auth_router
 from backend.routers.create import router as create_router
+from backend.routers.auto_optimize import router as auto_optimize_router
 
 
 class OBOAuthMiddleware(BaseHTTPMiddleware):
@@ -166,6 +167,7 @@ app.include_router(spaces_router)
 app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(create_router)
+app.include_router(auto_optimize_router)
 
 # Serve static files from React build
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"

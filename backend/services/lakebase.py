@@ -1,8 +1,10 @@
 """Lakebase (PostgreSQL) persistence for Genie Space scan results."""
 
 import asyncio
+import json
 import logging
 import os
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -19,70 +21,197 @@ _memory_store: dict = {
 
 _pool = None
 _lakebase_available = False
+_schema_retry_after: float = 0  # timestamp after which we retry schema creation
 
 
-def _generate_lakebase_credential() -> tuple[str, str] | None:
-    """Generate Lakebase OAuth credentials using the Databricks SDK.
+def _generate_credential() -> tuple[str, str] | None:
+    """Generate Lakebase credentials via Databricks SDK.
 
-    Uses whatever auth the SDK resolves (service principal in prod, CLI
-    profile locally). Returns (user_email, oauth_token) or None.
+    The SP has an OAuth role in Lakebase. Its OAuth access token works as
+    the postgres password (same pattern as the Lakebase UI's OAuth connection).
+    The username is the SP's application_id (client_id).
     """
-    instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME")
-    if not instance_name:
-        return None
-
     try:
-        from backend.services.auth import get_workspace_client
-        client = get_workspace_client()
+        from backend.services.auth import get_service_principal_client
+        client = get_service_principal_client()
 
-        resp = client.api_client.do(
-            method="POST",
-            path="/api/2.0/database/credentials",
-            body={
-                "request_id": "lakebase-pool",
-                "instance_names": [instance_name],
-            },
-        )
-        token = resp.get("token")
+        # The SP's OAuth token works as the postgres password.
+        # Generate an OAuth token directly using client_credentials grant.
+        token = None
+        client_id = client.config.client_id or os.environ.get("DATABRICKS_CLIENT_ID", "")
+        client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "")  # gitleaks:allow
+        host = (client.config.host or os.environ.get("DATABRICKS_HOST", "")).rstrip("/")
+
+        if client_id and client_secret and host:
+            import urllib.request
+            import urllib.parse
+            token_url = f"{host}/oidc/v1/token"
+            data = urllib.parse.urlencode({
+                "grant_type": "client_credentials",
+                "client_id": client_id,
+                "client_secret": client_secret,  # gitleaks:allow
+                "scope": "iam.current-user:read iam.groups:read iam.service-principals:read iam.users:read",
+            }).encode()
+            try:
+                req = urllib.request.Request(token_url, data=data,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    token_resp = json.loads(resp.read())
+                    token = token_resp.get("access_token")
+                if token:
+                    logger.info(f"Generated OAuth token for Lakebase (client_id={client_id[:8]}...)")
+            except Exception as e:
+                logger.debug(f"OAuth token generation failed: {e}")
+
         if not token:
-            logger.warning("Lakebase credential response missing token")
+            logger.info("Could not obtain SP OAuth token for Lakebase")
             return None
 
-        # Resolve username: SP identity or human user
-        user = os.environ.get("LAKEBASE_USER")
+        # Username is the SP's client_id (application_id)
+        user = client.config.client_id or os.environ.get("DATABRICKS_CLIENT_ID", "")
         if not user:
             try:
                 me = client.current_user.me()
-                user = me.user_name
+                user = me.user_name or ""
             except Exception:
-                user = "databricks"
-        logger.info(f"Generated Lakebase credential via SDK (user={user})")
+                pass
+
+        if not user:
+            logger.info("Could not determine SP username for Lakebase")
+            return None
+
+        logger.info(f"Using SP OAuth token for Lakebase (user={user[:8]}...)")
         return user, token
     except Exception as e:
         logger.warning(f"Lakebase credential generation failed: {e}")
         return None
 
 
+async def _ensure_schema():
+    """Idempotently create all Lakebase tables and indexes.
+
+    Safe to call on every startup — uses CREATE TABLE IF NOT EXISTS.
+    On failure, marks Lakebase unavailable and schedules a retry so the
+    app self-heals once Lakebase permissions are fixed (e.g. resource attached).
+    """
+    global _lakebase_available, _schema_retry_after
+    if _pool is None:
+        return
+    try:
+        async with _pool.acquire() as conn:
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS scan_results (
+                    id          SERIAL PRIMARY KEY,
+                    space_id    VARCHAR(64) NOT NULL,
+                    score       INTEGER     NOT NULL CHECK (score >= 0 AND score <= 100),
+                    maturity    VARCHAR(32) NOT NULL,
+                    breakdown   JSONB       NOT NULL DEFAULT '{}',
+                    findings    JSONB       NOT NULL DEFAULT '[]',
+                    next_steps  JSONB       NOT NULL DEFAULT '[]',
+                    scanned_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                    UNIQUE (space_id, scanned_at)
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scan_results_space_id ON scan_results(space_id)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scan_results_scanned_at ON scan_results(scanned_at DESC)"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scan_results_score ON scan_results(score)"
+            )
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS starred_spaces (
+                    space_id   VARCHAR(64) PRIMARY KEY,
+                    starred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS seen_spaces (
+                    space_id   VARCHAR(64) PRIMARY KEY,
+                    first_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                )
+            """)
+        _lakebase_available = True
+        logger.info("Lakebase schema ready (3 tables)")
+    except Exception as e:
+        logger.warning(f"Failed to ensure Lakebase schema: {e}. Falling back to in-memory storage.")
+        _lakebase_available = False
+        _schema_retry_after = time.monotonic() + 30  # retry after 30 seconds
+
+
+async def _maybe_retry_schema():
+    """If pool exists but schema failed, retry periodically (e.g. after Lakebase resource is attached)."""
+    global _schema_retry_after
+    if _lakebase_available or _pool is None:
+        return
+    if time.monotonic() < _schema_retry_after:
+        return
+    _schema_retry_after = time.monotonic() + 30  # prevent thundering herd
+    logger.info("Retrying Lakebase schema creation...")
+    await _ensure_schema()
+
+
 async def init_pool():
-    """Initialize asyncpg connection pool. Falls back gracefully if unavailable."""
+    """Initialize asyncpg connection pool. Falls back gracefully if unavailable.
+
+    When Lakebase is connected via the Databricks Apps UI, the platform injects
+    LAKEBASE_HOST and LAKEBASE_PASSWORD as environment variables. Without these,
+    the app uses in-memory storage (ephemeral per deployment).
+    """
     global _pool, _lakebase_available
 
     host = os.environ.get("LAKEBASE_HOST")
     if not host:
-        logger.info("LAKEBASE_HOST not set - using in-memory fallback")
+        logger.info("LAKEBASE_HOST not set - using in-memory fallback. "
+                     "Connect Lakebase via the Databricks Apps UI for persistent storage.")
         return
+
+    # valueFrom: postgres injects the endpoint resource path, not the hostname.
+    # Resolve the actual hostname from the Lakebase API.
+    if host.startswith("projects/"):
+        logger.info(f"LAKEBASE_HOST is a resource path ({host}), resolving hostname...")
+        try:
+            from backend.services.auth import get_service_principal_client
+            sp = get_service_principal_client()
+            # Extract the endpoint path up to /endpoints/...
+            # Format: projects/{project}/branches/{branch}/endpoints/{endpoint}
+            parts = host.split("/")
+            # Find the endpoints section and construct the parent path
+            ep_idx = parts.index("endpoints") if "endpoints" in parts else -1
+            if ep_idx >= 0:
+                endpoints_path = "/".join(parts[:ep_idx + 2])  # up to endpoints/{name}
+                parent_path = "/".join(parts[:ep_idx])  # branches path
+                resp = sp.api_client.do("GET", f"/api/2.0/postgres/{parent_path}/endpoints")
+                endpoints = resp.get("endpoints", [])
+                for ep in endpoints:
+                    if ep.get("name", "").startswith(endpoints_path) or ep.get("name") == host:
+                        hosts = ep.get("status", {}).get("hosts", {})
+                        # Use the non-pooled host — the pooled host doesn't support OAuth auth
+                        resolved = hosts.get("host", "")
+                        if resolved:
+                            logger.info(f"Resolved Lakebase host: {resolved}")
+                            host = resolved
+                            break
+        except Exception as e:
+            logger.warning(f"Could not resolve Lakebase host from resource path: {e}")
+            return
 
     password = os.environ.get("LAKEBASE_PASSWORD")
     user = os.environ.get("LAKEBASE_USER", "postgres")
 
     if not password:
-        cred = _generate_lakebase_credential()
+        # Try generating credentials via Databricks SDK
+        cred = _generate_credential()
         if cred:
             user, password = cred
         else:
-            logger.warning("No LAKEBASE_PASSWORD and credential generation failed - using in-memory fallback")
+            logger.warning("LAKEBASE_HOST is set but no password available - using in-memory fallback. "
+                           "Ensure the Lakebase postgres resource is properly connected in the Apps UI.")
             return
 
+    logger.info(f"Connecting to Lakebase: host={host}, user={user[:12]}..., port={os.environ.get('LAKEBASE_PORT', '5432')}, db={os.environ.get('LAKEBASE_DATABASE', 'databricks_postgres')}, password_len={len(password) if password else 0}")
     try:
         import asyncpg
         _pool = await asyncpg.create_pool(
@@ -98,6 +227,7 @@ async def init_pool():
         )
         _lakebase_available = True
         logger.info("Lakebase connection pool initialized")
+        await _ensure_schema()
     except Exception as e:
         logger.warning(f"Lakebase unavailable: {e}. Using in-memory fallback.")
         _lakebase_available = False
@@ -226,6 +356,7 @@ async def star_space(space_id: str, starred: bool) -> None:
 
 async def get_starred_spaces() -> list[str]:
     """Get all starred space IDs."""
+    await _maybe_retry_schema()
     if not _lakebase_available or _pool is None:
         return list(_memory_store["stars"])
 
@@ -261,6 +392,7 @@ async def record_space_seen(space_id: str) -> None:
 
 async def get_all_scan_summaries() -> list[dict]:
     """Get latest scan summary for all scanned spaces."""
+    await _maybe_retry_schema()
     if not _lakebase_available or _pool is None:
         return list(_memory_store["scans"].values())
 

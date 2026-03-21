@@ -2,7 +2,8 @@
  * App - Genie Workbench root component.
  * Supports four top-level views: SpaceList, SpaceDetail, AdminDashboard, CreateSpace.
  */
-import { useState } from "react"
+import { useState, Component } from "react"
+import type { ReactNode, ErrorInfo } from "react"
 import { LayoutGrid, BarChart2 } from "lucide-react"
 import { ThemeToggle } from "@/components/ThemeToggle"
 import { useTheme } from "@/hooks/useTheme"
@@ -11,6 +12,25 @@ import { SpaceDetail } from "@/pages/SpaceDetail"
 import { AdminDashboard } from "@/pages/AdminDashboard"
 import { CreateAgentChat } from "@/components/CreateAgentChat"
 import type { ScanResult } from "@/types"
+
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null }
+  static getDerivedStateFromError(error: Error) { return { error } }
+  componentDidCatch(error: Error, info: ErrorInfo) { console.error("React ErrorBoundary caught:", error, info) }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 32, fontFamily: "monospace" }}>
+          <h2 style={{ color: "red" }}>Something went wrong</h2>
+          <pre style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{this.state.error.message}</pre>
+          <pre style={{ whiteSpace: "pre-wrap", marginTop: 8, fontSize: 12, opacity: 0.7 }}>{this.state.error.stack}</pre>
+          <button onClick={() => this.setState({ error: null })} style={{ marginTop: 16, padding: "8px 16px" }}>Try Again</button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 type View = "list" | "detail" | "admin" | "create"
 
@@ -97,6 +117,7 @@ export default function App() {
   const isFixMode = currentView === "create" && fixPrefill !== null
 
   return (
+    <ErrorBoundary>
     <div className="min-h-screen bg-background text-primary">
       {/* Top header */}
       <header className="sticky top-0 z-50 border-b border-default bg-surface/80 backdrop-blur-sm">
@@ -188,5 +209,6 @@ export default function App() {
         </div>
       </main>
     </div>
+    </ErrorBoundary>
   )
 }

@@ -6,6 +6,7 @@ databricks.yml
 /output
 .cursor/
 .codex/
+context/
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
@@ -233,3 +234,5 @@ lerna-debug.log*
 *.njsproj
 *.sln
 *.sw?
+
+.databricks

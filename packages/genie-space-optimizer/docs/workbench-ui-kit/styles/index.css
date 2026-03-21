@@ -1,0 +1,713 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   FONT FACES
+   Download fonts from:
+   - Cabinet Grotesk: https://www.fontshare.com/fonts/cabinet-grotesk
+   - General Sans: https://www.fontshare.com/fonts/general-sans
+   - JetBrains Mono: https://www.jetbrains.com/lp/mono/
+   Place .woff2 files in frontend/public/fonts/
+   ========================================================================== */
+
+@font-face {
+  font-family: 'Cabinet Grotesk';
+  src: url('/fonts/CabinetGrotesk-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Cabinet Grotesk';
+  src: url('/fonts/CabinetGrotesk-Extrabold.woff2') format('woff2');
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'General Sans';
+  src: url('/fonts/GeneralSans-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'General Sans';
+  src: url('/fonts/GeneralSans-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'General Sans';
+  src: url('/fonts/GeneralSans-Semibold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMono-Regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('/fonts/JetBrainsMono-Medium.woff2') format('woff2');
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ==========================================================================
+   THEME TOKENS
+   ========================================================================== */
+
+@theme {
+  /* Primary accent - Electric Indigo */
+  --color-accent: #4F46E5;
+  --color-accent-light: #818CF8;
+  --color-accent-glow: rgba(79, 70, 229, 0.4);
+
+  /* Secondary accent - Cyan */
+  --color-cyan: #06B6D4;
+  --color-cyan-light: #22D3EE;
+
+  /* Semantic colors */
+  --color-success: #10B981;
+  --color-success-light: #34D399;
+  --color-warning: #F59E0B;
+  --color-warning-light: #FBBF24;
+  --color-danger: #EF4444;
+  --color-danger-light: #F87171;
+  --color-info: #3B82F6;
+  --color-info-light: #60A5FA;
+
+  /* Neutral colors */
+  --color-slate-50: #F8FAFC;
+  --color-slate-100: #F1F5F9;
+  --color-slate-200: #E2E8F0;
+  --color-slate-300: #CBD5E1;
+  --color-slate-400: #94A3B8;
+  --color-slate-500: #64748B;
+  --color-slate-600: #475569;
+  --color-slate-700: #334155;
+  --color-slate-800: #1E293B;
+  --color-slate-900: #0F172A;
+  --color-slate-950: #0A0F1C;
+
+  /* Typography */
+  --font-display: 'Cabinet Grotesk', 'Inter', system-ui, sans-serif;
+  --font-body: 'General Sans', 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', Menlo, monospace;
+
+  /* Spacing */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+}
+
+/* ==========================================================================
+   BASE STYLES - LIGHT MODE (DEFAULT)
+   ========================================================================== */
+
+:root {
+  --bg-primary: #FAFBFD;
+  --bg-surface: #FFFFFF;
+  --bg-elevated: #F4F6FA;
+  --bg-sunken: #F1F5F9;
+  --text-primary: #0F172A;
+  --text-secondary: #334155;
+  --text-muted: #64748B;
+  --border-color: rgba(15, 23, 42, 0.08);
+  --border-color-strong: rgba(15, 23, 42, 0.12);
+  --shadow-color: rgba(15, 23, 42, 0.08);
+  --accent-current: var(--color-accent);
+  --accent-glow-current: var(--color-accent-glow);
+}
+
+/* ==========================================================================
+   DARK MODE
+   ========================================================================== */
+
+.dark {
+  --bg-primary: #0A0F1C;
+  --bg-surface: #111827;
+  --bg-elevated: #1E293B;
+  --bg-sunken: #0D1321;
+  --text-primary: #F8FAFC;
+  --text-secondary: #CBD5E1;
+  --text-muted: #94A3B8;
+  --border-color: rgba(255, 255, 255, 0.08);
+  --border-color-strong: rgba(255, 255, 255, 0.12);
+  --shadow-color: rgba(0, 0, 0, 0.3);
+  --accent-current: var(--color-accent-light);
+  --accent-glow-current: rgba(129, 140, 248, 0.4);
+}
+
+/* ==========================================================================
+   BODY & HTML
+   ========================================================================== */
+
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ==========================================================================
+   INTERACTIVE ELEMENTS
+   ========================================================================== */
+
+button,
+a,
+[role="button"],
+[type="button"],
+[type="submit"],
+[type="reset"],
+summary,
+label[for],
+select,
+.cursor-pointer {
+  cursor: pointer;
+}
+
+button:disabled,
+[disabled] {
+  cursor: not-allowed;
+}
+
+/* ==========================================================================
+   BACKGROUND PATTERNS
+   ========================================================================== */
+
+.bg-pattern {
+  background-color: var(--bg-primary);
+  background-image: radial-gradient(circle at 1px 1px, rgba(15, 23, 42, 0.04) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+.dark .bg-pattern {
+  background-image: none;
+  background:
+    var(--bg-primary)
+    radial-gradient(ellipse 80% 50% at 20% 40%, rgba(79, 70, 229, 0.12) 0%, transparent 50%),
+    radial-gradient(ellipse 60% 40% at 80% 60%, rgba(6, 182, 212, 0.08) 0%, transparent 50%);
+}
+
+/* Mesh gradient for hero sections */
+.bg-mesh {
+  background:
+    radial-gradient(ellipse at 20% 30%, rgba(79, 70, 229, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 70%, rgba(6, 182, 212, 0.06) 0%, transparent 50%),
+    var(--bg-primary);
+}
+
+.dark .bg-mesh {
+  background:
+    radial-gradient(ellipse at 20% 30%, rgba(129, 140, 248, 0.15) 0%, transparent 50%),
+    radial-gradient(ellipse at 80% 70%, rgba(34, 211, 238, 0.1) 0%, transparent 50%),
+    var(--bg-primary);
+}
+
+/* ==========================================================================
+   GRADIENT UTILITIES
+   ========================================================================== */
+
+.gradient-accent {
+  background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-light) 100%);
+}
+
+.gradient-success {
+  background: linear-gradient(135deg, var(--color-success) 0%, var(--color-success-light) 100%);
+}
+
+.gradient-warning {
+  background: linear-gradient(135deg, var(--color-warning) 0%, var(--color-warning-light) 100%);
+}
+
+.gradient-danger {
+  background: linear-gradient(135deg, var(--color-danger) 0%, var(--color-danger-light) 100%);
+}
+
+/* Header gradient overlay */
+.gradient-header {
+  background: linear-gradient(90deg,
+    rgba(79, 70, 229, 0.08) 0%,
+    transparent 40%,
+    transparent 60%,
+    rgba(6, 182, 212, 0.06) 100%
+  );
+}
+
+.dark .gradient-header {
+  background: linear-gradient(90deg,
+    rgba(129, 140, 248, 0.12) 0%,
+    transparent 40%,
+    transparent 60%,
+    rgba(34, 211, 238, 0.08) 100%
+  );
+}
+
+/* ==========================================================================
+   GLOW EFFECTS
+   ========================================================================== */
+
+.glow-accent {
+  box-shadow: 0 0 20px var(--accent-glow-current);
+}
+
+.glow-success {
+  box-shadow: 0 0 20px rgba(16, 185, 129, 0.4);
+}
+
+.glow-warning {
+  box-shadow: 0 0 20px rgba(245, 158, 11, 0.4);
+}
+
+.glow-danger {
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.4);
+}
+
+/* Card glow for dark mode */
+.dark .card-glow {
+  box-shadow:
+    0 0 0 1px var(--border-color),
+    0 0 32px rgba(79, 70, 229, 0.08);
+}
+
+/* ==========================================================================
+   ANIMATIONS
+   ========================================================================== */
+
+@keyframes fadeSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes scan {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 8px var(--accent-glow-current);
+  }
+  50% {
+    box-shadow: 0 0 20px var(--accent-glow-current);
+  }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Stagger animation utility */
+.animate-stagger > * {
+  animation: fadeSlideUp 0.4s ease-out both;
+}
+
+.animate-stagger > *:nth-child(1) { animation-delay: 0ms; }
+.animate-stagger > *:nth-child(2) { animation-delay: 60ms; }
+.animate-stagger > *:nth-child(3) { animation-delay: 120ms; }
+.animate-stagger > *:nth-child(4) { animation-delay: 180ms; }
+.animate-stagger > *:nth-child(5) { animation-delay: 240ms; }
+.animate-stagger > *:nth-child(6) { animation-delay: 300ms; }
+.animate-stagger > *:nth-child(7) { animation-delay: 360ms; }
+.animate-stagger > *:nth-child(8) { animation-delay: 420ms; }
+.animate-stagger > *:nth-child(9) { animation-delay: 480ms; }
+.animate-stagger > *:nth-child(10) { animation-delay: 540ms; }
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.3s ease-out;
+}
+
+.animate-slide-up {
+  animation: fadeSlideUp 0.4s ease-out;
+}
+
+/* Scanning/loading animation */
+.animate-scan {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--accent-current) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: scan 1.5s ease-in-out infinite;
+}
+
+/* Glow pulse for active states */
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* ==========================================================================
+   SCROLLBAR STYLING
+   ========================================================================== */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-elevated);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--text-muted);
+  border-radius: 4px;
+  opacity: 0.5;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--text-muted) var(--bg-elevated);
+}
+
+/* ==========================================================================
+   TYPOGRAPHY UTILITIES
+   ========================================================================== */
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-body {
+  font-family: var(--font-body);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Text colors using CSS vars */
+.text-primary {
+  color: var(--text-primary);
+}
+
+.text-secondary {
+  color: var(--text-secondary);
+}
+
+.text-muted {
+  color: var(--text-muted);
+}
+
+.text-accent {
+  color: var(--accent-current);
+}
+
+/* ==========================================================================
+   SURFACE UTILITIES
+   ========================================================================== */
+
+.bg-surface {
+  background-color: var(--bg-surface);
+}
+
+.bg-elevated {
+  background-color: var(--bg-elevated);
+}
+
+.bg-sunken {
+  background-color: var(--bg-sunken);
+}
+
+.border-default {
+  border-color: var(--border-color);
+}
+
+.border-strong {
+  border-color: var(--border-color-strong);
+}
+
+/* ==========================================================================
+   PROSE / MARKDOWN STYLES
+   ========================================================================== */
+
+.prose {
+  line-height: 1.7;
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+}
+
+.prose h1,
+.prose h2,
+.prose h3,
+.prose h4 {
+  font-family: var(--font-display);
+  color: var(--text-primary);
+}
+
+.prose h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  margin-top: 0;
+  margin-bottom: 1rem;
+  line-height: 1.2;
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 0.5rem;
+}
+
+.prose h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  line-height: 1.3;
+}
+
+.prose h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  line-height: 1.4;
+}
+
+.prose h4 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.prose p {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.prose ul,
+.prose ol {
+  margin-top: 0.75rem;
+  margin-bottom: 0.75rem;
+  padding-left: 1.5rem;
+}
+
+.prose ul {
+  list-style-type: disc;
+}
+
+.prose ol {
+  list-style-type: decimal;
+}
+
+.prose li {
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.prose li > ul,
+.prose li > ol {
+  margin-top: 0.25rem;
+  margin-bottom: 0.25rem;
+}
+
+.prose code {
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background-color: var(--bg-elevated);
+  padding: 0.2em 0.4em;
+  border-radius: 0.25rem;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.prose pre {
+  background-color: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  padding: 1rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+}
+
+.dark .prose pre {
+  background-color: var(--bg-sunken);
+}
+
+.prose pre code {
+  background-color: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+
+.prose a {
+  color: var(--accent-current);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  transition: color 0.15s ease;
+}
+
+.prose a:hover {
+  color: var(--color-cyan);
+}
+
+.prose strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.prose blockquote {
+  border-left: 4px solid var(--accent-current);
+  padding-left: 1rem;
+  margin-left: 0;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.prose hr {
+  border: none;
+  border-top: 1px solid var(--border-color);
+  margin-top: 2rem;
+  margin-bottom: 2rem;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+  margin-bottom: 1rem;
+}
+
+.prose th,
+.prose td {
+  border: 1px solid var(--border-color);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+.prose th {
+  background-color: var(--bg-elevated);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.prose input[type="checkbox"] {
+  margin-right: 0.5rem;
+}
+
+/* Chat-sized variant — smaller headings and tighter spacing for chat bubbles */
+.prose-chat {
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+
+.prose-chat h1 { font-size: 1.15rem; margin-top: 0.75rem; margin-bottom: 0.5rem; }
+.prose-chat h2 { font-size: 1.05rem; margin-top: 0.75rem; margin-bottom: 0.5rem; }
+.prose-chat h3 { font-size: 0.95rem; margin-top: 0.5rem; margin-bottom: 0.35rem; }
+.prose-chat h4 { font-size: 0.875rem; margin-top: 0.5rem; margin-bottom: 0.25rem; }
+
+.prose-chat p { margin-top: 0.4rem; margin-bottom: 0.4rem; }
+.prose-chat ul, .prose-chat ol { margin-top: 0.4rem; margin-bottom: 0.4rem; padding-left: 1.25rem; }
+.prose-chat li { margin-top: 0.15rem; margin-bottom: 0.15rem; }
+
+.prose-chat pre {
+  font-size: 0.8rem;
+  padding: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.prose-chat table { font-size: 0.8rem; }
+.prose-chat th, .prose-chat td { padding: 0.25rem 0.5rem; }
+
+.prose-chat blockquote { margin-top: 0.5rem; margin-bottom: 0.5rem; padding-left: 0.75rem; font-size: 0.85rem; }
+
+/* ==========================================================================
+   FOCUS STYLES
+   ========================================================================== */
+
+.focus-ring:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--bg-surface),
+    0 0 0 4px var(--accent-current);
+}
+
+.dark .focus-ring:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--bg-surface),
+    0 0 0 4px var(--accent-current),
+    0 0 16px var(--accent-glow-current);
+}
+
+/* ==========================================================================
+   LEGACY GRADIENT (for backward compatibility during migration)
+   ========================================================================== */
+
+.gradient-primary {
+  background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-light) 100%);
+}

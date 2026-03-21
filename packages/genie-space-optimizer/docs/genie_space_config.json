@@ -1,0 +1,1570 @@
+{
+  "description": "Natural language analytics for Altria tobacco products at 7-Eleven stores. Ask questions in plain English to analyze sales, inventory, promotions, and customer loyalty across 100+ locations.\n\nDATA COVERAGE:\n\u2022 100+ stores (franchise & corporate) across multiple states\n\u2022 50+ Altria product SKUs (smokeless tobacco & cigarettes)\n\u2022 Daily sales: revenue, units, transactions, discounts, returns\n\u2022 Real-time inventory: on-hand, forecasts, stockouts, replenishment needs\n\u2022 Customer loyalty program data and penetration metrics\n\u2022 Store, product, and date dimensions for multi-dimensional analysis\n\nAVAILABLE ANALYTICS:\n1. Sales Performance - Revenue trends, transaction volumes, promotional ROI, brand performance, store rankings\n2. Inventory Health - Stock levels, days of supply, stockout alerts, replenishment priorities, overstock\n3. Store Operations - Franchise vs corporate analysis, geographic performance, store type comparisons\n4. Product Analytics - Brand comparisons, premium vs standard, SKU performance, seasonal trends\n5. Customer Loyalty - Program penetration, member behavior, transaction value analysis\n6. Time Analysis - Daily/monthly/quarterly trends, year-over-year comparisons, rolling windows (7/30/90 days)\n\nUSE CASES:\nSales managers (regional tracking) \u2022 Category managers (product mix) \u2022 Supply chain (inventory optimization) \u2022 \nStore operators (replenishment) \u2022 Marketing (promotional ROI) \u2022 Regional directors (store comparisons) \u2022 \nFinance (revenue analysis)\n\nTIME PERIODS:\nHistorical data with daily granularity. Supports current month, last 7/30/90 days, quarterly, yearly, \nand year-over-year comparisons.",
+  "serialized_space": {
+    "version": 2,
+    "config": {
+      "sample_questions": [
+        {
+          "id": "01f0ad3bc23713a48b30c9fbe1792b64",
+          "question": [
+            "What are the top 10 stores by revenue this month?"
+          ]
+        },
+        {
+          "id": "01f0ad3bc2361bebb2f6bb245992759f",
+          "question": [
+            "Which stores are out of stock for Copenhagen?"
+          ]
+        },
+        {
+          "id": "01f0ad3bc23613e1b1ef65da131f0145",
+          "question": [
+            "What's the average discount rate for premium products?"
+          ]
+        },
+        {
+          "id": "01f0ad3bc235199c86ba9fc9a8f99ad7",
+          "question": [
+            "Show loyalty penetration by state"
+          ]
+        },
+        {
+          "id": "01f0ad3bc23511209fd049ae0b7d5e8d",
+          "question": [
+            "Compare franchise vs corporate store performance"
+          ]
+        },
+        {
+          "id": "01f0ad3bc23416828b3c8776f3e9349f",
+          "question": [
+            "Which products need replenishment at more than 5 stores?"
+          ]
+        }
+      ]
+    },
+    "data_sources": {
+      "tables": [
+        {
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.dim_date",
+          "column_configs": [
+            {
+              "column_name": "date",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "date_key",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "day_of_month",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "day_of_week",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "day_of_week_abbr",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "day_of_week_name",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "fiscal_month",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "fiscal_quarter",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "fiscal_year",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "is_current_month",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "is_current_quarter",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "is_current_year",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "is_month_end",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "is_month_start",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "is_quarter_start",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "is_weekend",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "is_year_start",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "month",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "month_abbr",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "month_name",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "quarter",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "quarter_name",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "record_created_timestamp",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "week_of_year",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "year",
+              "enable_format_assistance": true
+            }
+          ]
+        },
+        {
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.dim_product",
+          "column_configs": [
+            {
+              "column_name": "brand",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "is_premium",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "manufacturer",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "manufacturer_group",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "product_category",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "product_code",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "product_key",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "record_created_timestamp",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "record_updated_timestamp",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "sku_description",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "upc_code",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            }
+          ]
+        },
+        {
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.dim_store",
+          "column_configs": [
+            {
+              "column_name": "address",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "altria_retail_control_number",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "city",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "close_date",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "county",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "effective_from",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "effective_to",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "is_current",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "latitude",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "longitude",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "open_date",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "record_created_timestamp",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "record_updated_timestamp",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "state",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "store_age_days",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "store_hours",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "store_key",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "store_name",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "store_number",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "store_status",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "store_type",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "zip_code",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            }
+          ]
+        },
+        {
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.fact_inventory_snapshot",
+          "column_configs": [
+            {
+              "column_name": "current_forecast",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "current_minimum",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "current_on_hand",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "days_of_supply",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "inventory_coverage_ratio",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "needs_replenishment",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "overstocked",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "product_key",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "record_created_timestamp",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "record_updated_timestamp",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "sku_description",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "stock_status",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "store_key",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "store_number",
+              "description": [
+                "Store business key for human readability. EDITED FOR TESTING"
+              ],
+              "synonyms": [
+                "inventory records"
+              ],
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "upc_code",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            }
+          ]
+        },
+        {
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.fact_sales_daily",
+          "column_configs": [
+            {
+              "column_name": "avg_transaction_value",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "avg_unit_price",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "coupon_discount_total",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "date_key",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "discount_penetration_pct",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "gross_revenue",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "loyalty_discount_total",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "loyalty_penetration_pct",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "loyalty_transactions",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "max_unit_price",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "min_unit_price",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "multi_unit_discount_total",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "net_revenue",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "net_units",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "product_key",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "record_created_timestamp",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "record_updated_timestamp",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "return_amount",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "return_rate_pct",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "return_transaction_count",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "store_key",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "store_number",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "total_discount",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "transaction_count",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "transaction_date",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "unique_loyalty_customers",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "unique_transactions",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "units_returned",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "units_sold",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "upc_code",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            }
+          ]
+        }
+      ],
+      "metric_views": [
+        {
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.inventory_health_metrics",
+          "column_configs": [
+            {
+              "column_name": "adequate_stock_locations"
+            },
+            {
+              "column_name": "avg_coverage_ratio"
+            },
+            {
+              "column_name": "avg_days_of_supply"
+            },
+            {
+              "column_name": "brand",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "city",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "in_stock_rate"
+            },
+            {
+              "column_name": "low_stock_locations"
+            },
+            {
+              "column_name": "needs_replenishment",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "overstock_count"
+            },
+            {
+              "column_name": "overstocked",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "product_category",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "product_name",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "replenishment_needed_count"
+            },
+            {
+              "column_name": "state",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "stock_status",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "stockout_locations"
+            },
+            {
+              "column_name": "stockout_rate"
+            },
+            {
+              "column_name": "store_name",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "store_number",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "total_forecast"
+            },
+            {
+              "column_name": "total_locations"
+            },
+            {
+              "column_name": "total_minimum"
+            },
+            {
+              "column_name": "total_on_hand"
+            },
+            {
+              "column_name": "upc_code",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            }
+          ]
+        },
+        {
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics",
+          "column_configs": [
+            {
+              "column_name": "avg_discount_rate"
+            },
+            {
+              "column_name": "avg_loyalty_penetration"
+            },
+            {
+              "column_name": "avg_return_rate"
+            },
+            {
+              "column_name": "avg_transaction_value"
+            },
+            {
+              "column_name": "avg_unit_price"
+            },
+            {
+              "column_name": "brand",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "city",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "coupon_discounts"
+            },
+            {
+              "column_name": "day_of_week_name",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "gross_revenue"
+            },
+            {
+              "column_name": "is_premium",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "is_weekend",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "loyalty_discounts"
+            },
+            {
+              "column_name": "loyalty_transactions"
+            },
+            {
+              "column_name": "max_unit_price"
+            },
+            {
+              "column_name": "min_unit_price"
+            },
+            {
+              "column_name": "month",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "month_name",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "product_category",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "product_name",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "quarter",
+              "enable_format_assistance": true
+            },
+            {
+              "column_name": "return_transactions"
+            },
+            {
+              "column_name": "state",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "store_name",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "store_number",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "store_type",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "total_discounts"
+            },
+            {
+              "column_name": "total_revenue"
+            },
+            {
+              "column_name": "total_units"
+            },
+            {
+              "column_name": "transaction_count"
+            },
+            {
+              "column_name": "unique_loyalty_customers"
+            },
+            {
+              "column_name": "unique_transactions"
+            },
+            {
+              "column_name": "units_returned"
+            },
+            {
+              "column_name": "units_sold"
+            },
+            {
+              "column_name": "upc_code",
+              "enable_format_assistance": true,
+              "enable_entity_matching": true
+            },
+            {
+              "column_name": "year",
+              "enable_format_assistance": true
+            }
+          ]
+        }
+      ]
+    },
+    "instructions": {
+      "text_instructions": [
+        {
+          "id": "01f0ad1010c212a7a17001b551b71dec",
+          "content": [
+            "BUSINESS CONTEXT:\n",
+            "Altria tobacco products (Copenhagen, Marlboro, Skoal, Parliament) sold at 7-Eleven stores. Analyze sales, inventory, promotions, and customer loyalty across 100+ locations.\n",
+            "\n",
+            "DATA ASSETS:\n",
+            "1. sales_performance_metrics - Daily sales by store/product. 18 measures: revenue, units, transactions, discounts, loyalty, pricing. Dimensions: store, product, date.\n",
+            "2. inventory_health_metrics - Current inventory positions. Measures: on-hand, days of supply, stockouts, replenishment needs.\n",
+            "3. TVFs: get_sales_by_date_range(), get_sales_trend(), get_loyalty_metrics(), get_low_stock_items(), get_store_inventory(), get_product_mix()\n",
+            "\n",
+            "KEY METRICS:\n",
+            "\u2022 Revenue: Use net_revenue (gross - returns - discounts). Synonyms: sales, dollars\n",
+            "\u2022 Volume: Units sold minus returns. Synonyms: quantity, items\n",
+            "\u2022 Loyalty Penetration: (loyalty_transactions / total_transactions) * 100\n",
+            "\u2022 Stockout Rate: (out_of_stock_locations / total_locations) * 100\n",
+            "\u2022 Days of Supply: on_hand / daily_forecast\n",
+            "\n",
+            "TIME FILTERS:\n",
+            "\u2022 \"last 7 days\" \u2192 WHERE transaction_date >= CURRENT_DATE - 7\n",
+            "\u2022 \"last 30 days\" \u2192 WHERE transaction_date >= CURRENT_DATE - 30\n",
+            "\u2022 \"this month\" \u2192 WHERE is_current_month = true\n",
+            "\u2022 \"this year\" \u2192 WHERE year = YEAR(CURRENT_DATE)\n",
+            "\n",
+            "AGGREGATIONS:\n",
+            "\u2022 \"by store\" \u2192 GROUP BY store_name\n",
+            "\u2022 \"by state\" \u2192 GROUP BY state\n",
+            "\u2022 \"by brand\" \u2192 GROUP BY brand (Copenhagen, Marlboro, Skoal, Parliament)\n",
+            "\u2022 \"by product\" \u2192 GROUP BY sku_description\n",
+            "\u2022 \"by month\" \u2192 GROUP BY month_name\n",
+            "\n",
+            "FILTERS:\n",
+            "\u2022 \"Copenhagen\" \u2192 brand = 'Copenhagen'\n",
+            "\u2022 \"premium\" \u2192 is_premium = true\n",
+            "\u2022 \"franchise\" \u2192 store_type = 'Franchise'\n",
+            "\u2022 \"out of stock\" \u2192 stock_status = 'Out of Stock'\n",
+            "\u2022 \"weekends\" \u2192 is_weekend = true\n",
+            "\n",
+            "BUSINESS RULES:\n",
+            "\u2022 Store numbers are strings (e.g., '101', '150')\n",
+            "\u2022 Returns = negative quantity_sold\n",
+            "\u2022 For stores, filter dim_store.is_current = true (SCD Type 2)\n",
+            "\u2022 Use TOP N for rankings (default TOP 10)\n",
+            "\u2022 Default to current month if no time specified"
+          ]
+        }
+      ],
+      "example_question_sqls": [
+        {
+          "id": "01f112efbc95102991afea3afdc5c722",
+          "question": [
+            "Stores where days of supply is less than or equal to 10."
+          ],
+          "sql": [
+            "SELECT * FROM \n",
+            "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.fact_inventory_snapshot\n",
+            "WHERE days_of_supply <= :days_of_supply"
+          ],
+          "parameters": [
+            {
+              "name": "days_of_supply",
+              "type_hint": "INTEGER",
+              "default_value": {
+                "values": [
+                  "10"
+                ]
+              }
+            }
+          ],
+          "usage_guidance": [
+            "Use this when asked about days of supply being low.?"
+          ]
+        }
+      ],
+      "sql_functions": [
+        {
+          "id": "01f0ad0f09081561ba6de2829ed2fa02",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_low_stock_items"
+        },
+        {
+          "id": "01f0ad0f1d5012f5827579bc338a7e31",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_sales_trend"
+        },
+        {
+          "id": "01f0ad0f20b01be0b061164be75bdb0d",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_store_inventory"
+        },
+        {
+          "id": "01f0ad21813418dc814c489e6e08476b",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.compare_brand_performance"
+        },
+        {
+          "id": "01f0ad21851b16bba8dda62928a0f2e4",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.compare_city_performance"
+        },
+        {
+          "id": "01f0ad21886111cc8504a9a29a712f7f",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.compare_state_performance"
+        },
+        {
+          "id": "01f0ad218b7f19319c0bdfea4c4d2038",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.compare_store_types"
+        },
+        {
+          "id": "01f0ad218ee11202be177cc0d893526c",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.compare_time_periods"
+        },
+        {
+          "id": "01f0ad21924c17719c5c68b4bc739f05",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_critical_inventory_alerts"
+        },
+        {
+          "id": "01f0ad21964315c29be539843853d9cd",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_loyalty_metrics"
+        },
+        {
+          "id": "01f0ad21996414d29dce5b3581382e6c",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_product_mix"
+        },
+        {
+          "id": "01f0ad219cd6125dae71c1f6686ebbb6",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_replenishment_priorities"
+        },
+        {
+          "id": "01f0ad21a1381ac7be9b93f4d9bc9286",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_sales_by_date_range"
+        },
+        {
+          "id": "01f0ad21a5c81a97a70bdcd7fa135821",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_top_products_by_revenue"
+        },
+        {
+          "id": "01f0ad21a9f51b7bb097781877955aac",
+          "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_top_stores_by_revenue"
+        }
+      ],
+      "join_specs": [
+        {
+          "id": "01f0ad0d633619c7b3f7c7fbc9ac975e",
+          "left": {
+            "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.fact_inventory_snapshot",
+            "alias": "fact_inventory_snapshot"
+          },
+          "right": {
+            "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.dim_product",
+            "alias": "dim_product"
+          },
+          "sql": [
+            "`fact_inventory_snapshot`.`product_key` = `dim_product`.`product_key`",
+            "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"
+          ]
+        },
+        {
+          "id": "01f0ad0d63361dc9870d5df2e3eefdee",
+          "left": {
+            "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.fact_inventory_snapshot",
+            "alias": "fact_inventory_snapshot"
+          },
+          "right": {
+            "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.dim_store",
+            "alias": "dim_store"
+          },
+          "sql": [
+            "`fact_inventory_snapshot`.`store_key` = `dim_store`.`store_key`",
+            "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"
+          ]
+        },
+        {
+          "id": "01f0ad0d63371301b7af4d47f0e584b3",
+          "left": {
+            "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.fact_sales_daily",
+            "alias": "fact_sales_daily"
+          },
+          "right": {
+            "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.dim_date",
+            "alias": "dim_date"
+          },
+          "sql": [
+            "`fact_sales_daily`.`date_key` = `dim_date`.`date_key`",
+            "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"
+          ]
+        },
+        {
+          "id": "01f0ad0d63371617a00966230b49d673",
+          "left": {
+            "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.fact_sales_daily",
+            "alias": "fact_sales_daily"
+          },
+          "right": {
+            "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.dim_product",
+            "alias": "dim_product"
+          },
+          "sql": [
+            "`fact_sales_daily`.`product_key` = `dim_product`.`product_key`",
+            "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"
+          ]
+        },
+        {
+          "id": "01f0ad0d633718e99796715812933b62",
+          "left": {
+            "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.fact_sales_daily",
+            "alias": "fact_sales_daily"
+          },
+          "right": {
+            "identifier": "prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.dim_store",
+            "alias": "dim_store"
+          },
+          "sql": [
+            "`fact_sales_daily`.`store_key` = `dim_store`.`store_key`",
+            "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"
+          ]
+        }
+      ]
+    },
+    "benchmarks": {
+      "questions": [
+        {
+          "id": "01f0b9f2110c1532bc508f08be2551a2",
+          "question": [
+            "Compare premium vs standard product revenue by state"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  state,\n",
+                "  SUM(CASE WHEN is_premium = true THEN MEASURE(total_revenue) ELSE 0 END) as premium_revenue,\n",
+                "  SUM(CASE WHEN is_premium = false THEN MEASURE(total_revenue) ELSE 0 END) as standard_revenue,\n",
+                "  MEASURE(total_revenue) as total_revenue,\n",
+                "  SUM(CASE WHEN is_premium = true THEN MEASURE(total_revenue) ELSE 0 END) * 100.0 / \n",
+                "    MEASURE(total_revenue) as premium_mix_pct\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "GROUP BY ALL\n",
+                "ORDER BY total_revenue DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f202471e7bb21e824d7af6ba35",
+          "question": [
+            "Show revenue by brand and store type"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  brand,\n",
+                "  SUM(CASE WHEN store_type = 'Franchise' THEN MEASURE(total_revenue) ELSE 0 END) as franchise_revenue,\n",
+                "  SUM(CASE WHEN store_type = 'Corporate' THEN MEASURE(total_revenue) ELSE 0 END) as corporate_revenue,\n",
+                "  MEASURE(total_revenue) as total_revenue,\n",
+                "  SUM(CASE WHEN store_type = 'Franchise' THEN MEASURE(total_revenue) ELSE 0 END) * 100.0 / \n",
+                "    MEASURE(total_revenue) as franchise_share_pct\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "GROUP BY ALL\n",
+                "ORDER BY total_revenue DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f1f85f10a18945254ee0dd218a",
+          "question": [
+            "What products sell best at store 150?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT * \n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_product_mix('150', CURRENT_DATE - 30, CURRENT_DATE);"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f1ee4b1d8fb863b5269d4c2d71",
+          "question": [
+            "What are the top 10 cities by transaction count?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  city,\n",
+                "  state,\n",
+                "  MEASURE(transaction_count) as transaction_count,\n",
+                "  MEASURE(total_revenue) as total_revenue,\n",
+                "  COUNT(DISTINCT store_number) as stores_in_city\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "GROUP BY ALL\n",
+                "ORDER BY transaction_count DESC\n",
+                "LIMIT 10;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f1e2a01e4abda908e17581cc6e",
+          "question": [
+            "Rank states by total revenue, show top 5"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  state,\n",
+                "  MEASURE(total_revenue) as total_revenue,\n",
+                "  COUNT(DISTINCT store_number) as store_count,\n",
+                "  MEASURE(total_revenue) / COUNT(DISTINCT store_number) as revenue_per_store\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "GROUP BY ALL\n",
+                "ORDER BY total_revenue DESC\n",
+                "LIMIT 5;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f1d44c1b2cb7438b52b76e040c",
+          "question": [
+            "Show monthly revenue for this year"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  month,\n",
+                "  month_name,\n",
+                "  MEASURE(total_revenue) as total_revenue,\n",
+                "  MEASURE(transaction_count) as transactions,\n",
+                "  MEASURE(total_revenue) / COUNT(DISTINCT transaction_date) as avg_daily_revenue\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "WHERE year = YEAR(CURRENT_DATE)\n",
+                "GROUP BY ALL\n",
+                "ORDER BY month ASC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f1c83017419913a3c452cf2670",
+          "question": [
+            "Compare Q1 2025 revenue vs Q1 2024"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  year,\n",
+                "  MEASURE(total_revenue) as q1_revenue,\n",
+                "  MEASURE(transaction_count) as transactions,\n",
+                "  LAG(MEASURE(total_revenue)) OVER (ORDER BY year) as prior_year_revenue,\n",
+                "  (MEASURE(total_revenue) - LAG(MEASURE(total_revenue)) OVER (ORDER BY year)) / \n",
+                "    LAG(MEASURE(total_revenue)) OVER (ORDER BY year) * 100 as growth_pct\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "WHERE quarter = 1 AND year IN (2024, 2025)\n",
+                "GROUP BY ALL\n",
+                "ORDER BY year;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f1ba451339b3eff1bd888f642a",
+          "question": [
+            "Show me sales trend for the last 30 days"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT * \n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_sales_trend(30);"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f1b06014b9801958c5dbfedf5a",
+          "question": [
+            "Which products are overstocked across multiple locations?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  product_name,\n",
+                "  brand,\n",
+                "  COUNT(DISTINCT store_number) as overstock_locations,\n",
+                "  MEASURE(total_on_hand) as total_on_hand,\n",
+                "  MEASURE(total_forecast) as total_forecast,\n",
+                "  MEASURE(total_on_hand) - MEASURE(total_forecast) as excess_units\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.inventory_health_metrics\n",
+                "WHERE overstocked = true\n",
+                "GROUP BY ALL\n",
+                "HAVING COUNT(DISTINCT store_number) > 1\n",
+                "ORDER BY overstock_locations DESC, excess_units DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f1a03a1e4cbeb11fb8c4a4f206",
+          "question": [
+            "Show me inventory for store 101"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT * \n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_store_inventory('101');"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f18fef15eeaeb6cdd992dada7b",
+          "question": [
+            "Show average days of supply by state"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  state,\n",
+                "  MEASURE(avg_days_of_supply) as avg_days_of_supply,\n",
+                "  MEASURE(stockout_rate) as stockout_rate_pct,\n",
+                "  COUNT(DISTINCT CASE WHEN stock_status IN ('Low Stock', 'Below Minimum') THEN store_number END) * 100.0 / \n",
+                "    COUNT(DISTINCT store_number) as low_stock_rate_pct,\n",
+                "  COUNT(DISTINCT store_number) as total_locations\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.inventory_health_metrics\n",
+                "GROUP BY ALL\n",
+                "ORDER BY avg_days_of_supply DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f181541b0b9f37058295c1a325",
+          "question": [
+            "What products need replenishment at more than 5 stores?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT * \n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.get_low_stock_items(5);"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f1632f10aa9c22952eee16d5df",
+          "question": [
+            "Which stores are out of stock for Copenhagen products?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  store_number,\n",
+                "  store_name,\n",
+                "  product_name,\n",
+                "  stock_status\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.inventory_health_metrics\n",
+                "WHERE brand = 'Copenhagen' AND stock_status = 'Out of Stock'\n",
+                "ORDER BY store_number;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f15812165a823313a1082558ec",
+          "question": [
+            "Show loyalty penetration by state, sorted highest to lowest"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  state,\n",
+                "  MEASURE(avg_loyalty_penetration) as loyalty_penetration_pct,\n",
+                "  MEASURE(unique_loyalty_customers) as unique_loyalty_customers,\n",
+                "  MEASURE(transaction_count) as total_transactions\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "GROUP BY ALL\n",
+                "ORDER BY loyalty_penetration_pct DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0b9f14abe1d1b9ae0ecdab7435efa",
+          "question": [
+            "Compare average transaction value for loyalty vs non-loyalty customers"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "WITH loyalty_stats AS (\n",
+                "  SELECT \n",
+                "    MEASURE(loyalty_transactions) as loyalty_transactions,\n",
+                "    MEASURE(transaction_count) as total_transactions,\n",
+                "    MEASURE(total_revenue) as total_revenue\n",
+                "  FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                ")\n",
+                "SELECT \n",
+                "  'Loyalty' as customer_type,\n",
+                "  loyalty_transactions as transaction_count,\n",
+                "  total_revenue * 0.55 as revenue,  -- Estimated loyalty revenue share\n",
+                "  (total_revenue * 0.55) / loyalty_transactions as avg_transaction_value\n",
+                "FROM loyalty_stats\n",
+                "UNION ALL\n",
+                "SELECT \n",
+                "  'Non-Loyalty' as customer_type,\n",
+                "  (total_transactions - loyalty_transactions) as transaction_count,\n",
+                "  total_revenue * 0.45 as revenue,  -- Estimated non-loyalty revenue share\n",
+                "  (total_revenue * 0.45) / (total_transactions - loyalty_transactions) as avg_transaction_value\n",
+                "FROM loyalty_stats;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad425240149ba9a9a5763100bf67",
+          "question": [
+            "Which stores have the highest loyalty program penetration?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  store_number,\n",
+                "  store_name,\n",
+                "  MEASURE(avg_loyalty_penetration) as loyalty_penetration_pct,\n",
+                "  MEASURE(unique_loyalty_customers) as loyalty_customers,\n",
+                "  MEASURE(transaction_count) as total_transactions\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "GROUP BY ALL\n",
+                "ORDER BY loyalty_penetration_pct DESC\n",
+                "LIMIT 10;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad423f2f17e2afdd0bc83f6c0ec0",
+          "question": [
+            "What's the average multi-unit discount by brand?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  brand,\n",
+                "  MEASURE(total_discounts) as multi_unit_discounts,\n",
+                "  MEASURE(transaction_count) as transactions_with_discount,\n",
+                "  MEASURE(total_discounts) / MEASURE(transaction_count) as avg_discount_per_transaction\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "GROUP BY ALL\n",
+                "HAVING MEASURE(total_discounts) > 0\n",
+                "ORDER BY multi_unit_discounts DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad42336f1f39b7a45e84b992ac0b",
+          "question": [
+            "Which stores have the highest coupon discount usage?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  store_number,\n",
+                "  store_name,\n",
+                "  MEASURE(coupon_discounts) as coupon_discounts,\n",
+                "  MEASURE(transaction_count) as transactions,\n",
+                "  MEASURE(coupon_discounts) / MEASURE(transaction_count) as avg_coupon_per_transaction\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "GROUP BY ALL\n",
+                "HAVING MEASURE(coupon_discounts) > 0\n",
+                "ORDER BY coupon_discounts DESC\n",
+                "LIMIT 10;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad14b60c1bdca5778d70bc9fa866",
+          "question": [
+            "What's the discount penetration rate by store type?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  store_type,\n",
+                "  MEASURE(avg_discount_rate) as avg_discount_penetration,\n",
+                "  MEASURE(total_discounts) as total_discounts,\n",
+                "  MEASURE(total_revenue) as total_revenue\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "GROUP BY ALL\n",
+                "ORDER BY avg_discount_penetration DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad14a38417fa8cce5eedba7283e5",
+          "question": [
+            "Show revenue by product category for the last 30 days"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  product_category,\n",
+                "  MEASURE(total_revenue) as revenue_last_30_days,\n",
+                "  MEASURE(total_units) as units_sold,\n",
+                "  COUNT(DISTINCT store_number) as store_count\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "WHERE transaction_date >= CURRENT_DATE - 30\n",
+                "GROUP BY ALL\n",
+                "ORDER BY revenue_last_30_days DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad14944b17b793b2414fedb56b23",
+          "question": [
+            "What's the return rate for premium vs standard products?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  CASE WHEN is_premium = true THEN 'Premium' ELSE 'Standard' END as product_tier,\n",
+                "  MEASURE(avg_return_rate) as avg_return_rate,\n",
+                "  MEASURE(units_returned) as units_returned,\n",
+                "  MEASURE(units_sold) as units_sold\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "GROUP BY ALL\n",
+                "ORDER BY product_tier DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad14854413a2a77b5b484fba9ec2",
+          "question": [
+            "What are the top 5 products by revenue this month?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  product_name,\n",
+                "  brand,\n",
+                "  MEASURE(total_revenue) as total_revenue,\n",
+                "  MEASURE(total_units) as units_sold\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "WHERE month = MONTH(CURRENT_DATE) AND year = YEAR(CURRENT_DATE)\n",
+                "GROUP BY ALL\n",
+                "ORDER BY total_revenue DESC\n",
+                "LIMIT 5;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad1476721e53afcacf710872c18e",
+          "question": [
+            "Compare revenue for weekends vs weekdays this quarter"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  CASE WHEN is_weekend = true THEN 'Weekend' ELSE 'Weekday' END as period,\n",
+                "  MEASURE(total_revenue) as total_revenue,\n",
+                "  MEASURE(transaction_count) as transaction_count,\n",
+                "  MEASURE(avg_transaction_value) as avg_transaction_value\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "WHERE quarter = QUARTER(CURRENT_DATE)\n",
+                "GROUP BY ALL\n",
+                "ORDER BY period DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad1467ea145ea26916bfb9279ca7",
+          "question": [
+            "Compare average transaction value for franchise vs corporate stores"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  store_type,\n",
+                "  MEASURE(avg_transaction_value) as avg_transaction_value,\n",
+                "  MEASURE(transaction_count) as transaction_count,\n",
+                "  MEASURE(total_revenue) as total_revenue\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "GROUP BY ALL\n",
+                "ORDER BY total_revenue DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad1452441fa28d53bac972f069a4",
+          "question": [
+            "Compare revenue and units sold for Copenhagen vs Marlboro this year"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  brand,\n",
+                "  MEASURE(total_revenue) as total_revenue,\n",
+                "  MEASURE(total_units) as units_sold,\n",
+                "  MEASURE(total_revenue) / MEASURE(total_units) as avg_price_per_unit\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "WHERE brand IN ('Copenhagen', 'Marlboro') AND year = YEAR(CURRENT_DATE)\n",
+                "GROUP BY ALL\n",
+                "ORDER BY total_revenue DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad143e7d183cba0d70a7fbc626c1",
+          "question": [
+            "Show me total revenue by state for Q1 2025"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  state,\n",
+                "  MEASURE(total_revenue) as total_revenue,\n",
+                "  COUNT(DISTINCT store_number) as store_count,\n",
+                "  MEASURE(total_revenue) / COUNT(DISTINCT store_number) as avg_revenue_per_store\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "WHERE year = 2025 AND quarter = 1\n",
+                "GROUP BY ALL\n",
+                "ORDER BY total_revenue DESC;"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "01f0ad1423bb14d2b1292a60baa4d4e2",
+          "question": [
+            "What are the top 10 stores by revenue this month?"
+          ],
+          "answer": [
+            {
+              "format": "SQL",
+              "content": [
+                "SELECT \n",
+                "  store_number,\n",
+                "  store_name,\n",
+                "  MEASURE(total_revenue) as total_revenue\n",
+                "FROM prashanth_subrahmanyam_catalog.dev_prashanth_subrahmanyam_altria_gold.sales_performance_metrics\n",
+                "WHERE month = MONTH(CURRENT_DATE) AND year = YEAR(CURRENT_DATE)\n",
+                "GROUP BY ALL\n",
+                "ORDER BY total_revenue DESC\n",
+                "LIMIT 10;"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "space_id": "01f0ad0d629b11879bb8c06e03b919f8",
+  "title": "Altria Sales & Inventory Analytics",
+  "warehouse_id": "4b9b953939869799"
+}

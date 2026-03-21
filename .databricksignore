@@ -52,6 +52,12 @@ mlflow.db
 !backend/references/schema.md
 !docs/checklist-by-schema.md
 !docs/genie-space-schema.md
+deploy.sh
+deploy-config.sh
+databricks.yml
+.env.deploy
+.env.deploy.template
+.build/
 CODEOWNERS.txt
 LICENSE.md
 NOTICE.md
@@ -62,3 +68,12 @@ sql/
 .databricks/
 .gitleaksignore
 .gitignore
+
+# GSO subtree — exclude non-runtime files
+packages/genie-space-optimizer/node_modules/
+packages/genie-space-optimizer/.build/
+packages/genie-space-optimizer/.databricks/
+packages/genie-space-optimizer/src/genie_space_optimizer/__dist__/
+packages/genie-space-optimizer/browser-test-output/
+packages/genie-space-optimizer/tests/
+packages/genie-space-optimizer/.git/

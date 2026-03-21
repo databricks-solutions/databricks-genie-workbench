@@ -307,3 +307,218 @@ export interface AgentChatMessage {
   created_space?: { space_id: string; url: string; display_name: string }
   updated_space?: { space_id: string; url: string }
 }
+
+// ============================================================================
+// Auto-Optimize (GSO) Types
+// ============================================================================
+
+// apply_mode supports three values: "genie_config" (default),
+// "uc_artifact" (UC-level changes only), "both" (config + UC).
+// The UI currently only exposes "genie_config" and disables "both".
+export interface GSOTriggerRequest {
+  space_id: string
+  apply_mode?: "genie_config" | "uc_artifact" | "both"
+  levers?: number[]
+  deploy_target?: string
+}
+
+export interface GSOTriggerResponse {
+  runId: string
+  jobRunId: string
+  jobUrl: string | null
+  status: string
+}
+
+export interface GSOLeverInfo {
+  id: number
+  name: string
+  description: string
+}
+
+export interface GSORunStatus {
+  runId: string
+  status: string
+  spaceId: string
+  startedAt: string | null
+  completedAt: string | null
+  baselineScore: number | null
+  optimizedScore: number | null
+  convergenceReason: string | null
+  stepsCompleted?: number | null
+  totalSteps?: number | null
+  currentStepName?: string | null
+}
+
+export interface GSORunSummary {
+  run_id: string
+  space_id: string
+  status: string
+  started_at: string
+  completed_at: string | null
+  best_accuracy: number | null
+  best_iteration: number | null
+  convergence_reason: string | null
+  triggered_by: string | null
+}
+
+export interface GSOPipelineStep {
+  stepNumber: number
+  name: string
+  status: string
+  durationSeconds: number | null
+  summary: string | null
+  inputs: Record<string, any> | null
+  outputs: Record<string, any> | null
+}
+
+export interface GSOStageEvent {
+  stage: string
+  status: string
+  durationSeconds: number | null
+  startedAt: string | null
+  completedAt: string | null
+  summary: string | null
+}
+
+export interface GSOResourceLink {
+  label: string
+  url: string
+  category: string
+}
+
+export interface GSOPatch {
+  iteration: number
+  lever: number | null
+  patch_type: string
+  target_object: string
+  scope: string
+  risk_level: string
+  status: string
+  command: string | null
+}
+
+export interface GSOPatchDetail {
+  patchType: string
+  scope: string
+  riskLevel: string
+  targetObject: string | null
+  rolledBack: boolean
+  rollbackReason: string | null
+  command: Record<string, any> | string | null
+  patch: Record<string, any> | string | null
+  appliedAt: string | null
+}
+
+export interface GSOLeverIteration {
+  iteration: number
+  status: string
+  patchCount: number
+  patchTypes: string[]
+  scoreBefore: number | null
+  scoreAfter: number | null
+  scoreDelta: number | null
+  judgeScores: Record<string, number | null>
+  mlflowRunId: string | null
+  rollbackReason: string | null
+  patches: GSOPatchDetail[]
+}
+
+export interface GSOLeverStatus {
+  lever: number
+  name: string
+  status: string
+  patchCount: number
+  scoreBefore: number | null
+  scoreAfter: number | null
+  scoreDelta: number | null
+  rollbackReason: string | null
+  patches: GSOPatchDetail[]
+  iterations: GSOLeverIteration[]
+}
+
+export interface GSOPipelineRun {
+  runId: string
+  spaceId: string
+  spaceName?: string
+  status: string
+  startedAt: string
+  completedAt: string | null
+  initiatedBy?: string
+  baselineScore: number | null
+  optimizedScore: number | null
+  baselineIteration: number | null
+  bestIteration: number | null
+  steps: GSOPipelineStep[]
+  stages: GSOStageEvent[]
+  levers: GSOLeverStatus[]
+  links: GSOResourceLink[]
+  convergenceReason: string | null
+  deploymentStatus: string | null
+}
+
+export interface GSOIterationResult {
+  iteration: number
+  lever: number | null
+  eval_scope: string
+  overall_accuracy: number
+  total_questions: number
+  correct_count: number
+  scores_json: string | Record<string, number>
+  thresholds_met: boolean
+  reflection_json?: string | Record<string, any> | null
+}
+
+export interface GSOSuggestion {
+  suggestionId: string
+  runId: string
+  spaceId: string
+  iteration: number | null
+  suggestionType: string
+  title: string
+  rationale: string | null
+  definition: string | null
+  affectedQuestions: string[]
+  estimatedImpact: string | null
+  status: string
+}
+
+export interface GSOQuestionResult {
+  question_id: string
+  judge: string
+  value: string
+  failure_type: string | null
+  confidence: number | null
+}
+
+export interface GSOQuestionDetail {
+  question_id: string
+  question: string
+  generated_sql: string | null
+  expected_sql: string | null
+  passed: boolean | null
+  match_type: string | null
+  judge_verdicts?: Record<string, string>
+  excluded?: boolean
+  genie_sample?: string | null
+  gt_sample?: string | null
+  genie_columns?: string[]
+  gt_columns?: string[]
+  genie_rows?: number | null
+  gt_rows?: number | null
+}
+
+export interface GSOSchemaAccessStatus {
+  catalog: string
+  schema_name: string
+  read_granted: boolean
+  grant_sql: string | null
+}
+
+export interface GSOPermissionCheck {
+  sp_display_name: string
+  sp_application_id: string
+  sp_has_manage: boolean
+  schemas: GSOSchemaAccessStatus[]
+  can_start: boolean
+  errors: string[]
+}

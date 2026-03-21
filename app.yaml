@@ -20,6 +20,16 @@ command:
   - "--port"
   - "8000"
 
+user_api_scopes:
+  - "sql"
+  - "dashboards.genie"
+  - "serving.serving-endpoints"
+  - "catalog.catalogs:read"
+  - "catalog.schemas:read"
+  - "catalog.tables:read"
+  - "files.files"
+  - "iam.access-control:read"
+
 env:
   # ---------------------------------------------------------------------------
   # MLflow Tracing
@@ -60,50 +70,46 @@ env:
     value: ""
 
   # ---------------------------------------------------------------------------
-  # Lakebase PostgreSQL — credentials auto-generated via Databricks SDK (SP)
-  # Grant the app's service principal CAN MANAGE on the Lakebase instance.
+  # Lakebase PostgreSQL — connect manually via Databricks Apps UI.
+  # Add a postgres resource named "postgres" in the Apps UI. The platform
+  # injects the host via valueFrom. The app auto-creates all required tables.
+  # Without Lakebase, the app uses in-memory storage (ephemeral).
   # ---------------------------------------------------------------------------
   - name: LAKEBASE_HOST
-    value: ""  # e.g. instance-XXXX.database.cloud.databricks.com
+    valueFrom: postgres
   - name: LAKEBASE_PORT
     value: "5432"
   - name: LAKEBASE_DATABASE
     value: "databricks_postgres"
-  - name: LAKEBASE_INSTANCE_NAME
-    value: ""  # e.g. genie-workbench-sz
+
+  # ---------------------------------------------------------------------------
+  # Auto-Optimize (GSO Engine)
+  # These are placeholder values. The deploy script patches them with real
+  # values (from bundle state) on workspace before running `apps deploy`.
+  # ---------------------------------------------------------------------------
+  - name: GSO_CATALOG
+    value: "__GSO_CATALOG__"
+  - name: GSO_SCHEMA
+    value: "genie_space_optimizer"
+  - name: GSO_JOB_ID
+    value: "__GSO_JOB_ID__"
+  - name: GSO_WAREHOUSE_ID
+    valueFrom: sql-warehouse
 
 # ---------------------------------------------------------------------------
-# User Authorization Scopes (OBO)
-# These must be configured in the Databricks Apps UI, NOT in this file.
-# Navigate to: Compute > Apps > [app] > Edit > User Authorization > +Add Scope
-#
-# Required scopes:
-#   sql                          — SQL warehouse queries
-#   dashboards.genie             — Genie Space API (/api/2.0/genie/spaces/*)
-#   serving.serving-endpoints    — LLM serving endpoint queries
-#   catalog.catalogs:read        — Unity Catalog catalog browsing
-#   catalog.schemas:read         — Unity Catalog schema browsing
-#   catalog.tables:read          — Unity Catalog table browsing
-#
-# Without these scopes, the OBO token will lack permissions and API calls
-# will fail. After adding scopes, users will see an OAuth consent prompt
-# on first access.
+# Deployment
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Service Principal authorization
-# The app runs under its own service principal identity.
-# Grant the SP access to the following resources after deploying:
+# Recommended: Use the bundle deploy for automated setup:
+#   ./scripts/install.sh        # Guided first-time setup
+#   ./scripts/deploy.sh          # Subsequent deploys
 #
-#   Programmatic (use notebooks/grant_app_permissions.py):
-#     1. Workspace Directory  — Can Manage  (for creating new Genie Spaces)
-#     2. Unity Catalog/Schema — USE CATALOG, USE SCHEMA, SELECT
+# The bundle (databricks.yml) automatically:
+#   - Configures all OAuth scopes (no UI clicks needed)
+#   - Deploys the GSO optimization job
+#   - Injects GSO_JOB_ID into the app env
+#   - Sets up the SQL warehouse resource
 #
-#   Via UI:
-#     3. LLM Serving Endpoint — Can Query   (Serving > Endpoint > Permissions)
-#     4. SQL Warehouse        — Can Use     (SQL > Warehouse > Permissions)
-#     5. Genie Space(s)       — Can Edit    (Genie Space > Settings)
-#
-# Find the service principal at: Compute > Apps > [your app] > Authorization
-# The SP name follows the pattern: app-XXXXX [app-name]
+# Manual deploy (without bundle):
+#   npm run build && databricks apps deploy <app-name> --source-code-path .
+#   Then configure scopes and permissions manually per docs/DEPLOY.md
 # ---------------------------------------------------------------------------
