@@ -171,7 +171,10 @@ echo "  ✓ All pre-flight checks passed"
 STEP=2
 echo ""
 echo "▸ Step $STEP/$TOTAL_STEPS: Building frontend..."
-(cd "$PROJECT_DIR/frontend" && npm install --silent && npm run build --silent)
+if ! (cd "$PROJECT_DIR/frontend" && npm install --silent && npm run build --silent); then
+    echo "  ✗ Frontend build failed (npm returned non-zero exit code)."
+    exit 1
+fi
 if [ ! -f "$PROJECT_DIR/frontend/dist/index.html" ]; then
     echo "  ✗ Frontend build failed — frontend/dist/index.html not found."
     exit 1
