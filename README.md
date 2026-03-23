@@ -23,6 +23,7 @@ The app is a FastAPI backend serving a React/Vite frontend, deployed as a [Datab
   * Apps enabled
   * A SQL Warehouse (Serverless recommended)
   * A Unity Catalog with CREATE SCHEMA permission
+  * MLflow Prompt Registry enabled (required for Auto-Optimize judge prompt traceability)
 
 ## Quick Start
 
@@ -164,6 +165,7 @@ The app uses On-Behalf-Of (OBO) auth — users see only Genie Spaces they have p
 | `Catalog 'X' is not accessible` | Wrong catalog or missing permissions | `databricks catalogs list --profile <profile>` |
 | `Invalid SQL warehouse resource` | Warehouse doesn't exist or no CAN_USE | `databricks warehouses list --profile <profile>` |
 | `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps |
+| Auto-Optimize fails at "Baseline Evaluation" with `FEATURE_DISABLED` | Prompt Registry not enabled on workspace | Contact workspace admin to enable MLflow Prompt Registry |
 | Unresolved `__GSO_*__` placeholders | deploy.sh couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
 
 **Debug commands:**

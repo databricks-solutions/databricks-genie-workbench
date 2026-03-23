@@ -421,7 +421,7 @@ for i in $(seq 1 18); do
     DEPLOY_STATE=$(echo "$APP_JSON" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
-ad = d.get('active_deployment',{}) or d.get('pending_deployment',{})
+ad = d.get('pending_deployment',{}) or d.get('active_deployment',{})
 print(ad.get('status',{}).get('state','UNKNOWN'))
 " 2>/dev/null || echo "UNKNOWN")
     if [ "$DEPLOY_STATE" != "IN_PROGRESS" ]; then
@@ -467,7 +467,7 @@ if [ "$DEPLOY_STATE" = "SUCCEEDED" ]; then
 elif [ "$DEPLOY_STATE" = "FAILED" ]; then
     DEPLOY_MSG=$(echo "$APP_JSON" | python3 -c "
 import sys,json; d=json.load(sys.stdin)
-ad = d.get('active_deployment',{}) or d.get('pending_deployment',{})
+ad = d.get('pending_deployment',{}) or d.get('active_deployment',{})
 print(ad.get('status',{}).get('message','unknown error'))
 " 2>/dev/null || echo "unknown")
     echo "  ✗ App deployment FAILED: $DEPLOY_MSG"

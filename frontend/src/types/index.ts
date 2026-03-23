@@ -519,6 +519,8 @@ export interface GSOPermissionCheck {
   sp_application_id: string
   sp_has_manage: boolean
   schemas: GSOSchemaAccessStatus[]
+  prompt_registry_available: boolean
+  prompt_registry_error: string | null
   can_start: boolean
   errors: string[]
 }

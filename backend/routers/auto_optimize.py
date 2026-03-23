@@ -71,6 +71,8 @@ class PermissionCheckResponse(BaseModel):
     sp_application_id: str = ""
     sp_has_manage: bool
     schemas: list[SchemaAccessStatus]
+    prompt_registry_available: bool = True
+    prompt_registry_error: str | None = None
     can_start: bool
     errors: list[str] = []
 
@@ -814,14 +816,36 @@ async def check_permissions(space_id: str):
         errors.append(f"Could not probe data access: {exc}")
         logger.warning("Could not probe data access for space %s", space_id, exc_info=True)
 
+    # Probe MLflow Prompt Registry availability (read-only check)
+    prompt_registry_available = True
+    prompt_registry_error = None
+    try:
+        sp_ws.api_client.do("GET", "/api/2.0/mlflow/unity-catalog/prompts", query={"max_results": "1"})
+    except Exception as exc:
+        err_msg = str(exc)
+        if "FEATURE_DISABLED" in err_msg or "not enabled" in err_msg.lower():
+            prompt_registry_available = False
+            prompt_registry_error = (
+                "MLflow Prompt Registry is not enabled on this workspace. "
+                "Contact your workspace admin to enable it."
+            )
+            errors.append(prompt_registry_error)
+            logger.warning("Prompt Registry not enabled: %s", err_msg)
+        else:
+            # Other errors (e.g. permissions on a specific schema) don't mean
+            # the feature itself is unavailable.
+            logger.debug("Prompt Registry probe returned non-fatal error: %s", err_msg)
+
     all_read = all(s.read_granted for s in schemas) if schemas else True
-    can_start = sp_has_manage and all_read
+    can_start = sp_has_manage and all_read and prompt_registry_available
 
     return PermissionCheckResponse(
         sp_display_name=sp_display_name,
         sp_application_id=sp_application_id,
         sp_has_manage=sp_has_manage,
         schemas=schemas,
+        prompt_registry_available=prompt_registry_available,
+        prompt_registry_error=prompt_registry_error,
         can_start=can_start,
         errors=errors,
     )

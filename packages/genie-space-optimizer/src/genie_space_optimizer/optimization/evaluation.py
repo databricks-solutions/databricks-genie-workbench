@@ -2005,12 +2005,17 @@ def _classify_prompt_registration_error(message: str, uc_schema: str) -> dict[st
             ),
         }
 
-    if "preview" in lowered and ("prompt" in lowered or "genai" in lowered):
+    if (
+        "feature_disabled" in lowered
+        or ("not enabled" in lowered and ("prompt" in lowered or "registry" in lowered))
+        or ("preview" in lowered and ("prompt" in lowered or "genai" in lowered))
+    ):
         return {
             "reason": "feature_not_enabled",
             "missing_privileges": [],
             "remediation": (
-                "Enable MLflow Prompt Registry / GenAI preview in workspace settings."
+                "Enable MLflow Prompt Registry on the workspace. "
+                "Contact your workspace admin or enable the GenAI preview in workspace settings."
             ),
         }
 
