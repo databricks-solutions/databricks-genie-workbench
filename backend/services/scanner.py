@@ -1,7 +1,7 @@
 """IQ scoring engine for Genie Space configurations.
 
 3-tier maturity: Not Ready → Ready to Optimize → Trusted.
-15 checks, 1 point each.
+12 checks, 1 point each.
 """
 
 import logging
@@ -14,8 +14,8 @@ from backend.services.lakebase import save_scan_result, get_latest_score, get_la
 logger = logging.getLogger(__name__)
 
 
-# First 13 checks are config checks; the last 2 are optimization checks.
-CONFIG_CHECK_COUNT = 13
+# First 10 checks are config checks; the last 2 are optimization checks.
+CONFIG_CHECK_COUNT = 10
 
 
 def get_maturity_label(checks: list[dict]) -> str:
@@ -44,8 +44,8 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     """Calculate IQ score for a Genie Space configuration.
 
     Returns a dict with:
-        - score: int (0-15)
-        - total: 15
+        - score: int (0-12)
+        - total: 12
         - maturity: str
         - checks: flat list of {label, passed}
         - findings: list of finding strings
@@ -57,7 +57,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
 
     tables = space_data.get("data_sources", {}).get("tables", [])
 
-    # --- Config checks (1-13) ---
+    # --- Config checks (1-10) ---
 
     # 1. Tables exist
     passed = bool(tables)
@@ -84,18 +84,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         findings.append("Columns have no descriptions")
         next_steps.append("Add column descriptions to improve query accuracy")
 
-    # 4. UC 3-part names
-    passed = bool(tables) and any(
-        len((t.get("table_name") or t.get("identifier") or "").split(".")) == 3
-        or t.get("catalog")
-        for t in tables
-    )
-    _check(checks, "UC 3-part names", passed)
-    if not passed and tables:
-        findings.append("Tables may not be using Unity Catalog")
-        next_steps.append("Use fully-qualified Unity Catalog table names (catalog.schema.table)")
-
-    # 5. Text instructions > 50 chars
+    # 4. Text instructions > 50 chars
     text_instructions = space_data.get("instructions", {}).get("text_instructions", [])
     passed = bool(text_instructions) and any(
         len("".join(t.get("content", [])) if isinstance(t.get("content"), list) else t.get("content", "")) > 50
@@ -106,15 +95,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         findings.append("No text instructions configured" if not text_instructions else "Text instructions are too brief")
         next_steps.append("Add text instructions to explain business context and terminology")
 
-    # 6. Filter snippets
-    filter_snippets = space_data.get("instructions", {}).get("sql_snippets", {}).get("filters", [])
-    passed = bool(filter_snippets)
-    _check(checks, "Filter snippets", passed)
-    if not passed:
-        findings.append("No filter snippets defined")
-        next_steps.append("Add filter snippets for common time ranges and business segments")
-
-    # 7. Join specifications
+    # 5. Join specifications
     join_specs = space_data.get("instructions", {}).get("join_specs", [])
     passed = bool(join_specs)
     _check(checks, "Join specifications", passed)
@@ -122,19 +103,16 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         findings.append("No join specifications for multi-table space")
         next_steps.append("Add join specifications to help Genie correctly join your tables")
 
-    # 8. Table count 2-10
+    # 6. Table count 1-10
     table_count = len(tables)
-    passed = 2 <= table_count <= 10
-    _check(checks, "Table count 2-10", passed)
+    passed = 1 <= table_count <= 10
+    _check(checks, "Table count 1-10", passed)
     if not passed and tables:
-        if table_count == 1:
-            findings.append("Only 1 table configured — consider adding related tables")
-            next_steps.append("Add 2-5 related tables for better cross-table query capability (do this in Unity Catalog)")
-        elif table_count > 10:
+        if table_count > 10:
             findings.append("More than 10 tables may reduce Genie accuracy")
             next_steps.append("Consider reducing to the most relevant 5-10 tables")
 
-    # 9. 5+ example SQLs
+    # 7. 5+ example SQLs
     example_sqls = space_data.get("instructions", {}).get("example_question_sqls", [])
     passed = len(example_sqls) >= 5
     _check(checks, "5+ example SQLs", passed)
@@ -145,17 +123,19 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
             findings.append("No example SQL questions configured")
         next_steps.append("Add at least 5 example SQL questions covering diverse query patterns")
 
-    # 10. SQL functions/expressions/measures
+    # 8. SQL snippets (functions/expressions/measures/filters)
     sql_functions = space_data.get("instructions", {}).get("sql_functions", [])
-    expressions = space_data.get("instructions", {}).get("sql_snippets", {}).get("expressions", [])
-    measures = space_data.get("instructions", {}).get("sql_snippets", {}).get("measures", [])
-    passed = bool(sql_functions or expressions or measures)
-    _check(checks, "SQL functions/expressions/measures", passed)
+    sql_snippets = space_data.get("instructions", {}).get("sql_snippets", {})
+    expressions = sql_snippets.get("expressions", [])
+    measures = sql_snippets.get("measures", [])
+    filters = sql_snippets.get("filters", [])
+    passed = bool(sql_functions or expressions or measures or filters)
+    _check(checks, "SQL snippets (functions/expressions/measures/filters)", passed)
     if not passed:
-        findings.append("No SQL functions, expressions, or measures configured")
-        next_steps.append("Add SQL functions or expression snippets for complex business logic")
+        findings.append("No SQL functions, expressions, measures, or filters configured")
+        next_steps.append("Add SQL snippets for complex business logic, common filters, and calculated measures")
 
-    # 11. Entity/format matching
+    # 9. Entity/format matching
     entity_or_format = False
     for t in tables:
         for col in t.get("column_configs", []) + t.get("columns", []):
@@ -169,7 +149,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         findings.append("No columns have entity matching or format assistance enabled")
         next_steps.append("Enable entity matching on categorical columns and format assistance on date/number columns")
 
-    # 12. 10+ benchmark questions
+    # 10. 10+ benchmark questions
     benchmarks = space_data.get("benchmarks", {}).get("questions", [])
     passed = len(benchmarks) >= 10
     _check(checks, "10+ benchmark questions", passed)
@@ -180,24 +160,16 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
             findings.append("No benchmark questions configured")
         next_steps.append("Add at least 10 benchmark questions to measure and track Genie accuracy")
 
-    # 13. Metric views
-    metric_views = space_data.get("data_sources", {}).get("metric_views", [])
-    passed = bool(metric_views)
-    _check(checks, "Metric views exist", passed)
-    if not passed:
-        findings.append("No metric views configured")
-        next_steps.append("Add metric views for pre-aggregated business metrics (do this in Unity Catalog)")
+    # --- Optimization checks (11-12) ---
 
-    # --- Optimization checks (14-15) ---
-
-    # 14. Optimization run recorded
+    # 11. Optimization run recorded
     has_run = bool(optimization_run)
     _check(checks, "Optimization workflow completed", has_run)
     if not has_run:
         findings.append("Space has not been through the optimization workflow")
         next_steps.append("Use the Optimize tab to benchmark and improve Genie's accuracy")
 
-    # 15. Accuracy ≥ 85%
+    # 12. Accuracy ≥ 85%
     accuracy = optimization_run.get("accuracy", 0) if optimization_run else 0
     passed = has_run and accuracy >= 0.85
     _check(checks, "Optimization accuracy ≥ 85%", passed)
@@ -210,7 +182,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
 
     return {
         "score": score,
-        "total": 15,
+        "total": 12,
         "maturity": maturity,
         "checks": checks,
         "optimization_accuracy": accuracy if optimization_run else None,
