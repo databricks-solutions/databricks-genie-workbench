@@ -200,7 +200,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
                   <p className="text-xs text-muted mt-1.5">
                     {space.score != null ? (
                       <>
-                        {space.score}/15 checks passed
+                        {space.score}/12 checks passed
                         {" · "}
                         {getOptimizationLabel(space.optimization_accuracy)}
                       </>

@@ -102,7 +102,7 @@ export default function App() {
     const prompt = [
       `Fix my Genie Space "${displayName}" (ID: ${spaceId}).`,
       "",
-      `IQ Score: ${scanResult.score}/${scanResult.total ?? 15} (${scanResult.maturity})`,
+      `IQ Score: ${scanResult.score}/${scanResult.total ?? 12} (${scanResult.maturity})`,
       "",
       "Issues found:",
       ...lines,

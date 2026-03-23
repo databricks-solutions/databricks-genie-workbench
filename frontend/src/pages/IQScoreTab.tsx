@@ -47,7 +47,7 @@ export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onR
   const passedChecks = allChecks.filter(c => c.passed)
   const failedChecks = allChecks.filter(c => !c.passed)
   const totalChecks = allChecks.length
-  const total = scanResult.total ?? 15
+  const total = scanResult.total ?? 12
 
   const maturityColors = MATURITY_COLORS[scanResult.maturity]
 

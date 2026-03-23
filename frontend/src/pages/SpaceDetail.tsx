@@ -59,7 +59,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
             setScanResult({
               space_id: spaceId,
               score: detail.scan_result.score,
-              total: detail.scan_result.total ?? 15,
+              total: detail.scan_result.total ?? 12,
               maturity: detail.scan_result.maturity,
               optimization_accuracy: detail.scan_result.optimization_accuracy ?? null,
               checks: detail.scan_result.checks ?? [],
@@ -147,7 +147,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
                   {scanResult.maturity}
                 </span>
                 <span className="text-muted text-sm">
-                  {scanResult.score}/15 checks · {getOptimizationLabel(scanResult.optimization_accuracy)}
+                  {scanResult.score}/{scanResult.total} checks · {getOptimizationLabel(scanResult.optimization_accuracy)}
                 </span>
               </>
             ) : (

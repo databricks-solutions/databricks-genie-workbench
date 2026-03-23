@@ -157,7 +157,7 @@ async def trigger_scan(space_id: str) -> ScanResult:
         return ScanResult(
             space_id=space_id,
             score=scan_data["score"],
-            total=scan_data.get("total", 15),
+            total=scan_data.get("total", 12),
             maturity=scan_data["maturity"],
             optimization_accuracy=scan_data.get("optimization_accuracy"),
             checks=scan_data.get("checks", []),

@@ -299,7 +299,7 @@ async def get_latest_score(space_id: str) -> Optional[dict]:
         extra = json.loads(row["breakdown"])
         return {
             "score": row["score"],
-            "total": 15,
+            "total": 12,
             "maturity": row["maturity"],
             "optimization_accuracy": extra.get("optimization_accuracy"),
             "findings": json.loads(row["findings"]),

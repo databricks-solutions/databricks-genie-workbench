@@ -151,8 +151,8 @@ class CheckDetail(BaseModel):
 class ScanResult(BaseModel):
     """IQ scan result for a Genie Space."""
     space_id: str
-    score: int = Field(..., ge=0, le=15)
-    total: int = 15
+    score: int = Field(..., ge=0, le=12)
+    total: int = 12
     maturity: MaturityLevel
     optimization_accuracy: float | None = None  # 0.0-1.0, None if never optimized
     checks: list[CheckDetail] = Field(default_factory=list)
