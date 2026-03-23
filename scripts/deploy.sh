@@ -435,6 +435,35 @@ APP_STATUS=$(echo "$APP_JSON" | python3 -c "import sys,json; print(json.load(sys
 
 if [ "$DEPLOY_STATE" = "SUCCEEDED" ]; then
     echo "  ✓ App deployment SUCCEEDED"
+
+    # Wait for app to finish restarting and reach RUNNING state
+    if [ "$APP_STATUS" != "RUNNING" ]; then
+        echo "  Waiting for app to reach RUNNING state..."
+        for i in $(seq 1 12); do
+            sleep 10
+            APP_JSON=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null)
+            APP_STATUS=$(echo "$APP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('app_status',{}).get('state','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
+            APP_URL=$(echo "$APP_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('url',''))" 2>/dev/null || true)
+            if [ "$APP_STATUS" = "RUNNING" ]; then
+                break
+            fi
+            if [ "$APP_STATUS" = "CRASHED" ] || [ "$APP_STATUS" = "UNAVAILABLE" ]; then
+                break
+            fi
+            echo "    ... app is $APP_STATUS (attempt $i/12)"
+        done
+    fi
+
+    if [ "$APP_STATUS" = "RUNNING" ]; then
+        echo "  ✓ App is RUNNING"
+    elif [ "$APP_STATUS" = "CRASHED" ] || [ "$APP_STATUS" = "UNAVAILABLE" ]; then
+        echo "  ✗ App status: $APP_STATUS"
+        echo "  Check logs:  databricks apps logs $APP_NAME --profile $PROFILE"
+        VERIFY_OK=false
+    else
+        echo "  ℹ App is still $APP_STATUS — it may need more time to start."
+        echo "  Check status:  databricks apps get $APP_NAME --profile $PROFILE"
+    fi
 elif [ "$DEPLOY_STATE" = "FAILED" ]; then
     DEPLOY_MSG=$(echo "$APP_JSON" | python3 -c "
 import sys,json; d=json.load(sys.stdin)
@@ -472,13 +501,16 @@ else
     echo "  URL: https://${APP_NAME}-*.databricksapps.com (available shortly)"
 fi
 echo ""
-if [ "$VERIFY_OK" = "true" ]; then
-    echo "  Status: All checks passed ✓"
-else
+if [ "$VERIFY_OK" != "true" ]; then
     echo "  Status: DEPLOY FAILED — review errors above"
     echo ""
     echo "  Quick debug:"
     echo "    databricks apps logs $APP_NAME --profile $PROFILE"
+elif [ "$APP_STATUS" = "RUNNING" ]; then
+    echo "  Status: App is RUNNING ✓"
+else
+    echo "  Status: Deploy succeeded, app is $APP_STATUS"
+    echo "  The app may need a minute to finish starting."
 fi
 echo ""
 echo "  NOTE: If you see 'Failed to list spaces' in the app, attach a"

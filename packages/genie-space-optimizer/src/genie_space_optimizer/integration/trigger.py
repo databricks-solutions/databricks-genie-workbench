@@ -172,7 +172,7 @@ def trigger_optimization(
     except Exception:
         logger.warning("OBO UC metadata prefetch failed for run %s", run_id, exc_info=True)
 
-    from genie_space_optimizer.backend.routes.settings import get_sp_principal_aliases
+    from genie_space_optimizer.common.sp_permissions import get_sp_principal_aliases
 
     sp_aliases = get_sp_principal_aliases(sp_ws)
     if not sp_can_manage_space(sp_ws, space_id, sp_aliases):

@@ -12,8 +12,9 @@ wheels/
 # version file
 src/genie_space_optimizer/_version.py
 
-# metadata file
-src/genie_space_optimizer/_metadata.py
+# metadata file — no longer ignored; stub is checked in so the main
+# Genie Workbench app can import GSO modules without running apx build.
+# src/genie_space_optimizer/_metadata.py
 
 # build files
 dist
