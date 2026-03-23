@@ -1,145 +1,92 @@
-# Genie Workbench → Multi-Agent Architecture
+# Agent Deployment Layer for Genie Workbench
 
 > **Status:** Proposal
 > **Author:** Stuart Gano
-> **Audience:** Sean Zhang (Workbench maintainer)
 > **Date:** 2026-03-10
 
 ---
 
-## Executive Summary
+## Summary
 
-The Genie Workbench is a monolithic Databricks App (~10,200 lines backend) that hand-rolls OBO auth, tool-calling loops, SSE streaming, and SDK wrappers. Two FE-built libraries solve these exact problems:
+The Genie Workbench now has scoring, analysis, optimization, creation, and auto-optimization all working as a Databricks App. This proposal adds an **agent deployment layer** so each capability can also be deployed as a standalone Databricks agent — enabling A2A discovery, MCP tool integration, and independent `mlflow.genai.evaluate()` testing.
 
-- **AI Dev Kit** (`databricks-tools-core`) — pre-built Python functions for SQL execution, Unity Catalog browsing, and warehouse management
-- **dbx-agent-app** — `@app_agent` decorator that auto-generates `/invocations` endpoints, agent cards, MCP servers, health checks, and handles OBO auth
+The existing backend is unchanged. The agent layer wraps existing domain logic using:
 
-This proposal refactors the Workbench into a **multi-agent system** where each capability is a separate, discoverable `@app_agent` app. The result: ~30% less code, free MCP servers, A2A discovery, and `mlflow.genai.evaluate()` support — with zero changes to the React frontend.
+- **`dbx-agent-app`** (`@app_agent` decorator) — auto-generates `/invocations` endpoints, agent cards, MCP servers, and health checks
+- **AI Dev Kit** (`databricks-tools-core`) — optional drop-in replacements for UC browsing and SQL execution
 
----
+**What this enables:**
+- Other workspace apps can discover and call Workbench capabilities via A2A protocol
+- Each agent gets a free MCP server for tool integration
+- Automated eval pipelines via `mlflow.genai.evaluate()` against individual agents
+- Independent deployment of individual capabilities when needed
 
-## Current Architecture (Monolith)
-
-```
-┌─────────────────────────────────────────────────┐
-│  backend/main.py (FastAPI)                      │
-│                                                 │
-│  ┌──────────────────────────────────────────┐   │
-│  │ OBOAuthMiddleware                        │   │
-│  │ (hand-rolled ContextVar + x-forwarded-   │   │
-│  │  access-token extraction)                │   │
-│  └──────────────────────────────────────────┘   │
-│                                                 │
-│  ┌──────────┐ ┌──────────┐ ┌───────────────┐   │
-│  │ routers/ │ │ routers/ │ │ routers/      │   │
-│  │ spaces   │ │ analysis │ │ create        │   │
-│  │ (scan,   │ │ (analyze,│ │ (UC discovery │   │
-│  │  history, │ │  stream, │ │  agent chat,  │   │
-│  │  star,   │ │  query,  │ │  validate,    │   │
-│  │  fix)    │ │  optimize│ │  create)      │   │
-│  └──────────┘ └──────────┘ └───────────────┘   │
-│                                                 │
-│  ┌──────────────────────────────────────────┐   │
-│  │ services/                                │   │
-│  │ scanner.py  analyzer.py  optimizer.py    │   │
-│  │ fix_agent.py  create_agent.py            │   │
-│  │ create_agent_tools.py (2,717 lines!)     │   │
-│  │ create_agent_session.py                  │   │
-│  │ uc_client.py  sql_executor.py            │   │
-│  │ genie_client.py  lakebase.py  auth.py    │   │
-│  └──────────────────────────────────────────┘   │
-│                                                 │
-│  frontend/dist/ (React SPA, static files)       │
-└─────────────────────────────────────────────────┘
-```
-
-### Pain points
-
-| Issue | Impact |
-|-------|--------|
-| `create_agent_tools.py` is 2,717 lines of hand-coded tool definitions + JSON schemas + dispatch table | Every new tool requires ~80 lines of boilerplate |
-| OBO auth in `services/auth.py` (136 lines) uses ContextVar + middleware — breaks in streaming generators | Streaming endpoints need manual `set_obo_user_token()` re-establishment. Recent fix added `get_service_principal_client()` fallback for missing OAuth scopes |
-| `genie_client.py` (244 lines) duplicates SP-fallback pattern (`_is_scope_error`) in every API call | Each new Genie API function must remember to add scope-error retry logic |
-| `sql_executor.py` (220 lines) reimplements what `databricks-tools-core.sql` provides | Maintenance burden, no warehouse auto-detection improvements |
-| `uc_client.py` (60 lines) reimplements what `databricks-tools-core.unity_catalog` provides | Duplicated effort |
-| No agent discovery — other workspace apps can't call Workbench capabilities | Siloed functionality |
-| No eval support — testing requires manual curl/browser interaction | No regression testing pipeline |
-| Monolithic deployment — any change redeploys everything | Slow iteration on individual capabilities |
+**What this does NOT change:**
+- The existing monolith deployment continues to work as-is
+- The React frontend is unmodified
+- All existing domain logic (scanner, analyzer, optimizer, fix agent, create agent, GSO) stays in place
 
 ---
 
-## Proposed Architecture (Multi-Agent)
+## Architecture
+
+The agent layer sits alongside the existing monolith. Both deployment modes work:
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  genie-workbench (supervisor)                           │
-│  React SPA + FastAPI shell                              │
-│  Routes frontend API calls → sub-agent /invocations     │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐             │
-│  │ genie-   │  │ genie-   │  │ genie-   │             │
-│  │ scorer   │  │ analyzer │  │ creator  │             │
-│  │          │  │          │  │          │             │
-│  │ IQ scan  │  │ LLM deep │  │ Space    │             │
-│  │ scoring  │  │ analysis │  │ creation │             │
-│  │ history  │  │ synthesis│  │ wizard   │             │
-│  └──────────┘  └──────────┘  └──────────┘             │
-│                                                         │
-│  ┌──────────┐  ┌──────────┐                            │
-│  │ genie-   │  │ genie-   │                            │
-│  │ optimizer│  │ fixer    │                            │
-│  │          │  │          │                            │
-│  │ Benchmark│  │ AI fix   │                            │
-│  │ labeling │  │ agent    │                            │
-│  │ suggest  │  │ patches  │                            │
-│  └──────────┘  └──────────┘                            │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  EXISTING: Monolith (unchanged)                                 │
+│  backend/main.py → routers → services → frontend/dist           │
+│  Deployed via: databricks apps deploy                           │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│  NEW: Agent Layer (additive)                                    │
+│  Deployed via: dbx-agent-app deploy --config agents.yaml        │
+│                                                                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐                     │
+│  │ genie-   │  │ genie-   │  │ genie-   │                     │
+│  │ scorer   │  │ analyzer │  │ creator  │                     │
+│  │ wraps:   │  │ wraps:   │  │ wraps:   │                     │
+│  │ scanner  │  │ analyzer │  │ create_  │                     │
+│  │ .py      │  │ .py      │  │ agent.py │                     │
+│  └──────────┘  └──────────┘  └──────────┘                     │
+│                                                                 │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐                     │
+│  │ genie-   │  │ genie-   │  │supervisor│                     │
+│  │ optimizer│  │ fixer    │  │ React SPA│                     │
+│  │ wraps:   │  │ wraps:   │  │ + proxy  │                     │
+│  │ optimizer│  │ fix_agent│  │          │                     │
+│  │ .py      │  │ .py      │  │          │                     │
+│  └──────────┘  └──────────┘  └──────────┘                     │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-Each sub-agent is a standalone Databricks App with:
+Each agent wraps existing domain logic and adds:
 - **`@app_agent` decorator** — auto-generates `/invocations`, `/.well-known/agent.json`, `/health`, MCP server
-- **OBO auth** — handled by `request.user_context` (replaces ContextVar middleware)
-- **Tool definitions** — auto-generated from `@agent.tool()` decorated functions (replaces JSON schemas)
+- **OBO auth** — `request.user_context` bridges into existing auth via `obo_context()`
+- **Tool definitions** — auto-generated from `@agent.tool()` decorated functions
 - **Eval support** — `app_predict_fn()` bridge to `mlflow.genai.evaluate()`
 
 ---
 
 ## Agent Decomposition
 
-### Agent Boundaries
+### What each agent wraps
 
-| Agent | Source | Tools | Needs Lakebase? | Streaming? | LLM? |
-|-------|--------|-------|-----------------|------------|------|
-| **genie-scorer** | `agents/scorer/` | `scan_space`, `get_history`, `toggle_star`, `list_spaces` | Yes (scores, stars) | No | No |
-| **genie-analyzer** | `agents/analyzer/` | `fetch_space`, `analyze_section`, `analyze_all`, `query_genie`, `execute_sql` | No | Yes (SSE) | Yes |
-| **genie-creator** | `agents/creator/` | All 16 current tools (discover_*, describe_*, profile_*, generate_config, etc.) | Yes (sessions) | Yes (SSE) | Yes |
-| **genie-optimizer** | `agents/optimizer/` | `generate_suggestions`, `merge_config`, `label_benchmark` | No | No (heartbeat SSE) | Yes |
-| **genie-fixer** | `agents/fixer/` | `generate_fixes`, `apply_patch` | No | Yes (SSE) | Yes |
-| **supervisor** | root `app.py` | Routes to sub-agents, serves React SPA, `/api/settings`, `/api/auth` | Yes (starred) | Proxy | No |
+| Agent | Wraps | Tools exposed | Lakebase? | Streaming? | LLM? |
+|-------|-------|---------------|-----------|------------|------|
+| **genie-scorer** | `services/scanner.py` | `scan_space`, `get_history`, `toggle_star`, `list_spaces` | Yes (scores, stars) | No | No |
+| **genie-analyzer** | `services/analyzer.py`, `services/genie_client.py` | `fetch_space`, `analyze_section`, `analyze_all`, `query_genie`, `execute_sql` | No | Yes (SSE) | Yes |
+| **genie-creator** | `services/create_agent.py`, `services/create_agent_tools.py` | All 16 current tools (discover_*, describe_*, profile_*, generate_config, etc.) | Yes (sessions) | Yes (SSE) | Yes |
+| **genie-optimizer** | `services/optimizer.py` | `generate_suggestions`, `merge_config`, `label_benchmark` | No | No (heartbeat SSE) | Yes |
+| **genie-fixer** | `services/fix_agent.py` | `generate_fixes`, `apply_patch` | No | Yes (SSE) | Yes |
+| **supervisor** | Existing React SPA | Routes frontend API calls to sub-agents, serves static files | Yes (starred) | Proxy | No |
 
-### What moves where
+Each agent imports from `backend/services/` — the domain logic stays where it is. The agent layer is a thin wrapper that exposes existing functions as agent tools with standard protocol support.
 
-```
-backend/services/scanner.py        → agents/scorer/scanner.py       (as-is, domain logic)
-backend/services/analyzer.py       → agents/analyzer/analyzer.py    (as-is, domain logic)
-backend/services/optimizer.py      → agents/optimizer/optimizer.py  (as-is, domain logic)
-backend/services/fix_agent.py      → agents/fixer/fix_agent.py     (as-is, domain logic)
-backend/services/create_agent.py   → agents/creator/agent.py       (as-is, domain logic)
-backend/services/create_agent_session.py → agents/creator/session.py (as-is)
-backend/prompts_create/            → agents/creator/prompts/        (as-is)
-backend/references/                → agents/creator/references/     (as-is)
+### Domain logic (unchanged)
 
-backend/services/uc_client.py      → DELETED (replaced by databricks-tools-core)
-backend/sql_executor.py            → DELETED (replaced by databricks-tools-core)
-backend/routers/spaces.py          → DISSOLVED (endpoints become scorer/supervisor tools)
-backend/routers/analysis.py        → DISSOLVED (endpoints become analyzer/optimizer tools)
-backend/routers/create.py          → DISSOLVED (endpoints become creator tools)
-```
-
-### What stays custom (irreplaceable domain logic)
-
-These files contain business logic specific to GenieIQ/GenieRx and move to their respective agents unchanged:
+These files contain the business logic that agents wrap. They are not modified:
 
 - `scanner.py` — Rule-based IQ scoring (maturity levels, dimension weights)
 - `analyzer.py` — LLM checklist evaluation with session management
@@ -149,41 +96,18 @@ These files contain business logic specific to GenieIQ/GenieRx and move to their
 - `create_agent_session.py` — Two-tier session persistence (memory + Lakebase)
 - `prompts_create/` — Dynamic prompt assembly (9 modules: core, data_sources, requirements, plan, etc.)
 - `references/schema.md` — Genie Space schema reference
-- `genie_creator.py` — Genie API write operations
-- `genie_client.py` — Genie API read operations (including SP-fallback for missing OAuth scopes, added in PR #7)
+- `genie_client.py` — Genie API read operations (including SP-fallback for missing OAuth scopes)
 - `lakebase.py` — PostgreSQL persistence with in-memory fallback
+- `auto_optimize.py` + GSO package — Auto-optimization pipeline
 
 ---
 
-## What Gets Replaced
+## What the Agent Layer Provides
 
-### 1. Tool Definition Boilerplate → `@agent.tool()` Decorators
+### 1. Auto-generated tool definitions from `@agent.tool()` decorators
 
-**Before** (create_agent_tools.py, ~80 lines per tool):
-```python
-TOOL_DEFINITIONS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "discover_catalogs",
-            "description": "List all Unity Catalog catalogs the user has access to.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    # ... 15 more tool definitions with nested JSON schemas ...
-]
+Agent tools are defined as decorated functions — schemas, dispatch, and validation are auto-generated:
 
-def handle_tool_call(name: str, arguments: dict, session_config=None) -> dict:
-    handlers = {
-        "discover_catalogs": _discover_catalogs,
-        "discover_schemas": _discover_schemas,
-        # ... 14 more entries ...
-    }
-    handler = handlers.get(name)
-    # ... dispatch logic ...
-```
-
-**After** (auto-generated from function signatures):
 ```python
 @creator.tool(description="List all Unity Catalog catalogs the user has access to.")
 async def discover_catalogs() -> dict:
@@ -196,62 +120,31 @@ async def discover_schemas(catalog: str) -> dict:
     return {"schemas": list_schemas(catalog)}
 ```
 
-**Impact:** ~580 lines of JSON schemas + 40-line dispatch table → auto-generated.
+For tools with complex nested parameters (like `generate_config`), Pydantic models provide the schema and runtime validation in one place — see `agents/creator/schemas.py`.
 
-### 2. OBO Auth Middleware + SP Fallback → `request.user_context`
+### 2. OBO auth bridging via `obo_context()`
 
-**Before** (main.py + auth.py + genie_client.py):
+Agents receive the user's token via `request.user_context`. The `obo_context()` context manager bridges this into the existing `get_workspace_client()` pattern so domain logic works unchanged:
+
 ```python
-# main.py — ContextVar middleware
-class OBOAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        token = request.headers.get("x-forwarded-access-token", "")
-        if token:
-            set_obo_user_token(token)  # ContextVar
-        request.state.user_token = token
-        response = await call_next(request)
-        if not is_streaming:
-            clear_obo_user_token()
-        return response
-
-# auth.py — SP fallback for scope errors (added in PR #7)
-def get_service_principal_client() -> WorkspaceClient:
-    """Bypass OBO for ops requiring scopes the user token lacks."""
-    return _get_default_client()
-
-# genie_client.py — every API function repeats this pattern
-try:
-    return _get_space_with_client(client, genie_space_id)
-except Exception as e:
-    if _is_scope_error(e):
-        sp_client = get_service_principal_client()
-        return _get_space_with_client(sp_client, genie_space_id)
-
-# In streaming generators:
-if user_token:
-    set_obo_user_token(user_token)  # Must re-establish in generator!
+@scorer.tool(description="Run IQ scan on a Genie Space")
+async def scan_space(space_id: str, request: AgentRequest) -> dict:
+    with obo_context(request.user_context.access_token):
+        # Existing scanner.py works as-is — get_workspace_client() returns OBO client
+        result = scanner.calculate_score(space_id)
 ```
 
-**After** (`@app_agent` handles it):
-```python
-@app_agent(name="genie-scorer", ...)
-async def scorer(request: AgentRequest) -> AgentResponse:
-    # request.user_context.access_token is automatically available
-    # No ContextVar management, no SP fallback boilerplate
-    ...
-```
+### 3. Optional AI Dev Kit integration
 
-**Impact:** ~30 lines of middleware + SP fallback pattern duplicated across every API call → zero.
+Where applicable, agents can use `databricks-tools-core` as drop-in replacements:
 
-### 3. UC Client + SQL Executor → `databricks-tools-core`
+| Existing service | AI Dev Kit equivalent |
+|---------|-------------|
+| `backend/services/uc_client.py` | `databricks_tools_core.unity_catalog` |
+| SQL execution in various services | `databricks_tools_core.sql` |
+| Warehouse auto-detection | `get_best_warehouse()` |
 
-| Current | Lines | Replacement |
-|---------|-------|-------------|
-| `backend/services/uc_client.py` | 60 | `from databricks_tools_core.unity_catalog import list_catalogs, list_schemas, list_tables` |
-| `backend/sql_executor.py` | 220 | `from databricks_tools_core.sql import execute_sql, get_best_warehouse` |
-| Warehouse auto-detection | 30 | `get_best_warehouse()` |
-
-**Impact:** 310 lines deleted, replaced by maintained library functions.
+This is optional and incremental — agents can import existing services or AI Dev Kit functions interchangeably.
 
 ---
 
@@ -342,89 +235,43 @@ Other workspace apps can discover and call these agents using `AgentDiscovery`.
 
 ---
 
-## Migration Path (Phased, Backwards-Compatible)
+## Implementation Roadmap
 
-### Phase 1: Scaffolding + Architecture Doc ← **This PR**
+Each phase adds a working agent. The monolith continues to serve production throughout.
 
-- Architecture proposal for review
+### Phase 1: Scaffolds + Architecture ← **This PR**
+
+- Agent scaffolds with tool signatures and source traceability
 - `agents.yaml` deployment config
-- Skeleton `app.py` + `app.yaml` for each agent
-- No behavior changes to existing monolith
+- Shared modules: `auth_bridge.py`, `lakebase_client.py`, `sp_fallback.py`
+- This document
 
-### Phase 2: Extract genie-scorer (lowest risk)
+### Phase 2: Wire up genie-scorer (lowest risk)
 
-**Why first:** No LLM calls, no streaming, no sessions — pure rule-based scoring. Validates the `@app_agent` pattern with minimal risk.
+**Why first:** No LLM calls, no streaming, no sessions — pure rule-based scoring. Validates the `@app_agent` + `obo_context()` pattern end-to-end.
 
-Files moved:
-- `backend/services/scanner.py` → `agents/scorer/scanner.py` (as-is)
-- Relevant Lakebase functions → `agents/scorer/lakebase.py`
+- Agent tool implementations call `backend/services/scanner.py` directly
+- Deploy alongside monolith, verify via `/invocations` and MCP
 
-What gets deleted from monolith:
-- Scan/history/star endpoints from `backend/routers/spaces.py` (~80 lines)
+### Phase 3: Wire up genie-fixer (streaming + LLM)
 
-### Phase 3: Extract genie-fixer (streaming + LLM, medium complexity)
+Validates SSE streaming through `@app_agent` + LLM tool calling.
 
-**Why second:** Streaming SSE + LLM calls, but simpler than creator (no sessions, no 16 tools).
-
-Files moved:
-- `backend/services/fix_agent.py` → `agents/fixer/fix_agent.py`
-- Fix prompt → `agents/fixer/prompts.py`
-
-Validates: Streaming via async generator → SSE (auto-handled by `@app_agent`)
-
-### Phase 4: Extract genie-analyzer (streaming + LLM, high complexity)
-
-Files moved:
-- `backend/services/analyzer.py` → `agents/analyzer/analyzer.py`
-- Analysis prompts → `agents/analyzer/prompts/`
+### Phase 4: Wire up genie-analyzer (streaming + LLM, multi-tool)
 
 Tools: `fetch_space`, `analyze_section`, `analyze_all`, `query_genie`, `execute_sql`
 
-### Phase 5: Extract genie-optimizer
-
-Files moved:
-- `backend/services/optimizer.py` → `agents/optimizer/optimizer.py`
-- Benchmark labeling logic → `agents/optimizer/labeling.py`
+### Phase 5: Wire up genie-optimizer
 
 Tools: `generate_suggestions`, `merge_config`, `label_benchmark`
 
-### Phase 6: Extract genie-creator (most complex, last)
+### Phase 6: Wire up genie-creator (most complex)
 
-**Why last:** 16 tools, session persistence, complex tool-calling loop with message compaction. Hardest extraction.
+16 tools, session persistence, complex tool-calling loop. Pydantic schemas (in `agents/creator/schemas.py`) replace hand-written JSON tool definitions.
 
-Key change: 16 hand-coded tool definitions become `@creator.tool()` decorators:
-```python
-@creator.tool(description="List Unity Catalog catalogs")
-async def discover_catalogs() -> dict:
-    from databricks_tools_core.unity_catalog import list_catalogs
-    return {"catalogs": list_catalogs()}
-```
+### Phase 7: Supervisor + frontend proxy
 
-What stays custom: Dynamic prompt assembly, session persistence, message compaction, config generation/validation. These are domain logic.
-
-What gets replaced:
-- Tool definition boilerplate (~580 lines of JSON schemas → auto-generated from function signatures)
-- `handle_tool_call()` dispatcher (~40 lines → auto-routing)
-- OBO middleware → `request.user_context`
-
-### Phase 7: Supervisor + Frontend
-
-The supervisor becomes a thin shell that:
-1. Serves the React SPA (static files)
-2. Routes API calls to sub-agents
-3. Handles settings and auth endpoints
-
-Frontend changes: **Minimal.** API client (`frontend/src/lib/api.ts`) keeps hitting the same paths. The supervisor proxies to sub-agents transparently.
-
-### Phase 8: AI Dev Kit Integration
-
-Replace hand-rolled utilities with `databricks-tools-core` across all agents:
-
-| Current | Lines | Replacement |
-|---------|-------|-------------|
-| `backend/services/uc_client.py` | 60 | `databricks_tools_core.unity_catalog` |
-| `backend/sql_executor.py` | 220 | `databricks_tools_core.sql` |
-| Warehouse auto-detection in sql_executor | 30 | `get_best_warehouse()` |
+Optional: if agent deployment becomes the primary mode, add a supervisor that serves the React SPA and proxies API calls to sub-agents. The frontend stays unchanged — same API paths, same behavior.
 
 ---
 
@@ -448,18 +295,13 @@ This replaces the current "manual curl and check" testing with automated, repeat
 
 ---
 
-## Integration Challenges — Concrete Solutions
+## Shared Modules
 
-The three auth systems that need bridging:
-- **Monolith auth** (`backend/services/auth.py:25`): `_obo_client` ContextVar → `WorkspaceClient`
-- **`@app_agent`** (`dbx_agent_app/core/types.py:32`): `request.user_context` → `UserContext` with `.access_token`
-- **`databricks-tools-core`** (`databricks_tools_core/auth.py:35-36`): `_host_ctx`/`_token_ctx` ContextVars via `set_databricks_auth()`
+The agent layer includes shared utilities in `agents/_shared/` that handle the integration between `@app_agent` and existing backend services.
 
-### 1. OBO Auth Bridge → `agents/_shared/auth_bridge.py`
+### 1. Auth Bridge → `agents/_shared/auth_bridge.py`
 
-**Problem:** Each agent receives `request.user_context` from `@app_agent`, but domain logic calls `get_workspace_client()` from the monolith's auth module. During migration, both patterns need to work. And `databricks-tools-core` functions use their own separate ContextVars.
-
-**Solution:** `obo_context()` context manager that sets up all three auth systems in one `with` block:
+`obo_context()` is a context manager that bridges `@app_agent`'s `request.user_context` into the existing `get_workspace_client()` pattern, plus `databricks-tools-core` ContextVars. This lets agent tools call existing domain logic without modification:
 
 ```python
 from agents._shared.auth_bridge import obo_context
@@ -477,9 +319,7 @@ For streaming generators, capture the token before the generator starts and re-e
 
 ### 2. Complex Tool Schemas → `agents/creator/schemas.py`
 
-**Problem:** `generate_config` has 11 parameters with 4-5 nesting levels (tables → column configs, example SQLs → parameters, etc.). `@app_agent`'s schema generator only handles primitives. The monolith defines these schemas as **~580 lines of hand-written JSON** in `create_agent_tools.py` — brittle, hard to maintain, and easy to get out of sync with the runtime code.
-
-**Solution:** **~80 lines of Pydantic models** that auto-generate the equivalent JSON Schema via `.model_json_schema()` and double as runtime validation:
+For tools with deeply nested parameters (like `generate_config` with 11 params across 4-5 nesting levels), Pydantic models provide the JSON Schema and runtime validation in ~80 lines:
 
 ```python
 from agents.creator.schemas import GenerateConfigArgs
@@ -492,13 +332,11 @@ async def generate_config(**kwargs) -> dict:
     args = GenerateConfigArgs(**kwargs)  # Validate at runtime
 ```
 
-580 lines of hand-maintained JSON → 80 lines of Pydantic models. Schema and validation are always in sync because they come from the same source.
+Schema and validation stay in sync because they come from the same source.
 
-### 3. Frontend Transparency → `agents/supervisor/proxy.py`
+### 3. Supervisor Proxy → `agents/supervisor/proxy.py`
 
-**Problem:** The React SPA makes 28 API calls to `/api/*` that route to 5 different sub-agents after decomposition. The frontend should not change.
-
-**Solution:** Ordered route table with prefix matching, glob support for path parameters, and SSE stream detection:
+If agents are deployed independently, the supervisor proxies frontend API calls to the correct agent. Ordered route table with prefix matching, glob support for path parameters, and SSE stream detection:
 
 ```python
 ROUTE_TABLE = [
@@ -513,11 +351,9 @@ ROUTE_TABLE = [
 
 SSE streams are detected by `content-type: text/event-stream` and forwarded as chunked bytes. OBO headers pass through automatically.
 
-### 4. SP Fallback Decorator → `agents/_shared/sp_fallback.py`
+### 4. SP Fallback → `agents/_shared/sp_fallback.py`
 
-**Problem:** The `_is_scope_error()` + retry-with-SP pattern is duplicated across `genie_client.py` and `spaces.py`. Each agent that calls Genie APIs needs this pattern.
-
-**Solution:** `@with_sp_fallback` decorator and `genie_api_call()` convenience function:
+Centralizes the SP-fallback pattern for Genie API calls where the user's OBO token may lack required OAuth scopes:
 
 ```python
 from agents._shared.sp_fallback import genie_api_call
@@ -529,9 +365,7 @@ space = genie_api_call("GET", f"/api/2.0/genie/spaces/{space_id}",
 
 ### 5. Shared Lakebase Pool → `agents/_shared/lakebase_client.py`
 
-**Problem:** Multiple agents need Lakebase (scorer for scores/stars, creator for sessions). Each runs as a separate Databricks App with its own credentials.
-
-**Solution:** Shared pool lifecycle + idempotent DDL per agent:
+Shared asyncpg pool lifecycle with idempotent DDL. Each agent initializes its own pool from its own env vars:
 
 ```python
 from agents._shared.lakebase_client import init_pool, SCORER_DDL
@@ -544,20 +378,16 @@ Each agent initializes its own pool from its own env vars. Domain-specific query
 
 ---
 
-## Estimated Impact
+## What You Get
 
-| Metric | Before | After |
-|--------|--------|-------|
-| Backend Python lines | ~10,178 | ~7,100 (30% reduction from eliminating boilerplate) |
-| Files deleted | 0 | 5 (routers + utility wrappers replaced by libraries) |
-| Tool definition boilerplate | ~580 lines JSON schemas | 0 (auto-generated from type hints) |
-| Dispatch table code | ~40 lines | 0 (auto-routing by `@app_agent`) |
-| OBO auth code | ~30 lines middleware | 0 (handled by framework) |
-| Auto-generated endpoints | 0 | 30+ (5 agents × 6 endpoints each: /invocations, /health, agent.json, MCP, etc.) |
-| MCP servers | 0 | 5 (one per agent, free) |
-| Agent discovery | None | A2A protocol, workspace-wide |
-| Eval support | Manual testing | `mlflow.genai.evaluate()` via bridge |
-| Deployment | Single `databricks apps deploy` | `dbx-agent-app deploy --config agents.yaml` (per-agent or all) |
+| Capability | Today | With agent layer |
+|------------|-------|-----------------|
+| Auto-generated endpoints | — | 30+ (5 agents × `/invocations`, `/health`, `agent.json`, MCP, etc.) |
+| MCP servers | — | 5 (one per agent, free) |
+| Agent discovery | — | A2A protocol, workspace-wide |
+| Eval support | Manual testing | `mlflow.genai.evaluate()` via `app_predict_fn()` bridge |
+| Independent deployment | — | `dbx-agent-app deploy --config agents.yaml --agent scorer` |
+| Tool definitions | Hand-written JSON schemas | Auto-generated from function signatures + Pydantic models |
 
 ---
 
@@ -577,33 +407,23 @@ Each agent initializes its own pool from its own env vars. Domain-specific query
 
 ## Files in This PR
 
-### New files — scaffolds + deployment
-- `docs/architecture-proposal.md` — this document
+All files are additive. No changes to existing `backend/`, `frontend/`, `packages/`, or `scripts/`.
+
+### Agent scaffolds
 - `agents.yaml` — multi-agent deployment config
-- `agents/scorer/app.py` — scorer agent scaffold
-- `agents/scorer/app.yaml` — scorer Databricks Apps config
-- `agents/analyzer/app.py` — analyzer agent scaffold
-- `agents/analyzer/app.yaml` — analyzer Databricks Apps config
-- `agents/creator/app.py` — creator agent scaffold
-- `agents/creator/app.yaml` — creator Databricks Apps config
-- `agents/optimizer/app.py` — optimizer agent scaffold
-- `agents/optimizer/app.yaml` — optimizer Databricks Apps config
-- `agents/fixer/app.py` — fixer agent scaffold
-- `agents/fixer/app.yaml` — fixer Databricks Apps config
+- `agents/scorer/app.py` + `app.yaml` — scorer agent (wraps scanner.py)
+- `agents/analyzer/app.py` + `app.yaml` — analyzer agent (wraps analyzer.py)
+- `agents/creator/app.py` + `app.yaml` — creator agent (wraps create_agent.py)
+- `agents/creator/schemas.py` — Pydantic models for complex tool parameters
+- `agents/optimizer/app.py` + `app.yaml` — optimizer agent (wraps optimizer.py)
+- `agents/fixer/app.py` + `app.yaml` — fixer agent (wraps fix_agent.py)
+- `agents/supervisor/proxy.py` — frontend-transparent proxy with SSE support
 
-### New files — integration challenge solutions
-- `agents/_shared/__init__.py` — shared utilities package
-- `agents/_shared/auth_bridge.py` — Challenge 1: OBO auth context manager bridging all 3 auth systems
-- `agents/_shared/sp_fallback.py` — Challenge 4: SP fallback decorator for Genie API scope errors
-- `agents/_shared/lakebase_client.py` — Challenge 5: Shared Lakebase pool with idempotent DDL
-- `agents/creator/schemas.py` — Challenge 2: Pydantic models replacing ~580 lines of JSON schemas
-- `agents/supervisor/__init__.py` — supervisor package
-- `agents/supervisor/proxy.py` — Challenge 3: Frontend-transparent proxy with SSE support
+### Shared modules
+- `agents/_shared/auth_bridge.py` — OBO auth context manager bridging `@app_agent` ↔ existing services
+- `agents/_shared/sp_fallback.py` — SP fallback decorator for Genie API scope errors
+- `agents/_shared/lakebase_client.py` — Shared Lakebase pool with idempotent DDL
 
-### Modified files
-- `agents/scorer/app.py` — wired up auth_bridge, sp_fallback, and lakebase_client imports
-- `agents/creator/app.py` — uses Pydantic schema override for generate_config/present_plan
-- `docs/architecture-proposal.md` — replaced placeholder challenge descriptions with concrete solutions
-
-### No changes to existing monolith
-The existing `backend/` code is untouched. All new files are additive.
+### Documentation
+- `docs/architecture-proposal.md` — this document
+- `docs/genierx-spec.md` — GenieRX analyzer/recommender specification
