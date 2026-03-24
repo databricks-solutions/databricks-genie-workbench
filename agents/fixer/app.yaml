@@ -1,0 +1,6 @@
+command: ["uvicorn", "agents.fixer.app:app", "--host", "0.0.0.0", "--port", "8000"]
+env:
+  - name: DATABRICKS_HOST
+    value: ""
+  - name: LLM_MODEL
+    value: "databricks-claude-sonnet-4-6"

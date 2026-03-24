@@ -1,0 +1,10 @@
+command: ["uvicorn", "agents.optimizer.app:app", "--host", "0.0.0.0", "--port", "8000"]
+env:
+  - name: DATABRICKS_HOST
+    value: ""
+  - name: SQL_WAREHOUSE_ID
+    valueFrom: sql-warehouse
+  - name: LLM_MODEL
+    value: "databricks-claude-sonnet-4-6"
+  - name: GENIE_TARGET_DIRECTORY
+    value: "/Shared/"
