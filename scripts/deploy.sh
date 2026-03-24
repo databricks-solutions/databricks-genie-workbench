@@ -303,6 +303,7 @@ echo "  Patching app.yaml on workspace with GSO config..."
 PATCHED_APP_YAML="/tmp/app.yaml.patched"
 cp "$PROJECT_DIR/app.yaml" "$PATCHED_APP_YAML"
 sed -i.bak "s|__GSO_CATALOG__|$CATALOG|" "$PATCHED_APP_YAML"
+sed -i.bak "s|__LAKEBASE_INSTANCE__|$LAKEBASE_INSTANCE|" "$PATCHED_APP_YAML"
 if [ -n "$JOB_ID" ]; then
     sed -i.bak "s|__GSO_JOB_ID__|$JOB_ID|" "$PATCHED_APP_YAML"
 fi
@@ -318,7 +319,7 @@ fi
 
 databricks workspace import "$WS_PATH/app.yaml" \
     --profile "$PROFILE" --file "$PATCHED_APP_YAML" --format AUTO --overwrite 2>/dev/null && \
-echo "  ✓ app.yaml patched (GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>})" || \
+echo "  ✓ app.yaml patched (GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>}, LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE)" || \
 echo "  ⚠ Could not patch app.yaml — config may not be set"
 
 # Sync _metadata.py — gitignored so sync skips it,

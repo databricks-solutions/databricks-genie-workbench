@@ -39,7 +39,10 @@ def _generate_credential() -> tuple[str, str] | None:
         from backend.services.auth import get_service_principal_client
         client = get_service_principal_client()
 
-        instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME", "genie-workbench")
+        instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME", "")
+        if not instance_name:
+            logger.info("LAKEBASE_INSTANCE_NAME not set — cannot generate database credential")
+            return None
         cred = client.database.generate_database_credential(
             request_id=str(uuid.uuid4()),
             instance_names=[instance_name],
@@ -191,7 +194,10 @@ async def init_pool():
     # For provisioned Lakebase, resolve hostname from instance if LAKEBASE_HOST
     # is a resource path (injected by Apps platform).
     if host.startswith("projects/") or not host.endswith(".com"):
-        instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME", "genie-workbench")
+        instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME", "")
+        if not instance_name:
+            logger.warning("LAKEBASE_HOST requires resolution but LAKEBASE_INSTANCE_NAME is not set")
+            return
         logger.info(f"LAKEBASE_HOST is '{host}', resolving from instance '{instance_name}'...")
         try:
             from backend.services.auth import get_service_principal_client
