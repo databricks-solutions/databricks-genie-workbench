@@ -186,6 +186,10 @@ if [ "$UPDATE_ONLY" = "true" ]; then
     STEP=3
     echo ""
     echo "▸ Step $STEP/$TOTAL_STEPS: Syncing files to workspace..."
+    # Clean sync: delete workspace dir first so deleted local files don't linger.
+    # databricks sync --full only uploads — it never removes stale remote files.
+    echo "  Cleaning stale workspace files..."
+    databricks workspace delete "$WS_PATH" --profile "$PROFILE" --recursive 2>/dev/null || true
     databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full
     # frontend/dist/ is gitignored so databricks sync skips it — upload explicitly
     echo "  Uploading frontend build artifacts..."
@@ -219,6 +223,10 @@ else
     STEP=4
     echo ""
     echo "▸ Step $STEP/$TOTAL_STEPS: Syncing files to workspace..."
+    # Clean sync: delete workspace dir first so deleted local files don't linger.
+    # databricks sync --full only uploads — it never removes stale remote files.
+    echo "  Cleaning stale workspace files..."
+    databricks workspace delete "$WS_PATH" --profile "$PROFILE" --recursive 2>/dev/null || true
     databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full
     # frontend/dist/ is gitignored so databricks sync skips it — upload explicitly
     echo "  Uploading frontend build artifacts..."

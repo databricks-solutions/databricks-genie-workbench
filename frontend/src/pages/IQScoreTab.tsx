@@ -2,7 +2,7 @@
  * IQScoreTab - Maturity S-curve + side-by-side check columns + recommendations.
  */
 import { useState } from "react"
-import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, ChevronDown, ChevronRight, Check, X, Settings2 } from "lucide-react"
+import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, ChevronDown, ChevronRight, Check, X } from "lucide-react"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import { MaturityCurve } from "@/components/MaturityCurve"
 import type { ScanResult, CheckDetail } from "@/types"
@@ -14,10 +14,9 @@ interface IQScoreTabProps {
   spaceId: string
   spaceConfig?: Record<string, unknown>
   onFixWithAgent?: () => void
-  onRunOptimization?: () => void
 }
 
-export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onRunOptimization }: IQScoreTabProps) {
+export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent }: IQScoreTabProps) {
   const [checksExpanded, setChecksExpanded] = useState(false)
 
   if (!scanResult) {
@@ -173,26 +172,15 @@ export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onR
           </div>
 
           {/* Action buttons */}
-          {scanResult.findings.length > 0 && (onFixWithAgent || onRunOptimization) && (
+          {scanResult.findings.length > 0 && onFixWithAgent && (
             <div className="mt-4 pt-4 border-t border-default flex items-center gap-2">
-              {onFixWithAgent && (
-                <button
-                  onClick={onFixWithAgent}
-                  className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
-                >
-                  <Zap className="w-4 h-4" />
-                  Fix with AI Agent
-                </button>
-              )}
-              {onRunOptimization && (
-                <button
-                  onClick={onRunOptimization}
-                  className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-default text-secondary hover:bg-surface-secondary transition-colors"
-                >
-                  <Settings2 className="w-4 h-4" />
-                  Run Optimization
-                </button>
-              )}
+              <button
+                onClick={onFixWithAgent}
+                className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
+              >
+                <Zap className="w-4 h-4" />
+                Fix with AI Agent
+              </button>
             </div>
           )}
         </div>

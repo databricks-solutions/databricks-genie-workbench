@@ -187,7 +187,7 @@ export function AutoOptimizeTab({ spaceId }: AutoOptimizeTabProps) {
       <Card>
         <CardContent className="py-12 text-center">
           <Info className="w-10 h-10 text-muted mx-auto mb-4" />
-          <h3 className="text-lg font-semibold text-primary mb-2">Auto-Optimize is not configured</h3>
+          <h3 className="text-lg font-semibold text-primary mb-2">Optimize is not configured</h3>
           <p className="text-muted text-sm">
             Contact your administrator to set GSO_CATALOG and GSO_JOB_ID for this deployment.
           </p>

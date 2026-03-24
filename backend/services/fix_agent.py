@@ -14,7 +14,6 @@ from typing import AsyncGenerator
 from backend.services.llm_utils import call_serving_endpoint, get_llm_model
 from backend.services.genie_client import get_genie_space, get_serialized_space
 from backend.services.auth import get_workspace_client, run_in_context
-from backend.models import OptimizationSuggestion
 from backend.prompts import get_fix_agent_prompt
 
 logger = logging.getLogger(__name__)
