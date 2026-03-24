@@ -1083,7 +1083,7 @@ async def get_run(run_id: str):
     for it in iterations:
         it_num = int(it.get("iteration", -1))
         if it.get("eval_scope") == "full" and it_num > 0:
-            accuracy = it.get("overall_accuracy")
+            accuracy = _safe_float(it.get("overall_accuracy"))
             if accuracy is not None and (optimized_score is None or accuracy > optimized_score):
                 optimized_score = accuracy
                 best_iteration = it_num
@@ -1093,7 +1093,7 @@ async def get_run(run_id: str):
         for it in iterations:
             it_num = int(it.get("iteration", -1))
             if it_num > 0:
-                accuracy = it.get("overall_accuracy")
+                accuracy = _safe_float(it.get("overall_accuracy"))
                 if accuracy is not None and (optimized_score is None or accuracy > optimized_score):
                     optimized_score = accuracy
                     best_iteration = it_num
@@ -1380,6 +1380,13 @@ async def list_iterations(run_id: str):
             f"SELECT {_ITER_COLS} FROM {_delta_table('genie_opt_iterations')} "
             f"WHERE run_id = '{run_id}' ORDER BY iteration ASC"
         )
+    # Coerce key numeric fields — Delta fallback may return strings
+    for it in iterations:
+        it["overall_accuracy"] = _safe_float(it.get("overall_accuracy"))
+        it["total_questions"] = _safe_int(it.get("total_questions")) or 0
+        it["correct_count"] = _safe_int(it.get("correct_count")) or 0
+        it["iteration"] = _safe_int(it.get("iteration")) or 0
+        it["lever"] = _safe_int(it.get("lever"))
     return iterations
 
 

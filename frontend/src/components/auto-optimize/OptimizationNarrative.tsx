@@ -43,8 +43,9 @@ function parseReflection(it: GSOIterationResult): ReflectionEntry | null {
 }
 
 function NarrativeEntry({ entry }: { entry: ReflectionEntry }) {
-  const deltaPct = entry.accuracyDelta != null
-    ? (Math.abs(entry.accuracyDelta) > 1 ? entry.accuracyDelta : entry.accuracyDelta * 100)
+  const rawDelta = entry.accuracyDelta != null ? Number(entry.accuracyDelta) : null
+  const deltaPct = rawDelta != null && !isNaN(rawDelta)
+    ? (Math.abs(rawDelta) > 1 ? rawDelta : rawDelta * 100)
     : null
 
   return (

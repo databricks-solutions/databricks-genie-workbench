@@ -16,9 +16,10 @@ function parseScoresJson(json: string | Record<string, number> | null | undefine
   }
 }
 
-function toPct(v: number): string {
-  const n = v <= 1 ? v * 100 : v
-  return `${n.toFixed(1)}%`
+function toPct(v: number | string): string {
+  const n = typeof v === "string" ? parseFloat(v) : v
+  if (isNaN(n)) return "0.0%"
+  return `${(n <= 1 ? n * 100 : n).toFixed(1)}%`
 }
 
 export function JudgePassRates({ iterations, baselineJudgeScores }: JudgePassRatesProps) {

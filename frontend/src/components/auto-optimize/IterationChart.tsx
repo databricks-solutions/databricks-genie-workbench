@@ -45,7 +45,7 @@ function buildChartData(iterations: GSOIterationResult[]): ChartPoint[] {
           : it.lever != null && it.lever > 0
             ? (LEVER_NAMES[it.lever] ?? `Lever ${it.lever}`)
             : `Iter ${it.iteration}`,
-      accuracy: it.overall_accuracy <= 1 ? it.overall_accuracy * 100 : it.overall_accuracy,
+      accuracy: Number(it.overall_accuracy) <= 1 ? Number(it.overall_accuracy) * 100 : Number(it.overall_accuracy),
       totalQuestions: it.total_questions,
     }))
 }
