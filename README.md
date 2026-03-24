@@ -61,10 +61,22 @@ The installer will:
 
 Without Lakebase, scan results and starred spaces are lost on app restart.
 
+**Create a Lakebase instance** (if you don't have one):
+1. In the workspace UI, go to **Catalog → Lakebase** (or **SQL → Lakebase**)
+2. Click **Create** → name it (e.g. `genie-workbench`), capacity **CU_1**
+
+**Grant the app's SP access:**
+1. Go to **Databases → your instance → Roles**
+2. Find the app's SP (e.g. `app-xxxx genie-workbench-v0`) and grant **CREATEDB** attribute
+3. Go to **Databases → your instance → Permissions** and grant the SP **Can manage**
+
+**Attach to your app:**
 1. Open **Databricks Apps UI** → your app → **Resources**
-2. Click **+ Add resource** → **PostgreSQL (Lakebase)**
-3. Name it `postgres` with **CAN_CONNECT_AND_CREATE** permission
-4. Save — the app auto-detects Lakebase and creates tables on next request (no redeploy needed)
+2. Click **+ Add resource** → **PostgreSQL (Lakebase)** → select your instance
+3. Set resource key to `postgres` with **CAN_CONNECT_AND_CREATE** permission
+4. Save and **redeploy** — the app creates a `genie` schema and all tables automatically
+
+The app stores data in the `genie` schema within the `databricks_postgres` database. Tables: `scan_results`, `starred_spaces`, `seen_spaces`, `optimization_runs`, `agent_sessions`.
 
 ## Manual Setup (without installer)
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
 from typing import Any
@@ -14,6 +13,7 @@ from pydantic import BaseModel
 
 from backend.services.auth import get_workspace_client, get_service_principal_client, get_databricks_host
 from backend.services import gso_lakebase
+from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
 from genie_space_optimizer.integration import (
     trigger_optimization,
     apply_optimization,
@@ -120,52 +120,13 @@ def _build_gso_config() -> IntegrationConfig:
     )
 
 
-# ---------------------------------------------------------------------------
-# Type coercion helpers (ported from GSO routes/runs.py)
-# ---------------------------------------------------------------------------
-
-
-def _safe_int(val: Any) -> int | None:
-    if val is None:
-        return None
-    try:
-        f = float(val)
-        if not math.isfinite(f):
-            return None
-        return int(f)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_float(val: Any) -> float | None:
-    if val is None:
-        return None
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _finite(val: Any, default: float = 0.0) -> float:
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
-
-
-def _safe_json_parse(val: Any) -> Any:
-    if val is None:
-        return None
-    if isinstance(val, (dict, list)):
-        return val
-    if isinstance(val, str):
-        try:
-            return json.loads(val)
-        except (json.JSONDecodeError, TypeError):
-            return val
-    return val
+# Type coercion helpers — imported from genie_space_optimizer.backend.utils
+# Aliases preserve call-site compatibility with the underscore-prefixed names
+# that were used throughout this file before the import was added.
+_safe_int = safe_int
+_safe_float = safe_float
+_finite = safe_finite
+_safe_json_parse = safe_json_parse
 
 
 def _parse_detail(stage: dict) -> dict:

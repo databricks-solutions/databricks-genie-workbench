@@ -79,7 +79,7 @@ async def _ensure_table() -> None:
     try:
         async with pool.acquire() as conn:
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS agent_sessions (
+                CREATE TABLE IF NOT EXISTS genie.agent_sessions (
                     session_id   TEXT PRIMARY KEY,
                     history      JSONB NOT NULL DEFAULT '[]'::jsonb,
                     space_config JSONB,
@@ -91,7 +91,7 @@ async def _ensure_table() -> None:
             """)
             await conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_agent_sessions_last_active
-                ON agent_sessions (last_active)
+                ON genie.agent_sessions (last_active)
             """)
         logger.info("agent_sessions table ready")
     except Exception as e:
@@ -106,7 +106,7 @@ async def _persist(session: AgentSession) -> None:
     try:
         async with pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO agent_sessions
+                INSERT INTO genie.agent_sessions
                     (session_id, history, space_config, space_id, space_url, created_at, last_active)
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (session_id) DO UPDATE SET
@@ -136,7 +136,7 @@ async def _load(session_id: str) -> AgentSession | None:
     try:
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM agent_sessions WHERE session_id = $1",
+                "SELECT * FROM genie.agent_sessions WHERE session_id = $1",
                 session_id,
             )
         if row is None:
@@ -216,7 +216,7 @@ async def delete_session_async(session_id: str) -> bool:
         try:
             async with pool.acquire() as conn:
                 result = await conn.execute(
-                    "DELETE FROM agent_sessions WHERE session_id = $1",
+                    "DELETE FROM genie.agent_sessions WHERE session_id = $1",
                     session_id,
                 )
                 if "DELETE 1" in result:

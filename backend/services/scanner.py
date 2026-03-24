@@ -4,6 +4,7 @@
 12 checks, 1 point each.
 """
 
+import asyncio
 import logging
 import os
 from datetime import datetime
@@ -17,6 +18,11 @@ logger = logging.getLogger(__name__)
 
 # First 10 checks are config checks; the last 2 are optimization checks.
 CONFIG_CHECK_COUNT = 10
+
+# Terminal GSO run statuses that indicate a completed optimization.
+# Subset of auto_optimize._TERMINAL_RUN_STATUSES — only includes statuses
+# where best_accuracy is meaningful for IQ scoring.
+_GSO_TERMINAL = {"CONVERGED", "STALLED", "MAX_ITERATIONS"}
 
 
 def get_maturity_label(checks: list[dict]) -> str:
@@ -211,57 +217,63 @@ async def scan_space(space_id: str, user_token: Optional[str] = None) -> dict:
         logger.error(f"Failed to fetch space {space_id}: {e}")
         raise ValueError(f"Cannot scan space {space_id}: {e}")
 
-    # Fetch latest optimization run for Trusted tier scoring
-    optimization_run = None
-    try:
-        optimization_run = await get_latest_optimization_run(space_id)
-    except Exception as e:
-        logger.warning(f"Failed to fetch optimization run for {space_id}: {e}")
+    # Fetch optimization runs from both sources concurrently
+    async def _fetch_opt_run():
+        try:
+            return await get_latest_optimization_run(space_id)
+        except Exception as e:
+            logger.warning(f"Failed to fetch optimization run for {space_id}: {e}")
+            return None
 
-    # Also check for Auto-Optimize (GSO) runs — use the best result from either source
-    try:
-        from backend.services import gso_lakebase
-        gso_runs = await gso_lakebase.load_gso_runs_for_space(space_id)
+    async def _fetch_gso_runs():
+        try:
+            from backend.services import gso_lakebase
+            runs = await gso_lakebase.load_gso_runs_for_space(space_id)
+            # Delta table fallback when Lakebase synced tables are empty
+            if not runs:
+                catalog = os.environ.get("GSO_CATALOG", "")
+                schema = os.environ.get("GSO_SCHEMA", "genie_space_optimizer")
+                wh_id = os.environ.get("GSO_WAREHOUSE_ID") or os.environ.get("SQL_WAREHOUSE_ID", "")
+                if catalog and wh_id:
+                    try:
+                        from genie_space_optimizer.common.warehouse import sql_warehouse_query
+                        from backend.services.auth import get_workspace_client
+                        ws = get_workspace_client()
+                        df = sql_warehouse_query(
+                            ws, wh_id,
+                            f"SELECT run_id, space_id, status, best_accuracy, completed_at, started_at "
+                            f"FROM {catalog}.{schema}.genie_opt_runs "
+                            f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
+                        )
+                        if not df.empty:
+                            runs = df.to_dict(orient="records")
+                    except Exception as e:
+                        logger.warning(f"GSO Delta fallback failed for {space_id}: {e}")
+            return runs or []
+        except Exception as e:
+            logger.warning(f"Failed to check GSO runs for {space_id}: {e}")
+            return []
 
-        # Delta table fallback when Lakebase synced tables are empty
-        if not gso_runs:
-            catalog = os.environ.get("GSO_CATALOG", "")
-            schema = os.environ.get("GSO_SCHEMA", "genie_space_optimizer")
-            wh_id = os.environ.get("GSO_WAREHOUSE_ID") or os.environ.get("SQL_WAREHOUSE_ID", "")
-            if catalog and wh_id:
-                try:
-                    from genie_space_optimizer.common.warehouse import sql_warehouse_query
-                    from backend.services.auth import get_workspace_client
-                    ws = get_workspace_client()
-                    df = sql_warehouse_query(
-                        ws, wh_id,
-                        f"SELECT run_id, space_id, status, best_accuracy, completed_at, started_at "
-                        f"FROM {catalog}.{schema}.genie_opt_runs "
-                        f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
-                    )
-                    if not df.empty:
-                        gso_runs = df.to_dict(orient="records")
-                except Exception as e:
-                    logger.warning(f"GSO Delta fallback failed for {space_id}: {e}")
+    optimization_run, gso_runs = await asyncio.gather(
+        _fetch_opt_run(), _fetch_gso_runs()
+    )
 
-        _GSO_TERMINAL = {"CONVERGED", "STALLED", "MAX_ITERATIONS"}
-        for gso_run in gso_runs:  # already sorted most recent first
-            status = str(gso_run.get("status", "")).upper()
-            best_acc = gso_run.get("best_accuracy")
-            if status in _GSO_TERMINAL and best_acc is not None:
-                acc = float(best_acc)
-                # GSO stores accuracy as percentage (0-100); normalize to 0.0-1.0
-                if acc > 1.0:
-                    acc = acc / 100.0
-                gso_as_opt = {
-                    "accuracy": acc,
-                    "created_at": gso_run.get("completed_at") or gso_run.get("started_at"),
-                }
-                if optimization_run is None or gso_as_opt["accuracy"] > optimization_run.get("accuracy", 0):
-                    optimization_run = gso_as_opt
-                break  # only consider most recent terminal GSO run
-    except Exception as e:
-        logger.warning(f"Failed to check GSO runs for {space_id}: {e}")
+    # Use the best accuracy from either source
+    for gso_run in gso_runs:  # already sorted most recent first
+        status = str(gso_run.get("status", "")).upper()
+        best_acc = gso_run.get("best_accuracy")
+        if status in _GSO_TERMINAL and best_acc is not None:
+            acc = float(best_acc)
+            # GSO stores accuracy as percentage (0-100); normalize to 0.0-1.0
+            if acc > 1.0:
+                acc = acc / 100.0
+            gso_as_opt = {
+                "accuracy": acc,
+                "created_at": gso_run.get("completed_at") or gso_run.get("started_at"),
+            }
+            if optimization_run is None or gso_as_opt["accuracy"] > optimization_run.get("accuracy", 0):
+                optimization_run = gso_as_opt
+            break  # only consider most recent terminal GSO run
 
     scan_result = calculate_score(space_data, optimization_run=optimization_run)
     scan_result["space_id"] = space_id

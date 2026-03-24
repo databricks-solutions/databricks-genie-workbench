@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -22,52 +23,36 @@ _memory_store: dict = {
 _pool = None
 _lakebase_available = False
 _schema_retry_after: float = 0  # timestamp after which we retry schema creation
+_token_refresh_task: asyncio.Task | None = None
+_current_token: str | None = None
+_lakebase_instance_name: str | None = None
 
 
 def _generate_credential() -> tuple[str, str] | None:
-    """Generate Lakebase credentials via Databricks SDK.
+    """Generate Lakebase credentials via the Databricks database credential API.
 
-    The SP has an OAuth role in Lakebase. Its OAuth access token works as
-    the postgres password (same pattern as the Lakebase UI's OAuth connection).
-    The username is the SP's application_id (client_id).
+    Uses the SDK's generate_database_credential() to get a properly-scoped
+    OAuth token for Postgres. Tokens expire after 1 hour.
     """
+    global _current_token
     try:
         from backend.services.auth import get_service_principal_client
         client = get_service_principal_client()
 
-        # The SP's OAuth token works as the postgres password.
-        # Generate an OAuth token directly using client_credentials grant.
-        token = None
-        client_id = client.config.client_id or os.environ.get("DATABRICKS_CLIENT_ID", "")
-        client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET", "")  # gitleaks:allow
-        host = (client.config.host or os.environ.get("DATABRICKS_HOST", "")).rstrip("/")
-
-        if client_id and client_secret and host:
-            import urllib.request
-            import urllib.parse
-            token_url = f"{host}/oidc/v1/token"
-            data = urllib.parse.urlencode({
-                "grant_type": "client_credentials",
-                "client_id": client_id,
-                "client_secret": client_secret,  # gitleaks:allow
-                "scope": "iam.current-user:read iam.groups:read iam.service-principals:read iam.users:read",
-            }).encode()
-            try:
-                req = urllib.request.Request(token_url, data=data,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"})
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    token_resp = json.loads(resp.read())
-                    token = token_resp.get("access_token")
-                if token:
-                    logger.info(f"Generated OAuth token for Lakebase (client_id={client_id[:8]}...)")
-            except Exception as e:
-                logger.debug(f"OAuth token generation failed: {e}")
-
+        instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME", "genie-workbench")
+        cred = client.database.generate_database_credential(
+            request_id=str(uuid.uuid4()),
+            instance_names=[instance_name],
+        )
+        token = cred.token
         if not token:
-            logger.info("Could not obtain SP OAuth token for Lakebase")
+            logger.info("Database credential API returned no token")
             return None
 
-        # Username is the SP's client_id (application_id)
+        _current_token = token
+        logger.info(f"Generated database credential for Lakebase instance '{instance_name}'")
+
+        # Username is the SP's application_id
         user = client.config.client_id or os.environ.get("DATABRICKS_CLIENT_ID", "")
         if not user:
             try:
@@ -80,11 +65,31 @@ def _generate_credential() -> tuple[str, str] | None:
             logger.info("Could not determine SP username for Lakebase")
             return None
 
-        logger.info(f"Using SP OAuth token for Lakebase (user={user[:8]}...)")
+        logger.info(f"Using database credential for Lakebase (user={user[:8]}...)")
         return user, token
     except Exception as e:
         logger.warning(f"Lakebase credential generation failed: {e}")
         return None
+
+
+async def _token_refresh_loop():
+    """Background task to refresh the Lakebase token every 50 minutes (before 1-hour expiry)."""
+    global _current_token
+    while True:
+        await asyncio.sleep(50 * 60)  # 50 minutes
+        try:
+            cred = _generate_credential()
+            if cred:
+                _, token = cred
+                _current_token = token
+                # Update password on all idle connections in the pool
+                if _pool:
+                    await _pool.execute(f"SELECT 1")  # keep pool alive
+                logger.info("Lakebase token refreshed")
+            else:
+                logger.warning("Failed to refresh Lakebase token")
+        except Exception as e:
+            logger.warning(f"Lakebase token refresh error: {e}")
 
 
 async def _ensure_schema():
@@ -99,8 +104,10 @@ async def _ensure_schema():
         return
     try:
         async with _pool.acquire() as conn:
+            # Lakebase restricts the default 'public' schema — use a dedicated schema
+            await conn.execute("CREATE SCHEMA IF NOT EXISTS genie")
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS scan_results (
+                CREATE TABLE IF NOT EXISTS genie.scan_results (
                     id          SERIAL PRIMARY KEY,
                     space_id    VARCHAR(64) NOT NULL,
                     score       INTEGER     NOT NULL CHECK (score >= 0 AND score <= 100),
@@ -113,28 +120,41 @@ async def _ensure_schema():
                 )
             """)
             await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_scan_results_space_id ON scan_results(space_id)"
+                "CREATE INDEX IF NOT EXISTS idx_scan_results_space_id ON genie.scan_results(space_id)"
             )
             await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_scan_results_scanned_at ON scan_results(scanned_at DESC)"
+                "CREATE INDEX IF NOT EXISTS idx_scan_results_scanned_at ON genie.scan_results(scanned_at DESC)"
             )
             await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_scan_results_score ON scan_results(score)"
+                "CREATE INDEX IF NOT EXISTS idx_scan_results_score ON genie.scan_results(score)"
             )
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS starred_spaces (
+                CREATE TABLE IF NOT EXISTS genie.starred_spaces (
                     space_id   VARCHAR(64) PRIMARY KEY,
                     starred_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
                 )
             """)
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS seen_spaces (
+                CREATE TABLE IF NOT EXISTS genie.seen_spaces (
                     space_id   VARCHAR(64) PRIMARY KEY,
                     first_seen TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
                 )
             """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS genie.optimization_runs (
+                    id              SERIAL PRIMARY KEY,
+                    space_id        VARCHAR(64) NOT NULL,
+                    benchmark_total INTEGER NOT NULL,
+                    benchmark_correct INTEGER NOT NULL,
+                    accuracy        REAL NOT NULL,
+                    created_at      TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+                )
+            """)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_optimization_runs_space_id ON genie.optimization_runs(space_id)"
+            )
         _lakebase_available = True
-        logger.info("Lakebase schema ready (3 tables)")
+        logger.info("Lakebase schema ready (4 tables)")
     except Exception as e:
         logger.warning(f"Failed to ensure Lakebase schema: {e}. Falling back to in-memory storage.")
         _lakebase_available = False
@@ -160,7 +180,7 @@ async def init_pool():
     LAKEBASE_HOST and LAKEBASE_PASSWORD as environment variables. Without these,
     the app uses in-memory storage (ephemeral per deployment).
     """
-    global _pool, _lakebase_available
+    global _pool, _lakebase_available, _token_refresh_task, _lakebase_instance_name
 
     host = os.environ.get("LAKEBASE_HOST")
     if not host:
@@ -168,41 +188,31 @@ async def init_pool():
                      "Connect Lakebase via the Databricks Apps UI for persistent storage.")
         return
 
-    # valueFrom: postgres injects the endpoint resource path, not the hostname.
-    # Resolve the actual hostname from the Lakebase API.
-    if host.startswith("projects/"):
-        logger.info(f"LAKEBASE_HOST is a resource path ({host}), resolving hostname...")
+    # For provisioned Lakebase, resolve hostname from instance if LAKEBASE_HOST
+    # is a resource path (injected by Apps platform).
+    if host.startswith("projects/") or not host.endswith(".com"):
+        instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME", "genie-workbench")
+        logger.info(f"LAKEBASE_HOST is '{host}', resolving from instance '{instance_name}'...")
         try:
             from backend.services.auth import get_service_principal_client
-            sp = get_service_principal_client()
-            # Extract the endpoint path up to /endpoints/...
-            # Format: projects/{project}/branches/{branch}/endpoints/{endpoint}
-            parts = host.split("/")
-            # Find the endpoints section and construct the parent path
-            ep_idx = parts.index("endpoints") if "endpoints" in parts else -1
-            if ep_idx >= 0:
-                endpoints_path = "/".join(parts[:ep_idx + 2])  # up to endpoints/{name}
-                parent_path = "/".join(parts[:ep_idx])  # branches path
-                resp = sp.api_client.do("GET", f"/api/2.0/postgres/{parent_path}/endpoints")
-                endpoints = resp.get("endpoints", [])
-                for ep in endpoints:
-                    if ep.get("name", "").startswith(endpoints_path) or ep.get("name") == host:
-                        hosts = ep.get("status", {}).get("hosts", {})
-                        # Use the non-pooled host — the pooled host doesn't support OAuth auth
-                        resolved = hosts.get("host", "")
-                        if resolved:
-                            logger.info(f"Resolved Lakebase host: {resolved}")
-                            host = resolved
-                            break
+            client = get_service_principal_client()
+            instance = client.database.get_database_instance(name=instance_name)
+            resolved = instance.read_write_dns
+            if resolved:
+                logger.info(f"Resolved Lakebase host: {resolved}")
+                host = resolved
+            else:
+                logger.warning("Instance has no read_write_dns — is it stopped?")
+                return
         except Exception as e:
-            logger.warning(f"Could not resolve Lakebase host from resource path: {e}")
+            logger.warning(f"Could not resolve Lakebase host from instance: {e}")
             return
 
     password = os.environ.get("LAKEBASE_PASSWORD")
     user = os.environ.get("LAKEBASE_USER", "postgres")
 
     if not password:
-        # Try generating credentials via Databricks SDK
+        # Generate credentials via Databricks database credential API
         cred = _generate_credential()
         if cred:
             user, password = cred
@@ -211,7 +221,7 @@ async def init_pool():
                            "Ensure the Lakebase postgres resource is properly connected in the Apps UI.")
             return
 
-    logger.info(f"Connecting to Lakebase: host={host}, user={user[:12]}..., port={os.environ.get('LAKEBASE_PORT', '5432')}, db={os.environ.get('LAKEBASE_DATABASE', 'databricks_postgres')}, password_len={len(password) if password else 0}")
+    logger.info(f"Connecting to Lakebase: host={host}, user={user[:12]}..., port={os.environ.get('LAKEBASE_PORT', '5432')}, db={os.environ.get('LAKEBASE_DATABASE', 'postgres')}")
     try:
         import asyncpg
         _pool = await asyncpg.create_pool(
@@ -228,14 +238,20 @@ async def init_pool():
         _lakebase_available = True
         logger.info("Lakebase connection pool initialized")
         await _ensure_schema()
+
+        # Start background token refresh (tokens expire after 1 hour)
+        _token_refresh_task = asyncio.create_task(_token_refresh_loop())
     except Exception as e:
         logger.warning(f"Lakebase unavailable: {e}. Using in-memory fallback.")
         _lakebase_available = False
 
 
 async def close_pool():
-    """Close the connection pool."""
-    global _pool
+    """Close the connection pool and stop token refresh."""
+    global _pool, _token_refresh_task
+    if _token_refresh_task:
+        _token_refresh_task.cancel()
+        _token_refresh_task = None
     if _pool:
         await _pool.close()
         _pool = None
@@ -257,7 +273,7 @@ async def save_scan_result(space_id: str, scan_result: dict) -> None:
     import json
     async with _pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO scan_results (space_id, score, maturity, breakdown, findings, next_steps, scanned_at)
+            INSERT INTO genie.scan_results (space_id, score, maturity, breakdown, findings, next_steps, scanned_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (space_id, scanned_at) DO UPDATE SET
                 score = EXCLUDED.score,
@@ -275,7 +291,7 @@ async def save_scan_result(space_id: str, scan_result: dict) -> None:
             datetime.fromisoformat(scan_result["scanned_at"]),
         )
         await conn.execute(
-            "INSERT INTO seen_spaces (space_id) VALUES ($1) ON CONFLICT DO NOTHING",
+            "INSERT INTO genie.seen_spaces (space_id) VALUES ($1) ON CONFLICT DO NOTHING",
             space_id,
         )
 
@@ -289,7 +305,7 @@ async def get_latest_score(space_id: str) -> Optional[dict]:
     async with _pool.acquire() as conn:
         row = await conn.fetchrow("""
             SELECT score, maturity, breakdown, findings, next_steps, scanned_at
-            FROM scan_results
+            FROM genie.scan_results
             WHERE space_id = $1
             ORDER BY scanned_at DESC
             LIMIT 1
@@ -317,7 +333,7 @@ async def get_score_history(space_id: str, days: int = 30) -> list[dict]:
     async with _pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT score, maturity, scanned_at
-            FROM scan_results
+            FROM genie.scan_results
             WHERE space_id = $1
               AND scanned_at >= NOW() - INTERVAL '$2 days'
             ORDER BY scanned_at ASC
@@ -344,12 +360,12 @@ async def star_space(space_id: str, starred: bool) -> None:
     async with _pool.acquire() as conn:
         if starred:
             await conn.execute(
-                "INSERT INTO starred_spaces (space_id) VALUES ($1) ON CONFLICT DO NOTHING",
+                "INSERT INTO genie.starred_spaces (space_id) VALUES ($1) ON CONFLICT DO NOTHING",
                 space_id,
             )
         else:
             await conn.execute(
-                "DELETE FROM starred_spaces WHERE space_id = $1",
+                "DELETE FROM genie.starred_spaces WHERE space_id = $1",
                 space_id,
             )
 
@@ -361,7 +377,7 @@ async def get_starred_spaces() -> list[str]:
         return list(_memory_store["stars"])
 
     async with _pool.acquire() as conn:
-        rows = await conn.fetch("SELECT space_id FROM starred_spaces")
+        rows = await conn.fetch("SELECT space_id FROM genie.starred_spaces")
         return [r["space_id"] for r in rows]
 
 
@@ -372,7 +388,7 @@ async def is_space_starred(space_id: str) -> bool:
 
     async with _pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT 1 FROM starred_spaces WHERE space_id = $1", space_id
+            "SELECT 1 FROM genie.starred_spaces WHERE space_id = $1", space_id
         )
         return row is not None
 
@@ -385,7 +401,7 @@ async def record_space_seen(space_id: str) -> None:
 
     async with _pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO seen_spaces (space_id) VALUES ($1) ON CONFLICT DO NOTHING",
+            "INSERT INTO genie.seen_spaces (space_id) VALUES ($1) ON CONFLICT DO NOTHING",
             space_id,
         )
 
@@ -401,7 +417,7 @@ async def get_all_scan_summaries() -> list[dict]:
         rows = await conn.fetch("""
             SELECT DISTINCT ON (space_id)
                 space_id, score, maturity, findings, scanned_at
-            FROM scan_results
+            FROM genie.scan_results
             ORDER BY space_id, scanned_at DESC
         """)
         return [
@@ -436,7 +452,7 @@ async def save_optimization_run(space_id: str, benchmark_total: int, benchmark_c
 
     async with _pool.acquire() as conn:
         await conn.execute("""
-            INSERT INTO optimization_runs (space_id, benchmark_total, benchmark_correct, accuracy)
+            INSERT INTO genie.optimization_runs (space_id, benchmark_total, benchmark_correct, accuracy)
             VALUES ($1, $2, $3, $4)
         """, space_id, benchmark_total, benchmark_correct, accuracy)
 
@@ -452,7 +468,7 @@ async def get_latest_optimization_run(space_id: str) -> Optional[dict]:
     async with _pool.acquire() as conn:
         row = await conn.fetchrow("""
             SELECT accuracy, created_at
-            FROM optimization_runs
+            FROM genie.optimization_runs
             WHERE space_id = $1
             ORDER BY created_at DESC
             LIMIT 1

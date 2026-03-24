@@ -81,6 +81,8 @@ env:
     value: "5432"
   - name: LAKEBASE_DATABASE
     value: "databricks_postgres"
+  - name: LAKEBASE_INSTANCE_NAME
+    value: "genie-workbench"
 
   # ---------------------------------------------------------------------------
   # Auto-Optimize (GSO Engine)
