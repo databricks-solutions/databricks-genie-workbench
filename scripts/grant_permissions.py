@@ -167,7 +167,7 @@ def _sql_exec(*, profile: str, warehouse_id: str, statement: str) -> dict:
 
 def _ensure_tables(*, profile: str, catalog: str, schema: str, warehouse_id: str) -> None:
     """Create all GSO Delta tables if they don't exist (idempotent)."""
-    from genie_space_optimizer.optimization.state import _ALL_DDL
+    from genie_space_optimizer.optimization.ddl import _ALL_DDL
 
     failed: list[str] = []
     for table_name, ddl_template in _ALL_DDL.items():
