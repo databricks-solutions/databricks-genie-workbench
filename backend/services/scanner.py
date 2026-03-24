@@ -5,6 +5,7 @@
 """
 
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -167,7 +168,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     _check(checks, "Optimization workflow completed", has_run)
     if not has_run:
         findings.append("Space has not been through the optimization workflow")
-        next_steps.append("Use the Optimize tab to benchmark and improve Genie's accuracy")
+        next_steps.append("Use the Auto-Optimize or Optimize tab to benchmark and improve Genie's accuracy")
 
     # 12. Accuracy ≥ 85%
     accuracy = optimization_run.get("accuracy", 0) if optimization_run else 0
@@ -216,6 +217,51 @@ async def scan_space(space_id: str, user_token: Optional[str] = None) -> dict:
         optimization_run = await get_latest_optimization_run(space_id)
     except Exception as e:
         logger.warning(f"Failed to fetch optimization run for {space_id}: {e}")
+
+    # Also check for Auto-Optimize (GSO) runs — use the best result from either source
+    try:
+        from backend.services import gso_lakebase
+        gso_runs = await gso_lakebase.load_gso_runs_for_space(space_id)
+
+        # Delta table fallback when Lakebase synced tables are empty
+        if not gso_runs:
+            catalog = os.environ.get("GSO_CATALOG", "")
+            schema = os.environ.get("GSO_SCHEMA", "genie_space_optimizer")
+            wh_id = os.environ.get("GSO_WAREHOUSE_ID") or os.environ.get("SQL_WAREHOUSE_ID", "")
+            if catalog and wh_id:
+                try:
+                    from genie_space_optimizer.common.warehouse import sql_warehouse_query
+                    from backend.services.auth import get_workspace_client
+                    ws = get_workspace_client()
+                    df = sql_warehouse_query(
+                        ws, wh_id,
+                        f"SELECT run_id, space_id, status, best_accuracy, completed_at, started_at "
+                        f"FROM {catalog}.{schema}.genie_opt_runs "
+                        f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
+                    )
+                    if not df.empty:
+                        gso_runs = df.to_dict(orient="records")
+                except Exception as e:
+                    logger.warning(f"GSO Delta fallback failed for {space_id}: {e}")
+
+        _GSO_TERMINAL = {"CONVERGED", "STALLED", "MAX_ITERATIONS"}
+        for gso_run in gso_runs:  # already sorted most recent first
+            status = str(gso_run.get("status", "")).upper()
+            best_acc = gso_run.get("best_accuracy")
+            if status in _GSO_TERMINAL and best_acc is not None:
+                acc = float(best_acc)
+                # GSO stores accuracy as percentage (0-100); normalize to 0.0-1.0
+                if acc > 1.0:
+                    acc = acc / 100.0
+                gso_as_opt = {
+                    "accuracy": acc,
+                    "created_at": gso_run.get("completed_at") or gso_run.get("started_at"),
+                }
+                if optimization_run is None or gso_as_opt["accuracy"] > optimization_run.get("accuracy", 0):
+                    optimization_run = gso_as_opt
+                break  # only consider most recent terminal GSO run
+    except Exception as e:
+        logger.warning(f"Failed to check GSO runs for {space_id}: {e}")
 
     scan_result = calculate_score(space_data, optimization_run=optimization_run)
     scan_result["space_id"] = space_id
