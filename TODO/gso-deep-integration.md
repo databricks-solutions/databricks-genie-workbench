@@ -8,51 +8,33 @@ GSO (Genie Space Optimizer) was originally a standalone Databricks App that got 
 
 ---
 
-## Phase 0: Clean Up Standalone App Artifacts (Delete Dead Weight)
+## Phase 0: Clean Up Standalone App Artifacts (Delete Dead Weight) — DONE
 
-Delete everything in `packages/genie-space-optimizer/` that's leftover from the standalone app and not needed by either the Workbench or the Databricks Job.
+Deleted all standalone app scaffolding from `packages/genie-space-optimizer/`. `backend/` and `ui/` inside `src/` deferred to Phase 1 (runtime imports depend on them).
 
-### Files/dirs to delete:
+### What was deleted:
+- IDE configs: `.claude/`, `.cursor/`, `.vscode/`, `.mcp.json`
+- Deploy pipeline: `app.yml`, `deploy.sh`, `deploy-config.sh`, `destroy.sh`, `Makefile`, `resources/`
+- Frontend build: `package.json`, `bun.lock`, `tsconfig.json`
+- Docs: `README.md`, `QUICKSTART.md`, `CHANGELOG.md`, `CODE_REVIEW.md`, `DEPLOYMENT.md`, `E2E_TESTING_GUIDE.md`, `CLAUDE.md`, `docs/`, `genie_space_optimizer/` (12 architecture markdown files)
+- Scaffolding: `.gitignore`, `.python-version`, `uv.lock`
+- Test artifacts: `browser-test-output/`, `scripts/`, `tests/`
 
-**IDE configs (from original developer):**
-- `.claude/` (skills, settings)
-- `.cursor/` (settings, plans, rules, mcp.json)
-- `.vscode/` (settings.json)
-- `.mcp.json`
-
-**Standalone deploy pipeline (Workbench has its own):**
-- `app.yml` — GSO's standalone app config
-- `deploy.sh` — GSO's deploy script
-- `deploy-config.sh` — GSO's deploy config
-- `destroy.sh` — GSO's teardown script
-- `Makefile` — GSO's build system
-- `resources/` — deploy helper scripts (grant_app_uc_permissions.py, patch_app_yml.py)
-
-**Standalone frontend (Workbench has its own React app):**
-- `package.json`
-- `bun.lock`
-- `tsconfig.json`
-
-**Standalone docs (not needed in this repo):**
-- `README.md`
-- `QUICKSTART.md`
-- `CHANGELOG.md`
-- `CODE_REVIEW.md`
-- `DEPLOYMENT.md`
-- `E2E_TESTING_GUIDE.md`
-- `docs/` (entire directory — test run logs, backlog.yml, agent-progress.json, MLflow guides, etc.)
-- `genie_space_optimizer/*.md` (8 architecture docs at module root)
-
-**Duplicate project scaffolding:**
-- `.gitignore` (root repo has its own)
-- `.python-version` (root repo has its own)
-- `uv.lock` (1MB, root repo has its own)
-
-**Test artifacts:**
-- `browser-test-output/` (screenshots from standalone testing)
-
-**GSO standalone backend (fully replaced by Workbench's auto_optimize router):**
-- `src/genie_space_optimizer/backend/` — entire directory (utils.py absorbed in Phase 1 first)
+### What remains after Phase 0:
+```
+packages/genie-space-optimizer/
+  pyproject.toml              # Needed to build wheel for jobs
+  databricks.yml              # Bundle config for the job resource
+  src/genie_space_optimizer/
+    __init__.py
+    _metadata.py, _version.py # Package build metadata
+    backend/                  # Standalone backend (delete in Phase 1D after absorbing utils.py)
+    common/                   # Shared utilities (used by both Workbench and jobs)
+    integration/              # Thin integration layer (absorb in Phase 1A)
+    optimization/             # Core optimization engine (Spark-heavy, jobs only)
+    jobs/                     # 6-task Databricks Job DAG notebooks
+    ui/                       # Standalone frontend (delete in Phase 1D)
+```
 
 ### What remains after Phase 0 + Phase 1:
 ```
@@ -162,7 +144,7 @@ These files import from `genie_space_optimizer.common.*` — those imports stay 
 
 ## Recommended Order
 
-1. **Phase 0** — delete standalone artifacts (pure cleanup, no behavior change)
+1. ~~**Phase 0** — delete standalone artifacts (pure cleanup, no behavior change)~~ **DONE**
 2. **Phase 1** — absorb runtime code into `backend/services/gso/`
 3. **Phase 2** — frontend constants consolidation
 4. **Phase 3** — Score-to-Optimize UX bridges
@@ -171,7 +153,7 @@ These files import from `genie_space_optimizer.common.*` — those imports stay 
 
 ## Verification
 
-- After Phase 0: `packages/genie-space-optimizer/` contains only `pyproject.toml`, `databricks.yml`, and `src/` (with `common/`, `integration/`, `optimization/`, `jobs/`). No IDE configs, docs, deploy scripts, or frontend build files.
+- ~~After Phase 0: `packages/genie-space-optimizer/` contains only `pyproject.toml`, `databricks.yml`, and `src/` (with `common/`, `integration/`, `optimization/`, `jobs/`). No IDE configs, docs, deploy scripts, or frontend build files.~~ **VERIFIED**
 - After Phase 1: `backend/services/gso/` contains absorbed integration + utils. `packages/` further slimmed to `common/`, `optimization/`, `jobs/`. Zero `genie_space_optimizer.integration` or `genie_space_optimizer.backend` imports in `backend/`. All endpoints work. Job still deploys.
 - After Phase 3: Score tab → "Run Optimization" → Optimize tab. Optimization completes → "Re-scan" → Score tab.
 - After Phase 4: History tab shows scan + optimization events on one timeline.
