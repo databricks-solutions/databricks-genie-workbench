@@ -174,7 +174,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     _check(checks, "Optimization workflow completed", has_run)
     if not has_run:
         findings.append("Space has not been through the optimization workflow")
-        next_steps.append("Use the Auto-Optimize or Optimize tab to benchmark and improve Genie's accuracy")
+        next_steps.append("Benchmark and improve Genie's accuracy with Optimization")
 
     # 12. Accuracy ≥ 85%
     accuracy = optimization_run.get("accuracy", 0) if optimization_run else 0

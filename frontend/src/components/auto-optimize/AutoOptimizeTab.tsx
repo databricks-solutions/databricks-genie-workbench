@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react"
-import { Info, Play, Cog } from "lucide-react"
+import { Info, Play, Cog, BarChart2 } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { OptimizationConfig } from "@/components/auto-optimize/OptimizationConfig"
@@ -23,6 +23,7 @@ import type { GSORunStatus, GSOPermissionCheck, GSOQuestionDetail } from "@/type
 
 interface AutoOptimizeTabProps {
   spaceId: string
+  onRescan?: () => void
 }
 
 type View = "configure" | "monitoring" | "detail"
@@ -50,7 +51,7 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   QUEUED: "secondary",
 }
 
-export function AutoOptimizeTab({ spaceId }: AutoOptimizeTabProps) {
+export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
   const [configured, setConfigured] = useState<boolean | null>(null)
   const [healthIssues, setHealthIssues] = useState<string[]>([])
   const [view, setView] = useState<View>("configure")
@@ -381,6 +382,25 @@ export function AutoOptimizeTab({ spaceId }: AutoOptimizeTabProps) {
         {!isTerminal && (
           <div className="flex justify-end">
             <p className="text-xs text-muted animate-pulse">Polling every 5 seconds...</p>
+          </div>
+        )}
+
+        {/* Re-scan prompt when run reaches terminal state */}
+        {isTerminal && onRescan && (
+          <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3">
+            <div>
+              <h3 className="text-sm font-semibold text-primary">Optimization complete</h3>
+              <p className="text-xs text-muted mt-0.5">
+                Re-scan to see how your IQ score has changed.
+              </p>
+            </div>
+            <button
+              onClick={onRescan}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors shrink-0"
+            >
+              <BarChart2 className="w-3.5 h-3.5" />
+              Re-scan IQ Score
+            </button>
           </div>
         )}
 

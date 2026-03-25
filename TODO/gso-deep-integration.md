@@ -97,19 +97,21 @@ These files import from `genie_space_optimizer.common.*` — those imports stay 
 
 ---
 
-## Phase 3: Bridge Score-to-Optimize Journey (Highest UX Impact)
+## Phase 3: Bridge Score-to-Optimize Journey (Highest UX Impact) — DONE
 
-### 3A. "Run Optimization" CTA in IQScoreTab
+### 3A. "Run Optimization" CTA in IQScoreTab — DONE
 - **Files**: `frontend/src/pages/IQScoreTab.tsx`, `frontend/src/pages/SpaceDetail.tsx`
-- **What**: Add button next to "Fix with AI Agent" → navigates to Optimize tab.
+- **What**: Added "Run Optimization" button next to "Fix with AI Agent" → navigates to Optimize tab.
 
-### 3B. Actionable optimization checks
+### 3B. Actionable optimization checks — DONE
 - **Files**: `frontend/src/pages/IQScoreTab.tsx`
-- **What**: Failed checks #11/#12 clickable → navigate to Optimize tab.
+- **What**: Failed checks #11/#12 clickable with hover effect (accent underline + Rocket icon) → navigate to Optimize tab.
 
-### 3C. Post-optimization re-scan prompt
+### 3C. Post-optimization re-scan prompt — DONE
 - **Files**: `frontend/src/components/auto-optimize/AutoOptimizeTab.tsx`, `frontend/src/pages/SpaceDetail.tsx`
-- **What**: Terminal state → "Re-scan to see updated IQ score" banner.
+- **What**: Terminal state → blue "Optimization complete / Re-scan IQ Score" banner → triggers scan and navigates to Score tab.
+
+Also fixed: Check #11 recommendation text simplified to "Benchmark and improve Genie's accuracy with Optimization".
 
 ---
 
@@ -147,7 +149,7 @@ These files import from `genie_space_optimizer.common.*` — those imports stay 
 1. ~~**Phase 0** — delete standalone artifacts (pure cleanup, no behavior change)~~ **DONE**
 2. **Phase 1** — absorb runtime code into `backend/services/gso/`
 3. **Phase 2** — frontend constants consolidation
-4. **Phase 3** — Score-to-Optimize UX bridges
+4. ~~**Phase 3** — Score-to-Optimize UX bridges~~ **DONE**
 5. **Phase 4** — unified History timeline
 6. **Phase 5** — state lifting + UI polish
 
@@ -155,5 +157,5 @@ These files import from `genie_space_optimizer.common.*` — those imports stay 
 
 - ~~After Phase 0: `packages/genie-space-optimizer/` contains only `pyproject.toml`, `databricks.yml`, and `src/` (with `common/`, `integration/`, `optimization/`, `jobs/`). No IDE configs, docs, deploy scripts, or frontend build files.~~ **VERIFIED**
 - After Phase 1: `backend/services/gso/` contains absorbed integration + utils. `packages/` further slimmed to `common/`, `optimization/`, `jobs/`. Zero `genie_space_optimizer.integration` or `genie_space_optimizer.backend` imports in `backend/`. All endpoints work. Job still deploys.
-- After Phase 3: Score tab → "Run Optimization" → Optimize tab. Optimization completes → "Re-scan" → Score tab.
+- ~~After Phase 3: Score tab → "Run Optimization" → Optimize tab. Optimization completes → "Re-scan" → Score tab.~~ **VERIFIED**
 - After Phase 4: History tab shows scan + optimization events on one timeline.

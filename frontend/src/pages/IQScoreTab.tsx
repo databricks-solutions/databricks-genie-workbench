@@ -2,7 +2,7 @@
  * IQScoreTab - Maturity S-curve + side-by-side check columns + recommendations.
  */
 import { useState } from "react"
-import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, ChevronDown, ChevronRight, Check, X } from "lucide-react"
+import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, ChevronDown, ChevronRight, Check, X, Rocket } from "lucide-react"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import { MaturityCurve } from "@/components/MaturityCurve"
 import type { ScanResult, CheckDetail } from "@/types"
@@ -14,9 +14,10 @@ interface IQScoreTabProps {
   spaceId: string
   spaceConfig?: Record<string, unknown>
   onFixWithAgent?: () => void
+  onNavigateToOptimize?: () => void
 }
 
-export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent }: IQScoreTabProps) {
+export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onNavigateToOptimize }: IQScoreTabProps) {
   const [checksExpanded, setChecksExpanded] = useState(false)
 
   if (!scanResult) {
@@ -124,12 +125,30 @@ export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent }: I
                     Not Passed ({failedChecks.length})
                   </div>
                   <div className="space-y-0.5">
-                    {failedChecks.map((check, i) => (
-                      <div key={i} className="flex items-center gap-2 py-1.5">
-                        <X className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
-                        <span className="flex-1 text-sm text-muted truncate">{check.label}</span>
-                      </div>
-                    ))}
+                    {failedChecks.map((check, i) => {
+                      const isOptCheck = onNavigateToOptimize && (
+                        check.label === "Optimization workflow completed" ||
+                        check.label === "Optimization accuracy ≥ 85%"
+                      )
+                      return isOptCheck ? (
+                        <button
+                          key={i}
+                          onClick={onNavigateToOptimize}
+                          className="flex items-center gap-2 py-1.5 w-full text-left group"
+                        >
+                          <X className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                          <span className="flex-1 text-sm text-muted truncate group-hover:text-accent group-hover:underline transition-colors">
+                            {check.label}
+                          </span>
+                          <Rocket className="w-3 h-3 text-muted opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </button>
+                      ) : (
+                        <div key={i} className="flex items-center gap-2 py-1.5">
+                          <X className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                          <span className="flex-1 text-sm text-muted truncate">{check.label}</span>
+                        </div>
+                      )
+                    })}
                     {failedChecks.length === 0 && (
                       <p className="text-xs text-emerald-500 py-2">All checks passed!</p>
                     )}
@@ -172,15 +191,26 @@ export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent }: I
           </div>
 
           {/* Action buttons */}
-          {scanResult.findings.length > 0 && onFixWithAgent && (
+          {scanResult.findings.length > 0 && (onFixWithAgent || onNavigateToOptimize) && (
             <div className="mt-4 pt-4 border-t border-default flex items-center gap-2">
-              <button
-                onClick={onFixWithAgent}
-                className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
-              >
-                <Zap className="w-4 h-4" />
-                Fix with AI Agent
-              </button>
+              {onFixWithAgent && (
+                <button
+                  onClick={onFixWithAgent}
+                  className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
+                >
+                  <Zap className="w-4 h-4" />
+                  Fix with AI Agent
+                </button>
+              )}
+              {onNavigateToOptimize && (
+                <button
+                  onClick={onNavigateToOptimize}
+                  className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
+                >
+                  <Rocket className="w-4 h-4" />
+                  Run Optimization
+                </button>
+              )}
             </div>
           )}
         </div>

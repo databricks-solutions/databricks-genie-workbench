@@ -86,6 +86,11 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
     }
   }
 
+  const handleRescanFromOptimize = () => {
+    setActiveTab("score")
+    handleScan()
+  }
+
   const handleToggleStar = async () => {
     const newStarred = !isStarred
     setIsStarred(newStarred)
@@ -212,11 +217,12 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
             spaceId={spaceId}
             spaceConfig={state.spaceData ?? undefined}
             onFixWithAgent={onFixWithAgent && scanResult ? () => onFixWithAgent(spaceId, displayName, spaceUrl, scanResult) : undefined}
+            onNavigateToOptimize={() => setActiveTab("optimize")}
           />
         )}
 
         {activeTab === "optimize" && (
-          <AutoOptimizeTab spaceId={spaceId} />
+          <AutoOptimizeTab spaceId={spaceId} onRescan={handleRescanFromOptimize} />
         )}
 
         {activeTab === "history" && (
