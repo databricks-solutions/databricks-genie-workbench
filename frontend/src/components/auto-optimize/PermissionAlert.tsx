@@ -150,6 +150,19 @@ export function PermissionAlert({ permissions, loading, onRefresh }: PermissionA
             code={allGrantSql || undefined}
           />
         )}
+
+        <PermissionStep
+          step={3}
+          title="Enable MLflow Prompt Registry"
+          description={
+            <>
+              The MLflow Prompt Registry must be enabled on your workspace for judge prompt
+              traceability. Contact your <strong>workspace admin</strong> to enable this feature
+              in the workspace settings.
+            </>
+          }
+          granted={permissions.prompt_registry_available !== false}
+        />
       </div>
     </div>
   )

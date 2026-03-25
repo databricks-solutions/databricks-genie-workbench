@@ -6,8 +6,8 @@
 import { useRef, useEffect, useState } from "react"
 
 interface MaturityCurveProps {
-  score: number              // 0-15
-  total: number              // 15
+  score: number              // 0-12
+  total: number              // 12
   maturity: string           // current tier label
 }
 
@@ -51,16 +51,16 @@ export function MaturityCurve({ score, total, maturity }: MaturityCurveProps) {
     }))
 
     // Non-linear score-to-position mapping:
-    // 0-12 → first third (Not Ready)
-    // 13   → middle third (Ready to Optimize)
-    // 14   → middle third (optimized but < 85%)
-    // 15   → final third (Trusted)
+    // 0-9  → first third (Not Ready: config checks still failing)
+    // 10   → middle third (Ready to Optimize: all 10 config checks pass)
+    // 11   → middle third (optimization done but accuracy < 85%)
+    // 12   → final third (Trusted: all checks pass)
     let pct: number
-    if (score <= 12) {
-      pct = (score / 12) * (1/3)
-    } else if (score === 13) {
+    if (score <= 9) {
+      pct = (score / 9) * (1/3)
+    } else if (score === 10) {
       pct = 1/3 + (1/3) * 0.5
-    } else if (score === 14) {
+    } else if (score === 11) {
       pct = 1/3 + (1/3) * 0.85
     } else {
       pct = 2/3 + (1/3) * 0.85

@@ -148,8 +148,8 @@ function LeverCard({ lever }: { lever: GSOLeverStatus }) {
                   <span className="font-medium">Iteration {it.iteration}:</span>{" "}
                   {it.patchTypes.join(", ") || "—"}
                   {it.scoreDelta != null && (
-                    <span className={it.scoreDelta > 0 ? "text-emerald-600 ml-1" : "text-red-500 ml-1"}>
-                      ({it.scoreDelta > 0 ? "+" : ""}{it.scoreDelta.toFixed(1)}%)
+                    <span className={Number(it.scoreDelta) > 0 ? "text-emerald-600 ml-1" : "text-red-500 ml-1"}>
+                      ({Number(it.scoreDelta) > 0 ? "+" : ""}{Number(it.scoreDelta).toFixed(1)}%)
                     </span>
                   )}
                 </div>

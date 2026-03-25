@@ -2,15 +2,7 @@
  * TypeScript types matching the Python Pydantic models in backend/models.py
  */
 
-export interface GenieQueryResponse {
-  sql: string | null
-  status: string
-  error: string | null
-  conversation_id: string
-  message_id: string
-}
-
-// SQL execution types
+// SQL execution types (used by auto-optimize QuestionDetail)
 export interface SqlExecutionColumn {
   name: string
   type_name: string
@@ -33,71 +25,6 @@ export interface AppSettings {
   workspace_directory: string | null
 }
 
-// Optimization types
-export interface OptimizationSuggestion {
-  field_path: string
-  current_value: unknown
-  suggested_value: unknown
-  rationale: string
-  checklist_reference: string | null
-  priority: "high" | "medium" | "low"
-  category: string
-}
-
-export interface ComparisonDiscrepancy {
-  type: string // "column_mismatch", "extra_rows", "missing_rows", "value_diff", "error"
-  detail: string
-}
-
-export interface ComparisonResult {
-  match_type: string // "exact", "value_match", "partial", "row_count_only", "mismatch"
-  confidence: number // 0.0 - 1.0
-  auto_label: boolean // suggested label
-  discrepancies: ComparisonDiscrepancy[]
-  summary: string // human-readable explanation
-}
-
-export interface LabelingFeedbackItem {
-  question_text: string
-  is_correct: boolean | null
-  feedback_text: string | null
-  auto_label?: boolean | null
-  user_overrode_auto_label?: boolean
-  auto_comparison_summary?: string | null
-}
-
-export interface FailureDiagnosis {
-  question: string
-  failure_types: string[]
-  explanation: string
-}
-
-export interface OptimizationResponse {
-  suggestions: OptimizationSuggestion[]
-  summary: string
-  trace_id: string
-  diagnosis: FailureDiagnosis[]
-}
-
-export interface ConfigMergeResponse {
-  merged_config: Record<string, unknown>
-  summary: string
-  trace_id: string
-}
-
-// Genie Space creation types
-export interface GenieCreateRequest {
-  display_name: string
-  merged_config: Record<string, unknown>
-  parent_path?: string
-}
-
-export interface GenieCreateResponse {
-  genie_space_id: string
-  display_name: string
-  space_url: string
-}
-
 // Space fetch/detail response types
 export interface FetchSpaceResponse {
   genie_space_id: string
@@ -109,9 +36,6 @@ export interface SpaceDetailResponse {
   scan_result: Omit<ScanResult, "space_id" | "scanned_at"> & { scanned_at?: string } | null
   is_starred: boolean
 }
-
-// App state types
-export type OptimizeView = "benchmarks" | "labeling" | "feedback" | "optimization" | "preview"
 
 // ===== GenieIQ / Workbench Types =====
 
@@ -519,6 +443,8 @@ export interface GSOPermissionCheck {
   sp_application_id: string
   sp_has_manage: boolean
   schemas: GSOSchemaAccessStatus[]
+  prompt_registry_available: boolean
+  prompt_registry_error: string | null
   can_start: boolean
   errors: string[]
 }

@@ -236,6 +236,13 @@ APP_NAME_DEFAULT="genie-workbench"
 _info "Lakebase provides persistent storage for scan history and starred spaces."
 _info "Without it, the app uses in-memory storage (data lost on restart)."
 echo ""
+_info "If you have a Lakebase instance, enter its name below."
+_info "Leave blank to skip (in-memory fallback — data lost on restart)."
+echo ""
+
+_prompt LAKEBASE_INSTANCE "Lakebase instance name" "$APP_NAME_DEFAULT"
+
+echo ""
 _info "After deploy, attach a Lakebase resource in the Databricks Apps UI:"
 _info "  Apps → $APP_NAME_DEFAULT → Resources → + Add → PostgreSQL (Lakebase)"
 _info "  Name it 'postgres' with CAN_CONNECT_AND_CREATE permission."
@@ -262,6 +269,7 @@ GENIE_CATALOG=$CATALOG
 GENIE_APP_NAME=$APP_NAME
 GENIE_DEPLOY_PROFILE=$PROFILE
 GENIE_LLM_MODEL=$LLM_MODEL
+GENIE_LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE
 EOF
 
 _ok "Configuration written to .env.deploy"
@@ -273,6 +281,7 @@ echo "  │  Catalog:      $CATALOG"
 echo "  │  GSO Schema:   ${CATALOG}.${GSO_SCHEMA} (default)"
 echo "  │  Warehouse ID: $WAREHOUSE_ID"
 echo "  │  LLM Model:    $LLM_MODEL"
+echo "  │  Lakebase:     ${LAKEBASE_INSTANCE:-<none>}"
 echo "  └───────────────────────────────────────────────────────────┘"
 
 # ══════════════════════════════════════════════════════════════════════════

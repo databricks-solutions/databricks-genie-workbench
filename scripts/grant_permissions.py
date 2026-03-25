@@ -17,6 +17,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 # Allow importing from the GSO package (packages/genie-space-optimizer/src)
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -57,6 +58,38 @@ def _run_json(cmd: list[str]) -> dict:
     return json.loads(out)
 
 
+def _await_sql(result: dict, *, profile: str, label: str, timeout: int = 30) -> dict:
+    """Poll a SQL statement until it reaches a terminal state.
+
+    If the initial result is already terminal (SUCCEEDED, FAILED, CANCELED, CLOSED),
+    return immediately. Otherwise poll GET /api/2.0/sql/statements/{id} every 5s
+    until the statement completes or *timeout* seconds elapse.
+    """
+    TERMINAL = {"SUCCEEDED", "FAILED", "CANCELED", "CLOSED"}
+    state = (result.get("status") or {}).get("state", "")
+    if state in TERMINAL:
+        return result
+
+    stmt_id = result.get("statement_id")
+    if not stmt_id:
+        return result  # can't poll without an id
+
+    print(f"[grant-permissions] {label}: waiting for statement to complete (state={state})...")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(5)
+        result = _run_json([
+            "databricks", "api", "get", f"/api/2.0/sql/statements/{stmt_id}",
+            "--profile", profile,
+        ])
+        state = (result.get("status") or {}).get("state", "")
+        if state in TERMINAL:
+            return result
+        print(f"[grant-permissions] {label}: still waiting (state={state})...")
+
+    return result  # timed out — caller will see non-SUCCEEDED state and raise
+
+
 def _ensure_schema(*, profile: str, catalog: str, schema: str, warehouse_id: str) -> None:
     """Create the optimization schema if it doesn't exist."""
     schema_fqn = f"{catalog}.{schema}"
@@ -74,6 +107,7 @@ def _ensure_schema(*, profile: str, catalog: str, schema: str, warehouse_id: str
         "--profile", profile,
         "--json", payload,
     ])
+    result = _await_sql(result, profile=profile, label=f"Schema {schema_fqn}")
     state = (result.get("status") or {}).get("state", "")
     if state != "SUCCEEDED":
         err_msg = (result.get("status") or {}).get("error", {}).get("message", "unknown")
@@ -95,6 +129,7 @@ def _ensure_volume(*, profile: str, catalog: str, schema: str, warehouse_id: str
         "--profile", profile,
         "--json", payload,
     ])
+    result = _await_sql(result, profile=profile, label=f"Volume {vol_fqn}")
     state = (result.get("status") or {}).get("state", "")
     if state != "SUCCEEDED":
         err_msg = (result.get("status") or {}).get("error", {}).get("message", "unknown")
@@ -119,7 +154,7 @@ def _sql_exec(*, profile: str, warehouse_id: str, statement: str) -> dict:
         f.write(payload)
         tmp_path = f.name
     try:
-        return _run_json([
+        result = _run_json([
             "databricks", "api", "post", "/api/2.0/sql/statements",
             "--profile", profile,
             "--json", f"@{tmp_path}",
@@ -127,11 +162,12 @@ def _sql_exec(*, profile: str, warehouse_id: str, statement: str) -> dict:
     finally:
         import os as _os
         _os.unlink(tmp_path)
+    return _await_sql(result, profile=profile, label="SQL exec")
 
 
 def _ensure_tables(*, profile: str, catalog: str, schema: str, warehouse_id: str) -> None:
     """Create all GSO Delta tables if they don't exist (idempotent)."""
-    from genie_space_optimizer.optimization.state import _ALL_DDL
+    from genie_space_optimizer.optimization.ddl import _ALL_DDL
 
     failed: list[str] = []
     for table_name, ddl_template in _ALL_DDL.items():

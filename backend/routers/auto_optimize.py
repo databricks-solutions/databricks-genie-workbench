@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import re
 from typing import Any
@@ -14,6 +13,7 @@ from pydantic import BaseModel
 
 from backend.services.auth import get_workspace_client, get_service_principal_client, get_databricks_host
 from backend.services import gso_lakebase
+from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
 from genie_space_optimizer.integration import (
     trigger_optimization,
     apply_optimization,
@@ -71,6 +71,8 @@ class PermissionCheckResponse(BaseModel):
     sp_application_id: str = ""
     sp_has_manage: bool
     schemas: list[SchemaAccessStatus]
+    prompt_registry_available: bool = True
+    prompt_registry_error: str | None = None
     can_start: bool
     errors: list[str] = []
 
@@ -118,52 +120,13 @@ def _build_gso_config() -> IntegrationConfig:
     )
 
 
-# ---------------------------------------------------------------------------
-# Type coercion helpers (ported from GSO routes/runs.py)
-# ---------------------------------------------------------------------------
-
-
-def _safe_int(val: Any) -> int | None:
-    if val is None:
-        return None
-    try:
-        f = float(val)
-        if not math.isfinite(f):
-            return None
-        return int(f)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_float(val: Any) -> float | None:
-    if val is None:
-        return None
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _finite(val: Any, default: float = 0.0) -> float:
-    try:
-        f = float(val)
-        return f if math.isfinite(f) else default
-    except (TypeError, ValueError):
-        return default
-
-
-def _safe_json_parse(val: Any) -> Any:
-    if val is None:
-        return None
-    if isinstance(val, (dict, list)):
-        return val
-    if isinstance(val, str):
-        try:
-            return json.loads(val)
-        except (json.JSONDecodeError, TypeError):
-            return val
-    return val
+# Type coercion helpers — imported from genie_space_optimizer.backend.utils
+# Aliases preserve call-site compatibility with the underscore-prefixed names
+# that were used throughout this file before the import was added.
+_safe_int = safe_int
+_safe_float = safe_float
+_finite = safe_finite
+_safe_json_parse = safe_json_parse
 
 
 def _parse_detail(stage: dict) -> dict:
@@ -759,7 +722,7 @@ async def check_permissions(space_id: str):
     # Check SP CAN_MANAGE on the space
     sp_has_manage = False
     try:
-        from genie_space_optimizer.backend.routes.settings import get_sp_principal_aliases
+        from genie_space_optimizer.common.sp_permissions import get_sp_principal_aliases
         from genie_space_optimizer.common.genie_client import sp_can_manage_space
 
         sp_aliases = get_sp_principal_aliases(sp_ws)
@@ -779,7 +742,7 @@ async def check_permissions(space_id: str):
             extract_genie_space_table_refs,
             get_unique_schemas,
         )
-        from genie_space_optimizer.backend.routes.settings import _probe_sp_required_access
+        from genie_space_optimizer.common.sp_permissions import probe_sp_required_access
 
         ws = get_workspace_client()
         try:
@@ -790,7 +753,7 @@ async def check_permissions(space_id: str):
         unique_schemas = set(get_unique_schemas(refs))
 
         if unique_schemas:
-            read_granted, _write_granted = _probe_sp_required_access(sp_ws, unique_schemas)
+            read_granted, _write_granted = probe_sp_required_access(sp_ws, unique_schemas)
             # UC SQL requires the application_id (UUID), not the display name
             sp_name_for_grant = sp_application_id or sp_display_name or "<service-principal>"
 
@@ -814,14 +777,36 @@ async def check_permissions(space_id: str):
         errors.append(f"Could not probe data access: {exc}")
         logger.warning("Could not probe data access for space %s", space_id, exc_info=True)
 
+    # Probe MLflow Prompt Registry availability (read-only check)
+    prompt_registry_available = True
+    prompt_registry_error = None
+    try:
+        sp_ws.api_client.do("GET", "/api/2.0/mlflow/unity-catalog/prompts", query={"max_results": "1"})
+    except Exception as exc:
+        err_msg = str(exc)
+        if "FEATURE_DISABLED" in err_msg or "not enabled" in err_msg.lower():
+            prompt_registry_available = False
+            prompt_registry_error = (
+                "MLflow Prompt Registry is not enabled on this workspace. "
+                "Contact your workspace admin to enable it."
+            )
+            errors.append(prompt_registry_error)
+            logger.warning("Prompt Registry not enabled: %s", err_msg)
+        else:
+            # Other errors (e.g. permissions on a specific schema) don't mean
+            # the feature itself is unavailable.
+            logger.debug("Prompt Registry probe returned non-fatal error: %s", err_msg)
+
     all_read = all(s.read_granted for s in schemas) if schemas else True
-    can_start = sp_has_manage and all_read
+    can_start = sp_has_manage and all_read and prompt_registry_available
 
     return PermissionCheckResponse(
         sp_display_name=sp_display_name,
         sp_application_id=sp_application_id,
         sp_has_manage=sp_has_manage,
         schemas=schemas,
+        prompt_registry_available=prompt_registry_available,
+        prompt_registry_error=prompt_registry_error,
         can_start=can_start,
         errors=errors,
     )
@@ -1059,7 +1044,7 @@ async def get_run(run_id: str):
     for it in iterations:
         it_num = int(it.get("iteration", -1))
         if it.get("eval_scope") == "full" and it_num > 0:
-            accuracy = it.get("overall_accuracy")
+            accuracy = _safe_float(it.get("overall_accuracy"))
             if accuracy is not None and (optimized_score is None or accuracy > optimized_score):
                 optimized_score = accuracy
                 best_iteration = it_num
@@ -1069,7 +1054,7 @@ async def get_run(run_id: str):
         for it in iterations:
             it_num = int(it.get("iteration", -1))
             if it_num > 0:
-                accuracy = it.get("overall_accuracy")
+                accuracy = _safe_float(it.get("overall_accuracy"))
                 if accuracy is not None and (optimized_score is None or accuracy > optimized_score):
                     optimized_score = accuracy
                     best_iteration = it_num
@@ -1356,6 +1341,13 @@ async def list_iterations(run_id: str):
             f"SELECT {_ITER_COLS} FROM {_delta_table('genie_opt_iterations')} "
             f"WHERE run_id = '{run_id}' ORDER BY iteration ASC"
         )
+    # Coerce key numeric fields — Delta fallback may return strings
+    for it in iterations:
+        it["overall_accuracy"] = _safe_float(it.get("overall_accuracy"))
+        it["total_questions"] = _safe_int(it.get("total_questions")) or 0
+        it["correct_count"] = _safe_int(it.get("correct_count")) or 0
+        it["iteration"] = _safe_int(it.get("iteration")) or 0
+        it["lever"] = _safe_int(it.get("lever"))
     return iterations
 
 

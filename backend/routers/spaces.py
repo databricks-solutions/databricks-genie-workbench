@@ -53,7 +53,11 @@ async def list_spaces(
         client = get_workspace_client()
         host = (client.config.host or "").rstrip("/")
 
-        starred_ids = await get_starred_spaces()
+        try:
+            starred_ids = await get_starred_spaces()
+        except Exception as e:
+            logger.warning(f"Lakebase unavailable for starred spaces, using empty list: {e}")
+            starred_ids = []
         starred_set = set(starred_ids)
 
         items = []
@@ -70,7 +74,10 @@ async def list_spaces(
                 continue
 
             # Get latest score from Lakebase
-            score_data = await get_latest_score(space_id)
+            try:
+                score_data = await get_latest_score(space_id)
+            except Exception:
+                score_data = None
             score = score_data.get("score") if score_data else None
             maturity = score_data.get("maturity") if score_data else None
             optimization_accuracy = score_data.get("optimization_accuracy") if score_data else None
@@ -157,7 +164,7 @@ async def trigger_scan(space_id: str) -> ScanResult:
         return ScanResult(
             space_id=space_id,
             score=scan_data["score"],
-            total=scan_data.get("total", 15),
+            total=scan_data.get("total", 12),
             maturity=scan_data["maturity"],
             optimization_accuracy=scan_data.get("optimization_accuracy"),
             checks=scan_data.get("checks", []),

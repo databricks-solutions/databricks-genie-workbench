@@ -34,6 +34,7 @@ GSO_SCHEMA="genie_space_optimizer"  # Fixed default — matches GSO convention
 WAREHOUSE_ID="${GENIE_WAREHOUSE_ID:-}"
 PROFILE="${GENIE_DEPLOY_PROFILE:-DEFAULT}"
 LLM_MODEL="${GENIE_LLM_MODEL:-databricks-claude-sonnet-4-6}"
+LAKEBASE_INSTANCE="${GENIE_LAKEBASE_INSTANCE:-$APP_NAME}"
 
 # ── Validate required values ─────────────────────────────────────────────
 if [ -z "$WAREHOUSE_ID" ]; then
@@ -64,5 +65,6 @@ _print_config() {
     echo "  │  GSO Schema:   ${CATALOG}.${GSO_SCHEMA}"
     echo "  │  Warehouse ID: $WAREHOUSE_ID"
     echo "  │  LLM Model:    $LLM_MODEL"
+    echo "  │  Lakebase:     $LAKEBASE_INSTANCE"
     echo "  └─────────────────────────────────────────────────────────┘"
 }
