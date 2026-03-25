@@ -26,6 +26,7 @@ _schema_retry_after: float = 0  # timestamp after which we retry schema creation
 _token_refresh_task: asyncio.Task | None = None
 _current_token: str | None = None
 _lakebase_instance_name: str | None = None
+_conn_params: dict | None = None  # stored at init for pool recreation on token refresh
 
 
 def _generate_credential() -> tuple[str, str] | None:
@@ -76,21 +77,41 @@ def _generate_credential() -> tuple[str, str] | None:
 
 
 async def _token_refresh_loop():
-    """Background task to refresh the Lakebase token every 50 minutes (before 1-hour expiry)."""
-    global _current_token
+    """Background task to refresh the Lakebase token every 50 minutes (before 1-hour expiry).
+
+    asyncpg pools store the password at creation time with no way to update it.
+    We must recreate the pool with fresh credentials so new connections authenticate.
+    """
+    global _pool, _current_token
     while True:
         await asyncio.sleep(50 * 60)  # 50 minutes
         try:
             cred = _generate_credential()
-            if cred:
-                _, token = cred
-                _current_token = token
-                # Update password on all idle connections in the pool
-                if _pool:
-                    await _pool.execute(f"SELECT 1")  # keep pool alive
-                logger.info("Lakebase token refreshed")
-            else:
+            if not cred:
                 logger.warning("Failed to refresh Lakebase token")
+                continue
+            user, token = cred
+            _current_token = token
+            if _conn_params is None or _pool is None:
+                continue
+            # Recreate pool with fresh credentials
+            import asyncpg
+            new_pool = await asyncpg.create_pool(
+                host=_conn_params["host"],
+                port=_conn_params["port"],
+                database=_conn_params["database"],
+                user=user,
+                password=token,
+                min_size=2,
+                max_size=10,
+                command_timeout=30,
+                ssl="require",
+            )
+            old_pool = _pool
+            _pool = new_pool
+            if old_pool:
+                await old_pool.close()
+            logger.info("Lakebase token refreshed and pool recreated")
         except Exception as e:
             logger.warning(f"Lakebase token refresh error: {e}")
 
@@ -183,7 +204,7 @@ async def init_pool():
     LAKEBASE_HOST and LAKEBASE_PASSWORD as environment variables. Without these,
     the app uses in-memory storage (ephemeral per deployment).
     """
-    global _pool, _lakebase_available, _token_refresh_task, _lakebase_instance_name
+    global _pool, _lakebase_available, _token_refresh_task, _lakebase_instance_name, _conn_params
 
     host = os.environ.get("LAKEBASE_HOST")
     if not host:
@@ -227,13 +248,17 @@ async def init_pool():
                            "Ensure the Lakebase postgres resource is properly connected in the Apps UI.")
             return
 
-    logger.info(f"Connecting to Lakebase: host={host}, user={user[:12]}..., port={os.environ.get('LAKEBASE_PORT', '5432')}, db={os.environ.get('LAKEBASE_DATABASE', 'postgres')}")
+    port = int(os.environ.get("LAKEBASE_PORT", "5432"))
+    database = os.environ.get("LAKEBASE_DATABASE", "databricks_postgres")
+    _conn_params = {"host": host, "port": port, "database": database}
+
+    logger.info(f"Connecting to Lakebase: host={host}, user={user[:12]}..., port={port}, db={database}")
     try:
         import asyncpg
         _pool = await asyncpg.create_pool(
             host=host,
-            port=int(os.environ.get("LAKEBASE_PORT", "5432")),
-            database=os.environ.get("LAKEBASE_DATABASE", "databricks_postgres"),
+            port=port,
+            database=database,
             user=user,
             password=password,
             min_size=2,
@@ -291,7 +316,7 @@ async def save_scan_result(space_id: str, scan_result: dict) -> None:
             space_id,
             scan_result["score"],
             scan_result["maturity"],
-            json.dumps({"optimization_accuracy": scan_result.get("optimization_accuracy")}),
+            json.dumps({"optimization_accuracy": scan_result.get("optimization_accuracy"), "checks": scan_result.get("checks", [])}),
             json.dumps(scan_result.get("findings", [])),
             json.dumps(scan_result.get("next_steps", [])),
             datetime.fromisoformat(scan_result["scanned_at"]),
@@ -324,6 +349,7 @@ async def get_latest_score(space_id: str) -> Optional[dict]:
             "total": 12,
             "maturity": row["maturity"],
             "optimization_accuracy": extra.get("optimization_accuracy"),
+            "checks": extra.get("checks", []),
             "findings": json.loads(row["findings"]),
             "next_steps": json.loads(row["next_steps"]),
             "scanned_at": row["scanned_at"].isoformat(),
