@@ -6,7 +6,7 @@ import { useState, useEffect, useRef } from "react"
 import { ArrowLeft, Star, Eye, BarChart2, Clock, ExternalLink, Rocket, Play } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
-import type { ScanResult, ScoreHistoryPoint } from "@/types"
+import type { ScanResult, ScoreHistoryPoint, OptimizationEvent } from "@/types"
 import { IQScoreTab } from "./IQScoreTab"
 import { HistoryTab } from "./HistoryTab"
 import { useAnalysis } from "@/hooks/useAnalysis"
@@ -32,6 +32,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
   const [isStarred, setIsStarred] = useState(false)
   const [isScanning, setIsScanning] = useState(false)
   const [history, setHistory] = useState<ScoreHistoryPoint[]>([])
+  const [optimizationEvents, setOptimizationEvents] = useState<OptimizationEvent[]>([])
   const [hasActiveOptRun, setHasActiveOptRun] = useState(false)
 
   const { state, actions } = useAnalysis()
@@ -59,6 +60,8 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
               checks: detail.scan_result.checks ?? [],
               findings: detail.scan_result.findings ?? [],
               next_steps: detail.scan_result.next_steps ?? [],
+              warnings: detail.scan_result.warnings ?? [],
+              warning_next_steps: detail.scan_result.warning_next_steps ?? [],
               scanned_at: detail.scan_result.scanned_at ?? "",
             })
           }
@@ -110,7 +113,12 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
 
   useEffect(() => {
     if (activeTab === "history") {
-      getSpaceHistory(spaceId).then(setHistory).catch(console.error)
+      getSpaceHistory(spaceId)
+        .then(({ scans, optimization_events }) => {
+          setHistory(scans)
+          setOptimizationEvents(optimization_events)
+        })
+        .catch(console.error)
     }
   }, [activeTab, spaceId])
 
@@ -226,7 +234,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
         )}
 
         {activeTab === "history" && (
-          <HistoryTab history={history} />
+          <HistoryTab history={history} optimizationEvents={optimizationEvents} />
         )}
       </div>
     </div>

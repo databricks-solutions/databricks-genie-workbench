@@ -9,6 +9,7 @@ Each turn includes:
   - Backtracking rules (~15 lines, always)
   - Tool/UI/autopilot rules (~60 lines, always)
   - Schema reference (always)
+  - (fix mode only) Current space config summary
 
 This reduces the per-turn prompt from ~500 to ~200-250 lines, improving
 LLM adherence and lowering token costs.
@@ -169,6 +170,93 @@ def _get_adjacent_summaries(step: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Space config summary (for fix mode)
+# ---------------------------------------------------------------------------
+
+def _summarize_space_config(config: dict) -> str:
+    """Build a concise summary of an existing space config for the system prompt.
+
+    Gives the agent full awareness of what's already in the space so it can
+    jump straight to fixes without calling discovery/inspection tools.
+    """
+    lines: list[str] = []
+
+    # Tables
+    tables = config.get("data_sources", {}).get("tables") or []
+    if tables:
+        lines.append(f"**Tables ({len(tables)}):**")
+        for t in tables:
+            tid = t.get("table_identifier", "?")
+            desc = t.get("description", "")
+            col_count = len(t.get("columns") or [])
+            desc_snippet = f" — {desc[:80]}..." if len(desc) > 80 else f" — {desc}" if desc else ""
+            lines.append(f"- `{tid}` ({col_count} columns){desc_snippet}")
+
+            # Columns with descriptions (only list those that have descriptions)
+            cols_with_desc = [
+                c for c in (t.get("columns") or [])
+                if c.get("description")
+            ]
+            if cols_with_desc:
+                for c in cols_with_desc[:10]:
+                    lines.append(f"  - `{c.get('name', '?')}`: {c['description'][:60]}")
+                if len(cols_with_desc) > 10:
+                    lines.append(f"  - ... and {len(cols_with_desc) - 10} more with descriptions")
+
+    # Joins
+    joins = config.get("data_sources", {}).get("join_specs") or []
+    if joins:
+        lines.append(f"\n**Joins ({len(joins)}):**")
+        for j in joins:
+            lines.append(f"- {j.get('join_string', '?')[:120]}")
+
+    # Instructions
+    instructions = config.get("instructions", {})
+    text_instr = instructions.get("text_instructions") or []
+    if text_instr:
+        lines.append(f"\n**Text instructions ({len(text_instr)}):**")
+        for ti in text_instr[:5]:
+            content = ti.get("content", str(ti)) if isinstance(ti, dict) else str(ti)
+            lines.append(f"- {content[:100]}")
+        if len(text_instr) > 5:
+            lines.append(f"- ... and {len(text_instr) - 5} more")
+
+    # Example SQLs
+    example_sqls = instructions.get("example_question_sqls") or []
+    if example_sqls:
+        lines.append(f"\n**Example SQLs ({len(example_sqls)}):**")
+        for eq in example_sqls[:5]:
+            q = eq.get("question", "?") if isinstance(eq, dict) else str(eq)
+            lines.append(f"- {q[:100]}")
+        if len(example_sqls) > 5:
+            lines.append(f"- ... and {len(example_sqls) - 5} more")
+
+    # SQL snippets (measures, filters, expressions)
+    snippets = instructions.get("sql_snippets") or {}
+    for kind in ("measures", "filters", "expressions"):
+        items = snippets.get(kind) or []
+        if items:
+            lines.append(f"\n**{kind.title()} ({len(items)}):**")
+            for item in items[:5]:
+                name = item.get("name", "?") if isinstance(item, dict) else str(item)
+                lines.append(f"- {name}")
+            if len(items) > 5:
+                lines.append(f"- ... and {len(items) - 5} more")
+
+    # Sample questions
+    sample_qs = instructions.get("sample_questions") or []
+    if sample_qs:
+        lines.append(f"\n**Sample questions ({len(sample_qs)}):**")
+        for sq in sample_qs[:5]:
+            q = sq.get("question", str(sq)) if isinstance(sq, dict) else str(sq)
+            lines.append(f"- {q[:100]}")
+        if len(sample_qs) > 5:
+            lines.append(f"- ... and {len(sample_qs) - 5} more")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -182,6 +270,7 @@ def assemble_system_prompt(session: AgentSession, schema_reference: str) -> str:
     4. Backtracking rules
     5. Tool/UI/autopilot rules
     6. Schema reference
+    7. (fix mode) Current space config summary
     """
     step = detect_step(session)
 
@@ -201,5 +290,18 @@ def assemble_system_prompt(session: AgentSession, schema_reference: str) -> str:
         TOOL_RULES,
         f"## Schema Reference\n{schema_reference}",
     ])
+
+    # In fix mode, inject the current space config so the agent doesn't
+    # waste tool calls discovering what's already in the space.
+    if session.space_id and session.space_config:
+        summary = _summarize_space_config(session.space_config)
+        if summary:
+            sections.append(
+                "## Current Space Config\n\n"
+                "The space config is already loaded in your session. "
+                "You do NOT need to call discover_tables, describe_table, or other "
+                "inspection tools — use the summary below and jump straight to fixes.\n\n"
+                f"{summary}"
+            )
 
     return "\n\n".join(sections)

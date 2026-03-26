@@ -18,7 +18,7 @@ Bad:
 - `describe_table` → always first when exploring a new table
 - `assess_data_quality` + `profile_table_usage` → call together after describe_table
 - `profile_columns` → after describe, on columns that need deeper inspection
-- `test_sql` → on every SQL query before including it anywhere (for parameterized SQL, pass `parameters` with `name`+`default_value` so `:param` placeholders get substituted)
+- `test_sql` → on every SQL query before including it anywhere (for parameterized SQL, pass `parameters` with `name`+`default_value` so `:param` placeholders get substituted). **Do NOT include leading `--` comments in SQL** — start with the SELECT/WITH statement directly.
 - `generate_plan` → after inspection, generates ALL plan sections in parallel (preferred over present_plan)
 - `generate_config` → after user approves the plan (auto-pulls plan data from session — no need to repeat args)
 - `validate_config` → after generate_config, must pass before create_space

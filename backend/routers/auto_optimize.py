@@ -1293,43 +1293,30 @@ async def get_active_run(space_id: str):
         return {"hasActiveRun": False, "activeRunId": None, "activeRunStatus": None}
 
 
-@router.get("/spaces/{space_id}/runs")
-async def list_runs_for_space(space_id: str):
-    """List past optimization runs for a space.
+async def load_runs_with_fallback(space_id: str) -> list[dict]:
+    """Load optimization runs — Lakebase primary, Delta table fallback.
 
-    Primary source is Lakebase (fast).  Falls back to the authoritative
-    Delta table via SQL Warehouse when Lakebase returns no results.
+    Shared by the runs endpoint and the history endpoint.
     """
     runs = await gso_lakebase.load_gso_runs_for_space(space_id)
     if runs:
         return runs
 
-    # Fallback: query Delta table directly
     if not _is_configured():
         return []
 
-    config = _build_gso_config()
-    if not config.warehouse_id:
-        return []
+    return _delta_query(
+        f"SELECT run_id, space_id, status, started_at, completed_at, "
+        f"best_accuracy, best_iteration, convergence_reason, triggered_by "
+        f"FROM {_delta_table('genie_opt_runs')} "
+        f"WHERE space_id = '{space_id}' ORDER BY started_at DESC"
+    )
 
-    try:
-        from genie_space_optimizer.common.warehouse import sql_warehouse_query
 
-        ws = get_workspace_client()
-        runs_df = sql_warehouse_query(
-            ws,
-            config.warehouse_id,
-            f"SELECT run_id, space_id, status, started_at, completed_at, "
-            f"best_accuracy, best_iteration, convergence_reason, triggered_by "
-            f"FROM {config.catalog}.{config.schema_name}.genie_opt_runs "
-            f"WHERE space_id = '{space_id}' ORDER BY started_at DESC",
-        )
-        if runs_df.empty:
-            return []
-        return runs_df.to_dict(orient="records")
-    except Exception as exc:
-        logger.warning("Delta fallback for runs history failed: %s", exc, exc_info=True)
-        return []
+@router.get("/spaces/{space_id}/runs")
+async def list_runs_for_space(space_id: str):
+    """List past optimization runs for a space."""
+    return await load_runs_with_fallback(space_id)
 
 
 @router.get("/runs/{run_id}/iterations")

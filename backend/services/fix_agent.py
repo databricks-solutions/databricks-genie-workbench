@@ -11,6 +11,9 @@ import json
 import logging
 from typing import AsyncGenerator
 
+import mlflow
+from mlflow.entities import SpanType
+
 from backend.services.llm_utils import call_serving_endpoint, get_llm_model
 from backend.services.genie_client import get_genie_space, get_serialized_space
 from backend.services.auth import get_workspace_client, run_in_context
@@ -57,7 +60,7 @@ class FixAgent:
             )
 
             # Call LLM to generate fix plan
-            content = call_serving_endpoint(
+            content = _generate_fix_plan(
                 messages=[{"role": "user", "content": prompt}],
                 model=self.model,
                 max_tokens=4096,
@@ -138,6 +141,13 @@ class FixAgent:
             yield {"status": "error", "message": str(e)}
 
 
+@mlflow.trace(name="fix_generate_plan", span_type=SpanType.LLM)
+def _generate_fix_plan(messages: list[dict], model: str, max_tokens: int) -> str:
+    """Traced wrapper around LLM call for fix plan generation."""
+    return call_serving_endpoint(messages=messages, model=model, max_tokens=max_tokens)
+
+
+@mlflow.trace(name="fix_parse_plan", span_type=SpanType.TOOL)
 def _parse_fix_plan(content: str) -> dict:
     """Parse LLM response into a structured fix plan."""
     content = content.strip()
@@ -224,24 +234,26 @@ def _set_value_at_path(config: dict, field_path: str, value) -> None:
         current[final_key] = value
 
 
+@mlflow.trace(name="fix_apply_config", span_type=SpanType.TOOL)
+def _apply_config_sync(space_id: str, new_config: dict) -> None:
+    """Synchronous, traced config application via the Genie API."""
+    from backend.genie_creator import _enforce_constraints, _clean_config
+    constrained = _enforce_constraints(new_config)
+    cleaned = _clean_config(constrained)
+    client = get_workspace_client()
+    client.api_client.do(
+        method="PATCH",
+        path=f"/api/2.0/genie/spaces/{space_id}",
+        body={"serialized_space": json.dumps(cleaned)},
+    )
+
+
 async def _apply_config_to_databricks(space_id: str, new_config: dict) -> None:
     """Apply the updated config to Databricks via the Genie API."""
     import asyncio
-    from backend.services.auth import get_workspace_client
-
-    def _do_apply():
-        from backend.genie_creator import _enforce_constraints, _clean_config
-        constrained = _enforce_constraints(new_config)
-        cleaned = _clean_config(constrained)
-        client = get_workspace_client()
-        client.api_client.do(
-            method="PATCH",
-            path=f"/api/2.0/genie/spaces/{space_id}",
-            body={"serialized_space": json.dumps(cleaned)},
-        )
 
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, run_in_context(_do_apply))
+    await loop.run_in_executor(None, run_in_context(lambda: _apply_config_sync(space_id, new_config)))
 
 
 # Lazy singleton

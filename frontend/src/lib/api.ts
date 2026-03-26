@@ -8,7 +8,7 @@ import type {
   SpaceDetailResponse,
   SpaceListItem,
   ScanResult,
-  ScoreHistoryPoint,
+  SpaceHistory,
   AdminDashboardStats,
   LeaderboardEntry,
   AlertItem,
@@ -157,8 +157,8 @@ export async function scanSpace(spaceId: string): Promise<ScanResult> {
   )
 }
 
-export async function getSpaceHistory(spaceId: string, days = 30): Promise<ScoreHistoryPoint[]> {
-  return fetchWithTimeout<ScoreHistoryPoint[]>(
+export async function getSpaceHistory(spaceId: string, days = 30): Promise<SpaceHistory> {
+  return fetchWithTimeout<SpaceHistory>(
     `${API_BASE}/spaces/${spaceId}/history?days=${days}`,
     {},
     DEFAULT_TIMEOUT

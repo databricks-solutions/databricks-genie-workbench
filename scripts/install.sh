@@ -10,13 +10,14 @@ set -euo pipefail
 #   3. Asks for catalog (with auto-discovery)
 #   4. Asks for SQL Warehouse (with auto-discovery)
 #   5. Asks for LLM model
-#   6. Lakebase info (attach manually via Apps UI after deploy)
-#   7. Asks for app name
-#   8. Writes .env.deploy
-#   9. Runs deploy.sh
-#  10. Resolves app service principal
-#  11. Optionally grants SP access to Genie Spaces
-#  12. Prints summary with automated/manual sections
+#   6. MLflow tracing (optional — experiment ID for agent observability)
+#   7. Lakebase info (attach manually via Apps UI after deploy)
+#   8. Asks for app name
+#   9. Writes .env.deploy
+#  10. Runs deploy.sh
+#  11. Resolves app service principal
+#  12. Optionally grants SP access to Genie Spaces
+#  13. Prints summary with automated/manual sections
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -227,11 +228,52 @@ _header "Step 5: LLM Model"
 _prompt LLM_MODEL "LLM serving endpoint" "databricks-claude-sonnet-4-6"
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 6: Lakebase
+# Step 6: MLflow Tracing (optional)
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 6: Lakebase (PostgreSQL)"
-
 APP_NAME_DEFAULT="genie-workbench"
+
+_header "Step 6: MLflow Tracing (optional)"
+
+_info "MLflow tracing provides observability for the Create Agent and Fix Agent."
+_info "Traces are logged to an MLflow experiment in your workspace."
+echo ""
+
+MLFLOW_EXPERIMENT_ID=""
+_prompt_yn ENABLE_MLFLOW "Enable MLflow tracing for agents?" "N"
+
+if [ "$ENABLE_MLFLOW" = "Y" ]; then
+    _prompt_yn HAS_EXPERIMENT "Do you already have an MLflow experiment?" "N"
+
+    if [ "$HAS_EXPERIMENT" = "Y" ]; then
+        _prompt MLFLOW_EXPERIMENT_ID "MLflow experiment ID" ""
+        if [ -z "$MLFLOW_EXPERIMENT_ID" ]; then
+            _warn "No experiment ID provided. MLflow tracing will be disabled."
+        else
+            _ok "MLflow tracing enabled (experiment: $MLFLOW_EXPERIMENT_ID)"
+        fi
+    else
+        _info "Creating MLflow experiment..."
+        EXPERIMENT_PATH="/Shared/${APP_NAME_DEFAULT}-agent-tracing"
+        MLFLOW_EXPERIMENT_ID=$(
+            databricks experiments create-experiment "$EXPERIMENT_PATH" \
+                --profile "$PROFILE" -o json 2>/dev/null \
+            | python3 -c "import sys,json; print(json.load(sys.stdin).get('experiment_id',''))" 2>/dev/null || true
+        )
+        if [ -n "$MLFLOW_EXPERIMENT_ID" ]; then
+            _ok "Created experiment: $EXPERIMENT_PATH (ID: $MLFLOW_EXPERIMENT_ID)"
+        else
+            _warn "Could not create experiment. MLflow tracing will be disabled."
+            _info "You can create one manually and add the ID to .env.deploy later."
+        fi
+    fi
+else
+    _info "MLflow tracing disabled. You can enable it later in .env.deploy."
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
+# Step 7: Lakebase
+# ══════════════════════════════════════════════════════════════════════════
+_header "Step 7: Lakebase (PostgreSQL)"
 
 _info "Lakebase provides persistent storage for scan history and starred spaces."
 _info "Without it, the app uses in-memory storage (data lost on restart)."
@@ -248,16 +290,16 @@ _info "  Apps → $APP_NAME_DEFAULT → Resources → + Add → PostgreSQL (Lake
 _info "  Name it 'postgres' with CAN_CONNECT_AND_CREATE permission."
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 7: App name
+# Step 8: App name
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 7: App name"
+_header "Step 8: App name"
 
 _prompt APP_NAME "Databricks App name" "$APP_NAME_DEFAULT"
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 8: Write .env.deploy
+# Step 9: Write .env.deploy
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 8: Writing configuration"
+_header "Step 9: Writing configuration"
 
 ENV_FILE="$PROJECT_DIR/.env.deploy"
 cat > "$ENV_FILE" <<EOF
@@ -270,6 +312,7 @@ GENIE_APP_NAME=$APP_NAME
 GENIE_DEPLOY_PROFILE=$PROFILE
 GENIE_LLM_MODEL=$LLM_MODEL
 GENIE_LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE
+GENIE_MLFLOW_EXPERIMENT_ID=$MLFLOW_EXPERIMENT_ID
 EOF
 
 _ok "Configuration written to .env.deploy"
@@ -282,12 +325,13 @@ echo "  │  GSO Schema:   ${CATALOG}.${GSO_SCHEMA} (default)"
 echo "  │  Warehouse ID: $WAREHOUSE_ID"
 echo "  │  LLM Model:    $LLM_MODEL"
 echo "  │  Lakebase:     ${LAKEBASE_INSTANCE:-<none>}"
+echo "  │  MLflow:       ${MLFLOW_EXPERIMENT_ID:-<disabled>}"
 echo "  └───────────────────────────────────────────────────────────┘"
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 9: Deploy
+# Step 10: Deploy
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 9: Deploying"
+_header "Step 10: Deploying"
 
 _prompt_yn DO_DEPLOY "Run deploy now?" "Y"
 
@@ -303,9 +347,9 @@ AUTOMATED=()
 AUTOMATED_FAIL=()
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 10: Resolve app service principal
+# Step 11: Resolve app service principal
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 10: Resolving app service principal"
+_header "Step 11: Resolving app service principal"
 
 SP_CLIENT_ID=$(
     databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null \
@@ -338,9 +382,9 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 11: Genie Space permissions (optional)
+# Step 12: Genie Space permissions (optional)
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 11: Genie Space access"
+_header "Step 12: Genie Space access"
 
 _info "The app uses On-Behalf-Of (OBO) auth, so users see their own spaces."
 _info "However, the service principal needs explicit grants for fallback access."

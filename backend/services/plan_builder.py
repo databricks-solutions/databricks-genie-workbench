@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Thread pool size matches the 5 parallel plan sections (tables, questions,
 # example_sqls, benchmarks, analytics) so all sections start simultaneously.
-_CONCURRENCY = 5
+_CONCURRENCY = 3
 
 # SQL validation can have up to 15 tasks (5 example_sqls + 10 benchmarks).
 # Higher parallelism than plan generation since each task is a SQL warehouse call.

@@ -5,13 +5,11 @@ Databricks App for creating, scoring, and optimizing Genie Spaces. FastAPI backe
 ## Commands
 
 ```bash
-# Backend (from project root)
+# Install
 uv pip install -e .                          # Install Python deps
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload  # Dev server
 
 # Frontend (from frontend/)
 cd frontend && npm install && npm run build  # Build for production
-cd frontend && npm run dev                   # Vite dev server (port 5173, proxies /api to :8000)
 cd frontend && npm run lint                  # ESLint
 
 # Full build (what Databricks Apps runs)
@@ -64,12 +62,16 @@ scripts/
   preflight.sh             # Pre-deploy validation checks
   build.sh                 # Frontend build
   deploy-config.sh         # Shared deploy configuration/variables
+  ensure_gso_job.py        # Ensures GSO optimization job exists in workspace
+  grant_permissions.py     # Grants required permissions for app resources
+  setup_synced_tables.py   # Sets up GSO synced tables in Lakebase
 frontend/
   src/
     App.tsx                # Root: SpaceList | SpaceDetail | AdminDashboard | CreateAgentChat
     lib/api.ts             # All API calls (fetch, SSE streaming helpers)
     types/index.ts         # TypeScript types mirroring backend Pydantic models
     components/            # UI components (analysis, optimization, fix agent, etc.)
+      auto-optimize/       # GSO pipeline UI (22 components: config, run history, patches, scores, etc.)
     pages/                 # SpaceList, SpaceDetail, AdminDashboard, HistoryTab, IQScoreTab
     hooks/                 # useAnalysis, useTheme
   vite.config.ts           # Vite config with /api proxy to localhost:8000
@@ -123,7 +125,7 @@ Do NOT suggest running `uvicorn` or `npm run dev` locally. The app depends on Da
 ## Gotchas
 
 - **frontend/dist/ is gitignored but NOT databricksignored** — the built React app must be synced to workspace for deployment. Build before `databricks sync`.
-- **`.databricksignore` excludes `*.md`** but explicitly includes `backend/references/schema.md` (needed at runtime by the analyzer).
+- **`.databricksignore` excludes `*.md`** but explicitly re-includes `backend/references/schema.md` (needed at runtime by create agent and analysis prompts).
 - **OBO ContextVar and streaming** — for SSE endpoints, the ContextVar is NOT cleared after `call_next` because the response streams lazily. Streaming handlers stash the token on `request.state` and re-set it inside the generator.
 - **Two separate "analysis" paths** — IQ Scan (`scanner.py`, rule-based, instant) and Deep Analysis (`routers/analysis.py`, LLM-based, streaming). They produce different outputs and don't cross-reference.
 - **Two separate optimization paths** — Fix Agent (`fix_agent.py`, from scan findings, auto-applies JSON patches) and Auto-Optimize (`auto_optimize.py` + GSO engine in `packages/genie-space-optimizer/`, full benchmark-driven optimization pipeline). They're independent.

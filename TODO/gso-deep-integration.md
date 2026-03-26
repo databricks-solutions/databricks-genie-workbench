@@ -115,13 +115,13 @@ Also fixed: Check #11 recommendation text simplified to "Benchmark and improve G
 
 ---
 
-## Phase 4: Unify History Timeline
+## Phase 4: Unify History Timeline — DONE
 
-### 4A. Backend: Merge scan + optimization events
+### 4A. Backend: Merge scan + optimization events — DONE
 - **Files**: `backend/routers/spaces.py`, `backend/services/gso_lakebase.py`
 - **What**: Extend history endpoint to include optimization runs with `type` field.
 
-### 4B. Frontend: Unified timeline
+### 4B. Frontend: Unified timeline — DONE
 - **Files**: `frontend/src/pages/HistoryTab.tsx`, `frontend/src/types/index.ts`
 - **What**: Show optimization events as annotated markers alongside scan history.
 
@@ -150,7 +150,7 @@ Also fixed: Check #11 recommendation text simplified to "Benchmark and improve G
 2. **Phase 1** — absorb runtime code into `backend/services/gso/`
 3. **Phase 2** — frontend constants consolidation
 4. ~~**Phase 3** — Score-to-Optimize UX bridges~~ **DONE**
-5. **Phase 4** — unified History timeline
+5. ~~**Phase 4** — unified History timeline~~ **DONE**
 6. **Phase 5** — state lifting + UI polish
 
 ## Verification
@@ -158,4 +158,4 @@ Also fixed: Check #11 recommendation text simplified to "Benchmark and improve G
 - ~~After Phase 0: `packages/genie-space-optimizer/` contains only `pyproject.toml`, `databricks.yml`, and `src/` (with `common/`, `integration/`, `optimization/`, `jobs/`). No IDE configs, docs, deploy scripts, or frontend build files.~~ **VERIFIED**
 - After Phase 1: `backend/services/gso/` contains absorbed integration + utils. `packages/` further slimmed to `common/`, `optimization/`, `jobs/`. Zero `genie_space_optimizer.integration` or `genie_space_optimizer.backend` imports in `backend/`. All endpoints work. Job still deploys.
 - ~~After Phase 3: Score tab → "Run Optimization" → Optimize tab. Optimization completes → "Re-scan" → Score tab.~~ **VERIFIED**
-- After Phase 4: History tab shows scan + optimization events on one timeline.
+- ~~After Phase 4: History tab shows scan + optimization events on one timeline.~~ **VERIFIED**

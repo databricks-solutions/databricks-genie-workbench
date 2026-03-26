@@ -44,6 +44,8 @@ export type MaturityLevel = "Trusted" | "Ready to Optimize" | "Not Ready"
 export interface CheckDetail {
   label: string
   passed: boolean
+  detail?: string | null
+  severity?: string | null  // "pass" | "warning" | "fail"
 }
 
 export interface ScanResult {
@@ -55,6 +57,8 @@ export interface ScanResult {
   checks: CheckDetail[]
   findings: string[]
   next_steps: string[]
+  warnings: string[]             // Advisory findings from warning-severity checks
+  warning_next_steps: string[]   // Paired with warnings
   scanned_at: string
 }
 
@@ -122,7 +126,23 @@ export interface AlertItem {
 export interface ScoreHistoryPoint {
   score: number
   maturity: string
+  optimization_accuracy: number | null
   scanned_at: string
+}
+
+export interface OptimizationEvent {
+  run_id: string
+  status: string
+  started_at: string | null
+  completed_at: string | null
+  best_accuracy: number | null
+  convergence_reason: string | null
+  triggered_by: string | null
+}
+
+export interface SpaceHistory {
+  scans: ScoreHistoryPoint[]
+  optimization_events: OptimizationEvent[]
 }
 
 export interface CurrentUser {
