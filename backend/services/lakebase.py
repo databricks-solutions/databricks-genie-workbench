@@ -317,7 +317,12 @@ async def save_scan_result(space_id: str, scan_result: dict) -> None:
             space_id,
             scan_result["score"],
             scan_result["maturity"],
-            json.dumps({"optimization_accuracy": scan_result.get("optimization_accuracy"), "checks": scan_result.get("checks", [])}),
+            json.dumps({
+                "optimization_accuracy": scan_result.get("optimization_accuracy"),
+                "checks": scan_result.get("checks", []),
+                "warnings": scan_result.get("warnings", []),
+                "warning_next_steps": scan_result.get("warning_next_steps", []),
+            }),
             json.dumps(scan_result.get("findings", [])),
             json.dumps(scan_result.get("next_steps", [])),
             datetime.fromisoformat(scan_result["scanned_at"]),
@@ -353,6 +358,8 @@ async def get_latest_score(space_id: str) -> Optional[dict]:
             "checks": extra.get("checks", []),
             "findings": json.loads(row["findings"]),
             "next_steps": json.loads(row["next_steps"]),
+            "warnings": extra.get("warnings", []),
+            "warning_next_steps": extra.get("warning_next_steps", []),
             "scanned_at": row["scanned_at"].isoformat(),
         }
 
@@ -389,6 +396,8 @@ async def get_latest_scores_batch(space_ids: list[str]) -> dict[str, dict]:
                 "checks": extra.get("checks", []),
                 "findings": json.loads(row["findings"]),
                 "next_steps": json.loads(row["next_steps"]),
+                "warnings": extra.get("warnings", []),
+                "warning_next_steps": extra.get("warning_next_steps", []),
                 "scanned_at": row["scanned_at"].isoformat(),
             }
         return result

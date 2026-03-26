@@ -44,6 +44,8 @@ export type MaturityLevel = "Trusted" | "Ready to Optimize" | "Not Ready"
 export interface CheckDetail {
   label: string
   passed: boolean
+  detail?: string | null
+  severity?: string | null  // "pass" | "warning" | "fail"
 }
 
 export interface ScanResult {
@@ -55,6 +57,8 @@ export interface ScanResult {
   checks: CheckDetail[]
   findings: string[]
   next_steps: string[]
+  warnings: string[]             // Advisory findings from warning-severity checks
+  warning_next_steps: string[]   // Paired with warnings
   scanned_at: string
 }
 

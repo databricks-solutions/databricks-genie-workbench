@@ -60,6 +60,8 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
               checks: detail.scan_result.checks ?? [],
               findings: detail.scan_result.findings ?? [],
               next_steps: detail.scan_result.next_steps ?? [],
+              warnings: detail.scan_result.warnings ?? [],
+              warning_next_steps: detail.scan_result.warning_next_steps ?? [],
               scanned_at: detail.scan_result.scanned_at ?? "",
             })
           }
