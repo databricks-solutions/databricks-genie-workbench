@@ -3,12 +3,17 @@
 import json
 import logging
 import os
+import time
 
 import httpx
 
 from backend.services.auth import get_workspace_client
 
 logger = logging.getLogger(__name__)
+
+_MAX_RETRIES = 4
+_RETRY_BACKOFF_BASE = 2  # seconds
+_RETRYABLE_STATUSES = {429, 502, 503}
 
 
 def get_llm_model() -> str:
@@ -57,19 +62,24 @@ def call_serving_endpoint(
 
     logger.info(f"Calling serving endpoint: {model}")
 
-    resp = httpx.post(
-        url,
-        json=body,
-        headers=auth_headers,
-        timeout=timeout,
-    )
-
-    if resp.status_code == 429:
-        retry_after = resp.headers.get("Retry-After", "unknown")
-        raise RuntimeError(
-            f"Rate limited by serving endpoint (429). Retry-After: {retry_after}s. "
-            "Reduce prompt size or wait before retrying."
+    for attempt in range(_MAX_RETRIES + 1):
+        resp = httpx.post(
+            url,
+            json=body,
+            headers=auth_headers,
+            timeout=timeout,
         )
+
+        if resp.status_code in _RETRYABLE_STATUSES:
+            if attempt >= _MAX_RETRIES:
+                logger.error("Serving endpoint returned %d after %d retries, giving up", resp.status_code, _MAX_RETRIES)
+                raise RuntimeError(f"Serving endpoint returned {resp.status_code} after {_MAX_RETRIES} retries.")
+            retry_after = resp.headers.get("Retry-After")
+            delay = float(retry_after) if retry_after else _RETRY_BACKOFF_BASE * (2 ** attempt)
+            logger.warning("%d from serving endpoint, retrying in %.1fs (attempt %d/%d)", resp.status_code, delay, attempt + 1, _MAX_RETRIES)
+            time.sleep(delay)
+            continue
+        break
 
     if resp.status_code != 200:
         raise RuntimeError(

@@ -122,7 +122,23 @@ export interface AlertItem {
 export interface ScoreHistoryPoint {
   score: number
   maturity: string
+  optimization_accuracy: number | null
   scanned_at: string
+}
+
+export interface OptimizationEvent {
+  run_id: string
+  status: string
+  started_at: string | null
+  completed_at: string | null
+  best_accuracy: number | null
+  convergence_reason: string | null
+  triggered_by: string | null
+}
+
+export interface SpaceHistory {
+  scans: ScoreHistoryPoint[]
+  optimization_events: OptimizationEvent[]
 }
 
 export interface CurrentUser {

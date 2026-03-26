@@ -262,8 +262,9 @@ async def init_pool():
             user=user,
             password=password,
             min_size=2,
-            max_size=10,
+            max_size=25,
             command_timeout=30,
+            timeout=10,
             ssl="require",
         )
         _lakebase_available = True
@@ -356,6 +357,43 @@ async def get_latest_score(space_id: str) -> Optional[dict]:
         }
 
 
+async def get_latest_scores_batch(space_ids: list[str]) -> dict[str, dict]:
+    """Get the latest scan result for multiple spaces in a single query."""
+    if not space_ids:
+        return {}
+
+    if not _lakebase_available or _pool is None:
+        return {
+            sid: _memory_store["scans"][sid]
+            for sid in space_ids
+            if sid in _memory_store["scans"]
+        }
+
+    import json
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT DISTINCT ON (space_id)
+                space_id, score, maturity, breakdown, findings, next_steps, scanned_at
+            FROM genie.scan_results
+            WHERE space_id = ANY($1)
+            ORDER BY space_id, scanned_at DESC
+        """, space_ids)
+        result = {}
+        for row in rows:
+            extra = json.loads(row["breakdown"])
+            result[row["space_id"]] = {
+                "score": row["score"],
+                "total": 12,
+                "maturity": row["maturity"],
+                "optimization_accuracy": extra.get("optimization_accuracy"),
+                "checks": extra.get("checks", []),
+                "findings": json.loads(row["findings"]),
+                "next_steps": json.loads(row["next_steps"]),
+                "scanned_at": row["scanned_at"].isoformat(),
+            }
+        return result
+
+
 async def get_score_history(space_id: str, days: int = 30) -> list[dict]:
     """Get score history for a space over the last N days."""
     if not _lakebase_available or _pool is None:
@@ -364,20 +402,22 @@ async def get_score_history(space_id: str, days: int = 30) -> list[dict]:
     import json
     async with _pool.acquire() as conn:
         rows = await conn.fetch("""
-            SELECT score, maturity, scanned_at
+            SELECT score, maturity, breakdown, scanned_at
             FROM genie.scan_results
             WHERE space_id = $1
-              AND scanned_at >= NOW() - INTERVAL '$2 days'
+              AND scanned_at >= NOW() - $2 * INTERVAL '1 day'
             ORDER BY scanned_at ASC
         """, space_id, days)
-        return [
-            {
+        results = []
+        for r in rows:
+            extra = json.loads(r["breakdown"]) if r["breakdown"] else {}
+            results.append({
                 "score": r["score"],
                 "maturity": r["maturity"],
+                "optimization_accuracy": extra.get("optimization_accuracy"),
                 "scanned_at": r["scanned_at"].isoformat(),
-            }
-            for r in rows
-        ]
+            })
+        return results
 
 
 async def star_space(space_id: str, starred: bool) -> None:

@@ -53,9 +53,8 @@ _TYPE_HINT_MAP = {
 }
 
 # Cap concurrent SQL statements to avoid overwhelming the warehouse.
-# 3 is safe for even a 2X-Small Pro warehouse; serverless could handle
-# much more but we design for the lowest common denominator.
-_SQL_CONCURRENCY = 3
+# 8 is appropriate for a Large warehouse shared across 3 app instances.
+_SQL_CONCURRENCY = 8
 _sql_semaphore = threading.Semaphore(_SQL_CONCURRENCY)
 
 

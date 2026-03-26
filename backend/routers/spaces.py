@@ -12,12 +12,14 @@ from backend.services.auth import get_workspace_client, get_service_principal_cl
 from backend.services.genie_client import list_genie_spaces, _is_scope_error
 from backend.services.lakebase import (
     get_latest_score,
+    get_latest_scores_batch,
     get_score_history,
     star_space,
     get_starred_spaces,
     is_space_starred,
     get_all_scan_summaries,
 )
+from backend.routers.auto_optimize import load_runs_with_fallback
 from backend.services.scanner import scan_space
 from backend.models import (
     SpaceListItem,
@@ -60,6 +62,13 @@ async def list_spaces(
             starred_ids = []
         starred_set = set(starred_ids)
 
+        # Batch-fetch all scores in a single DB query
+        all_space_ids = [s.get("space_id", "") for s in raw_spaces]
+        try:
+            scores_map = await get_latest_scores_batch(all_space_ids)
+        except Exception:
+            scores_map = {}
+
         items = []
         for space in raw_spaces:
             space_id = space.get("space_id", "")
@@ -73,11 +82,7 @@ async def list_spaces(
             if search and search.lower() not in display_name.lower():
                 continue
 
-            # Get latest score from Lakebase
-            try:
-                score_data = await get_latest_score(space_id)
-            except Exception:
-                score_data = None
+            score_data = scores_map.get(space_id)
             score = score_data.get("score") if score_data else None
             maturity = score_data.get("maturity") if score_data else None
             optimization_accuracy = score_data.get("optimization_accuracy") if score_data else None
@@ -183,10 +188,30 @@ async def trigger_scan(space_id: str) -> ScanResult:
 async def get_history(
     space_id: str,
     days: int = Query(30, ge=1, le=365),
-) -> list[dict]:
-    """Get score history for a Genie Space."""
+) -> dict:
+    """Get unified score + optimization history for a Genie Space."""
+    def _to_iso(val):
+        if val is None:
+            return None
+        return val.isoformat() if hasattr(val, "isoformat") else str(val)
+
     try:
-        return await get_score_history(space_id, days=days)
+        scans, opt_runs = await asyncio.gather(
+            get_score_history(space_id, days=days),
+            load_runs_with_fallback(space_id),
+        )
+        optimization_events = []
+        for run in opt_runs:
+            optimization_events.append({
+                "run_id": run.get("run_id"),
+                "status": run.get("status"),
+                "started_at": _to_iso(run.get("started_at")),
+                "completed_at": _to_iso(run.get("completed_at")),
+                "best_accuracy": run.get("best_accuracy"),
+                "convergence_reason": run.get("convergence_reason"),
+                "triggered_by": run.get("triggered_by"),
+            })
+        return {"scans": scans, "optimization_events": optimization_events}
     except Exception as e:
         logger.exception(f"Failed to get history for {space_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to get history")
