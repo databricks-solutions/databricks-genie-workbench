@@ -1695,8 +1695,17 @@ def _substitute_params(sql: str, parameters: list[dict] | None) -> str:
     return sql
 
 
+def _strip_leading_comments(sql: str) -> str:
+    """Strip leading SQL line comments (--) that cause execution failures."""
+    lines = sql.lstrip().splitlines()
+    while lines and lines[0].lstrip().startswith("--"):
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
+
 def _test_sql(sql: str, parameters: list[dict] | None = None) -> dict:
     test_query = _substitute_params(sql, parameters)
+    test_query = _strip_leading_comments(test_query)
 
     import re
     remaining = re.findall(r":([a-zA-Z_]\w*)\b", test_query)
