@@ -16,6 +16,8 @@ class CheckDetail(BaseModel):
     """A single scoring check result."""
     label: str
     passed: bool
+    detail: str | None = None       # Human-readable context (e.g., "3/8 tables (38%)")
+    severity: str | None = None     # "pass" | "warning" | "fail"
 
 
 class ScanResult(BaseModel):
@@ -28,6 +30,8 @@ class ScanResult(BaseModel):
     checks: list[CheckDetail] = Field(default_factory=list)
     findings: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)               # Advisory findings from warning-severity checks
+    warning_next_steps: list[str] = Field(default_factory=list)     # Paired with warnings
     scanned_at: str  # ISO datetime string
 
 

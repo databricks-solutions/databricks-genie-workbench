@@ -1,8 +1,8 @@
 /**
- * IQScoreTab - Maturity S-curve + side-by-side check columns + recommendations.
+ * IQScoreTab - Maturity S-curve + three-column check grid + split recommendations.
  */
 import { useState } from "react"
-import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, ChevronDown, ChevronRight, Check, X, Rocket } from "lucide-react"
+import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Check, X, Rocket } from "lucide-react"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import { MaturityCurve } from "@/components/MaturityCurve"
 import type { ScanResult, CheckDetail } from "@/types"
@@ -44,12 +44,21 @@ export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onN
   const allChecks: CheckDetail[] = Array.isArray(scanResult.checks)
     ? scanResult.checks
     : Object.values(scanResult.checks as unknown as Record<string, CheckDetail[]>).flat()
-  const passedChecks = allChecks.filter(c => c.passed)
+
+  // Three-way split: passed (clean), warning (passed but suboptimal), failed
+  const passedChecks = allChecks.filter(c => c.passed && c.severity !== "warning")
+  const warningChecks = allChecks.filter(c => c.severity === "warning")
   const failedChecks = allChecks.filter(c => !c.passed)
   const totalChecks = allChecks.length
   const total = scanResult.total ?? 12
 
   const maturityColors = MATURITY_COLORS[scanResult.maturity]
+
+  // Safely access warnings arrays (may be absent on old scan results)
+  const warnMessages = scanResult.warnings ?? []
+  const warnNextSteps = scanResult.warning_next_steps ?? []
+  const hasIssues = scanResult.next_steps.length > 0
+  const hasOpportunities = warnMessages.length > 0
 
   return (
     <div className="space-y-6">
@@ -79,7 +88,7 @@ export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onN
         {/* S-curve visualization */}
         <MaturityCurve score={scanResult.score} total={total} maturity={scanResult.maturity} />
 
-        {/* Expandable check list — two columns: passed / not passed */}
+        {/* Expandable check list — three columns: passed / warnings / failed */}
         {totalChecks > 0 && (
           <div className="mt-3 pt-3 border-t border-default">
             <button
@@ -91,14 +100,15 @@ export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onN
                 : <ChevronRight className="w-4 h-4 text-muted" />
               }
               <span className="text-sm font-medium text-secondary group-hover:text-primary transition-colors">
-                {passedChecks.length}/{totalChecks} checks passed
+                {passedChecks.length + warningChecks.length}/{totalChecks} checks passed
+                {warningChecks.length > 0 && ` · ${warningChecks.length} warning${warningChecks.length !== 1 ? "s" : ""}`}
                 {" · "}
                 {getOptimizationLabel(scanResult.optimization_accuracy)}
               </span>
             </button>
 
             {checksExpanded && (
-              <div className="grid grid-cols-2 gap-6 mt-3">
+              <div className="grid grid-cols-3 gap-4 mt-3">
                 {/* Passed column */}
                 <div>
                   <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-500 mb-2">
@@ -107,18 +117,47 @@ export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onN
                   </div>
                   <div className="space-y-0.5">
                     {passedChecks.map((check, i) => (
-                      <div key={i} className="flex items-center gap-2 py-1.5">
-                        <Check className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
-                        <span className="flex-1 text-sm text-secondary truncate">{check.label}</span>
+                      <div key={i} className="py-1.5">
+                        <div className="flex items-center gap-2">
+                          <Check className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                          <span className="flex-1 text-sm text-secondary truncate">{check.label}</span>
+                        </div>
+                        {check.detail && (
+                          <p className="text-xs text-muted ml-5.5 mt-0.5 pl-[22px]">{check.detail}</p>
+                        )}
                       </div>
                     ))}
                     {passedChecks.length === 0 && (
-                      <p className="text-xs text-muted py-2">No checks passed yet</p>
+                      <p className="text-xs text-muted py-2">No clean passes</p>
                     )}
                   </div>
                 </div>
 
-                {/* Not passed column */}
+                {/* Warnings column */}
+                <div>
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-400 mb-2">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Warnings ({warningChecks.length})
+                  </div>
+                  <div className="space-y-0.5">
+                    {warningChecks.map((check, i) => (
+                      <div key={i} className="py-1.5">
+                        <div className="flex items-center gap-2">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                          <span className="flex-1 text-sm text-secondary truncate">{check.label}</span>
+                        </div>
+                        {check.detail && (
+                          <p className="text-xs text-amber-400/70 pl-[22px] mt-0.5">{check.detail}</p>
+                        )}
+                      </div>
+                    ))}
+                    {warningChecks.length === 0 && (
+                      <p className="text-xs text-muted py-2">No warnings</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Failed column */}
                 <div>
                   <div className="flex items-center gap-1.5 text-xs font-semibold text-red-400 mb-2">
                     <AlertCircle className="w-3.5 h-3.5" />
@@ -134,18 +173,28 @@ export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onN
                         <button
                           key={i}
                           onClick={onNavigateToOptimize}
-                          className="flex items-center gap-2 py-1.5 w-full text-left group"
+                          className="py-1.5 w-full text-left group"
                         >
-                          <X className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
-                          <span className="flex-1 text-sm text-muted truncate group-hover:text-accent group-hover:underline transition-colors">
-                            {check.label}
-                          </span>
-                          <Rocket className="w-3 h-3 text-muted opacity-0 group-hover:opacity-100 transition-opacity" />
+                          <div className="flex items-center gap-2">
+                            <X className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                            <span className="flex-1 text-sm text-muted truncate group-hover:text-accent group-hover:underline transition-colors">
+                              {check.label}
+                            </span>
+                            <Rocket className="w-3 h-3 text-muted opacity-0 group-hover:opacity-100 transition-opacity" />
+                          </div>
+                          {check.detail && (
+                            <p className="text-xs text-muted pl-[22px] mt-0.5">{check.detail}</p>
+                          )}
                         </button>
                       ) : (
-                        <div key={i} className="flex items-center gap-2 py-1.5">
-                          <X className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
-                          <span className="flex-1 text-sm text-muted truncate">{check.label}</span>
+                        <div key={i} className="py-1.5">
+                          <div className="flex items-center gap-2">
+                            <X className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
+                            <span className="flex-1 text-sm text-muted truncate">{check.label}</span>
+                          </div>
+                          {check.detail && (
+                            <p className="text-xs text-muted pl-[22px] mt-0.5">{check.detail}</p>
+                          )}
                         </div>
                       )
                     })}
@@ -167,31 +216,67 @@ export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onN
         )}
       </div>
 
-      {/* Recommendations */}
-      {scanResult.next_steps.length > 0 && (
+      {/* Recommendations — split into Issues + Opportunities */}
+      {(hasIssues || hasOpportunities) && (
         <div className="bg-surface border border-default rounded-xl p-5">
           <h3 className="text-sm font-semibold text-secondary uppercase tracking-wide mb-4 flex items-center gap-2">
             <TrendingUp className="w-4 h-4 text-amber-400" />
             Recommendations
           </h3>
-          <div className="space-y-3">
-            {scanResult.next_steps.map((step, i) => (
-              <div key={i} className="flex items-start gap-3">
-                <span className="w-5 h-5 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-xs font-medium text-amber-400 flex-shrink-0 mt-0.5">
-                  {i + 1}
-                </span>
-                <div>
-                  {scanResult.findings[i] && (
-                    <p className="text-sm font-medium text-primary">{scanResult.findings[i]}</p>
-                  )}
-                  <p className="text-sm text-muted">{step}</p>
-                </div>
+
+          {/* Issues (from failed checks) */}
+          {hasIssues && (
+            <div className={hasOpportunities ? "mb-5" : ""}>
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-red-400 mb-2">
+                <AlertCircle className="w-3.5 h-3.5" />
+                Issues ({scanResult.next_steps.length})
               </div>
-            ))}
-          </div>
+              <div className="space-y-3">
+                {scanResult.next_steps.map((step, i) => (
+                  <div key={i} className="flex items-start gap-3">
+                    <span className="w-5 h-5 rounded-full bg-red-500/15 border border-red-500/30 flex items-center justify-center text-xs font-medium text-red-400 flex-shrink-0 mt-0.5">
+                      {i + 1}
+                    </span>
+                    <div>
+                      {scanResult.findings[i] && (
+                        <p className="text-sm font-medium text-primary">{scanResult.findings[i]}</p>
+                      )}
+                      <p className="text-sm text-muted">{step}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Opportunities (from warning checks) */}
+          {hasOpportunities && (
+            <div>
+              {hasIssues && <div className="border-t border-default mb-4" />}
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-400 mb-2">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                Opportunities ({warnMessages.length})
+              </div>
+              <div className="space-y-3">
+                {warnNextSteps.map((step, i) => (
+                  <div key={i} className="flex items-start gap-3">
+                    <span className="w-5 h-5 rounded-full bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-xs font-medium text-amber-400 flex-shrink-0 mt-0.5">
+                      {i + 1}
+                    </span>
+                    <div>
+                      {warnMessages[i] && (
+                        <p className="text-sm font-medium text-primary">{warnMessages[i]}</p>
+                      )}
+                      <p className="text-sm text-muted">{step}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Action buttons */}
-          {scanResult.findings.length > 0 && (onFixWithAgent || onNavigateToOptimize) && (
+          {(scanResult.findings.length > 0 || hasOpportunities) && (onFixWithAgent || onNavigateToOptimize) && (
             <div className="mt-4 pt-4 border-t border-default flex items-center gap-2">
               {onFixWithAgent && (
                 <button
