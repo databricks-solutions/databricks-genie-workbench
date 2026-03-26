@@ -39,13 +39,13 @@ env:
   - name: MLFLOW_REGISTRY_URI
     value: "databricks-uc"
   - name: MLFLOW_EXPERIMENT_ID
-    value: "2624606869914616"
+    value: "__MLFLOW_EXPERIMENT_ID__"
 
   # ---------------------------------------------------------------------------
   # LLM Model
   # ---------------------------------------------------------------------------
   - name: LLM_MODEL
-    value: "databricks-claude-sonnet-4-6"
+    value: "__LLM_MODEL__"
 
   # ---------------------------------------------------------------------------
   # SQL Warehouse — pulled from the app resource named "sql-warehouse".

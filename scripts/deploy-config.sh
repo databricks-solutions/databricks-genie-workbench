@@ -12,9 +12,11 @@
 #   GENIE_APP_NAME           (optional)  Databricks App name          [default: genie-workbench]
 #   GENIE_DEPLOY_PROFILE     (optional)  Databricks CLI profile       [default: DEFAULT]
 #   GENIE_LLM_MODEL          (optional)  LLM serving endpoint         [default: databricks-claude-sonnet-4-6]
+#   GENIE_LAKEBASE_INSTANCE  (optional)  Lakebase instance name       [default: <app-name>]
+#   GENIE_MLFLOW_EXPERIMENT_ID (optional) MLflow experiment ID for agent tracing [default: disabled]
 #
 # After sourcing, the following variables are available:
-#   APP_NAME, CATALOG, GSO_SCHEMA, WAREHOUSE_ID, PROFILE, LLM_MODEL
+#   APP_NAME, CATALOG, GSO_SCHEMA, WAREHOUSE_ID, PROFILE, LLM_MODEL, MLFLOW_EXPERIMENT_ID
 # ---------------------------------------------------------------------------
 
 # ── Load .env.deploy if present (in project root) ─────────────────────────
@@ -35,6 +37,7 @@ WAREHOUSE_ID="${GENIE_WAREHOUSE_ID:-}"
 PROFILE="${GENIE_DEPLOY_PROFILE:-DEFAULT}"
 LLM_MODEL="${GENIE_LLM_MODEL:-databricks-claude-sonnet-4-6}"
 LAKEBASE_INSTANCE="${GENIE_LAKEBASE_INSTANCE:-$APP_NAME}"
+MLFLOW_EXPERIMENT_ID="${GENIE_MLFLOW_EXPERIMENT_ID:-}"
 
 # ── Validate required values ─────────────────────────────────────────────
 if [ -z "$WAREHOUSE_ID" ]; then
@@ -66,5 +69,6 @@ _print_config() {
     echo "  │  Warehouse ID: $WAREHOUSE_ID"
     echo "  │  LLM Model:    $LLM_MODEL"
     echo "  │  Lakebase:     $LAKEBASE_INSTANCE"
+    echo "  │  MLflow:       ${MLFLOW_EXPERIMENT_ID:-<disabled>}"
     echo "  └─────────────────────────────────────────────────────────┘"
 }
