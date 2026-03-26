@@ -16,8 +16,8 @@ The app is a FastAPI backend serving a React/Vite frontend, deployed as a [Datab
 
 ## Prerequisites
 
-* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.230+)
-* Node.js 18+ and npm
+* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.230+ recommended)
+* Node.js (18+ recommended) and npm
 * Python 3.11+
 * A Databricks workspace with:
   * Apps enabled
@@ -51,15 +51,18 @@ databricks auth login --profile <workspace-profile>
 The installer will:
 1. Check prerequisites (CLI, Node, Python)
 2. Ask for your Databricks CLI profile
-3. Auto-discover catalogs and SQL warehouses
-4. Ask for app name and LLM model
-5. Write `.env.deploy` with your configuration
-6. Run `scripts/deploy.sh` to create and deploy the app
-7. Grant the app's service principal access to your Genie Spaces
+3. Ask for catalog and SQL warehouse (auto-discovered from your workspace)
+4. Ask for LLM model endpoint
+5. Ask for Lakebase instance name and app name
+6. Write `.env.deploy` with your configuration
+7. Run `scripts/deploy.sh` to build and deploy the app
+8. Resolve the app's service principal and optionally grant access to your existing Genie Spaces
 
 ### 4. Attach Lakebase (optional but recommended)
 
 Without Lakebase, scan results and starred spaces are lost on app restart.
+
+> **Note:** If you used `install.sh`, it already collected your Lakebase instance name (stored as `GENIE_LAKEBASE_INSTANCE` in `.env.deploy`). You still need to attach the resource manually in the Apps UI as described below.
 
 **Create a Lakebase instance** (if you don't have one):
 1. In the workspace UI, go to **Catalog → Lakebase** (or **SQL → Lakebase**)
@@ -91,6 +94,7 @@ GENIE_CATALOG=<your-catalog-name>
 GENIE_APP_NAME=genie-workbench
 GENIE_DEPLOY_PROFILE=genie-workbench
 GENIE_LLM_MODEL=databricks-claude-sonnet-4-6
+GENIE_LAKEBASE_INSTANCE=genie-workbench
 EOF
 ```
 
@@ -111,6 +115,7 @@ Set these in `.env.deploy` or as environment variables:
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (must be unique in your workspace) |
 | `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
 | `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint for analysis |
+| `GENIE_LAKEBASE_INSTANCE` | No | `<app-name>` | Lakebase instance name (patched into `app.yaml` at deploy) |
 
 ## Deploy Commands
 
@@ -129,8 +134,8 @@ Set these in `.env.deploy` or as environment variables:
 2. **Build frontend** — `npm install` + `npm run build`
 3. **Create app** — `databricks apps create` (skipped if app already exists)
 4. **Sync files** — `databricks sync --full` + explicit `frontend/dist/` upload
-5. **Grant UC permissions** — creates GSO schema/tables, grants SP access
-6. **Configure job permissions** — finds optimization job, grants SP CAN_MANAGE
+5. **Grant UC permissions** — resolves app SP, creates GSO schema/tables, grants SP access, enables CDF
+6. **Set up optimization job** — builds GSO wheel, uploads notebooks, creates/finds the Databricks job, grants SP CAN_MANAGE
 7. **Redeploy app** — patches `app.yaml` with config values, configures scopes, deploys
 8. **Verify** — checks critical files, waits for deployment to succeed
 
@@ -179,6 +184,11 @@ The app uses On-Behalf-Of (OBO) auth — users see only Genie Spaces they have p
 | `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps |
 | Auto-Optimize fails at "Baseline Evaluation" with `FEATURE_DISABLED` | Prompt Registry not enabled on workspace | Contact workspace admin to enable MLflow Prompt Registry |
 | Unresolved `__GSO_*__` placeholders | deploy.sh couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
+| GSO job creation fails during deploy | Missing build dependencies or UC Volume permission | Check `ensure_gso_job.py` output; run `pip install build` if needed |
+| `ModuleNotFoundError: build` | `build` package not installed for wheel creation | `pip install build` |
+| Notebook upload fails (`RESOURCE_DOES_NOT_EXIST`) | `/Workspace/Shared/` not writable by deployer | Check workspace-level permissions on the upload path |
+
+> **Note on MLflow tracing:** The `MLFLOW_EXPERIMENT_ID` in `app.yaml` is workspace-specific. The app validates it at startup and silently disables tracing if the experiment doesn't exist in your workspace. To enable tracing, create an MLflow experiment and update the value in `app.yaml` before deploying.
 
 **Debug commands:**
 
@@ -203,3 +213,30 @@ Databricks support doesn't cover this content. For questions or bugs, please ope
 
 | library | description | license | source |
 |---|---|---|---|
+| asyncpg | Fast PostgreSQL client for asyncio | Apache-2.0 | https://pypi.org/project/asyncpg/ |
+| class-variance-authority | CSS class name composition utility | Apache-2.0 | https://github.com/joe-bell/cva |
+| clsx | Utility for constructing className strings | MIT | https://github.com/lukeed/clsx |
+| databricks-sdk | Databricks SDK for Python | Apache-2.0 | https://pypi.org/project/databricks-sdk/ |
+| fastapi | Modern async web framework for APIs | MIT | https://pypi.org/project/fastapi/ |
+| httpx | Async/sync HTTP client | BSD-3-Clause | https://pypi.org/project/httpx/ |
+| lucide-react | Icon library for React | ISC | https://github.com/lucide-icons/lucide |
+| mlflow | ML experiment tracking and model registry | Apache-2.0 | https://pypi.org/project/mlflow/ |
+| pandas | Data manipulation and analysis | BSD-3-Clause | https://pypi.org/project/pandas/ |
+| prism-react-renderer | Syntax highlighting with Prism for React | MIT | https://github.com/FormidableLabs/prism-react-renderer |
+| psycopg | PostgreSQL database adapter (v3) | LGPL-3.0 | https://pypi.org/project/psycopg/ |
+| pydantic | Data validation using Python type hints | MIT | https://pypi.org/project/pydantic/ |
+| pydantic-settings | Settings management with Pydantic | MIT | https://pypi.org/project/pydantic-settings/ |
+| python-dotenv | Load environment variables from .env files | BSD-3-Clause | https://pypi.org/project/python-dotenv/ |
+| pyyaml | YAML parser and emitter | MIT | https://pypi.org/project/PyYAML/ |
+| react | Library for building user interfaces | MIT | https://github.com/facebook/react |
+| react-diff-viewer-continued | Text diff viewer component for React | MIT | https://github.com/aeolun/react-diff-viewer-continued |
+| react-dom | React DOM rendering | MIT | https://github.com/facebook/react |
+| react-markdown | Render Markdown as React components | MIT | https://github.com/remarkjs/react-markdown |
+| recharts | Charting library for React | MIT | https://github.com/recharts/recharts |
+| remark-gfm | GitHub Flavored Markdown support for remark | MIT | https://github.com/remarkjs/remark-gfm |
+| requests | HTTP library for Python | Apache-2.0 | https://pypi.org/project/requests/ |
+| sql-formatter | SQL query formatter | MIT | https://github.com/sql-formatter-org/sql-formatter |
+| sqlglot | SQL parser, transpiler, and optimizer | MIT | https://pypi.org/project/sqlglot/ |
+| sqlmodel | SQL databases with Python and Pydantic | MIT | https://pypi.org/project/sqlmodel/ |
+| tailwind-merge | Merge Tailwind CSS classes without conflicts | MIT | https://github.com/dcastil/tailwind-merge |
+| uvicorn | ASGI web server | BSD-3-Clause | https://pypi.org/project/uvicorn/ |
