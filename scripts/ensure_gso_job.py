@@ -14,7 +14,8 @@ Usage:
         --catalog main \
         --schema genie_space_optimizer \
         --app-name genie-workbench \
-        --project-dir /path/to/repo
+        --project-dir /path/to/repo \
+        --sp-client-id <app-service-principal-client-id>
 """
 
 import argparse
@@ -59,6 +60,24 @@ def _run_json(cmd: list[str], **kwargs) -> dict:
 # ---------------------------------------------------------------------------
 # Step 1: Find existing job
 # ---------------------------------------------------------------------------
+
+def _update_run_as(profile: str, job_id: str, sp_client_id: str) -> None:
+    """Ensure the job's run_as is set to the app service principal."""
+    payload = json.dumps({
+        "new_settings": {
+            "run_as": {"service_principal_name": sp_client_id},
+        },
+    })
+    try:
+        _run_json([
+            "databricks", "jobs", "update", job_id,
+            "--profile", profile,
+            "--json", payload,
+        ])
+        _log(f"  ✓ Job run_as updated to SP {sp_client_id}")
+    except Exception as exc:
+        _log(f"  ⚠ Could not update job run_as: {exc}")
+
 
 def _find_existing_job(profile: str) -> str | None:
     """Find the GSO optimization job by name and tag."""
@@ -180,6 +199,7 @@ def _create_job(
     schema: str,
     app_name: str,
     vol_wheel_path: str,
+    sp_client_id: str = "",
 ) -> str:
     """Create the optimization job and return its ID."""
     job_spec = {
@@ -189,6 +209,7 @@ def _create_job(
             "(preflight -> baseline_eval -> enrichment -> lever_loop -> finalize -> deploy). "
             "SP executes with granted privileges on user schemas."
         ),
+        **({"run_as": {"service_principal_name": sp_client_id}} if sp_client_id else {}),
         "max_concurrent_runs": 20,
         "queue": {"enabled": True},
         "tags": {
@@ -337,6 +358,8 @@ def main() -> int:
     parser.add_argument("--schema", required=True)
     parser.add_argument("--app-name", required=True)
     parser.add_argument("--project-dir", required=True)
+    parser.add_argument("--sp-client-id", default="",
+                        help="App service principal client ID (sets job run_as)")
     args = parser.parse_args()
 
     # 1. Check for existing job
@@ -344,6 +367,8 @@ def main() -> int:
     existing_id = _find_existing_job(args.profile)
     if existing_id:
         _log(f"  ✓ Found existing optimization job: {existing_id}")
+        if args.sp_client_id:
+            _update_run_as(args.profile, existing_id, args.sp_client_id)
         print(existing_id)
         return 0
 
@@ -367,6 +392,7 @@ def main() -> int:
     job_id = _create_job(
         args.profile, args.catalog, args.schema,
         args.app_name, vol_wheel_path,
+        sp_client_id=args.sp_client_id,
     )
     _log(f"  ✓ Created optimization job: {job_id}")
 

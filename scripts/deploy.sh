@@ -257,6 +257,21 @@ python3 "$SCRIPT_DIR/grant_permissions.py" \
     --warehouse-id "$WAREHOUSE_ID"
 echo "  ✓ UC grants applied"
 
+# Grant deployer "Service Principal User" role on the app SP.
+# Required for setting the job's run_as to the SP.
+SP_USER_PAYLOAD=$(python3 -c "
+import json
+print(json.dumps({'access_control_list': [
+    {'user_name': '$DEPLOYER', 'permission_level': 'CAN_USE'},
+]}))
+")
+if databricks api patch "/api/2.0/permissions/authorization/serviceprincipals/$SP_CLIENT_ID" \
+    --profile "$PROFILE" --json "$SP_USER_PAYLOAD" 2>/dev/null; then
+    echo "  ✓ Deployer granted Service Principal User role"
+else
+    echo "  ⚠ Could not grant SP User role — job run_as may fail. Ask a workspace admin."
+fi
+
 # ── Set up GSO optimization job ──────────────────────────────────────────
 STEP=$((STEP + 1))
 echo ""
@@ -268,20 +283,21 @@ if JOB_ID=$(python3 "$SCRIPT_DIR/ensure_gso_job.py" \
     --catalog "$CATALOG" \
     --schema "$GSO_SCHEMA" \
     --app-name "$APP_NAME" \
-    --project-dir "$PROJECT_DIR"); then
+    --project-dir "$PROJECT_DIR" \
+    --sp-client-id "$SP_CLIENT_ID"); then
 
-    # Grant job permissions to deployer and SP
+    # Grant job permissions — SP owns the job (run_as identity), deployer can manage
     PERM_PAYLOAD=$(python3 -c "
 import json
 acl = [
-    {'user_name': '$DEPLOYER', 'permission_level': 'IS_OWNER'},
+    {'user_name': '$DEPLOYER', 'permission_level': 'CAN_MANAGE'},
     {'group_name': 'users', 'permission_level': 'CAN_VIEW'},
-    {'service_principal_name': '$SP_CLIENT_ID', 'permission_level': 'CAN_MANAGE'},
+    {'service_principal_name': '$SP_CLIENT_ID', 'permission_level': 'IS_OWNER'},
 ]
 print(json.dumps({'access_control_list': acl}))
 ")
     if databricks api put "/api/2.0/permissions/jobs/$JOB_ID" --profile "$PROFILE" --json "$PERM_PAYLOAD" 2>/dev/null; then
-        echo "  ✓ Job permissions updated (owner=$DEPLOYER, SP=CAN_MANAGE, users=CAN_VIEW)"
+        echo "  ✓ Job permissions updated (SP=IS_OWNER, deployer=CAN_MANAGE, users=CAN_VIEW)"
     else
         echo "  ⚠ Could not set job permissions — SP may not be able to trigger optimization runs."
     fi
