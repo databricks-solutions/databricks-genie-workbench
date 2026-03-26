@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -17,7 +18,7 @@ class CheckDetail(BaseModel):
     label: str
     passed: bool
     detail: str | None = None       # Human-readable context (e.g., "3/8 tables (38%)")
-    severity: str | None = None     # "pass" | "warning" | "fail"
+    severity: Literal["pass", "warning", "fail"] | None = None
 
 
 class ScanResult(BaseModel):

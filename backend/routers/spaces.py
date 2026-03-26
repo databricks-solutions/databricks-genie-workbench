@@ -19,7 +19,7 @@ from backend.services.lakebase import (
     is_space_starred,
     get_all_scan_summaries,
 )
-from backend.routers.auto_optimize import load_runs_with_fallback
+from backend.routers.auto_optimize import load_runs_with_fallback, _isoformat
 from backend.services.scanner import scan_space
 from backend.models import (
     SpaceListItem,
@@ -190,11 +190,6 @@ async def get_history(
     days: int = Query(30, ge=1, le=365),
 ) -> dict:
     """Get unified score + optimization history for a Genie Space."""
-    def _to_iso(val):
-        if val is None:
-            return None
-        return val.isoformat() if hasattr(val, "isoformat") else str(val)
-
     try:
         scans, opt_runs = await asyncio.gather(
             get_score_history(space_id, days=days),
@@ -205,8 +200,8 @@ async def get_history(
             optimization_events.append({
                 "run_id": run.get("run_id"),
                 "status": run.get("status"),
-                "started_at": _to_iso(run.get("started_at")),
-                "completed_at": _to_iso(run.get("completed_at")),
+                "started_at": _isoformat(run.get("started_at")),
+                "completed_at": _isoformat(run.get("completed_at")),
                 "best_accuracy": run.get("best_accuracy"),
                 "convergence_reason": run.get("convergence_reason"),
                 "triggered_by": run.get("triggered_by"),

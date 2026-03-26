@@ -54,29 +54,6 @@ async def load_gso_runs_for_space(space_id: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-async def load_gso_runs_for_space_since(space_id: str, days: int = 30) -> list[dict]:
-    """Load optimization runs for a space over the last N days, oldest first."""
-    if not _lakebase_available or _pool is None:
-        return []
-
-    try:
-        async with _pool.acquire() as conn:
-            rows = await conn.fetch(
-                f"""SELECT run_id, status, started_at, completed_at,
-                          best_accuracy, convergence_reason, triggered_by
-                   FROM {_tbl('genie_opt_runs')}
-                   WHERE space_id = $1
-                     AND started_at >= NOW() - $2 * INTERVAL '1 day'
-                   ORDER BY started_at ASC""",
-                space_id,
-                days,
-            )
-            return [dict(r) for r in rows]
-    except Exception:
-        logger.warning("Failed to load GSO runs for space %s", space_id, exc_info=True)
-        return []
-
-
 async def load_gso_stages(run_id: str) -> list[dict]:
     """Load pipeline stages for a run."""
     if not _lakebase_available or _pool is None:
