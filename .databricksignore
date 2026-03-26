@@ -50,8 +50,6 @@ mlflow.db
 # Other non-runtime files
 *.md
 !backend/references/schema.md
-!docs/checklist-by-schema.md
-!docs/genie-space-schema.md
 deploy.sh
 deploy-config.sh
 databricks.yml
