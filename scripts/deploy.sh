@@ -268,7 +268,8 @@ if JOB_ID=$(python3 "$SCRIPT_DIR/ensure_gso_job.py" \
     --catalog "$CATALOG" \
     --schema "$GSO_SCHEMA" \
     --app-name "$APP_NAME" \
-    --project-dir "$PROJECT_DIR"); then
+    --project-dir "$PROJECT_DIR" \
+    --sp-client-id "$SP_CLIENT_ID"); then
 
     # Grant job permissions to deployer and SP
     PERM_PAYLOAD=$(python3 -c "
