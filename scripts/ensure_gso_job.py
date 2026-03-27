@@ -209,7 +209,6 @@ def _create_job(
             "(preflight -> baseline_eval -> enrichment -> lever_loop -> finalize -> deploy). "
             "SP executes with granted privileges on user schemas."
         ),
-        **({"run_as": {"service_principal_name": sp_client_id}} if sp_client_id else {}),
         "max_concurrent_runs": 20,
         "queue": {"enabled": True},
         "tags": {
