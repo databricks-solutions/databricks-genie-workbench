@@ -338,9 +338,9 @@ export const LEVERS: Lever[] = [
     number: 3,
     name: "Table-Valued Functions",
     description:
-      "Optimizes TVF descriptions, parameter documentation, and routing guidance. Can propose removal of persistently failing TVFs after TVF_REMOVAL_MIN_ITERATIONS (2) consecutive failures.",
-    patchTypes: ["add_tvf_parameter", "remove_tvf"],
-    failureTypes: ["tvf_parameter_error"],
+      "Optimizes TVF descriptions, parameter documentation, routing guidance, and example SQL queries for TVF routing. Can propose removal of persistently failing TVFs after TVF_REMOVAL_MIN_ITERATIONS (2) consecutive failures.",
+    patchTypes: ["add_tvf_parameter", "remove_tvf", "add_example_sql", "update_example_sql"],
+    failureTypes: ["tvf_parameter_error", "asset_routing_error"],
     ownedSections: [
       "purpose",
       "best_for",
@@ -378,6 +378,32 @@ export const LEVERS: Lever[] = [
       "ambiguous_question",
     ],
     ownedSections: [],
+  },
+  {
+    number: 6,
+    name: "SQL Expressions",
+    description:
+      "Adds reusable SQL expressions (measures, filters, dimensions) that define business concepts like KPIs, common conditions, and grouping attributes. These structured definitions teach Genie about business terms and do not count toward the instruction budget.",
+    patchTypes: [
+      "add_sql_snippet_measure",
+      "update_sql_snippet_measure",
+      "remove_sql_snippet_measure",
+      "add_sql_snippet_filter",
+      "update_sql_snippet_filter",
+      "remove_sql_snippet_filter",
+      "add_sql_snippet_expression",
+      "update_sql_snippet_expression",
+      "remove_sql_snippet_expression",
+    ],
+    failureTypes: [
+      "wrong_aggregation",
+      "wrong_measure",
+      "missing_filter",
+      "missing_dimension",
+      "wrong_grouping",
+      "ambiguous_question",
+    ],
+    ownedSections: ["AGGREGATION RULES", "QUERY PATTERNS"],
   },
 ];
 
@@ -1160,7 +1186,7 @@ export const WALKTHROUGH_STAGES: WalkthroughStage[] = [
   { id: "enrichment", title: "Enrichment", subtitle: "Proactively fill metadata gaps", pipelineGroup: "enrichment", icon: Sparkles },
   { id: "lever-loop", title: "The Optimization Loop", subtitle: "Iteratively improve via targeted patches", pipelineGroup: "leverLoop", icon: RefreshCw },
   { id: "failure-analysis", title: "Failure Analysis", subtitle: "Diagnose and cluster root causes", pipelineGroup: "leverLoop", icon: Filter },
-  { id: "levers", title: "The 5 Levers", subtitle: "Targeted tools for specific problem types", pipelineGroup: "leverLoop", icon: Layers },
+  { id: "levers", title: "The 6 Levers", subtitle: "Targeted tools for specific problem types", pipelineGroup: "leverLoop", icon: Layers },
   { id: "three-gates", title: "The 3-Gate Pattern", subtitle: "Validate improvements, catch regressions", pipelineGroup: "leverLoop", icon: GitBranch },
   { id: "convergence", title: "Convergence & Safety", subtitle: "Know when to stop, prevent harm", pipelineGroup: "finalize", icon: TrendingUp },
   { id: "finalize", title: "Finalize & Deploy", subtitle: "Test, promote, and optionally deploy", pipelineGroup: "finalize", icon: CheckCheck },

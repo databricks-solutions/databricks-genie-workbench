@@ -144,6 +144,7 @@ if _warehouse_id:
 
 import mlflow
 mlflow.set_experiment(exp_name)
+mlflow.openai.autolog()
 
 # Read from lever_loop (or baseline if lever_loop was skipped)
 lever_skipped_raw = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="skipped")

@@ -78,7 +78,8 @@ PARTITIONED BY (space_id)
 COMMENT 'Genie Space optimization runs - one row per optimization attempt'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_OPT_STAGES_DDL = """\
@@ -100,7 +101,8 @@ PARTITIONED BY (run_id)
 COMMENT 'Optimization stage transitions - ordered timeline of what happened'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_OPT_ITERATIONS_DDL = """\
@@ -130,7 +132,8 @@ PARTITIONED BY (run_id)
 COMMENT 'Evaluation iteration results - scores and failures per eval pass'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_OPT_PATCHES_DDL = """\
@@ -159,7 +162,8 @@ PARTITIONED BY (run_id)
 COMMENT 'Patch audit trail - every metadata change applied to Genie Space'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_EVAL_ASI_RESULTS_DDL = """\
@@ -186,7 +190,8 @@ USING DELTA
 COMMENT 'Actionable Side Information from evaluation judges'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 TABLE_DATA_ACCESS_GRANTS = "genie_opt_data_access_grants"
@@ -206,7 +211,8 @@ USING DELTA
 COMMENT 'Tracks UC privileges granted to the app SP for accessing Genie space assets'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_OPT_PROVENANCE_DDL = """\
@@ -241,7 +247,8 @@ PARTITIONED BY (run_id)
 COMMENT 'End-to-end provenance: links every patch to originating judge verdicts and gate outcomes'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _GENIE_OPT_SUGGESTIONS_DDL = """\
@@ -268,7 +275,8 @@ PARTITIONED BY (run_id)
 COMMENT 'Strategist improvement suggestions — proposed metric views and functions for human review'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
-    'delta.autoOptimize.autoCompact' = 'true'
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
 )"""
 
 _ALL_DDL: dict[str, str] = {
@@ -709,11 +717,11 @@ def write_patch(
 
     command = patch_record.get("command")
     if command is not None:
-        row["command_json"] = json.dumps(command)
+        row["command_json"] = command if isinstance(command, str) else json.dumps(command)
 
     rollback = patch_record.get("rollback")
     if rollback is not None:
-        row["rollback_json"] = json.dumps(rollback)
+        row["rollback_json"] = rollback if isinstance(rollback, str) else json.dumps(rollback)
 
     proposal_id = patch_record.get("proposal_id")
     if proposal_id is not None:
@@ -825,10 +833,11 @@ def write_provenance(
         blame = p.get("blame_set")
         if isinstance(blame, list):
             blame = json.dumps(blame)
+        row_lever = p.get("mapped_lever") if p.get("mapped_lever") is not None else lever
         row: dict[str, Any] = {
             "run_id": run_id,
             "iteration": iteration,
-            "lever": lever,
+            "lever": int(row_lever),
             "question_id": p.get("question_id", ""),
             "signal_type": p.get("signal_type", "hard"),
             "arbiter_verdict": p.get("arbiter_verdict"),
@@ -862,17 +871,21 @@ def update_provenance_proposals(
     catalog: str,
     schema: str,
 ) -> None:
-    """Backfill ``proposal_id`` and ``patch_type`` into provenance rows."""
+    """Backfill ``proposal_id``, ``patch_type``, and ``lever`` into provenance rows."""
     fqn = _fqn(catalog, schema, TABLE_PROVENANCE)
     for m in proposal_mappings:
         cid = (m.get("cluster_id") or "").replace("'", "''")
         pid = (m.get("proposal_id") or "").replace("'", "''")
         pt = (m.get("patch_type") or "").replace("'", "''")
+        lever = m.get("lever")
         if not cid:
             continue
         try:
+            set_clause = f"proposal_id = '{pid}', patch_type = '{pt}'"
+            if lever is not None:
+                set_clause += f", lever = {int(lever)}"
             spark.sql(
-                f"UPDATE {fqn} SET proposal_id = '{pid}', patch_type = '{pt}' "
+                f"UPDATE {fqn} SET {set_clause} "
                 f"WHERE run_id = '{run_id}' AND iteration = {iteration} AND cluster_id = '{cid}'"
             )
         except Exception:

@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { SqlSnippetPatch } from "@/components/SqlSnippetPatch";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -833,9 +834,14 @@ function PatchRow({ patch }: { patch: Record<string, unknown> }) {
       </button>
       {expanded && (
         <div className="border-t p-2">
-          <pre className="max-h-32 overflow-auto rounded bg-elevated p-2 text-[10px]">
-            {JSON.stringify(patch.command || patch.patch || patch, null, 2)}
-          </pre>
+          {String(patch.patchType || patch.type || "").includes("sql_snippet") ||
+           String(patch.patchType || "") === "proactive_sql_expression" ? (
+            <SqlSnippetPatch patch={patch} />
+          ) : (
+            <pre className="max-h-32 overflow-auto rounded bg-elevated p-2 text-[10px]">
+              {JSON.stringify(patch.command || patch.patch || patch, null, 2)}
+            </pre>
+          )}
         </div>
       )}
     </div>

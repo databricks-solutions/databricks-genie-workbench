@@ -307,6 +307,7 @@ def list_spaces(
     sp_ws: Dependencies.Client,
     config: Dependencies.Config,
     headers: Dependencies.Headers,
+    session: Dependencies.Session,
 ):
     """List all Genie Spaces the caller can see, enriched with quality scores.
 
@@ -324,11 +325,13 @@ def list_spaces(
         logger.error("Genie list_spaces failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=502, detail=f"Could not fetch Genie spaces: {exc}") from exc
 
+    from ..gso_read_through import load_recent_activity_with_fallback
+
     score_by_space: dict[str, float] = {}
     try:
         spark = get_spark()
-        activity_df = load_recent_activity(
-            spark, config.catalog, config.schema_name, limit=200,
+        activity_df = load_recent_activity_with_fallback(
+            session, spark, config.catalog, config.schema_name, limit=200,
         )
         if not activity_df.empty:
             for _, row in activity_df.iterrows():
@@ -424,6 +427,7 @@ def get_space_detail(
     sp_ws: Dependencies.Client,
     config: Dependencies.Config,
     headers: Dependencies.Headers,
+    session: Dependencies.Session,
 ):
     """Full space config with UC metadata and optimization history."""
     from genie_space_optimizer.common.genie_client import fetch_space_config
@@ -583,10 +587,14 @@ def get_space_detail(
         sch = parts[1] if len(parts) >= 3 else config.schema_name
         functions.append(FunctionInfo(name=ident, catalog=cat, schema_name=sch))
 
+    from ..gso_read_through import load_runs_for_space_with_fallback
+
     history: list[RunSummary] = []
     try:
         spark = get_spark()
-        runs_df = load_runs_for_space(spark, space_id, config.catalog, config.schema_name)
+        runs_df = load_runs_for_space_with_fallback(
+            session, spark, space_id, config.catalog, config.schema_name,
+        )
         if not runs_df.empty and _reconcile_active_runs(
             spark=spark,
             runs_df=runs_df,
@@ -594,7 +602,9 @@ def get_space_detail(
             catalog=config.catalog,
             schema_name=config.schema_name,
         ):
-            runs_df = load_runs_for_space(spark, space_id, config.catalog, config.schema_name)
+            runs_df = load_runs_for_space_with_fallback(
+                session, spark, space_id, config.catalog, config.schema_name,
+            )
         if not runs_df.empty:
             baseline_scores = _load_baseline_scores(
                 spark, [r for r in runs_df["run_id"]], config.catalog, config.schema_name,
@@ -679,6 +689,7 @@ def do_start_optimization(
     apply_mode: str = "genie_config",
     levers: list[int] | None = None,
     deploy_target: str | None = None,
+    target_benchmark_count: int | None = None,
 ) -> OptimizeResponse:
     """Core optimization trigger logic shared by the UI route and the API trigger route.
 
@@ -978,6 +989,7 @@ def do_start_optimization(
             experiment_name=experiment_name or "",
             deploy_target=deploy_target or "",
             warehouse_id=config.warehouse_id or "",
+            target_benchmark_count=str(target_benchmark_count) if target_benchmark_count else "",
         )
 
         if use_warehouse_fallback:

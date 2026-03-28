@@ -216,8 +216,12 @@ _warehouse_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="warehouse_
 if _warehouse_id:
     _os.environ["GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID"] = _warehouse_id
 
+from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
+max_benchmark_count = int(dbutils.jobs.taskValues.get(taskKey="preflight", key="max_benchmark_count", default=str(MAX_BENCHMARK_COUNT)))
+
 import mlflow
 mlflow.set_experiment(exp_name)
+mlflow.openai.autolog()
 
 _banner("Resolved Upstream Task Values")
 _log(
@@ -321,6 +325,7 @@ try:
     eval_result = baseline_run_evaluation(
         spark, run_id, catalog, schema, benchmarks, setup_ctx, w=w,
         model_creation_kwargs=_baseline_model_kwargs,
+        max_benchmark_count=max_benchmark_count,
     )
     _log("Evaluation complete", overall_accuracy=eval_result.get("overall_accuracy", 0.0))
 except Exception as exc:
@@ -393,6 +398,7 @@ dbutils.jobs.taskValues.set(key="overall_accuracy", value=baseline_out["overall_
 dbutils.jobs.taskValues.set(key="thresholds_met", value=baseline_out["thresholds_met"])
 dbutils.jobs.taskValues.set(key="model_id", value=baseline_out["model_id"])
 dbutils.jobs.taskValues.set(key="mlflow_run_id", value=eval_result.get("mlflow_run_id", ""))
+dbutils.jobs.taskValues.set(key="max_benchmark_count", value=max_benchmark_count)
 
 _log(
     "Task values published",

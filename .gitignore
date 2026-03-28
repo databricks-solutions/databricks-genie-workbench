@@ -45,24 +45,15 @@ node_modules/
 # UI dist folder
 src/genie_space_optimizer/__dist__/
 
-# docs
-docs/building-genai-apps-with-mlflow.md
-docs/mlflow-genai-feature-map.md
-docs/testrun
-docs/testrun1.txt
-docs/testrun2.txt
-docs/testrun2_annotated.md
-docs/testrun3.txt
-docs/testrun4.txt
-docs/testrun5.txt
-docs/testrun6.txt
-docs/testrun7.txt
-docs/benchmarkqustions
-docs/testconfig
-docs/genie_logo.png
-docs/genie_logo.jpg
-docs/genie_space_config_raw.json
-docs/genie_space_config.json
-
 # MLflow
 mlflow.db
+
+# Agent / IDE metadata
+.cursor/
+.claude/
+/genie_space_optimizer/
+browser-test-output/
+genie_space_optimizer_docs/
+
+# docs
+docs/

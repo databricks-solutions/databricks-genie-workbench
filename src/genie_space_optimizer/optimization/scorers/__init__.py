@@ -96,6 +96,7 @@ def make_all_scorers(
     catalog: str,
     schema: str,
     loaded_prompts: dict[str, str] | None = None,
+    instruction_context: str = "",
 ) -> list:
     """Assemble all 9 scorers with bound runtime context.
 
@@ -119,7 +120,7 @@ def make_all_scorers(
         _make_response_quality_judge(w, catalog, schema),
         asset_routing_scorer,
         result_correctness_scorer,
-        _make_arbiter_scorer(w, catalog, schema, loaded_prompts),
+        _make_arbiter_scorer(w, catalog, schema, loaded_prompts, instruction_context=instruction_context),
     ]
 
 

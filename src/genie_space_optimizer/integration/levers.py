@@ -10,11 +10,12 @@ LEVER_DESCRIPTIONS: dict[int, str] = {
     3: "Remove underperforming TVFs",
     4: "Add, update, or remove join relationships between tables",
     5: "Rewrite global routing instructions and add domain-specific guidance",
+    6: "Add reusable SQL expressions (measures, filters, dimensions)",
 }
 
 
 def get_lever_info() -> list[dict]:
-    """Return metadata for user-selectable levers (1-5).
+    """Return metadata for user-selectable levers (1-6).
 
     Lever 0 ("Proactive Enrichment") is a preparatory stage that always
     runs and is not exposed in the UI.
@@ -30,5 +31,5 @@ def get_lever_info() -> list[dict]:
 
 
 def get_default_lever_order() -> list[int]:
-    """Return the default lever execution order: ``[1, 2, 3, 4, 5]``."""
+    """Return the default lever execution order: ``[1, 2, 3, 4, 5, 6]``."""
     return list(DEFAULT_LEVER_ORDER)

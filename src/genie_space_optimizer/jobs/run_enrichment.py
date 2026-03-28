@@ -87,6 +87,7 @@ baseline_model_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="mo
 
 import mlflow
 mlflow.set_experiment(exp_name)
+mlflow.openai.autolog()
 
 _banner("Resolved Upstream Task Values")
 _log(

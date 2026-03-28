@@ -3,12 +3,43 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pandas as pd
 import pytest
 
 from genie_space_optimizer.common.config import MAX_ITERATIONS
+
+
+@pytest.fixture
+def mock_openai_completion():
+    """Mock OpenAI ChatCompletion with token usage."""
+    completion = MagicMock()
+    completion.choices = [
+        MagicMock(message=MagicMock(content='{"proposed_value": "test", "rationale": "test"}'))
+    ]
+    completion.usage = MagicMock(
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+    )
+    return completion
+
+
+@pytest.fixture
+def patch_llm_client(mock_openai_completion):
+    """Patch the shared llm_client to use a mock OpenAI client.
+
+    Yields the mock client so tests can inspect/configure calls.
+    """
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_openai_completion
+
+    with patch(
+        "genie_space_optimizer.optimization.llm_client.get_openai_client",
+        return_value=mock_client,
+    ):
+        yield mock_client
 
 
 @pytest.fixture

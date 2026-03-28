@@ -17,7 +17,12 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+from genie_space_optimizer.optimization.llm_client import (
+    _openai_client_cache,
+    _resolve_bearer_token,
+    call_llm as _call_llm_openai,
+    get_openai_client as _get_openai_client,
+)
 
 from genie_space_optimizer.common.config import (
     ADAPTIVE_STRATEGIST_PROMPT,
@@ -28,11 +33,13 @@ from genie_space_optimizer.common.config import (
     FAILURE_TAXONOMY,
     GENERIC_FIX_PREFIXES,
     INSTRUCTION_SECTION_ORDER,
+    LEVER_TO_SECTIONS,
     LEVER_1_2_COLUMN_PROMPT,
     LEVER_4_JOIN_DISCOVERY_PROMPT,
     LEVER_4_JOIN_SPEC_PROMPT,
     LEVER_5_HOLISTIC_PROMPT,
     LEVER_5_INSTRUCTION_PROMPT,
+    LEVER_6_SQL_EXPRESSION_PROMPT,
     LEVER_NAMES,
     LLM_ENDPOINT,
     LLM_MAX_RETRIES,
@@ -61,7 +68,7 @@ logger = logging.getLogger(__name__)
 
 _LLM_TIMEOUT_SECONDS = 600
 _EXAMPLE_SQL_SIMILARITY_THRESHOLD = 0.85
-_INSTR_LOSS_THRESHOLD = 0.5
+_INSTR_LOSS_THRESHOLD = 0.75
 
 
 def _ws_with_timeout(
@@ -75,19 +82,30 @@ def _ws_with_timeout(
     after the fact has no effect.  We therefore always create a fresh
     client.  In a Databricks job the env-var auth (``DATABRICKS_HOST``,
     ``DATABRICKS_TOKEN``, etc.) is inherited automatically.
+
+    When *w* is provided its config is cloned using ``Config.attributes()``
+    (the SDK's own attribute registry) and the original credentials strategy,
+    so every auth method — PAT, OAuth M2M, Azure MI, Google SA, etc. — is
+    preserved automatically.
     """
-    from databricks.sdk import client as _sdk_client
+    from databricks.sdk.config import Config
 
-    cfg_kwargs: dict[str, Any] = {"http_timeout_seconds": timeout}
-    if w is not None:
-        for attr in ("host", "token", "azure_workspace_resource_id",
-                      "azure_client_id", "azure_client_secret", "azure_tenant_id",
-                      "client_id", "client_secret"):
-            val = getattr(w.config, attr, None)
-            if val:
-                cfg_kwargs[attr] = val
+    if w is None:
+        return WorkspaceClient(config=Config(http_timeout_seconds=timeout))
 
-    return WorkspaceClient(config=_sdk_client.Config(**cfg_kwargs))
+    cfg_kwargs: dict[str, Any] = {}
+    for attr in Config.attributes():
+        val = getattr(w.config, attr.name, None)
+        if val is not None:
+            cfg_kwargs[attr.name] = val
+    cfg_kwargs["http_timeout_seconds"] = timeout
+
+    return WorkspaceClient(
+        config=Config(
+            credentials_strategy=w.config._credentials_strategy,
+            **cfg_kwargs,
+        )
+    )
 
 
 def _estimate_tokens(text: str) -> int:
@@ -131,6 +149,11 @@ def _truncate_to_budget(
 
 
 # ── Traced LLM Call Helper ─────────────────────────────────────────────
+#
+# _resolve_bearer_token, _get_openai_client, and _openai_client_cache
+# now live in ``llm_client.py`` and are re-imported at the top of this
+# module for backward compatibility with tests and other consumers.
+
 
 def _traced_llm_call(
     w: WorkspaceClient | None,
@@ -142,10 +165,12 @@ def _traced_llm_call(
     temperature: float = LLM_TEMPERATURE,
     max_tokens: int | None = None,
 ) -> tuple[str, Any]:
-    """Execute an LLM call wrapped in a ``CHAT_MODEL`` MLflow span.
+    """Execute an LLM call via the OpenAI SDK with automatic MLflow tracing.
 
-    The span captures the full prompt messages, model, temperature,
-    raw response text, token usage, and retry events.
+    ``mlflow.openai.autolog()`` instruments every OpenAI call with a
+    ``CHAT_MODEL`` span that captures token usage, cost, and latency.
+    This wrapper adds retry logic inside a ``CHAIN`` span and logs
+    token usage on the span for visibility.
 
     Returns ``(raw_text, response_object)`` for the caller to parse.
     Raises the last exception if all retries are exhausted.
@@ -155,53 +180,42 @@ def _traced_llm_call(
     import mlflow
     from mlflow.entities import SpanEvent, SpanType
 
-    with mlflow.start_span(name=span_name, span_type=SpanType.CHAT_MODEL) as span:
+    with mlflow.start_span(name=span_name, span_type=SpanType.CHAIN) as span:
         span.set_inputs({
-            "messages": [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": prompt},
-            ],
             "model": LLM_ENDPOINT,
             "temperature": temperature,
+            "prompt_chars": len(prompt),
         })
-        span.set_attribute("prompt_chars", len(prompt))
 
+        client = _get_openai_client(w)
         text = ""
         last_err: Exception | None = None
+
         for attempt in range(max_retries):
             try:
-                wc = _ws_with_timeout(w)
-                query_kwargs: dict[str, Any] = {
-                    "name": LLM_ENDPOINT,
+                call_kwargs: dict[str, Any] = {
+                    "model": LLM_ENDPOINT,
                     "messages": [
-                        ChatMessage(role=ChatMessageRole.SYSTEM, content=system_msg),
-                        ChatMessage(role=ChatMessageRole.USER, content=prompt),
+                        {"role": "system", "content": system_msg},
+                        {"role": "user", "content": prompt},
                     ],
                     "temperature": temperature,
                 }
                 if max_tokens is not None:
-                    query_kwargs["max_tokens"] = max_tokens
-                response = wc.serving_endpoints.query(**query_kwargs)
-                choices = getattr(response, "choices", None) or []
-                if not choices:
+                    call_kwargs["max_tokens"] = max_tokens
+
+                response = client.chat.completions.create(**call_kwargs)
+
+                if not response.choices:
                     raise ValueError("LLM response had no choices")
-                content = getattr(choices[0].message, "content", None)
+                content = response.choices[0].message.content
                 if not content:
                     raise ValueError("LLM response content is empty")
                 text = str(content).strip()
 
-                usage = getattr(response, "usage", None)
-                if usage:
-                    _usage_attrs: dict[str, Any] = {}
-                    for attr in ("total_tokens", "prompt_tokens", "completion_tokens"):
-                        val = getattr(usage, attr, None)
-                        if val is not None:
-                            _usage_attrs[attr] = val
-                    if _usage_attrs:
-                        span.set_attributes(_usage_attrs)
+                _log_token_usage(span, response)
 
                 span.set_outputs({
-                    "response_text": text[:10_000],
                     "response_chars": len(text),
                     "attempts": attempt + 1,
                 })
@@ -221,6 +235,21 @@ def _traced_llm_call(
             "attempts": max_retries,
         })
         raise last_err  # type: ignore[misc]
+
+
+def _log_token_usage(span: Any, response: Any) -> None:
+    """Attach token usage from an OpenAI response to an MLflow span."""
+    usage = getattr(response, "usage", None)
+    if not usage:
+        return
+    try:
+        span.set_attribute("mlflow.chat.tokenUsage", {
+            "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+            "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
+            "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+        })
+    except Exception:
+        pass
 
 
 def _row_qid(row: dict, *, fallback: str = "unknown") -> str:
@@ -273,6 +302,10 @@ DUAL_PERSIST_PATHS: dict[int, dict[str, str]] = {
         "api": "PATCH /api/2.0/genie/spaces/{space_id}",
         "repo": "src/genie/{domain}_genie_export.json",
     },
+    6: {
+        "api": "PATCH /api/2.0/genie/spaces/{space_id}",
+        "repo": "src/genie/{domain}_genie_export.json",
+    },
 }
 
 
@@ -298,7 +331,7 @@ def _map_to_lever(
     blame_set: list | str | None = None,
     judge: str | None = None,
 ) -> int:
-    """Map a failure root cause to its primary control lever (1-5).
+    """Map a failure root cause to its primary control lever (1-6).
 
     ASI ``failure_type`` takes precedence when present since it comes
     directly from the FAILURE_TAXONOMY and is more precise.
@@ -333,6 +366,8 @@ def _map_to_lever(
         "format_difference": 0,
         "extra_columns_only": 0,
         "select_star": 0,
+        "missing_dimension": 6,
+        "wrong_grouping": 6,
     }
 
     if asi_failure_type and asi_failure_type in mapping:
@@ -347,10 +382,10 @@ def _map_to_lever(
 def _resolve_scope(lever: int, apply_mode: str = APPLY_MODE) -> str:
     """Determine where a patch is applied based on lever and apply_mode.
 
-    Levers 4-5 are always ``genie_config`` (Genie Space native structures).
+    Levers 4-6 are always ``genie_config`` (Genie Space native structures).
     Levers 1-3 are governed by ``apply_mode``.
     """
-    if lever in (4, 5):
+    if lever in (4, 5, 6):
         return "genie_config"
     return apply_mode
 
@@ -435,6 +470,172 @@ def _extract_join_pairs(sql: str) -> set[tuple[str, str]]:
     return pairs
 
 
+def _extract_instruction_default_filters(
+    metadata_snapshot: dict,
+) -> list[dict]:
+    """Parse Genie Space instructions for default filter rules.
+
+    Returns a list of ``{column, value, pattern}`` dicts representing
+    filters that the instructions mandate by default.
+    """
+    from genie_space_optimizer.optimization.applier import _get_general_instructions
+
+    instructions = _get_general_instructions(metadata_snapshot)
+    if not instructions:
+        return []
+
+    filters: list[dict] = []
+    lines = instructions.split("\n")
+    _FILTER_PATTERNS = [
+        re.compile(r"(?:always|by default|default(?:s)? to)\s+(?:filter|use|apply|set)\s+.*?(\w+)\s*=\s*['\"]?(\w+)", re.IGNORECASE),
+        re.compile(r"(\w+)\s*=\s*['\"]?(\w+)['\"]?\s+(?:by default|unless|is the default)", re.IGNORECASE),
+        re.compile(r"(?:unless\s+(?:explicitly|specifically)\s+(?:asked|requested|stated)\s+otherwise).*?(\w+)\s*=\s*['\"]?(\w+)", re.IGNORECASE),
+    ]
+
+    for line in lines:
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+        for pattern in _FILTER_PATTERNS:
+            match = pattern.search(line_stripped)
+            if match:
+                filters.append({
+                    "column": match.group(1).lower(),
+                    "value": match.group(2),
+                    "pattern": line_stripped[:200],
+                })
+
+    instr = metadata_snapshot.get("instructions", {})
+    sql_snippets = instr.get("sql_snippets", {}) if isinstance(instr, dict) else {}
+    for f_item in sql_snippets.get("filters", []):
+        sql_raw = f_item.get("sql", "")
+        sql = "".join(str(s) for s in sql_raw).strip() if isinstance(sql_raw, list) else str(sql_raw).strip()
+        eq_match = re.match(r"(\w+)\s*=\s*['\"]?(\w+)", sql)
+        if eq_match:
+            filters.append({
+                "column": eq_match.group(1).lower(),
+                "value": eq_match.group(2),
+                "pattern": f"sql_snippet: {sql}",
+            })
+
+    return filters
+
+
+def _detect_instruction_contradictions(
+    original_sections: dict[str, list[str]],
+    proposed_sections: dict[str, str | list[str]],
+) -> list[dict]:
+    """Detect contradictions between user-authored and optimizer-proposed instruction sections.
+
+    Compares filter polarity (always/default vs never/only-when-explicit) for
+    the same column across original and proposed sections.  Returns a list of
+    contradiction dicts with ``section``, ``original_rule``, ``proposed_line``,
+    and ``contradiction_type``.
+
+    Only flags clear inversions to avoid false positives on nuanced rewording.
+    """
+    _ALWAYS_PATTERNS = [
+        re.compile(r"(?:always|by default|default(?:s)?\s+(?:to|filter))\s+.*?(\w+)\s*=\s*['\"]?(\w+)", re.IGNORECASE),
+        re.compile(r"default\s+filter[:\s]+(\w+)\s*=\s*['\"]?(\w+)", re.IGNORECASE),
+    ]
+    _NEVER_PATTERNS = [
+        re.compile(r"(?:never|do\s+not|don'?t)\s+(?:apply|add|filter|use|include)\s+.*?(\w+)\s*=\s*['\"]?(\w+)", re.IGNORECASE),
+        re.compile(r"only\s+(?:apply|add|filter|use)\s+.*?(\w+)\s*=\s*['\"]?(\w+)['\"]?\s+when\s+.*?(?:explicitly|specifically)", re.IGNORECASE),
+        re.compile(r"(\w+)\s*=\s*['\"]?(\w+)['\"]?\s+only\s+when\s+.*?(?:explicitly|specifically)", re.IGNORECASE),
+        re.compile(r"absolutely\s+never\s+(?:apply|add|filter|use).*?(\w+)\s*=\s*['\"]?(\w+)", re.IGNORECASE),
+    ]
+
+    def _extract_filter_rules(sections: dict, patterns: list, polarity: str) -> list[dict]:
+        rules: list[dict] = []
+        for section_name, lines in sections.items():
+            if isinstance(lines, str):
+                lines = [lines]
+            for line in lines:
+                if not isinstance(line, str):
+                    continue
+                for pat in patterns:
+                    match = pat.search(line)
+                    if match:
+                        rules.append({
+                            "column": match.group(1).lower(),
+                            "value": match.group(2).lower(),
+                            "polarity": polarity,
+                            "section": section_name,
+                            "line": line.strip(),
+                        })
+        return rules
+
+    original_always = _extract_filter_rules(original_sections, _ALWAYS_PATTERNS, "always")
+    proposed_never = _extract_filter_rules(
+        {k: v if isinstance(v, list) else [v] for k, v in proposed_sections.items()},
+        _NEVER_PATTERNS, "never",
+    )
+    original_never = _extract_filter_rules(original_sections, _NEVER_PATTERNS, "never")
+    proposed_always = _extract_filter_rules(
+        {k: v if isinstance(v, list) else [v] for k, v in proposed_sections.items()},
+        _ALWAYS_PATTERNS, "always",
+    )
+
+    contradictions: list[dict] = []
+
+    for orig in original_always:
+        for prop in proposed_never:
+            if orig["column"] == prop["column"]:
+                contradictions.append({
+                    "section": prop["section"],
+                    "original_rule": orig["line"],
+                    "proposed_line": prop["line"],
+                    "contradiction_type": "filter_inversion",
+                    "detail": f"Original says always/default {orig['column']}={orig['value']}, "
+                              f"proposed says never/only-explicit",
+                })
+
+    for orig in original_never:
+        for prop in proposed_always:
+            if orig["column"] == prop["column"]:
+                contradictions.append({
+                    "section": prop["section"],
+                    "original_rule": orig["line"],
+                    "proposed_line": prop["line"],
+                    "contradiction_type": "filter_inversion",
+                    "detail": f"Original says never {orig['column']}={orig['value']}, "
+                              f"proposed says always/default",
+                })
+
+    return contradictions
+
+
+def _classify_generated_sql_quality(generated_sql: str, question: str = "") -> str:
+    """Classify structural issues in generated SQL when expected SQL is missing.
+
+    Provides more actionable root causes than ``"other"`` by analyzing the
+    SQL's structure against the question text.
+    """
+    gen_lower = generated_sql.lower()
+    q_lower = question.lower() if question else ""
+
+    if re.search(r"\bcount\s*\(\s*\*\s*\)", gen_lower) and not re.search(r"\b(?:count|how many)\b", q_lower):
+        return "exploratory_query"
+
+    gen_has_group = bool(re.search(r"\bgroup\s+by\b", gen_lower))
+    asks_for_by = bool(re.search(r"\bby\s+\w+", q_lower))
+    if asks_for_by and not gen_has_group:
+        return "missing_aggregation"
+
+    gen_has_where = bool(re.search(r"\bwhere\b", gen_lower))
+    filter_keywords = re.findall(r"\b(?:for|only|just|specific|in|from)\s+(\w+)", q_lower)
+    if filter_keywords and not gen_has_where:
+        return "missing_filter"
+
+    gen_selects = re.findall(r"\bselect\b(.+?)\bfrom\b", gen_lower, re.S)
+    if gen_selects:
+        gen_cols = [c.strip() for c in gen_selects[0].split(",")]
+        if len(gen_cols) <= 2 and asks_for_by:
+            return "wrong_granularity"
+
+    return "unverifiable_no_expected_sql"
+
+
 def _classify_sql_diff(ctx: dict) -> str:
     """Classify a failure's root cause by comparing expected vs generated SQL.
 
@@ -463,6 +664,9 @@ def _classify_sql_diff(ctx: dict) -> str:
         generated_sql = (resp.get("response") or "").strip()
 
     if not expected_sql or not generated_sql:
+        if generated_sql:
+            question = (ctx.get("request") or {}).get("question", "") if isinstance(ctx.get("request"), dict) else ""
+            return _classify_generated_sql_quality(generated_sql, question)
         return "other"
 
     exp_lower = expected_sql.lower()
@@ -717,6 +921,8 @@ def cluster_failures(
                     or row.get(f"metadata/{judge}/wrong_clause")
                 )
 
+                asi_join_assessment = judge_meta.get("join_assessment")
+
                 if not asi_failure_type and uc_asi_map:
                     uc_asi_entry = uc_asi_map.get((question_id, judge))
                     if uc_asi_entry:
@@ -724,19 +930,22 @@ def cluster_failures(
                         asi_blame_set = asi_blame_set or uc_asi_entry.get("blame_set")
                         asi_counterfactual = asi_counterfactual or uc_asi_entry.get("counterfactual_fix")
                         asi_wrong_clause = asi_wrong_clause or uc_asi_entry.get("wrong_clause")
+                        if not asi_join_assessment:
+                            asi_join_assessment = uc_asi_entry.get("join_assessment")
 
-                failures.append(
-                    {
-                        "question_id": question_id,
-                        "judge": judge,
-                        "rationale": rationale,
-                        "asi_failure_type": asi_failure_type,
-                        "asi_blame_set": asi_blame_set,
-                        "asi_counterfactual_fix": asi_counterfactual,
-                        "asi_wrong_clause": asi_wrong_clause,
-                        "sql_context": sql_ctx,
-                    }
-                )
+                failure_entry: dict = {
+                    "question_id": question_id,
+                    "judge": judge,
+                    "rationale": rationale,
+                    "asi_failure_type": asi_failure_type,
+                    "asi_blame_set": asi_blame_set,
+                    "asi_counterfactual_fix": asi_counterfactual,
+                    "asi_wrong_clause": asi_wrong_clause,
+                    "sql_context": sql_ctx,
+                }
+                if isinstance(asi_join_assessment, dict) and asi_join_assessment.get("left_table"):
+                    failure_entry["asi_join_assessment"] = asi_join_assessment
+                failures.append(failure_entry)
 
     question_profiles: dict[str, dict] = {}
     for f in failures:
@@ -782,6 +991,24 @@ def cluster_failures(
             profile["counterfactual_fixes"].append(f["asi_counterfactual_fix"])
         if f.get("asi_wrong_clause"):
             profile["wrong_clauses"].append(f["asi_wrong_clause"])
+
+    # ── Filter-aware blame adjustment: clear blame for instruction-mandated filters
+    default_filters = _extract_instruction_default_filters(metadata_snapshot)
+    _default_filter_cols = {f["column"] for f in default_filters}
+    if _default_filter_cols:
+        for qid, profile in question_profiles.items():
+            _adjusted = []
+            for blame_item in profile["blame_sets"]:
+                blame_lower = blame_item.lower()
+                if any(col in blame_lower for col in _default_filter_cols):
+                    logger.debug(
+                        "Clearing blame '%s' for Q=%s — matches instruction default filter",
+                        blame_item, qid,
+                    )
+                    continue
+                _adjusted.append(blame_item)
+            if len(_adjusted) != len(profile["blame_sets"]):
+                profile["blame_sets"] = _adjusted
 
     for qid, profile in question_profiles.items():
         cause_counts = Counter(profile["root_causes"])
@@ -833,7 +1060,17 @@ def cluster_failures(
     cluster_groups: dict[tuple[str, str], list[str]] = defaultdict(list)
     for qid, profile in question_profiles.items():
         blame_key = "|".join(sorted(profile["blame_sets"])) if profile["blame_sets"] else ""
-        group_key = (profile["dominant_root_cause"], blame_key)
+        root = profile["dominant_root_cause"]
+        if root in ("other", "unverifiable_no_expected_sql") and not blame_key:
+            ctx = profile.get("sql_context", {})
+            gen_sql = (ctx.get("response", {}) or {}).get("response", "") if isinstance(ctx.get("response"), dict) else ""
+            if not gen_sql:
+                gen_sql = str(ctx.get("generated_sql", ""))
+            q_text = ctx.get("question", "") if ctx else ""
+            sub_root = _classify_generated_sql_quality(gen_sql, q_text) if gen_sql else root
+            if sub_root != "unverifiable_no_expected_sql":
+                root = sub_root
+        group_key = (root, blame_key)
         cluster_groups[group_key].append(qid)
 
     clusters: list[dict] = []
@@ -843,6 +1080,7 @@ def cluster_failures(
         all_wrong_clauses: list[str] = []
         sql_contexts: list[dict] = []
         sample_asi_type: str | None = None
+        join_assessments: list[dict] = []
 
         question_traces: list[dict] = []
         for qid in qids:
@@ -857,6 +1095,10 @@ def cluster_failures(
                     if f.get("asi_failure_type"):
                         sample_asi_type = f["asi_failure_type"]
                         break
+            for f in profile["failures"]:
+                ja = f.get("asi_join_assessment")
+                if isinstance(ja, dict) and ja.get("left_table"):
+                    join_assessments.append({**ja, "question_id": qid})
             q_text = profile["sql_context"].get("question", "") if profile["sql_context"] else ""
             judge_traces = []
             for f in profile["failures"]:
@@ -892,6 +1134,8 @@ def cluster_failures(
             "sql_contexts": sql_contexts[:5],
             "question_traces": question_traces,
         }
+        if join_assessments:
+            entry["join_assessments"] = join_assessments
         clusters.append(entry)
 
     clusters.sort(key=lambda c: len(c["question_ids"]), reverse=True)
@@ -1680,7 +1924,7 @@ def _generate_proactive_instructions(
 ) -> str:
     """Generate conservative routing instructions for an empty Genie Space.
 
-    Returns the instruction text (500-1500 chars), or ``""`` on failure.
+    Returns the instruction text (500-4000 chars), or ``""`` on failure.
     """
     from genie_space_optimizer.common.config import PROACTIVE_INSTRUCTION_PROMPT
 
@@ -1716,8 +1960,8 @@ def _generate_proactive_instructions(
         if len(text) < 50:
             logger.warning("Proactive instruction generation: result too short (%d chars)", len(text))
             return ""
-        if len(text) > 1500:
-            text = text[:1500].rsplit("\n", 1)[0]
+        if len(text) > 4000:
+            text = text[:4000].rsplit("\n", 1)[0]
         text = normalize_instructions(text)
         logger.info("Proactive instruction generation: produced %d chars", len(text))
         return text
@@ -2076,17 +2320,26 @@ _FACT_PREFIXES = ("fact_", "fct_")
 
 _JOIN_FQN_RE = re.compile(
     r"\bJOIN\s+"
-    r"((?:`[^`]+`(?:\.`[^`]+`){1,2})"              # backtick-quoted 2- or 3-part
-    r"|(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){1,2}))"    # unquoted 2- or 3-part
+    r"((?:`[^`]+`(?:\.`[^`]+`){0,2})"              # backtick-quoted 1-, 2-, or 3-part
+    r"|(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){0,2}))"   # unquoted 1-, 2-, or 3-part
     r"(?:\s+(?:AS\s+)?(\w+))?"
-    r"\s*ON\s+(.+?)(?=\bJOIN\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bUNION\b|;|\Z)",
+    r"\s*ON\s+(.+?)(?=\bJOIN\b|\bWHERE\b|\bGROUP\b|\bORDER\b|\bLIMIT\b|\bUNION\b|\bHAVING\b|;|\Z)",
+    re.I | re.S,
+)
+
+_JOIN_USING_RE = re.compile(
+    r"\bJOIN\s+"
+    r"((?:`[^`]+`(?:\.`[^`]+`){0,2})"              # backtick-quoted 1-, 2-, or 3-part
+    r"|(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){0,2}))"   # unquoted 1-, 2-, or 3-part
+    r"(?:\s+(?:AS\s+)?(\w+))?"
+    r"\s*USING\s*\(([^)]+)\)",
     re.I | re.S,
 )
 
 _SQL_FROM_TABLE_RE = re.compile(
     r"\bFROM\s+"
-    r"((?:`[^`]+`(?:\.`[^`]+`){1,2})"              # backtick-quoted 2- or 3-part
-    r"|(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){1,2}))",   # unquoted 2- or 3-part
+    r"((?:`[^`]+`(?:\.`[^`]+`){0,2})"              # backtick-quoted 1-, 2-, or 3-part
+    r"|(?:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){0,2}))",  # unquoted 1-, 2-, or 3-part
     re.I,
 )
 
@@ -2236,8 +2489,9 @@ def _extract_proven_joins(
             if not sql:
                 continue
 
-            join_matches = list(_JOIN_FQN_RE.finditer(sql))
-            if not join_matches:
+            join_on_matches = list(_JOIN_FQN_RE.finditer(sql))
+            join_using_matches = list(_JOIN_USING_RE.finditer(sql))
+            if not join_on_matches and not join_using_matches:
                 continue
 
             _diag_has_join += 1
@@ -2256,37 +2510,56 @@ def _extract_proven_joins(
 
             if not from_fqn:
                 _diag_no_from += 1
+                all_matches = len(join_on_matches) + len(join_using_matches)
                 logger.debug(
                     "Join extraction [%s/%s]: no FROM table resolved "
                     "(raw=%r), skipping %d JOINs",
-                    qid, source_label, from_table_raw, len(join_matches),
+                    qid, source_label, from_table_raw, all_matches,
                 )
                 continue
 
-            for m in join_matches:
+            def _resolve_joined_table(raw: str) -> str:
+                """Resolve a raw joined table name to FQN."""
+                fqn = short_to_fqn.get(raw, "")
+                if not fqn:
+                    short = _short_name(raw).lower()
+                    if short not in _ambiguous_shorts:
+                        fqn = short_to_fqn.get(short, "")
+                    elif "." in raw and raw.count(".") >= 2:
+                        fqn = raw
+                if not fqn and "." in raw and raw.count(".") >= 2:
+                    fqn = raw
+                return fqn
+
+            parsed_joins: list[tuple[str, str]] = []
+            for m in join_on_matches:
                 joined_table_raw = m.group(1).replace("`", "").lower()
-                alias = (m.group(2) or "").lower()
                 on_clause = m.group(3).strip()
+                parsed_joins.append((joined_table_raw, on_clause))
 
-                joined_fqn = short_to_fqn.get(joined_table_raw, "")
-                if not joined_fqn:
-                    joined_short = _short_name(joined_table_raw).lower()
-                    if joined_short not in _ambiguous_shorts:
-                        joined_fqn = short_to_fqn.get(joined_short, "")
-                    elif "." in joined_table_raw and joined_table_raw.count(".") >= 2:
-                        joined_fqn = joined_table_raw
+            for m in join_using_matches:
+                joined_table_raw = m.group(1).replace("`", "").lower()
+                using_cols = [c.strip().strip("`") for c in m.group(3).split(",")]
+                from_short = _short_name(from_fqn).lower()
+                joined_short = _short_name(joined_table_raw).lower() or joined_table_raw
+                on_parts = [
+                    f"`{from_short}`.`{c}` = `{joined_short}`.`{c}`"
+                    for c in using_cols
+                ]
+                on_clause = " AND ".join(on_parts)
+                parsed_joins.append((joined_table_raw, on_clause))
+
+            for joined_table_raw, on_clause in parsed_joins:
+                joined_fqn = _resolve_joined_table(joined_table_raw)
 
                 if not joined_fqn:
-                    if "." in joined_table_raw and joined_table_raw.count(".") >= 2:
-                        joined_fqn = joined_table_raw
-                    else:
-                        _diag_no_resolve += 1
-                        logger.debug(
-                            "Join extraction [%s/%s]: cannot resolve "
-                            "joined table %r to FQN",
-                            qid, source_label, joined_table_raw,
-                        )
-                        continue
+                    _diag_no_resolve += 1
+                    logger.debug(
+                        "Join extraction [%s/%s]: cannot resolve "
+                        "joined table %r to FQN",
+                        qid, source_label, joined_table_raw,
+                    )
+                    continue
 
                 _pk_l, _pk_r = sorted((from_fqn, joined_fqn))
                 pair_key = (_pk_l, _pk_r)
@@ -2331,6 +2604,14 @@ def _extract_proven_joins(
 
     result.sort(key=lambda x: (-int(x.get("agreed", False)), -x["frequency"]))
 
+    diagnostics = {
+        "total_rows": len(rows),
+        "positive_verdicts": _diag_positive,
+        "sql_with_join": _diag_has_join,
+        "no_from_resolved": _diag_no_from,
+        "no_joined_resolved": _diag_no_resolve,
+    }
+
     logger.info(
         "Proactive join discovery: %d candidates from %d rows "
         "(positive_verdicts=%d, sql_with_join=%d, "
@@ -2346,7 +2627,7 @@ def _extract_proven_joins(
             cand["frequency"], cand["agreed"],
             cand.get("on_condition", "")[:80],
         )
-    return result
+    return result, diagnostics
 
 
 def _corroborate_with_uc_metadata(
@@ -2485,7 +2766,7 @@ def _build_join_specs_from_proven(
             "right": {"identifier": right_fqn, "alias": right_short},
             "sql": sql_parts,
         }
-        spec = ensure_join_spec_fields(spec)
+        spec = ensure_join_spec_fields(spec, config=metadata_snapshot)
 
         if not _validate_join_spec_entry(spec):
             logger.info(
@@ -3680,6 +3961,12 @@ def _build_cluster_data(clusters: list[dict], *, top_n: int = 5) -> list[dict]:
         cf = cluster.get("asi_counterfactual_fixes", [])
         if cf:
             entry["suggested_fixes"] = [str(f)[:200] for f in cf[:5]]
+        ja_list = cluster.get("join_assessments", [])
+        if ja_list:
+            entry["join_assessments"] = [
+                {k: v for k, v in ja.items() if k != "question_id"}
+                for ja in ja_list[:5]
+            ]
         result.append(entry)
     if len(sorted_hard) > top_n:
         for cluster in sorted_hard[top_n:]:
@@ -4311,13 +4598,27 @@ def _resolve_lever5_llm_result(
         }
 
     if instruction_type == "sql_expression":
+        snippet_type = llm_result.get("snippet_type", "measure")
+        patch_type_map = {
+            "measure": "add_sql_snippet_measure",
+            "filter": "add_sql_snippet_filter",
+            "expression": "add_sql_snippet_expression",
+        }
+        resolved_type = patch_type_map.get(snippet_type, "add_sql_snippet_measure")
         logger.info(
-            "Lever 6 LLM recommended sql_expression (handled by levers 1-5): "
-            "table=%s column=%s — falling back to example_sql",
-            llm_result.get("target_table", ""),
-            llm_result.get("target_column", ""),
+            "Lever 5 LLM recommended sql_expression — routing to Lever 6 "
+            "(type=%s, table=%s)",
+            snippet_type, llm_result.get("target_table", ""),
         )
-        return original_patch_type, {}
+        return resolved_type, {
+            "snippet_type": snippet_type,
+            "display_name": llm_result.get("display_name", ""),
+            "alias": llm_result.get("alias", ""),
+            "sql": llm_result.get("sql", ""),
+            "synonyms": llm_result.get("synonyms", []),
+            "instruction": llm_result.get("instruction", ""),
+            "target_table": llm_result.get("target_table", ""),
+        }
 
     if cluster and cluster.get("root_cause") in _SQL_PATTERN_ROOT_CAUSES:
         sql_ctxs = cluster.get("sql_contexts", [])
@@ -4358,6 +4659,7 @@ def _call_llm_for_proposal(
     metadata_snapshot: dict,
     patch_type: str,
     lever: int,
+    w: WorkspaceClient | None = None,
 ) -> dict:
     """Call Databricks Claude Opus 4.6 to generate proposal text.
 
@@ -4524,35 +4826,25 @@ def _call_llm_for_proposal(
 
     from genie_space_optimizer.optimization.evaluation import _extract_json
 
+    _proposal_system_msg = (
+        "You are a JSON-only responder. Your ENTIRE response must be a single "
+        "valid JSON object. Do not include any analysis, markdown, commentary, "
+        "or explanation outside the JSON. Start your response with '{' and end "
+        "with '}'."
+    )
+
     text = ""
     for attempt in range(LLM_MAX_RETRIES):
         try:
-            _wc = _ws_with_timeout(None)
-            response = _wc.serving_endpoints.query(
-                name=LLM_ENDPOINT,
+            text, _response = _call_llm_openai(
+                w,
                 messages=[
-                    ChatMessage(
-                        role=ChatMessageRole.SYSTEM,
-                        content=(
-                            "You are a JSON-only responder. Your ENTIRE response must be a single "
-                            "valid JSON object. Do not include any analysis, markdown, commentary, "
-                            "or explanation outside the JSON. Start your response with '{' and end "
-                            "with '}'."
-                        ),
-                    ),
-                    ChatMessage(role=ChatMessageRole.USER, content=prompt),
+                    {"role": "system", "content": _proposal_system_msg},
+                    {"role": "user", "content": prompt},
                 ],
+                max_retries=1,
                 temperature=LLM_TEMPERATURE,
             )
-            choices = getattr(response, "choices", None) or []
-            if not choices:
-                raise ValueError("LLM response had no choices")
-            first_choice = choices[0]
-            message = getattr(first_choice, "message", None)
-            content = getattr(message, "content", None)
-            if not content:
-                raise ValueError("LLM response content is empty")
-            text = str(content).strip()
             parsed = _extract_json(text)
             print(
                 f"│ Attempt {attempt + 1}/{LLM_MAX_RETRIES}:{'':9s} OK -- parsed JSON\n"
@@ -4762,24 +5054,15 @@ def _call_llm_for_join_discovery(
     text = ""
     for attempt in range(LLM_MAX_RETRIES):
         try:
-            wc = _ws_with_timeout(w)
-            response = wc.serving_endpoints.query(
-                name=LLM_ENDPOINT,
+            text, _response = _call_llm_openai(
+                w,
                 messages=[
-                    ChatMessage(role=ChatMessageRole.SYSTEM, content=system_msg),
-                    ChatMessage(role=ChatMessageRole.USER, content=prompt),
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt},
                 ],
+                max_retries=1,
                 temperature=LLM_TEMPERATURE,
             )
-            choices = getattr(response, "choices", None) or []
-            if not choices:
-                raise ValueError("LLM response had no choices")
-            first_choice = choices[0]
-            message = getattr(first_choice, "message", None)
-            content = getattr(message, "content", None)
-            if not content:
-                raise ValueError("LLM response content is empty")
-            text = str(content).strip()
             result = _extract_json(text)
             specs = result.get("join_specs", [])
             rationale = result.get("rationale", "")
@@ -4973,6 +5256,173 @@ def normalize_instructions(text: str) -> str:
     return _merge_structured_instructions(existing=text, contributions=[], global_guidance="")
 
 
+# ---------------------------------------------------------------------------
+# Instruction pre-structuring: convert unstructured instructions into
+# canonical ALL-CAPS sections so section-level merges are safe.
+# ---------------------------------------------------------------------------
+
+_pre_structure_cache: dict[int, dict[str, list[str]]] = {}
+
+
+def _is_unstructured(text: str) -> bool:
+    """Return True if *text* has no recognized ALL-CAPS section headers."""
+    if not text or not text.strip():
+        return True
+    sanitized = _sanitize_plaintext_instructions(text)
+    sections, preamble = _parse_sections(sanitized)
+    return (not sections) and bool(preamble)
+
+
+def _pre_structure_instructions(
+    raw: str,
+    metadata_snapshot: dict,
+    w: WorkspaceClient | None = None,
+) -> dict[str, list[str]]:
+    """Classify unstructured instructions into canonical section format via LLM.
+
+    Returns a dict keyed by section header (e.g. ``"PURPOSE"``) with lists
+    of bullet lines.  Falls back to ``_merge_structured_instructions`` if the
+    LLM call fails.
+    """
+    from genie_space_optimizer.common.config import INSTRUCTION_RESTRUCTURE_PROMPT
+
+    cache_key = hash(raw)
+    if cache_key in _pre_structure_cache:
+        return _pre_structure_cache[cache_key]
+
+    ctx = _build_space_schema_context(metadata_snapshot)
+    format_kwargs = {
+        "existing_instructions": raw,
+        "tables_context": ctx.get("tables_context", "(no tables)"),
+    }
+    prompt = format_mlflow_template(INSTRUCTION_RESTRUCTURE_PROMPT, **format_kwargs)
+    system_msg = "You classify Genie Space instructions into canonical sections."
+
+    try:
+        text, _response = _traced_llm_call(
+            w, system_msg, prompt,
+            span_name="pre_structure_instructions",
+            max_tokens=4096,
+        )
+        text = re.sub(r"```[a-z]*\n?", "", text).strip().rstrip("`")
+        text = _sanitize_plaintext_instructions(text)
+        sections, preamble = _parse_sections(text)
+
+        if not sections:
+            logger.warning(
+                "Pre-structuring LLM returned no sections — falling back to heuristic"
+            )
+            raise ValueError("LLM did not produce structured output")
+
+        if preamble:
+            non_blank = [ln for ln in preamble if ln.strip()]
+            if non_blank:
+                target = "PURPOSE" if "PURPOSE" not in sections else "CONSTRAINTS"
+                sections.setdefault(target, []).extend(non_blank)
+
+        result: dict[str, list[str]] = {}
+        for section in INSTRUCTION_SECTION_ORDER:
+            if section in sections:
+                result[section] = [
+                    ln for ln in sections[section] if ln.strip()
+                ]
+
+        logger.info(
+            "Pre-structured instructions into %d sections (%s)",
+            len(result),
+            ", ".join(result.keys()),
+        )
+        _pre_structure_cache[cache_key] = result
+        return result
+
+    except Exception:
+        logger.warning(
+            "Pre-structuring LLM call failed — falling back to heuristic merge",
+            exc_info=True,
+        )
+        fallback_text = _merge_structured_instructions(
+            existing=raw, contributions=[], global_guidance=""
+        )
+        sections, _ = _parse_sections(fallback_text)
+        result = {
+            section: [ln for ln in lines if ln.strip()]
+            for section, lines in sections.items()
+        }
+        _pre_structure_cache[cache_key] = result
+        return result
+
+
+def _ensure_structured(
+    current_instructions: str,
+    metadata_snapshot: dict,
+    w: WorkspaceClient | None = None,
+) -> dict[str, list[str]]:
+    """Return existing instructions as a structured section dict.
+
+    If already structured, parses directly.  If unstructured, calls
+    ``_pre_structure_instructions`` to classify via LLM.
+    """
+    if not current_instructions or not current_instructions.strip():
+        return {}
+
+    sanitized = _sanitize_plaintext_instructions(current_instructions)
+    sections, preamble = _parse_sections(sanitized)
+
+    if sections and not preamble:
+        return {k: [ln for ln in v if ln.strip()] for k, v in sections.items()}
+
+    if sections and preamble:
+        non_blank = [ln for ln in preamble if ln.strip()]
+        if non_blank:
+            target = "PURPOSE" if "PURPOSE" not in sections else "CONSTRAINTS"
+            sections.setdefault(target, []).extend(non_blank)
+        return {k: [ln for ln in v if ln.strip()] for k, v in sections.items()}
+
+    return _pre_structure_instructions(current_instructions, metadata_snapshot, w=w)
+
+
+# ---------------------------------------------------------------------------
+# Semantic content-preservation check
+# ---------------------------------------------------------------------------
+
+_KEY_PHRASE_RE = re.compile(
+    r'[a-z_]+\.[a-z_]+\.[a-z_]+'    # 3-part identifiers
+    r'|[A-Z]{2,}[A-Z_]*'              # ALL-CAPS acronyms (2+ chars)
+    r'|[a-z_]{2,}\.[a-z_]{2,}'        # 2-part identifiers
+    r"|'[YN]'"                         # flag literals
+)
+
+
+def _extract_key_phrases(text: str) -> set[str]:
+    """Extract domain-significant tokens from instruction text."""
+    phrases: set[str] = set()
+    for m in _KEY_PHRASE_RE.finditer(text):
+        phrases.add(m.group(0))
+    return phrases
+
+
+def _instruction_coverage(old: str, new: str, threshold: float = 0.6) -> bool:
+    """Check that key identifiers from *old* appear in *new*.
+
+    Returns ``True`` if coverage is above *threshold* (i.e. the new text
+    preserves enough of the original's key phrases).
+    """
+    old_tokens = _extract_key_phrases(old)
+    if not old_tokens:
+        return True
+    new_tokens = _extract_key_phrases(new)
+    coverage = len(old_tokens & new_tokens) / len(old_tokens)
+    if coverage < threshold:
+        logger.warning(
+            "Instruction coverage %.1f%% < %.0f%% threshold — "
+            "%d/%d key phrases missing: %s",
+            coverage * 100, threshold * 100,
+            len(old_tokens - new_tokens), len(old_tokens),
+            sorted(old_tokens - new_tokens)[:10],
+        )
+    return coverage >= threshold
+
+
 def _repair_truncated_holistic_json(text: str) -> dict:
     """Extract instruction_text and example_sql_proposals from a truncated JSON.
 
@@ -5122,24 +5572,15 @@ def _call_llm_for_holistic_instructions(
     text = ""
     for attempt in range(LLM_MAX_RETRIES):
         try:
-            wc = _ws_with_timeout(w)
-            response = wc.serving_endpoints.query(
-                name=LLM_ENDPOINT,
+            text, _response = _call_llm_openai(
+                w,
                 messages=[
-                    ChatMessage(role=ChatMessageRole.SYSTEM, content=holistic_system_msg),
-                    ChatMessage(role=ChatMessageRole.USER, content=prompt),
+                    {"role": "system", "content": holistic_system_msg},
+                    {"role": "user", "content": prompt},
                 ],
+                max_retries=1,
                 temperature=LLM_TEMPERATURE,
             )
-            choices = getattr(response, "choices", None) or []
-            if not choices:
-                raise ValueError("LLM response had no choices")
-            first_choice = choices[0]
-            message = getattr(first_choice, "message", None)
-            content = getattr(message, "content", None)
-            if not content:
-                raise ValueError("LLM response content is empty")
-            text = str(content).strip()
             try:
                 result = _extract_json(text)
             except json.JSONDecodeError:
@@ -6191,11 +6632,12 @@ def _generate_holistic_strategy(
         existing_instr = _get_general_instructions(metadata_snapshot)
 
         if dict_contributions:
-            existing_sections, _ = _parse_sections(
-                _sanitize_plaintext_instructions(existing_instr) if existing_instr else ""
+            existing_sections = _ensure_structured(
+                existing_instr, metadata_snapshot, w=w,
             )
             merged_sections: dict[str, list[str]] = {
-                s: existing_sections.get(s, []) for s in INSTRUCTION_SECTION_ORDER
+                s: list(existing_sections.get(s, []))
+                for s in INSTRUCTION_SECTION_ORDER
             }
             valid_keys = set(INSTRUCTION_SECTION_ORDER)
             for dc in dict_contributions:
@@ -6223,6 +6665,17 @@ def _generate_holistic_strategy(
                     parts.append(s)
                 parts.append("")
             global_rewrite = _sanitize_plaintext_instructions("\n".join(parts).strip())
+
+            if existing_instr and not _instruction_coverage(
+                existing_instr, global_rewrite
+            ):
+                logger.warning(
+                    "Two-phase holistic rewrite drops key phrases — force-merging"
+                )
+                global_rewrite = _merge_structured_instructions(
+                    existing=existing_instr,
+                    contributions=[global_rewrite],
+                )
         elif str_contributions or global_guidance:
             global_rewrite = _merge_structured_instructions(
                 existing=existing_instr,
@@ -6822,6 +7275,584 @@ def _ngram_similarity(a: str, b: str, n: int = 3) -> float:
     return len(a_ngrams & b_ngrams) / len(a_ngrams | b_ngrams)
 
 
+# ── Lever 6: SQL Expressions ──────────────────────────────────────────
+
+
+def _format_existing_sql_snippets(metadata_snapshot: dict) -> str:
+    """Format existing SQL snippets for the Lever 6 prompt context."""
+    snippets = metadata_snapshot.get("sql_snippets", {})
+    if not isinstance(snippets, dict):
+        return "(No existing SQL expressions.)"
+
+    lines: list[str] = []
+    for snippet_type in ("measures", "filters", "expressions"):
+        items = snippets.get(snippet_type, []) or []
+        if not items:
+            continue
+        lines.append(f"\n### {snippet_type.title()}")
+        for item in items:
+            name = item.get("display_name", item.get("alias", "unnamed"))
+            sql = item.get("sql", [])
+            sql_str = sql[0] if isinstance(sql, list) and sql else str(sql)
+            syns = item.get("synonyms", [])
+            lines.append(f"  - {name}: `{sql_str}`")
+            if syns:
+                lines.append(f"    Synonyms: {', '.join(syns)}")
+
+    return "\n".join(lines) if lines else "(No existing SQL expressions.)"
+
+
+def _generate_lever6_proposal(
+    cluster: dict,
+    metadata_snapshot: dict,
+    *,
+    strategist_hints: list[dict] | None = None,
+    w: WorkspaceClient | None = None,
+    spark: Any = None,
+    catalog: str = "",
+    gold_schema: str = "",
+    warehouse_id: str = "",
+) -> dict | None:
+    """Generate a SQL Expression proposal for a failure cluster.
+
+    Calls the LLM with LEVER_6_SQL_EXPRESSION_PROMPT, validates the output
+    structurally and by SQL execution, and returns a proposal dict or None
+    if validation fails.
+
+    The LLM chooses the snippet_type (measure/filter/expression) — the
+    static _LEVER_TO_PATCH_TYPE mapping is NOT used here.
+    """
+    import json as _json
+
+    import mlflow
+    from mlflow.entities import SpanType as _SpanType
+
+    root_cause = cluster.get("root_cause", "other")
+
+    with mlflow.start_span(name=f"lever6_proposal_{root_cause}", span_type=_SpanType.CHAIN) as span:
+        cluster_context = _format_cluster_briefs([cluster])
+        schema_context = _format_schema_index(metadata_snapshot)
+        existing_snippets = _format_existing_sql_snippets(metadata_snapshot)
+
+        hints_text = "(No strategist hints.)"
+        if strategist_hints:
+            hints_text = _json.dumps(strategist_hints, indent=2)
+
+        prompt = format_mlflow_template(
+            LEVER_6_SQL_EXPRESSION_PROMPT,
+            root_cause=root_cause,
+            cluster_context=cluster_context,
+            schema_context=schema_context,
+            existing_sql_snippets=existing_snippets,
+            strategist_hints=hints_text,
+        )
+
+        span.set_inputs({"root_cause": root_cause, "prompt_chars": len(prompt)})
+
+        try:
+            raw_text, _ = _traced_llm_call(
+                w, "You are a SQL expression expert.", prompt,
+                span_name="lever6_llm",
+            )
+        except Exception:
+            logger.warning("Lever 6 LLM call failed for root_cause=%s", root_cause, exc_info=True)
+            return None
+
+        from genie_space_optimizer.optimization.evaluation import _extract_json
+
+        llm_result = _extract_json(raw_text)
+        if not llm_result or not isinstance(llm_result, dict):
+            logger.warning("Lever 6 LLM returned unparseable JSON for root_cause=%s", root_cause)
+            return None
+
+        snippet_type = llm_result.get("snippet_type", "")
+        if snippet_type not in ("measure", "filter", "expression"):
+            logger.warning("Lever 6 LLM returned invalid snippet_type: %s", snippet_type)
+            return None
+
+        sql_raw = llm_result.get("sql", "")
+        if not sql_raw:
+            logger.warning("Lever 6 LLM returned empty sql")
+            return None
+
+        sql_ok, violations = _validate_sql_identifiers(
+            sql_raw, _build_identifier_allowlist(metadata_snapshot),
+        )
+        if not sql_ok:
+            logger.warning("Lever 6: SQL snippet has invalid identifiers: %s", violations)
+            return None
+
+        if spark is not None or (w is not None and warehouse_id):
+            from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
+
+            _valid_result = validate_sql_snippet(
+                sql_raw, snippet_type, metadata_snapshot,
+                spark=spark, catalog=catalog, gold_schema=gold_schema,
+                w=w, warehouse_id=warehouse_id,
+            )
+            if not _valid_result[0]:
+                logger.warning("Lever 6: SQL snippet failed execution validation: %s", _valid_result[1])
+                return None
+            sql_raw = _valid_result[2] if len(_valid_result) > 2 else sql_raw
+
+        existing = metadata_snapshot.get("sql_snippets", {})
+        type_key = {"measure": "measures", "filter": "filters", "expression": "expressions"}[snippet_type]
+        for existing_item in (existing.get(type_key, []) or []):
+            existing_sql = existing_item.get("sql", [])
+            existing_sql_str = existing_sql[0] if isinstance(existing_sql, list) and existing_sql else str(existing_sql)
+            if _ngram_similarity(sql_raw.lower(), existing_sql_str.lower()) > 0.85:
+                logger.info("Lever 6: Duplicate SQL snippet detected, skipping")
+                return None
+
+        patch_type_map = {
+            "measure": "add_sql_snippet_measure",
+            "filter": "add_sql_snippet_filter",
+            "expression": "add_sql_snippet_expression",
+        }
+
+        static_default = _LEVER_TO_PATCH_TYPE.get((root_cause, 6), "N/A")
+        logger.info(
+            "Lever 6 LLM chose snippet_type=%s for cluster root_cause=%s "
+            "(static default would have been %s)",
+            snippet_type, root_cause, static_default,
+        )
+
+        span.set_outputs({"snippet_type": snippet_type, "sql": sql_raw[:200]})
+
+        return {
+            "patch_type": patch_type_map[snippet_type],
+            "lever": 6,
+            "snippet_type": snippet_type,
+            "display_name": llm_result.get("display_name", ""),
+            "alias": llm_result.get("alias", ""),
+            "sql": sql_raw,
+            "synonyms": llm_result.get("synonyms", []),
+            "instruction": llm_result.get("instruction", ""),
+            "target_table": llm_result.get("target_table", ""),
+            "rationale": llm_result.get("rationale", ""),
+            "affected_questions": llm_result.get("affected_questions", []),
+            "confidence": 0.7,
+            "questions_fixed": len(cluster.get("question_traces", [])),
+        }
+
+
+# ── Lever 6 / Phase 2: Proactive SQL Expression Mining ─────────────────
+
+_AGG_PATTERN = re.compile(
+    r"((?:SUM|COUNT|AVG|MIN|MAX|COUNT\s+DISTINCT)\s*\([^)]+\))",
+    re.IGNORECASE,
+)
+
+_WHERE_PATTERN = re.compile(
+    r"WHERE\s+(.+?)(?:\s+GROUP\s+BY|\s+ORDER\s+BY|\s+HAVING|\s+LIMIT|\s*$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+_DERIVED_PATTERN = re.compile(
+    r"(CASE\s+WHEN.+?END|"
+    r"(?:MONTH|QUARTER|YEAR|DATE_TRUNC|DATE_FORMAT|CONCAT)\s*\([^)]+\))",
+    re.IGNORECASE,
+)
+
+
+def _convert_instructions_to_sql_expressions(
+    metadata_snapshot: dict,
+    w: WorkspaceClient | None = None,
+    *,
+    spark: Any = None,
+    catalog: str = "",
+    gold_schema: str = "",
+    warehouse_id: str = "",
+) -> list[dict]:
+    """Parse Genie Space instructions for business rules expressible as SQL snippets.
+
+    Calls an LLM to extract default filters, KPI definitions, and derived
+    attributes from ``text_instructions``, then validates each candidate
+    via ``validate_sql_snippet``.  Returns only validated candidates.
+    """
+    from genie_space_optimizer.common.config import (
+        INSTRUCTION_TO_SQL_EXPRESSION_PROMPT,
+        format_mlflow_template,
+    )
+    from genie_space_optimizer.optimization.applier import _get_general_instructions
+    from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
+
+    instructions_text = _get_general_instructions(metadata_snapshot)
+    if not instructions_text or len(instructions_text.strip()) < 20:
+        logger.info("No substantial instructions to convert to SQL expressions")
+        return []
+
+    ds = metadata_snapshot.get("data_sources", {})
+    all_sources: list = []
+    if isinstance(ds, dict):
+        all_sources.extend(ds.get("tables", []) or [])
+        all_sources.extend(ds.get("metric_views", []) or [])
+    schema_lines: list[str] = []
+    for t in all_sources:
+        if not isinstance(t, dict):
+            continue
+        tname = t.get("identifier", t.get("name", "")).split(".")[-1]
+        for col in (t.get("columns", []) or []):
+            cname = col.get("name", "")
+            ctype = col.get("type_text", col.get("type", ""))
+            desc = col.get("description", "")[:80]
+            if cname:
+                schema_lines.append(f"{tname}.{cname} ({ctype}): {desc}")
+        for cc in (t.get("column_configs", []) or []):
+            cname = cc.get("column_name", "")
+            if cname and not any(cname in ln for ln in schema_lines):
+                schema_lines.append(f"{tname}.{cname}: (from column_configs)")
+    schema_context = "\n".join(schema_lines) if schema_lines else "(no schema available)"
+
+    instr = metadata_snapshot.get("instructions", {})
+    existing_snippets = instr.get("sql_snippets", {}) if isinstance(instr, dict) else {}
+    existing_strs: list[str] = []
+    for category in ("measures", "filters", "expressions"):
+        for item in existing_snippets.get(category, []):
+            sql_raw = item.get("sql", "")
+            sql_str = "".join(str(s) for s in sql_raw).strip() if isinstance(sql_raw, list) else str(sql_raw).strip()
+            if sql_str:
+                existing_strs.append(f"{category}: {sql_str}")
+    existing_text = "\n".join(existing_strs) if existing_strs else "(none)"
+
+    prompt = format_mlflow_template(
+        INSTRUCTION_TO_SQL_EXPRESSION_PROMPT,
+        instructions_text=instructions_text,
+        schema_context=schema_context,
+        existing_expressions=existing_text,
+    )
+
+    try:
+        text, _response = _traced_llm_call(
+            w, "", prompt, span_name="instruction_to_sql_expression",
+        )
+    except Exception:
+        logger.warning("Instruction-to-SQL-expression LLM call failed", exc_info=True)
+        return []
+
+    from genie_space_optimizer.optimization.evaluation import _extract_json
+    try:
+        result = _extract_json(text)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("Instruction-to-SQL-expression response not valid JSON")
+        return []
+
+    candidates = result if isinstance(result, list) else result.get("expressions", [])
+    validated: list[dict] = []
+
+    existing_sql_lower = {s.lower().strip() for s in existing_strs}
+
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        sql = c.get("sql", "").strip()
+        snippet_type = c.get("snippet_type", "").strip().lower()
+        if not sql or snippet_type not in ("measure", "filter", "expression"):
+            continue
+        if sql.lower().strip() in existing_sql_lower:
+            continue
+
+        _valid_result = validate_sql_snippet(
+            sql, snippet_type, metadata_snapshot,
+            spark=spark, catalog=catalog, gold_schema=gold_schema,
+            w=w, warehouse_id=warehouse_id,
+        )
+        is_valid = _valid_result[0]
+        err = _valid_result[1]
+        prefixed_sql = _valid_result[2] if len(_valid_result) > 2 else sql
+        if is_valid:
+            validated.append({
+                "snippet_type": snippet_type,
+                "sql": prefixed_sql,
+                "display_name": c.get("display_name", ""),
+                "description": c.get("description", ""),
+                "synonyms": c.get("synonyms", []),
+                "alias": c.get("alias", ""),
+                "is_default": c.get("is_default", False),
+                "omit_when": c.get("omit_when"),
+                "source": "instruction_derived",
+            })
+        else:
+            logger.info(
+                "Instruction-derived SQL expression rejected: %s — %s",
+                sql[:80], err,
+            )
+
+    logger.info(
+        "Instruction-to-SQL-expression: %d/%d candidates validated",
+        len(validated), len(candidates),
+    )
+    return validated
+
+
+def _mine_sql_expression_candidates(
+    benchmarks: list[dict],
+    metadata_snapshot: dict,
+) -> list[dict]:
+    """Extract SQL Expression candidates from benchmark ground-truth SQL.
+
+    Scans all benchmark expected_sql for:
+      - Recurring aggregation patterns (2+ occurrences) -> measures
+      - Recurring WHERE patterns (2+ occurrences) -> filters
+      - Recurring derived columns (CASE, date functions) -> expressions
+
+    Returns list of candidate dicts with:
+      {snippet_type, sql, display_name, alias, source_count}
+    """
+    from collections import Counter
+
+    from genie_space_optimizer.common.config import SQL_EXPRESSION_MIN_FREQUENCY
+
+    agg_counter: Counter[str] = Counter()
+    where_counter: Counter[str] = Counter()
+    derived_counter: Counter[str] = Counter()
+
+    for b in benchmarks:
+        sql = b.get("expected_sql", "") or ""
+        if not sql.strip():
+            continue
+
+        for m in _AGG_PATTERN.findall(sql):
+            normalized = " ".join(m.split()).upper()
+            agg_counter[normalized] += 1
+
+        where_match = _WHERE_PATTERN.search(sql)
+        if where_match:
+            clause = where_match.group(1).strip()
+            for condition in re.split(r"\s+AND\s+", clause, flags=re.IGNORECASE):
+                condition = condition.strip()
+                if condition and len(condition) < 200:
+                    normalized = " ".join(condition.split())
+                    where_counter[normalized] += 1
+
+        for m in _DERIVED_PATTERN.findall(sql):
+            normalized = " ".join(m.split())
+            derived_counter[normalized] += 1
+
+    candidates: list[dict] = []
+
+    for sql_expr, count in agg_counter.most_common():
+        if count < SQL_EXPRESSION_MIN_FREQUENCY:
+            break
+        alias = re.sub(r"[^a-z0-9]+", "_", sql_expr.lower()).strip("_")[:50]
+        candidates.append({
+            "snippet_type": "measure",
+            "sql": sql_expr,
+            "display_name": _auto_display_name(sql_expr, "measure"),
+            "alias": alias,
+            "source_count": count,
+        })
+
+    for sql_expr, count in where_counter.most_common():
+        if count < SQL_EXPRESSION_MIN_FREQUENCY:
+            break
+        candidates.append({
+            "snippet_type": "filter",
+            "sql": sql_expr,
+            "display_name": _auto_display_name(sql_expr, "filter"),
+            "alias": "",
+            "source_count": count,
+        })
+
+    for sql_expr, count in derived_counter.most_common():
+        if count < SQL_EXPRESSION_MIN_FREQUENCY:
+            break
+        alias = re.sub(r"[^a-z0-9]+", "_", sql_expr.lower()).strip("_")[:50]
+        candidates.append({
+            "snippet_type": "expression",
+            "sql": sql_expr,
+            "display_name": _auto_display_name(sql_expr, "expression"),
+            "alias": alias,
+            "source_count": count,
+        })
+
+    seen: set[str] = set()
+    deduped: list[dict] = []
+    for c in candidates:
+        key = c["sql"].lower()
+        if any(_ngram_similarity(key, s) > 0.85 for s in seen):
+            continue
+        seen.add(key)
+        deduped.append(c)
+
+    return deduped
+
+
+def _auto_display_name(sql: str, snippet_type: str) -> str:
+    """Generate a human-readable display name from a SQL expression."""
+    sql_clean = sql.strip()
+
+    if snippet_type == "measure":
+        match = re.match(r"(SUM|COUNT|AVG|MIN|MAX)\s*\((.+)\)", sql_clean, re.IGNORECASE)
+        if match:
+            func, col = match.group(1).upper(), match.group(2).strip()
+            col_name = col.split(".")[-1].replace("_", " ").title()
+            prefix = {"SUM": "Total", "COUNT": "Count of", "AVG": "Average",
+                       "MIN": "Minimum", "MAX": "Maximum"}.get(func, func)
+            return f"{prefix} {col_name}"
+        return f"Measure: {sql_clean[:40]}"
+
+    if snippet_type == "filter":
+        return f"Filter: {sql_clean[:50]}"
+
+    if snippet_type == "expression":
+        match = re.match(r"(MONTH|QUARTER|YEAR|DATE_TRUNC)\s*\((.+)\)", sql_clean, re.IGNORECASE)
+        if match:
+            func, col = match.group(1).title(), match.group(2).strip()
+            col_name = col.split(".")[-1].replace("_", " ").title()
+            return f"{col_name} {func}"
+        return f"Expression: {sql_clean[:40]}"
+
+    return sql_clean[:50]
+
+
+def _discover_schema_sql_expressions(
+    metadata_snapshot: dict,
+) -> list[dict]:
+    """Discover SQL Expression candidates from schema patterns.
+
+    Scans column names, types, and descriptions for strong signals:
+      - Numeric columns named like revenue/cost/amount -> SUM measures
+      - Date/timestamp columns -> MONTH/QUARTER expressions
+
+    Returns conservative candidates that still need execution validation.
+    """
+    _MEASURE_PATTERNS = re.compile(
+        r"(?:revenue|sales|amount|total|cost|expense|price|profit|margin|"
+        r"count|qty|quantity|fee|charge|discount|balance)",
+        re.IGNORECASE,
+    )
+    _DATE_PATTERNS = re.compile(
+        r"(?:date|_at$|_on$|timestamp|datetime|created|updated|modified)",
+        re.IGNORECASE,
+    )
+    _NUMERIC_TYPES = {"int", "integer", "bigint", "float", "double", "decimal", "numeric", "long", "short"}
+
+    ds = metadata_snapshot.get("data_sources", {})
+    if not isinstance(ds, dict):
+        return []
+
+    candidates: list[dict] = []
+    seen_sqls: set[str] = set()
+
+    for table in (ds.get("tables", []) or []):
+        if not isinstance(table, dict):
+            continue
+        table_id = table.get("identifier", "")
+        if not table_id:
+            continue
+
+        columns = table.get("columns", []) or []
+        for col in columns:
+            if not isinstance(col, dict):
+                continue
+            col_name = col.get("name", "") or col.get("column_name", "")
+            col_type = (col.get("type_text", "") or col.get("data_type", "")).lower()
+            if not col_name:
+                continue
+
+            is_hidden = col.get("is_hidden", False) or col.get("hidden", False)
+            if is_hidden:
+                continue
+
+            base_type = col_type.split("(")[0].strip()
+            fq_col = f"{table_id}.{col_name}"
+
+            if base_type in _NUMERIC_TYPES and _MEASURE_PATTERNS.search(col_name):
+                sql_expr = f"SUM({fq_col})"
+                if sql_expr.lower() not in seen_sqls:
+                    seen_sqls.add(sql_expr.lower())
+                    alias = re.sub(r"[^a-z0-9]+", "_", f"total_{col_name}".lower()).strip("_")[:50]
+                    candidates.append({
+                        "snippet_type": "measure",
+                        "sql": sql_expr,
+                        "display_name": f"Total {col_name.replace('_', ' ').title()}",
+                        "alias": alias,
+                        "source_count": 0,
+                    })
+
+            if _DATE_PATTERNS.search(col_name) and ("date" in base_type or "timestamp" in base_type):
+                for func, label in [("MONTH", "Month"), ("QUARTER", "Quarter")]:
+                    sql_expr = f"{func}({fq_col})"
+                    if sql_expr.lower() not in seen_sqls:
+                        seen_sqls.add(sql_expr.lower())
+                        alias = re.sub(
+                            r"[^a-z0-9]+", "_",
+                            f"{col_name}_{func}".lower(),
+                        ).strip("_")[:50]
+                        candidates.append({
+                            "snippet_type": "expression",
+                            "sql": sql_expr,
+                            "display_name": f"{col_name.replace('_', ' ').title()} {label}",
+                            "alias": alias,
+                            "source_count": 0,
+                        })
+
+    return candidates
+
+
+def _enrich_candidates_with_llm(
+    candidates: list[dict],
+    metadata_snapshot: dict,
+    *,
+    w: WorkspaceClient | None = None,
+) -> list[dict]:
+    """Use LLM to generate display_name, synonyms, and instruction for candidates.
+
+    Takes raw (sql, snippet_type) candidates and enriches them with
+    human-friendly metadata.  If the LLM call fails, candidates are returned
+    with auto-generated display names.
+    """
+    if not candidates or w is None:
+        return candidates
+
+    import json as _json
+
+    from genie_space_optimizer.common.config import (
+        SQL_EXPRESSION_SEEDING_PROMPT,
+        format_mlflow_template,
+    )
+
+    candidates_json = _json.dumps(
+        [{"snippet_type": c["snippet_type"], "sql": c["sql"]} for c in candidates],
+        indent=2,
+    )
+    schema_context = _format_schema_index(metadata_snapshot)
+
+    prompt = format_mlflow_template(
+        SQL_EXPRESSION_SEEDING_PROMPT,
+        candidates=candidates_json,
+        schema=schema_context[:4000],
+    )
+
+    try:
+        raw_text, _ = _traced_llm_call(
+            w, "You are a SQL metadata expert.", prompt,
+            span_name="sql_expression_seeding_llm",
+        )
+        from genie_space_optimizer.optimization.evaluation import _extract_json
+        enrichments = _extract_json(raw_text)
+        if isinstance(enrichments, list) and len(enrichments) == len(candidates):
+            for c, e in zip(candidates, enrichments):
+                if isinstance(e, dict):
+                    if e.get("display_name"):
+                        c["display_name"] = e["display_name"]
+                    if e.get("synonyms"):
+                        c["synonyms"] = e["synonyms"]
+                    if e.get("instruction"):
+                        c["instruction"] = e["instruction"]
+                    if e.get("alias") and c["snippet_type"] != "filter":
+                        c["alias"] = e["alias"]
+    except Exception:
+        logger.warning("LLM enrichment for SQL expression candidates failed; using auto-generated names", exc_info=True)
+
+    for c in candidates:
+        c.setdefault("synonyms", [])
+        c.setdefault("instruction", "")
+
+    return candidates
+
+
 def _filter_no_op_proposals(proposals: list[dict], metadata_snapshot: dict) -> list[dict]:
     """Remove proposals that don't meaningfully change the current metadata.
 
@@ -7033,7 +8064,7 @@ def _merge_overlapping_instructions(proposals: list[dict]) -> list[dict]:
     return others + merged
 
 
-_LEVER_NAMES = {0: "Proactive Enrichment", 1: "Tables & Columns", 2: "Metric Views", 3: "Table-Valued Functions", 4: "Join Specifications", 5: "Genie Space Instructions"}
+_LEVER_NAMES = {0: "Proactive Enrichment", 1: "Tables & Columns", 2: "Metric Views", 3: "Table-Valued Functions", 4: "Join Specifications", 5: "Genie Space Instructions", 6: "SQL Expressions"}
 
 
 def _build_provenance(cluster: dict, lever: int, patch_type: str) -> dict:
@@ -7074,7 +8105,7 @@ def generate_proposals_from_strategy(
     lever_key = str(target_lever)
     lever_dir = directives.get(lever_key, {})
 
-    if not lever_dir and target_lever != 5:
+    if not lever_dir and target_lever not in (4, 5, 6):
         return proposals
 
     scope = _resolve_scope(target_lever, apply_mode)
@@ -7227,7 +8258,7 @@ def generate_proposals_from_strategy(
                         "left": {"identifier": left_table},
                         "right": {"identifier": right_table},
                         "sql": [sanitized_guidance] if sanitized_guidance else [],
-                    })
+                    }, config=metadata_snapshot)
                     valid, reason = validate_join_spec_types(join_spec, metadata_snapshot)
                     if not valid:
                         logger.info("[%s] Join spec rejected (type mismatch): %s", ag_id, reason)
@@ -7257,6 +8288,63 @@ def generate_proposals_from_strategy(
                         "provenance": {**provenance_base, "patch_type": "add_join_spec"},
                     })
 
+            # Fallback: use judge-provided join_assessments from source clusters
+            _all_clusters = strategy.get("_source_clusters", [])
+            _ja_entries: list[dict] = []
+            for _sc_id in source_clusters:
+                for _clust in _all_clusters:
+                    if _clust.get("cluster_id") == _sc_id:
+                        _ja_entries.extend(_clust.get("join_assessments", []))
+            _proposed_pairs = {
+                tuple(sorted((p["join_spec"]["left"]["identifier"],
+                               p["join_spec"]["right"]["identifier"])))
+                for p in proposals if p.get("join_spec")
+            }
+            for _ja in _ja_entries:
+                _lt = _ja.get("left_table", "")
+                _rt = _ja.get("right_table", "")
+                if not _lt or not _rt:
+                    continue
+                _pair = tuple(sorted((_lt, _rt)))
+                if _pair in _proposed_pairs:
+                    continue
+                _cond = _ja.get("suggested_condition", "")
+                _sanitized = _sanitize_join_sql(_cond) if _cond else ""
+                _j_spec = ensure_join_spec_fields({
+                    "left": {"identifier": _lt},
+                    "right": {"identifier": _rt},
+                    "sql": [_sanitized] if _sanitized else [],
+                }, config=metadata_snapshot)
+                _valid, _reason = validate_join_spec_types(_j_spec, metadata_snapshot)
+                if not _valid:
+                    logger.info("[%s] Judge join_assessment rejected (type): %s", ag_id, _reason)
+                    continue
+                proposals.append({
+                    "proposal_id": f"P{len(proposals) + 1:03d}",
+                    "cluster_id": f"{ag_id}_JA",
+                    "lever": 4,
+                    "scope": "genie_config",
+                    "patch_type": "add_join_spec",
+                    "change_description": f"[{ag_id}] Judge-assessed join: {_lt} ↔ {_rt}",
+                    "proposed_value": "",
+                    "rationale": f"Judge assessment: {_ja.get('evidence', '')}",
+                    "join_spec": _j_spec,
+                    "dual_persistence": DUAL_PERSIST_PATHS.get(4, DUAL_PERSIST_PATHS[5]),
+                    "confidence": 0.75,
+                    "questions_fixed": q_fixed,
+                    "questions_at_risk": 0,
+                    "net_impact": max(q_fixed * 0.75, 1.0),
+                    "asi": {
+                        "failure_type": "missing_join_spec",
+                        "blame_set": [_lt, _rt],
+                        "severity": "major",
+                        "counterfactual_fixes": [],
+                        "ambiguity_detected": False,
+                    },
+                    "provenance": {**provenance_base, "patch_type": "add_join_spec"},
+                })
+                _proposed_pairs.add(_pair)
+
             discovery_hints = discover_join_candidates(metadata_snapshot)
             if discovery_hints:
                 discovery_specs = _call_llm_for_join_discovery(
@@ -7266,7 +8354,7 @@ def generate_proposals_from_strategy(
                     join_spec = spec_result.get("join_spec")
                     if not isinstance(join_spec, dict):
                         continue
-                    join_spec = ensure_join_spec_fields(join_spec)
+                    join_spec = ensure_join_spec_fields(join_spec, config=metadata_snapshot)
                     spec_result["join_spec"] = join_spec
                     valid, reason = validate_join_spec_types(join_spec, metadata_snapshot)
                     if not valid:
@@ -7327,9 +8415,67 @@ def generate_proposals_from_strategy(
                         k: v for k, v in instruction_sections.items() if k in valid_keys
                     }
 
+                # --- Task 4: section ownership enforcement ---
+                allowed_sections = set(LEVER_TO_SECTIONS.get(target_lever, []))
+                if allowed_sections:
+                    unauthorized = {
+                        k for k in instruction_sections if k not in allowed_sections
+                    }
+                    if unauthorized:
+                        logger.warning(
+                            "Lever %d attempted to write instruction sections %s "
+                            "(allowed: %s) — folding into CONSTRAINTS",
+                            target_lever, sorted(unauthorized), sorted(allowed_sections),
+                        )
+                        for k in sorted(unauthorized):
+                            val = instruction_sections.pop(k, "")
+                            if val:
+                                existing_c = instruction_sections.get("CONSTRAINTS", "")
+                                instruction_sections["CONSTRAINTS"] = (
+                                    (existing_c + "\n" + val).strip() if existing_c else val
+                                )
+
+                # --- Contradiction check against user-authored instructions ---
+                _orig_sections = metadata_snapshot.get("_original_instruction_sections")
+                if _orig_sections and isinstance(_orig_sections, dict):
+                    _contradictions = _detect_instruction_contradictions(
+                        _orig_sections, instruction_sections,
+                    )
+                    for _c in _contradictions:
+                        logger.warning(
+                            "REJECTED contradictory instruction: section=%s "
+                            "proposed='%s' contradicts original='%s' (%s)",
+                            _c["section"],
+                            _c["proposed_line"][:120],
+                            _c["original_rule"][:120],
+                            _c["contradiction_type"],
+                        )
+                        _c_section = _c["section"]
+                        _c_line = _c["proposed_line"]
+                        _sec_val = instruction_sections.get(_c_section, "")
+                        if isinstance(_sec_val, str) and _c_line in _sec_val:
+                            instruction_sections[_c_section] = _sec_val.replace(
+                                _c_line, ""
+                            ).strip()
+                        elif isinstance(_sec_val, list):
+                            instruction_sections[_c_section] = [
+                                ln for ln in _sec_val if _c_line not in ln
+                            ]
+                    if _contradictions:
+                        instruction_sections = {
+                            k: v for k, v in instruction_sections.items()
+                            if (isinstance(v, str) and v.strip()) or (isinstance(v, list) and v)
+                        }
+                        logger.info(
+                            "Stripped %d contradictory line(s) from proposed instructions",
+                            len(_contradictions),
+                        )
+
                 current_instructions = _get_general_instructions(metadata_snapshot)
-                existing_sections, _ = _parse_sections(
-                    _sanitize_plaintext_instructions(current_instructions) if current_instructions else ""
+
+                # Pre-structure existing instructions if unstructured
+                existing_sections = _ensure_structured(
+                    current_instructions, metadata_snapshot, w=w,
                 )
                 merged_secs: dict[str, list[str]] = {
                     s: list(existing_sections.get(s, []))
@@ -7369,6 +8515,17 @@ def generate_proposals_from_strategy(
                         "Instruction rewrite would lose content (%d -> %d chars) "
                         "— force-merging existing instructions",
                         len(current_instructions), len(merged_text),
+                    )
+                    merged_text = _merge_structured_instructions(
+                        existing=current_instructions,
+                        contributions=[merged_text],
+                    )
+
+                if current_instructions and not _instruction_coverage(
+                    current_instructions, merged_text
+                ):
+                    logger.warning(
+                        "Instruction rewrite drops key phrases — force-merging"
                     )
                     merged_text = _merge_structured_instructions(
                         existing=current_instructions,
@@ -7423,6 +8580,18 @@ def generate_proposals_from_strategy(
                         existing=current_instructions,
                         contributions=[merged_text],
                     )
+
+                if current_instructions and not _instruction_coverage(
+                    current_instructions, merged_text
+                ):
+                    logger.warning(
+                        "Instruction guidance rewrite drops key phrases — force-merging"
+                    )
+                    merged_text = _merge_structured_instructions(
+                        existing=current_instructions,
+                        contributions=[merged_text],
+                    )
+
                 proposals.append({
                     "proposal_id": f"P{len(proposals) + 1:03d}",
                     "cluster_id": ag_id,
@@ -7482,7 +8651,55 @@ def generate_proposals_from_strategy(
                         "provenance": {**provenance_base, "patch_type": "add_example_sql"},
                     })
 
+        # ── Lever 6: SQL Expressions ─────────────────────────────────────
+        elif target_lever == 6:
+            ag_directives = action_group.get("lever_directives", {}).get("6", {})
+            strategist_hints = ag_directives.get("sql_expressions", []) if isinstance(ag_directives, dict) else []
+
+            source_cids = set(action_group.get("source_cluster_ids", []))
+            all_clusters = metadata_snapshot.get("failure_clusters", [])
+            eligible_clusters = [
+                c for c in all_clusters
+                if c.get("cluster_id") in source_cids
+            ]
+            if not eligible_clusters:
+                eligible_clusters = [
+                    {"root_cause": root_cause, "question_traces": affected_qs, "cluster_id": ag_id}
+                ]
+
+            for cluster in eligible_clusters:
+                proposal = _generate_lever6_proposal(
+                    cluster, metadata_snapshot,
+                    strategist_hints=strategist_hints,
+                    w=w, spark=spark, catalog=catalog,
+                    gold_schema=gold_schema, warehouse_id=warehouse_id,
+                )
+                if proposal:
+                    proposal["proposal_id"] = f"P{len(proposals) + 1:03d}"
+                    proposal["cluster_id"] = cluster.get("cluster_id", ag_id)
+                    proposal["scope"] = "genie_config"
+                    proposal["change_description"] = (
+                        f"[{ag_id}] SQL Expression: {proposal.get('display_name', 'unnamed')} "
+                        f"({proposal.get('snippet_type', '?')})"
+                    )
+                    proposal["proposed_value"] = proposal.get("sql", "")
+                    proposal["rationale"] = proposal.get("rationale", f"Strategy: {root_cause}")
+                    proposal["dual_persistence"] = DUAL_PERSIST_PATHS.get(6, DUAL_PERSIST_PATHS[5])
+                    proposal["questions_at_risk"] = 0
+                    proposal["net_impact"] = max(proposal.get("questions_fixed", 0) * 0.7, 1.0)
+                    proposal["asi"] = {
+                        "failure_type": cluster.get("root_cause", root_cause),
+                        "blame_set": source_clusters,
+                        "severity": "major",
+                        "counterfactual_fixes": [],
+                        "ambiguity_detected": False,
+                    }
+                    proposal["provenance"] = {**provenance_base, "patch_type": proposal["patch_type"]}
+                    proposals.append(proposal)
+
         # ── Example SQL from any lever ────────────────────────────────────
+        # Preserve the originating lever so patches are attributed correctly
+        # (e.g. TVF routing example SQLs stay under lever 3, not lever 5).
         if target_lever != 5 and isinstance(lever_dir, dict):
             ex_sqls = lever_dir.get("example_sqls", [])
             if not ex_sqls:
@@ -7500,7 +8717,7 @@ def generate_proposals_from_strategy(
                     proposals.append({
                         "proposal_id": f"P{len(proposals) + 1:03d}",
                         "cluster_id": f"{ag_id}_L{target_lever}_EX{ex_idx + 1}",
-                        "lever": 5,
+                        "lever": target_lever,
                         "scope": "genie_config",
                         "patch_type": "add_example_sql",
                         "change_description": f"[{ag_id}] Lever {target_lever} example SQL {ex_idx + 1}: {eq[:80]}",
@@ -7510,7 +8727,7 @@ def generate_proposals_from_strategy(
                         "parameters": ex_sql.get("parameters", []),
                         "usage_guidance": ex_sql.get("usage_guidance", ""),
                         "rationale": f"Example SQL from lever {target_lever}: {root_cause}",
-                        "dual_persistence": DUAL_PERSIST_PATHS.get(5, DUAL_PERSIST_PATHS[5]),
+                        "dual_persistence": DUAL_PERSIST_PATHS.get(target_lever, DUAL_PERSIST_PATHS[5]),
                         "confidence": 0.75,
                         "questions_fixed": 1,
                         "questions_at_risk": 0,
@@ -7635,6 +8852,18 @@ def generate_metadata_proposals(
                     existing=current_instructions,
                     contributions=[instruction_text],
                 )
+
+            if current_instructions and not _instruction_coverage(
+                current_instructions, instruction_text
+            ):
+                logger.warning(
+                    "Holistic instruction rewrite drops key phrases — force-merging"
+                )
+                instruction_text = _merge_structured_instructions(
+                    existing=current_instructions,
+                    contributions=[instruction_text],
+                )
+
             total_q = sum(len(c.get("question_ids", [])) for c in all_lever5_clusters)
             holistic_traces = []
             for c in (all_lever5_clusters or clusters):
@@ -7763,12 +8992,12 @@ def generate_metadata_proposals(
             ),
         )
 
-        llm_result = _call_llm_for_proposal(cluster, metadata_snapshot, patch_type, lever)
+        llm_result = _call_llm_for_proposal(cluster, metadata_snapshot, patch_type, lever, w=w)
 
         extra_fields: dict = {}
 
         if lever == 4 and isinstance(llm_result.get("join_spec"), dict):
-            llm_result["join_spec"] = ensure_join_spec_fields(llm_result["join_spec"])
+            llm_result["join_spec"] = ensure_join_spec_fields(llm_result["join_spec"], config=metadata_snapshot)
             valid, reason = validate_join_spec_types(
                 llm_result["join_spec"], metadata_snapshot
             )
@@ -7940,7 +9169,7 @@ def generate_metadata_proposals(
                 join_spec = spec_result.get("join_spec")
                 if not isinstance(join_spec, dict):
                     continue
-                join_spec = ensure_join_spec_fields(join_spec)
+                join_spec = ensure_join_spec_fields(join_spec, config=metadata_snapshot)
                 spec_result["join_spec"] = join_spec
 
                 valid, reason = validate_join_spec_types(join_spec, metadata_snapshot)

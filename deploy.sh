@@ -19,7 +19,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=deploy-config.sh
 source "$SCRIPT_DIR/deploy-config.sh"
 
-TOTAL_STEPS=6
+TOTAL_STEPS=8
 
 echo "╔══════════════════════════════════════════════════════════════╗"
 echo "║  Genie Space Optimizer — Bundle Deploy                      ║"
@@ -125,6 +125,43 @@ print(json.dumps({'access_control_list': acl}))
 databricks api put "/api/2.0/permissions/jobs/$JOB_ID" --profile "$PROFILE" --json "$PERM_PAYLOAD"
 echo "  ✓ Job permissions updated (owner=$DEPLOYER, SP=CAN_MANAGE, users=CAN_VIEW)"
 echo "  ℹ Job run_as will be set to SP automatically on first app startup"
+
+# ── Step 7: Grant SP CAN_RUN on the bundle workspace directory ───────────
+echo ""
+echo "▸ Step 7/$TOTAL_STEPS: Granting SP access to bundle workspace notebooks..."
+
+WS_BUNDLE_ROOT="/Workspace/Users/$DEPLOYER/.bundle/genie-space-optimizer/dev"
+BUNDLE_DIR_OBJ_ID=$(
+    databricks workspace get-status "$WS_BUNDLE_ROOT" --profile "$PROFILE" -o json \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['object_id'])"
+)
+if [ -n "$BUNDLE_DIR_OBJ_ID" ]; then
+    databricks api patch "/api/2.0/permissions/directories/$BUNDLE_DIR_OBJ_ID" \
+        --profile "$PROFILE" \
+        --json "{\"access_control_list\": [{\"service_principal_name\": \"$SP_CLIENT_ID\", \"permission_level\": \"CAN_MANAGE\"}]}"
+    echo "  ✓ SP granted CAN_MANAGE on $WS_BUNDLE_ROOT"
+else
+    echo "  ⚠ Could not resolve bundle workspace directory — SP may lack notebook access"
+fi
+
+# ── Step 8: Grant SP CAN_MANAGE on the MLflow experiment root directory ──
+echo ""
+echo "▸ Step 8/$TOTAL_STEPS: Granting SP access to MLflow experiment directory..."
+
+SHARED_EXP_ROOT="/Shared/genie-space-optimizer"
+databricks workspace mkdirs "$SHARED_EXP_ROOT" --profile "$PROFILE" 2>/dev/null || true
+SHARED_DIR_OBJ_ID=$(
+    databricks workspace get-status "$SHARED_EXP_ROOT" --profile "$PROFILE" -o json \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['object_id'])" 2>/dev/null
+)
+if [ -n "$SHARED_DIR_OBJ_ID" ]; then
+    databricks api patch "/api/2.0/permissions/directories/$SHARED_DIR_OBJ_ID" \
+        --profile "$PROFILE" \
+        --json "{\"access_control_list\": [{\"service_principal_name\": \"$SP_CLIENT_ID\", \"permission_level\": \"CAN_MANAGE\"}]}"
+    echo "  ✓ SP granted CAN_MANAGE on $SHARED_EXP_ROOT"
+else
+    echo "  ⚠ Could not resolve MLflow experiment directory — SP may lack artifact write access"
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"

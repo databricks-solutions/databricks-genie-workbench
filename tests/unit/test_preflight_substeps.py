@@ -212,27 +212,31 @@ class TestPreflightGenerateBenchmarks:
 # ---------------------------------------------------------------------------
 
 class TestPreflightValidateBenchmarks:
+    def _enough_benchmarks(self, n=25):
+        """Return enough benchmarks to avoid post-validation top-up."""
+        return [{"question": f"q{i}", "id": f"b{i}"} for i in range(n)]
+
     @patch("genie_space_optimizer.optimization.preflight.validate_benchmarks")
     def test_filters_invalid_benchmarks(self, mock_validate):
         from genie_space_optimizer.optimization.preflight import preflight_validate_benchmarks
 
-        benchmarks = [{"question": f"q{i}", "id": f"b{i}"} for i in range(7)]
-        validations = [{"valid": True}] * 6 + [{"valid": False, "error": "missing column"}]
+        benchmarks = self._enough_benchmarks(25) + [{"question": "qbad", "id": "bbad"}]
+        validations = [{"valid": True}] * 25 + [{"valid": False, "error": "missing column"}]
         mock_validate.return_value = validations
         result = preflight_validate_benchmarks(
             MagicMock(), MagicMock(), "run-1", "cat", "gold", {},
             benchmarks, [], [], [], "default",
         )
-        assert len(result["benchmarks"]) == 6
-        assert result["pre_count"] == 7
+        assert len(result["benchmarks"]) == 25
+        assert result["pre_count"] == 26
 
     @patch("genie_space_optimizer.optimization.preflight.validate_benchmarks")
     def test_without_warehouse_id_backward_compat(self, mock_validate):
         """Calling without warehouse_id preserves existing behavior (R7)."""
         from genie_space_optimizer.optimization.preflight import preflight_validate_benchmarks
 
-        benchmarks = [{"question": f"q{i}", "id": f"b{i}"} for i in range(6)]
-        mock_validate.return_value = [{"valid": True}] * 6
+        benchmarks = self._enough_benchmarks(25)
+        mock_validate.return_value = [{"valid": True}] * 25
         result = preflight_validate_benchmarks(
             MagicMock(), MagicMock(), "run-1", "cat", "gold", {},
             benchmarks, [], [], [], "default",
@@ -246,8 +250,8 @@ class TestPreflightValidateBenchmarks:
         """warehouse_id is forwarded to validate_benchmarks."""
         from genie_space_optimizer.optimization.preflight import preflight_validate_benchmarks
 
-        benchmarks = [{"question": f"q{i}", "id": f"b{i}"} for i in range(6)]
-        mock_validate.return_value = [{"valid": True}] * 6
+        benchmarks = self._enough_benchmarks(25)
+        mock_validate.return_value = [{"valid": True}] * 25
         preflight_validate_benchmarks(
             MagicMock(), MagicMock(), "run-1", "cat", "gold", {},
             benchmarks, [], [], [], "default",

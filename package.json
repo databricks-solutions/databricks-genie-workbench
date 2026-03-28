@@ -31,9 +31,9 @@
         "@opentelemetry/exporter-logs-otlp-http": "^0.213.0",
         "@opentelemetry/resources": "^2.6.0",
         "@opentelemetry/sdk-logs": "^0.213.0",
-        "@tailwindcss/vite": "^4.2.1",
-        "@tanstack/router-generator": "^1.166.12",
-        "@tanstack/router-plugin": "^1.166.13",
+        "@tailwindcss/vite": "^4.2.2",
+        "@tanstack/router-generator": "^1.166.15",
+        "@tanstack/router-plugin": "^1.167.2",
         "@types/node": "25.0.3",
         "@types/react": "19.2.7",
         "@types/react-dom": "19.2.3",
@@ -41,6 +41,6 @@
         "playwright": "^1.58.2",
         "smol-toml": "1.6.0",
         "typescript": "5.9.3",
-        "vite": "^8.0.0"
+        "vite": "^8.0.1"
     }
 }
