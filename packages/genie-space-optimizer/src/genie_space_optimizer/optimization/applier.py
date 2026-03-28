@@ -135,6 +135,34 @@ def _validate_example_sql_entry(
     return True
 
 
+def _validate_sql_snippet_entry(entry: dict, snippet_type: str) -> bool:
+    """Validate a sql_snippet dict conforms to the Genie API schema."""
+    from genie_space_optimizer.common.genie_schema import (
+        SqlSnippetExpression,
+        SqlSnippetFilter,
+        SqlSnippetMeasure,
+    )
+
+    model_map = {
+        "filters": SqlSnippetFilter,
+        "expressions": SqlSnippetExpression,
+        "measures": SqlSnippetMeasure,
+    }
+    model_cls = model_map.get(snippet_type)
+    if not model_cls:
+        return False
+
+    try:
+        model_cls.model_validate(entry)
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Invalid sql_snippet (%s) rejected: %s — error: %s",
+            snippet_type, entry, exc,
+        )
+        return False
+
+
 def _enforce_instruction_limit(config: dict) -> None:
     """Trim text_instructions content so it stays under the API limit."""
     ti = (config.get("instructions") or {}).get("text_instructions", [])
@@ -511,6 +539,39 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
         if isinstance(fixes, str):
             fixes = [fixes]
         new_text = p.get("proposed_value") or (fixes[0] if fixes else p.get("change_description", ""))
+
+        if (
+            patch_type.startswith("add_sql_snippet_")
+            or patch_type.startswith("update_sql_snippet_")
+            or patch_type.startswith("remove_sql_snippet_")
+        ):
+            from genie_space_optimizer.common.genie_schema import generate_genie_id
+
+            snippet_type_key = {
+                "measure": "measures", "filter": "filters", "expression": "expressions",
+            }.get(p.get("snippet_type", ""), "measures")
+
+            snippet = {
+                "id": generate_genie_id(),
+                "sql": [p["sql"]] if isinstance(p.get("sql"), str) else p.get("sql", []),
+                "display_name": p.get("display_name", ""),
+                "synonyms": p.get("synonyms", []),
+                "instruction": [p["instruction"]] if isinstance(p.get("instruction"), str) else p.get("instruction", []),
+            }
+            if p.get("alias") and snippet_type_key != "filters":
+                snippet["alias"] = p["alias"]
+
+            patches.append({
+                "type": patch_type,
+                "target": p.get("target_table", ""),
+                "lever": 6,
+                "risk_level": classify_risk(patch_type),
+                "predicted_affected_questions": p.get("questions_fixed", 0),
+                "source_proposal_id": p.get("proposal_id", ""),
+                "sql_snippet": snippet,
+                "snippet_type": snippet_type_key,
+            })
+            continue
 
         table_sections = p.get("table_sections")
         col_sections = p.get("column_sections")
@@ -893,6 +954,73 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
             json.dumps({"op": "add", "section": "join_specs", "join_spec": patch.get("previous_join_spec", {})}),
         )
 
+    # ── SQL Snippets (Lever 6) ────────────────────────────────────
+    _SNIPPET_TYPE_MAP = {
+        "add_sql_snippet_measure": "measures",
+        "update_sql_snippet_measure": "measures",
+        "remove_sql_snippet_measure": "measures",
+        "add_sql_snippet_filter": "filters",
+        "update_sql_snippet_filter": "filters",
+        "remove_sql_snippet_filter": "filters",
+        "add_sql_snippet_expression": "expressions",
+        "update_sql_snippet_expression": "expressions",
+        "remove_sql_snippet_expression": "expressions",
+    }
+
+    if patch_type in _SNIPPET_TYPE_MAP:
+        snippet_subtype = _SNIPPET_TYPE_MAP[patch_type]
+        op_prefix = patch_type.split("_sql_snippet_")[0]  # "add", "update", "remove"
+        snippet = patch.get("sql_snippet", {})
+        snippet_id = snippet.get("id", "") or patch.get("snippet_id", "")
+
+        if op_prefix == "add":
+            return action(
+                json.dumps({
+                    "op": "add",
+                    "section": "sql_snippets",
+                    "snippet_type": snippet_subtype,
+                    "snippet": snippet,
+                }),
+                json.dumps({
+                    "op": "remove",
+                    "section": "sql_snippets",
+                    "snippet_type": snippet_subtype,
+                    "snippet_id": snippet_id,
+                }),
+            )
+        if op_prefix == "update":
+            return action(
+                json.dumps({
+                    "op": "update",
+                    "section": "sql_snippets",
+                    "snippet_type": snippet_subtype,
+                    "snippet_id": snippet_id,
+                    "snippet": snippet,
+                }),
+                json.dumps({
+                    "op": "update",
+                    "section": "sql_snippets",
+                    "snippet_type": snippet_subtype,
+                    "snippet_id": snippet_id,
+                    "snippet": patch.get("previous_sql_snippet", {}),
+                }),
+            )
+        if op_prefix == "remove":
+            return action(
+                json.dumps({
+                    "op": "remove",
+                    "section": "sql_snippets",
+                    "snippet_type": snippet_subtype,
+                    "snippet_id": snippet_id,
+                }),
+                json.dumps({
+                    "op": "add",
+                    "section": "sql_snippets",
+                    "snippet_type": snippet_subtype,
+                    "snippet": patch.get("previous_sql_snippet", {}),
+                }),
+            )
+
     # ── Column Discovery Settings (Lever 5) ───────────────────────
     if patch_type == "enable_example_values":
         return action(
@@ -1062,6 +1190,31 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
             return True
         if op == "rewrite":
             text = cmd.get("new_text", "")
+            _orig_sections = config.get("_original_instruction_sections")
+            if _orig_sections and isinstance(_orig_sections, dict) and text:
+                try:
+                    from genie_space_optimizer.optimization.optimizer import (
+                        _detect_instruction_contradictions,
+                        _ensure_structured,
+                    )
+                    _proposed_secs = _ensure_structured(text, config)
+                    _contradictions = _detect_instruction_contradictions(
+                        _orig_sections, _proposed_secs,
+                    )
+                    if _contradictions:
+                        for _c in _contradictions:
+                            logger.warning(
+                                "Applier safety net: stripping contradictory line "
+                                "from rewrite: '%s' (contradicts '%s')",
+                                _c["proposed_line"][:100],
+                                _c["original_rule"][:100],
+                            )
+                            text = text.replace(_c["proposed_line"], "").strip()
+                except Exception:
+                    logger.debug(
+                        "Applier contradiction check failed — proceeding with rewrite",
+                        exc_info=True,
+                    )
             _set_general_instructions(config, normalize_instructions(text))
             return True
 
@@ -1271,7 +1424,7 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
         if op == "add":
             js = cmd.get("join_spec", {})
             if js:
-                js = ensure_join_spec_fields(js)
+                js = ensure_join_spec_fields(js, config=config)
                 if not _validate_join_spec_entry(js):
                     return False
                 specs.append(js)
@@ -1287,12 +1440,54 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
             lt, rt = cmd.get("left_table", ""), cmd.get("right_table", "")
             new_spec = cmd.get("join_spec", {})
             if new_spec:
-                new_spec = ensure_join_spec_fields(new_spec)
+                new_spec = ensure_join_spec_fields(new_spec, config=config)
                 if not _validate_join_spec_entry(new_spec):
                     return False
             for i, s in enumerate(specs):
                 if _join_spec_left_id(s) == lt and _join_spec_right_id(s) == rt:
                     specs[i] = new_spec
+                    return True
+            return False
+
+    # ── SQL Snippets (Lever 6) ────────────────────────────────────
+    if section == "sql_snippets":
+        from genie_space_optimizer.common.genie_schema import generate_genie_id
+
+        snippet_type_key = cmd.get("snippet_type", "")
+        if snippet_type_key not in ("measures", "filters", "expressions"):
+            return False
+
+        inst = config.setdefault("instructions", {})
+        snippets_block = inst.setdefault("sql_snippets", {})
+        items: list = snippets_block.setdefault(snippet_type_key, [])
+
+        if op == "add":
+            snippet = cmd.get("snippet", {})
+            if not snippet:
+                return False
+            if not snippet.get("id"):
+                snippet["id"] = generate_genie_id()
+            if not _validate_sql_snippet_entry(snippet, snippet_type_key):
+                return False
+            items.append(snippet)
+            return True
+
+        if op == "remove":
+            snippet_id = cmd.get("snippet_id", "")
+            for i, s in enumerate(items):
+                if s.get("id") == snippet_id:
+                    items.pop(i)
+                    return True
+            return False
+
+        if op == "update":
+            snippet_id = cmd.get("snippet_id", "")
+            new_snippet = cmd.get("snippet", {})
+            if new_snippet and not _validate_sql_snippet_entry(new_snippet, snippet_type_key):
+                return False
+            for i, s in enumerate(items):
+                if s.get("id") == snippet_id:
+                    items[i] = new_snippet
                     return True
             return False
 

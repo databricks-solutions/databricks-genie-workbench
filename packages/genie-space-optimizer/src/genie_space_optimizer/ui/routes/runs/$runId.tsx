@@ -80,7 +80,7 @@ const STEP_DESCRIPTIONS: Record<number, string> = {
   1: "Reads the Genie Space configuration and queries Unity Catalog for column metadata, tags, and descriptions.",
   2: "Runs all benchmark questions through the Genie API with 9 evaluation judges to establish the current accuracy baseline.",
   3: "Proactively enriches the Genie Space with descriptions, join paths, metadata, instructions, and example SQLs.",
-  4: "Applies 5 optimization levers (table/column metadata, metric views, TVFs, join specs, instructions) and evaluates each change.",
+  4: "Applies 6 optimization levers (table/column metadata, metric views, TVFs, join specs, instructions, SQL expressions) and evaluates each change.",
   5: "Final evaluation pass on the optimized configuration with repeatability checks to confirm stable improvements.",
   6: "Deploys the optimized configuration to the target environment.",
 };
@@ -902,6 +902,7 @@ function StepInsights({
   if (step.name === "Proactive Enrichment") {
     const proactive = outputs.proactiveChanges as Record<string, unknown> | undefined;
     const totalEnrichments = outputs.totalEnrichments as number | undefined;
+    const totalConfigChanges = outputs.totalConfigChanges as number | undefined;
     const enrichmentSkipped = outputs.enrichmentSkipped as boolean | undefined;
 
     return (
@@ -909,9 +910,18 @@ function StepInsights({
         {enrichmentSkipped && (
           <p className="text-muted">Enrichment skipped (baseline already meets thresholds)</p>
         )}
-        {totalEnrichments != null && (
-          <Badge variant="secondary">Total enrichments: {totalEnrichments}</Badge>
-        )}
+        <div className="flex flex-wrap gap-1.5">
+          {totalEnrichments != null && (
+            <Badge variant="secondary">
+              {totalEnrichments} enrichments
+              {totalConfigChanges != null && totalConfigChanges !== totalEnrichments && (
+                <span className="ml-1 font-normal text-muted">
+                  ({totalConfigChanges} config changes)
+                </span>
+              )}
+            </Badge>
+          )}
+        </div>
         {proactive && Object.keys(proactive).length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {(proactive.descriptionsEnriched as number) > 0 && (
@@ -948,6 +958,11 @@ function StepInsights({
             {(proactive.exampleSqlsMined as number) > 0 && (
               <Badge variant="outline" className="text-[10px] border-violet-200 text-violet-700">
                 Example SQLs: {proactive.exampleSqlsMined as number}
+              </Badge>
+            )}
+            {(proactive.sqlExpressionsSeeded as number) > 0 && (
+              <Badge variant="outline" className="text-[10px] border-violet-200 text-violet-700">
+                SQL expressions: {proactive.sqlExpressionsSeeded as number}
               </Badge>
             )}
           </div>

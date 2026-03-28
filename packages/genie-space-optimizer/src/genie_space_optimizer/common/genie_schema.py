@@ -53,14 +53,40 @@ def generate_genie_id() -> str:
     return f"{hi:016x}{lo:016x}"
 
 
-def ensure_join_spec_fields(spec: dict) -> dict:
-    """Ensure a join spec dict has all required fields (alias, id).
+def _is_metric_view_identifier(identifier: str, config: dict | None = None) -> bool:
+    """Check if a table identifier is a metric view.
+
+    When *config* is provided, checks ``data_sources.metric_views``
+    deterministically.  Falls back to name-prefix heuristic (``mv_``,
+    ``metric_``) when no config is available.
+    """
+    if config:
+        ds = config.get("data_sources", {})
+        if isinstance(ds, dict):
+            mv_identifiers = {
+                (mv.get("identifier") or "").lower()
+                for mv in (ds.get("metric_views", []) or [])
+                if isinstance(mv, dict)
+            }
+            if mv_identifiers:
+                return identifier.lower() in mv_identifiers
+    short = identifier.rsplit(".", 1)[-1].lower() if identifier else ""
+    return short.startswith("mv_") or short.startswith("metric_")
+
+
+def ensure_join_spec_fields(spec: dict, config: dict | None = None) -> dict:
+    """Ensure a join spec dict has all required fields (alias, id, instruction).
 
     Mutates and returns the spec for convenience. Always derives ``alias``
     from the last segment of ``identifier`` (overriding any LLM-provided
     alias to prevent rejected short aliases like ``jt``), and generates a
     new ``id`` when absent.  Also normalises ``sql`` predicates so that
     table references match ``left.alias`` / ``right.alias``.
+
+    When *config* is provided, metric view detection uses
+    ``data_sources.metric_views`` deterministically.  When either side
+    is a metric view and no ``instruction`` is set, auto-populates it
+    with CTE-first guidance to prevent METRIC_VIEW_JOIN_NOT_SUPPORTED.
     """
     for side_key in ("left", "right"):
         side = spec.get(side_key)
@@ -69,6 +95,25 @@ def ensure_join_spec_fields(spec: dict) -> dict:
     if not spec.get("id"):
         spec["id"] = generate_genie_id()
     spec = normalize_join_spec_sql(spec)
+
+    left_id = (spec.get("left") or {}).get("identifier", "")
+    right_id = (spec.get("right") or {}).get("identifier", "")
+    left_is_mv = _is_metric_view_identifier(left_id, config)
+    right_is_mv = _is_metric_view_identifier(right_id, config)
+
+    if (left_is_mv or right_is_mv) and not spec.get("instruction"):
+        mv_name = left_id.rsplit(".", 1)[-1] if left_is_mv else right_id.rsplit(".", 1)[-1]
+        dim_name = right_id.rsplit(".", 1)[-1] if left_is_mv else left_id.rsplit(".", 1)[-1]
+        spec["instruction"] = [
+            f"METRIC VIEW JOIN: Do NOT use a direct JOIN between {mv_name} and {dim_name}. "
+            f"Instead, materialize {mv_name} in a CTE (WITH clause) using MEASURE() and GROUP BY ALL, "
+            f"then JOIN the CTE result to {dim_name}. "
+            f"Direct JOINs on metric views cause METRIC_VIEW_JOIN_NOT_SUPPORTED errors."
+        ]
+
+    if spec.get("instruction") and isinstance(spec["instruction"], str):
+        spec["instruction"] = [spec["instruction"]]
+
     return spec
 
 

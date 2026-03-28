@@ -143,6 +143,7 @@ class TriggerRequest(BaseModel):
     apply_mode: str = "genie_config"
     levers: list[int] | None = None
     deploy_target: str | None = None
+    target_benchmark_count: int | None = None
 
 
 class TriggerResponse(BaseModel):

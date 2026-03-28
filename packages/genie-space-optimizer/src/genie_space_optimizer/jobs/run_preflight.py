@@ -112,6 +112,7 @@
 # COMMAND ----------
 
 import json
+import math
 import traceback
 from functools import partial
 from typing import Any, cast
@@ -119,7 +120,12 @@ from typing import Any, cast
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
 
-from genie_space_optimizer.common.config import MAX_ITERATIONS
+from genie_space_optimizer.common.config import (
+    HELD_OUT_RATIO,
+    MAX_BENCHMARK_COUNT,
+    MAX_ITERATIONS,
+    TARGET_BENCHMARK_COUNT,
+)
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
 from genie_space_optimizer.optimization.harness import _run_preflight
@@ -132,6 +138,9 @@ from genie_space_optimizer.optimization.preflight import (
     preflight_validate_benchmarks,
 )
 from genie_space_optimizer.optimization.state import ensure_optimization_tables, update_run_status
+
+import mlflow
+mlflow.openai.autolog()
 
 dbutils = cast(Any, globals().get("dbutils"))
 
@@ -176,6 +185,7 @@ dbutils.widgets.text("apply_mode", "genie_config")
 dbutils.widgets.text("deploy_target", "")
 dbutils.widgets.text("warehouse_id", "")
 dbutils.widgets.text("triggered_by", "")
+dbutils.widgets.text("target_benchmark_count", "")
 
 run_id = dbutils.widgets.get("run_id")
 space_id = dbutils.widgets.get("space_id")
@@ -188,6 +198,15 @@ levers = json.loads(dbutils.widgets.get("levers") or "[1,2,3,4,5]")
 apply_mode = dbutils.widgets.get("apply_mode") or "genie_config"
 deploy_target = dbutils.widgets.get("deploy_target") or None
 triggered_by = dbutils.widgets.get("triggered_by") or ""
+_target_benchmark_count_raw = dbutils.widgets.get("target_benchmark_count").strip()
+target_benchmark_count = int(_target_benchmark_count_raw) if _target_benchmark_count_raw else None
+
+effective_target = target_benchmark_count or TARGET_BENCHMARK_COUNT
+effective_max = (
+    math.ceil(effective_target / (1 - HELD_OUT_RATIO))
+    if target_benchmark_count
+    else MAX_BENCHMARK_COUNT
+)
 
 _banner("Resolved Widget Inputs")
 _log(
@@ -203,6 +222,7 @@ _log(
     apply_mode=apply_mode,
     deploy_target=deploy_target,
     triggered_by=triggered_by,
+    target_benchmark_count=target_benchmark_count,
 )
 
 # COMMAND ----------
@@ -375,6 +395,8 @@ try:
         space_id=space_id,
         experiment_name=experiment_name,
         warehouse_id=warehouse_id,
+        target_benchmark_count=effective_target,
+        max_benchmark_count=effective_max,
     )
     _benchmarks = ctx_bench["benchmarks"]
     _log("Benchmarks loaded", count=len(_benchmarks), regenerated=ctx_bench["regenerated"])
@@ -401,6 +423,8 @@ try:
         ctx_uc["uc_columns"], ctx_uc["uc_tags"], ctx_uc["uc_routines"],
         _domain,
         warehouse_id=warehouse_id,
+        target_benchmark_count=effective_target,
+        max_benchmark_count=effective_max,
     )
     _benchmarks = ctx_valid["benchmarks"]
     _log("Validation complete", valid=len(_benchmarks), pre_count=ctx_valid["pre_count"],
@@ -434,6 +458,7 @@ try:
         _config, _benchmarks,
         ctx_uc["uc_columns"], ctx_uc["uc_tags"], ctx_uc["uc_routines"],
         _genie_table_refs, experiment_name,
+        max_benchmark_count=effective_max,
     )
     _log("Experiment created",
          experiment=ctx_exp["experiment_name"],
@@ -528,6 +553,7 @@ dbutils.jobs.taskValues.set(key="deploy_target", value=deploy_target or "")
 dbutils.jobs.taskValues.set(key="warehouse_id", value=warehouse_id)
 dbutils.jobs.taskValues.set(key="triggered_by", value=triggered_by)
 dbutils.jobs.taskValues.set(key="human_corrections", value=json.dumps(preflight_out.get("human_corrections", []), default=str))
+dbutils.jobs.taskValues.set(key="max_benchmark_count", value=effective_max)
 
 _log(
     "Task values published",

@@ -225,6 +225,9 @@ if _warehouse_id:
 triggered_by = dbutils.jobs.taskValues.get(taskKey="preflight", key="triggered_by", default="")
 human_corrections = json.loads(dbutils.jobs.taskValues.get(taskKey="preflight", key="human_corrections", default="[]"))
 
+from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
+max_benchmark_count = int(dbutils.jobs.taskValues.get(taskKey="preflight", key="max_benchmark_count", default=str(MAX_BENCHMARK_COUNT)))
+
 scores_json = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="scores")
 prev_scores = json.loads(scores_json)
 prev_accuracy = float(dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="overall_accuracy"))
@@ -238,6 +241,7 @@ enrichment_skipped = str(enrichment_skipped_raw).lower() in ("true", "1")
 
 import mlflow
 mlflow.set_experiment(exp_name)
+mlflow.openai.autolog()
 
 _banner("Resolved Upstream Task Values")
 _log(
@@ -332,6 +336,7 @@ try:
         human_corrections=human_corrections,
         enrichment_done=True,
         enrichment_model_id=enrichment_model_id,
+        max_benchmark_count=max_benchmark_count,
     )
     _log(
         "Lever loop finished",
@@ -368,6 +373,14 @@ dbutils.jobs.taskValues.set(key="model_id", value=loop_out["model_id"])
 dbutils.jobs.taskValues.set(key="iteration_counter", value=loop_out["iteration_counter"])
 dbutils.jobs.taskValues.set(key="best_iteration", value=loop_out["best_iteration"])
 dbutils.jobs.taskValues.set(key="skipped", value=False)
+dbutils.jobs.taskValues.set(
+    key="all_eval_mlflow_run_ids",
+    value=json.dumps(loop_out.get("all_eval_mlflow_run_ids", []), default=str),
+)
+dbutils.jobs.taskValues.set(
+    key="all_failure_question_ids",
+    value=json.dumps(loop_out.get("all_failure_question_ids", []), default=str),
+)
 
 debug_info = {
     k: v for k, v in loop_out.items()

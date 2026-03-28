@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { ProvenancePanel } from "@/components/ProvenancePanel";
+import { PatchGroup } from "@/components/PatchGroup";
 import {
   CheckCircle2,
   Loader2,
@@ -8,6 +9,7 @@ import {
   XCircle,
   Circle,
   Wrench,
+  Sparkles,
 } from "lucide-react";
 
 interface LeverItem {
@@ -127,6 +129,7 @@ function formatDelta(delta: number | null | undefined): React.ReactNode {
 export function LeverProgress({ levers, links = [], runId }: LeverProgressProps) {
   if (!levers.length) return null;
 
+  const isProactiveOnly = levers.every((l) => l.lever === 0);
   const accepted = levers.filter((l) => l.status === "accepted").length;
   const total = levers.length;
 
@@ -134,12 +137,23 @@ export function LeverProgress({ levers, links = [], runId }: LeverProgressProps)
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <h4 className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted">
-          <Wrench className="h-3.5 w-3.5" />
-          Optimization Levers
+          {isProactiveOnly ? (
+            <>
+              <Sparkles className="h-3.5 w-3.5" />
+              Proactive Changes
+            </>
+          ) : (
+            <>
+              <Wrench className="h-3.5 w-3.5" />
+              Optimization Levers
+            </>
+          )}
         </h4>
-        <span className="text-xs text-muted">
-          {accepted}/{total} accepted
-        </span>
+        {!isProactiveOnly && (
+          <span className="text-xs text-muted">
+            {accepted}/{total} accepted
+          </span>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -151,6 +165,7 @@ export function LeverProgress({ levers, links = [], runId }: LeverProgressProps)
           const hasPatchDetails = patches.length > 0;
           const iterations = lever.iterations ?? [];
           const hasIterationDetails = iterations.length > 0;
+          const isLever0 = lever.lever === 0;
 
           return (
             <div
@@ -174,15 +189,17 @@ export function LeverProgress({ levers, links = [], runId }: LeverProgressProps)
                   {lever.name}
                 </span>
 
-                <Badge variant="outline" className={`flex items-center gap-1 ${cfg.className}`}>
-                  {cfg.icon}
-                  {cfg.label}
-                </Badge>
+                {!isLever0 && (
+                  <Badge variant="outline" className={`flex items-center gap-1 ${cfg.className}`}>
+                    {cfg.icon}
+                    {cfg.label}
+                  </Badge>
+                )}
 
                 <div className="ml-auto flex items-center gap-3">
                   {patchCount > 0 && (
                     <span className="text-xs text-muted">
-                      {patchCount} patch{patchCount !== 1 ? "es" : ""}
+                      {patchCount} {isLever0 ? "config changes" : `patch${patchCount !== 1 ? "es" : ""}`}
                     </span>
                   )}
 
@@ -205,32 +222,7 @@ export function LeverProgress({ levers, links = [], runId }: LeverProgressProps)
               {hasPatchDetails && (
                 <div className="space-y-1 border-t border-dashed border-db-gray-border pt-2">
                   <p className="text-xs font-medium text-muted">Changes</p>
-                  {patches.slice(0, 8).map((patch, idx) => (
-                    <div key={idx} className="rounded border bg-white px-2 py-1 text-xs">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Badge variant="secondary">{patch.patchType ?? "patch"}</Badge>
-                        {patch.scope && <span className="text-muted">scope: {patch.scope}</span>}
-                        {patch.riskLevel && <span className="text-muted">risk: {patch.riskLevel}</span>}
-                        {patch.rolledBack && (
-                          <Badge variant="outline" className="border-db-orange/30 text-db-orange">
-                            rolled back
-                          </Badge>
-                        )}
-                      </div>
-                      {patch.targetObject && (
-                        <p className="mt-1 text-muted">target: {patch.targetObject}</p>
-                      )}
-                      {patch.command != null ? (
-                        <pre className="mt-1 max-h-24 overflow-auto rounded bg-elevated/40 p-1 text-[11px]">
-                          {JSON.stringify(patch.command, null, 2)}
-                        </pre>
-                      ) : patch.patch != null ? (
-                        <pre className="mt-1 max-h-24 overflow-auto rounded bg-elevated/40 p-1 text-[11px]">
-                          {JSON.stringify(patch.patch, null, 2)}
-                        </pre>
-                      ) : null}
-                    </div>
-                  ))}
+                  <PatchGroup patches={patches} />
                 </div>
               )}
 
@@ -304,27 +296,7 @@ export function LeverProgress({ levers, links = [], runId }: LeverProgressProps)
                           )}
 
                           {!!iterPatches.length && (
-                            <div className="space-y-1">
-                              {iterPatches.map((patch, idx) => (
-                                <div key={idx} className="rounded border bg-white px-2 py-1">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <Badge variant="secondary">{patch.patchType ?? "patch"}</Badge>
-                                    {patch.targetObject && (
-                                      <span className="text-muted">{patch.targetObject}</span>
-                                    )}
-                                  </div>
-                                  {patch.command != null ? (
-                                    <pre className="mt-1 max-h-24 overflow-auto rounded bg-elevated/40 p-1 text-[11px]">
-                                      {JSON.stringify(patch.command, null, 2)}
-                                    </pre>
-                                  ) : patch.patch != null ? (
-                                    <pre className="mt-1 max-h-24 overflow-auto rounded bg-elevated/40 p-1 text-[11px]">
-                                      {JSON.stringify(patch.patch, null, 2)}
-                                    </pre>
-                                  ) : null}
-                                </div>
-                              ))}
-                            </div>
+                            <PatchGroup patches={iterPatches} />
                           )}
 
                           {!!iter.stageEvents?.length && (

@@ -87,7 +87,7 @@ resources:
         - name: apply_mode
           default: "genie_config"
         - name: levers
-          default: "[1,2,3,4,5]"
+          default: "[1,2,3,4,5,6]"
         - name: max_iterations
           default: "5"
         - name: triggered_by
@@ -115,7 +115,7 @@ resources:
               deploy_target: "{{job.parameters.deploy_target}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
           environment_key: default
-          timeout_seconds: 7200
+          timeout_seconds: 14400
           max_retries: 0
         - task_key: baseline_eval
           depends_on:
@@ -123,7 +123,7 @@ resources:
           notebook_task:
             notebook_path: ./src/genie_space_optimizer/jobs/run_baseline.py
           environment_key: default
-          timeout_seconds: 7200
+          timeout_seconds: 14400
           max_retries: 0
         - task_key: enrichment
           depends_on:
@@ -131,7 +131,7 @@ resources:
           notebook_task:
             notebook_path: ./src/genie_space_optimizer/jobs/run_enrichment.py
           environment_key: default
-          timeout_seconds: 7200
+          timeout_seconds: 14400
           max_retries: 0
         - task_key: lever_loop
           depends_on:
@@ -139,7 +139,7 @@ resources:
           notebook_task:
             notebook_path: ./src/genie_space_optimizer/jobs/run_lever_loop.py
           environment_key: default
-          timeout_seconds: 7200
+          timeout_seconds: 14400
           max_retries: 0
         - task_key: finalize
           depends_on:
@@ -147,7 +147,7 @@ resources:
           notebook_task:
             notebook_path: ./src/genie_space_optimizer/jobs/run_finalize.py
           environment_key: default
-          timeout_seconds: 7200
+          timeout_seconds: 14400
           max_retries: 0
         - task_key: deploy
           depends_on:
@@ -155,7 +155,7 @@ resources:
           notebook_task:
             notebook_path: ./src/genie_space_optimizer/jobs/run_deploy.py
           environment_key: default
-          timeout_seconds: 7200
+          timeout_seconds: 14400
           max_retries: 0
       environments:
         - environment_key: default
@@ -165,6 +165,8 @@ resources:
               - .build/genie_space_optimizer-0.0.0-py3-none-any.whl
               - "mlflow[databricks]>=3.10.1"
               - "databricks-sdk>=0.40.0"
+              - "openai>=1.17"
+              - "litellm"
       permissions:
         - group_name: "users"
           level: "CAN_VIEW"
