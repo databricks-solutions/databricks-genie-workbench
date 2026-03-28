@@ -15,6 +15,7 @@ const LEVER_NAMES: Record<number, string> = {
   3: "TVFs",
   4: "Joins",
   5: "Instructions",
+  6: "SQL Expressions",
 }
 
 const STATUS_COLORS: Record<string, "success" | "danger" | "warning" | "secondary" | "info"> = {

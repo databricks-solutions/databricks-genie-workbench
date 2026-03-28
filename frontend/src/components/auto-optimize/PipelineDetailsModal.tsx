@@ -283,7 +283,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                               const bestAccuracy = Math.max(...iterations.filter(i => i.iteration > 0).map(i => i.overall_accuracy))
                               const isBest = !isBaseline && it.overall_accuracy === bestAccuracy
                               const LEVER_NAMES: Record<number, string> = {
-                                1: "Tables & Columns", 2: "Metric Views", 3: "TVFs", 4: "Joins", 5: "Instructions",
+                                1: "Tables & Columns", 2: "Metric Views", 3: "TVFs", 4: "Joins", 5: "Instructions", 6: "SQL Expressions",
                               }
                               return (
                                 <tr

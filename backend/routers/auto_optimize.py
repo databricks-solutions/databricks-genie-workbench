@@ -29,7 +29,8 @@ router = APIRouter(prefix="/api/auto-optimize")
 # Lightweight column list for iterations queries — excludes rows_json (megabytes per row)
 _ITER_COLS = (
     "iteration, eval_scope, overall_accuracy, total_questions, correct_count, "
-    "scores_json, failures_json, thresholds_met, lever, repeatability_pct, reflection_json"
+    "scores_json, failures_json, thresholds_met, lever, repeatability_pct, "
+    "reflection_json, mlflow_run_id"
 )
 
 # Lever names — matches GSO common/config.py
@@ -40,6 +41,7 @@ LEVER_NAMES: dict[int, str] = {
     3: "Table-Valued Functions",
     4: "Join Specifications",
     5: "Genie Space Instructions",
+    6: "SQL Expressions",
 }
 
 _TERMINAL_RUN_STATUSES = {
@@ -843,10 +845,15 @@ async def trigger(body: TriggerRequest, request: Request):
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
-        # Active run already exists for this space
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        msg = str(e)
+        if "already in progress" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        logger.exception("Trigger optimization failed: %s", e)
+        raise HTTPException(status_code=500, detail=msg)
     except Exception as e:
-        logger.exception(f"Failed to trigger optimization: {e}")
+        logger.exception("Failed to trigger optimization: %s", e)
         raise HTTPException(status_code=500, detail="Failed to start optimization job.")
 
 
@@ -1209,8 +1216,12 @@ async def apply_run(run_id: str):
     try:
         result = apply_optimization(run_id, ws, config)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        logger.exception(f"Failed to apply optimization {run_id}: {e}")
+        logger.exception("Failed to apply optimization %s: %s", run_id, e)
         raise HTTPException(status_code=500, detail="Failed to apply optimization.")
 
 
@@ -1224,8 +1235,10 @@ async def discard_run(run_id: str):
     try:
         result = discard_optimization(run_id, ws, sp_ws, config)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
-        logger.exception(f"Failed to discard optimization {run_id}: {e}")
+        logger.exception("Failed to discard optimization %s: %s", run_id, e)
         raise HTTPException(status_code=500, detail="Failed to discard optimization.")
 
 

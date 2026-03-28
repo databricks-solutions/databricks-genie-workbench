@@ -21,6 +21,7 @@ const LEVER_NAMES: Record<number, string> = {
   3: "TVFs",
   4: "Joins",
   5: "Instructions",
+  6: "SQL Expressions",
 }
 
 interface ChartPoint {
