@@ -135,7 +135,14 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
           const maxIter = Math.max(...fullIters.map((it) => it.iteration))
           latestIterRef.current = maxIter
 
-          // Try ASI results first (per-judge failure analysis)
+          // Prefer question-results (rows_json) — has full question text, SQL, and arbiter-adjusted pass/fail
+          const questionResults = await getAutoOptimizeQuestionResults(activeRunId!, maxIter)
+          if (questionResults && questionResults.length > 0) {
+            setQuestions(questionResults)
+            return
+          }
+
+          // Fallback: ASI results (lightweight, available before rows_json is written)
           const asiResults = await getAutoOptimizeAsiResults(activeRunId!, maxIter)
           if (asiResults && asiResults.length > 0) {
             const seen = new Map<string, typeof asiResults[0]>()
@@ -154,13 +161,6 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
                 match_type: null,
               }))
             )
-            return
-          }
-
-          // Fallback: use question-results (from rows_json in iterations table)
-          const questionResults = await getAutoOptimizeQuestionResults(activeRunId!, maxIter)
-          if (questionResults && questionResults.length > 0) {
-            setQuestions(questionResults)
           }
         })
         .catch(() => {})

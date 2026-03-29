@@ -1,7 +1,9 @@
 import { useState } from "react"
 import { Badge } from "@/components/ui/badge"
 import { ChevronDown, Wrench, CheckCircle2, XCircle, GitBranch } from "lucide-react"
-import type { GSOLeverStatus, GSOPatchDetail, GSOLeverIteration } from "@/types"
+import { ProactiveEnrichmentView } from "@/components/auto-optimize/ProactiveEnrichmentView"
+import { SmartPatchCard } from "@/components/auto-optimize/SmartPatchCard"
+import type { GSOLeverStatus, GSOLeverIteration } from "@/types"
 
 interface OptimizationLeversProps {
   levers: GSOLeverStatus[]
@@ -17,46 +19,6 @@ const STATUS_BADGE: Record<string, { variant: "success" | "danger" | "warning" |
   pending: { variant: "secondary", label: "Pending" },
 }
 
-function PatchCard({ patch }: { patch: GSOPatchDetail }) {
-  const commandStr = patch.command
-    ? typeof patch.command === "string"
-      ? patch.command
-      : JSON.stringify(patch.command)
-    : null
-
-  return (
-    <div className="rounded-lg border border-default bg-surface p-3 space-y-1.5">
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="inline-flex items-center rounded-md border border-accent/30 bg-accent/10 px-2 py-0.5 text-xs font-mono font-medium text-accent">
-          {patch.patchType}
-        </span>
-        <span className="text-xs text-muted">scope: {patch.scope}</span>
-        <span className="text-xs text-muted">risk: {patch.riskLevel}</span>
-        {patch.rolledBack && (
-          <Badge variant="danger" className="text-[10px] py-0 px-1.5">rolled back</Badge>
-        )}
-      </div>
-      {patch.targetObject && (
-        <p className="text-xs text-muted font-mono">target: {patch.targetObject}</p>
-      )}
-      {commandStr && (
-        <div className="relative">
-          <p className="text-xs font-mono text-muted/80 bg-elevated/50 rounded px-2 py-1.5 overflow-hidden max-h-16 line-clamp-3">
-            {commandStr}
-          </p>
-          {commandStr.length > 200 && (
-            <div className="mt-1 h-1.5 rounded-full bg-elevated overflow-hidden">
-              <div
-                className="h-full rounded-full bg-accent/60"
-                style={{ width: `${Math.min(100, (200 / commandStr.length) * 100)}%` }}
-              />
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
 
 function IterationRow({ iteration }: { iteration: GSOLeverIteration }) {
   const badge = STATUS_BADGE[iteration.status] ?? STATUS_BADGE.pending
@@ -107,12 +69,17 @@ function LeverCard({ lever }: { lever: GSOLeverStatus }) {
               ? lever.patches
               : lever.iterations.flatMap((it) => it.patches ?? [])
             if (allPatches.length === 0) return null
+
+            if (lever.lever === 0) {
+              return <ProactiveEnrichmentView patches={allPatches} />
+            }
+
             return (
               <div className="space-y-1.5">
                 <p className="text-xs font-medium text-muted">Changes</p>
                 <div className="space-y-2">
                   {allPatches.map((patch, i) => (
-                    <PatchCard key={i} patch={patch} />
+                    <SmartPatchCard key={i} patch={patch} />
                   ))}
                 </div>
               </div>

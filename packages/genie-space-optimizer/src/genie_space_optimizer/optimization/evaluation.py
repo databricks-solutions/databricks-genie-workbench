@@ -1350,10 +1350,14 @@ def _precheck_benchmarks_for_eval(
 
         try:
             if w and warehouse_id:
-                _execute_sql_via_warehouse(
+                explain_df = _execute_sql_via_warehouse(
                     w, warehouse_id, f"EXPLAIN {resolved_sql}",
                     catalog=catalog, schema=gold_schema,
                 )
+                if not explain_df.empty and "plan" in explain_df.columns:
+                    plan_text = "\n".join(str(v) for v in explain_df["plan"].tolist())
+                    if "Error occurred during query planning" in plan_text:
+                        raise RuntimeError(plan_text)
             else:
                 _set_sql_context(spark, catalog, gold_schema)
                 spark.sql(f"EXPLAIN {resolved_sql}")
