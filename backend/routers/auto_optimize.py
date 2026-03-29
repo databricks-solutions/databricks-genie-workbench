@@ -9,7 +9,9 @@ import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from backend.routers._validators import RunId, SpaceId
 
 from backend.services.auth import get_workspace_client, get_service_principal_client, get_databricks_host
 from backend.services import gso_lakebase
@@ -55,7 +57,7 @@ _TERMINAL_RUN_STATUSES = {
 # ---------------------------------------------------------------------------
 
 class TriggerRequest(BaseModel):
-    space_id: str
+    space_id: str = Field(..., pattern=r"^[0-9a-zA-Z_-]{1,128}$")
     apply_mode: str = "genie_config"
     levers: list[int] | None = None
     deploy_target: str | None = None
@@ -713,7 +715,7 @@ async def health():
 
 
 @router.get("/permissions/{space_id}")
-async def check_permissions(space_id: str):
+async def check_permissions(space_id: SpaceId):
     """Pre-check SP permissions for a Genie Space before optimization."""
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
@@ -983,7 +985,7 @@ def _map_stages_to_steps(
 
 
 @router.get("/runs/{run_id}")
-async def get_run(run_id: str):
+async def get_run(run_id: RunId):
     """Get full run detail including stages, iterations, levers, and patches."""
     run = await gso_lakebase.load_gso_run(run_id)
     if not run and _is_configured():
@@ -1167,7 +1169,7 @@ async def get_run(run_id: str):
 
 
 @router.get("/runs/{run_id}/status")
-async def get_run_status(run_id: str):
+async def get_run_status(run_id: RunId):
     """Lightweight status poll endpoint."""
     run = await gso_lakebase.load_gso_run(run_id)
     if not run and _is_configured():
@@ -1265,7 +1267,7 @@ async def list_levers():
 
 
 @router.post("/runs/{run_id}/apply")
-async def apply_run(run_id: str):
+async def apply_run(run_id: RunId):
     """Apply an optimization run's results to the Genie Space."""
     ws = get_workspace_client()
     config = _build_gso_config()
@@ -1283,7 +1285,7 @@ async def apply_run(run_id: str):
 
 
 @router.post("/runs/{run_id}/discard")
-async def discard_run(run_id: str):
+async def discard_run(run_id: RunId):
     """Discard an optimization run and rollback to pre-optimization state."""
     ws = get_workspace_client()
     sp_ws = get_service_principal_client()
@@ -1300,7 +1302,7 @@ async def discard_run(run_id: str):
 
 
 @router.get("/spaces/{space_id}/active-run")
-async def get_active_run(space_id: str):
+async def get_active_run(space_id: SpaceId):
     """Check for an active optimization run by querying the authoritative Delta table.
 
     Reconciles zombie runs first (same as trigger.py), then returns active run info.
@@ -1384,13 +1386,13 @@ async def load_runs_with_fallback(space_id: str) -> list[dict]:
 
 
 @router.get("/spaces/{space_id}/runs")
-async def list_runs_for_space(space_id: str):
+async def list_runs_for_space(space_id: SpaceId):
     """List past optimization runs for a space."""
     return await load_runs_with_fallback(space_id)
 
 
 @router.get("/runs/{run_id}/iterations")
-async def list_iterations(run_id: str):
+async def list_iterations(run_id: RunId):
     """Get per-iteration evaluation details for a run (excludes rows_json for performance)."""
     iterations = await gso_lakebase.load_gso_iterations(run_id)
     if not iterations and _is_configured():
@@ -1409,7 +1411,7 @@ async def list_iterations(run_id: str):
 
 
 @router.get("/runs/{run_id}/debug-data")
-async def debug_data(run_id: str):
+async def debug_data(run_id: RunId):
     """Diagnostic: inspect raw data sources for patches and iterations."""
     config = _build_gso_config()
     diag: dict = {
@@ -1508,7 +1510,7 @@ async def debug_data(run_id: str):
 
 
 @router.get("/runs/{run_id}/asi-results")
-async def list_asi_results(run_id: str, iteration: int = Query(..., description="Iteration number")):
+async def list_asi_results(run_id: RunId, iteration: int = Query(..., description="Iteration number")):
     """Get per-judge ASI failure analysis for a specific iteration."""
     results = await gso_lakebase.load_gso_asi_results(run_id, iteration)
     if not results and _is_configured():
@@ -1520,7 +1522,7 @@ async def list_asi_results(run_id: str, iteration: int = Query(..., description=
 
 
 @router.get("/runs/{run_id}/question-results")
-async def list_question_results(run_id: str, iteration: int = Query(..., description="Iteration number")):
+async def list_question_results(run_id: RunId, iteration: int = Query(..., description="Iteration number")):
     """Get per-question results (question text + SQL) for a specific iteration."""
 
     # Try full-scope first, then fall back to any scope
@@ -1547,7 +1549,7 @@ async def list_question_results(run_id: str, iteration: int = Query(..., descrip
 
 
 @router.get("/runs/{run_id}/patches")
-async def list_patches(run_id: str):
+async def list_patches(run_id: RunId):
     """Get all optimization patches for a run."""
     patches = await gso_lakebase.load_gso_patches(run_id)
     if not patches and _is_configured():
@@ -1559,7 +1561,7 @@ async def list_patches(run_id: str):
 
 
 @router.get("/runs/{run_id}/suggestions")
-async def list_suggestions(run_id: str):
+async def list_suggestions(run_id: RunId):
     """Get strategist improvement suggestions for a run."""
     suggestions = await gso_lakebase.load_gso_suggestions(run_id)
     if not suggestions and _is_configured():

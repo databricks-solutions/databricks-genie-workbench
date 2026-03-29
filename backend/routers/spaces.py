@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 import json
 
+from backend.routers._validators import SpaceId
+
 from backend.services.auth import get_workspace_client, get_service_principal_client
 from backend.services.genie_client import list_genie_spaces, _is_scope_error
 from backend.services.lakebase import (
@@ -120,7 +122,7 @@ async def list_spaces(
 
 
 @router.get("/spaces/{space_id}")
-async def get_space_detail(space_id: str) -> dict:
+async def get_space_detail(space_id: SpaceId) -> dict:
     """Get space details with latest scan result."""
     try:
         client = get_workspace_client()
@@ -161,7 +163,7 @@ async def get_space_detail(space_id: str) -> dict:
 
 
 @router.post("/spaces/{space_id}/scan")
-async def trigger_scan(space_id: str) -> ScanResult:
+async def trigger_scan(space_id: SpaceId) -> ScanResult:
     """Trigger an IQ scan for a Genie Space and persist results."""
     try:
         scan_data = await scan_space(space_id)
@@ -186,7 +188,7 @@ async def trigger_scan(space_id: str) -> ScanResult:
 
 @router.get("/spaces/{space_id}/history")
 async def get_history(
-    space_id: str,
+    space_id: SpaceId,
     days: int = Query(30, ge=1, le=365),
 ) -> dict:
     """Get unified score + optimization history for a Genie Space."""
@@ -213,7 +215,7 @@ async def get_history(
 
 
 @router.put("/spaces/{space_id}/star")
-async def toggle_star(space_id: str, request: StarToggleRequest) -> dict:
+async def toggle_star(space_id: SpaceId, request: StarToggleRequest) -> dict:
     """Toggle star status for a Genie Space."""
     try:
         await star_space(space_id, request.starred)
@@ -224,7 +226,7 @@ async def toggle_star(space_id: str, request: StarToggleRequest) -> dict:
 
 
 @router.post("/spaces/{space_id}/fix")
-async def run_fix_agent(space_id: str, request: FixRequest):
+async def run_fix_agent(space_id: SpaceId, request: FixRequest):
     """Run the AI fix agent on a space. Returns SSE stream."""
     from backend.services.fix_agent import get_fix_agent
 
