@@ -1,10 +1,10 @@
 /**
  * SpaceList - Org-wide Genie Space listing with IQ scores.
  */
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { Star, RefreshCw, Search, LayoutGrid, AlertTriangle, Zap, Plus, ExternalLink, Filter } from "lucide-react"
 import { listSpaces, scanSpace, toggleStar } from "@/lib/api"
-import { MATURITY_COLORS } from "@/lib/utils"
+import { MATURITY_COLORS, getAccuracyBadgeClass } from "@/lib/utils"
 import type { SpaceListItem, ScanResult } from "@/types"
 import { WelcomeHero } from "@/components/WelcomeHero"
 
@@ -21,6 +21,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
   const [starredOnly, setStarredOnly] = useState(false)
   const [scanning, setScanning] = useState<Set<string>>(new Set())
   const [maturityFilter, setMaturityFilter] = useState<Set<string>>(new Set())
+  const [hasLoaded, setHasLoaded] = useState(false)
 
   const toggleMaturityFilter = (value: string) => {
     setMaturityFilter(prev => {
@@ -31,9 +32,12 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
     })
   }
 
-  const filteredSpaces = maturityFilter.size === 0
-    ? spaces
-    : spaces.filter(s => maturityFilter.has(s.maturity ?? "Unscanned"))
+  const filteredSpaces = useMemo(() =>
+    maturityFilter.size === 0
+      ? spaces
+      : spaces.filter(s => maturityFilter.has(s.maturity ?? "Unscanned")),
+    [spaces, maturityFilter]
+  )
 
   const loadSpaces = useCallback(async () => {
     setLoading(true)
@@ -51,6 +55,10 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
   useEffect(() => {
     loadSpaces()
   }, [loadSpaces])
+
+  useEffect(() => {
+    if (!loading && !hasLoaded) setHasLoaded(true)
+  }, [loading, hasLoaded])
 
   const handleScan = async (e: React.MouseEvent, spaceId: string) => {
     e.stopPropagation()
@@ -184,7 +192,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 animate-stagger">
+        <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4${hasLoaded ? "" : " animate-stagger"}`}>
           {filteredSpaces.map(space => (
             <div
               key={space.space_id}
@@ -212,15 +220,7 @@ export function SpaceList({ onSelectSpace, onCreateSpace }: SpaceListProps) {
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${MATURITY_COLORS[space.maturity ?? ""]?.badge ?? "bg-elevated text-muted border-default"}`}>
                         {space.score}/12 · {space.maturity}
                       </span>
-                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
-                        space.optimization_accuracy != null
-                          ? space.optimization_accuracy >= 0.85
-                            ? "border-emerald-500/30 bg-emerald-500/20 text-emerald-400"
-                            : space.optimization_accuracy >= 0.61
-                              ? "border-amber-500/30 bg-amber-500/20 text-amber-400"
-                              : "border-red-500/30 bg-red-500/20 text-red-400"
-                          : "border-default bg-elevated text-muted"
-                      }`}>
+                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${getAccuracyBadgeClass(space.optimization_accuracy)}`}>
                         {space.optimization_accuracy != null
                           ? `${Math.round(space.optimization_accuracy * 100)}% acc.`
                           : "Not optimized"}
