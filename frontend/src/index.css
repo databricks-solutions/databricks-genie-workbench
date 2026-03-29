@@ -711,3 +711,78 @@ button:disabled,
 .gradient-primary {
   background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-light) 100%);
 }
+
+/* ==========================================================================
+   GRADIENT TEXT
+   ========================================================================== */
+
+.text-gradient {
+  background: linear-gradient(135deg, var(--color-accent) 0%, var(--color-accent-light) 40%, var(--color-cyan) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.dark .text-gradient {
+  background: linear-gradient(135deg, var(--color-accent-light) 0%, #C4B5FD 40%, var(--color-cyan-light) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ==========================================================================
+   HERO BACKGROUNDS
+   ========================================================================== */
+
+.hero-mesh {
+  background:
+    radial-gradient(ellipse 60% 50% at 15% 50%, rgba(79, 70, 229, 0.08) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 60% at 85% 30%, rgba(6, 182, 212, 0.06) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 40% at 60% 90%, rgba(245, 158, 11, 0.03) 0%, transparent 70%),
+    var(--bg-surface);
+}
+
+.dark .hero-mesh {
+  background:
+    radial-gradient(ellipse 60% 50% at 15% 50%, rgba(79, 70, 229, 0.2) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 60% at 85% 30%, rgba(6, 182, 212, 0.12) 0%, transparent 70%),
+    radial-gradient(ellipse 40% 40% at 60% 90%, rgba(251, 191, 36, 0.04) 0%, transparent 70%),
+    var(--bg-surface);
+}
+
+.hero-grid {
+  background-image:
+    linear-gradient(var(--text-primary) 1px, transparent 1px),
+    linear-gradient(90deg, var(--text-primary) 1px, transparent 1px);
+  background-size: 48px 48px;
+  opacity: 0.02;
+}
+
+.dark .hero-grid {
+  opacity: 0.03;
+}
+
+/* ==========================================================================
+   HEADER ACCENT LINE
+   ========================================================================== */
+
+@keyframes gradientShift {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.header-accent-line {
+  height: 2px;
+  background: linear-gradient(90deg,
+    var(--color-accent),
+    var(--color-cyan),
+    var(--color-accent-light),
+    var(--color-accent)
+  );
+  background-size: 300% 100%;
+  animation: gradientShift 8s ease-in-out infinite;
+}

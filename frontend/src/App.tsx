@@ -120,7 +120,7 @@ export default function App() {
     <ErrorBoundary>
     <div className="min-h-screen bg-background text-primary">
       {/* Top header */}
-      <header className="sticky top-0 z-50 border-b border-default bg-surface/80 backdrop-blur-sm">
+      <header className="sticky top-0 z-50 bg-surface/80 backdrop-blur-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
           {/* Logo + title */}
           <div className="flex items-center gap-3">
@@ -163,6 +163,7 @@ export default function App() {
 
           <ThemeToggle />
         </div>
+        <div className="header-accent-line" />
       </header>
 
       {/* Main content */}
