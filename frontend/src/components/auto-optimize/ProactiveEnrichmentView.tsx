@@ -234,7 +234,7 @@ function SectionRenderer({ sectionKey, patches }: { sectionKey: string; patches:
 export function ProactiveEnrichmentView({ patches }: ProactiveEnrichmentViewProps) {
   const grouped = SECTIONS.map((section) => ({
     ...section,
-    patches: patches.filter((p) => section.types.includes(p.patchType)),
+    patches: patches.filter((p) => (section.types as readonly string[]).includes(p.patchType)),
   })).filter((s) => s.patches.length > 0)
 
   if (grouped.length === 0) {
