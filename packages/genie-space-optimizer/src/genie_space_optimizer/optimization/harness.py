@@ -34,6 +34,7 @@ from databricks.sdk import WorkspaceClient
 from genie_space_optimizer.common.config import (
     APPLY_MODE,
     ARBITER_CORRECTION_TRIGGER,
+    CONSECUTIVE_ESCALATION_LIMIT,
     CONSECUTIVE_ROLLBACK_LIMIT,
     DEFAULT_LEVER_ORDER,
     DEFAULT_THRESHOLDS,
@@ -3183,6 +3184,7 @@ def _handle_escalation(
         _corr_result = _run_arbiter_corrections(
             w, spark, run_id, catalog, schema, domain,
             force_adopt_qids=set(affected) if affected else None,
+            data_profile=metadata_snapshot.get("_data_profile"),
         )
         _total_corrections = (
             _corr_result.get("gc_applied", 0)
@@ -3194,6 +3196,31 @@ def _handle_escalation(
         result["detail"]["nc_repaired"] = _corr_result.get("nc_repaired", 0)
         result["detail"]["corrected_qids"] = sorted(_corr_result.get("corrected_qids", set()))
         result["detail"]["quarantined_qids"] = sorted(_corr_result.get("quarantined_qids", set()))
+
+        if _total_corrections == 0 and affected:
+            _unfixed_qids = [
+                q for q in affected
+                if q not in _corr_result.get("corrected_qids", set())
+                and q not in _corr_result.get("quarantined_qids", set())
+            ]
+            if _unfixed_qids:
+                _root_cause = ag.get("root_cause_summary", "Ground truth SQL may be incorrect")
+                flag_for_human_review(
+                    spark, run_id, catalog, schema, domain,
+                    [{
+                        "question_id": q,
+                        "question_text": "",
+                        "reason": f"GT_REPAIR_UNRESOLVED: {_root_cause[:200]}",
+                        "iterations_failed": 0,
+                        "patches_tried": "gt_repair (arbiter corrections failed)",
+                    } for q in _unfixed_qids],
+                )
+                result["detail"]["flagged_for_review"] = len(_unfixed_qids)
+                logger.info(
+                    "gt_repair: flagged %d questions for human review "
+                    "(arbiter could not fix)",
+                    len(_unfixed_qids),
+                )
 
     elif escalation == "flag_for_review":
         flag_for_human_review(
@@ -3378,6 +3405,7 @@ def _run_arbiter_corrections(
     already_repaired: set[str] | None = None,
     quarantined_qids: set[str] | None = None,
     force_adopt_qids: set[str] | None = None,
+    data_profile: dict | None = None,
 ) -> dict:
     """Run the full cross-iteration arbiter correction pipeline.
 
@@ -3425,7 +3453,10 @@ def _run_arbiter_corrections(
                 f"(confirmed in {ac.get('confirmation_count', '?')} evals)"
             )
 
-        result = apply_benchmark_corrections(gc_actions, spark, uc_schema, domain)
+        result = apply_benchmark_corrections(
+            gc_actions, spark, uc_schema, domain,
+            data_profile=data_profile,
+        )
         gc_applied = result["applied"]
         gc_skipped = result["skipped"]
         print(
@@ -3489,6 +3520,7 @@ def _run_arbiter_corrections(
                     }]
                     repair_result = apply_benchmark_corrections(
                         repair_actions, spark, uc_schema, domain,
+                        data_profile=data_profile,
                     )
                     if repair_result["applied"] > 0:
                         print(f"      -> Repair succeeded: {repaired_sql[:80]}")
@@ -3522,6 +3554,7 @@ def _analyze_and_distribute(
     *,
     verbose: bool = True,
     quarantined_qids: set[str] | None = None,
+    exclude_qids: set[str] | None = None,
 ) -> dict:
     """Analyze failures once, cluster, and distribute clusters to levers.
 
@@ -3540,6 +3573,7 @@ def _analyze_and_distribute(
 
     failure_rows = _get_failure_rows(spark, run_id, catalog, schema)
     _quarantined = quarantined_qids or set()
+    _exclude = exclude_qids or set()
 
     _NON_ACTIONABLE_VERDICTS = {"genie_correct", "both_correct"}
     arbiter_counts: dict[str, int] = {}
@@ -3555,6 +3589,9 @@ def _analyze_and_distribute(
 
         if qid in _quarantined:
             quarantine_excluded.append(qid)
+            continue
+
+        if qid in _exclude:
             continue
 
         if av in _NON_ACTIONABLE_VERDICTS:
@@ -4601,6 +4638,7 @@ def _run_lever_loop(
         already_corrected=_correction_state["corrected_qids"],
         already_repaired=_correction_state["repaired_qids"],
         quarantined_qids=_correction_state["quarantined_qids"],
+        data_profile=metadata_snapshot.get("_data_profile"),
     )
     _correction_state["corrected_qids"] = _pre_loop_corr["corrected_qids"]
     _correction_state["quarantined_qids"] = _pre_loop_corr["quarantined_qids"]
@@ -4652,6 +4690,7 @@ def _run_lever_loop(
     ags_attempted: list[str] = []
     ags_accepted: list[str] = []
     ags_rolled_back: list[str] = []
+    escalated_gt_repair_qids: set[str] = set()
     noise_floor = min(100.0 / max(len(benchmarks), 1), MAX_NOISE_FLOOR)
 
     reflection_buffer: list[dict] = resume_state.get("reflection_buffer", [])
@@ -4685,6 +4724,35 @@ def _run_lever_loop(
             )
             break
 
+        _consecutive_esc = 0
+        _last_esc_type: str | None = None
+        for _esc_entry in reversed(reflection_buffer):
+            if not _esc_entry.get("escalation_handled"):
+                break
+            _esc_reason = _esc_entry.get("rollback_reason", "")
+            if _last_esc_type is None:
+                _last_esc_type = _esc_reason
+            if _esc_reason == _last_esc_type:
+                _consecutive_esc += 1
+            else:
+                break
+        if _consecutive_esc >= CONSECUTIVE_ESCALATION_LIMIT:
+            logger.info(
+                "Consecutive escalation limit (%d) reached for '%s' — "
+                "stopping at iteration %d",
+                CONSECUTIVE_ESCALATION_LIMIT, _last_esc_type, _iter_num,
+            )
+            write_stage(
+                spark, run_id, "LEVER_LOOP_ESCALATION_EXIT", "COMPLETE",
+                task_key="lever_loop", iteration=iteration_counter,
+                detail={
+                    "consecutive_escalations": _consecutive_esc,
+                    "escalation_type": _last_esc_type,
+                },
+                catalog=catalog, schema=schema,
+            )
+            break
+
         iteration_counter += 1
 
         # ── 3B.1b: Per-iteration arbiter corrections ─────────────────
@@ -4693,6 +4761,7 @@ def _run_lever_loop(
             already_corrected=_correction_state["corrected_qids"],
             already_repaired=_correction_state["repaired_qids"],
             quarantined_qids=_correction_state["quarantined_qids"],
+            data_profile=metadata_snapshot.get("_data_profile"),
         )
         _correction_state["corrected_qids"] = _iter_corr["corrected_qids"]
         _correction_state["quarantined_qids"] = _iter_corr["quarantined_qids"]
@@ -4702,6 +4771,7 @@ def _run_lever_loop(
             spark, run_id, catalog, schema, metadata_snapshot,
             iteration_counter - 1, lever_label=0,
             quarantined_qids=_correction_state["quarantined_qids"],
+            exclude_qids=escalated_gt_repair_qids,
         )
         clusters = _analysis["all_clusters"]
         soft_signal_clusters = _analysis["soft_signal_clusters"]
@@ -5037,6 +5107,12 @@ def _run_lever_loop(
                         escalation_handled=True,
                     ))
                 else:
+                    _unfixed = set(ag.get("affected_questions", [])) - set(
+                        _esc_result.get("detail", {}).get("corrected_qids", [])
+                    ) - set(
+                        _esc_result.get("detail", {}).get("quarantined_qids", [])
+                    )
+                    escalated_gt_repair_qids.update(_unfixed)
                     reflection_buffer.append(_build_reflection_entry(
                         iteration=iteration_counter, ag_id=ag_id, accepted=False,
                         levers=[], target_objects=ag.get("affected_questions", []),
@@ -6804,6 +6880,51 @@ def optimize_genie_space(
                 spark, run_id_str, catalog, schema,
                 status="CONVERGED",
                 convergence_reason="baseline_meets_thresholds",
+            )
+        elif prev_accuracy >= 99.0 and not thresholds_met:
+            _ao_qids = baseline_out.get("arbiter_overridden_qids", [])
+            _ss_qids = baseline_out.get("soft_signal_qids", [])
+            logger.warning(
+                "ARBITER-SATURATED: accuracy=%.1f%% but thresholds not met. "
+                "%d arbiter-overridden, %d soft-signal questions. "
+                "The lever loop cannot improve further — flagging for human review.",
+                prev_accuracy, len(_ao_qids), len(_ss_qids),
+            )
+            _review_items = []
+            for _aq in _ao_qids:
+                _review_items.append({
+                    "question_id": _aq,
+                    "question_text": "",
+                    "reason": "ARBITER_SATURATED: arbiter overrode judge failures; "
+                              "ground truth may need manual review",
+                    "iterations_failed": 0,
+                    "patches_tried": "none (arbiter-saturated baseline)",
+                })
+            if _review_items:
+                from genie_space_optimizer.optimization.labeling import flag_for_human_review
+                flag_for_human_review(
+                    spark, run_id_str, catalog, schema, domain, _review_items,
+                )
+            result.status = "CONVERGED"
+            result.convergence_reason = "arbiter_saturated"
+            result.best_accuracy = prev_accuracy
+            result.best_model_id = model_id
+            result.final_scores = prev_scores
+            write_stage(
+                spark, run_id_str, "ARBITER_SATURATED_EXIT", "COMPLETE",
+                task_key="lever_loop", catalog=catalog, schema=schema,
+                detail={
+                    "baseline_accuracy": prev_accuracy,
+                    "arbiter_overridden_count": len(_ao_qids),
+                    "soft_signal_count": len(_ss_qids),
+                    "thresholds_met": False,
+                    "scores": prev_scores,
+                },
+            )
+            update_run_status(
+                spark, run_id_str, catalog, schema,
+                status="CONVERGED",
+                convergence_reason="arbiter_saturated",
             )
         else:
             # Stage 2.5: Proactive Enrichment

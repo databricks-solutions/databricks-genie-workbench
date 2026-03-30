@@ -85,7 +85,10 @@ _SCORER_FEEDBACK_CACHE: dict[tuple[str, str], dict] = {}
 
 _REGISTERED_PROMPT_NAMES: dict[str, str] = {}
 
-_PROVENANCE_PRIORITY = ["curated", "synthetic", "auto_corrected", "coverage_gap_fill"]
+_PROVENANCE_PRIORITY = [
+    "curated", "curated_sql_generated", "reused", "synthetic",
+    "auto_corrected", "coverage_gap_fill",
+]
 
 
 def _truncate_benchmarks(benchmarks: list[dict], max_count: int) -> list[dict]:
@@ -3865,6 +3868,43 @@ def run_evaluation(
             )
         )
 
+        _arbiter_overridden_qids: list[str] = []
+        _soft_signal_qids: list[str] = []
+        for _ao_row in rows_for_output:
+            _ao_rc = str(
+                _ao_row.get("result_correctness/value", _ao_row.get("result_correctness", ""))
+            ).lower()
+            _ao_av = str(
+                _ao_row.get("arbiter/value", _ao_row.get("arbiter", "skipped"))
+            ).lower()
+            _ao_rq = _ao_row.get("request") or {}
+            if isinstance(_ao_rq, str):
+                try:
+                    _ao_rq = json.loads(_ao_rq)
+                except (json.JSONDecodeError, TypeError):
+                    _ao_rq = {}
+            _ao_kw = _ao_rq.get("kwargs", {}) if isinstance(_ao_rq, dict) else {}
+            _ao_qid = str(
+                _ao_row.get("inputs/question_id")
+                or (_ao_row.get("inputs") or {}).get("question_id", "")
+                or _ao_row.get("question_id")
+                or _ao_kw.get("question_id")
+                or (_ao_rq.get("question_id") if isinstance(_ao_rq, dict) else None)
+                or ""
+            )
+            if not _ao_qid:
+                continue
+            if _ao_rc in ("no", "false", "0", "0.0") and _ao_av in _ARBITER_CORRECT_VERDICTS:
+                _arbiter_overridden_qids.append(_ao_qid)
+                _has_judge_fail = False
+                for _ao_col, _ao_val in _ao_row.items():
+                    if (_ao_col.startswith("feedback/") and _ao_col.endswith("/value")
+                            and "no" in str(_ao_val).lower()):
+                        _has_judge_fail = True
+                        break
+                if _has_judge_fail:
+                    _soft_signal_qids.append(_ao_qid)
+
         # Arbiter-adjust result_correctness so detect_regressions sees true
         # signal instead of raw hash-mismatch noise.
         if rows_for_output:
@@ -4026,6 +4066,8 @@ def run_evaluation(
             "harness_retry_count": harness_retry_count,
             "excluded_count": excluded_count,
             "quarantined_benchmarks": quarantined_benchmarks,
+            "arbiter_overridden_qids": _arbiter_overridden_qids,
+            "soft_signal_qids": _soft_signal_qids,
         }
 
     logger.info(
@@ -5582,6 +5624,34 @@ def _generate_sql_for_curated_questions(
         "Curated SQL generation: %d/%d questions got valid SQL",
         len(enriched), len(question_only_benchmarks),
     )
+
+    _data_profile = config.get("_data_profile", {})
+    if _data_profile and enriched:
+        try:
+            from genie_space_optimizer.optimization.benchmarks import (
+                validate_predicate_values,
+            )
+            _pred_results = validate_predicate_values(enriched, _data_profile)
+            for _eb, _pr in zip(enriched, _pred_results):
+                if not _pr["valid"]:
+                    for mm in _pr["mismatches"]:
+                        if mm.get("suggestion"):
+                            old_sql = _eb.get("expected_sql", "")
+                            new_sql = old_sql.replace(
+                                f"'{mm['literal']}'", f"'{mm['suggestion']}'",
+                            )
+                            if new_sql != old_sql:
+                                _eb["expected_sql"] = new_sql
+                                _eb["correction_source"] = "predicate_value_fix"
+                                logger.info(
+                                    "Curated SQL auto-corrected predicate: "
+                                    "%s='%s' → '%s' in '%s'",
+                                    mm["column"], mm["literal"],
+                                    mm["suggestion"], _eb["question"][:60],
+                                )
+        except Exception as exc:
+            logger.warning("Predicate value post-check skipped: %s", exc)
+
     return enriched
 
 
@@ -6052,8 +6122,8 @@ def generate_benchmarks(
                 "expected_facts": b.get("expected_facts", []),
                 "priority": priority,
                 "split": "",
-                "source": b.get("source", "genie_space"),
-                "provenance": b.get("provenance", "curated"),
+                "source": b.get("source") or "genie_space",
+                "provenance": b.get("provenance") or "curated",
                 "validation_status": curated_status,
                 "validation_reason_code": "ok" if expected_sql else "missing_expected_sql",
                 "validation_error": None if expected_sql else "No expected SQL in curated sample question",
@@ -6080,8 +6150,8 @@ def generate_benchmarks(
                 "expected_facts": b.get("expected_facts", []),
                 "priority": priority,
                 "split": "",
-                "source": b.get("source", "llm_generated"),
-                "provenance": b.get("provenance", "synthetic"),
+                "source": b.get("source") or "llm_generated",
+                "provenance": b.get("provenance") or "synthetic",
                 "validation_status": b.get("validation_status", "valid"),
                 "validation_reason_code": b.get("validation_reason_code", "ok"),
                 "validation_error": b.get("validation_error"),
@@ -6258,8 +6328,8 @@ def load_benchmarks_from_dataset(
                     "required_tables": expectations.get("required_tables", []),
                     "required_columns": expectations.get("required_columns", []),
                     "expected_facts": expectations.get("expected_facts", []),
-                    "source": expectations.get("source", ""),
-                    "provenance": expectations.get("provenance", ""),
+                    "source": expectations.get("source") or "",
+                    "provenance": expectations.get("provenance") or "",
                     "validation_status": expectations.get("validation_status", ""),
                     "validation_reason_code": expectations.get("validation_reason_code", ""),
                     "validation_error": expectations.get("validation_error"),

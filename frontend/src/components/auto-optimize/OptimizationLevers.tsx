@@ -495,6 +495,11 @@ function regroupLevers(levers: GSOLeverStatus[]): GSOLeverStatus[] {
     lever3.patchCount = lever3.patches.length + lever3.iterations.reduce((s, it) => s + (it.patches?.length ?? 0), 0)
   }
 
+  const lever0 = result.find((l) => l.lever === 0)
+  const hasAdaptiveLevers = result.some((l) => l.lever >= 1)
+
+  if (!hasAdaptiveLevers) return lever0 ? [lever0] : []
+
   const byLever = new Map(result.map((l) => [l.lever, l]))
   const full: GSOLeverStatus[] = []
   for (const def of ALL_LEVERS) {
@@ -517,7 +522,6 @@ function regroupLevers(levers: GSOLeverStatus[]): GSOLeverStatus[] {
     }
   }
 
-  const lever0 = result.find((l) => l.lever === 0)
   if (lever0) full.unshift(lever0)
 
   return full

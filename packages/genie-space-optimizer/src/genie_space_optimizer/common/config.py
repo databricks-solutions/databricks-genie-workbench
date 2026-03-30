@@ -88,6 +88,11 @@ CONSECUTIVE_ROLLBACK_LIMIT = 3
 the optimizer is stuck and further iterations are unlikely to help.
 Root causes are only marked as tried when the limit is about to be hit,
 giving the strategist a chance to retry with a different lever."""
+CONSECUTIVE_ESCALATION_LIMIT = 2
+"""Stop the lever loop after this many consecutive iterations where the
+strategist escalated (gt_repair, flag_for_review) instead of producing
+actionable patches.  Repeated identical escalations indicate a systemic
+issue (e.g. bad ground-truth SQL) that the optimizer cannot resolve."""
 ARBITER_CORRECTION_TRIGGER = 3  # deprecated — use per-question thresholds below
 GENIE_CORRECT_CONFIRMATION_THRESHOLD = 2
 """Minimum independent evaluations where a question must receive ``genie_correct``

@@ -1212,6 +1212,177 @@ def preflight_validate_benchmarks(
     _lines.append(_pf_bar())
     print("\n".join(_lines))
 
+    # ── Semantic alignment check (LLM-based) ────────────────────────
+    _align_targets = [b for b in benchmarks if b.get("expected_sql")]
+    if _align_targets:
+        try:
+            from genie_space_optimizer.optimization.benchmarks import (
+                validate_question_sql_alignment,
+            )
+            _align_results = validate_question_sql_alignment(_align_targets)
+            _align_rejected = 0
+            _align_lines = [_pf_section("PREFLIGHT — SEMANTIC ALIGNMENT CHECK")]
+            _align_lines.append(_pf_kv("Benchmarks checked", len(_align_targets)))
+            for _ab, _ar in zip(_align_targets, _align_results):
+                if not _ar.get("aligned", True):
+                    _align_rejected += 1
+                    _issues = "; ".join(_ar.get("issues", []))
+                    _bid = _ab.get("id", _ab.get("question_id", "?"))
+                    _bq = str(_ab.get("question", ""))[:80]
+                    logger.warning(
+                        "BENCHMARK MISALIGNED: id=%s question='%s' issues=%s",
+                        _bid, _bq, _issues,
+                    )
+                    _align_lines.append(f"  MISALIGNED [{_bid}] \"{_bq}\" — {_issues[:120]}")
+                    _ab["validation_status"] = "misaligned"
+                    _ab["validation_reason_code"] = "semantic_misalignment"
+                    _ab["validation_error"] = _issues[:200]
+            if _align_rejected > 0:
+                benchmarks = [b for b in benchmarks if b.get("validation_status") != "misaligned"]
+                _align_lines.append(_pf_kv("Rejected (misaligned)", _align_rejected))
+                _align_lines.append(_pf_kv("Remaining valid", len(benchmarks)))
+            else:
+                _align_lines.append(_pf_kv("All benchmarks aligned", "yes"))
+            _align_lines.append(_pf_bar())
+            print("\n".join(_align_lines))
+
+            write_stage(
+                spark, run_id, "PREFLIGHT_SEMANTIC_ALIGNMENT", "COMPLETE",
+                task_key="preflight", catalog=catalog, schema=schema,
+                detail={
+                    "checked": len(_align_targets),
+                    "misaligned": _align_rejected,
+                    "remaining": len(benchmarks),
+                },
+            )
+        except Exception as exc:
+            logger.warning("Semantic alignment check skipped: %s", exc)
+
+    # ── Predicate value validation (data-profile-grounded) ──────────
+    _data_profile = config.get("_data_profile", {})
+    _pred_targets = [b for b in benchmarks if b.get("expected_sql")]
+    if _data_profile and _pred_targets:
+        try:
+            from genie_space_optimizer.optimization.benchmarks import (
+                validate_predicate_values,
+            )
+            _pred_results = validate_predicate_values(_pred_targets, _data_profile)
+            _pred_rejected = 0
+            _pred_autocorrected = 0
+            _pred_lines = [_pf_section("PREFLIGHT — PREDICATE VALUE CHECK")]
+            _pred_lines.append(_pf_kv("Benchmarks checked", len(_pred_targets)))
+
+            for _pb, _pr in zip(_pred_targets, _pred_results):
+                if not _pr["valid"]:
+                    corrected = False
+                    for mm in _pr["mismatches"]:
+                        if mm.get("suggestion"):
+                            old_sql = _pb.get("expected_sql", "")
+                            new_sql = old_sql.replace(
+                                f"'{mm['literal']}'", f"'{mm['suggestion']}'",
+                            )
+                            if new_sql != old_sql:
+                                _pb["expected_sql"] = new_sql
+                                _pb["provenance"] = "auto_corrected"
+                                _pb["correction_source"] = "predicate_value_fix"
+                                _pred_autocorrected += 1
+                                corrected = True
+                                _pred_lines.append(
+                                    f"  AUTO-CORRECTED: {mm['column']}="
+                                    f"'{mm['literal']}' → '{mm['suggestion']}'"
+                                )
+                    if not corrected:
+                        _pred_rejected += 1
+                        _bid = _pb.get("id", _pb.get("question_id", "?"))
+                        _bq = str(_pb.get("question", ""))[:60]
+                        for mm in _pr["mismatches"]:
+                            _pred_lines.append(
+                                f"  MISMATCH [{_bid}] \"{_bq}\" — "
+                                f"{mm['column']}='{mm['literal']}' "
+                                f"not in {mm['profiled_values'][:5]}"
+                            )
+                        _pb["validation_status"] = "predicate_mismatch"
+                        _pb["validation_reason_code"] = "data_value_mismatch"
+                        _pb["validation_error"] = "; ".join(
+                            f"{mm['column']}='{mm['literal']}'" for mm in _pr["mismatches"]
+                        )[:200]
+
+            if _pred_rejected > 0 or _pred_autocorrected > 0:
+                benchmarks = [
+                    b for b in benchmarks
+                    if b.get("validation_status") != "predicate_mismatch"
+                ]
+
+            _pred_lines.append(_pf_kv("Mismatched (rejected)", _pred_rejected))
+            _pred_lines.append(_pf_kv("Auto-corrected", _pred_autocorrected))
+            _pred_lines.append(_pf_kv("Remaining valid", len(benchmarks)))
+            _pred_lines.append(_pf_bar())
+            print("\n".join(_pred_lines))
+
+            write_stage(
+                spark, run_id, "PREFLIGHT_PREDICATE_VALIDATION", "COMPLETE",
+                task_key="preflight", catalog=catalog, schema=schema,
+                detail={
+                    "checked": len(_pred_targets),
+                    "mismatched": _pred_rejected,
+                    "auto_corrected": _pred_autocorrected,
+                    "remaining": len(benchmarks),
+                },
+            )
+        except Exception as exc:
+            logger.warning("Predicate value check skipped: %s", exc)
+
+    # ── GT execution check (non-empty result validation) ────────────
+    _exec_targets = [b for b in benchmarks if b.get("expected_sql")]
+    if _exec_targets:
+        try:
+            from genie_space_optimizer.optimization.benchmarks import (
+                validate_gt_returns_results,
+            )
+            _exec_results = validate_gt_returns_results(
+                _exec_targets, spark,
+                w=w, warehouse_id=warehouse_id,
+                catalog=catalog, schema=schema,
+            )
+            _exec_empty = 0
+            _exec_lines = [_pf_section("PREFLIGHT — GT EXECUTION CHECK")]
+            _exec_lines.append(_pf_kv("Benchmarks checked", len(_exec_targets)))
+
+            for _eb, _er in zip(_exec_targets, _exec_results):
+                if not _er["has_results"] and _er.get("error") is None:
+                    _exec_empty += 1
+                    _bid = _eb.get("id", _eb.get("question_id", "?"))
+                    _bq = str(_eb.get("question", ""))[:60]
+                    _exec_lines.append(
+                        f"  EMPTY RESULT [{_bid}] \"{_bq}\" — GT SQL returned 0 rows"
+                    )
+                    _eb["validation_status"] = "empty_gt_result"
+                    _eb["validation_reason_code"] = "gt_returns_no_rows"
+                    _eb["validation_error"] = "Ground truth SQL returned 0 rows"
+
+            if _exec_empty > 0:
+                benchmarks = [
+                    b for b in benchmarks
+                    if b.get("validation_status") != "empty_gt_result"
+                ]
+
+            _exec_lines.append(_pf_kv("Empty GT results (rejected)", _exec_empty))
+            _exec_lines.append(_pf_kv("Remaining valid", len(benchmarks)))
+            _exec_lines.append(_pf_bar())
+            print("\n".join(_exec_lines))
+
+            write_stage(
+                spark, run_id, "PREFLIGHT_GT_EXECUTION_CHECK", "COMPLETE",
+                task_key="preflight", catalog=catalog, schema=schema,
+                detail={
+                    "checked": len(_exec_targets),
+                    "empty_results": _exec_empty,
+                    "remaining": len(benchmarks),
+                },
+            )
+        except Exception as exc:
+            logger.warning("GT execution check skipped: %s", exc)
+
     TOP_UP_THRESHOLD = int(target_benchmark_count * 0.75)
 
     if len(benchmarks) < MIN_VALID_BENCHMARKS:
@@ -1742,7 +1913,8 @@ def _load_or_generate_benchmarks(
                         len(valid_existing), len(genie_benchmarks),
                     )
                     for benchmark in valid_existing:
-                        benchmark.setdefault("provenance", "synthetic")
+                        if not benchmark.get("provenance"):
+                            benchmark["provenance"] = "reused"
                         benchmark.setdefault("validation_status", "valid")
                         benchmark.setdefault("validation_reason_code", "ok")
                         benchmark.setdefault("validation_error", None)
@@ -1763,7 +1935,8 @@ def _load_or_generate_benchmarks(
                         len(valid_existing), target_benchmark_count, gap,
                     )
                     for benchmark in valid_existing:
-                        benchmark.setdefault("provenance", "synthetic")
+                        if not benchmark.get("provenance"):
+                            benchmark["provenance"] = "reused"
                         benchmark.setdefault("validation_status", "valid")
                         benchmark.setdefault("validation_reason_code", "ok")
                         benchmark.setdefault("validation_error", None)

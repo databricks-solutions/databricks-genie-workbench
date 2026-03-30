@@ -670,6 +670,257 @@ def validate_question_sql_alignment(
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# 2c. Predicate Value Validation (data-profile-grounded)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+_EQ_PREDICATE_RE = _re.compile(
+    r"""
+    (?:`?(\w+)`?\s*\.\s*)?   # optional table alias: t. or `t`.
+    `?(\w+)`?                # column name
+    \s*=\s*                  # equals sign
+    '([^']*)'                # single-quoted literal
+    """,
+    _re.VERBOSE | _re.IGNORECASE,
+)
+
+_IN_PREDICATE_RE = _re.compile(
+    r"""
+    (?:`?(\w+)`?\s*\.\s*)?   # optional table alias
+    `?(\w+)`?                # column name
+    \s+IN\s*\(               # IN (
+    ([^)]+)                  # values inside parens
+    \)
+    """,
+    _re.VERBOSE | _re.IGNORECASE,
+)
+
+_FROM_JOIN_RE = _re.compile(
+    r"""
+    (?:FROM|JOIN)\s+
+    `?([a-zA-Z0-9_.]+)`?     # table FQN
+    (?:\s+(?:AS\s+)?`?(\w+)`?)?  # optional alias
+    """,
+    _re.VERBOSE | _re.IGNORECASE,
+)
+
+
+def _extract_table_aliases(sql: str) -> dict[str, str]:
+    """Extract {alias_or_leaf: full_table_name} from FROM/JOIN clauses."""
+    aliases: dict[str, str] = {}
+    for m in _FROM_JOIN_RE.finditer(sql):
+        table_fqn = m.group(1)
+        alias = m.group(2)
+        leaf = table_fqn.split(".")[-1].strip("`").lower()
+        norm_fqn = table_fqn.replace("`", "").lower()
+        if alias:
+            aliases[alias.lower()] = norm_fqn
+        aliases[leaf] = norm_fqn
+    return aliases
+
+
+def _extract_predicates(sql: str) -> list[dict]:
+    """Extract equality and IN predicates from SQL WHERE clauses."""
+    predicates: list[dict] = []
+    for m in _EQ_PREDICATE_RE.finditer(sql):
+        predicates.append({
+            "table_alias": (m.group(1) or "").lower(),
+            "column": m.group(2).lower(),
+            "values": [m.group(3)],
+        })
+    for m in _IN_PREDICATE_RE.finditer(sql):
+        raw_vals = m.group(3)
+        values = [v.strip().strip("'\"") for v in raw_vals.split(",")]
+        predicates.append({
+            "table_alias": (m.group(1) or "").lower(),
+            "column": m.group(2).lower(),
+            "values": values,
+        })
+    return predicates
+
+
+def validate_predicate_values(
+    benchmarks: list[dict],
+    data_profile: dict[str, dict],
+    *,
+    fuzzy_threshold: float = 0.85,
+) -> list[dict]:
+    """Check WHERE clause literal values against profiled distinct values.
+
+    For each benchmark, extracts equality/IN predicates from expected_sql,
+    resolves column references to profiled tables, and checks whether the
+    literal values exist in the profiled distinct_values.
+
+    Returns a list of dicts (one per benchmark) with keys:
+      - ``question``: the benchmark question text
+      - ``valid``: True if all predicates match (or can't be checked)
+      - ``mismatches``: list of ``{column, table, literal, profiled_values, suggestion}``
+    """
+    from difflib import SequenceMatcher
+
+    profile_lower: dict[str, dict] = {}
+    for tbl, tinfo in data_profile.items():
+        norm_key = tbl.replace("`", "").lower()
+        cols_lower: dict[str, dict] = {}
+        for col, cinfo in tinfo.get("columns", {}).items():
+            cols_lower[col.lower()] = cinfo
+        profile_lower[norm_key] = {"columns": cols_lower}
+
+    results: list[dict] = []
+    for b in benchmarks:
+        sql = b.get("expected_sql", "")
+        question = b.get("question", "")
+        if not sql or not sql.strip():
+            results.append({"question": question, "valid": True, "mismatches": []})
+            continue
+
+        aliases = _extract_table_aliases(sql)
+        predicates = _extract_predicates(sql)
+        mismatches: list[dict] = []
+
+        for pred in predicates:
+            col_name = pred["column"]
+            tbl_alias = pred["table_alias"]
+
+            resolved_table = aliases.get(tbl_alias, "") if tbl_alias else ""
+            candidate_tables: list[str] = []
+            if resolved_table:
+                candidate_tables.append(resolved_table)
+            else:
+                candidate_tables.extend(aliases.values())
+
+            profiled_values: list[str] | None = None
+            matched_table = ""
+            for ct in candidate_tables:
+                for profile_key in profile_lower:
+                    if ct in profile_key or profile_key.endswith(ct):
+                        col_info = profile_lower[profile_key].get("columns", {}).get(col_name)
+                        if col_info and col_info.get("distinct_values"):
+                            profiled_values = col_info["distinct_values"]
+                            matched_table = profile_key
+                            break
+                if profiled_values is not None:
+                    break
+
+            if profiled_values is None:
+                continue
+
+            profiled_lower = {str(v).lower(): str(v) for v in profiled_values}
+            for literal in pred["values"]:
+                if literal.lower() in profiled_lower:
+                    continue
+
+                best_match = ""
+                best_score = 0.0
+                for pv_lower, pv_original in profiled_lower.items():
+                    score = SequenceMatcher(None, literal.lower(), pv_lower).ratio()
+                    if score > best_score:
+                        best_score = score
+                        best_match = pv_original
+
+                mismatches.append({
+                    "column": col_name,
+                    "table": matched_table,
+                    "literal": literal,
+                    "profiled_values": profiled_values[:20],
+                    "suggestion": best_match if best_score >= fuzzy_threshold else None,
+                    "fuzzy_score": round(best_score, 3),
+                })
+
+        results.append({
+            "question": question,
+            "valid": len(mismatches) == 0,
+            "mismatches": mismatches,
+        })
+
+    flagged = sum(1 for r in results if not r["valid"])
+    if flagged:
+        logger.info(
+            "Predicate value check: %d/%d benchmarks have value mismatches",
+            flagged, len(benchmarks),
+        )
+        for r in results:
+            if not r["valid"]:
+                for mm in r["mismatches"]:
+                    logger.info(
+                        "  Mismatch: %s — %s.%s='%s' not in profiled values %s (suggestion=%s)",
+                        r["question"][:60], mm["table"], mm["column"],
+                        mm["literal"], mm["profiled_values"][:5], mm["suggestion"],
+                    )
+
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 2d. GT Execution Check (non-empty result validation)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def validate_gt_returns_results(
+    benchmarks: list[dict],
+    spark: Any,
+    *,
+    w: Any = None,
+    warehouse_id: str = "",
+    catalog: str = "",
+    schema: str = "",
+    max_checks: int = 50,
+) -> list[dict]:
+    """Run a COUNT(*) wrapper around each GT SQL to verify it returns rows.
+
+    Benchmarks whose expected_sql yields zero rows are flagged — this
+    typically indicates incorrect WHERE clause values or referencing
+    the wrong table partition.
+
+    Returns a list of ``{question, has_results, row_count, error}`` dicts.
+    """
+    from genie_space_optimizer.optimization.evaluation import _exec_sql
+
+    _sql_kw: dict[str, Any] = dict(w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema)
+    results: list[dict] = []
+
+    for b in benchmarks[:max_checks]:
+        sql = b.get("expected_sql", "")
+        question = b.get("question", "")
+        if not sql or not sql.strip():
+            results.append({"question": question, "has_results": True, "row_count": -1, "error": None})
+            continue
+
+        count_sql = f"SELECT COUNT(*) AS cnt FROM ({sql.rstrip(';')}) _gt_check"
+        try:
+            df = _exec_sql(count_sql, spark, **_sql_kw)
+            if df is not None and not df.empty:
+                cnt = int(df.iloc[0]["cnt"])
+                results.append({
+                    "question": question,
+                    "has_results": cnt > 0,
+                    "row_count": cnt,
+                    "error": None,
+                })
+            else:
+                results.append({"question": question, "has_results": False, "row_count": 0, "error": "empty result"})
+        except Exception as exc:
+            results.append({
+                "question": question,
+                "has_results": True,
+                "row_count": -1,
+                "error": str(exc)[:200],
+            })
+
+    empty_count = sum(1 for r in results if not r["has_results"])
+    if empty_count:
+        logger.warning(
+            "GT execution check: %d/%d benchmarks returned 0 rows",
+            empty_count, len(results),
+        )
+        for r in results:
+            if not r["has_results"]:
+                logger.warning("  Empty GT: %s (error=%s)", r["question"][:80], r.get("error"))
+
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # 3. Train/Held-Out Split
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -767,6 +1018,7 @@ def apply_benchmark_corrections(
     *,
     w: Any = None,
     warehouse_id: str = "",
+    data_profile: dict | None = None,
 ) -> dict:
     """Apply arbiter corrections to the MLflow evaluation dataset.
 
@@ -774,6 +1026,11 @@ def apply_benchmark_corrections(
     - ``question``: the benchmark question to correct
     - ``new_expected_sql``: the corrected SQL
     - ``verdict``: ``genie_correct`` or ``arbiter_repair``
+
+    Before applying, validates:
+    1. Syntactic validity (EXPLAIN)
+    2. Semantic alignment with the question (LLM check)
+    3. Predicate values against data profile (if available)
 
     Returns ``{applied: int, skipped: int, errors: list[str]}``.
     """
@@ -809,6 +1066,59 @@ def apply_benchmark_corrections(
             )
             skipped += 1
             continue
+
+        try:
+            alignment = validate_question_sql_alignment(
+                [{"question": question, "expected_sql": new_sql}]
+            )
+            if alignment and not alignment[0].get("aligned", True):
+                issues = "; ".join(alignment[0].get("issues", []))
+                logger.warning(
+                    "Skipping arbiter correction — SQL misaligned with question: "
+                    "'%s' — issues: %s",
+                    question[:60], issues,
+                )
+                errors.append(
+                    f"Alignment mismatch for '{question[:50]}': {issues[:150]}"
+                )
+                skipped += 1
+                continue
+        except Exception:
+            logger.debug(
+                "Alignment check failed for correction, proceeding cautiously",
+                exc_info=True,
+            )
+
+        if data_profile:
+            try:
+                pred_results = validate_predicate_values(
+                    [{"question": question, "expected_sql": new_sql}],
+                    data_profile,
+                )
+                if pred_results and not pred_results[0]["valid"]:
+                    unfixable = [
+                        m for m in pred_results[0]["mismatches"]
+                        if not m.get("suggestion")
+                    ]
+                    if unfixable:
+                        mm_desc = "; ".join(
+                            f"{m['column']}='{m['literal']}'" for m in unfixable
+                        )
+                        logger.warning(
+                            "Skipping arbiter correction — predicate value "
+                            "mismatch: '%s' — %s",
+                            question[:60], mm_desc,
+                        )
+                        errors.append(
+                            f"Predicate mismatch for '{question[:50]}': {mm_desc[:150]}"
+                        )
+                        skipped += 1
+                        continue
+            except Exception:
+                logger.debug(
+                    "Predicate check failed for correction, proceeding cautiously",
+                    exc_info=True,
+                )
 
         try:
             escaped_sql = new_sql.replace("'", "\\'")
