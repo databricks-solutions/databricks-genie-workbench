@@ -60,8 +60,9 @@ function ExampleSqlTable({ patches }: { patches: GSOPatchDetail[] }) {
         <tbody>
           {patches.map((p, i) => {
             const cmd = parseCommand(p.command)
-            const question = String(cmd.question || "")
-            const sql = String(cmd.sql || cmd.new_sql || "")
+            const pat = parseCommand(p.patch)
+            const question = String(cmd.question || pat.question || pat.example_question || "")
+            const sql = String(cmd.sql || cmd.new_sql || pat.sql || pat.new_sql || "")
             return (
               <tr key={i} className="border-b border-default last:border-0">
                 <td className="px-3 py-2 text-muted tabular-nums align-top">{i + 1}</td>
@@ -97,20 +98,25 @@ function SqlExpressionTable({ patches }: { patches: GSOPatchDetail[] }) {
         </thead>
         <tbody>
           {patches.map((p, i) => {
-            const patchData = parseCommand(p.patch)
+            const pat = parseCommand(p.patch)
+            const cmd = parseCommand(p.command)
+            const snippet = (cmd.sql_snippet || {}) as Record<string, unknown>
+            const snippetType = String(pat.snippet_type || snippet.snippet_type || cmd.snippet_type || "expression")
+            const displayName = String(pat.display_name || snippet.display_name || cmd.display_name || "")
+            const sql = String(pat.sql || snippet.sql || cmd.sql || "")
             return (
               <tr key={i} className="border-b border-default last:border-0">
                 <td className="px-3 py-2 text-muted tabular-nums">{i + 1}</td>
                 <td className="px-3 py-2">
                   <span className="inline-flex items-center rounded-md border border-teal-500/30 bg-teal-500/10 px-1.5 py-0.5 text-[10px] font-medium text-teal-700 dark:text-teal-400">
-                    {String(patchData.snippet_type || "expression")}
+                    {snippetType}
                   </span>
                 </td>
-                <td className="px-3 py-2 text-primary">{String(patchData.display_name || "—")}</td>
+                <td className="px-3 py-2 text-primary">{displayName || "—"}</td>
                 <td className="px-3 py-2">
-                  {patchData.sql ? (
+                  {sql ? (
                     <code className="text-[11px] font-mono bg-elevated/50 rounded px-1.5 py-0.5 text-primary block whitespace-pre-wrap leading-relaxed">
-                      {String(patchData.sql)}
+                      {sql}
                     </code>
                   ) : "—"}
                 </td>
@@ -142,7 +148,14 @@ function DescriptionTable({ patches }: { patches: GSOPatchDetail[] }) {
           {patches.map((p, i) => {
             const patchData = parseCommand(p.patch)
             const cmdData = parseCommand(p.command)
-            const desc = String(patchData.description || cmdData.description || cmdData.new_text || patchData.new_text || "—")
+            const cmdStructured = (cmdData.structured_sections || {}) as Record<string, string>
+            const patStructured = (patchData.structured_sections || {}) as Record<string, string>
+            const desc = String(
+              cmdStructured.purpose || patStructured.purpose
+              || patchData.description || cmdData.description
+              || cmdData.new_text || patchData.new_text
+              || "—"
+            )
             const op = String(cmdData.op || p.patchType.split("_")[0] || "update")
             return (
               <tr key={i} className="border-b border-default last:border-0">
