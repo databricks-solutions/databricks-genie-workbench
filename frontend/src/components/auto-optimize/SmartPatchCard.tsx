@@ -1,3 +1,5 @@
+import { useState } from "react"
+import { ChevronDown } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import type { GSOPatchDetail } from "@/types"
 
@@ -7,10 +9,15 @@ interface SmartPatchCardProps {
 
 function parseJson(raw: Record<string, unknown> | string | null): Record<string, unknown> {
   if (!raw) return {}
+  if (typeof raw === "object") return raw
   if (typeof raw === "string") {
-    try { return JSON.parse(raw) } catch { return {} }
+    try {
+      let parsed = JSON.parse(raw)
+      if (typeof parsed === "string") parsed = JSON.parse(parsed)
+      return typeof parsed === "object" && parsed !== null ? parsed : {}
+    } catch { return {} }
   }
-  return raw
+  return {}
 }
 
 const OP_STYLE: Record<string, { variant: "success" | "danger" | "warning" | "info"; label: string }> = {
@@ -160,20 +167,42 @@ function ExampleSqlCard({ cmd }: { cmd: Record<string, unknown> }) {
 }
 
 function InstructionCard({ cmd }: { cmd: Record<string, unknown> }) {
+  const [expanded, setExpanded] = useState(false)
   const newText = String(cmd.new_text || "")
   const oldText = String(cmd.old_text || "")
+  const op = String(cmd.op || "")
+  const TRUNCATE_AT = 300
+  const isLong = newText.length > TRUNCATE_AT
+  const displayText = isLong && !expanded ? newText.slice(0, TRUNCATE_AT) + "…" : newText
+  const showOld = !!(oldText && (op === "update" || op === "rewrite"))
 
   return (
     <div>
       {newText && (
         <div className="rounded-md border border-default bg-elevated/30 px-3 py-2">
-          <p className="text-xs text-primary leading-relaxed whitespace-pre-wrap">{newText}</p>
+          <p className="text-xs text-primary leading-relaxed whitespace-pre-wrap">{displayText}</p>
+          {isLong && (
+            <button
+              onClick={() => setExpanded(!expanded)}
+              className="flex items-center gap-1 mt-1.5 text-[11px] text-accent hover:underline"
+            >
+              <ChevronDown className={`h-3 w-3 transition-transform ${expanded ? "rotate-180" : ""}`} />
+              {expanded ? "Show less" : "Show more"}
+            </button>
+          )}
         </div>
       )}
-      {oldText && String(cmd.op) === "update" && (
-        <div className="mt-1.5 rounded-md border border-default/50 bg-elevated/10 px-3 py-2">
-          <p className="text-[11px] text-muted line-through leading-relaxed">{oldText.slice(0, 200)}{oldText.length > 200 ? "…" : ""}</p>
-        </div>
+      {showOld && (
+        <details className="mt-1.5">
+          <summary className="text-[11px] text-muted cursor-pointer hover:text-primary">
+            Previous instruction
+          </summary>
+          <div className="mt-1 rounded-md border border-default/50 bg-elevated/10 px-3 py-2">
+            <p className="text-[11px] text-muted line-through leading-relaxed whitespace-pre-wrap">
+              {oldText.slice(0, 500)}{oldText.length > 500 ? "…" : ""}
+            </p>
+          </div>
+        </details>
       )}
     </div>
   )
@@ -288,6 +317,27 @@ export function SmartPatchCard({ patch }: SmartPatchCardProps) {
 
   if (!cmd.op && !cmd.section) {
     const patchData = parseJson(patch.patch)
+
+    // Instruction-type patches: show before/after text via InstructionCard
+    if (patch.patchType.includes("instruction")) {
+      const newText = String(cmd.new_text || patchData.new_text || patchData.proposed_value || "")
+      const oldText = String(cmd.old_text || patchData.old_value || patchData.old_text || "")
+      const op = patch.patchType.startsWith("rewrite") ? "rewrite"
+        : patch.patchType.startsWith("add") ? "add" : "update"
+      if (newText || oldText) {
+        return (
+          <div className="rounded-lg border border-default bg-surface p-3 space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <OpBadge op={op} />
+              <span className="text-xs font-medium text-muted">Instruction</span>
+              {patch.targetObject && <Target value={patch.targetObject} />}
+            </div>
+            <InstructionCard cmd={{ op, new_text: newText, old_text: oldText }} />
+          </div>
+        )
+      }
+    }
+
     if (Object.keys(patchData).length > 0) {
       return (
         <div className="rounded-lg border border-default bg-surface p-3 space-y-1.5">

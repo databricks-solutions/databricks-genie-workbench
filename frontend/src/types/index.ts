@@ -398,6 +398,8 @@ export interface GSOPipelineRun {
   links: GSOResourceLink[]
   convergenceReason: string | null
   deploymentStatus: string | null
+  labelingSessionUrl: string | null
+  labelingSessionName: string | null
 }
 
 export interface GSOIterationResult {

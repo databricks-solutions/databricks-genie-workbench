@@ -21,9 +21,9 @@ interface OptimizationConfigProps {
 const LEVERS = [
   { id: 1, name: "Tables & Columns", description: "Update table descriptions, column descriptions, and synonyms" },
   { id: 2, name: "Metric Views", description: "Update metric view column descriptions" },
-  { id: 3, name: "Table-Valued Functions", description: "Remove underperforming TVFs" },
+  { id: 3, name: "SQL Queries & Functions", description: "Add and update example SQLs, and remove underperforming TVFs" },
   { id: 4, name: "Join Specifications", description: "Add, update, or remove join relationships" },
-  { id: 5, name: "Genie Space Instructions", description: "Rewrite global routing instructions" },
+  { id: 5, name: "Text Instructions", description: "Rewrite global routing instructions" },
   { id: 6, name: "SQL Expressions", description: "Add reusable SQL expressions (measures, filters, dimensions)" },
 ]
 

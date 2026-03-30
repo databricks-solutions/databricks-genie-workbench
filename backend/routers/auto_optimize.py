@@ -38,9 +38,9 @@ LEVER_NAMES: dict[int, str] = {
     0: "Proactive Enrichment",
     1: "Tables & Columns",
     2: "Metric Views",
-    3: "Table-Valued Functions",
+    3: "SQL Queries & Functions",
     4: "Join Specifications",
-    5: "Genie Space Instructions",
+    5: "Text Instructions",
     6: "SQL Expressions",
 }
 
@@ -929,16 +929,17 @@ def _last_summary(matching_stages: list[dict]) -> str | None:
 
 
 def _normalize_step_status_for_terminal_run(*, status: str, run_status: str) -> str:
-    """Avoid stale 'running' steps when the overall run is already terminal."""
-    if status != "running":
-        return status
+    """Normalize step status when the overall run is already terminal."""
     normalized = run_status.upper()
-    if normalized == "FAILED":
-        return "failed"
-    if normalized in {"CANCELLED", "DISCARDED"}:
-        return "pending"
-    if normalized in _TERMINAL_RUN_STATUSES:
-        return "completed"
+    if status == "running":
+        if normalized == "FAILED":
+            return "failed"
+        if normalized in {"CANCELLED", "DISCARDED"}:
+            return "pending"
+        if normalized in _TERMINAL_RUN_STATUSES:
+            return "completed"
+    if status == "pending" and normalized in _TERMINAL_RUN_STATUSES:
+        return "skipped"
     return status
 
 
@@ -1160,6 +1161,8 @@ async def get_run(run_id: str):
         "links": links,
         "convergenceReason": run.get("convergence_reason"),
         "deploymentStatus": run.get("deploy_status"),
+        "labelingSessionUrl": run.get("labeling_session_url") or None,
+        "labelingSessionName": run.get("labeling_session_name") or None,
     }
 
 

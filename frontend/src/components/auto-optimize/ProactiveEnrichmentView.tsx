@@ -57,7 +57,6 @@ function ExampleSqlsSection({ patches }: { patches: GSOPatchDetail[] }) {
           <tr className="border-b border-default">
             <th className="text-left px-3 py-1.5 text-muted font-medium w-8">#</th>
             <th className="text-left px-3 py-1.5 text-muted font-medium">Question</th>
-            <th className="text-left px-3 py-1.5 text-muted font-medium w-48">Target</th>
           </tr>
         </thead>
         <tbody>
@@ -68,9 +67,6 @@ function ExampleSqlsSection({ patches }: { patches: GSOPatchDetail[] }) {
               <tr key={i} className="border-b border-default last:border-0">
                 <td className="px-3 py-2 text-muted tabular-nums">{i + 1}</td>
                 <td className="px-3 py-2 text-primary">{question}</td>
-                <td className="px-3 py-2 text-muted font-mono truncate max-w-[200px]" title={p.targetObject ?? undefined}>
-                  {p.targetObject || "—"}
-                </td>
               </tr>
             )
           })}

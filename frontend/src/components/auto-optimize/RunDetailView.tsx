@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { ArrowLeft, Cog } from "lucide-react"
+import { ArrowLeft, Cog, UserCheck, ExternalLink } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ScoreSummary } from "@/components/auto-optimize/ScoreSummary"
@@ -132,6 +132,30 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
 
       {/* Score summary cards */}
       <ScoreSummary baselineScore={run.baselineScore} optimizedScore={run.optimizedScore} />
+
+      {/* Human Review Banner */}
+      {run.labelingSessionUrl && (
+        <div className="flex items-start gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+          <UserCheck className="mt-0.5 h-5 w-5 text-amber-600 shrink-0" />
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold text-amber-900 dark:text-amber-300">
+              Questions flagged for human review
+            </h3>
+            <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-400">
+              The optimizer identified questions that could not be resolved automatically and flagged them for your review.
+            </p>
+          </div>
+          <a
+            href={run.labelingSessionUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md border border-amber-500/30 text-amber-700 dark:text-amber-300 hover:bg-amber-500/10 transition-colors"
+          >
+            Open Review Session
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-default">
