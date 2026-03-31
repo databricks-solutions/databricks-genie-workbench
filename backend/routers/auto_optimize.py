@@ -29,7 +29,8 @@ router = APIRouter(prefix="/api/auto-optimize")
 # Lightweight column list for iterations queries — excludes rows_json (megabytes per row)
 _ITER_COLS = (
     "iteration, eval_scope, overall_accuracy, total_questions, correct_count, "
-    "scores_json, failures_json, thresholds_met, lever, repeatability_pct, reflection_json"
+    "scores_json, failures_json, thresholds_met, lever, repeatability_pct, "
+    "reflection_json, mlflow_run_id"
 )
 
 # Lever names — matches GSO common/config.py
@@ -37,9 +38,10 @@ LEVER_NAMES: dict[int, str] = {
     0: "Proactive Enrichment",
     1: "Tables & Columns",
     2: "Metric Views",
-    3: "Table-Valued Functions",
+    3: "SQL Queries & Functions",
     4: "Join Specifications",
-    5: "Genie Space Instructions",
+    5: "Text Instructions",
+    6: "SQL Expressions",
 }
 
 _TERMINAL_RUN_STATUSES = {
@@ -241,16 +243,36 @@ def _build_step_summary(
     if step_name == "Baseline Evaluation":
         baseline_iter = next((r for r in iterations_rows if _safe_int(r.get("iteration")) == 0), None)
         score = f"{_finite(baseline_iter.get('overall_accuracy', 0)):.1f}" if baseline_iter else "?"
-        questions = str(baseline_iter.get("total_questions", "?")) if baseline_iter else "?"
-        correct = str(_safe_int(baseline_iter.get("correct_count")) or "?") if baseline_iter else "?"
-        return f"Evaluated {questions} benchmark questions with 9 evaluation judges. Baseline score: {score}% ({correct}/{questions} correct)"
+        total = (_safe_int(baseline_iter.get("total_questions")) or 0) if baseline_iter else 0
+        correct = (_safe_int(baseline_iter.get("correct_count")) or 0) if baseline_iter else 0
+        # overall_accuracy = correct / (total - excluded) * 100, so effective denominator = correct / (accuracy/100)
+        accuracy_val = _finite(baseline_iter.get("overall_accuracy", 0)) if baseline_iter else 0
+        effective_denom = round(correct / (accuracy_val / 100)) if accuracy_val > 0 and correct > 0 else correct
+        excluded = total - effective_denom if total > effective_denom else 0
+        correct_str = str(correct) if correct else "?"
+        denom_str = str(effective_denom) if effective_denom else str(total or "?")
+        excluded_note = f" ({excluded} excluded)" if excluded > 0 else ""
+        return f"Evaluated {total or '?'} benchmark questions with 9 evaluation judges. Baseline score: {score}% ({correct_str}/{denom_str} correct{excluded_note})"
     if step_name == "Proactive Enrichment":
         descriptions = _safe_int(detail.get("descriptions_enriched")) or 0
         joins = _safe_int(detail.get("joins_discovered")) or 0
         examples = _safe_int(detail.get("examples_mined")) or 0
         instructions = 1 if detail.get("instructions_seeded") else 0
-        total = _safe_int(detail.get("total_enrichments")) or (descriptions + joins + instructions + examples)
-        return f"Applied {total} proactive enrichments: {descriptions} descriptions, {joins} joins, {instructions} instructions, {examples} example SQLs"
+        sql_expressions = _safe_int(detail.get("sql_expressions_seeded")) or 0
+        total = _safe_int(detail.get("total_enrichments")) or (descriptions + joins + instructions + examples + sql_expressions)
+        parts: list[str] = []
+        if descriptions:
+            parts.append(f"{descriptions} descriptions")
+        if joins:
+            parts.append(f"{joins} joins")
+        if instructions:
+            parts.append(f"{instructions} instructions")
+        if examples:
+            parts.append(f"{examples} example SQLs")
+        if sql_expressions:
+            parts.append(f"{sql_expressions} SQL expressions")
+        breakdown = ", ".join(parts) if parts else "no changes"
+        return f"Applied {total} proactive enrichments: {breakdown}"
     if step_name == "Adaptive Optimization":
         patches = detail.get("patches_applied", 0)
         levers_accepted = detail.get("levers_accepted", [])
@@ -843,10 +865,15 @@ async def trigger(body: TriggerRequest, request: Request):
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
-        # Active run already exists for this space
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e))
+    except RuntimeError as e:
+        msg = str(e)
+        if "already in progress" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        logger.exception("Trigger optimization failed: %s", e)
+        raise HTTPException(status_code=500, detail=msg)
     except Exception as e:
-        logger.exception(f"Failed to trigger optimization: {e}")
+        logger.exception("Failed to trigger optimization: %s", e)
         raise HTTPException(status_code=500, detail="Failed to start optimization job.")
 
 
@@ -860,8 +887,8 @@ _STEP_DEFINITIONS = [
     {"stepNumber": 2, "name": "Baseline Evaluation",   "stage_prefixes": ["BASELINE_EVAL"]},
     {"stepNumber": 3, "name": "Proactive Enrichment",  "stage_prefixes": ["ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL"]},
     {"stepNumber": 4, "name": "Adaptive Optimization", "stage_prefixes": ["LEVER_", "AG_"]},
-    {"stepNumber": 5, "name": "Finalization",          "stage_prefixes": ["FINALIZE", "REPEATABILITY", "HELD_OUT"]},
-    {"stepNumber": 6, "name": "Deploy",                "stage_prefixes": ["DEPLOY", "COMPLETE", "UC_OBO_WRITE"]},
+    {"stepNumber": 5, "name": "Finalization",          "stage_prefixes": ["FINALIZE", "REPEATABILITY", "HELD_OUT", "COMPLETE"]},
+    {"stepNumber": 6, "name": "Deploy",                "stage_prefixes": ["DEPLOY", "UC_OBO_WRITE"]},
 ]
 
 
@@ -902,16 +929,17 @@ def _last_summary(matching_stages: list[dict]) -> str | None:
 
 
 def _normalize_step_status_for_terminal_run(*, status: str, run_status: str) -> str:
-    """Avoid stale 'running' steps when the overall run is already terminal."""
-    if status != "running":
-        return status
+    """Normalize step status when the overall run is already terminal."""
     normalized = run_status.upper()
-    if normalized == "FAILED":
-        return "failed"
-    if normalized in {"CANCELLED", "DISCARDED"}:
-        return "pending"
-    if normalized in _TERMINAL_RUN_STATUSES:
-        return "completed"
+    if status == "running":
+        if normalized == "FAILED":
+            return "failed"
+        if normalized in {"CANCELLED", "DISCARDED"}:
+            return "pending"
+        if normalized in _TERMINAL_RUN_STATUSES:
+            return "completed"
+    if status == "pending" and normalized in _TERMINAL_RUN_STATUSES:
+        return "skipped"
     return status
 
 
@@ -1133,6 +1161,8 @@ async def get_run(run_id: str):
         "links": links,
         "convergenceReason": run.get("convergence_reason"),
         "deploymentStatus": run.get("deploy_status"),
+        "labelingSessionUrl": run.get("labeling_session_url") or None,
+        "labelingSessionName": run.get("labeling_session_name") or None,
     }
 
 
@@ -1178,14 +1208,48 @@ async def get_run_status(run_id: str):
         # Next pending step
         current_step_name = _STEP_DEFINITIONS[steps_completed]["name"]
 
+    # Compute baseline vs optimized scores from iterations (lightweight query)
+    iterations = await gso_lakebase.load_gso_iterations(run_id)
+    if not iterations and _is_configured():
+        iterations = _delta_query(
+            f"SELECT {_ITER_COLS} FROM {_delta_table('genie_opt_iterations')} "
+            f"WHERE run_id = '{run_id}' ORDER BY iteration"
+        ) or []
+
+    baseline_score = None
+    optimized_score = None
+    for it in iterations:
+        it_num = _safe_int(it.get("iteration"))
+        acc = _safe_float(it.get("overall_accuracy"))
+        scope = str(it.get("eval_scope", "")).lower()
+        if it_num == 0 and scope == "full" and acc is not None:
+            baseline_score = acc
+        elif it_num is not None and it_num > 0 and scope == "full" and acc is not None:
+            if optimized_score is None or acc > optimized_score:
+                optimized_score = acc
+    # Fallback: baseline from any scope if full not available
+    if baseline_score is None:
+        for it in iterations:
+            if _safe_int(it.get("iteration")) == 0:
+                baseline_score = _safe_float(it.get("overall_accuracy"))
+                break
+    # Fallback: optimized from any scope > 0
+    if optimized_score is None:
+        for it in iterations:
+            it_num = _safe_int(it.get("iteration"))
+            if it_num is not None and it_num > 0:
+                acc = _safe_float(it.get("overall_accuracy"))
+                if acc is not None and (optimized_score is None or acc > optimized_score):
+                    optimized_score = acc
+
     return {
         "runId": run.get("run_id"),
         "status": run.get("status"),
         "spaceId": run.get("space_id"),
         "startedAt": _isoformat(run.get("started_at")),
         "completedAt": _isoformat(run.get("completed_at")),
-        "baselineScore": run.get("best_accuracy"),
-        "optimizedScore": run.get("best_accuracy"),
+        "baselineScore": baseline_score,
+        "optimizedScore": optimized_score if optimized_score is not None else baseline_score,
         "convergenceReason": run.get("convergence_reason"),
         "stepsCompleted": steps_completed,
         "totalSteps": 6,
@@ -1209,8 +1273,12 @@ async def apply_run(run_id: str):
     try:
         result = apply_optimization(run_id, ws, config)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        logger.exception(f"Failed to apply optimization {run_id}: {e}")
+        logger.exception("Failed to apply optimization %s: %s", run_id, e)
         raise HTTPException(status_code=500, detail="Failed to apply optimization.")
 
 
@@ -1224,8 +1292,10 @@ async def discard_run(run_id: str):
     try:
         result = discard_optimization(run_id, ws, sp_ws, config)
         return {"status": result.status, "runId": result.run_id, "message": result.message}
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
-        logger.exception(f"Failed to discard optimization {run_id}: {e}")
+        logger.exception("Failed to discard optimization %s: %s", run_id, e)
         raise HTTPException(status_code=500, detail="Failed to discard optimization.")
 
 

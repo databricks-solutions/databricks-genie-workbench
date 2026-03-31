@@ -647,6 +647,48 @@ def flag_for_human_review(
     return flagged
 
 
+def resolve_stale_flags(
+    spark: Any,
+    catalog: str,
+    schema: str,
+    domain: str,
+    passing_question_ids: set[str],
+) -> int:
+    """Mark flags as resolved for questions that now pass.
+
+    Finds all ``status='pending'`` flags for the domain whose question_id
+    is in *passing_question_ids* and sets ``status='resolved'``.
+
+    Returns the number of flags resolved.
+    """
+    if not passing_question_ids:
+        return 0
+
+    _ensure_flagged_questions_table(spark, catalog, schema)
+    fqn = f"{catalog}.{schema}.genie_opt_flagged_questions"
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    resolved = 0
+    for qid in passing_question_ids:
+        try:
+            spark.sql(
+                f"UPDATE {fqn} SET status = 'resolved', flagged_at = '{now}' "
+                f"WHERE question_id = '{qid}' AND domain = '{domain}' AND status = 'pending'"
+            )
+            resolved += 1
+        except Exception:
+            logger.debug("Could not resolve flag for %s", qid, exc_info=True)
+
+    if resolved:
+        logger.info(
+            "Resolved %d stale flag(s) for domain %s (questions now passing)",
+            resolved, domain,
+        )
+    return resolved
+
+
 def get_flagged_questions(
     spark: Any,
     catalog: str,
@@ -654,16 +696,23 @@ def get_flagged_questions(
     domain: str,
     *,
     status: str = "pending",
+    run_id: str = "",
 ) -> list[dict]:
-    """Return flagged questions for a domain with the given status."""
+    """Return flagged questions for a domain with the given status.
+
+    When *run_id* is provided, only returns flags from that specific run.
+    """
     from genie_space_optimizer.optimization.state import run_query
 
     _ensure_flagged_questions_table(spark, catalog, schema)
     fqn = f"{catalog}.{schema}.genie_opt_flagged_questions"
     try:
+        where = f"WHERE domain = '{domain}' AND status = '{status}'"
+        if run_id:
+            where += f" AND run_id = '{run_id}'"
         df = run_query(
             spark,
-            f"SELECT * FROM {fqn} WHERE domain = '{domain}' AND status = '{status}'",
+            f"SELECT * FROM {fqn} {where}",
         )
         return df.to_dict("records") if not df.empty else []
     except Exception:

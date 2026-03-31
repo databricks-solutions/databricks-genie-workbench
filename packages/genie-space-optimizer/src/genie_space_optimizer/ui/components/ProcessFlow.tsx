@@ -95,6 +95,7 @@ const LEVERS = [
   { number: 3, name: "Table-Valued Functions", description: "TVF SQL, parameters, function signatures", examples: ["update_tvf_sql", "add_tvf_parameter"], icon: Code2 },
   { number: 4, name: "Join Specifications", description: "Table relationships, join columns, cardinality", examples: ["add_join_spec", "update_join_spec"], icon: Link2 },
   { number: 5, name: "Genie Space Instructions", description: "Routing rules, disambiguation, example SQL", examples: ["add_example_sql", "add_instruction"], icon: FileText },
+  { number: 6, name: "SQL Expressions", description: "Reusable measures, filters, and dimensions", examples: ["add_sql_snippet_measure", "add_sql_snippet_filter"], icon: FlaskConical },
 ];
 
 const FAILURE_TO_LEVER = [
@@ -550,7 +551,7 @@ export function ProcessFlow() {
       <div className="text-center">
         <h2 className="text-xl font-semibold text-primary">How the Optimizer Works</h2>
         <p className="mt-1 text-sm text-muted">
-          A {TOTAL_STEPS}-step pipeline that analyzes, benchmarks, and improves your Genie Space configuration using 9 judges and 5 optimization levers.
+          A {TOTAL_STEPS}-step pipeline that analyzes, benchmarks, and improves your Genie Space configuration using 9 judges and 6 optimization levers.
         </p>
       </div>
 

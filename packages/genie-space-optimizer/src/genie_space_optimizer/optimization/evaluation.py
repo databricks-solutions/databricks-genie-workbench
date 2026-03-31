@@ -27,7 +27,6 @@ from typing import TYPE_CHECKING, Any, Union
 
 import mlflow
 import pandas as pd
-from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 from mlflow.entities import AssessmentSource, Feedback
 from mlflow.genai.scorers import scorer
 
@@ -86,7 +85,10 @@ _SCORER_FEEDBACK_CACHE: dict[tuple[str, str], dict] = {}
 
 _REGISTERED_PROMPT_NAMES: dict[str, str] = {}
 
-_PROVENANCE_PRIORITY = ["curated", "synthetic", "auto_corrected", "coverage_gap_fill"]
+_PROVENANCE_PRIORITY = [
+    "curated", "curated_sql_generated", "reused", "synthetic",
+    "auto_corrected", "coverage_gap_fill",
+]
 
 
 def _truncate_benchmarks(benchmarks: list[dict], max_count: int) -> list[dict]:
@@ -323,35 +325,33 @@ def _link_prompt_to_trace(prompt_name: str) -> None:
 
 
 def _call_llm_for_scoring(
-    w: WorkspaceClient,
+    w: "WorkspaceClient",
     prompt: str,
     max_retries: int = LLM_MAX_RETRIES,
     prompt_name: str = "",
 ) -> dict:
-    """Call LLM using Databricks SDK with retry + exponential backoff.
+    """Call LLM via the OpenAI SDK with retry + exponential backoff.
+
+    Uses the shared ``llm_client`` so that ``mlflow.openai.autolog()``
+    captures token usage, cost, and latency automatically.
 
     If *prompt_name* is provided, loads the registered prompt first to
     link it to the current MLflow trace (visible in Linked Prompts tab).
     """
+    from genie_space_optimizer.optimization.llm_client import call_llm
+
     _link_prompt_to_trace(prompt_name)
 
     last_err: Exception | None = None
     for attempt in range(max_retries):
         try:
-            response = w.serving_endpoints.query(
-                name=LLM_ENDPOINT,
-                messages=[ChatMessage(role=ChatMessageRole.USER, content=prompt)],
+            text, _response = call_llm(
+                w,
+                messages=[{"role": "user", "content": prompt}],
+                max_retries=1,
                 temperature=LLM_TEMPERATURE,
             )
-            choices = getattr(response, "choices", None) or []
-            if not choices:
-                raise ValueError(f"Empty LLM response choices on attempt {attempt + 1}")
-            first_choice = choices[0]
-            message = getattr(first_choice, "message", None)
-            content = getattr(message, "content", None)
-            if not content or not content.strip():
-                raise ValueError(f"Empty LLM response on attempt {attempt + 1}")
-            return _extract_json(content)
+            return _extract_json(text)
         except Exception as e:
             last_err = e
             if attempt < max_retries - 1:
@@ -692,9 +692,10 @@ def build_asi_metadata(
     actual_value: str | None = None,
     counterfactual_fix: str | None = None,
     affected_question_pattern: str | None = None,
+    join_assessment: dict | None = None,
 ) -> dict:
     """Build an ASI metadata dict conforming to ASI_SCHEMA."""
-    return {
+    md: dict = {
         "failure_type": failure_type if failure_type in FAILURE_TAXONOMY else "other",
         "severity": severity,
         "confidence": confidence,
@@ -708,6 +709,9 @@ def build_asi_metadata(
         "counterfactual_fix": counterfactual_fix,
         "affected_question_pattern": affected_question_pattern,
     }
+    if join_assessment and isinstance(join_assessment, dict):
+        md["join_assessment"] = join_assessment
+    return md
 
 
 def format_asi_markdown(
@@ -1294,12 +1298,31 @@ def _precheck_benchmarks_for_eval(
     mv_names_lower = {n.lower().split(".")[-1] for n in (metric_view_names or set())}
     _mv_measures = metric_view_measures or {}
 
+    from genie_space_optimizer.common.config import REQUIRE_GROUND_TRUTH_SQL
+
     for idx, benchmark in enumerate(benchmarks):
         question = str(benchmark.get("question") or "").strip()
         qid = str(benchmark.get("id") or benchmark.get("question_id") or f"q-{idx}")
         sql = str(benchmark.get("expected_sql") or "").strip()
         if not sql:
-            valid.append(benchmark)
+            if REQUIRE_GROUND_TRUTH_SQL:
+                quarantined.append(
+                    {
+                        "question_id": qid,
+                        "question": question,
+                        "reason": "missing_ground_truth",
+                        "sqlstate": None,
+                        "error": "Benchmark has no expected SQL — cannot evaluate without ground truth",
+                        "expected_sql": "",
+                    }
+                )
+                reason_counts["invalid_benchmark_count"] += 1
+                logger.warning(
+                    "BENCHMARK REJECTED (no ground truth SQL): id=%s question='%s'",
+                    qid, question[:80],
+                )
+            else:
+                valid.append(benchmark)
             continue
 
         resolved_sql = resolve_sql(sql, catalog=catalog, gold_schema=gold_schema)
@@ -1330,10 +1353,14 @@ def _precheck_benchmarks_for_eval(
 
         try:
             if w and warehouse_id:
-                _execute_sql_via_warehouse(
+                explain_df = _execute_sql_via_warehouse(
                     w, warehouse_id, f"EXPLAIN {resolved_sql}",
                     catalog=catalog, schema=gold_schema,
                 )
+                if not explain_df.empty and "plan" in explain_df.columns:
+                    plan_text = "\n".join(str(v) for v in explain_df["plan"].tolist())
+                    if "Error occurred during query planning" in plan_text:
+                        raise RuntimeError(plan_text)
             else:
                 _set_sql_context(spark, catalog, gold_schema)
                 spark.sql(f"EXPLAIN {resolved_sql}")
@@ -1375,14 +1402,19 @@ def _precheck_benchmarks_for_eval(
             mv in resolved_sql.lower() for mv in mv_names_lower
         ) if mv_names_lower else False
         is_mv_context = expected_asset == "MV" or uses_measure or refs_metric_view
-        if is_mv_context and _MV_JOIN_RE.search(resolved_sql):
+        _uses_cte = bool(re.search(r"\bWITH\b\s+\w+\s+AS\s*\(", resolved_sql, re.IGNORECASE))
+        if is_mv_context and _MV_JOIN_RE.search(resolved_sql) and not _uses_cte:
             quarantined.append(
                 {
                     "question_id": qid,
                     "question": question,
                     "reason": "metric_view_join",
                     "sqlstate": None,
-                    "error": "Metric view / MEASURE() benchmarks cannot use JOINs (METRIC_VIEW_JOIN_NOT_SUPPORTED)",
+                    "error": (
+                        "Metric view / MEASURE() benchmarks cannot use direct JOINs "
+                        "(METRIC_VIEW_JOIN_NOT_SUPPORTED). Use the CTE-first pattern: "
+                        "materialize the metric view in a WITH clause, then JOIN the CTE."
+                    ),
                     "expected_sql": resolved_sql[:1500],
                 }
             )
@@ -1470,15 +1502,18 @@ def make_predict_fn(
                 _trace_tags["genie.lever"] = str(lever)
             if eval_scope:
                 _trace_tags["genie.eval_scope"] = eval_scope
-            _trace_metadata: dict[str, str] = {}
+            _trace_metadata: dict[str, str] = {
+                "space_id": space_id,
+            }
             if triggered_by:
                 _trace_metadata["mlflow.trace.user"] = triggered_by
             if optimization_run_id:
                 _trace_metadata["mlflow.trace.session"] = optimization_run_id
-            if _trace_metadata:
-                mlflow.update_current_trace(tags=_trace_tags, metadata=_trace_metadata)
-            else:
-                mlflow.update_current_trace(tags=_trace_tags)
+            if iteration is not None:
+                _trace_metadata["iteration"] = str(iteration)
+            if eval_scope:
+                _trace_metadata["eval_scope"] = eval_scope
+            mlflow.update_current_trace(tags=_trace_tags, metadata=_trace_metadata)
         except Exception:
             pass
 
@@ -2757,16 +2792,15 @@ def _run_evaluate_with_retries(
 
     attempts: list[dict[str, Any]] = []
     initial_workers = os.getenv("MLFLOW_GENAI_EVAL_MAX_WORKERS")
+    initial_scorer_workers = os.getenv("MLFLOW_GENAI_EVAL_MAX_SCORER_WORKERS")
     initial_skip_validation = os.getenv("MLFLOW_GENAI_EVAL_SKIP_TRACE_VALIDATION")
     os.environ["MLFLOW_GENAI_EVAL_SKIP_TRACE_VALIDATION"] = "True"
+    os.environ["MLFLOW_GENAI_EVAL_MAX_SCORER_WORKERS"] = "10"
 
     try:
         for attempt in range(1, max(1, EVAL_MAX_ATTEMPTS) + 1):
-            workers = initial_workers if attempt == 1 else EVAL_SINGLE_WORKER_FALLBACK
-            if workers is None:
-                os.environ.pop("MLFLOW_GENAI_EVAL_MAX_WORKERS", None)
-            else:
-                os.environ["MLFLOW_GENAI_EVAL_MAX_WORKERS"] = workers
+            workers = "1" if attempt == 1 else EVAL_SINGLE_WORKER_FALLBACK
+            os.environ["MLFLOW_GENAI_EVAL_MAX_WORKERS"] = workers
 
             try:
                 result = mlflow.genai.evaluate(**evaluate_kwargs)
@@ -2807,6 +2841,10 @@ def _run_evaluate_with_retries(
             os.environ.pop("MLFLOW_GENAI_EVAL_MAX_WORKERS", None)
         else:
             os.environ["MLFLOW_GENAI_EVAL_MAX_WORKERS"] = initial_workers
+        if initial_scorer_workers is None:
+            os.environ.pop("MLFLOW_GENAI_EVAL_MAX_SCORER_WORKERS", None)
+        else:
+            os.environ["MLFLOW_GENAI_EVAL_MAX_SCORER_WORKERS"] = initial_scorer_workers
         if initial_skip_validation is None:
             os.environ.pop("MLFLOW_GENAI_EVAL_SKIP_TRACE_VALIDATION", None)
         else:
@@ -2965,6 +3003,8 @@ def create_evaluation_dataset(
     catalog: str = "",
     gold_schema: str = "",
     experiment_id: str = "",
+    *,
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> Any | None:
     """Create or update the MLflow UC evaluation dataset from benchmarks.
 
@@ -3037,10 +3077,10 @@ def create_evaluation_dataset(
                 "Dropped %d duplicate benchmark(s) by question text before persisting to %s",
                 _dup_count, uc_table_name,
             )
-        if len(records) > MAX_BENCHMARK_COUNT:
+        if len(records) > max_benchmark_count:
             records = _truncate_benchmarks(
                 [{"provenance": r.get("expectations", {}).get("provenance", "other"), **r} for r in records],
-                MAX_BENCHMARK_COUNT,
+                max_benchmark_count,
             )
             for r in records:
                 r.pop("provenance", None)
@@ -3339,6 +3379,7 @@ def run_evaluation(
     optimization_run_id: str = "",
     lever: int | None = None,
     model_creation_kwargs: dict | None = None,
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> dict:
     """Run ``mlflow.genai.evaluate()`` and return structured results.
 
@@ -3460,10 +3501,10 @@ def run_evaluation(
                     "expectations": expectations,
                 }
             )
-        if len(eval_records) > MAX_BENCHMARK_COUNT:
+        if len(eval_records) > max_benchmark_count:
             eval_records = _truncate_benchmarks(
                 [{**r, "provenance": r.get("expectations", {}).get("provenance", "other")} for r in eval_records],
-                MAX_BENCHMARK_COUNT,
+                max_benchmark_count,
             )
             for r in eval_records:
                 r.pop("provenance", None)
@@ -3827,6 +3868,43 @@ def run_evaluation(
             )
         )
 
+        _arbiter_overridden_qids: list[str] = []
+        _soft_signal_qids: list[str] = []
+        for _ao_row in rows_for_output:
+            _ao_rc = str(
+                _ao_row.get("result_correctness/value", _ao_row.get("result_correctness", ""))
+            ).lower()
+            _ao_av = str(
+                _ao_row.get("arbiter/value", _ao_row.get("arbiter", "skipped"))
+            ).lower()
+            _ao_rq = _ao_row.get("request") or {}
+            if isinstance(_ao_rq, str):
+                try:
+                    _ao_rq = json.loads(_ao_rq)
+                except (json.JSONDecodeError, TypeError):
+                    _ao_rq = {}
+            _ao_kw = _ao_rq.get("kwargs", {}) if isinstance(_ao_rq, dict) else {}
+            _ao_qid = str(
+                _ao_row.get("inputs/question_id")
+                or (_ao_row.get("inputs") or {}).get("question_id", "")
+                or _ao_row.get("question_id")
+                or _ao_kw.get("question_id")
+                or (_ao_rq.get("question_id") if isinstance(_ao_rq, dict) else None)
+                or ""
+            )
+            if not _ao_qid:
+                continue
+            if _ao_rc in ("no", "false", "0", "0.0") and _ao_av in _ARBITER_CORRECT_VERDICTS:
+                _arbiter_overridden_qids.append(_ao_qid)
+                _has_judge_fail = False
+                for _ao_col, _ao_val in _ao_row.items():
+                    if (_ao_col.startswith("feedback/") and _ao_col.endswith("/value")
+                            and "no" in str(_ao_val).lower()):
+                        _has_judge_fail = True
+                        break
+                if _has_judge_fail:
+                    _soft_signal_qids.append(_ao_qid)
+
         # Arbiter-adjust result_correctness so detect_regressions sees true
         # signal instead of raw hash-mismatch noise.
         if rows_for_output:
@@ -3988,6 +4066,8 @@ def run_evaluation(
             "harness_retry_count": harness_retry_count,
             "excluded_count": excluded_count,
             "quarantined_benchmarks": quarantined_benchmarks,
+            "arbiter_overridden_qids": _arbiter_overridden_qids,
+            "soft_signal_qids": _soft_signal_qids,
         }
 
     logger.info(
@@ -4508,7 +4588,7 @@ def extract_genie_space_benchmarks(
             continue
         q_raw = ex.get("question", "")
         if isinstance(q_raw, list):
-            q_raw = q_raw[0] if q_raw else ""
+            q_raw = " ".join(str(c) for c in q_raw)
         question = str(q_raw).strip()
         if not question:
             continue
@@ -4519,7 +4599,7 @@ def extract_genie_space_benchmarks(
 
         sql_raw = ex.get("sql", "")
         if isinstance(sql_raw, list):
-            sql_raw = sql_raw[0] if sql_raw else ""
+            sql_raw = "".join(str(c) for c in sql_raw)
         expected_sql = str(sql_raw).strip()
 
         if expected_sql:
@@ -4556,7 +4636,7 @@ def extract_genie_space_benchmarks(
             continue
         q_raw = bq.get("question", [])
         if isinstance(q_raw, list):
-            q_raw = q_raw[0] if q_raw else ""
+            q_raw = " ".join(str(c) for c in q_raw)
         question = str(q_raw).strip()
         if not question:
             continue
@@ -5099,6 +5179,8 @@ def _fill_coverage_gaps(
     category_performance: dict[str, dict] | None = None,
     *,
     warehouse_id: str = "",
+    target_benchmark_count: int = TARGET_BENCHMARK_COUNT,
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> list[dict]:
     """Generate targeted benchmarks for Genie Space assets with zero coverage.
 
@@ -5114,8 +5196,8 @@ def _fill_coverage_gaps(
     Returns only validated gap-fill benchmarks (may be empty).
     """
     soft_cap = min(
-        int(TARGET_BENCHMARK_COUNT * COVERAGE_GAP_SOFT_CAP_FACTOR),
-        MAX_BENCHMARK_COUNT,
+        int(target_benchmark_count * COVERAGE_GAP_SOFT_CAP_FACTOR),
+        max_benchmark_count,
     )
     if len(benchmarks) >= soft_cap:
         logger.info(
@@ -5415,6 +5497,223 @@ def _enforce_metadata_constraints(
     return True, "ok", ""
 
 
+def _generate_sql_for_curated_questions(
+    w: WorkspaceClient,
+    config: dict,
+    uc_columns: list[dict],
+    uc_routines: list[dict],
+    question_only_benchmarks: list[dict],
+    catalog: str,
+    schema: str,
+    spark: SparkSession,
+    *,
+    warehouse_id: str = "",
+) -> list[dict]:
+    """Generate and validate expected SQL for curated questions that lack it.
+
+    Uses the same LLM + validation pipeline as synthetic benchmark generation.
+    Questions that fail SQL generation after retries are dropped.
+
+    Returns only benchmarks that ended up with valid ``expected_sql``.
+    """
+    if not question_only_benchmarks:
+        return []
+
+    from genie_space_optimizer.common.config import (
+        CURATED_SQL_GENERATION_PROMPT,
+        CURATED_SQL_GENERATION_MAX_RETRIES,
+        format_mlflow_template,
+    )
+    from genie_space_optimizer.optimization.benchmarks import validate_ground_truth_sql
+
+    ctx = _build_schema_contexts(config, uc_columns, uc_routines)
+    questions_json = json.dumps(
+        [{"question": b["question"]} for b in question_only_benchmarks],
+        indent=2,
+    )
+
+    prompt = format_mlflow_template(
+        CURATED_SQL_GENERATION_PROMPT,
+        valid_assets_context=ctx["valid_assets_context"],
+        tables_context=ctx["tables_context"],
+        column_allowlist=ctx.get("column_allowlist", "(no columns)"),
+        metric_views_context=ctx.get("metric_views_context", "None"),
+        tvfs_context=ctx.get("tvfs_context", "None"),
+        join_specs_context=ctx.get("join_specs_context", "None"),
+        instructions_context=ctx.get("instructions_context", "None"),
+        data_profile_context=ctx.get("data_profile_context", "(no data profile available)"),
+        questions_json=questions_json,
+    )
+
+    try:
+        response = _call_llm_for_scoring(
+            w, prompt,
+            prompt_name=get_registered_prompt_name("curated_sql_generation"),
+        )
+        generated: list[dict] = (
+            response if isinstance(response, list) else response.get("benchmarks", [])
+        )
+    except Exception:
+        logger.warning("Curated SQL generation LLM call failed", exc_info=True)
+        return []
+
+    question_map = {b["question"].strip().lower(): b for b in question_only_benchmarks}
+    enriched: list[dict] = []
+
+    for g in generated:
+        if not isinstance(g, dict):
+            continue
+        sql = g.get("expected_sql")
+        question = str(g.get("question", "")).strip()
+        if not sql or g.get("unfixable_reason"):
+            logger.info(
+                "Curated SQL generation: unfixable '%s' — %s",
+                question[:60],
+                g.get("unfixable_reason", "no SQL generated"),
+            )
+            continue
+
+        is_valid, err = validate_ground_truth_sql(
+            sql, spark, catalog=catalog, gold_schema=schema,
+            w=w, warehouse_id=warehouse_id,
+        )
+        if not is_valid:
+            for _retry in range(CURATED_SQL_GENERATION_MAX_RETRIES):
+                corrections = _attempt_benchmark_correction(
+                    w, config, uc_columns, uc_routines,
+                    [{"question": question, "expected_sql": sql, "validation_error": err}],
+                    catalog, schema, spark,
+                    _build_metadata_allowlist(config=config, uc_columns=uc_columns, uc_routines=uc_routines),
+                    warehouse_id=warehouse_id,
+                )
+                if corrections:
+                    g = corrections[0]
+                    sql = g.get("expected_sql", "")
+                    is_valid = bool(sql)
+                    break
+                logger.info(
+                    "Curated SQL correction attempt %d failed for '%s'",
+                    _retry + 1, question[:60],
+                )
+
+        if is_valid and sql:
+            original = question_map.get(question.lower(), {})
+            enriched.append({
+                **original,
+                "question": question,
+                "expected_sql": sql,
+                "expected_asset": g.get("expected_asset", detect_asset_type(sql)),
+                "category": g.get("category", original.get("category", "curated")),
+                "required_tables": g.get("required_tables", []),
+                "required_columns": g.get("required_columns", []),
+                "expected_facts": g.get("expected_facts", []),
+                "source": "genie_space",
+                "provenance": "curated_sql_generated",
+                "validation_status": "valid",
+                "validation_reason_code": "ok",
+                "validation_error": None,
+                "correction_source": "curated_sql_generation",
+            })
+        else:
+            logger.warning(
+                "Dropping curated question (no valid SQL after retries): %s",
+                question[:80],
+            )
+
+    logger.info(
+        "Curated SQL generation: %d/%d questions got valid SQL",
+        len(enriched), len(question_only_benchmarks),
+    )
+
+    _data_profile = config.get("_data_profile", {})
+    if _data_profile and enriched:
+        try:
+            from genie_space_optimizer.optimization.benchmarks import (
+                validate_predicate_values,
+            )
+            _pred_results = validate_predicate_values(enriched, _data_profile)
+            for _eb, _pr in zip(enriched, _pred_results):
+                if not _pr["valid"]:
+                    for mm in _pr["mismatches"]:
+                        if mm.get("suggestion"):
+                            old_sql = _eb.get("expected_sql", "")
+                            new_sql = old_sql.replace(
+                                f"'{mm['literal']}'", f"'{mm['suggestion']}'",
+                            )
+                            if new_sql != old_sql:
+                                _eb["expected_sql"] = new_sql
+                                _eb["correction_source"] = "predicate_value_fix"
+                                logger.info(
+                                    "Curated SQL auto-corrected predicate: "
+                                    "%s='%s' → '%s' in '%s'",
+                                    mm["column"], mm["literal"],
+                                    mm["suggestion"], _eb["question"][:60],
+                                )
+        except Exception as exc:
+            logger.warning("Predicate value post-check skipped: %s", exc)
+
+    return enriched
+
+
+def _enforce_instruction_default_filters_on_benchmarks(
+    benchmarks: list[dict],
+    config: dict,
+) -> int:
+    """Ensure benchmarks include instruction-mandated default filters in their SQL.
+
+    Reads default filter rules from the Genie Space instructions and checks
+    each benchmark's ``expected_sql``. If a benchmark's SQL is missing a
+    mandated filter, appends it to the WHERE clause.
+
+    Returns the count of benchmarks patched.
+    """
+    try:
+        from genie_space_optimizer.optimization.optimizer import (
+            _extract_instruction_default_filters,
+        )
+    except ImportError:
+        return 0
+
+    parsed_space = config.get("_parsed_space", config)
+    default_filters = _extract_instruction_default_filters(parsed_space)
+    if not default_filters:
+        return 0
+
+    patched = 0
+    for b in benchmarks:
+        sql = b.get("expected_sql", "")
+        if not sql or not sql.strip():
+            continue
+        sql_lower = sql.lower()
+        for df in default_filters:
+            col = df["column"]
+            val = df["value"]
+            if col.lower() in sql_lower:
+                continue
+            if "where" in sql_lower:
+                sql = re.sub(
+                    r"(?i)\bWHERE\b",
+                    f"WHERE {col} = '{val}' AND",
+                    sql,
+                    count=1,
+                )
+            else:
+                group_match = re.search(r"(?i)\b(GROUP\s+BY|ORDER\s+BY|LIMIT)\b", sql)
+                if group_match:
+                    pos = group_match.start()
+                    sql = sql[:pos] + f"WHERE {col} = '{val}' " + sql[pos:]
+                else:
+                    sql = sql.rstrip().rstrip(";") + f" WHERE {col} = '{val}'"
+            b["expected_sql"] = sql
+            b["_instruction_filter_patched"] = True
+            patched += 1
+            logger.info(
+                "Added instruction-mandated filter '%s=%s' to benchmark: %s",
+                col, val, b.get("question", "")[:80],
+            )
+    return patched
+
+
 def generate_benchmarks(
     w: WorkspaceClient,
     config: dict,
@@ -5429,6 +5728,8 @@ def generate_benchmarks(
     genie_space_benchmarks: list[dict] | None = None,
     existing_benchmarks: list[dict] | None = None,
     warehouse_id: str = "",
+    *,
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> list[dict]:
     """Generate benchmark questions via LLM from Genie Space context.
 
@@ -5761,7 +6062,46 @@ def generate_benchmarks(
 
     all_benchmarks: list[dict] = list(_existing)
 
-    for idx, b in enumerate(curated):
+    from genie_space_optimizer.common.config import REQUIRE_GROUND_TRUTH_SQL
+
+    curated_with_sql = [b for b in curated if str(b.get("expected_sql", "") or "").strip()]
+    curated_no_sql = [b for b in curated if not str(b.get("expected_sql", "") or "").strip()]
+
+    if curated_no_sql and REQUIRE_GROUND_TRUTH_SQL:
+        logger.info(
+            "Generating ground-truth SQL for %d curated question-only benchmarks",
+            len(curated_no_sql),
+        )
+        enriched_curated = _generate_sql_for_curated_questions(
+            w, config, uc_columns, uc_routines,
+            curated_no_sql, catalog, schema, spark,
+            warehouse_id=warehouse_id,
+        )
+        curated_with_sql.extend(enriched_curated)
+        _dropped = len(curated_no_sql) - len(enriched_curated)
+        if _dropped:
+            logger.warning(
+                "Dropped %d curated questions that could not get valid SQL "
+                "(enriched %d/%d)",
+                _dropped, len(enriched_curated), len(curated_no_sql),
+            )
+        _dropped_questions = [
+            b["question"][:80] for b in curated_no_sql
+            if b["question"].strip().lower() not in {
+                e["question"].strip().lower() for e in enriched_curated
+            }
+        ]
+        if _dropped_questions:
+            logger.info(
+                "Dropped curated questions: %s",
+                "; ".join(_dropped_questions[:10]),
+            )
+    elif curated_no_sql:
+        curated_with_sql.extend(curated_no_sql)
+
+    effective_curated = curated_with_sql
+
+    for idx, b in enumerate(effective_curated):
         question_id = f"{domain}_gs_{idx + 1:03d}"
         priority = "P0"
         expected_sql = str(b.get("expected_sql", "") or "")
@@ -5782,16 +6122,16 @@ def generate_benchmarks(
                 "expected_facts": b.get("expected_facts", []),
                 "priority": priority,
                 "split": "",
-                "source": b.get("source", "genie_space"),
-                "provenance": "curated",
+                "source": b.get("source") or "genie_space",
+                "provenance": b.get("provenance") or "curated",
                 "validation_status": curated_status,
                 "validation_reason_code": "ok" if expected_sql else "missing_expected_sql",
                 "validation_error": None if expected_sql else "No expected SQL in curated sample question",
-                "correction_source": "",
+                "correction_source": b.get("correction_source", ""),
             }
         )
 
-    offset = len(curated)
+    offset = len(effective_curated)
     for idx, b in enumerate(valid_benchmarks):
         question_id = f"{domain}_{offset + idx + 1:03d}"
         priority = "P0" if idx < 3 else "P1"
@@ -5810,8 +6150,8 @@ def generate_benchmarks(
                 "expected_facts": b.get("expected_facts", []),
                 "priority": priority,
                 "split": "",
-                "source": b.get("source", "llm_generated"),
-                "provenance": b.get("provenance", "synthetic"),
+                "source": b.get("source") or "llm_generated",
+                "provenance": b.get("provenance") or "synthetic",
                 "validation_status": b.get("validation_status", "valid"),
                 "validation_reason_code": b.get("validation_reason_code", "ok"),
                 "validation_error": b.get("validation_error"),
@@ -5838,6 +6178,8 @@ def generate_benchmarks(
         domain=domain,
         existing_questions=all_accepted_questions,
         warehouse_id=warehouse_id,
+        target_benchmark_count=target_count,
+        max_benchmark_count=max_benchmark_count,
     )
     gap_fill_offset = len(curated) + len(valid_benchmarks)
     for idx, b in enumerate(gap_fill_benchmarks):
@@ -5864,6 +6206,17 @@ def generate_benchmarks(
                 "validation_error": b.get("validation_error"),
                 "correction_source": "",
             }
+        )
+
+    # ── Post-generation: enforce instruction-mandated default filters ──
+    _filter_patched = _enforce_instruction_default_filters_on_benchmarks(
+        all_benchmarks, config,
+    )
+    if _filter_patched:
+        logger.info(
+            "Post-generation filter enforcement: patched %d benchmark(s) "
+            "with instruction-mandated default filters",
+            _filter_patched,
         )
 
     from genie_space_optimizer.optimization.benchmarks import assign_splits
@@ -5975,8 +6328,8 @@ def load_benchmarks_from_dataset(
                     "required_tables": expectations.get("required_tables", []),
                     "required_columns": expectations.get("required_columns", []),
                     "expected_facts": expectations.get("expected_facts", []),
-                    "source": expectations.get("source", ""),
-                    "provenance": expectations.get("provenance", ""),
+                    "source": expectations.get("source") or "",
+                    "provenance": expectations.get("provenance") or "",
                     "validation_status": expectations.get("validation_status", ""),
                     "validation_reason_code": expectations.get("validation_reason_code", ""),
                     "validation_error": expectations.get("validation_error"),

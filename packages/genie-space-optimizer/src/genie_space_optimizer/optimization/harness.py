@@ -34,6 +34,7 @@ from databricks.sdk import WorkspaceClient
 from genie_space_optimizer.common.config import (
     APPLY_MODE,
     ARBITER_CORRECTION_TRIGGER,
+    CONSECUTIVE_ESCALATION_LIMIT,
     CONSECUTIVE_ROLLBACK_LIMIT,
     DEFAULT_LEVER_ORDER,
     DEFAULT_THRESHOLDS,
@@ -47,6 +48,7 @@ from genie_space_optimizer.common.config import (
     INLINE_EVAL_DELAY,
     INSTRUCTION_PROMPT_NAME_TEMPLATE,
     LEVER_NAMES,
+    MAX_BENCHMARK_COUNT,
     MAX_ITERATIONS,
     MAX_NOISE_FLOOR,
     NEITHER_CORRECT_QUARANTINE_THRESHOLD,
@@ -368,13 +370,23 @@ def baseline_setup_scorers(
         warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
         instruction_prompt_name=_instr_prompt,
     )
-    scorers = make_all_scorers(w, spark, catalog, schema)
+
+    from genie_space_optimizer.common.genie_client import fetch_space_config as _fetch_cfg
+    try:
+        _bl_config = _fetch_cfg(w, space_id)
+        _bl_parsed = _bl_config.get("_parsed_space", _bl_config)
+        _bl_instr = _bl_parsed.get("instructions", {}) if isinstance(_bl_parsed, dict) else {}
+        _bl_instr_text = _bl_instr.get("text_instructions", "") if isinstance(_bl_instr, dict) else ""
+    except Exception:
+        _bl_instr_text = ""
+    scorers = make_all_scorers(w, spark, catalog, schema, instruction_context=_bl_instr_text)
 
     _lines = [_section("BASELINE — EVALUATION SETUP", "-")]
     _lines.append(_kv("Space ID", space_id))
     _lines.append(_kv("Model ID", model_id))
     _lines.append(_kv("Experiment", exp_name))
     _lines.append(_kv("Scorers", len(scorers)))
+    _lines.append(_kv("Instruction context", f"{len(_bl_instr_text)} chars" if _bl_instr_text else "(none)"))
     _lines.append(_bar("-"))
     print("\n".join(_lines))
 
@@ -397,6 +409,7 @@ def baseline_run_evaluation(
     setup_ctx: dict,
     w: WorkspaceClient | None = None,
     model_creation_kwargs: dict | None = None,
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> dict:
     """Sub-step 2b: Run 9-judge evaluation with retry."""
     _ensure_sql_context(spark, catalog, schema)
@@ -409,6 +422,7 @@ def baseline_run_evaluation(
         spark=spark, w=w, catalog=catalog, gold_schema=schema,
         uc_schema=f"{catalog}.{schema}",
         model_creation_kwargs=model_creation_kwargs,
+        max_benchmark_count=max_benchmark_count,
     )
     return eval_result
 
@@ -1034,8 +1048,9 @@ def _run_proactive_join_discovery(
         result["fk_candidates"] = len(fk_candidates)
 
         # 3b. Tier 1: Execution-proven joins from baseline eval
-        exec_candidates = _extract_proven_joins(rows_json, metadata_snapshot)
+        exec_candidates, exec_diagnostics = _extract_proven_joins(rows_json, metadata_snapshot)
         result["execution_candidates"] = len(exec_candidates)
+        result["extraction_diagnostics"] = exec_diagnostics
 
         # 3c. Merge: FK candidates take precedence for shared table pairs.
         #     For pairs that appear in both, keep the FK candidate's ON
@@ -1087,6 +1102,13 @@ def _run_proactive_join_discovery(
             _jd_lines.append(_kv("Existing join specs", result['existing_specs']))
             _jd_lines.append(_kv("FK constraint candidates", result['fk_candidates']))
             _jd_lines.append(_kv("Execution-proven candidates", result['execution_candidates']))
+            _diag = result.get("extraction_diagnostics", {})
+            if _diag:
+                _jd_lines.append(_kv("  Eval rows scanned", _diag.get("total_rows", "?")))
+                _jd_lines.append(_kv("  Positive verdicts", _diag.get("positive_verdicts", "?")))
+                _jd_lines.append(_kv("  SQL with JOIN", _diag.get("sql_with_join", "?")))
+                _jd_lines.append(_kv("  FROM unresolved", _diag.get("no_from_resolved", "?")))
+                _jd_lines.append(_kv("  Joined unresolved", _diag.get("no_joined_resolved", "?")))
             _jd_lines.append(_kv("Merged candidates", result['candidates_found']))
             _jd_lines.append(_kv("Already defined", result['already_defined']))
             _jd_lines.append(_kv("Type-incompatible", result['type_incompatible']))
@@ -1147,6 +1169,13 @@ def _run_proactive_join_discovery(
         _jd_lines.append(_kv("Existing join specs", result['existing_specs']))
         _jd_lines.append(_kv("FK constraint candidates", result['fk_candidates']))
         _jd_lines.append(_kv("Execution-proven candidates", result['execution_candidates']))
+        _diag = result.get("extraction_diagnostics", {})
+        if _diag:
+            _jd_lines.append(_kv("  Eval rows scanned", _diag.get("total_rows", "?")))
+            _jd_lines.append(_kv("  Positive verdicts", _diag.get("positive_verdicts", "?")))
+            _jd_lines.append(_kv("  SQL with JOIN", _diag.get("sql_with_join", "?")))
+            _jd_lines.append(_kv("  FROM unresolved", _diag.get("no_from_resolved", "?")))
+            _jd_lines.append(_kv("  Joined unresolved", _diag.get("no_joined_resolved", "?")))
         _jd_lines.append(_kv("Merged candidates", result['candidates_found']))
         _jd_lines.append(_kv("Already defined", result['already_defined']))
         _jd_lines.append(_kv("Type-incompatible", result['type_incompatible']))
@@ -1175,6 +1204,144 @@ def _run_proactive_join_discovery(
             catalog=catalog, schema=schema,
         )
         return result
+
+
+# ── Iterative join mining (runs after each accepted iteration) ────────
+
+
+def _mine_and_apply_proven_joins(
+    w: "WorkspaceClient",
+    spark: "SparkSession",
+    run_id: str,
+    space_id: str,
+    metadata_snapshot: dict,
+    eval_rows: list[dict],
+    catalog: str,
+    schema: str,
+    *,
+    iteration: int = 0,
+) -> dict:
+    """Mine execution-proven joins from eval rows and apply new ones.
+
+    Lightweight wrapper around ``_extract_proven_joins`` →
+    ``_corroborate_with_uc_metadata`` → ``_build_join_specs_from_proven``
+    that can be called after any accepted iteration.
+
+    Returns a result dict with ``total_applied`` count and ``new_specs``.
+    Does NOT re-read from Delta — operates on the in-memory *eval_rows*.
+    """
+    from genie_space_optimizer.common.genie_client import (
+        patch_space_config,
+    )
+    from genie_space_optimizer.optimization.optimizer import (
+        _build_join_specs_from_proven,
+        _corroborate_with_uc_metadata,
+        _extract_proven_joins,
+        _short_name,
+    )
+
+    result: dict = {"total_applied": 0, "new_specs": [], "extraction_diagnostics": {}}
+    if not eval_rows:
+        return result
+
+    exec_candidates, exec_diagnostics = _extract_proven_joins(eval_rows, metadata_snapshot)
+    result["extraction_diagnostics"] = exec_diagnostics
+    if not exec_candidates:
+        return result
+
+    _inst = metadata_snapshot.get("instructions", {})
+    if not isinstance(_inst, dict):
+        _inst = {}
+    existing_specs = _inst.get("join_specs", [])
+    if not isinstance(existing_specs, list):
+        existing_specs = []
+
+    existing_pairs: set[tuple[str, str]] = set()
+    for spec in existing_specs:
+        if not isinstance(spec, dict):
+            continue
+        left_obj = spec.get("left", {})
+        right_obj = spec.get("right", {})
+        lt = left_obj.get("identifier", "") if isinstance(left_obj, dict) else ""
+        rt = right_obj.get("identifier", "") if isinstance(right_obj, dict) else ""
+        if lt and rt:
+            _a, _b = sorted((lt, rt))
+            existing_pairs.add((_a, _b))
+
+    new_candidates = []
+    for cand in exec_candidates:
+        pair_key = tuple(sorted((cand["left_table"], cand["right_table"])))
+        if pair_key not in existing_pairs:
+            new_candidates.append(cand)
+
+    new_candidates = _corroborate_with_uc_metadata(new_candidates, metadata_snapshot)
+    if not new_candidates:
+        return result
+
+    new_specs = _build_join_specs_from_proven(new_candidates, metadata_snapshot)
+    if not new_specs:
+        return result
+
+    parsed = metadata_snapshot
+    inst_block = parsed.setdefault("instructions", {})
+    spec_list = inst_block.setdefault("join_specs", [])
+
+    applied_lines: list[str] = []
+    for spec in new_specs:
+        meta = spec.pop("_proactive_metadata", {})
+        spec_list.append(spec)
+        left_short = _short_name(spec["left"]["identifier"])
+        right_short = _short_name(spec["right"]["identifier"])
+        freq = meta.get("frequency", 0)
+        agreed_tag = "agreed" if meta.get("agreed") else "single_source"
+        applied_lines.append(
+            f"{left_short} <-> {right_short}"
+            f" ON {spec['sql'][0][:60] if spec.get('sql') else '?'}"
+            f" (freq={freq}, {agreed_tag})"
+        )
+        result["total_applied"] += 1
+
+    patch_space_config(w, space_id, parsed)
+    result["new_specs"] = new_specs
+
+    for idx, spec in enumerate(new_specs):
+        write_patch(
+            spark, run_id, iteration, 4, idx,
+            {
+                "patch_type": "iterative_join_mining",
+                "scope": "genie_config",
+                "risk_level": "low",
+                "target_object": (
+                    f"{spec['left']['identifier']}"
+                    f" <-> {spec['right']['identifier']}"
+                ),
+                "patch": spec,
+                "command": None,
+            },
+            catalog, schema,
+        )
+
+    _jm_lines = [_section(f"ITERATIVE JOIN MINING (iter {iteration})", "-")]
+    _diag = result.get("extraction_diagnostics", {})
+    _jm_lines.append(_kv("Eval rows scanned", _diag.get("total_rows", "?")))
+    _jm_lines.append(_kv("Positive verdicts", _diag.get("positive_verdicts", "?")))
+    _jm_lines.append(_kv("SQL with JOIN", _diag.get("sql_with_join", "?")))
+    _jm_lines.append(_kv("Existing join specs", len(existing_specs)))
+    _jm_lines.append(_kv("New candidates", len(new_candidates)))
+    _jm_lines.append(_kv("New joins applied", result["total_applied"]))
+    for al in applied_lines:
+        _jm_lines.append(f"|    {al}")
+    _jm_lines.append(_bar("-"))
+    print("\n".join(_jm_lines))
+
+    write_stage(
+        spark, run_id, f"JOIN_MINING_ITER_{iteration}", "COMPLETE",
+        task_key="lever_loop", iteration=iteration,
+        detail=result,
+        catalog=catalog, schema=schema,
+    )
+
+    return result
 
 
 # ── Stage 2.9: PROACTIVE SPACE METADATA ENRICHMENT ──────────────────
@@ -1374,6 +1541,8 @@ def _apply_proactive_example_sqls(
     print("\n".join(_lines))
 
     for idx, entry in enumerate(applied):
+        _ap = entry.get("patch", {})
+        _action = entry.get("action", {})
         write_patch(
             spark, run_id, 0, 0, idx,
             {
@@ -1381,9 +1550,12 @@ def _apply_proactive_example_sqls(
                 "scope": "genie_config",
                 "risk_level": "low",
                 "target_object": f"example_question_sqls[{idx}]",
-                "patch": {"question": str(entry.get("patch", {}).get("example_question", ""))[:100]},
-                "command": None,
-                "rollback": None,
+                "patch": {
+                    "question": str(_ap.get("example_question", ""))[:200],
+                    "sql": str(_ap.get("example_sql", "")),
+                },
+                "command": _action.get("command"),
+                "rollback": _action.get("rollback_command"),
                 "proposal_id": "proactive_benchmark_mining",
             },
             catalog, schema,
@@ -1489,6 +1661,333 @@ def _run_proactive_instruction_seeding(
         write_stage(
             spark, run_id, "PROACTIVE_INSTRUCTION_SEEDING", "FAILED",
             task_key="instruction_seeding",
+            error_message=err_msg[:500],
+            catalog=catalog, schema=schema,
+        )
+        return result
+
+
+# ── Stage 2.96: INSTRUCTION-TO-SQL-EXPRESSION CONVERSION ─────────────
+
+
+def _apply_instruction_sql_expressions(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    run_id: str,
+    space_id: str,
+    candidates: list[dict],
+    metadata_snapshot: dict,
+    catalog: str,
+    schema: str,
+) -> int:
+    """Apply validated instruction-derived SQL expression candidates to the Genie Space.
+
+    Returns the count of expressions successfully applied.
+    """
+    from genie_space_optimizer.common.genie_client import patch_space_config
+    from genie_space_optimizer.common.genie_schema import generate_genie_id
+
+    if not candidates:
+        return 0
+
+    write_stage(
+        spark, run_id, "INSTRUCTION_SQL_EXPRESSION_CONVERSION", "STARTED",
+        task_key="enrichment", catalog=catalog, schema=schema,
+    )
+
+    instr = metadata_snapshot.get("instructions", {})
+    if not isinstance(instr, dict):
+        instr = {}
+    snippets = instr.setdefault("sql_snippets", {})
+
+    applied = 0
+    for c in candidates:
+        stype = c["snippet_type"]
+        category = f"{stype}s"
+        if category not in snippets:
+            snippets[category] = []
+
+        _sql_val = c["sql"]
+        entry: dict = {
+            "id": generate_genie_id(),
+            "sql": [_sql_val] if isinstance(_sql_val, str) else _sql_val,
+        }
+        if c.get("display_name"):
+            entry["display_name"] = c["display_name"]
+        if c.get("description"):
+            entry["description"] = c["description"]
+        if c.get("alias"):
+            entry["alias"] = c["alias"]
+        if c.get("synonyms"):
+            entry["synonyms"] = c["synonyms"]
+
+        snippets[category].append(entry)
+        applied += 1
+
+    if applied:
+        try:
+            patch_space_config(w, space_id, metadata_snapshot)
+            logger.info(
+                "Applied %d instruction-derived SQL expressions to space %s",
+                applied, space_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to PATCH instruction-derived SQL expressions",
+                exc_info=True,
+            )
+            applied = 0
+
+    write_stage(
+        spark, run_id, "INSTRUCTION_SQL_EXPRESSION_CONVERSION", "COMPLETE",
+        task_key="enrichment",
+        detail={
+            "candidates_total": len(candidates),
+            "applied": applied,
+        },
+        catalog=catalog, schema=schema,
+    )
+
+    _lines = [_section("INSTRUCTION → SQL EXPRESSION CONVERSION", "-")]
+    _lines.append(_kv("Candidates", len(candidates)))
+    _lines.append(_kv("Applied", applied))
+    for c in candidates[:5]:
+        _lines.append(f"  |  {c['snippet_type']}: {c['sql'][:60]}")
+    _lines.append(_bar("-"))
+    print("\n".join(_lines))
+
+    return applied
+
+
+# ── Stage 2.97: PROACTIVE SQL EXPRESSION SEEDING ─────────────────────
+
+
+def _run_sql_expression_seeding(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    run_id: str,
+    space_id: str,
+    config: dict,
+    metadata_snapshot: dict,
+    benchmarks: list[dict],
+    catalog: str,
+    schema: str,
+    *,
+    warehouse_id: str = "",
+) -> dict:
+    """Proactively seed SQL Expressions (measures, filters, dimensions).
+
+    Mines candidates from benchmark ground-truth SQL and schema patterns.
+    Each candidate is validated by execution before being applied.
+
+    Returns dict with counts of seeded/rejected expressions.
+    """
+    import json as _json
+
+    from genie_space_optimizer.common.config import (
+        SQL_EXPRESSION_SEEDING_MAX_CANDIDATES,
+        SQL_EXPRESSION_SEEDING_THRESHOLD,
+    )
+    from genie_space_optimizer.common.genie_client import patch_space_config
+    from genie_space_optimizer.common.genie_schema import generate_genie_id
+    from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
+    from genie_space_optimizer.optimization.optimizer import (
+        _discover_schema_sql_expressions,
+        _enrich_candidates_with_llm,
+        _format_existing_sql_snippets,
+        _mine_sql_expression_candidates,
+        _ngram_similarity,
+    )
+
+    result: dict = {
+        "total_candidates": 0,
+        "total_seeded": 0,
+        "total_rejected": 0,
+        "measures_seeded": 0,
+        "filters_seeded": 0,
+        "expressions_seeded": 0,
+        "skipped_reason": None,
+    }
+
+    parsed = config.get("_parsed_space", config)
+    existing_snippets = parsed.get("instructions", {}).get("sql_snippets", {})
+    if not isinstance(existing_snippets, dict):
+        existing_snippets = {}
+
+    existing_count = sum(
+        len(existing_snippets.get(k, []) or [])
+        for k in ("measures", "filters", "expressions")
+    )
+
+    if existing_count >= SQL_EXPRESSION_SEEDING_THRESHOLD:
+        _lines = [_section("SQL EXPRESSION SEEDING", "-")]
+        _lines.append(_kv("Existing snippets", existing_count))
+        _lines.append(_kv("Status", f"Skipped (threshold={SQL_EXPRESSION_SEEDING_THRESHOLD})"))
+        _lines.append(_bar("-"))
+        print("\n".join(_lines))
+        result["skipped_reason"] = "sufficient_existing"
+        return result
+
+    write_stage(
+        spark, run_id, "SQL_EXPRESSION_SEEDING", "STARTED",
+        task_key="sql_expression_seeding", catalog=catalog, schema=schema,
+    )
+
+    try:
+        benchmark_candidates = _mine_sql_expression_candidates(benchmarks, metadata_snapshot)
+        schema_candidates = _discover_schema_sql_expressions(metadata_snapshot)
+
+        all_candidates = benchmark_candidates + schema_candidates
+
+        seen_sqls: set[str] = set()
+        deduped: list[dict] = []
+        for c in all_candidates:
+            key = c["sql"].lower()
+            if any(_ngram_similarity(key, s) > 0.85 for s in seen_sqls):
+                continue
+            seen_sqls.add(key)
+            deduped.append(c)
+
+        deduped = deduped[:SQL_EXPRESSION_SEEDING_MAX_CANDIDATES]
+        result["total_candidates"] = len(deduped)
+
+        if not deduped:
+            _lines = [_section("SQL EXPRESSION SEEDING", "-")]
+            _lines.append(_kv("Candidates found", 0))
+            _lines.append(_kv("Status", "No candidates"))
+            _lines.append(_bar("-"))
+            print("\n".join(_lines))
+            write_stage(
+                spark, run_id, "SQL_EXPRESSION_SEEDING", "COMPLETE",
+                task_key="sql_expression_seeding",
+                detail=result, catalog=catalog, schema=schema,
+            )
+            return result
+
+        deduped = _enrich_candidates_with_llm(deduped, metadata_snapshot, w=w)
+
+        existing_sql_set: set[str] = set()
+        for snippet_type in ("measures", "filters", "expressions"):
+            for item in (existing_snippets.get(snippet_type, []) or []):
+                sql_val = item.get("sql", [])
+                sql_str = sql_val[0] if isinstance(sql_val, list) and sql_val else str(sql_val)
+                existing_sql_set.add(sql_str.lower())
+
+        applied_snippets: list[dict] = []
+        type_key_map = {"measure": "measures", "filter": "filters", "expression": "expressions"}
+
+        for candidate in deduped:
+            sql_raw = candidate["sql"]
+            snippet_type = candidate["snippet_type"]
+
+            if any(_ngram_similarity(sql_raw.lower(), e) > 0.85 for e in existing_sql_set):
+                result["total_rejected"] += 1
+                continue
+
+            _valid_result = validate_sql_snippet(
+                sql_raw, snippet_type, metadata_snapshot,
+                spark=spark, catalog=catalog, gold_schema=schema,
+                w=w, warehouse_id=warehouse_id,
+            )
+            is_valid = _valid_result[0]
+            err = _valid_result[1]
+            prefixed_sql = _valid_result[2] if len(_valid_result) > 2 else sql_raw
+            if not is_valid:
+                logger.info("SQL expression candidate rejected: %s — %s", sql_raw[:80], err)
+                result["total_rejected"] += 1
+                continue
+
+            snippet_entry = {
+                "id": generate_genie_id(),
+                "sql": [prefixed_sql],
+                "display_name": candidate.get("display_name", ""),
+                "synonyms": candidate.get("synonyms", []),
+                "instruction": [candidate.get("instruction", "")] if candidate.get("instruction") else [],
+            }
+            if candidate.get("alias") and snippet_type != "filter":
+                snippet_entry["alias"] = candidate["alias"]
+
+            type_key = type_key_map[snippet_type]
+            inst = parsed.setdefault("instructions", {})
+            snippets_block = inst.setdefault("sql_snippets", {})
+            items = snippets_block.setdefault(type_key, [])
+            items.append(snippet_entry)
+
+            applied_snippets.append({
+                "snippet_type": snippet_type,
+                "type_key": type_key,
+                "sql": sql_raw,
+                "display_name": candidate.get("display_name", ""),
+                "target_table": candidate.get("target_table", "sql_snippet"),
+                "snippet_id": snippet_entry["id"],
+            })
+
+            count_key = f"{type_key}_seeded"
+            result[count_key] = result.get(count_key, 0) + 1
+            existing_sql_set.add(sql_raw.lower())
+
+        if applied_snippets:
+            try:
+                patch_space_config(w, space_id, parsed)
+            except Exception:
+                logger.warning("SQL expression seeding: PATCH failed", exc_info=True)
+                result["total_seeded"] = 0
+                result["measures_seeded"] = 0
+                result["filters_seeded"] = 0
+                result["expressions_seeded"] = 0
+                write_stage(
+                    spark, run_id, "SQL_EXPRESSION_SEEDING", "FAILED",
+                    task_key="sql_expression_seeding",
+                    error_message="PATCH failed",
+                    catalog=catalog, schema=schema,
+                )
+                return result
+
+            for idx, snippet_entry in enumerate(applied_snippets):
+                write_patch(
+                    spark, run_id, 0, 0, idx,
+                    {
+                        "patch_type": "proactive_sql_expression",
+                        "scope": "genie_config",
+                        "risk_level": "low",
+                        "target_object": snippet_entry.get("target_table", "sql_snippet"),
+                        "patch": {
+                            "snippet_type": snippet_entry["snippet_type"],
+                            "sql": snippet_entry["sql"],
+                            "display_name": snippet_entry["display_name"],
+                        },
+                        "command": None,
+                        "rollback": None,
+                        "proposal_id": f"proactive_sql_expr_{idx}",
+                    },
+                    catalog, schema,
+                )
+
+        result["total_seeded"] = len(applied_snippets)
+
+        _lines = [_section("SQL EXPRESSION SEEDING", "-")]
+        _lines.append(_kv("Candidates evaluated", result["total_candidates"]))
+        _lines.append(_kv("Seeded", result["total_seeded"]))
+        _lines.append(_kv("  Measures", result["measures_seeded"]))
+        _lines.append(_kv("  Filters", result["filters_seeded"]))
+        _lines.append(_kv("  Expressions", result["expressions_seeded"]))
+        _lines.append(_kv("Rejected", result["total_rejected"]))
+        _lines.append(_bar("-"))
+        print("\n".join(_lines))
+
+        write_stage(
+            spark, run_id, "SQL_EXPRESSION_SEEDING", "COMPLETE",
+            task_key="sql_expression_seeding",
+            detail=result, catalog=catalog, schema=schema,
+        )
+        return result
+
+    except Exception as exc:
+        err_msg = f"{type(exc).__name__}: {exc}"
+        logger.exception("SQL_EXPRESSION_SEEDING FAILED for run %s", run_id)
+        write_stage(
+            spark, run_id, "SQL_EXPRESSION_SEEDING", "FAILED",
+            task_key="sql_expression_seeding",
             error_message=err_msg[:500],
             catalog=catalog, schema=schema,
         )
@@ -1765,6 +2264,45 @@ def _run_enrichment(
                 if uc_columns:
                     enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
+            # ── 5b-pre. Instruction-to-SQL-Expression Conversion ─────────
+            from genie_space_optimizer.optimization.optimizer import (
+                _convert_instructions_to_sql_expressions,
+            )
+            _instr_sql_candidates = _convert_instructions_to_sql_expressions(
+                metadata_snapshot, w=w,
+                spark=spark, catalog=catalog, gold_schema=schema,
+                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+            )
+            _instr_sql_applied = 0
+            if _instr_sql_candidates:
+                _instr_sql_applied = _apply_instruction_sql_expressions(
+                    w, spark, run_id, space_id, _instr_sql_candidates,
+                    metadata_snapshot, catalog, schema,
+                )
+                if _instr_sql_applied > 0:
+                    config = fetch_space_config(w, space_id)
+                    config["_uc_columns"] = uc_columns
+                    metadata_snapshot = config.get("_parsed_space", config)
+                    metadata_snapshot["_data_profile"] = data_profile
+                    if uc_columns:
+                        enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+
+            # ── 5b. SQL Expression Seeding ────────────────────────────────
+            sql_expr_result = _run_sql_expression_seeding(
+                w, spark, run_id, space_id, config=config,
+                metadata_snapshot=metadata_snapshot,
+                benchmarks=benchmarks,
+                catalog=catalog, schema=schema,
+                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+            )
+            if sql_expr_result.get("total_seeded", 0) > 0:
+                config = fetch_space_config(w, space_id)
+                config["_uc_columns"] = uc_columns
+                metadata_snapshot = config.get("_parsed_space", config)
+                metadata_snapshot["_data_profile"] = data_profile
+                if uc_columns:
+                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+
             mined_example_proposals = _mine_benchmark_example_sqls(
                 benchmarks, metadata_snapshot,
                 spark=spark, catalog=catalog, gold_schema=schema,
@@ -1789,6 +2327,8 @@ def _run_enrichment(
                 + (1 if meta_result.get("description_generated") else 0)
                 + (1 if meta_result.get("questions_generated") else 0)
                 + (1 if instruction_result.get("instructions_seeded") else 0)
+                + _instr_sql_applied
+                + sql_expr_result.get("total_seeded", 0)
                 + len(mined_example_proposals)
             )
 
@@ -1800,6 +2340,8 @@ def _run_enrichment(
                 "generated" if meta_result.get("questions_generated") else "unchanged",
             )))
             _enr_summary.append(_kv("Instructions seeded", "yes" if instruction_result.get("instructions_seeded") else "no"))
+            _enr_summary.append(_kv("Instruction-derived SQL expressions", _instr_sql_applied))
+            _enr_summary.append(_kv("SQL expressions seeded", sql_expr_result.get("total_seeded", 0)))
             _enr_summary.append(_kv("Example SQLs mined", len(mined_example_proposals)))
             _enr_summary.append(_kv("Total enrichments", total_enrichments))
             _enr_summary.append(_bar("-"))
@@ -1812,6 +2354,7 @@ def _run_enrichment(
                 "enrichment.columns_enriched": enrichment_result.get("total_enriched", 0),
                 "enrichment.tables_enriched": enrichment_result.get("tables_enriched", 0),
                 "enrichment.joins_discovered": join_result.get("total_applied", 0),
+                "enrichment.sql_expressions_seeded": sql_expr_result.get("total_seeded", 0),
                 "enrichment.examples_mined": len(mined_example_proposals),
                 "enrichment.total": total_enrichments,
             })
@@ -1840,6 +2383,7 @@ def _run_enrichment(
                 "descriptions_enriched": enrichment_result.get("total_enriched", 0),
                 "joins_discovered": join_result.get("total_applied", 0),
                 "instructions_seeded": bool(instruction_result.get("instructions_seeded")),
+                "sql_expressions_seeded": sql_expr_result.get("total_seeded", 0),
                 "examples_mined": len(mined_example_proposals),
             },
         )
@@ -1854,6 +2398,7 @@ def _run_enrichment(
                 "description_generated": bool(meta_result.get("description_generated")),
                 "questions_generated": bool(meta_result.get("questions_generated")),
                 "instructions_seeded": bool(instruction_result.get("instructions_seeded")),
+                "sql_expressions_seeded": sql_expr_result.get("total_seeded", 0),
                 "examples_mined": len(mined_example_proposals),
                 "total_enrichments": total_enrichments,
             },
@@ -1987,23 +2532,32 @@ def _diminishing_returns(
 
 def _filter_tried_clusters(
     clusters: list[dict],
-    tried_root_causes: set[tuple[str, str]],
+    tried_root_causes: set[tuple],
 ) -> list[dict]:
-    """Remove clusters whose (failure_type, blame_set) was already tried
-    and rolled back.  Keeps clusters that were tried and *accepted* (they
-    should no longer appear in fresh failure data anyway).
+    """Remove clusters whose root cause was already tried and rolled back.
 
-    *tried_root_causes* stores ``(asi_failure_type, asi_blame_set)`` tuples
-    recorded at rollback time so the key space matches the cluster fields.
+    *tried_root_causes* stores tuples recorded at rollback time.  Supports
+    both legacy 2-tuples ``(ft, blame)`` and new 3-tuples
+    ``(ft, blame, frozenset_of_levers)`` — the 3-tuple variant allows the
+    same root cause to be retried with a different lever combination.
     """
     if not tried_root_causes:
         return clusters
+    legacy_keys: set[tuple[str, str]] = set()
+    lever_keys: set[tuple[str, str, frozenset]] = set()
+    for entry in tried_root_causes:
+        if len(entry) == 2:
+            legacy_keys.add(entry)
+        elif len(entry) >= 3:
+            lever_keys.add(entry)
+
     filtered: list[dict] = []
     for c in clusters:
         ft = c.get("asi_failure_type") or c.get("root_cause", "other")
         blame = c.get("asi_blame_set") or ""
-        if (ft, blame) not in tried_root_causes:
-            filtered.append(c)
+        if (ft, blame) in legacy_keys:
+            continue
+        filtered.append(c)
     return filtered
 
 
@@ -2635,6 +3189,7 @@ def _handle_escalation(
         _corr_result = _run_arbiter_corrections(
             w, spark, run_id, catalog, schema, domain,
             force_adopt_qids=set(affected) if affected else None,
+            data_profile=metadata_snapshot.get("_data_profile"),
         )
         _total_corrections = (
             _corr_result.get("gc_applied", 0)
@@ -2646,6 +3201,31 @@ def _handle_escalation(
         result["detail"]["nc_repaired"] = _corr_result.get("nc_repaired", 0)
         result["detail"]["corrected_qids"] = sorted(_corr_result.get("corrected_qids", set()))
         result["detail"]["quarantined_qids"] = sorted(_corr_result.get("quarantined_qids", set()))
+
+        if _total_corrections == 0 and affected:
+            _unfixed_qids = [
+                q for q in affected
+                if q not in _corr_result.get("corrected_qids", set())
+                and q not in _corr_result.get("quarantined_qids", set())
+            ]
+            if _unfixed_qids:
+                _root_cause = ag.get("root_cause_summary", "Ground truth SQL may be incorrect")
+                flag_for_human_review(
+                    spark, run_id, catalog, schema, domain,
+                    [{
+                        "question_id": q,
+                        "question_text": "",
+                        "reason": f"GT_REPAIR_UNRESOLVED: {_root_cause[:200]}",
+                        "iterations_failed": 0,
+                        "patches_tried": "gt_repair (arbiter corrections failed)",
+                    } for q in _unfixed_qids],
+                )
+                result["detail"]["flagged_for_review"] = len(_unfixed_qids)
+                logger.info(
+                    "gt_repair: flagged %d questions for human review "
+                    "(arbiter could not fix)",
+                    len(_unfixed_qids),
+                )
 
     elif escalation == "flag_for_review":
         flag_for_human_review(
@@ -2830,6 +3410,7 @@ def _run_arbiter_corrections(
     already_repaired: set[str] | None = None,
     quarantined_qids: set[str] | None = None,
     force_adopt_qids: set[str] | None = None,
+    data_profile: dict | None = None,
 ) -> dict:
     """Run the full cross-iteration arbiter correction pipeline.
 
@@ -2877,7 +3458,10 @@ def _run_arbiter_corrections(
                 f"(confirmed in {ac.get('confirmation_count', '?')} evals)"
             )
 
-        result = apply_benchmark_corrections(gc_actions, spark, uc_schema, domain)
+        result = apply_benchmark_corrections(
+            gc_actions, spark, uc_schema, domain,
+            data_profile=data_profile,
+        )
         gc_applied = result["applied"]
         gc_skipped = result["skipped"]
         print(
@@ -2941,6 +3525,7 @@ def _run_arbiter_corrections(
                     }]
                     repair_result = apply_benchmark_corrections(
                         repair_actions, spark, uc_schema, domain,
+                        data_profile=data_profile,
                     )
                     if repair_result["applied"] > 0:
                         print(f"      -> Repair succeeded: {repaired_sql[:80]}")
@@ -2974,6 +3559,7 @@ def _analyze_and_distribute(
     *,
     verbose: bool = True,
     quarantined_qids: set[str] | None = None,
+    exclude_qids: set[str] | None = None,
 ) -> dict:
     """Analyze failures once, cluster, and distribute clusters to levers.
 
@@ -2992,6 +3578,7 @@ def _analyze_and_distribute(
 
     failure_rows = _get_failure_rows(spark, run_id, catalog, schema)
     _quarantined = quarantined_qids or set()
+    _exclude = exclude_qids or set()
 
     _NON_ACTIONABLE_VERDICTS = {"genie_correct", "both_correct"}
     arbiter_counts: dict[str, int] = {}
@@ -3007,6 +3594,9 @@ def _analyze_and_distribute(
 
         if qid in _quarantined:
             quarantine_excluded.append(qid)
+            continue
+
+        if qid in _exclude:
             continue
 
         if av in _NON_ACTIONABLE_VERDICTS:
@@ -3165,6 +3755,7 @@ def _analyze_and_distribute(
                     "wrong_clause": jt.get("wrong_clause"),
                     "rationale_snippet": jt.get("rationale_snippet"),
                     "cluster_id": c.get("cluster_id", ""),
+                    "mapped_lever": c.get("_mapped_lever"),
                 })
 
     # ── Pipeline lineage summary ───────────────────────────────────
@@ -3232,6 +3823,7 @@ def _run_gate_checks(
     noise_floor: float,
     affected_question_ids: set[str] | None = None,
     lever_keys: list[str] | None = None,
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> dict:
     """Run slice → P0 → full eval gate sequence for an action group.
 
@@ -3246,6 +3838,7 @@ def _run_gate_checks(
     import mlflow
 
     uc_schema = f"{catalog}.{schema}"
+    _primary_lever = int(lever_keys[0]) if lever_keys else 0
 
     has_dict_changes = any(
         (entry.get("patch", {}) or {}).get("enable_entity_matching")
@@ -3312,6 +3905,7 @@ def _run_gate_checks(
             spark=spark, w=w, catalog=catalog, gold_schema=schema, uc_schema=uc_schema,
             patched_objects=patched_objects,
             reference_sqls=reference_sqls if reference_sqls else None,
+            max_benchmark_count=max_benchmark_count,
         )
         slice_scores = slice_result.get("scores", {})
         slice_accuracy = slice_result.get("overall_accuracy", 0.0)
@@ -3348,7 +3942,7 @@ def _run_gate_checks(
             )
             try:
                 update_provenance_gate(
-                    spark, run_id, iteration_counter, 0,
+                    spark, run_id, iteration_counter - 1, _primary_lever,
                     "slice", "rollback",
                     {"regressions": [{"judge": d["judge"], "drop": d["drop"]} for d in slice_drops]},
                     catalog, schema,
@@ -3358,7 +3952,7 @@ def _run_gate_checks(
             try:
                 log_gate_feedback_on_traces(
                     slice_result, "slice", "rollback",
-                    regressions=slice_drops, lever=0, iteration=iteration_counter,
+                    regressions=slice_drops, lever=_primary_lever, iteration=iteration_counter,
                 )
             except Exception:
                 logger.debug("Failed to log gate feedback", exc_info=True)
@@ -3388,6 +3982,7 @@ def _run_gate_checks(
             predict_fn, scorers,
             spark=spark, w=w, catalog=catalog, gold_schema=schema, uc_schema=uc_schema,
             reference_sqls=reference_sqls if reference_sqls else None,
+            max_benchmark_count=max_benchmark_count,
         )
         try:
             write_iteration(
@@ -3441,6 +4036,7 @@ def _run_gate_checks(
         spark=spark, w=w, catalog=catalog, gold_schema=schema, uc_schema=uc_schema,
         reference_sqls=reference_sqls if reference_sqls else None,
         model_creation_kwargs=_model_kwargs,
+        max_benchmark_count=max_benchmark_count,
     )
     new_model_id = full_result_1.get("model_id", "")
 
@@ -3466,6 +4062,7 @@ def _run_gate_checks(
             predict_fn, scorers,
             spark=spark, w=w, catalog=catalog, gold_schema=schema, uc_schema=uc_schema,
             reference_sqls=reference_sqls if reference_sqls else None,
+            max_benchmark_count=max_benchmark_count,
         )
         scores_2 = full_result_2.get("scores", {})
         accuracy_2 = full_result_2.get("overall_accuracy", 0.0)
@@ -3567,7 +4164,7 @@ def _run_gate_checks(
         )
         try:
             update_provenance_gate(
-                spark, run_id, iteration_counter, 0,
+                spark, run_id, iteration_counter - 1, _primary_lever,
                 "full", "rollback",
                 {"regressions": [{"judge": r["judge"], "drop": r["drop"]} for r in regressions]},
                 catalog, schema,
@@ -3577,7 +4174,7 @@ def _run_gate_checks(
         try:
             log_gate_feedback_on_traces(
                 full_result, "full", "rollback",
-                regressions=regressions, lever=0, iteration=iteration_counter,
+                regressions=regressions, lever=_primary_lever, iteration=iteration_counter,
             )
         except Exception:
             logger.debug("Failed to log full eval gate feedback", exc_info=True)
@@ -3596,7 +4193,7 @@ def _run_gate_checks(
     )
     try:
         update_provenance_gate(
-            spark, run_id, iteration_counter, 0,
+            spark, run_id, iteration_counter - 1, _primary_lever,
             "full", "pass", None, catalog, schema,
         )
     except Exception:
@@ -3604,7 +4201,7 @@ def _run_gate_checks(
     try:
         log_gate_feedback_on_traces(
             full_result, "full", "pass",
-            lever=0, iteration=iteration_counter,
+            lever=_primary_lever, iteration=iteration_counter,
         )
     except Exception:
         logger.debug("Failed to log full eval gate feedback", exc_info=True)
@@ -3640,6 +4237,7 @@ def _run_lever_loop(
     human_corrections: list[dict] | None = None,
     enrichment_done: bool = False,
     enrichment_model_id: str = "",
+    max_benchmark_count: int = MAX_BENCHMARK_COUNT,
 ) -> dict:
     """Stage 3: Iterate levers with convergence checking.
 
@@ -3749,9 +4347,12 @@ def _run_lever_loop(
         triggered_by=triggered_by,
         instruction_prompt_name=_instr_prompt,
     )
-    scorers = make_all_scorers(w, spark, catalog, schema)
+    _parsed_space = config.get("_parsed_space", config)
+    _instr_section = _parsed_space.get("instructions", {}) if isinstance(_parsed_space, dict) else {}
+    _instr_text_for_scorers = _instr_section.get("text_instructions", "") if isinstance(_instr_section, dict) else ""
+    scorers = make_all_scorers(w, spark, catalog, schema, instruction_context=_instr_text_for_scorers)
     uc_schema = f"{catalog}.{schema}"
-    metadata_snapshot = config.get("_parsed_space", config)
+    metadata_snapshot = _parsed_space
     data_profile = (
         metadata_snapshot.get("_data_profile", {})
         or config.get("_data_profile", {})
@@ -3831,6 +4432,23 @@ def _run_lever_loop(
                 if uc_columns:
                     enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
+            # ── SQL Expression Seeding (legacy path) ──────────────────────
+            sql_expr_result = _run_sql_expression_seeding(
+                w, spark, run_id, space_id, config=config,
+                metadata_snapshot=metadata_snapshot,
+                benchmarks=benchmarks,
+                catalog=catalog, schema=schema,
+                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+            )
+            if sql_expr_result.get("total_seeded", 0) > 0:
+                from genie_space_optimizer.common.genie_client import fetch_space_config
+                config = fetch_space_config(w, space_id)
+                config["_uc_columns"] = uc_columns
+                metadata_snapshot = config.get("_parsed_space", config)
+                metadata_snapshot["_data_profile"] = data_profile
+                if uc_columns:
+                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+
             _enr_summary = [_section("PROACTIVE ENRICHMENT — SUMMARY", "-")]
             _enr_summary.append(_kv("Descriptions enriched", enrichment_result.get("total_enriched", 0)))
             _enr_summary.append(_kv("Joins discovered", join_result.get("total_applied", 0)))
@@ -3839,6 +4457,7 @@ def _run_lever_loop(
                 "generated" if meta_result.get("questions_generated") else "unchanged",
             )))
             _enr_summary.append(_kv("Instructions seeded", "yes" if instruction_result.get("instructions_seeded") else "no"))
+            _enr_summary.append(_kv("SQL expressions seeded", sql_expr_result.get("total_seeded", 0)))
             _enr_summary.append(_bar("-"))
             print("\n".join(_enr_summary))
 
@@ -3846,6 +4465,7 @@ def _run_lever_loop(
                 "enrichment.columns_enriched": enrichment_result.get("total_enriched", 0),
                 "enrichment.tables_enriched": enrichment_result.get("tables_enriched", 0),
                 "enrichment.joins_discovered": join_result.get("total_applied", 0),
+                "enrichment.sql_expressions_seeded": sql_expr_result.get("total_seeded", 0),
             })
     else:
         # Enrichment already handled by the enrichment task -- reload fresh
@@ -3871,6 +4491,120 @@ def _run_lever_loop(
             _kv("Config loaded from", "Genie Space API (post-enrichment)"),
             _bar("-"),
         ]))
+
+    # ── Phase 1.5: Restructure unstructured instructions ──────────
+    # If existing instructions lack ALL-CAPS section headers, classify
+    # them into canonical sections via LLM so downstream section-level
+    # merges are safe.  The restructured text is persisted to the Genie
+    # Space so all lever iterations operate on structured input.
+    try:
+        from genie_space_optimizer.optimization.applier import (
+            _get_general_instructions,
+            _set_general_instructions,
+        )
+        from genie_space_optimizer.optimization.optimizer import (
+            _is_unstructured,
+            _pre_structure_instructions,
+            normalize_instructions,
+        )
+
+        _current_instr = _get_general_instructions(metadata_snapshot)
+        if _current_instr and _current_instr.strip() and _is_unstructured(_current_instr):
+            logger.info(
+                "Existing instructions are unstructured (%d chars) "
+                "— restructuring into canonical sections",
+                len(_current_instr),
+            )
+            _restructured_secs = _pre_structure_instructions(
+                _current_instr, metadata_snapshot, w=w,
+            )
+            if _restructured_secs:
+                parts: list[str] = []
+                from genie_space_optimizer.common.config import INSTRUCTION_SECTION_ORDER
+                for _sec in INSTRUCTION_SECTION_ORDER:
+                    _lines_list = _restructured_secs.get(_sec, [])
+                    if not _lines_list:
+                        continue
+                    parts.append(f"{_sec}:")
+                    for _ln in _lines_list:
+                        _s = _ln.strip()
+                        if not _s:
+                            continue
+                        if not _s.startswith("- "):
+                            _s = f"- {_s}"
+                        parts.append(_s)
+                    parts.append("")
+                _restructured_text = normalize_instructions("\n".join(parts).strip())
+
+                if len(_restructured_text.strip()) >= len(_current_instr.strip()) * 0.5:
+                    _set_general_instructions(metadata_snapshot, _restructured_text)
+                    try:
+                        from genie_space_optimizer.common.genie_client import (
+                            patch_space_config,
+                        )
+                        patch_space_config(w, space_id, metadata_snapshot)
+                        logger.info(
+                            "Persisted restructured instructions (%d chars, %d sections)",
+                            len(_restructured_text), len(_restructured_secs),
+                        )
+                        write_patch(
+                            spark, run_id, 0, 0, 0,
+                            {
+                                "patch_type": "instruction_restructure",
+                                "scope": "genie_config",
+                                "risk_level": "low",
+                                "target_object": "instructions.text_instructions",
+                                "patch": {"instructions": _restructured_text[:200] + "..."},
+                                "command": None,
+                                "rollback": None,
+                                "proposal_id": "instruction_restructure",
+                            },
+                            catalog, schema,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Instruction restructure: PATCH to Genie Space failed",
+                            exc_info=True,
+                        )
+                else:
+                    logger.warning(
+                        "Restructured text too short (%d chars vs %d original) "
+                        "— skipping persist",
+                        len(_restructured_text), len(_current_instr),
+                    )
+
+            print("\n".join([
+                _section("INSTRUCTION RESTRUCTURING", "-"),
+                _kv("Original format", "unstructured"),
+                _kv("Sections detected", ", ".join(_restructured_secs.keys()) if _restructured_secs else "none"),
+                _bar("-"),
+            ]))
+        else:
+            logger.debug("Instructions already structured or empty — no restructuring needed")
+    except Exception:
+        logger.warning("Instruction restructuring failed — continuing with existing format", exc_info=True)
+
+    # ── Phase 1.6: Snapshot user-authored instruction sections ────────
+    # Capture the instruction sections AFTER restructuring but BEFORE any
+    # lever patches.  This snapshot is the user's ground truth — the
+    # optimizer must never generate content that contradicts it.
+    _original_instruction_sections: dict[str, list[str]] = {}
+    try:
+        from genie_space_optimizer.optimization.applier import _get_general_instructions
+        from genie_space_optimizer.optimization.optimizer import _ensure_structured
+        _pre_loop_instr = _get_general_instructions(metadata_snapshot)
+        if _pre_loop_instr and _pre_loop_instr.strip():
+            _original_instruction_sections = _ensure_structured(
+                _pre_loop_instr, metadata_snapshot, w=w,
+            )
+            metadata_snapshot["_original_instruction_sections"] = _original_instruction_sections
+            logger.info(
+                "Snapshotted %d user-authored instruction section(s): %s",
+                len(_original_instruction_sections),
+                list(_original_instruction_sections.keys()),
+            )
+    except Exception:
+        logger.warning("Could not snapshot original instruction sections", exc_info=True)
 
     # ── Phase 2: Pre-Loop Setup ──
     _pls_lines = [_section("LEVER LOOP — PRE-LOOP SETUP", "-")]
@@ -3909,6 +4643,7 @@ def _run_lever_loop(
         already_corrected=_correction_state["corrected_qids"],
         already_repaired=_correction_state["repaired_qids"],
         quarantined_qids=_correction_state["quarantined_qids"],
+        data_profile=metadata_snapshot.get("_data_profile"),
     )
     _correction_state["corrected_qids"] = _pre_loop_corr["corrected_qids"]
     _correction_state["quarantined_qids"] = _pre_loop_corr["quarantined_qids"]
@@ -3960,6 +4695,7 @@ def _run_lever_loop(
     ags_attempted: list[str] = []
     ags_accepted: list[str] = []
     ags_rolled_back: list[str] = []
+    escalated_gt_repair_qids: set[str] = set()
     noise_floor = min(100.0 / max(len(benchmarks), 1), MAX_NOISE_FLOOR)
 
     reflection_buffer: list[dict] = resume_state.get("reflection_buffer", [])
@@ -3993,6 +4729,35 @@ def _run_lever_loop(
             )
             break
 
+        _consecutive_esc = 0
+        _last_esc_type: str | None = None
+        for _esc_entry in reversed(reflection_buffer):
+            if not _esc_entry.get("escalation_handled"):
+                break
+            _esc_reason = _esc_entry.get("rollback_reason", "")
+            if _last_esc_type is None:
+                _last_esc_type = _esc_reason
+            if _esc_reason == _last_esc_type:
+                _consecutive_esc += 1
+            else:
+                break
+        if _consecutive_esc >= CONSECUTIVE_ESCALATION_LIMIT:
+            logger.info(
+                "Consecutive escalation limit (%d) reached for '%s' — "
+                "stopping at iteration %d",
+                CONSECUTIVE_ESCALATION_LIMIT, _last_esc_type, _iter_num,
+            )
+            write_stage(
+                spark, run_id, "LEVER_LOOP_ESCALATION_EXIT", "COMPLETE",
+                task_key="lever_loop", iteration=iteration_counter,
+                detail={
+                    "consecutive_escalations": _consecutive_esc,
+                    "escalation_type": _last_esc_type,
+                },
+                catalog=catalog, schema=schema,
+            )
+            break
+
         iteration_counter += 1
 
         # ── 3B.1b: Per-iteration arbiter corrections ─────────────────
@@ -4001,6 +4766,7 @@ def _run_lever_loop(
             already_corrected=_correction_state["corrected_qids"],
             already_repaired=_correction_state["repaired_qids"],
             quarantined_qids=_correction_state["quarantined_qids"],
+            data_profile=metadata_snapshot.get("_data_profile"),
         )
         _correction_state["corrected_qids"] = _iter_corr["corrected_qids"]
         _correction_state["quarantined_qids"] = _iter_corr["quarantined_qids"]
@@ -4010,6 +4776,7 @@ def _run_lever_loop(
             spark, run_id, catalog, schema, metadata_snapshot,
             iteration_counter - 1, lever_label=0,
             quarantined_qids=_correction_state["quarantined_qids"],
+            exclude_qids=escalated_gt_repair_qids,
         )
         clusters = _analysis["all_clusters"]
         soft_signal_clusters = _analysis["soft_signal_clusters"]
@@ -4134,6 +4901,7 @@ def _run_lever_loop(
                 skill_exemplars=skill_exemplars or None,
                 human_suggestions=_human_suggestions or None,
             )
+            strategy["_source_clusters"] = clusters + soft_signal_clusters
             action_groups = strategy.get("action_groups", [])
             ag = action_groups[0] if action_groups else None
 
@@ -4165,6 +4933,43 @@ def _run_lever_loop(
                     strategy = fallback_strategy
         finally:
             _mlflow.end_run()
+
+        if ag is None and clusters:
+            _remaining_qids = set()
+            for c in clusters:
+                _remaining_qids.update(c.get("question_ids", []))
+            if _remaining_qids and _iter_num <= max_iterations - 1:
+                logger.info(
+                    "Strategist returned 0 AGs but %d clusters with %d questions remain — "
+                    "constructing diagnostic fallback AG",
+                    len(clusters), len(_remaining_qids),
+                )
+                _top_cluster = ranked[0] if ranked else clusters[0]
+                ag = {
+                    "id": f"AG{iteration_counter}_fallback",
+                    "root_cause_summary": _top_cluster.get("root_cause", "unresolved_failures"),
+                    "affected_questions": _top_cluster.get("question_ids", []),
+                    "source_cluster_ids": [_top_cluster.get("cluster_id", "")],
+                    "lever_directives": {
+                        "5": {"instruction_guidance": "Add example SQLs and routing instructions for remaining failure patterns"},
+                        "6": {"generate_expressions": True},
+                    },
+                    "rationale": (
+                        f"Diagnostic fallback: {len(_remaining_qids)} question(s) still failing. "
+                        f"Trying Lever 5 (instructions/examples) + Lever 6 (SQL expressions) "
+                        f"as a broad-spectrum fix."
+                    ),
+                    "coordination_notes": "Fallback AG — strategist returned empty, applying broad-spectrum lever 5+6",
+                }
+                strategy = strategy or {}
+                strategy["action_groups"] = [ag]
+                print(
+                    _section(f"DIAGNOSTIC FALLBACK AG — {len(_remaining_qids)} questions remain", "!") + "\n"
+                    + _kv("Cluster", _top_cluster.get("cluster_id", "?")) + "\n"
+                    + _kv("Root cause", _top_cluster.get("root_cause", "?")) + "\n"
+                    + _kv("Questions", len(_top_cluster.get("question_ids", []))) + "\n"
+                    + _bar("!")
+                )
 
         if ag is None:
             logger.info("Strategist produced 0 action groups — ending lever loop")
@@ -4307,6 +5112,12 @@ def _run_lever_loop(
                         escalation_handled=True,
                     ))
                 else:
+                    _unfixed = set(ag.get("affected_questions", [])) - set(
+                        _esc_result.get("detail", {}).get("corrected_qids", [])
+                    ) - set(
+                        _esc_result.get("detail", {}).get("quarantined_qids", [])
+                    )
+                    escalated_gt_repair_qids.update(_unfixed)
                     reflection_buffer.append(_build_reflection_entry(
                         iteration=iteration_counter, ag_id=ag_id, accepted=False,
                         levers=[], target_objects=ag.get("affected_questions", []),
@@ -4351,7 +5162,7 @@ def _run_lever_loop(
                         apply_mode=apply_mode,
                         force_apply=True,
                     )
-                    _tvf_lever = int(lever_keys[0]) if lever_keys else 3
+                    _tvf_lever = 3
                     for idx, entry in enumerate(_tvf_apply_log.get("applied", [])):
                         write_patch(
                             spark, run_id, iteration_counter, _tvf_lever, idx,
@@ -4361,6 +5172,8 @@ def _run_lever_loop(
                     if _tvf_apply_log.get("patch_deployed", False):
                         logger.info("TVF %s removed successfully (tier=%s)", _tvf_id, _esc_tier)
                         metadata_snapshot = _tvf_apply_log.get("post_snapshot", metadata_snapshot)
+                        if _original_instruction_sections:
+                            metadata_snapshot["_original_instruction_sections"] = _original_instruction_sections
                     else:
                         logger.warning(
                             "TVF removal patch deploy failed: %s",
@@ -4459,11 +5272,11 @@ def _run_lever_loop(
         print("\n".join(_prov_patch_lines))
 
         _prop_mappings = [
-            {"cluster_id": p.get("cluster_id"), "proposal_id": p.get("proposal_id"), "patch_type": p.get("patch_type")}
+            {"cluster_id": p.get("cluster_id"), "proposal_id": p.get("proposal_id"), "patch_type": p.get("patch_type"), "lever": p.get("lever")}
             for p in all_proposals if p.get("cluster_id")
         ]
         try:
-            update_provenance_proposals(spark, run_id, iteration_counter, _prop_mappings, catalog, schema)
+            update_provenance_proposals(spark, run_id, iteration_counter - 1, _prop_mappings, catalog, schema)
         except Exception:
             logger.debug("Failed to update provenance proposals", exc_info=True)
 
@@ -4491,11 +5304,12 @@ def _run_lever_loop(
             w, space_id, patches, metadata_snapshot, apply_mode=apply_mode,
         )
 
-        _primary_lever = int(lever_keys[0]) if lever_keys else 0
+        _fallback_lever = int(lever_keys[0]) if lever_keys else 0
         for idx, entry in enumerate(apply_log.get("applied", [])):
+            _patch_lever = int(entry.get("patch", {}).get("lever", _fallback_lever))
             write_patch(
-                spark, run_id, iteration_counter, _primary_lever, idx,
-                _build_patch_record(entry, _primary_lever, apply_mode),
+                spark, run_id, iteration_counter, _patch_lever, idx,
+                _build_patch_record(entry, _patch_lever, apply_mode),
                 catalog, schema,
             )
 
@@ -4613,6 +5427,7 @@ def _run_lever_loop(
             noise_floor=noise_floor,
             affected_question_ids=set(ag.get("affected_questions", [])),
             lever_keys=lever_keys,
+            max_benchmark_count=max_benchmark_count,
         )
 
         # ── 3B.7: Accept or rollback ────────────────────────────────
@@ -4703,6 +5518,16 @@ def _run_lever_loop(
                 tgt = p.get("target_object", "")
                 if ft and tgt:
                     tried_patches.add((ft, tgt))
+            _lever_frozenset = frozenset(int(lk) for lk in lever_keys)
+            _consecutive_rb_count = 0
+            for _rb_entry in reversed(reflection_buffer):
+                if _rb_entry.get("escalation_handled"):
+                    continue
+                if not _rb_entry.get("accepted"):
+                    _consecutive_rb_count += 1
+                else:
+                    break
+            _should_mark_tried = _consecutive_rb_count >= CONSECUTIVE_ROLLBACK_LIMIT - 1
             source_cids = set(ag.get("source_cluster_ids", []))
             for c in clusters:
                 cid = c.get("cluster_id", "")
@@ -4710,8 +5535,15 @@ def _run_lever_loop(
                     continue
                 rc_ft = c.get("asi_failure_type") or c.get("root_cause", "other")
                 rc_blame = c.get("asi_blame_set") or ""
-                if rc_ft:
+                if rc_ft and _should_mark_tried:
                     tried_root_causes.add((rc_ft, rc_blame))
+                    tried_root_causes.add((rc_ft, rc_blame, _lever_frozenset))
+            if not _should_mark_tried:
+                logger.info(
+                    "Rollback %d/%d — keeping cluster available for retry "
+                    "(root causes NOT marked as tried)",
+                    _consecutive_rb_count, CONSECUTIVE_ROLLBACK_LIMIT,
+                )
             continue
 
         # ── Accept action group ──────────────────────────────────────
@@ -4853,6 +5685,36 @@ def _run_lever_loop(
         )
 
         metadata_snapshot = apply_log.get("post_snapshot", metadata_snapshot)
+        if _original_instruction_sections:
+            metadata_snapshot["_original_instruction_sections"] = _original_instruction_sections
+
+        # ── Mine execution-proven joins from latest eval rows ────────
+        try:
+            _eval_rows = full_result.get("rows", [])
+            if not _eval_rows:
+                _eval_rows_json = full_result.get("rows_json")
+                if isinstance(_eval_rows_json, str):
+                    import json as _json_mod
+                    try:
+                        _eval_rows = _json_mod.loads(_eval_rows_json)
+                    except (ValueError, TypeError):
+                        _eval_rows = []
+                elif isinstance(_eval_rows_json, list):
+                    _eval_rows = _eval_rows_json
+            if _eval_rows:
+                _mine_result = _mine_and_apply_proven_joins(
+                    w, spark, run_id, space_id, metadata_snapshot, _eval_rows,
+                    catalog, schema, iteration=iteration_counter,
+                )
+                if _mine_result.get("total_applied", 0) > 0:
+                    from genie_space_optimizer.common.genie_client import fetch_space_config as _fetch_cfg
+                    config = _fetch_cfg(w, space_id)
+                    metadata_snapshot = config.get("_parsed_space", config)
+        except Exception:
+            logger.debug(
+                "Iterative join mining failed at iter %d (non-fatal)",
+                iteration_counter, exc_info=True,
+            )
 
     write_stage(
         spark, run_id, "LEVER_LOOP_STARTED", "COMPLETE",
@@ -5253,7 +6115,15 @@ def _run_finalize(
                     w, space_id, spark, catalog, schema,
                     warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
                 )
-                ho_scorers = make_all_scorers(w, spark, catalog, schema)
+                try:
+                    from genie_space_optimizer.common.genie_client import fetch_space_config as _ho_fetch
+                    _ho_cfg = _ho_fetch(w, space_id)
+                    _ho_parsed = _ho_cfg.get("_parsed_space", _ho_cfg)
+                    _ho_instr = _ho_parsed.get("instructions", {}) if isinstance(_ho_parsed, dict) else {}
+                    _ho_instr_text = _ho_instr.get("text_instructions", "") if isinstance(_ho_instr, dict) else ""
+                except Exception:
+                    _ho_instr_text = ""
+                ho_scorers = make_all_scorers(w, spark, catalog, schema, instruction_context=_ho_instr_text)
 
                 held_out_result = run_evaluation(
                     space_id, exp_name, iteration_counter, held_out_benchmarks,
@@ -5383,6 +6253,23 @@ def _run_finalize(
                 all_failure_question_ids.extend(
                     qid for qid in _persistent_qids if qid not in set(all_failure_question_ids)
                 )
+
+            # Resolve stale flags for questions that now pass in the latest evaluation
+            _PASSING_VERDICTS = {"both_correct", "genie_correct"}
+            _now_passing: set[str] = set()
+            for _qid, _entries in _verdict_history.items():
+                if _entries and _entries[-1].verdict in _PASSING_VERDICTS:
+                    _now_passing.add(_qid)
+            _still_failing = {item["question_id"] for item in _persistent_items} if _persistent_items else set()
+            _resolve_candidates = _now_passing - _still_failing
+            if _resolve_candidates:
+                try:
+                    from genie_space_optimizer.optimization.labeling import resolve_stale_flags
+                    _resolved = resolve_stale_flags(spark, catalog, schema, domain, _resolve_candidates)
+                    if _resolved:
+                        logger.info("Resolved %d stale flag(s) for now-passing questions", _resolved)
+                except Exception:
+                    logger.debug("Failed to resolve stale flags", exc_info=True)
 
             _session_trace_ids = [
                 question_trace_map[qid][-1]
@@ -5998,6 +6885,51 @@ def optimize_genie_space(
                 spark, run_id_str, catalog, schema,
                 status="CONVERGED",
                 convergence_reason="baseline_meets_thresholds",
+            )
+        elif prev_accuracy >= 99.0 and not thresholds_met:
+            _ao_qids = baseline_out.get("arbiter_overridden_qids", [])
+            _ss_qids = baseline_out.get("soft_signal_qids", [])
+            logger.warning(
+                "ARBITER-SATURATED: accuracy=%.1f%% but thresholds not met. "
+                "%d arbiter-overridden, %d soft-signal questions. "
+                "The lever loop cannot improve further — flagging for human review.",
+                prev_accuracy, len(_ao_qids), len(_ss_qids),
+            )
+            _review_items = []
+            for _aq in _ao_qids:
+                _review_items.append({
+                    "question_id": _aq,
+                    "question_text": "",
+                    "reason": "ARBITER_SATURATED: arbiter overrode judge failures; "
+                              "ground truth may need manual review",
+                    "iterations_failed": 0,
+                    "patches_tried": "none (arbiter-saturated baseline)",
+                })
+            if _review_items:
+                from genie_space_optimizer.optimization.labeling import flag_for_human_review
+                flag_for_human_review(
+                    spark, run_id_str, catalog, schema, domain, _review_items,
+                )
+            result.status = "CONVERGED"
+            result.convergence_reason = "arbiter_saturated"
+            result.best_accuracy = prev_accuracy
+            result.best_model_id = model_id
+            result.final_scores = prev_scores
+            write_stage(
+                spark, run_id_str, "ARBITER_SATURATED_EXIT", "COMPLETE",
+                task_key="lever_loop", catalog=catalog, schema=schema,
+                detail={
+                    "baseline_accuracy": prev_accuracy,
+                    "arbiter_overridden_count": len(_ao_qids),
+                    "soft_signal_count": len(_ss_qids),
+                    "thresholds_met": False,
+                    "scores": prev_scores,
+                },
+            )
+            update_run_status(
+                spark, run_id_str, catalog, schema,
+                status="CONVERGED",
+                convergence_reason="arbiter_saturated",
             )
         else:
             # Stage 2.5: Proactive Enrichment

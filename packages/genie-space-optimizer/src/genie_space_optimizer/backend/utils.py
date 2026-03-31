@@ -66,6 +66,7 @@ def safe_json_parse(val: Any) -> Any:
     """Parse a JSON string if needed; return the original value on failure.
 
     Already-parsed dicts/lists pass through unchanged. Returns None for None.
+    Handles double/triple-encoded JSON strings by unwrapping iteratively.
     """
     if val is None:
         return None
@@ -74,7 +75,12 @@ def safe_json_parse(val: Any) -> Any:
     if not isinstance(val, str):
         return val
     try:
-        return json.loads(val)
+        result = json.loads(val)
+        for _ in range(3):
+            if not isinstance(result, str):
+                break
+            result = json.loads(result)
+        return result
     except (json.JSONDecodeError, TypeError):
         return val
 

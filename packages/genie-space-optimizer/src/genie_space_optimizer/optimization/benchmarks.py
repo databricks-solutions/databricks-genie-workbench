@@ -364,6 +364,9 @@ def _resolve_params_with_defaults(
     return resolved, all_resolved
 
 
+_MV_JOIN_RE = _re.compile(r"\bJOIN\b", _re.IGNORECASE)
+
+
 def validate_ground_truth_sql(
     sql: str,
     spark: Any,
@@ -373,6 +376,7 @@ def validate_ground_truth_sql(
     execute: bool = False,
     parameters: list[dict] | None = None,
     w: Any = None,
+    config: dict | None = None,
     warehouse_id: str = "",
 ) -> tuple[bool, str]:
     """Validate a single expected SQL via EXPLAIN + table existence checks.
@@ -425,10 +429,14 @@ def validate_ground_truth_sql(
             from genie_space_optimizer.optimization.evaluation import (
                 _execute_sql_via_warehouse,
             )
-            _execute_sql_via_warehouse(
+            explain_df = _execute_sql_via_warehouse(
                 w, warehouse_id, f"EXPLAIN {resolved}",
                 catalog=catalog, schema=gold_schema,
             )
+            if not explain_df.empty and "plan" in explain_df.columns:
+                plan_text = "\n".join(str(v) for v in explain_df["plan"].tolist())
+                if "Error occurred during query planning" in plan_text:
+                    raise RuntimeError(plan_text)
         else:
             with _quiet_grpc_logs():
                 _set_sql_context(spark, catalog, gold_schema)
@@ -461,6 +469,31 @@ def validate_ground_truth_sql(
         )
         if not exists:
             return False, err
+
+    # ── Metric view JOIN ban ────────────────────────────────────────
+    # MEASURE() queries cannot use direct JOINs (METRIC_VIEW_JOIN_NOT_SUPPORTED).
+    # However, the CTE-first pattern IS valid: MEASURE() inside a WITH clause,
+    # then JOIN the CTE result to a dimension table.
+    uses_measure = "MEASURE(" in resolved.upper()
+    if not uses_measure and config:
+        _parsed = config.get("_parsed_space", config)
+        _ds = _parsed.get("data_sources", {}) if isinstance(_parsed, dict) else {}
+        _mv_names = {
+            (mv.get("identifier") or mv.get("name") or "").lower().split(".")[-1]
+            for mv in (_ds.get("metric_views", []) if isinstance(_ds, dict) else [])
+            if isinstance(mv, dict) and (mv.get("identifier") or mv.get("name"))
+        }
+        if _mv_names and any(mv in resolved.lower() for mv in _mv_names):
+            uses_measure = True
+    if uses_measure and _MV_JOIN_RE.search(resolved):
+        import re as _re_mod
+        _uses_cte = bool(_re_mod.search(r"\bWITH\b\s+\w+\s+AS\s*\(", resolved, _re_mod.IGNORECASE))
+        if not _uses_cte:
+            return False, (
+                "METRIC_VIEW_JOIN: Metric view / MEASURE() SQL cannot use direct JOINs "
+                "(METRIC_VIEW_JOIN_NOT_SUPPORTED). Use the CTE-first pattern: "
+                "materialize the metric view in a WITH clause, then JOIN the CTE result."
+            )
 
     if execute:
         if w and warehouse_id:
@@ -503,8 +536,12 @@ def validate_benchmarks(
     *,
     w: Any = None,
     warehouse_id: str = "",
+    config: dict | None = None,
 ) -> list[dict]:
     """Validate each benchmark's ``expected_sql`` via EXPLAIN.
+
+    When *config* is provided, also checks for metric view JOIN violations
+    that would be caught at eval time by ``_precheck_benchmarks_for_eval``.
 
     Returns a list of validation result dicts:
     ``{question, expected_sql, valid, error}``.
@@ -515,7 +552,7 @@ def validate_benchmarks(
         question = b.get("question", "")
         is_valid, error = validate_ground_truth_sql(
             sql, spark, catalog=catalog, gold_schema=gold_schema,
-            w=w, warehouse_id=warehouse_id,
+            w=w, warehouse_id=warehouse_id, config=config,
         )
         results.append(
             {
@@ -554,12 +591,21 @@ def validate_question_sql_alignment(
         format_mlflow_template,
     )
 
+    from genie_space_optimizer.common.config import REQUIRE_GROUND_TRUTH_SQL
+
     results: list[dict] = []
     to_check: list[tuple[int, dict]] = []
     for i, b in enumerate(benchmarks):
         sql = b.get("expected_sql", "")
         if not sql or not sql.strip():
-            results.append({"question": b.get("question", ""), "aligned": True, "issues": []})
+            if REQUIRE_GROUND_TRUTH_SQL:
+                results.append({
+                    "question": b.get("question", ""),
+                    "aligned": False,
+                    "issues": ["missing_expected_sql"],
+                })
+            else:
+                results.append({"question": b.get("question", ""), "aligned": True, "issues": []})
         else:
             results.append({"question": b.get("question", ""), "aligned": True, "issues": []})
             to_check.append((i, b))
@@ -579,24 +625,19 @@ def validate_question_sql_alignment(
         )
 
         try:
-            from databricks.sdk import WorkspaceClient
-            from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-
             from genie_space_optimizer.optimization.evaluation import (
                 _link_prompt_to_trace,
                 get_registered_prompt_name,
             )
+            from genie_space_optimizer.optimization.llm_client import call_llm
 
             _link_prompt_to_trace(get_registered_prompt_name("benchmark_alignment_check"))
 
-            w = WorkspaceClient()
-            response = w.serving_endpoints.query(
-                name=LLM_ENDPOINT,
-                messages=[ChatMessage(role=ChatMessageRole.USER, content=prompt)],
+            raw, _response = call_llm(
+                None,
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
             )
-            choices = response.choices or []
-            raw = (choices[0].message.content or "").strip() if choices and choices[0].message else ""
             if raw.startswith("```"):
                 raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
             checks = json.loads(raw)
@@ -624,6 +665,257 @@ def validate_question_sql_alignment(
                     "  Misaligned: %s — %s",
                     r["question"][:80], "; ".join(r["issues"]),
                 )
+
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 2c. Predicate Value Validation (data-profile-grounded)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+_EQ_PREDICATE_RE = _re.compile(
+    r"""
+    (?:`?(\w+)`?\s*\.\s*)?   # optional table alias: t. or `t`.
+    `?(\w+)`?                # column name
+    \s*=\s*                  # equals sign
+    '([^']*)'                # single-quoted literal
+    """,
+    _re.VERBOSE | _re.IGNORECASE,
+)
+
+_IN_PREDICATE_RE = _re.compile(
+    r"""
+    (?:`?(\w+)`?\s*\.\s*)?   # optional table alias
+    `?(\w+)`?                # column name
+    \s+IN\s*\(               # IN (
+    ([^)]+)                  # values inside parens
+    \)
+    """,
+    _re.VERBOSE | _re.IGNORECASE,
+)
+
+_FROM_JOIN_RE = _re.compile(
+    r"""
+    (?:FROM|JOIN)\s+
+    `?([a-zA-Z0-9_.]+)`?     # table FQN
+    (?:\s+(?:AS\s+)?`?(\w+)`?)?  # optional alias
+    """,
+    _re.VERBOSE | _re.IGNORECASE,
+)
+
+
+def _extract_table_aliases(sql: str) -> dict[str, str]:
+    """Extract {alias_or_leaf: full_table_name} from FROM/JOIN clauses."""
+    aliases: dict[str, str] = {}
+    for m in _FROM_JOIN_RE.finditer(sql):
+        table_fqn = m.group(1)
+        alias = m.group(2)
+        leaf = table_fqn.split(".")[-1].strip("`").lower()
+        norm_fqn = table_fqn.replace("`", "").lower()
+        if alias:
+            aliases[alias.lower()] = norm_fqn
+        aliases[leaf] = norm_fqn
+    return aliases
+
+
+def _extract_predicates(sql: str) -> list[dict]:
+    """Extract equality and IN predicates from SQL WHERE clauses."""
+    predicates: list[dict] = []
+    for m in _EQ_PREDICATE_RE.finditer(sql):
+        predicates.append({
+            "table_alias": (m.group(1) or "").lower(),
+            "column": m.group(2).lower(),
+            "values": [m.group(3)],
+        })
+    for m in _IN_PREDICATE_RE.finditer(sql):
+        raw_vals = m.group(3)
+        values = [v.strip().strip("'\"") for v in raw_vals.split(",")]
+        predicates.append({
+            "table_alias": (m.group(1) or "").lower(),
+            "column": m.group(2).lower(),
+            "values": values,
+        })
+    return predicates
+
+
+def validate_predicate_values(
+    benchmarks: list[dict],
+    data_profile: dict[str, dict],
+    *,
+    fuzzy_threshold: float = 0.85,
+) -> list[dict]:
+    """Check WHERE clause literal values against profiled distinct values.
+
+    For each benchmark, extracts equality/IN predicates from expected_sql,
+    resolves column references to profiled tables, and checks whether the
+    literal values exist in the profiled distinct_values.
+
+    Returns a list of dicts (one per benchmark) with keys:
+      - ``question``: the benchmark question text
+      - ``valid``: True if all predicates match (or can't be checked)
+      - ``mismatches``: list of ``{column, table, literal, profiled_values, suggestion}``
+    """
+    from difflib import SequenceMatcher
+
+    profile_lower: dict[str, dict] = {}
+    for tbl, tinfo in data_profile.items():
+        norm_key = tbl.replace("`", "").lower()
+        cols_lower: dict[str, dict] = {}
+        for col, cinfo in tinfo.get("columns", {}).items():
+            cols_lower[col.lower()] = cinfo
+        profile_lower[norm_key] = {"columns": cols_lower}
+
+    results: list[dict] = []
+    for b in benchmarks:
+        sql = b.get("expected_sql", "")
+        question = b.get("question", "")
+        if not sql or not sql.strip():
+            results.append({"question": question, "valid": True, "mismatches": []})
+            continue
+
+        aliases = _extract_table_aliases(sql)
+        predicates = _extract_predicates(sql)
+        mismatches: list[dict] = []
+
+        for pred in predicates:
+            col_name = pred["column"]
+            tbl_alias = pred["table_alias"]
+
+            resolved_table = aliases.get(tbl_alias, "") if tbl_alias else ""
+            candidate_tables: list[str] = []
+            if resolved_table:
+                candidate_tables.append(resolved_table)
+            else:
+                candidate_tables.extend(aliases.values())
+
+            profiled_values: list[str] | None = None
+            matched_table = ""
+            for ct in candidate_tables:
+                for profile_key in profile_lower:
+                    if ct in profile_key or profile_key.endswith(ct):
+                        col_info = profile_lower[profile_key].get("columns", {}).get(col_name)
+                        if col_info and col_info.get("distinct_values"):
+                            profiled_values = col_info["distinct_values"]
+                            matched_table = profile_key
+                            break
+                if profiled_values is not None:
+                    break
+
+            if profiled_values is None:
+                continue
+
+            profiled_lower = {str(v).lower(): str(v) for v in profiled_values}
+            for literal in pred["values"]:
+                if literal.lower() in profiled_lower:
+                    continue
+
+                best_match = ""
+                best_score = 0.0
+                for pv_lower, pv_original in profiled_lower.items():
+                    score = SequenceMatcher(None, literal.lower(), pv_lower).ratio()
+                    if score > best_score:
+                        best_score = score
+                        best_match = pv_original
+
+                mismatches.append({
+                    "column": col_name,
+                    "table": matched_table,
+                    "literal": literal,
+                    "profiled_values": profiled_values[:20],
+                    "suggestion": best_match if best_score >= fuzzy_threshold else None,
+                    "fuzzy_score": round(best_score, 3),
+                })
+
+        results.append({
+            "question": question,
+            "valid": len(mismatches) == 0,
+            "mismatches": mismatches,
+        })
+
+    flagged = sum(1 for r in results if not r["valid"])
+    if flagged:
+        logger.info(
+            "Predicate value check: %d/%d benchmarks have value mismatches",
+            flagged, len(benchmarks),
+        )
+        for r in results:
+            if not r["valid"]:
+                for mm in r["mismatches"]:
+                    logger.info(
+                        "  Mismatch: %s — %s.%s='%s' not in profiled values %s (suggestion=%s)",
+                        r["question"][:60], mm["table"], mm["column"],
+                        mm["literal"], mm["profiled_values"][:5], mm["suggestion"],
+                    )
+
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 2d. GT Execution Check (non-empty result validation)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def validate_gt_returns_results(
+    benchmarks: list[dict],
+    spark: Any,
+    *,
+    w: Any = None,
+    warehouse_id: str = "",
+    catalog: str = "",
+    schema: str = "",
+    max_checks: int = 50,
+) -> list[dict]:
+    """Run a COUNT(*) wrapper around each GT SQL to verify it returns rows.
+
+    Benchmarks whose expected_sql yields zero rows are flagged — this
+    typically indicates incorrect WHERE clause values or referencing
+    the wrong table partition.
+
+    Returns a list of ``{question, has_results, row_count, error}`` dicts.
+    """
+    from genie_space_optimizer.optimization.evaluation import _exec_sql
+
+    _sql_kw: dict[str, Any] = dict(w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema)
+    results: list[dict] = []
+
+    for b in benchmarks[:max_checks]:
+        sql = b.get("expected_sql", "")
+        question = b.get("question", "")
+        if not sql or not sql.strip():
+            results.append({"question": question, "has_results": True, "row_count": -1, "error": None})
+            continue
+
+        count_sql = f"SELECT COUNT(*) AS cnt FROM ({sql.rstrip(';')}) _gt_check"
+        try:
+            df = _exec_sql(count_sql, spark, **_sql_kw)
+            if df is not None and not df.empty:
+                cnt = int(df.iloc[0]["cnt"])
+                results.append({
+                    "question": question,
+                    "has_results": cnt > 0,
+                    "row_count": cnt,
+                    "error": None,
+                })
+            else:
+                results.append({"question": question, "has_results": False, "row_count": 0, "error": "empty result"})
+        except Exception as exc:
+            results.append({
+                "question": question,
+                "has_results": True,
+                "row_count": -1,
+                "error": str(exc)[:200],
+            })
+
+    empty_count = sum(1 for r in results if not r["has_results"])
+    if empty_count:
+        logger.warning(
+            "GT execution check: %d/%d benchmarks returned 0 rows",
+            empty_count, len(results),
+        )
+        for r in results:
+            if not r["has_results"]:
+                logger.warning("  Empty GT: %s (error=%s)", r["question"][:80], r.get("error"))
 
     return results
 
@@ -726,6 +1018,7 @@ def apply_benchmark_corrections(
     *,
     w: Any = None,
     warehouse_id: str = "",
+    data_profile: dict | None = None,
 ) -> dict:
     """Apply arbiter corrections to the MLflow evaluation dataset.
 
@@ -733,6 +1026,11 @@ def apply_benchmark_corrections(
     - ``question``: the benchmark question to correct
     - ``new_expected_sql``: the corrected SQL
     - ``verdict``: ``genie_correct`` or ``arbiter_repair``
+
+    Before applying, validates:
+    1. Syntactic validity (EXPLAIN)
+    2. Semantic alignment with the question (LLM check)
+    3. Predicate values against data profile (if available)
 
     Returns ``{applied: int, skipped: int, errors: list[str]}``.
     """
@@ -768,6 +1066,59 @@ def apply_benchmark_corrections(
             )
             skipped += 1
             continue
+
+        try:
+            alignment = validate_question_sql_alignment(
+                [{"question": question, "expected_sql": new_sql}]
+            )
+            if alignment and not alignment[0].get("aligned", True):
+                issues = "; ".join(alignment[0].get("issues", []))
+                logger.warning(
+                    "Skipping arbiter correction — SQL misaligned with question: "
+                    "'%s' — issues: %s",
+                    question[:60], issues,
+                )
+                errors.append(
+                    f"Alignment mismatch for '{question[:50]}': {issues[:150]}"
+                )
+                skipped += 1
+                continue
+        except Exception:
+            logger.debug(
+                "Alignment check failed for correction, proceeding cautiously",
+                exc_info=True,
+            )
+
+        if data_profile:
+            try:
+                pred_results = validate_predicate_values(
+                    [{"question": question, "expected_sql": new_sql}],
+                    data_profile,
+                )
+                if pred_results and not pred_results[0]["valid"]:
+                    unfixable = [
+                        m for m in pred_results[0]["mismatches"]
+                        if not m.get("suggestion")
+                    ]
+                    if unfixable:
+                        mm_desc = "; ".join(
+                            f"{m['column']}='{m['literal']}'" for m in unfixable
+                        )
+                        logger.warning(
+                            "Skipping arbiter correction — predicate value "
+                            "mismatch: '%s' — %s",
+                            question[:60], mm_desc,
+                        )
+                        errors.append(
+                            f"Predicate mismatch for '{question[:50]}': {mm_desc[:150]}"
+                        )
+                        skipped += 1
+                        continue
+            except Exception:
+                logger.debug(
+                    "Predicate check failed for correction, proceeding cautiously",
+                    exc_info=True,
+                )
 
         try:
             escaped_sql = new_sql.replace("'", "\\'")
@@ -847,3 +1198,168 @@ def get_quarantined_questions(
         return set(df["question_id"].dropna().astype(str).tolist())
     except Exception:
         return set()
+
+
+# ── SQL Snippet Validation (Lever 6) ──────────────────────────────────
+
+
+def _extract_primary_table(sql: str, metadata_snapshot: dict) -> str | None:
+    """Extract the primary table referenced in a SQL snippet expression.
+
+    Looks for fully-qualified table references (catalog.schema.table) that
+    appear in the metadata snapshot's data_sources (both tables and metric views).
+    """
+    ds = metadata_snapshot.get("data_sources", {})
+    all_sources: list = []
+    if isinstance(ds, dict):
+        all_sources.extend(ds.get("tables", []) or [])
+        all_sources.extend(ds.get("metric_views", []) or [])
+    table_ids = {
+        t.get("identifier", "").lower(): t.get("identifier", "")
+        for t in all_sources if isinstance(t, dict) and t.get("identifier")
+    }
+
+    sql_lower = sql.lower()
+    for tid_lower, tid in table_ids.items():
+        parts = tid_lower.split(".")
+        short_name = parts[-1] if parts else tid_lower
+        if short_name in sql_lower or tid_lower in sql_lower:
+            return tid
+
+    if table_ids:
+        return next(iter(table_ids.values()))
+
+    return None
+
+
+def _auto_prefix_bare_columns(
+    sql: str,
+    table_identifier: str,
+    metadata_snapshot: dict,
+) -> str:
+    """Add table prefix to bare column references in a SQL snippet.
+
+    The Genie API requires ``table.column`` syntax in SQL expressions.
+    This function detects bare column names (those not already prefixed
+    with ``table.``) and prepends the short table name.
+
+    Returns the SQL with prefixed columns (original SQL unchanged if
+    all columns are already qualified or no columns are recognized).
+    """
+    import re as _re
+
+    ds = metadata_snapshot.get("data_sources", {})
+    all_sources: list = []
+    if isinstance(ds, dict):
+        all_sources.extend(ds.get("tables", []) or [])
+        all_sources.extend(ds.get("metric_views", []) or [])
+
+    short_name = table_identifier.split(".")[-1] if table_identifier else ""
+    if not short_name:
+        return sql
+
+    column_names: set[str] = set()
+    for t in all_sources:
+        if not isinstance(t, dict):
+            continue
+        tid = (t.get("identifier") or t.get("name") or "").lower()
+        if short_name.lower() in tid:
+            for col in (t.get("columns", []) or []):
+                cname = (col.get("name") or "").strip()
+                if cname:
+                    column_names.add(cname.lower())
+            for cc in (t.get("column_configs", []) or []):
+                cname = (cc.get("column_name") or "").strip()
+                if cname:
+                    column_names.add(cname.lower())
+            break
+
+    if not column_names:
+        return sql
+
+    result = sql
+    for col in sorted(column_names, key=len, reverse=True):
+        pattern = _re.compile(
+            r'(?<![.\w])(' + _re.escape(col) + r')(?!\w)',
+            _re.IGNORECASE,
+        )
+        def _replacer(m: _re.Match) -> str:
+            start = m.start()
+            prefix_check = result[:start]
+            if prefix_check.rstrip().endswith("."):
+                return m.group(0)
+            return f"{short_name}.{m.group(1)}"
+        result = pattern.sub(_replacer, result)
+
+    return result
+
+
+def validate_sql_snippet(
+    sql: str,
+    snippet_type: str,
+    metadata_snapshot: dict,
+    *,
+    spark: Any = None,
+    catalog: str = "",
+    gold_schema: str = "",
+    w: Any = None,
+    warehouse_id: str = "",
+) -> tuple[bool, str, str]:
+    """Validate a SQL snippet by wrapping it in an executable context and running it.
+
+    Three-phase validation mirroring validate_ground_truth_sql:
+      1. Auto-prefix bare column names with table name (Genie API requirement).
+      2. EXPLAIN — catches syntax errors and unresolvable references.
+      3. Execution — runs the wrapped SQL with LIMIT 1.
+
+    Wrapping rules:
+      - measure:    SELECT <sql> FROM <table> LIMIT 1
+      - filter:     SELECT 1 FROM <table> WHERE <sql> LIMIT 1
+      - expression: SELECT <sql> FROM <table> LIMIT 1
+
+    Returns ``(is_valid, error_message, prefixed_sql)`` — callers should
+    use ``prefixed_sql`` (the 3rd element) when storing the snippet to
+    ensure ``table.column`` syntax required by the Genie API.
+    """
+    table = _extract_primary_table(sql, metadata_snapshot)
+    if not table:
+        return False, "Cannot determine primary table for SQL snippet", sql
+
+    resolved_table = resolve_sql(
+        f"${{catalog}}.${{gold_schema}}.{table.split('.')[-1]}"
+        if "." not in table else table,
+        catalog=catalog, gold_schema=gold_schema,
+    )
+
+    sql = _auto_prefix_bare_columns(sql, table, metadata_snapshot)
+
+    if snippet_type == "filter":
+        wrapped = f"SELECT 1 FROM {resolved_table} WHERE {sql} LIMIT 1"
+    else:
+        wrapped = f"SELECT {sql} FROM {resolved_table} LIMIT 1"
+
+    def _run_sql(statement: str) -> Any:
+        if w and warehouse_id:
+            from genie_space_optimizer.optimization.evaluation import (
+                _execute_sql_via_warehouse,
+            )
+            return _execute_sql_via_warehouse(
+                w, warehouse_id, statement,
+                catalog=catalog, schema=gold_schema,
+            )
+        if spark is not None:
+            _set_sql_context(spark, catalog, gold_schema)
+            return spark.sql(statement)
+        raise RuntimeError("No SQL execution backend available")
+
+    try:
+        _run_sql(f"EXPLAIN {wrapped}")
+    except Exception as exc:
+        return False, f"EXPLAIN failed: {exc}", sql
+
+    try:
+        _run_sql(wrapped)
+    except Exception as exc:
+        return False, f"Execution failed: {exc}", sql
+
+    return True, "", sql

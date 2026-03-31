@@ -12,9 +12,10 @@ const LEVER_NAMES: Record<number, string> = {
   0: "genie_config",
   1: "Tables & Columns",
   2: "Metric Views",
-  3: "TVFs",
+  3: "SQL Queries & Functions",
   4: "Joins",
-  5: "Instructions",
+  5: "Text Instructions",
+  6: "SQL Expressions",
 }
 
 const STATUS_COLORS: Record<string, "success" | "danger" | "warning" | "secondary" | "info"> = {

@@ -209,7 +209,8 @@ sketch
 
 # End of https://www.toptal.com/developers/gitignore/api/react
 
-**/uv.lock
+# uv.lock files must be committed — they pin exact versions with hashes
+# **/uv.lock  <-- intentionally NOT ignored; lock files are security artifacts
 **/mlruns/
 mlflow.db
 **/.vite/

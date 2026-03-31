@@ -1,13 +1,13 @@
 "use client";
 
 import { motion } from "motion/react";
-import { Settings2, BarChart3, Code, Link2, BookOpen } from "lucide-react";
+import { Settings2, BarChart3, Code, Link2, BookOpen, FlaskConical } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { StageScreen } from "../StageScreen";
 import { LEVERS, FICTIONAL_EXAMPLE } from "../data";
 import { cn } from "@/lib/utils";
 
-const LEVER_ICONS = [Settings2, BarChart3, Code, Link2, BookOpen] as const;
+const LEVER_ICONS = [Settings2, BarChart3, Code, Link2, BookOpen, FlaskConical] as const;
 
 const LEVER_ACCENTS: Record<number, string> = {
   1: "from-blue-500/90 to-blue-400/70",
@@ -15,6 +15,7 @@ const LEVER_ACCENTS: Record<number, string> = {
   3: "from-emerald-500/90 to-emerald-400/70",
   4: "from-orange-500/90 to-orange-400/70",
   5: "from-purple-500/90 to-purple-400/70",
+  6: "from-teal-500/90 to-teal-400/70",
 };
 
 const LEVER_PILL_COLORS: Record<number, string> = {
@@ -23,11 +24,12 @@ const LEVER_PILL_COLORS: Record<number, string> = {
   3: "bg-emerald-100 text-emerald-700 border-emerald-200",
   4: "bg-orange-100 text-orange-700 border-orange-200",
   5: "bg-purple-100 text-purple-700 border-purple-200",
+  6: "bg-teal-100 text-teal-700 border-teal-200",
 };
 
 export function LeversStage() {
   const visual = (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
       {LEVERS.map((lever, index) => {
         const Icon = LEVER_ICONS[lever.number - 1];
         const accent = LEVER_ACCENTS[lever.number] ?? "from-slate-500 to-slate-400";
@@ -95,6 +97,7 @@ export function LeversStage() {
           <p><strong>L3:</strong> TVF docs + <code className="rounded bg-db-gray-bg px-1.5 py-0.5">remove_tvf</code> for persistently failing TVFs.</p>
           <p><strong>L4:</strong> <code className="rounded bg-db-gray-bg px-1.5 py-0.5">LEVER_4_JOIN_SPEC_PROMPT</code> — analyzes SQL diffs for missing/incorrect JOINs, generates Genie-format join specs.</p>
           <p><strong>L5:</strong> Instruction rewrites + example SQL. Budget-aware, respects character limits.</p>
+          <p><strong>L6:</strong> SQL Expressions — reusable measures, filters, and dimensions. Adds structured business concept definitions to the knowledge store (no instruction budget cost).</p>
         </div>
       ),
     },
@@ -143,7 +146,7 @@ export function LeversStage() {
 
   return (
     <StageScreen
-      title="The 5 Levers"
+      title="The 6 Levers"
       subtitle="Targeted tools for specific problem types"
       pipelineGroup="leverLoop"
       visual={visual}

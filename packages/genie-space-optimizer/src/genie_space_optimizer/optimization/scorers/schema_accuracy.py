@@ -64,11 +64,20 @@ def _make_schema_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
             "   - ORDER BY differences\n"
             "   - Column aliasing differences\n\n"
             f"{context}\n\n"
-            'Respond with JSON only: {"correct": true/false, "failure_type": "<wrong_table|wrong_column|wrong_join|missing_column>", '
+            'Respond with JSON only: {"correct": true/false, '
+            '"failure_type": "<wrong_table|wrong_column|wrong_join|missing_join_spec|wrong_join_spec|missing_column>", '
             '"wrong_clause": "<the problematic SQL clause>", "blame_set": ["<table_or_column>"], '
             '"counterfactual_fix": "<specific Genie Space metadata change that would fix this, referencing exact table/column names>", '
-            '"rationale": "<brief explanation>"}\n'
-            'If correct, set failure_type to "", blame_set to [], and counterfactual_fix to "".'
+            '"rationale": "<brief explanation>", '
+            '"join_assessment": null}\n'
+            'If correct, set failure_type to "", blame_set to [], counterfactual_fix to "", and join_assessment to null.\n'
+            'If failure_type is wrong_join, missing_join_spec, or wrong_join_spec, '
+            'set join_assessment to: {"issue": "<missing_join|wrong_condition|wrong_direction>", '
+            '"left_table": "<fully_qualified_table_name>", "right_table": "<fully_qualified_table_name>", '
+            '"suggested_condition": "<left_table.col = right_table.col>", '
+            '"relationship": "<many_to_one|one_to_many|one_to_one>", '
+            '"evidence": "<brief explanation of why this join is needed based on the SQL comparison>"}. '
+            'Use fully-qualified table names (catalog.schema.table) from the SQL.'
         )
 
         logger.info(
@@ -182,6 +191,10 @@ def _make_schema_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
         elif cmp.get("error"):
             base_confidence = 0.6
 
+        _join_assess = result.get("join_assessment")
+        if isinstance(_join_assess, dict) and not _join_assess.get("left_table"):
+            _join_assess = None
+
         metadata = build_asi_metadata(
             failure_type=result.get("failure_type", "wrong_column"),
             severity="major",
@@ -192,6 +205,7 @@ def _make_schema_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
                 f"Fix {result.get('failure_type', 'schema issue')} "
                 f"involving {', '.join(result.get('blame_set', ['unknown']))}"
             ),
+            join_assessment=_join_assess,
         )
         return Feedback(
             name="schema_accuracy",

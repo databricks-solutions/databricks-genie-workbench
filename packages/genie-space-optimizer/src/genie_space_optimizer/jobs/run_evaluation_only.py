@@ -172,6 +172,9 @@ _log(
 w = WorkspaceClient()
 spark = SparkSession.builder.getOrCreate()
 
+import mlflow
+mlflow.openai.autolog()
+
 uc_schema = f"{catalog}.{schema}"
 benchmarks = load_benchmarks_from_dataset(spark, uc_schema, domain)
 if not benchmarks:

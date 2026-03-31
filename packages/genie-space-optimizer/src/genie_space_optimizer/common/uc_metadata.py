@@ -350,19 +350,30 @@ def get_foreign_keys_for_tables(
                 k.table_schema  AS child_schema,
                 k.table_name    AS child_table_name,
                 k.column_name   AS child_column,
-                k.ordinal_position,
                 c.table_catalog AS parent_catalog,
                 c.table_schema  AS parent_schema,
                 c.table_name    AS parent_table_name,
                 c.column_name   AS parent_column
-            FROM {cat}.information_schema.key_column_usage k
-            JOIN {cat}.information_schema.constraint_column_usage c
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY constraint_catalog, constraint_schema, constraint_name
+                    ORDER BY ordinal_position
+                ) AS rn
+                FROM {cat}.information_schema.key_column_usage
+                WHERE table_schema = '{sch}'
+                  AND position_in_unique_constraint IS NOT NULL
+            ) k
+            JOIN (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY constraint_catalog, constraint_schema, constraint_name
+                    ORDER BY column_name
+                ) AS rn
+                FROM {cat}.information_schema.constraint_column_usage
+            ) c
               ON k.constraint_catalog = c.constraint_catalog
              AND k.constraint_schema  = c.constraint_schema
              AND k.constraint_name    = c.constraint_name
-             AND k.ordinal_position   = c.ordinal_position
-            WHERE k.table_schema = '{sch}'
-              AND k.position_in_unique_constraint IS NOT NULL
+             AND k.rn                 = c.rn
             """
         )
     if not unions:

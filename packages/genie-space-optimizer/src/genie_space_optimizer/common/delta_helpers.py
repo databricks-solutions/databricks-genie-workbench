@@ -128,7 +128,8 @@ def insert_row(
     fqn = _fqn(catalog, schema, table)
     def _sql_lit(v: Any) -> str:
         if isinstance(v, str):
-            return f"'{v.replace(chr(39), chr(39)+chr(39))}'"
+            escaped = v.replace("\\", "\\\\").replace(chr(39), chr(39) + chr(39))
+            return f"'{escaped}'"
         if v is None:
             return "NULL"
         return str(v)

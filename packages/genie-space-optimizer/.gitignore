@@ -1,0 +1,59 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# version file
+src/genie_space_optimizer/_version.py
+
+# metadata file
+src/genie_space_optimizer/_metadata.py
+
+# build files
+dist
+
+# js-related
+node_modules/
+.tanstack
+
+# env files
+.env
+.env.local
+.env.*
+
+# mac
+.DS_Store
+
+# DABs 
+.databricks
+
+# apx
+.apx/
+
+# pytest cache
+.pytest_cache/
+
+# Build artifacts
+.build/
+
+# UI dist folder
+src/genie_space_optimizer/__dist__/
+
+# MLflow
+mlflow.db
+
+# Agent / IDE metadata
+.cursor/
+.claude/
+/genie_space_optimizer/
+browser-test-output/
+genie_space_optimizer_docs/
+
+# docs
+docs/

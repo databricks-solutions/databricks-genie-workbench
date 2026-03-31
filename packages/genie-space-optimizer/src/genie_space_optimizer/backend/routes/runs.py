@@ -366,6 +366,8 @@ def map_stages_to_steps(
     stages_rows: list[dict],
     iterations_rows: list[dict],
     run_data: dict,
+    *,
+    patches_rows: list[dict] | None = None,
 ) -> list[PipelineStep]:
     """Map internal harness stages to 6 user-facing pipeline steps."""
     steps: list[PipelineStep] = []
@@ -389,7 +391,10 @@ def map_stages_to_steps(
         duration = _total_duration(matching)
 
         summary = _build_step_summary(defn, matching, iterations_rows, run_data, stages_rows=stages_rows)
-        inputs, outputs = _build_step_io(defn, matching, iterations_rows, run_data, stages_rows=stages_rows)
+        inputs, outputs = _build_step_io(
+            defn, matching, iterations_rows, run_data,
+            stages_rows=stages_rows, patches_rows=patches_rows,
+        )
 
         steps.append(
             PipelineStep(
@@ -438,6 +443,7 @@ def _build_step_io(
     run_data: dict,
     *,
     stages_rows: list[dict] | None = None,
+    patches_rows: list[dict] | None = None,
 ) -> tuple[dict | None, dict | None]:
     """Build rich inputs/outputs payload for pipeline step drill-down."""
     if not matching:
@@ -659,6 +665,10 @@ def _build_step_io(
 
     if step_name == "Proactive Enrichment":
         proactive = _extract_proactive_changes(matching)
+        lever_0_count = sum(
+            1 for p in (patches_rows or [])
+            if _safe_int(p.get("lever")) == 0
+        )
         return (
             {
                 "spaceId": run_data.get("space_id"),
@@ -667,6 +677,7 @@ def _build_step_io(
                 "proactiveChanges": proactive if proactive else None,
                 "enrichmentModelId": detail.get("enrichment_model_id"),
                 "totalEnrichments": detail.get("total_enrichments", 0),
+                "totalConfigChanges": lever_0_count,
                 "enrichmentSkipped": detail.get("enrichment_skipped", False),
                 "stageEvents": timeline,
             },
@@ -813,14 +824,27 @@ def _build_step_summary(
         joins = _safe_int(detail.get("joins_discovered")) or 0
         examples = _safe_int(detail.get("examples_mined")) or 0
         instructions = 1 if detail.get("instructions_seeded") else 0
+        fa_enabled = _safe_int(detail.get("format_assistance_enabled")) or 0
+        sql_exprs = _safe_int(detail.get("sql_expressions_seeded")) or 0
         total = _safe_int(detail.get("total_enrichments")) or (descriptions + joins + instructions + examples)
-        return defn["summary_template"].format(
-            total=total,
-            descriptions=descriptions,
-            joins=joins,
-            instructions=instructions,
-            examples=examples,
-        )
+        parts: list[str] = []
+        if descriptions:
+            parts.append(f"{descriptions} descriptions")
+        if joins:
+            parts.append(f"{joins} joins")
+        if instructions:
+            parts.append(f"{instructions} instructions")
+        if examples:
+            parts.append(f"{examples} example SQLs")
+        if sql_exprs:
+            parts.append(f"{sql_exprs} SQL expressions")
+        if fa_enabled:
+            parts.append(f"{fa_enabled} format assistance columns")
+        if parts:
+            return f"Applied {total} proactive enrichments: {', '.join(parts)}"
+        if total:
+            return f"Applied {total} proactive enrichments"
+        return "Proactive enrichment complete"
     if step_name == "Adaptive Optimization":
         patches = detail.get("patches_applied", 0)
         levers_accepted = detail.get("levers_accepted", [])
@@ -1383,7 +1407,7 @@ def get_run(
     baseline_accuracy = _safe_float(baseline_iter.get("overall_accuracy")) if baseline_iter else None
     run_data["baseline_accuracy"] = baseline_accuracy
 
-    steps = map_stages_to_steps(stages_rows, iters_rows, run_data)
+    steps = map_stages_to_steps(stages_rows, iters_rows, run_data, patches_rows=patches_rows)
     configured_levers = run_data.get("levers", []) if isinstance(run_data.get("levers"), list) else []
     configured_lever_ints: list[int] = []
     for lever in configured_levers:
@@ -1405,7 +1429,7 @@ def get_run(
         display_status = "RUNNING"
 
     host = (ws.config.host or "").rstrip("/")
-    links = _build_links(host, run_data, iters_rows, config, ws)
+    links = _build_links(host, run_data, iters_rows, config, ws, stages_rows=stages_rows)
     baseline_eval_link = next(
         (
             l.url for l in links
@@ -2254,7 +2278,10 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
     domain = run_data.get("domain", run_data.get("space_id", ""))
     try:
         from genie_space_optimizer.optimization.labeling import get_flagged_questions
-        flagged = get_flagged_questions(spark, config.catalog, config.schema_name, domain)
+        flagged = get_flagged_questions(
+            spark, config.catalog, config.schema_name, domain,
+            run_id=run_id,
+        )
     except Exception:
         logger.debug("Could not load flagged questions for iteration detail", exc_info=True)
 
@@ -2284,6 +2311,7 @@ def _build_links(
     iters_rows: list[dict],
     config,
     ws: WorkspaceClient,
+    stages_rows: list[dict] | None = None,
 ) -> list[PipelineLink]:
     """Build external Databricks links from run metadata."""
     links: list[PipelineLink] = []
@@ -2351,13 +2379,23 @@ def _build_links(
                 category="mlflow",
             ))
 
-    best_model_id = run_data.get("best_model_id")
-    if best_model_id:
-        links.append(PipelineLink(
-            label="Best Model",
-            url=f"{host}/ml/models/{best_model_id}",
-            category="mlflow",
-        ))
+    uc_model = ""
+    uc_version = ""
+    for s in (stages_rows or []):
+        if str(s.get("stage", "")).startswith("FINALIZE") and str(s.get("status", "")).upper() == "COMPLETE":
+            fin_detail = safe_json_parse(s.get("detail_json"))
+            if isinstance(fin_detail, dict):
+                uc_model = fin_detail.get("uc_model_name", "")
+                uc_version = fin_detail.get("uc_model_version", "")
+            break
+    if uc_model and uc_version:
+        parts = uc_model.split(".")
+        if len(parts) == 3:
+            links.append(PipelineLink(
+                label="Best Model",
+                url=f"{host}/explore/data/models/{parts[0]}/{parts[1]}/{parts[2]}/version/{uc_version}",
+                category="mlflow",
+            ))
 
     labeling_url = run_data.get("labeling_session_url")
     labeling_name = run_data.get("labeling_session_name")

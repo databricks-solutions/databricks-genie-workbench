@@ -177,6 +177,7 @@ if _warehouse_id:
 
 import mlflow
 mlflow.set_experiment(exp_name)
+mlflow.openai.autolog()
 
 # Read from lever_loop (or baseline if lever_loop was skipped)
 lever_skipped_raw = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="skipped")
@@ -185,10 +186,20 @@ if lever_skipped:
     scores_json = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="scores")
     prev_model_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="model_id")
     iteration_counter = 0
+    _baseline_mlflow_run_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="mlflow_run_id", default="")
+    all_eval_mlflow_run_ids = [_baseline_mlflow_run_id] if _baseline_mlflow_run_id else []
+    all_failure_question_ids = []
 else:
     scores_json = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="scores")
     prev_model_id = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="model_id")
     iteration_counter = int(dbutils.jobs.taskValues.get(taskKey="lever_loop", key="iteration_counter"))
+    _baseline_mlflow_run_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="mlflow_run_id", default="")
+    _lever_eval_ids_raw = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="all_eval_mlflow_run_ids", default="[]")
+    all_eval_mlflow_run_ids = json.loads(_lever_eval_ids_raw) if _lever_eval_ids_raw else []
+    if _baseline_mlflow_run_id and _baseline_mlflow_run_id not in all_eval_mlflow_run_ids:
+        all_eval_mlflow_run_ids.insert(0, _baseline_mlflow_run_id)
+    _failure_qids_raw = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="all_failure_question_ids", default="[]")
+    all_failure_question_ids = json.loads(_failure_qids_raw) if _failure_qids_raw else []
 
 prev_scores = json.loads(scores_json)
 
@@ -273,6 +284,25 @@ _log(
 
 # COMMAND ----------
 
+# Reconstruct reflection_buffer from Delta iterations table
+_reflection_buffer: list[dict] = []
+try:
+    from genie_space_optimizer.optimization.state import load_all_full_iterations
+    _all_iters = load_all_full_iterations(spark, run_id, catalog, schema)
+    for _it in _all_iters:
+        _rj = _it.get("reflection_json")
+        if isinstance(_rj, dict) and _rj:
+            _reflection_buffer.append(_rj)
+        elif isinstance(_rj, str) and _rj.strip():
+            import json as _rj_json
+            try:
+                _reflection_buffer.append(_rj_json.loads(_rj))
+            except (ValueError, TypeError):
+                pass
+    _log("Reconstructed reflection buffer", entries=len(_reflection_buffer))
+except Exception as _rb_err:
+    _log("Could not reconstruct reflection buffer", error=str(_rb_err))
+
 try:
     _banner("Running _run_finalize (4 phases print below)")
     finalize_out = _run_finalize(
@@ -283,6 +313,9 @@ try:
         benchmarks=benchmarks,
         max_iterations=max_iterations,
         deploy_target=deploy_target,
+        all_eval_mlflow_run_ids=all_eval_mlflow_run_ids,
+        all_failure_question_ids=all_failure_question_ids,
+        reflection_buffer=_reflection_buffer if _reflection_buffer else None,
     )
     _log(
         "Finalize finished",

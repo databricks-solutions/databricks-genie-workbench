@@ -38,7 +38,7 @@ DEFAULT_THRESHOLDS = {
     "completeness": 90.0,
     "response_quality": 0.0,
     "result_correctness": 85.0,
-    "asset_routing": 95.0,
+    "asset_routing": 85.0,
 }
 
 REPEATABILITY_TARGET = 90.0
@@ -51,7 +51,7 @@ MLFLOW_THRESHOLDS = {
     "completeness/mean": 0.90,
     "response_quality/mean": 0.0,
     "result_correctness/mean": 0.85,
-    "asset_routing/mean": 0.95,
+    "asset_routing/mean": 0.85,
 }
 
 # ── 2. Rate Limits and Timing ──────────────────────────────────────────
@@ -83,9 +83,16 @@ SLICE_GATE_MIN_REDUCTION = 0.5
 REGRESSION_THRESHOLD = 5.0
 MAX_NOISE_FLOOR = 5.0
 PLATEAU_ITERATIONS = 2
-CONSECUTIVE_ROLLBACK_LIMIT = 2
+CONSECUTIVE_ROLLBACK_LIMIT = 3
 """Stop the lever loop after this many consecutive rollbacks, indicating
-the optimizer is stuck and further iterations are unlikely to help."""
+the optimizer is stuck and further iterations are unlikely to help.
+Root causes are only marked as tried when the limit is about to be hit,
+giving the strategist a chance to retry with a different lever."""
+CONSECUTIVE_ESCALATION_LIMIT = 2
+"""Stop the lever loop after this many consecutive iterations where the
+strategist escalated (gt_repair, flag_for_review) instead of producing
+actionable patches.  Repeated identical escalations indicate a systemic
+issue (e.g. bad ground-truth SQL) that the optimizer cannot resolve."""
 ARBITER_CORRECTION_TRIGGER = 3  # deprecated — use per-question thresholds below
 GENIE_CORRECT_CONFIRMATION_THRESHOLD = 2
 """Minimum independent evaluations where a question must receive ``genie_correct``
@@ -124,6 +131,17 @@ LLM_TEMPERATURE = 0
 LLM_MAX_RETRIES = 3
 
 # ── 5. Benchmark Generation ────────────────────────────────────────────
+
+REQUIRE_GROUND_TRUTH_SQL: bool = True
+"""When True, benchmarks without expected_sql are rejected at every gate:
+generation (curated question-only rows become LLM generation seeds instead),
+preflight validation (re-validate after top-up), and eval pre-check
+(quarantine instead of silently accepting).  Set to False to restore
+legacy behaviour where question-only benchmarks pass through evaluation."""
+
+CURATED_SQL_GENERATION_MAX_RETRIES = 2
+"""Maximum LLM correction attempts when generating SQL for a curated
+question that originally lacked expected_sql."""
 
 HELD_OUT_RATIO = 0.15
 """Fraction of non-curated benchmarks reserved for held-out generalization
@@ -226,20 +244,60 @@ BENCHMARK_GENERATION_PROMPT = (
     '- NEVER use SELECT * — metric views require explicit column references.\n'
     '- ALL measure columns MUST be wrapped in MEASURE() in both SELECT and ORDER BY.\n'
     '  Example: SELECT region, MEASURE(total_revenue) FROM mv_sales GROUP BY region\n'
-    '- NEVER use JOINs at query time on metric views — joins are defined in the metric view YAML.\n'
+    '- NEVER use MEASURE() in WHERE, HAVING, ON, or CASE WHEN clauses — MEASURE() is '
+    'only valid in SELECT and ORDER BY. To filter on a measure, materialize it in a '
+    'CTE first, then filter on the alias.\n'
+    '- NEVER use direct JOINs on metric views — they cause METRIC_VIEW_JOIN_NOT_SUPPORTED errors.\n'
+    '- If a question requires metric view data PLUS dimension columns from another table, '
+    'use the CTE-first pattern: materialize the metric view query in a WITH clause, then JOIN '
+    'the CTE result to the dimension table.\n'
     '- Dimensions (non-measure columns) are used for GROUP BY and filtering only.\n'
     '- The Metric Views section above lists which columns are measures vs dimensions.\n'
     '\n'
+    '## Common Metric View SQL Mistakes (AVOID THESE)\n'
+    'BAD:  SELECT zone, MEASURE(sales) FROM mv WHERE MEASURE(pct_chg) < -2\n'
+    'GOOD: WITH t AS (SELECT zone, MEASURE(sales) AS s, MEASURE(pct_chg) AS p '
+    'FROM mv GROUP BY zone) SELECT * FROM t WHERE p < -2\n'
+    '\n'
+    'BAD:  SELECT * FROM mv_store_sales\n'
+    'GOOD: SELECT zone, MEASURE(total_sales) FROM mv_store_sales GROUP BY zone\n'
+    '\n'
+    'BAD (METRIC_VIEW_JOIN_NOT_SUPPORTED):\n'
+    '  SELECT s.location_number, l.zone_name, MEASURE(s.cy_sales) '
+    'FROM mv_sales s JOIN dim_location l ON s.location_number = l.location_number GROUP BY ALL\n'
+    'GOOD (CTE-first pattern — materialize metric view, then JOIN):\n'
+    '  WITH sales AS (\n'
+    '    SELECT location_number, MEASURE(cy_sales) AS cy_sales FROM mv_sales GROUP BY ALL\n'
+    '  )\n'
+    '  SELECT s.location_number, l.zone_name, s.cy_sales '
+    'FROM sales s JOIN dim_location l ON s.location_number = l.location_number\n'
+    '\n'
     '## Question-SQL Alignment\n'
     '- expected_sql MUST answer EXACTLY what the question asks — no more, no less.\n'
-    '- Do NOT add WHERE filters the question does not mention.\n'
     '- Do NOT add extra columns beyond what the question asks for.\n'
     '- Do NOT add JOINs that only serve to add unrequested columns.\n'
-    '- If the question is ambiguous about a filter, do NOT assume one.\n'
+    '- If the question is ambiguous about a filter, do NOT assume one UNLESS the Genie '
+    'Space Instructions mandate it as a default.\n'
+    '\n'
+    '## CRITICAL: Instruction-Mandated Default Filters\n'
+    'The Genie Space Instructions section above may define default filters (e.g. '
+    '"Default filter: same_store_7now = Y for all PSD queries"). These are MANDATORY:\n'
+    '- EVERY benchmark SQL that falls under the scope of a default filter MUST include '
+    'that filter in its WHERE clause. Omitting it produces incorrect ground truth.\n'
+    '- The question text MUST reflect the default filter so question and SQL stay aligned. '
+    'Example: instead of "What are the PSD KPIs by zone?" with WHERE same_store_7now = \'Y\', '
+    'write "What are the same-store PSD KPIs by zone?"\n'
+    '- Do NOT add filters that are neither mentioned in the question NOR mandated by instructions.\n'
     '\n'
     '## Minimal SQL Principle\n'
     'Write the simplest correct SQL. Prefer fewer columns and filters. '
     'For "multi-table" category questions, JOINs are expected and encouraged.\n'
+    '\n'
+    '## Asset Coverage (MANDATORY)\n'
+    'Every table, metric view, and function listed in VALID Data Assets MUST appear '
+    'in at least one benchmark\'s expected_sql (in FROM, JOIN, or function call). '
+    'A single question that JOINs multiple tables counts as coverage for all tables '
+    'in that JOIN. Distribute questions across all assets first, then add variety.\n'
     '\n'
     '## Diversity\n'
     'At least 2 questions per category. Include edge cases '
@@ -306,7 +364,17 @@ BENCHMARK_CORRECTION_PROMPT = (
     '- Metric views: use MEASURE() syntax for aggregates in SELECT/ORDER BY.\n'
     '- Metric view alias collision: NEVER use ORDER BY alias when alias == source column\n'
     '  for MEASURE() expressions. Use ORDER BY MEASURE(column) directly.\n'
-    '- Metric views: NEVER use SELECT * or JOINs at query time. All measures MUST use MEASURE().\n'
+    '- Metric views: NEVER use SELECT * or direct JOINs on metric views. '
+    'All measures MUST use MEASURE().\n'
+    '- Metric views: NEVER use MEASURE() in WHERE, HAVING, ON, or CASE WHEN clauses — '
+    'MEASURE() is only valid in SELECT and ORDER BY. To filter on a measure, materialize '
+    'it in a CTE first, then filter on the alias.\n'
+    '- Metric view + JOIN: If the error is METRIC_VIEW_JOIN_NOT_SUPPORTED, rewrite using '
+    'the CTE-first pattern — materialize the metric view in a WITH clause, then JOIN the '
+    'CTE to the dimension table:\n'
+    '  BAD:  SELECT s.id, l.name, MEASURE(s.sales) FROM mv_sales s JOIN dim l ON s.id = l.id\n'
+    '  GOOD: WITH sales AS (SELECT id, MEASURE(sales) AS sales FROM mv_sales GROUP BY ALL) '
+    'SELECT s.id, l.name, s.sales FROM sales s JOIN dim l ON s.id = l.id\n'
     '- TVFs: use correct function call signature.\n'
     '- Multi-table JOINs: use Join Specifications above for valid join paths.\n'
     '- If error says "Query returns 0 rows", the SQL is syntactically valid but\n'
@@ -314,6 +382,9 @@ BENCHMARK_CORRECTION_PROMPT = (
     '- If no valid asset can answer the question, set expected_sql to null with unfixable_reason.\n'
     '- Preserve original question text.\n'
     '- Apply MINIMAL SQL PRINCIPLE: corrected SQL answers exactly what the question asks.\n'
+    '- If the SQL includes a domain-default filter (e.g., same-store, active status) that is '
+    'not mentioned in the question, either remove the filter or update the question text to '
+    'mention it so question and SQL stay aligned.\n'
     '</instructions>\n'
     '\n'
     '<output_schema>\n'
@@ -322,6 +393,76 @@ BENCHMARK_CORRECTION_PROMPT = (
     'Each object: "question", "expected_sql" (corrected or null), "expected_asset", '
     '"category", "required_tables", "required_columns", "expected_facts", '
     '"unfixable_reason" (null if fixed).\n'
+    '</output_schema>'
+)
+
+CURATED_SQL_GENERATION_PROMPT = (
+    '<role>\n'
+    'You are a Databricks SQL expert generating ground-truth SQL for benchmark questions.\n'
+    '</role>\n'
+    '\n'
+    '<context>\n'
+    '## VALID Data Assets (ONLY these exist)\n'
+    '{{ valid_assets_context }}\n'
+    '\n'
+    '## Tables and Columns\n'
+    '{{ tables_context }}\n'
+    '\n'
+    '## Column Allowlist (Extract-Over-Generate — use ONLY these column names)\n'
+    '{{ column_allowlist }}\n'
+    '\n'
+    '## Metric Views\n'
+    '{{ metric_views_context }}\n'
+    '\n'
+    '## Table-Valued Functions\n'
+    '{{ tvfs_context }}\n'
+    '\n'
+    '## Join Specifications (how tables relate)\n'
+    '{{ join_specs_context }}\n'
+    '\n'
+    '## Genie Space Instructions (business rules — follow these)\n'
+    '{{ instructions_context }}\n'
+    '\n'
+    '## Data Profile (actual values from database)\n'
+    '{{ data_profile_context }}\n'
+    '\n'
+    '## Curated Questions (generate SQL for each)\n'
+    '{{ questions_json }}\n'
+    '</context>\n'
+    '\n'
+    '<instructions>\n'
+    'Generate valid Databricks SQL for each curated question using ONLY the assets and '
+    'columns listed above.\n'
+    '\n'
+    '- The SQL must answer EXACTLY what the question asks — no more, no less.\n'
+    '- Use only columns from the Column Allowlist.\n'
+    '- Metric views: use MEASURE() syntax for aggregates in SELECT/ORDER BY.\n'
+    '- Metric views: NEVER use direct JOINs on metric views (causes METRIC_VIEW_JOIN_NOT_SUPPORTED). '
+    'If you need dimension columns from another table, use the CTE-first pattern: materialize the '
+    'metric view in a WITH clause, then JOIN the CTE to the dimension table.\n'
+    '- Multi-table queries: use Join Specifications for valid join paths.\n'
+    '- Data Profile: use realistic filter values from the profile.\n'
+    '- If a question truly cannot be answered with the available assets, set expected_sql '
+    'to null with unfixable_reason explaining why.\n'
+    '\n'
+    '## CRITICAL: Instruction-Mandated Default Filters\n'
+    'The Genie Space Instructions above define the business rules for this space, including '
+    'default filters. These instructions are the SOURCE OF TRUTH.\n'
+    '- If instructions say "Default filter: X = Y for all Z queries", EVERY SQL for Z-type '
+    'questions MUST include WHERE X = Y. Omitting an instruction-mandated default filter '
+    'produces incorrect ground truth that will penalize Genie for correct behavior.\n'
+    '- Only omit a default filter if the question EXPLICITLY asks to exclude it '
+    '(e.g. "including non-same-store locations").\n'
+    '</instructions>\n'
+    '\n'
+    '<output_schema>\n'
+    'Return a JSON array of objects. No markdown, just JSON.\n'
+    '\n'
+    'Each object: {{"question": "...", "expected_sql": "..." or null, '
+    '"expected_asset": "TABLE"|"MV"|"TVF", '
+    '"category": "aggregation"|"ranking"|"time-series"|"comparison"|"detail"|"list"|"threshold"|"multi-table", '
+    '"required_tables": [...], "required_columns": [...], "expected_facts": [], '
+    '"unfixable_reason": null or "..."}}\n'
     '</output_schema>'
 )
 
@@ -414,14 +555,28 @@ BENCHMARK_COVERAGE_GAP_PROMPT = (
     'When writing SQL for metric views:\n'
     '- NEVER use SELECT * — metric views require explicit column references.\n'
     '- ALL measure columns MUST be wrapped in MEASURE() in both SELECT and ORDER BY.\n'
+    '- NEVER use MEASURE() in WHERE, HAVING, ON, or CASE WHEN clauses — MEASURE() is '
+    'only valid in SELECT and ORDER BY. To filter on a measure, materialize it in a '
+    'CTE first, then filter on the alias.\n'
     '- NEVER use JOINs at query time on metric views.\n'
     '- Dimensions (non-measure columns) are used for GROUP BY and filtering only.\n'
+    '\n'
+    '## Common Metric View SQL Mistakes (AVOID THESE)\n'
+    'BAD:  SELECT zone, MEASURE(sales) FROM mv WHERE MEASURE(pct_chg) < -2\n'
+    'GOOD: WITH t AS (SELECT zone, MEASURE(sales) AS s, MEASURE(pct_chg) AS p '
+    'FROM mv GROUP BY zone) SELECT * FROM t WHERE p < -2\n'
+    '\n'
+    'BAD:  SELECT * FROM mv_store_sales\n'
+    'GOOD: SELECT zone, MEASURE(total_sales) FROM mv_store_sales GROUP BY zone\n'
     '\n'
     '## Question-SQL Alignment\n'
     '- expected_sql MUST answer EXACTLY what the question asks — no more, no less.\n'
     '- Do NOT add WHERE filters the question does not mention.\n'
     '- Do NOT add extra columns beyond what the question asks for.\n'
     '- Do NOT add JOINs that only serve to add unrequested columns.\n'
+    '- If the Genie Space Instructions specify a default filter (e.g., same-store only, '
+    'active status), and you include that filter in the SQL, you MUST mention it in the '
+    'question text so the question and SQL stay aligned.\n'
     '\n'
     '## Minimal SQL Principle\n'
     'Write the simplest correct SQL. Prefer fewer columns and filters. '
@@ -801,7 +956,7 @@ PROACTIVE_INSTRUCTION_PROMPT = (
     '</context>\n'
     '\n'
     '<instructions>\n'
-    'Write plain-text instructions (500-1500 characters) using ALL-CAPS SECTION HEADERS with a colon.\n'
+    'Write plain-text instructions (500-3750 characters) using ALL-CAPS SECTION HEADERS with a colon.\n'
     'Use these canonical sections (omit empty ones):\n'
     '\n'
     'PURPOSE:\n'
@@ -824,11 +979,57 @@ PROACTIVE_INSTRUCTION_PROMPT = (
     '- Do NOT invent business rules not evident in column names or descriptions.\n'
     '- Use short, imperative sentences.\n'
     '- Do NOT use Markdown formatting (no #, **, ```, etc.).\n'
-    '- Keep total output between 500 and 1500 characters.\n'
+    '- Keep total output between 500 and 3750 characters.\n'
     '</instructions>\n'
     '\n'
     '<output_schema>\n'
     'Respond with ONLY the instruction text — no JSON wrapper, no code fences.\n'
+    '</output_schema>'
+)
+
+INSTRUCTION_RESTRUCTURE_PROMPT = (
+    '<role>\n'
+    'You are a Databricks Genie Space instruction classifier. '
+    'Your job is to reorganize existing unstructured instructions into '
+    'canonical ALL-CAPS sections WITHOUT changing the content.\n'
+    '</role>\n'
+    '\n'
+    '<context>\n'
+    '## Existing Instructions (unstructured)\n'
+    '{{ existing_instructions }}\n'
+    '\n'
+    '## Available Tables\n'
+    '{{ tables_context }}\n'
+    '</context>\n'
+    '\n'
+    '<instructions>\n'
+    'Classify each rule or sentence from the existing instructions into '
+    'exactly one of these canonical sections:\n'
+    '\n'
+    'PURPOSE:             What this Genie Space does and who it serves\n'
+    'ASSET ROUTING:       Which table/TVF/MV to use for which topic\n'
+    'BUSINESS DEFINITIONS: Term definitions — [term] = [column] from [table]\n'
+    'DISAMBIGUATION:      How to resolve ambiguous terms, hierarchies, synonyms\n'
+    'AGGREGATION RULES:   How to aggregate measures, grain rules, default filters\n'
+    'FUNCTION ROUTING:    When to use TVFs/UDFs vs raw tables\n'
+    'JOIN GUIDANCE:       Explicit join paths and conditions\n'
+    'QUERY RULES:         SQL-level rules — filters, ordering, limits, output formatting\n'
+    'QUERY PATTERNS:      Common multi-step query patterns\n'
+    'TEMPORAL FILTERS:    Date partitioning, time-range rules\n'
+    'DATA QUALITY NOTES:  Known nulls, data caveats\n'
+    'CONSTRAINTS:         Cross-cutting behavioral constraints\n'
+    '\n'
+    'Rules:\n'
+    '- PRESERVE every rule from the original — do NOT drop, summarize, or rephrase.\n'
+    '- Each rule goes into exactly one section. If unclear, use CONSTRAINTS.\n'
+    '- Output plain text with ALL-CAPS section headers followed by a colon.\n'
+    '- Use - for bullet points. Use blank lines between sections.\n'
+    '- Do NOT use Markdown syntax (no ##, no **, no backticks).\n'
+    '- Omit sections with no matching rules.\n'
+    '</instructions>\n'
+    '\n'
+    '<output_schema>\n'
+    'Respond with ONLY the restructured instruction text — no JSON wrapper, no code fences.\n'
     '</output_schema>'
 )
 
@@ -927,12 +1128,20 @@ LEVER_4_JOIN_SPEC_PROMPT = (
     'You MUST ONLY reference tables and columns from the Identifier Allowlist. '
     'Any name not in the allowlist is INVALID and will be rejected.\n'
     '\n'
+    '## Metric View Join Rule\n'
+    'If EITHER side of the join is a metric view (name starts with mv_ or uses MEASURE()), '
+    'the join CANNOT be used as a direct SQL JOIN — it causes METRIC_VIEW_JOIN_NOT_SUPPORTED. '
+    'Instead, Genie must use the CTE-first pattern: materialize the metric view in a WITH clause, '
+    'then JOIN the CTE to the other table. Set the "instruction" field to explain this.\n'
+    '\n'
     '## Join Spec Format\n'
     '- alias: unqualified table name (last segment of identifier)\n'
     '- join condition: backtick-quoted aliases, e.g. '
     '"`fact_sales`.`product_key` = `dim_product`.`product_key`"\n'
     '- relationship_type: one of FROM_RELATIONSHIP_TYPE_MANY_TO_ONE, '
     'FROM_RELATIONSHIP_TYPE_ONE_TO_MANY, FROM_RELATIONSHIP_TYPE_ONE_TO_ONE\n'
+    '- instruction: usage guidance for this join (REQUIRED — explain when and how to use it, '
+    'especially CTE-first for metric view joins)\n'
     '</instructions>\n'
     '\n'
     '<output_schema>\n'
@@ -940,7 +1149,8 @@ LEVER_4_JOIN_SPEC_PROMPT = (
     '{"join_spec": {\n'
     '  "left": {"identifier": "<fully_qualified_table>", "alias": "<short_name>"},\n'
     '  "right": {"identifier": "<fully_qualified_table>", "alias": "<short_name>"},\n'
-    '  "sql": ["<join_condition>", "--rt=<relationship_type>--"]\n'
+    '  "sql": ["<join_condition>", "--rt=<relationship_type>--"],\n'
+    '  "instruction": "<usage guidance: when to use this join, CTE-first for metric views>"\n'
     '}, "rationale": "..."}\n'
     '</output_schema>'
 )
@@ -996,11 +1206,18 @@ LEVER_4_JOIN_DISCOVERY_PROMPT = (
     'You MUST ONLY reference tables and columns from the Identifier Allowlist. '
     'Any table or column not in the allowlist is INVALID and will be rejected.\n'
     '\n'
+    '## Metric View Join Rule\n'
+    'If either table is a metric view (name starts with mv_ or uses MEASURE()), '
+    'the join cannot be used as a direct SQL JOIN. Genie must use a CTE-first pattern. '
+    'Set the "instruction" field to explain this constraint.\n'
+    '\n'
     '## Join Spec Format\n'
     '- alias: unqualified table name (last segment of identifier)\n'
     '- join condition: backtick-quoted aliases\n'
     '- relationship_type: one of FROM_RELATIONSHIP_TYPE_MANY_TO_ONE, '
     'FROM_RELATIONSHIP_TYPE_ONE_TO_MANY, FROM_RELATIONSHIP_TYPE_ONE_TO_ONE\n'
+    '- instruction: usage guidance (REQUIRED — explain when/how to use, '
+    'CTE-first for metric view joins)\n'
     '</instructions>\n'
     '\n'
     '<output_schema>\n'
@@ -1008,7 +1225,8 @@ LEVER_4_JOIN_DISCOVERY_PROMPT = (
     '{"join_specs": [\n'
     '  {"left": {"identifier": "<fq_table>", "alias": "<short_name>"},\n'
     '    "right": {"identifier": "<fq_table>", "alias": "<short_name>"},\n'
-    '    "sql": ["<join_condition>", "--rt=<relationship_type>--"]}\n'
+    '    "sql": ["<join_condition>", "--rt=<relationship_type>--"],\n'
+    '    "instruction": "<usage guidance>"}\n'
     '], "rationale": "..."}\n'
     '\n'
     'If no valid joins found: {"join_specs": [], "rationale": "..."}\n'
@@ -1040,6 +1258,7 @@ LEVER_TO_SECTIONS: dict[int, list[str]] = {
     3: ["FUNCTION ROUTING"],
     4: ["JOIN GUIDANCE", "TEMPORAL FILTERS"],
     5: ["ASSET ROUTING", "QUERY RULES", "QUERY PATTERNS", "DATA QUALITY NOTES", "CONSTRAINTS"],
+    6: ["AGGREGATION RULES", "QUERY PATTERNS"],
 }
 
 INSTRUCTION_FORMAT_RULES = (
@@ -1321,11 +1540,17 @@ STRATEGIST_PROMPT = (
     '\n'
     '## Contract: All Instruments of Power\n'
     'For each root cause, specify EVERY lever that should act:\n'
-    '- wrong_column / wrong_table / missing_synonym: Primary Lever 1, also Lever 5\n'
-    '- wrong_aggregation / missing_filter: Primary Lever 2, also Lever 5\n'
+    '- wrong_column / wrong_table / missing_synonym: Primary Lever 1, also Lever 5 + Lever 6\n'
+    '- wrong_aggregation / wrong_measure / missing_filter: Primary Lever 2, also Lever 5 + Lever 6\n'
     '- tvf_parameter_error: Primary Lever 3, also Lever 5\n'
     '- wrong_join / missing_join_spec: Primary Lever 4, also Lever 1 + 5\n'
-    '- asset_routing_error / ambiguous_question: Primary Lever 5, also Lever 1\n'
+    '- asset_routing_error / ambiguous_question: Primary Lever 5, also Lever 1 + Lever 6\n'
+    '- missing_dimension / wrong_grouping: Primary Lever 6, also Lever 1 + Lever 5\n'
+    'Lever 6 adds reusable SQL expressions (measures, filters, dimensions) to the '
+    'knowledge store. Use it alongside other levers when a business concept (KPI, '
+    'common condition, or derived attribute) would be better captured as a structured '
+    'definition than as a column description or example SQL. SQL expressions do NOT '
+    'count toward the 100-slot instruction budget.\n'
     '\n'
     '## Contract: Structured Metadata Format\n'
     'ALL metadata changes MUST use structured sections.\n'
@@ -1414,7 +1639,13 @@ STRATEGIST_PROMPT = (
     '        "5": {"instruction_guidance": "<text>", "example_sqls": ['
     '{"question": "<prompt>", "sql_sketch": "<SQL>", '
     '"parameters": [{"name": "...", "type_hint": "STRING", "default_value": "..."}], '
-    '"usage_guidance": "<when to match>"}]}\n'
+    '"usage_guidance": "<when to match>"}]},\n'
+    '        "6": {"sql_expressions": [{"snippet_type": "measure|filter|expression", '
+    '"display_name": "Human-readable name", '
+    '"alias": "snake_case_id (required for measure/expression, omit for filter)", '
+    '"sql": "The SQL expression (raw, no SELECT/WHERE wrapper)", '
+    '"synonyms": ["synonym1", "synonym2"], '
+    '"instruction": "When and how Genie should use this"}]}\n'
     '      },\n'
     '      "coordination_notes": "<how levers reference each other>"\n'
     '    }\n'
@@ -1428,7 +1659,7 @@ STRATEGIST_PROMPT = (
     '}\n'
     '\n'
     'Rules:\n'
-    '- "lever_directives" keys "1"-"5". Only include levers with work to do.\n'
+    '- "lever_directives" keys "1"-"6". Only include levers with work to do.\n'
     '- "sections" keys from structured metadata schema.\n'
     '- Lever 2 uses same column format as Lever 1. Lever 3: {"functions": [...]}.\n'
     '- global_instruction_rewrite: a JSON OBJECT mapping section headers to content.\n'
@@ -1472,13 +1703,15 @@ STRATEGIST_TRIAGE_PROMPT = (
     '- Lever 3: Function descriptions and parameter documentation\n'
     '- Lever 4: Join specifications between tables\n'
     '- Lever 5: Instructions + example SQL queries\n'
+    '- Lever 6: SQL expressions (reusable measures, filters, dimensions)\n'
     '\n'
     '## Lever Mapping (All Instruments of Power)\n'
-    '- wrong_column / wrong_table / missing_synonym: Primary Lever 1, also Lever 5\n'
-    '- wrong_aggregation / missing_filter: Primary Lever 2, also Lever 5\n'
+    '- wrong_column / wrong_table / missing_synonym: Primary Lever 1, also Lever 5 + Lever 6\n'
+    '- wrong_aggregation / wrong_measure / missing_filter: Primary Lever 2, also Lever 5 + Lever 6\n'
     '- tvf_parameter_error: Primary Lever 3, also Lever 5\n'
     '- wrong_join / missing_join_spec: Primary Lever 4, also Lever 1 + 5\n'
-    '- asset_routing_error / ambiguous_question: Primary Lever 5, also Lever 1\n'
+    '- asset_routing_error / ambiguous_question: Primary Lever 5, also Lever 1 + Lever 6\n'
+    '- missing_dimension / wrong_grouping: Primary Lever 6, also Lever 1 + Lever 5\n'
     '\n'
     '## Contracts\n'
     '- No Cross-AG Conflicts: Two AGs MUST NOT touch same table/column. Merge overlapping.\n'
@@ -1609,10 +1842,13 @@ STRATEGIST_DETAIL_PROMPT = (
     '## Contract: Coordination Notes\n'
     'Explain how changes across levers reinforce each other.\n'
     '\n'
-    '## Contract: Example SQL\n'
+    '## Contract: Example SQL & SQL Expressions\n'
     'For any recurring failure pattern (routing, aggregation, temporal, join, filter), '
     'include example_sqls in lever 5. Propose multiple example SQLs covering distinct '
     'failure patterns — aim for 1 per affected question where a valid SQL sketch exists.\n'
+    'When a business concept (KPI, common condition, derived attribute) is better captured '
+    'as a reusable definition than an example SQL, include sql_expressions in lever 6 instead. '
+    'SQL expressions do NOT count toward the instruction budget.\n'
     '\n'
     '## Contract: Identifier Allowlist\n'
     'You MUST ONLY reference tables, columns, and functions from the Identifier Allowlist. '
@@ -1627,6 +1863,7 @@ STRATEGIST_DETAIL_PROMPT = (
     '  Lever 3 -> FUNCTION ROUTING\n'
     '  Lever 4 -> JOIN GUIDANCE, TEMPORAL FILTERS\n'
     '  Lever 5 -> ASSET ROUTING, QUERY RULES, QUERY PATTERNS, DATA QUALITY NOTES, CONSTRAINTS\n'
+    '  Lever 6 -> (no instruction sections — operates via sql_expressions in lever_directives)\n'
     'Every bullet must reference a specific asset. No generic guidance.\n'
     '\n'
     '## Contract: Improvement Proposals\n'
@@ -1664,6 +1901,7 @@ STRATEGIST_DETAIL_PROMPT = (
     '(NOT purpose/best_for/grain/scd)\n'
     '  Lever 3: purpose, best_for, use_instead_of, parameters, example\n'
     '  Lever 4: relationships, join\n'
+    '  Lever 6: (no description sections — operates via sql_expressions in lever_directives)\n'
     'Proposing sections outside the lever ownership will be rejected.\n'
     '</instructions>\n'
     '\n'
@@ -1771,7 +2009,13 @@ STRATEGIST_DETAIL_PROMPT = (
     '    "5": {"instruction_guidance": "<text>", "example_sqls": ['
     '{"question": "<prompt>", "sql_sketch": "<SQL>", '
     '"parameters": [{"name": "...", "type_hint": "STRING", "default_value": "..."}], '
-    '"usage_guidance": "<when to match>"}]}\n'
+    '"usage_guidance": "<when to match>"}]},\n'
+    '    "6": {"sql_expressions": [{"snippet_type": "measure|filter|expression", '
+    '"display_name": "Human-readable name", '
+    '"alias": "snake_case_id (required for measure/expression, omit for filter)", '
+    '"sql": "The SQL expression (raw, no SELECT/WHERE wrapper)", '
+    '"synonyms": ["synonym1", "synonym2"], '
+    '"instruction": "When and how Genie should use this"}]}\n'
     '  },\n'
     '  "coordination_notes": "<how levers reference each other>",\n'
     '  "instruction_contribution": {\n'
@@ -1800,6 +2044,8 @@ STRATEGIST_DETAIL_PROMPT = (
     '- Lever 2: same column format as Lever 1.\n'
     '- Lever 3: {"functions": [{"function": "...", "sections": {...}}]}\n'
     '- Lever 5 example_sqls: propose 1 per distinct failure pattern. Always include at least one.\n'
+    '- Lever 6 sql_expressions: propose reusable measures/filters/dimensions. '
+    'Prefer over example SQL when the concept applies across multiple question patterns.\n'
     '- proposals: OPTIONAL. Only include if you identify a genuinely missing Metric View or Function.\n'
     '</output_schema>'
 )
@@ -1830,13 +2076,51 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     '- Cannot identify a specific table, column, join, or instruction to change\n'
     '- The approach was already tried and failed (see DO NOT RETRY list)\n'
     '\n'
+    '## Contract: Join Assessment Evidence\n'
+    'When failure clusters include a "join_assessments" array, these are structured, '
+    'judge-verified join recommendations. Each entry contains:\n'
+    '- issue: missing_join | wrong_condition | wrong_direction\n'
+    '- left_table, right_table: fully-qualified table names\n'
+    '- suggested_condition: the join ON clause\n'
+    '- relationship: many_to_one | one_to_many | one_to_one\n'
+    '- evidence: explanation from the judge\n'
+    'If join_assessments are present and the issue is missing_join_spec or wrong_join_spec, '
+    'you SHOULD include Lever 4 in your action group with join_specs derived from these '
+    'assessments. This is high-confidence evidence from the evaluation judges.\n'
+    '\n'
     '## Contract: All Instruments of Power\n'
     'For the root cause you target, specify EVERY lever that should act:\n'
-    '- wrong_column / wrong_table / missing_synonym: Primary Lever 1, also Lever 5\n'
-    '- wrong_aggregation / missing_filter: Primary Lever 2, also Lever 5\n'
+    '- wrong_column / wrong_table / missing_synonym: Primary Lever 1, also Lever 5 + Lever 6\n'
+    '- wrong_aggregation / wrong_measure / missing_filter: Primary Lever 2, also Lever 5 + Lever 6\n'
     '- tvf_parameter_error: Primary Lever 3, also Lever 5\n'
-    '- wrong_join / missing_join_spec: Primary Lever 4, also Lever 1 + 5\n'
-    '- asset_routing_error / ambiguous_question: Primary Lever 5, also Lever 1\n'
+    '- wrong_join / missing_join_spec / wrong_join_spec: Primary Lever 4, also Lever 1 + 5\n'
+    '- asset_routing_error / ambiguous_question: Primary Lever 5, also Lever 1 + Lever 6\n'
+    '- missing_dimension / wrong_grouping: Primary Lever 6, also Lever 1 + Lever 5\n'
+    'Lever 6 adds reusable SQL expressions (measures, filters, dimensions) to the '
+    'knowledge store. Use it alongside other levers when a business concept (KPI, '
+    'common condition, or derived attribute) would be better captured as a structured '
+    'definition than as a column description or example SQL. SQL expressions do NOT '
+    'count toward the 100-slot instruction budget.\n'
+    '\n'
+    '## Contract: Compound-Concept Queries\n'
+    'When a question requires resolving MULTIPLE business concepts simultaneously '
+    '(e.g. "Canada 7Now delivery PSD sales by zone" = country filter + channel filter '
+    '+ metric + grouping dimension), apply a multi-lever approach:\n'
+    '1. Lever 6: Add SQL expressions for each atomic concept — a filter for the '
+    'country, a filter for the channel, a measure for the metric.\n'
+    '2. Lever 2: Ensure column descriptions include concept-to-column mappings '
+    '(e.g. "Canada = country_code=CA", "PSD sales = psd_sales column").\n'
+    '3. Lever 5: Add an example SQL that demonstrates the FULL filter chain for '
+    'this type of compound query.\n'
+    'NEVER leave a compound-concept failure with just an instruction rewrite — '
+    'Genie needs structured metadata (Lever 6 + Lever 2) to reliably decompose '
+    'natural language into multi-filter SQL.\n'
+    '\n'
+    '## Contract: Instruction-Defined Default Filters\n'
+    'If the Genie Space instructions define a default filter (e.g. "always filter by '
+    'same_store_7now = Y unless explicitly requested otherwise"), that filter is '
+    'CORRECT BEHAVIOR. Do NOT blame it as "over-filtering" in root cause analysis. '
+    'Only flag the filter as a problem if the user explicitly asked to exclude it.\n'
     '\n'
     '## Contract: Structured Metadata Format\n'
     'ALL metadata changes MUST use structured sections.\n'
@@ -1858,6 +2142,7 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     '(NOT purpose/best_for/grain/scd)\n'
     '  Lever 3: purpose, best_for, use_instead_of, parameters, example\n'
     '  Lever 4: relationships, join\n'
+    '  Lever 6: (no description sections — operates via sql_expressions in lever_directives)\n'
     'Proposing sections outside the lever ownership will be rejected.\n'
     '\n'
     '## Contract: Non-Regressive / Augment-Not-Overwrite\n'
@@ -1900,6 +2185,13 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     'for human review in the labeling session.\n'
     'If INTERMITTENT, the question may be non-deterministic — monitor but do not '
     'escalate unless it becomes PERSISTENT.\n'
+    '\n'
+    '## Contract: Improvement Proposals\n'
+    'When lever fixes alone cannot resolve a pattern, propose a new object via "proposals". '
+    'Propose METRIC_VIEW when 3+ questions need the same aggregation across varying dimensions, '
+    'or when ratios/distinct-counts cannot be safely re-aggregated from a flat table. '
+    'Propose FUNCTION when 2+ clusters need the same date/category transformation. '
+    'Only propose objects genuinely missing from the Identifier Allowlist.\n'
     '</instructions>\n'
     '\n'
     '<context>\n'
@@ -1927,10 +2219,21 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     '        "5": {"instruction_guidance": "<text>", "example_sqls": ['
     '{"question": "<prompt>", "sql_sketch": "<SQL>", '
     '"parameters": [{"name": "...", "type_hint": "STRING", "default_value": "..."}], '
-    '"usage_guidance": "<when to match>"}]}\n'
+    '"usage_guidance": "<when to match>"}]},\n'
+    '        "6": {"sql_expressions": [{"snippet_type": "measure|filter|expression", '
+    '"display_name": "Human-readable name", '
+    '"alias": "snake_case_id (required for measure/expression, omit for filter)", '
+    '"sql": "The SQL expression (raw, no SELECT/WHERE wrapper)", '
+    '"synonyms": ["synonym1", "synonym2"], '
+    '"instruction": "When and how Genie should use this"}]}\n'
     '      },\n'
     '      "coordination_notes": "<how levers reference each other>",\n'
-    '      "escalation": "<optional: remove_tvf | gt_repair | flag_for_review>"\n'
+    '      "escalation": "<optional: remove_tvf | gt_repair | flag_for_review>",\n'
+    '      "proposals": [\n'
+    '        {"type": "METRIC_VIEW | FUNCTION", "title": "<short name>", '
+    '"rationale": "<failure pattern it fixes>", "definition": "<SQL CREATE or YAML>", '
+    '"affected_questions": ["<qid>"], "estimated_impact": "<accuracy improvement>"}\n'
+    '      ]\n'
     '    }\n'
     '  ],\n'
     '  "global_instruction_rewrite": {\n'
@@ -1943,7 +2246,7 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     '\n'
     'Rules:\n'
     '- EXACTLY one action group. Pick the single highest-impact fix.\n'
-    '- "lever_directives" keys "1"-"5". Only include levers with work to do.\n'
+    '- "lever_directives" keys "1"-"6". Only include levers with work to do.\n'
     '- "sections" keys from structured metadata schema.\n'
     '- Lever 2 uses same column format as Lever 1. Lever 3: {"functions": [...]}.\n'
     '- global_instruction_rewrite: a JSON OBJECT mapping section headers to content.\n'
@@ -1952,6 +2255,7 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     'TEMPORAL FILTERS, DATA QUALITY NOTES, CONSTRAINTS.\n'
     '  Only include sections you want to ADD or REPLACE. Omitted sections are PRESERVED unchanged.\n'
     '  Values are plain-text bullet lists (no Markdown). Empty string means delete the section.\n'
+    '- proposals: OPTIONAL. Only include when lever fixes are insufficient and a missing MV or Function would resolve the pattern.\n'
     '- Do NOT repeat any approach listed in the DO NOT RETRY section.\n'
     '- If no actionable improvements remain:\n'
     '  {"action_groups": [], "global_instruction_rewrite": {}, '
@@ -2098,6 +2402,7 @@ LEVER_NAMES = {
     3: "Table-Valued Functions",
     4: "Join Specifications",
     5: "Genie Space Instructions",
+    6: "SQL Expressions",
 }
 """Lever ID -> display name mapping.
 
@@ -2106,7 +2411,7 @@ loop. It is not included in :data:`DEFAULT_LEVER_ORDER` and should not be
 shown in the UI as a toggleable option.
 """
 
-DEFAULT_LEVER_ORDER = [1, 2, 3, 4, 5]
+DEFAULT_LEVER_ORDER = [1, 2, 3, 4, 5, 6]
 """Default set of user-selectable levers, in execution order."""
 
 MAX_VALUE_DICTIONARY_COLUMNS = 120
@@ -2417,7 +2722,7 @@ PATCH_TYPES = {
         "risk_level": "medium",
         "affects": ["instructions"],
     },
-    # Lever 6: Genie Space Example SQL (preferred over text instructions)
+    # Example SQL patches (used by levers 3 and 5; preferred over text instructions)
     "add_example_sql": {
         "type": "add_example_sql",
         "scope": "genie_config",
@@ -2455,6 +2760,61 @@ PATCH_TYPES = {
         "risk_level": "medium",
         "affects": ["filters", "default_filters"],
     },
+    # Lever 6: SQL Expressions (measures, filters, dimensions)
+    "add_sql_snippet_measure": {
+        "type": "add_sql_snippet_measure",
+        "scope": "genie_config",
+        "risk_level": "medium",
+        "affects": ["sql_snippets", "measures"],
+    },
+    "update_sql_snippet_measure": {
+        "type": "update_sql_snippet_measure",
+        "scope": "genie_config",
+        "risk_level": "medium",
+        "affects": ["sql_snippets", "measures"],
+    },
+    "remove_sql_snippet_measure": {
+        "type": "remove_sql_snippet_measure",
+        "scope": "genie_config",
+        "risk_level": "medium",
+        "affects": ["sql_snippets", "measures"],
+    },
+    "add_sql_snippet_filter": {
+        "type": "add_sql_snippet_filter",
+        "scope": "genie_config",
+        "risk_level": "medium",
+        "affects": ["sql_snippets", "filters"],
+    },
+    "update_sql_snippet_filter": {
+        "type": "update_sql_snippet_filter",
+        "scope": "genie_config",
+        "risk_level": "medium",
+        "affects": ["sql_snippets", "filters"],
+    },
+    "remove_sql_snippet_filter": {
+        "type": "remove_sql_snippet_filter",
+        "scope": "genie_config",
+        "risk_level": "medium",
+        "affects": ["sql_snippets", "filters"],
+    },
+    "add_sql_snippet_expression": {
+        "type": "add_sql_snippet_expression",
+        "scope": "genie_config",
+        "risk_level": "medium",
+        "affects": ["sql_snippets", "expressions"],
+    },
+    "update_sql_snippet_expression": {
+        "type": "update_sql_snippet_expression",
+        "scope": "genie_config",
+        "risk_level": "medium",
+        "affects": ["sql_snippets", "expressions"],
+    },
+    "remove_sql_snippet_expression": {
+        "type": "remove_sql_snippet_expression",
+        "scope": "genie_config",
+        "risk_level": "medium",
+        "affects": ["sql_snippets", "expressions"],
+    },
 }
 
 # ── 18. Conflict Rules (23 pairs) ─────────────────────────────────────
@@ -2491,7 +2851,7 @@ CONFLICT_RULES = [
     ("rewrite_instruction", "remove_instruction"),
 ]
 
-# ── 19. Failure Taxonomy (22 types) ───────────────────────────────────
+# ── 19. Failure Taxonomy (24 types) ───────────────────────────────────
 
 FAILURE_TAXONOMY = {
     "wrong_table",
@@ -2516,6 +2876,8 @@ FAILURE_TAXONOMY = {
     "wrong_join_spec",
     "missing_format_assistance",
     "missing_entity_matching",
+    "missing_dimension",
+    "wrong_grouping",
 }
 
 # ── 19b. Cluster Priority Weights (adaptive lever loop) ───────────────
@@ -2835,6 +3197,7 @@ LEVER_PROMPTS: dict[str, str] = {
     "description_enrichment": DESCRIPTION_ENRICHMENT_PROMPT,
     "table_description_enrichment": TABLE_DESCRIPTION_ENRICHMENT_PROMPT,
     "proactive_instruction": PROACTIVE_INSTRUCTION_PROMPT,
+    "instruction_restructure": INSTRUCTION_RESTRUCTURE_PROMPT,
     "space_description": SPACE_DESCRIPTION_PROMPT,
     "sample_questions": SAMPLE_QUESTIONS_PROMPT,
     "gt_repair": GT_REPAIR_PROMPT,
@@ -2847,6 +3210,7 @@ BENCHMARK_PROMPTS: dict[str, str] = {
     "benchmark_correction": BENCHMARK_CORRECTION_PROMPT,
     "benchmark_alignment_check": BENCHMARK_ALIGNMENT_CHECK_PROMPT,
     "benchmark_coverage_gap": BENCHMARK_COVERAGE_GAP_PROMPT,
+    "curated_sql_generation": CURATED_SQL_GENERATION_PROMPT,
 }
 
 # ── 21. ASI Schema (12 fields) ─────────────────────────────────────────
@@ -2882,9 +3246,10 @@ _LEVER_TO_PATCH_TYPE: dict[tuple[str, int], str] = {
     ("missing_filter", 2): "update_mv_yaml",
     ("missing_temporal_filter", 2): "update_mv_yaml",
     ("wrong_filter_condition", 2): "update_column_description",
-    # Lever 3: Table-Valued Functions
+    # Lever 3: Table-Valued Functions (including routing example SQLs)
     ("tvf_parameter_error", 3): "add_tvf_parameter",
     ("repeatability_issue", 3): "add_tvf_parameter",
+    ("asset_routing_error", 3): "add_example_sql",
     # Lever 4: Join Specifications
     ("wrong_join", 4): "update_join_spec",
     ("missing_join_spec", 4): "add_join_spec",
@@ -2895,10 +3260,179 @@ _LEVER_TO_PATCH_TYPE: dict[tuple[str, int], str] = {
     ("missing_instruction", 5): "add_example_sql",
     ("ambiguous_question", 5): "add_example_sql",
     ("missing_filter", 5): "add_example_sql",
+    # Lever 6: SQL Expressions — Measures (aggregation / KPI failures)
+    ("wrong_aggregation", 6): "add_sql_snippet_measure",
+    ("wrong_measure", 6): "add_sql_snippet_measure",
+    # Lever 6: SQL Expressions — Filters (condition / WHERE clause failures)
+    ("missing_filter", 6): "add_sql_snippet_filter",
+    ("wrong_filter_condition", 6): "add_sql_snippet_filter",
+    ("missing_temporal_filter", 6): "add_sql_snippet_filter",
+    # Lever 6: SQL Expressions — Dimensions (grouping / derived column failures)
+    ("wrong_column", 6): "add_sql_snippet_expression",
+    ("description_mismatch", 6): "add_sql_snippet_expression",
+    ("ambiguous_question", 6): "add_sql_snippet_expression",
+    ("missing_dimension", 6): "add_sql_snippet_expression",
+    ("wrong_grouping", 6): "add_sql_snippet_expression",
     # Fallback for "other" failure types — avoids falling through to add_instruction
     ("other", 1): "update_column_description",
     ("other", 2): "update_column_description",
     ("other", 3): "update_description",
     ("other", 4): "add_join_spec",
     ("other", 5): "add_example_sql",
+    ("other", 6): "add_sql_snippet_measure",
 }
+
+# ── 23. Lever 6 SQL Expression Prompt ──────────────────────────────────
+
+LEVER_6_SQL_EXPRESSION_PROMPT = """You are an expert at defining SQL Expressions for Databricks Genie Spaces.
+
+## Context
+
+A Genie Space is answering user questions incorrectly. Analysis of the failures
+shows the root cause is: **{{ root_cause }}**
+
+### Failed questions and SQL diffs
+{{ cluster_context }}
+
+### Current schema
+{{ schema_context }}
+
+### Existing SQL Expressions (do NOT duplicate these)
+{{ existing_sql_snippets }}
+
+### Strategist hints (optional — adopt, modify, or override as needed)
+{{ strategist_hints }}
+
+## Task
+
+Based on the failure analysis, define ONE SQL Expression that would fix or
+improve the identified questions.  Choose the most appropriate type:
+
+- **measure**: A KPI or aggregation (e.g. `SUM(revenue) - SUM(cost)`).
+  Use when the failure involves wrong aggregation, missing metric, or
+  incorrect calculation.
+- **filter**: A boolean condition (e.g. `order_total > 1000`).
+  Use when the failure involves missing filters, wrong filter conditions,
+  or common WHERE patterns that recur across questions.
+- **expression** (dimension): A per-row derived value (e.g. `MONTH(date_col)`).
+  Use when the failure involves missing grouping attributes, derived columns,
+  or computed dimensions.
+
+## Output format (strict JSON)
+
+```json
+{{
+  "snippet_type": "measure" | "filter" | "expression",
+  "display_name": "Human-readable name for the concept",
+  "alias": "snake_case_identifier (required for measure/expression, omit for filter)",
+  "sql": "The SQL expression (single string, no trailing semicolon)",
+  "synonyms": ["synonym1", "synonym2"],
+  "instruction": "When and how Genie should use this expression",
+  "rationale": "Why this expression fixes the identified failures",
+  "target_table": "primary table this expression references",
+  "affected_questions": ["q1", "q2"]
+}}
+```
+
+Rules:
+- ALL column references MUST use table_name.column_name syntax (e.g. `mv_sales.revenue`, \
+NOT bare `revenue`). The Genie API rejects bare column names.
+- The SQL MUST reference only tables and columns that exist in the schema.
+- For measures: SQL must be a valid aggregation expression (SUM, COUNT, AVG, etc.).
+- For filters: SQL must evaluate to a boolean.
+- For expressions: SQL must produce a scalar value per row.
+- Do NOT wrap in SELECT or WHERE — provide the raw expression only.
+- Do NOT duplicate an existing SQL Expression.
+- Prefer concise, reusable definitions over question-specific hacks.
+"""
+
+# ── 24. Instruction-to-SQL-Expression Conversion ──────────────────────
+
+INSTRUCTION_TO_SQL_EXPRESSION_PROMPT = """\
+<role>
+You are a Databricks SQL expert extracting reusable SQL expressions from \
+Genie Space instructions.
+</role>
+
+<context>
+## Genie Space Instructions
+{{ instructions_text }}
+
+## Table Schema
+{{ schema_context }}
+
+## Existing SQL Expressions (do NOT duplicate)
+{{ existing_expressions }}
+</context>
+
+<instructions>
+Extract business rules from the instructions above that can be expressed as \
+reusable SQL snippets.  Focus on:
+
+1. **Default filters**: Rules like "always filter by X = Y", "default to ...", \
+"exclude ... unless explicitly requested".  These become snippet_type="filter".
+2. **Business KPI definitions**: "PSD sales means ...", "average transaction \
+size = ...".  These become snippet_type="measure".
+3. **Derived attributes**: "growth % = (CY - PY) / PY * 100", "day vs MTD".  \
+These become snippet_type="expression".
+
+Rules:
+- ALL column references MUST use table_name.column_name syntax \
+(e.g. `mv_7now_fact_sales.same_store_7now = 'Y'`, NOT bare `same_store_7now = 'Y'`). \
+The Genie API rejects bare column names. Use the Table Schema to determine the correct table prefix.
+- SQL must reference ONLY columns that exist in the Table Schema.
+- For filters: SQL must be a valid boolean expression.
+- For measures: SQL must be a valid aggregation (e.g. `SUM(mv_sales.cy_sales) - SUM(mv_sales.py_sales)`).
+- For expressions: SQL must produce a scalar per row.
+- Do NOT wrap in SELECT or WHERE — raw expression only.
+- Do NOT duplicate any Existing SQL Expression.
+- is_default=true means the instruction says to apply this filter BY DEFAULT (Genie SHOULD \
+include it automatically). Do NOT invert the logic — if the instruction says "Default filter: \
+X = Y for all Z queries", then is_default=true and the SQL is `table.X = 'Y'`.
+- Set omit_when to describe when the filter should NOT be applied \
+(e.g. "user explicitly asks for all stores including non-same-store").
+</instructions>
+
+<output_schema>
+Return a JSON array. Each element:
+{{"snippet_type": "measure"|"filter"|"expression", \
+"sql": "...", \
+"display_name": "...", \
+"description": "One sentence on what this computes/filters", \
+"synonyms": ["term1", "term2"], \
+"alias": "snake_case_identifier", \
+"is_default": true|false, \
+"omit_when": "..." or null}}
+
+Return [] if no extractable business rules are found.
+</output_schema>"""
+
+# ── 25. SQL Expression Seeding (Proactive, Lever 0) ───────────────────
+
+SQL_EXPRESSION_SEEDING_THRESHOLD = 5
+"""Skip proactive seeding if the space already has this many SQL snippets."""
+
+SQL_EXPRESSION_MIN_FREQUENCY = 2
+"""Minimum benchmark occurrences for a pattern to become a candidate."""
+
+SQL_EXPRESSION_SEEDING_MAX_CANDIDATES = 20
+"""Maximum candidates to evaluate (budget cap for execution validation)."""
+
+SQL_EXPRESSION_SEEDING_PROMPT = """Given these SQL patterns extracted from \
+proven benchmark queries for a Genie Space, generate business-friendly \
+metadata for each:
+
+{{ candidates }}
+
+Schema context:
+{{ schema }}
+
+For each candidate, provide:
+- display_name: A concise business-friendly name
+- synonyms: 2-3 alternative terms users might use
+- instruction: One sentence on when Genie should use this expression
+- alias: A snake_case identifier (for measures and expressions only)
+
+Output strict JSON array matching the input order. Each element:
+{{"display_name": "...", "synonyms": [...], "instruction": "...", "alias": "..."}}
+"""

@@ -364,6 +364,7 @@ def submit_optimization(
     experiment_name: str = "",
     deploy_target: str = "",
     warehouse_id: str = "",
+    target_benchmark_count: str = "",
 ) -> tuple[str, int]:
     """Trigger a run on the bundle-managed optimization job.
 
@@ -393,6 +394,7 @@ def submit_optimization(
                 "experiment_name": experiment_name,
                 "deploy_target": deploy_target,
                 "warehouse_id": warehouse_id,
+                "target_benchmark_count": target_benchmark_count,
             },
         )
 

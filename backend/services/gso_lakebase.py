@@ -8,7 +8,7 @@ appear under the schema matching GSO_SCHEMA (default `genie_space_optimizer`).
 import logging
 import os
 
-from backend.services.lakebase import _pool, _lakebase_available
+import backend.services.lakebase as _lb
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +19,13 @@ _GSO_PG_SCHEMA = os.environ.get("GSO_SCHEMA", "genie_space_optimizer")
 _SYNCED_SUFFIX = "_synced"
 
 
+def _get_pool():
+    """Return the live Lakebase pool, or None if unavailable."""
+    if not _lb._lakebase_available or _lb._pool is None:
+        return None
+    return _lb._pool
+
+
 def _tbl(name: str) -> str:
     """Return the fully-qualified Postgres table reference for a synced table."""
     return f'"{_GSO_PG_SCHEMA}"."{name}{_SYNCED_SUFFIX}"'
@@ -26,10 +33,11 @@ def _tbl(name: str) -> str:
 
 async def load_gso_run(run_id: str) -> dict | None:
     """Load a single optimization run by ID."""
-    if not _lakebase_available or _pool is None:
+    pool = _get_pool()
+    if pool is None:
         return None
 
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         row = await conn.fetchrow(
             f"SELECT * FROM {_tbl('genie_opt_runs')} WHERE run_id = $1",
             run_id,
@@ -39,10 +47,11 @@ async def load_gso_run(run_id: str) -> dict | None:
 
 async def load_gso_runs_for_space(space_id: str) -> list[dict]:
     """Load all optimization runs for a space, most recent first."""
-    if not _lakebase_available or _pool is None:
+    pool = _get_pool()
+    if pool is None:
         return []
 
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""SELECT run_id, space_id, status, started_at, completed_at,
                       best_accuracy, best_iteration, convergence_reason, triggered_by
@@ -56,10 +65,11 @@ async def load_gso_runs_for_space(space_id: str) -> list[dict]:
 
 async def load_gso_stages(run_id: str) -> list[dict]:
     """Load pipeline stages for a run."""
-    if not _lakebase_available or _pool is None:
+    pool = _get_pool()
+    if pool is None:
         return []
 
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""SELECT * FROM {_tbl('genie_opt_stages')}
                WHERE run_id = $1
@@ -75,7 +85,8 @@ async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -
     By default excludes the large rows_json column for performance.
     Pass include_rows_json=True when per-question detail is needed.
     """
-    if not _lakebase_available or _pool is None:
+    pool = _get_pool()
+    if pool is None:
         return []
 
     cols = "*" if include_rows_json else (
@@ -84,7 +95,7 @@ async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -
         "remaining_failures, arbiter_actions_json, repeatability_pct, repeatability_json, "
         "thresholds_met, reflection_json"
     )
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""SELECT {cols} FROM {_tbl('genie_opt_iterations')}
                WHERE run_id = $1
@@ -96,10 +107,11 @@ async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -
 
 async def load_gso_patches(run_id: str) -> list[dict]:
     """Load optimization patches for a run."""
-    if not _lakebase_available or _pool is None:
+    pool = _get_pool()
+    if pool is None:
         return []
 
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""SELECT * FROM {_tbl('genie_opt_patches')}
                WHERE run_id = $1
@@ -111,10 +123,11 @@ async def load_gso_patches(run_id: str) -> list[dict]:
 
 async def load_gso_asi_results(run_id: str, iteration: int) -> list[dict]:
     """Load ASI (per-judge) evaluation results for a specific iteration."""
-    if not _lakebase_available or _pool is None:
+    pool = _get_pool()
+    if pool is None:
         return []
 
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""SELECT * FROM {_tbl('genie_eval_asi_results')}
                WHERE run_id = $1 AND iteration = $2""",
@@ -130,11 +143,12 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
     If eval_scope is None, returns the first row with non-null rows_json
     for the given run_id and iteration (any scope).
     """
-    if not _lakebase_available or _pool is None:
+    pool = _get_pool()
+    if pool is None:
         return None
 
     tbl = _tbl('genie_opt_iterations')
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         if eval_scope is not None:
             row = await conn.fetchrow(
                 f"SELECT rows_json FROM {tbl} "
@@ -155,10 +169,11 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
 
 async def load_gso_suggestions(run_id: str) -> list[dict]:
     """Load optimization suggestions for a run."""
-    if not _lakebase_available or _pool is None:
+    pool = _get_pool()
+    if pool is None:
         return []
 
-    async with _pool.acquire() as conn:
+    async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""SELECT * FROM {_tbl('genie_opt_suggestions')}
                WHERE run_id = $1
