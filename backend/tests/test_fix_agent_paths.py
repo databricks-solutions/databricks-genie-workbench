@@ -169,3 +169,35 @@ class TestSanitizeIds:
         _sanitize_ids(config)
         assert config["name"] == "NOT_HEX"
         assert config["identifier"] == "catalog.schema.table"
+
+    def test_none_id_replaced(self):
+        config = {"id": None, "name": "test"}
+        _sanitize_ids(config)
+        assert HEX32.match(config["id"])
+
+    def test_empty_string_id_replaced(self):
+        config = {"id": "", "name": "test"}
+        _sanitize_ids(config)
+        assert HEX32.match(config["id"])
+
+    def test_missing_id_injected_in_known_array(self):
+        config = {
+            "instructions": {
+                "example_question_sqls": [
+                    {"question": ["What is X?"], "sql": ["SELECT 1"]},
+                ]
+            }
+        }
+        _sanitize_ids(config)
+        entry = config["instructions"]["example_question_sqls"][0]
+        assert "id" in entry
+        assert HEX32.match(entry["id"])
+
+    def test_missing_id_not_injected_in_unknown_array(self):
+        config = {
+            "some_custom_field": [
+                {"name": "test"},
+            ]
+        }
+        _sanitize_ids(config)
+        assert "id" not in config["some_custom_field"][0]

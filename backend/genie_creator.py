@@ -70,6 +70,9 @@ def _enforce_constraints(config: dict) -> dict:
     - Empty SQL snippets: Remove filters/expressions/measures with empty sql
     - String values in size-checked fields truncated to <= 25,000 chars
     - Tables capped at 30
+    - Column configs: Remove empty column_name entries and deduplicate
+    - Instruction IDs: Deduplicate across all instruction array scopes
+    - Question IDs: Deduplicate across sample_questions and benchmarks
     - Serialized output capped at 3.5 MB (warning only)
     """
     import copy
@@ -87,6 +90,7 @@ def _enforce_constraints(config: dict) -> dict:
     if isinstance(tables, list) and len(tables) > _MAX_TABLES:
         logger.warning("Truncating tables from %d to %d", len(tables), _MAX_TABLES)
         config["data_sources"]["tables"] = tables[:_MAX_TABLES]
+        tables = config["data_sources"]["tables"]
 
     # Remove sql_snippets with empty sql
     sql_snippets = instructions.get("sql_snippets", {})
@@ -107,6 +111,87 @@ def _enforce_constraints(config: dict) -> dict:
                 else:
                     filtered.append(item)
             sql_snippets[snippet_type] = filtered
+
+    # Deduplicate column_configs and remove entries with empty column_name
+    for tbl in tables:
+        ccs = tbl.get("column_configs", [])
+        if not isinstance(ccs, list):
+            continue
+        seen_cols: set[str] = set()
+        deduped = []
+        for cc in ccs:
+            if not isinstance(cc, dict):
+                continue
+            col_name = cc.get("column_name", "")
+            if not col_name:
+                logger.warning("Removing column_config with empty column_name in table %s",
+                               tbl.get("identifier", "?"))
+                continue
+            if col_name in seen_cols:
+                logger.warning("Removing duplicate column_config '%s' in table %s",
+                               col_name, tbl.get("identifier", "?"))
+                continue
+            seen_cols.add(col_name)
+            deduped.append(cc)
+        tbl["column_configs"] = deduped
+
+    # Deduplicate instruction IDs across all instruction scopes
+    seen_iids: set[str] = set()
+    for arr_name in ("text_instructions", "example_question_sqls", "sql_functions", "join_specs"):
+        items = instructions.get(arr_name, [])
+        if isinstance(items, list):
+            deduped = []
+            for item in items:
+                iid = item.get("id", "") if isinstance(item, dict) else ""
+                if iid and iid in seen_iids:
+                    logger.warning("Removing duplicate instruction id '%s' in %s", iid, arr_name)
+                    continue
+                if iid:
+                    seen_iids.add(iid)
+                deduped.append(item)
+            instructions[arr_name] = deduped
+    for stype in ("filters", "expressions", "measures"):
+        items = sql_snippets.get(stype, [])
+        if isinstance(items, list):
+            deduped = []
+            for item in items:
+                iid = item.get("id", "") if isinstance(item, dict) else ""
+                if iid and iid in seen_iids:
+                    logger.warning("Removing duplicate instruction id '%s' in %s", iid, stype)
+                    continue
+                if iid:
+                    seen_iids.add(iid)
+                deduped.append(item)
+            sql_snippets[stype] = deduped
+
+    # Deduplicate question IDs across sample_questions and benchmarks.questions
+    seen_qids: set[str] = set()
+    config_block = config.get("config", {})
+    sqs = config_block.get("sample_questions", [])
+    if isinstance(sqs, list):
+        deduped = []
+        for sq in sqs:
+            qid = sq.get("id", "") if isinstance(sq, dict) else ""
+            if qid and qid in seen_qids:
+                logger.warning("Removing duplicate question id '%s' in sample_questions", qid)
+                continue
+            if qid:
+                seen_qids.add(qid)
+            deduped.append(sq)
+        config_block["sample_questions"] = deduped
+    bench = config.get("benchmarks", {})
+    bqs = bench.get("questions", [])
+    if isinstance(bqs, list):
+        deduped = []
+        for bq in bqs:
+            qid = bq.get("id", "") if isinstance(bq, dict) else ""
+            if qid and qid in seen_qids:
+                logger.warning("Removing duplicate question id '%s' in benchmarks.questions", qid)
+                continue
+            if qid:
+                seen_qids.add(qid)
+            deduped.append(bq)
+        bench["questions"] = deduped
 
     # Normalize join relationship types to uppercase underscores
     _normalize_join_relationships(config)

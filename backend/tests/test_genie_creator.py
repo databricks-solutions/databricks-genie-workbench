@@ -85,6 +85,79 @@ class TestEnforceConstraints:
         _enforce_constraints(config)
         assert len(config["instructions"]["text_instructions"]) == original_len
 
+    def test_duplicate_column_configs_deduped(self):
+        config = {
+            "data_sources": {
+                "tables": [{
+                    "identifier": "cat.sch.tbl",
+                    "column_configs": [
+                        {"column_name": "col_a", "description": ["first"]},
+                        {"column_name": "col_a", "description": ["duplicate"]},
+                        {"column_name": "col_b", "description": ["unique"]},
+                    ],
+                }],
+            },
+            "instructions": {},
+        }
+        result = _enforce_constraints(config)
+        ccs = result["data_sources"]["tables"][0]["column_configs"]
+        assert len(ccs) == 2
+        assert ccs[0]["column_name"] == "col_a"
+        assert ccs[0]["description"] == ["first"]  # keeps first
+        assert ccs[1]["column_name"] == "col_b"
+
+    def test_empty_column_name_removed(self):
+        config = {
+            "data_sources": {
+                "tables": [{
+                    "identifier": "cat.sch.tbl",
+                    "column_configs": [
+                        {"column_name": "", "description": ["empty"]},
+                        {"column_name": "col_a", "description": ["valid"]},
+                    ],
+                }],
+            },
+            "instructions": {},
+        }
+        result = _enforce_constraints(config)
+        ccs = result["data_sources"]["tables"][0]["column_configs"]
+        assert len(ccs) == 1
+        assert ccs[0]["column_name"] == "col_a"
+
+    def test_duplicate_instruction_ids_deduped(self):
+        dup_id = "a" * 32
+        config = {
+            "instructions": {
+                "text_instructions": [{"id": dup_id, "content": ["text"]}],
+                "example_question_sqls": [{"id": dup_id, "question": ["Q?"]}],
+            },
+            "data_sources": {"tables": []},
+        }
+        result = _enforce_constraints(config)
+        assert len(result["instructions"]["text_instructions"]) == 1
+        # Duplicate in example_question_sqls should be removed
+        assert len(result["instructions"]["example_question_sqls"]) == 0
+
+    def test_duplicate_question_ids_deduped(self):
+        dup_id = "b" * 32
+        config = {
+            "config": {
+                "sample_questions": [
+                    {"id": dup_id, "question": ["Q1"]},
+                    {"id": "c" * 32, "question": ["Q2"]},
+                ],
+            },
+            "benchmarks": {
+                "questions": [{"id": dup_id, "question": ["Q1 again"]}],
+            },
+            "data_sources": {"tables": []},
+            "instructions": {},
+        }
+        result = _enforce_constraints(config)
+        assert len(result["config"]["sample_questions"]) == 2
+        # Duplicate in benchmarks should be removed
+        assert len(result["benchmarks"]["questions"]) == 0
+
 
 # ---------------------------------------------------------------------------
 # _truncate_oversized_strings

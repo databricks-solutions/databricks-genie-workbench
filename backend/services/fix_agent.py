@@ -303,24 +303,37 @@ def _validate_field_path(field_path: str) -> bool:
 
 _HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
 
+# Arrays whose dict entries require an `id` field per the Genie API schema.
+_ID_REQUIRED_ARRAYS = frozenset({
+    "sample_questions", "text_instructions", "example_question_sqls",
+    "join_specs", "filters", "expressions", "measures", "questions",
+    "sql_functions",
+})
 
-def _sanitize_ids(obj):
-    """Recursively fix invalid IDs in the config.
+
+def _sanitize_ids(obj, _parent_key=None):
+    """Recursively fix invalid or missing IDs in the config.
 
     The Genie API requires all `id` fields to be 32-character lowercase hex
     strings (UUID without hyphens). LLMs sometimes generate IDs with non-hex
-    characters or wrong formats. This replaces any invalid ID with a fresh one.
+    characters, wrong formats, null values, or omit them entirely. This
+    replaces any invalid ID with a fresh one and injects missing IDs into
+    entries inside known ID-required arrays.
     """
     if isinstance(obj, dict):
+        # Inject missing id for entries inside known ID-required arrays
+        if _parent_key in _ID_REQUIRED_ARRAYS and "id" not in obj:
+            obj["id"] = uuid.uuid4().hex
+            logger.info("Injected missing id '%s' in %s entry", obj["id"], _parent_key)
         for k, v in obj.items():
-            if k == "id" and isinstance(v, str) and not _HEX32_RE.match(v):
+            if k == "id" and (not isinstance(v, str) or not _HEX32_RE.match(v)):
                 obj[k] = uuid.uuid4().hex
-                logger.info(f"Replaced invalid id '{v}' with '{obj[k]}'")
+                logger.info("Replaced invalid id %r with '%s'", v, obj[k])
             else:
-                _sanitize_ids(v)
+                _sanitize_ids(v, _parent_key=k)
     elif isinstance(obj, list):
         for item in obj:
-            _sanitize_ids(item)
+            _sanitize_ids(item, _parent_key=_parent_key)
 
 
 @mlflow.trace(name="fix_apply_config", span_type=SpanType.TOOL)
