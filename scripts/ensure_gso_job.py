@@ -79,6 +79,38 @@ def _update_run_as(profile: str, job_id: str, sp_client_id: str) -> None:
         _log(f"  ⚠ Could not update job run_as: {exc}")
 
 
+def _update_wheel_dependency(profile: str, job_id: str, vol_wheel_path: str) -> None:
+    """Update the job's environment to reference the latest wheel."""
+    payload = {
+        "job_id": int(job_id),
+        "new_settings": {
+            "environments": [
+                {
+                    "environment_key": "default",
+                    "spec": {
+                        "client": "4",
+                        "dependencies": [
+                            vol_wheel_path,
+                            "mlflow[databricks]>=3.10.1",
+                            "databricks-sdk>=0.40.0",
+                        ],
+                    },
+                },
+            ],
+        },
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(payload, f)
+        tmp = f.name
+    try:
+        _run(["databricks", "jobs", "update", "--profile", profile, "--json", f"@{tmp}"])
+        _log(f"  ✓ Job environment updated to {os.path.basename(vol_wheel_path)}")
+    except Exception as exc:
+        _log(f"  ⚠ Could not update job environment: {exc}")
+    finally:
+        os.unlink(tmp)
+
+
 def _find_existing_job(profile: str) -> str | None:
     """Find the GSO optimization job by name and tag."""
     try:
@@ -361,25 +393,26 @@ def main() -> int:
                         help="App service principal client ID (sets job run_as)")
     args = parser.parse_args()
 
-    # 1. Check for existing job
-    _log("  Checking for existing optimization job...")
-    existing_id = _find_existing_job(args.profile)
-    if existing_id:
-        _log(f"  ✓ Found existing optimization job: {existing_id}")
-        if args.sp_client_id:
-            _update_run_as(args.profile, existing_id, args.sp_client_id)
-        print(existing_id)
-        return 0
-
-    # 2. Build wheel
+    # 1. Build wheel (always — ensures latest code is packaged)
     _log("  Building GSO wheel...")
     wheel_path = _build_wheel(args.project_dir)
     _log(f"  ✓ Wheel built: {os.path.basename(wheel_path)}")
 
-    # 3. Upload wheel to Volume
+    # 2. Upload wheel to Volume
     _log("  Uploading wheel to UC Volume...")
     vol_wheel_path = _upload_wheel(args.profile, wheel_path, args.catalog, args.schema)
     _log(f"  ✓ Wheel uploaded: {vol_wheel_path}")
+
+    # 3. Check for existing job
+    _log("  Checking for existing optimization job...")
+    existing_id = _find_existing_job(args.profile)
+    if existing_id:
+        _log(f"  ✓ Found existing optimization job: {existing_id}")
+        _update_wheel_dependency(args.profile, existing_id, vol_wheel_path)
+        if args.sp_client_id:
+            _update_run_as(args.profile, existing_id, args.sp_client_id)
+        print(existing_id)
+        return 0
 
     # 4. Upload notebooks
     _log("  Uploading job notebooks...")
