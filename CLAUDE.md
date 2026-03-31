@@ -20,6 +20,11 @@ npm run build # Triggers cd frontend && npm run build
 ./scripts/install.sh       # First-time setup (interactive, creates .env.deploy)
 ./scripts/deploy.sh        # Build, bundle deploy, app deploy (idempotent)
 
+# Dependency management
+# requirements.txt is auto-generated from uv.lock — do not edit manually.
+# After adding/bumping a Python dep in pyproject.toml:
+uv lock && uv export --frozen --no-hashes --no-emit-project --no-dev -o requirements.txt
+
 # Tests (require running backend at localhost:8000)
 python tests/test_e2e_local.py    # E2E create agent tests
 python tests/test_full_schema.py  # Schema validation
