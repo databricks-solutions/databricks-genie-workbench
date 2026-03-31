@@ -60,7 +60,7 @@ root = "src/genie_space_optimizer/ui"
 "@svgl" = "https://svgl.app/r/{name}.json"
 
 [build-system]
-requires = ["hatchling", "uv-dynamic-versioning>=0.7.0"]
+requires = ["hatchling==1.29.0", "uv-dynamic-versioning==0.13.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]

@@ -91,8 +91,8 @@ def _update_wheel_dependency(profile: str, job_id: str, vol_wheel_path: str) -> 
                         "client": "4",
                         "dependencies": [
                             vol_wheel_path,
-                            "mlflow[databricks]>=3.10.1",
-                            "databricks-sdk>=0.40.0",
+                            "mlflow[databricks]==3.10.1",
+                            "databricks-sdk==0.102.0",
                         ],
                     },
                 },
@@ -349,8 +349,8 @@ def _create_job(
                     "client": "4",
                     "dependencies": [
                         vol_wheel_path,
-                        "mlflow[databricks]>=3.10.1",
-                        "databricks-sdk>=0.40.0",
+                        "mlflow[databricks]==3.10.1",
+                        "databricks-sdk==0.102.0",
                     ],
                 },
             },

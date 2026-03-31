@@ -131,7 +131,7 @@ Set these in `.env.deploy` or as environment variables:
 **Full deploy (8 steps):**
 
 1. **Pre-flight checks** — validates tools, CLI profile, warehouse, catalog, app state
-2. **Build frontend** — `npm install` + `npm run build`
+2. **Build frontend** — `npm ci` + `npm run build`
 3. **Create app** — `databricks apps create` (skipped if app already exists)
 4. **Sync files** — `databricks sync --full` + explicit `frontend/dist/` upload
 5. **Grant UC permissions** — resolves app SP, creates GSO schema/tables, grants SP access, enables CDF
@@ -202,6 +202,60 @@ databricks apps get <app-name> --profile <profile>
 # List workspace files to verify sync
 databricks workspace list /Workspace/Users/<email>/<app-name>/backend --profile <profile>
 ```
+
+## Dependency Security
+
+All dependencies are pinned to exact versions to guard against supply chain attacks
+(e.g. [CVE-2026-33634 / TeamPCP](https://www.kaspersky.com/blog/critical-supply-chain-attack-trivy-litellm-checkmarx-teampcp/55510/),
+which targeted unpinned PyPI packages and GitHub Action tags).
+
+### Lock files (always commit these)
+
+| File | Covers | Tool |
+|---|---|---|
+| `uv.lock` | All root Python transitive deps with SHA256 hashes | uv |
+| `packages/genie-space-optimizer/uv.lock` | GSO Python deps with SHA256 hashes | uv |
+| `frontend/package-lock.json` | All frontend npm deps with SHA-512 integrity hashes | npm |
+| `packages/genie-space-optimizer/bun.lock` | GSO UI deps | bun |
+
+### Updating Python dependencies
+
+```bash
+# Upgrade one package (resolves latest compatible, updates uv.lock with new hashes)
+uv lock --upgrade-package <package-name>
+
+# Regenerate requirements.txt from the updated lock file
+uv export --frozen --no-dev --no-hashes --format requirements-txt \
+  | grep -v "^-e " > requirements.txt
+echo "-e ./packages/genie-space-optimizer" >> requirements.txt
+
+# Commit both
+git add uv.lock requirements.txt
+```
+
+> **Do not edit `requirements.txt` manually.** It is generated from `uv.lock` and
+> includes all transitive dependencies pinned to exact `==` versions. The generation
+> command is documented at the top of the file.
+
+### Updating npm dependencies
+
+```bash
+cd frontend
+npm install <package>@<new-version>   # resolves and updates package-lock.json
+# Then update package.json to exact version (remove the ^ prefix)
+git add package.json package-lock.json  # always commit both together
+```
+
+### Why `npm ci` instead of `npm install` in deploys
+
+`scripts/deploy.sh` uses `npm ci` for the frontend build step. Unlike `npm install`,
+`npm ci`:
+- Reads `package-lock.json` as the single source of truth (never updates it)
+- Verifies SHA-512 integrity hashes for every installed package
+- Fails loudly if `package.json` and `package-lock.json` are out of sync
+
+If you update `frontend/package.json`, always run `npm install` locally to regenerate
+`package-lock.json`, then commit both files.
 
 ## How to Get Help
 
