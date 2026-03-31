@@ -471,11 +471,11 @@ def write_patch(
 
     command = patch_record.get("command")
     if command is not None:
-        row["command_json"] = json.dumps(command)
+        row["command_json"] = command if isinstance(command, str) else json.dumps(command)
 
     rollback = patch_record.get("rollback")
     if rollback is not None:
-        row["rollback_json"] = json.dumps(rollback)
+        row["rollback_json"] = rollback if isinstance(rollback, str) else json.dumps(rollback)
 
     proposal_id = patch_record.get("proposal_id")
     if proposal_id is not None:

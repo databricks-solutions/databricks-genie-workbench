@@ -63,7 +63,7 @@ function ExampleSqlTable({ patches }: { patches: GSOPatchDetail[] }) {
             const cmd = parseCommand(p.command)
             const pat = parseCommand(p.patch)
             const question = String(cmd.question || pat.question || pat.example_question || "")
-            const sql = String(cmd.sql || cmd.new_sql || pat.sql || pat.new_sql || "")
+            const sql = String(cmd.sql || cmd.new_sql || pat.sql || pat.new_sql || pat.example_sql || "")
             return (
               <tr key={i} className="border-b border-default last:border-0">
                 <td className="px-3 py-2 text-muted tabular-nums align-top">{i + 1}</td>

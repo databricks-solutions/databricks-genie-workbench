@@ -201,17 +201,18 @@ if FRONTEND_DIST.exists():
             "/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets"
         )
 
+    _NO_CACHE = {"Cache-Control": "no-store, must-revalidate"}
+
     @app.get("/")
     async def serve_root():
-        return FileResponse(FRONTEND_DIST / "index.html")
+        return FileResponse(FRONTEND_DIST / "index.html", headers=_NO_CACHE)
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        # Serve static files from dist/ (e.g. favicon.svg) if they exist
         static_file = FRONTEND_DIST / full_path
         if static_file.is_file():
             return FileResponse(static_file)
-        return FileResponse(FRONTEND_DIST / "index.html")
+        return FileResponse(FRONTEND_DIST / "index.html", headers=_NO_CACHE)
 
 else:
     @app.get("/")
