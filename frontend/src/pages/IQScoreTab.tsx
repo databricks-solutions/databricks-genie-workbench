@@ -13,7 +13,6 @@ interface IQScoreTabProps {
   onScan: () => void
   isScanning: boolean
   spaceId: string
-  spaceConfig?: Record<string, unknown>
   /** Single contextual action — label/icon/callback determined by maturity tier */
   onAction?: () => void
   actionLabel?: string

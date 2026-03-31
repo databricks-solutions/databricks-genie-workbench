@@ -5,9 +5,11 @@ all patches together in a single Databricks API call. This avoids token-limit
 truncation and produces more reliable JSON per patch.
 """
 
+import asyncio
 import copy
 import json
 import logging
+import re
 from typing import AsyncGenerator
 
 import mlflow
@@ -18,6 +20,28 @@ from backend.services.auth import get_workspace_client, run_in_context
 from backend.prompts import get_fix_agent_single_prompt
 
 logger = logging.getLogger(__name__)
+
+# Known field names in the Genie API serialized_space schema.
+# See: https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field
+_VALID_FIELDS: frozenset[str] = frozenset({
+    # top-level
+    "version", "config", "data_sources", "instructions", "benchmarks",
+    # config
+    "sample_questions",
+    # data_sources
+    "tables", "metric_views", "identifier", "description", "column_configs",
+    "column_name", "synonyms", "exclude",
+    "enable_entity_matching", "enable_format_assistance",
+    # instructions
+    "text_instructions", "example_question_sqls", "sql_functions",
+    "join_specs", "sql_snippets",
+    "content", "question", "sql", "usage_guidance", "parameters",
+    "left", "right", "comment", "instruction",
+    "filters", "expressions", "measures",
+    "display_name", "alias", "id",
+    # benchmarks
+    "questions", "answer", "format",
+})
 
 
 class FixAgent:
@@ -57,12 +81,13 @@ class FixAgent:
                     "message": f"Fixing issue {i + 1}/{len(findings)}: {finding[:80]}...",
                 }
 
-                # One focused LLM call for this finding (may return multiple patches)
-                patches = _generate_patches_for_finding(
-                    space_id=space_id,
-                    finding=finding,
-                    space_config=new_config,
-                    model=self.model,
+                # One focused LLM call per finding — run in executor to avoid blocking the event loop
+                loop = asyncio.get_running_loop()
+                patches = await loop.run_in_executor(
+                    None,
+                    run_in_context(lambda f=finding: _generate_patches_for_finding(
+                        space_id=space_id, finding=f, space_config=new_config, model=self.model,
+                    )),
                 )
 
                 if not patches:
@@ -189,7 +214,6 @@ def _parse_patches(content: str) -> list[dict]:
 
 def _get_value_at_path(config: dict, field_path: str):
     """Navigate a config dict using dot-notation path."""
-    import re
     parts = []
     for part in field_path.split("."):
         match = re.match(r"^(.+?)\[(\d+)\]$", part)
@@ -213,7 +237,6 @@ def _get_value_at_path(config: dict, field_path: str):
 
 def _set_value_at_path(config: dict, field_path: str, value) -> None:
     """Set a value in a config dict using dot-notation path."""
-    import re
     parts = []
     for part in field_path.split("."):
         match = re.match(r"^(.+?)\[(\d+)\]$", part)
@@ -251,34 +274,11 @@ def _validate_field_path(field_path: str) -> bool:
     """Check that a patch field_path uses only known Genie API field names.
 
     Returns True if valid, False if the path contains an unknown field name.
-    See: https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field
+    Uses the module-level _VALID_FIELDS frozenset.
     """
-    # Known top-level and nested field names in serialized_space
-    VALID_FIELDS = {
-        # top-level
-        "version", "config", "data_sources", "instructions", "benchmarks",
-        # config
-        "sample_questions",
-        # data_sources
-        "tables", "metric_views", "identifier", "description", "column_configs",
-        "column_name", "synonyms", "exclude",
-        "enable_entity_matching", "enable_format_assistance",
-        # instructions
-        "text_instructions", "example_question_sqls", "sql_functions",
-        "join_specs", "sql_snippets",
-        "content", "question", "sql", "usage_guidance", "parameters",
-        "left", "right", "comment", "instruction",
-        "filters", "expressions", "measures",
-        "display_name", "alias", "id",
-        # benchmarks
-        "questions", "answer", "format",
-    }
-    import re
-    parts = field_path.split(".")
-    for part in parts:
-        # Strip array index: "tables[0]" → "tables"
+    for part in field_path.split("."):
         name = re.sub(r"\[\d+\]$", "", part)
-        if name not in VALID_FIELDS:
+        if name not in _VALID_FIELDS:
             logger.warning(f"Unknown field name '{name}' in path '{field_path}'")
             return False
     return True
@@ -300,9 +300,7 @@ def _apply_config_sync(space_id: str, new_config: dict) -> None:
 
 async def _apply_config_to_databricks(space_id: str, new_config: dict) -> None:
     """Apply the updated config to Databricks via the Genie API."""
-    import asyncio
-
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, run_in_context(lambda: _apply_config_sync(space_id, new_config)))
 
 

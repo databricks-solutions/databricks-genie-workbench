@@ -276,37 +276,7 @@ After completing the skipped step, resume guided mode for the next step.
 """
 
 
-def get_fix_agent_prompt(
-    space_id: str,
-    findings: list[str],
-    space_config: dict,
-) -> str:
-    """Build the prompt for the AI fix agent.
-
-    Args:
-        space_id: The Genie Space ID
-        findings: List of IQ scan findings to fix
-        space_config: The current space configuration dict
-
-    Returns:
-        Formatted prompt string
-    """
-    findings_text = "\n".join(f"- {f}" for f in findings) if findings else "No specific findings"
-    config_json = json.dumps(space_config, indent=2)
-
-    return f"""You are a Databricks Genie Space configuration repair agent. Your job is to analyze configuration issues and generate specific, targeted fixes.
-
-## Space ID: {space_id}
-
-## Issues Found (from IQ scan):
-{findings_text}
-
-## Current Configuration:
-```json
-{config_json}
-```
-
-## Valid Field Paths (ONLY use these exact names per the Databricks Genie API):
+_VALID_FIELD_PATHS_BLOCK = """## Valid Field Paths (ONLY use these exact names per the Databricks Genie API):
 
 **data_sources:**
 - `data_sources.tables[N].identifier` — string, catalog.schema.table format
@@ -349,7 +319,40 @@ CRITICAL: Do NOT invent field names. Common mistakes:
 - Example SQL queries: use `example_question_sqls` (NOT `sql_examples`, `example_sqls`, or `sql_queries`)
 - Text instructions: use `text_instructions` (NOT `general_instructions`)
 - Column synonyms: use `synonyms` inside `column_configs` (NOT a top-level field)
-Use ONLY the exact paths listed above.
+Use ONLY the exact paths listed above."""
+
+
+def get_fix_agent_prompt(
+    space_id: str,
+    findings: list[str],
+    space_config: dict,
+) -> str:
+    """Build the prompt for the AI fix agent.
+
+    Args:
+        space_id: The Genie Space ID
+        findings: List of IQ scan findings to fix
+        space_config: The current space configuration dict
+
+    Returns:
+        Formatted prompt string
+    """
+    findings_text = "\n".join(f"- {f}" for f in findings) if findings else "No specific findings"
+    config_json = json.dumps(space_config, indent=2)
+
+    return f"""You are a Databricks Genie Space configuration repair agent. Your job is to analyze configuration issues and generate specific, targeted fixes.
+
+## Space ID: {space_id}
+
+## Issues Found (from IQ scan):
+{findings_text}
+
+## Current Configuration:
+```json
+{config_json}
+```
+
+{_VALID_FIELD_PATHS_BLOCK}
 
 ## Your Task:
 Generate a JSON fix plan with specific field-level patches to address the findings above.
@@ -407,34 +410,7 @@ def get_fix_agent_single_prompt(
 {config_json}
 ```
 
-## Valid Field Paths (ONLY use these exact names per the Databricks Genie API):
-
-**data_sources:**
-- `data_sources.tables[N].identifier` — string
-- `data_sources.tables[N].description` — array of strings
-- `data_sources.tables[N].column_configs[N].column_name` — string
-- `data_sources.tables[N].column_configs[N].description` — array of strings
-- `data_sources.tables[N].column_configs[N].synonyms` — array of strings
-- `data_sources.metric_views[N].identifier` — string
-
-**instructions:**
-- `instructions.text_instructions[N].content` — array of strings (max 1 per space)
-- `instructions.example_question_sqls[N].question` — array of strings
-- `instructions.example_question_sqls[N].sql` — array of strings
-- `instructions.sql_functions[N].identifier` — string
-- `instructions.join_specs[N].sql` — array of strings
-- `instructions.sql_snippets.filters[N].display_name` — string
-- `instructions.sql_snippets.filters[N].sql` — array of strings
-- `instructions.sql_snippets.expressions[N].alias` — string
-- `instructions.sql_snippets.expressions[N].sql` — array of strings
-- `instructions.sql_snippets.measures[N].alias` — string
-- `instructions.sql_snippets.measures[N].sql` — array of strings
-
-**config & benchmarks:**
-- `config.sample_questions[N].question` — array of strings
-- `benchmarks.questions[N].question` — array of strings
-
-CRITICAL: The field for example SQL queries is `example_question_sqls`, NOT `sql_examples`.
+{_VALID_FIELD_PATHS_BLOCK}
 
 ## Output:
 Respond with ONLY a JSON object — no explanation, no analysis, no markdown, no text before or after.

@@ -41,7 +41,6 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
   const [statusMessage, setStatusMessage] = useState("Analyzing issues...")
   const [summary, setSummary] = useState("")
   const [errorMessage, setErrorMessage] = useState("")
-  const [patchCount, setPatchCount] = useState(0)
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
 
   const abortRef = useRef<(() => void) | null>(null)
@@ -66,7 +65,6 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
             break
 
           case "patch":
-            setPatchCount(c => c + 1)
             // Advance the next pending/fixing issue to "fixed"
             setIssues(prev => {
               const idx = patchIndexRef.current
@@ -181,8 +179,8 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
             <span className="text-xs font-medium text-muted">
               {phase === "applying"
                 ? "Applying changes to Databricks..."
-                : patchCount > 0
-                  ? `Fixed ${patchCount} of ${totalCount}...`
+                : fixedCount > 0
+                  ? `Fixed ${fixedCount} of ${totalCount}...`
                   : statusMessage
               }
             </span>

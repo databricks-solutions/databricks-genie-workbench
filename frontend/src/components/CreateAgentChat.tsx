@@ -38,17 +38,8 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { streamAgentChat } from "@/lib/api"
 import type { AgentChatMessage, AgentUIElement } from "@/types"
-interface FixAgentPrefill {
-  spaceId: string
-  displayName: string
-  spaceUrl?: string
-  prompt: string
-}
-
 interface CreateAgentChatProps {
   onCreated: (spaceId: string, displayName: string, initialTab?: string) => void
-  prefill?: FixAgentPrefill | null
-  onPrefillConsumed?: () => void
 }
 
 let msgCounter = 0
@@ -302,7 +293,7 @@ function groupMessages(msgs: AgentChatMessage[]): RenderItem[] {
 
 // ─── Component ─────────────────────────────────────────────────
 
-export function CreateAgentChat({ onCreated, prefill, onPrefillConsumed }: CreateAgentChatProps) {
+export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const restored = useRef(loadState())
   const prefillSpaceIdRef = useRef<string | null>(null)
 
@@ -408,29 +399,6 @@ export function CreateAgentChat({ onCreated, prefill, onPrefillConsumed }: Creat
     setFixResult(null)
     sessionStorage.removeItem(STORAGE_KEY)
   }
-
-  // Handle prefill from fix-with-agent flow
-  useEffect(() => {
-    if (!prefill) return
-    resetSession()
-
-    // Set prefill data
-    setInput(prefill.prompt)
-    prefillSpaceIdRef.current = prefill.spaceId
-    setFixMode(true)
-    fixModeRef.current = true
-    onPrefillConsumed?.()
-    // Focus input and auto-resize to show full prefill text
-    const tid = setTimeout(() => {
-      const el = inputRef.current
-      if (el) {
-        el.focus()
-        el.style.height = "auto"
-        el.style.height = Math.min(el.scrollHeight, 120) + "px"
-      }
-    }, 50)
-    return () => clearTimeout(tid)
-  }, [prefill])
 
   const toggleTool = (id: string) => {
     setExpandedTools((prev) => {
