@@ -26,6 +26,7 @@ function parseCommand(raw: Record<string, unknown> | string | null): Record<stri
     try {
       let parsed = JSON.parse(raw)
       if (typeof parsed === "string") parsed = JSON.parse(parsed)
+      if (typeof parsed === "string") parsed = JSON.parse(parsed)
       return typeof parsed === "object" && parsed !== null ? parsed : {}
     } catch { return {} }
   }
@@ -132,6 +133,24 @@ function SqlExpressionTable({ patches }: { patches: GSOPatchDetail[] }) {
   )
 }
 
+const STRUCTURED_SECTION_LABELS: Record<string, string> = {
+  purpose: "Purpose", definition: "Definition", best_for: "Best for",
+  grain: "Grain", values: "Values", aggregation: "Aggregation",
+  scd: "SCD", relationships: "Relationships", join: "Join",
+  grain_note: "Grain note", important_filters: "Important filters",
+  synonyms: "Synonyms", use_instead_of: "Use instead of",
+  parameters: "Parameters", example: "Example",
+}
+
+function extractStructuredDesc(sections: Record<string, string>): string {
+  const parts: string[] = []
+  for (const key of Object.keys(STRUCTURED_SECTION_LABELS)) {
+    const val = sections[key]
+    if (val && typeof val === "string") parts.push(val)
+  }
+  return parts.join(" · ")
+}
+
 function DescriptionTable({ patches }: { patches: GSOPatchDetail[] }) {
   return (
     <div className="rounded-lg border border-default overflow-hidden">
@@ -150,12 +169,12 @@ function DescriptionTable({ patches }: { patches: GSOPatchDetail[] }) {
             const cmdData = parseCommand(p.command)
             const cmdStructured = (cmdData.structured_sections || {}) as Record<string, string>
             const patStructured = (patchData.structured_sections || {}) as Record<string, string>
-            const desc = String(
-              cmdStructured.purpose || patStructured.purpose
-              || patchData.description || cmdData.description
-              || cmdData.new_text || patchData.new_text
-              || "—"
-            )
+            const desc =
+              extractStructuredDesc(cmdStructured)
+              || extractStructuredDesc(patStructured)
+              || String(patchData.description || cmdData.description
+                 || cmdData.new_text || patchData.new_text
+                 || "—")
             const op = String(cmdData.op || p.patchType.split("_")[0] || "update")
             return (
               <tr key={i} className="border-b border-default last:border-0">
@@ -307,7 +326,7 @@ function IterationRow({ iteration, lever }: { iteration: GSOLeverIteration; leve
     if (instrPatches.length === 0) return null
     const cmd = parseCommand(instrPatches[0].command)
     const patchData = parseCommand(instrPatches[0].patch)
-    return String(cmd.new_text || patchData.new_text || patchData.proposed_value || "")
+    return String(cmd.new_text || patchData.new_text || patchData.proposed_value || patchData.change_description || "")
   })() : null
   return (
     <div className="space-y-1">

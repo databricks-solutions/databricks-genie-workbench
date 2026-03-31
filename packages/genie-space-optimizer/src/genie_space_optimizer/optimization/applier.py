@@ -760,6 +760,10 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
             patch_dict["usage_guidance"] = p["usage_guidance"]
         if "old_value" in p:
             patch_dict["old_value"] = p["old_value"]
+        if "proposed_value" in p and "proposed_value" not in patch_dict:
+            patch_dict["proposed_value"] = p["proposed_value"]
+        if "change_description" in p and "change_description" not in patch_dict:
+            patch_dict["change_description"] = p["change_description"]
         patches.append(patch_dict)
     return patches
 

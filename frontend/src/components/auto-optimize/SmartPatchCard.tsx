@@ -14,6 +14,7 @@ function parseJson(raw: Record<string, unknown> | string | null): Record<string,
     try {
       let parsed = JSON.parse(raw)
       if (typeof parsed === "string") parsed = JSON.parse(parsed)
+      if (typeof parsed === "string") parsed = JSON.parse(parsed)
       return typeof parsed === "object" && parsed !== null ? parsed : {}
     } catch { return {} }
   }
@@ -59,20 +60,31 @@ function FieldRow({ label, children }: { label: string; children: React.ReactNod
   )
 }
 
+const STRUCTURED_LABELS: Record<string, string> = {
+  purpose: "Purpose", definition: "Definition", best_for: "Best for",
+  grain: "Grain", values: "Values", aggregation: "Aggregation",
+  scd: "SCD", relationships: "Relationships", join: "Join",
+  grain_note: "Grain note", important_filters: "Important filters",
+  synonyms: "Synonyms", use_instead_of: "Use instead of",
+  parameters: "Parameters", example: "Example",
+}
+
 function DescriptionCard({ cmd }: { cmd: Record<string, unknown> }) {
   const target = String(cmd.target || "")
   const structured = cmd.structured_sections as Record<string, string> | undefined
-  const purpose = structured?.purpose
-  const bestFor = structured?.best_for
 
-  if (purpose || bestFor) {
-    return (
-      <div>
-        <Target value={target} />
-        {purpose && <p className="text-xs text-primary mt-1.5 leading-relaxed">{purpose}</p>}
-        {bestFor && <FieldRow label="Best for">{bestFor}</FieldRow>}
-      </div>
-    )
+  if (structured && Object.keys(structured).length > 0) {
+    const entries = Object.entries(structured).filter(([, v]) => v && typeof v === "string")
+    if (entries.length > 0) {
+      return (
+        <div>
+          <Target value={target} />
+          {entries.map(([key, val]) => (
+            <FieldRow key={key} label={STRUCTURED_LABELS[key] || key}>{String(val)}</FieldRow>
+          ))}
+        </div>
+      )
+    }
   }
 
   const oldText = String(cmd.old_text || "")
@@ -317,11 +329,16 @@ export function SmartPatchCard({ patch }: SmartPatchCardProps) {
 
   if (!cmd.op && !cmd.section) {
     const patchData = parseJson(patch.patch)
+    const src = Object.keys(cmd).length === 0 ? patchData : cmd
 
-    // Instruction-type patches: show before/after text via InstructionCard
     if (patch.patchType.includes("instruction")) {
-      const newText = String(cmd.new_text || patchData.new_text || patchData.proposed_value || "")
-      const oldText = String(cmd.old_text || patchData.old_value || patchData.old_text || "")
+      const newText = String(
+        src.new_text || patchData.new_text || patchData.proposed_value
+        || patchData.change_description || ""
+      )
+      const oldText = String(
+        src.old_text || patchData.old_value || patchData.old_text || ""
+      )
       const op = patch.patchType.startsWith("rewrite") ? "rewrite"
         : patch.patchType.startsWith("add") ? "add" : "update"
       if (newText || oldText) {

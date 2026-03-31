@@ -1541,6 +1541,8 @@ def _apply_proactive_example_sqls(
     print("\n".join(_lines))
 
     for idx, entry in enumerate(applied):
+        _ap = entry.get("patch", {})
+        _action = entry.get("action", {})
         write_patch(
             spark, run_id, 0, 0, idx,
             {
@@ -1548,9 +1550,12 @@ def _apply_proactive_example_sqls(
                 "scope": "genie_config",
                 "risk_level": "low",
                 "target_object": f"example_question_sqls[{idx}]",
-                "patch": {"question": str(entry.get("patch", {}).get("example_question", ""))[:100]},
-                "command": None,
-                "rollback": None,
+                "patch": {
+                    "question": str(_ap.get("example_question", ""))[:200],
+                    "sql": str(_ap.get("example_sql", "")),
+                },
+                "command": _action.get("command"),
+                "rollback": _action.get("rollback_command"),
                 "proposal_id": "proactive_benchmark_mining",
             },
             catalog, schema,
