@@ -112,9 +112,22 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
     }
   }
 
+  // Findings that can't or shouldn't be fixed via config patches
+  const isFixable = (f: string) => {
+    const lower = f.toLowerCase()
+    return (
+      !lower.includes("optimization workflow") &&
+      !lower.includes("optimization accuracy") &&
+      !lower.includes("exceeds 120/space limit")  // informational — Genie ignores excess automatically
+    )
+  }
+
   const openFixPanel = (sr: ScanResult) => {
-    // Collect all fixable items: findings + warnings
-    const items: string[] = [...sr.findings, ...(sr.warnings ?? [])]
+    const items: string[] = [
+      ...sr.findings.filter(isFixable),
+      ...(sr.warnings ?? []).filter(isFixable),
+    ]
+    if (items.length === 0) return
     setFixFindings(items)
     setFixPanelOpen(true)
   }
@@ -153,7 +166,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
 
   // Determine contextual action(s) based on scan results
   const hasFixableItems = scanResult && (
-    scanResult.findings.length > 0 || (scanResult.warnings ?? []).length > 0
+    scanResult.findings.some(isFixable) || (scanResult.warnings ?? []).some(isFixable)
   )
   const maturity = scanResult?.maturity
   let actionProps: { onAction?: () => void; actionLabel?: string; actionIcon?: React.ReactNode } = {}

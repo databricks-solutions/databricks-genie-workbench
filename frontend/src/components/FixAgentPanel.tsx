@@ -13,6 +13,7 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronRight,
+  Info,
 } from "lucide-react"
 import { streamFixAgent } from "@/lib/api"
 import type { FixPatch } from "@/types"
@@ -45,6 +46,7 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
 
   const abortRef = useRef<(() => void) | null>(null)
   const patchIndexRef = useRef(0)
+  const phaseRef = useRef<Phase>("running")
 
   // Start fix agent on mount
   useEffect(() => {
@@ -94,6 +96,7 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
 
           case "applying":
             setPhase("applying")
+            phaseRef.current = "applying"
             setStatusMessage(event.message || "Applying changes to Databricks...")
             break
 
@@ -112,7 +115,9 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
                 item.status === "fixing" ? { ...item, status: "pending" as const } : item
               ))
             }
-            setPhase(applied > 0 ? "complete" : "error")
+            const newPhase = applied > 0 ? "complete" : "error"
+            setPhase(newPhase)
+            phaseRef.current = newPhase
             setSummary(event.summary || (applied > 0
               ? `Applied ${applied} fix(es)`
               : "Could not generate fixes — try re-scanning first"))
@@ -122,6 +127,7 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
 
           case "error":
             setPhase("error")
+            phaseRef.current = "error"
             setErrorMessage(event.message || "Fix agent encountered an error")
             // Mark any in-progress issue as error
             setIssues(prev => prev.map(item =>
@@ -131,8 +137,23 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
         }
       },
       (error) => {
-        setPhase("error")
-        setErrorMessage(error.message || "Connection failed")
+        // If the stream drops during the "applying" phase, the backend's
+        // executor thread will complete the PATCH call independently.
+        // Treat as success — the user can re-scan to verify.
+        if (phaseRef.current === "applying") {
+          setIssues(prev => prev.map(item =>
+            item.status === "pending" || item.status === "fixing"
+              ? { ...item, status: "fixed" as const }
+              : item
+          ))
+          setPhase("complete")
+          phaseRef.current = "complete"
+          setSummary("Changes applied — re-scan to verify")
+        } else {
+          setPhase("error")
+          phaseRef.current = "error"
+          setErrorMessage(error.message || "Connection failed")
+        }
       },
     )
     abortRef.current = abort
@@ -142,6 +163,13 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
 
   const fixedCount = issues.filter(i => i.status === "fixed").length
   const totalCount = issues.length
+  // Detect if any finding mentions 50+ columns needing descriptions
+  const hasBulkColumns = findings.some(f => {
+    const m = f.match(/(\d+)\s+columns?\s+have\s+descriptions/i) || f.match(/(\d+)\/(\d+)\s+columns/i)
+    if (!m) return false
+    const total = parseInt(m[2] ?? m[1], 10)
+    return total >= 50
+  })
 
   return (
     <div className="border border-default rounded-xl bg-surface flex flex-col h-[70vh] max-h-[700px] shadow-2xl">
@@ -269,6 +297,23 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
         {phase === "error" && errorMessage && (
           <div className="mt-2 px-3 py-2 bg-red-500/10 border border-red-500/25 rounded-lg">
             <p className="text-xs text-red-400">{errorMessage}</p>
+          </div>
+        )}
+
+        {/* UC AI Generate tip for bulk column descriptions */}
+        {phase === "complete" && hasBulkColumns && (
+          <div className="mt-3 mx-1 px-3 py-2.5 bg-blue-500/5 border border-blue-500/20 rounded-lg">
+            <div className="flex items-start gap-2">
+              <Info className="w-3.5 h-3.5 text-blue-400 flex-shrink-0 mt-0.5" />
+              <div className="text-xs text-blue-300/90 leading-relaxed">
+                <p className="font-medium text-blue-400 mb-1">Many columns still need descriptions</p>
+                <p>
+                  For bulk column descriptions, use <strong>AI Generate</strong> in Unity Catalog
+                  (Table &rarr; columns tab &rarr; "AI Generate"). It uses actual data samples to produce
+                  more accurate descriptions than config-level fixes.
+                </p>
+              </div>
+            </div>
           </div>
         )}
       </div>

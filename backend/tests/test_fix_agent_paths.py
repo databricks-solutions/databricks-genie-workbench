@@ -1,12 +1,14 @@
-"""Tests for config path navigation (backend/services/fix_agent.py).
+"""Tests for config path navigation and ID sanitization (backend/services/fix_agent.py).
 
-Tests _get_value_at_path() and _set_value_at_path() — pure dict traversal
+Tests _get_value_at_path(), _set_value_at_path(), and _sanitize_ids — pure
 functions, no mocking required.
 """
 
+import re
+
 import pytest
 
-from backend.services.fix_agent import _get_value_at_path, _set_value_at_path
+from backend.services.fix_agent import _get_value_at_path, _set_value_at_path, _sanitize_ids
 
 
 # ---------------------------------------------------------------------------
@@ -116,3 +118,54 @@ class TestSetValueAtPath:
     def test_set_deep_sql_value(self, config):
         _set_value_at_path(config, "instructions.sql_snippets.filters[1].sql[0]", "WHERE new=1")
         assert config["instructions"]["sql_snippets"]["filters"][1]["sql"][0] == "WHERE new=1"
+
+
+# ---------------------------------------------------------------------------
+# _sanitize_ids
+# ---------------------------------------------------------------------------
+
+HEX32 = re.compile(r"^[0-9a-f]{32}$")
+
+
+class TestSanitizeIds:
+    def test_valid_id_unchanged(self):
+        config = {"id": "a1b2c3d4e5f60000000000000000000a", "name": "test"}
+        _sanitize_ids(config)
+        assert config["id"] == "a1b2c3d4e5f60000000000000000000a"
+
+    def test_invalid_hex_chars_replaced(self):
+        bad_id = "2e41b27gb76746g438d3d00ff5e27fa03"  # contains 'g'
+        config = {"id": bad_id, "name": "test"}
+        _sanitize_ids(config)
+        assert config["id"] != bad_id
+        assert HEX32.match(config["id"])
+
+    def test_hyphenated_uuid_replaced(self):
+        config = {"id": "2e41b27b-b767-46e4-38d3-d00ff5e27fa0"}
+        _sanitize_ids(config)
+        assert HEX32.match(config["id"])
+
+    def test_too_short_id_replaced(self):
+        config = {"id": "abc123"}
+        _sanitize_ids(config)
+        assert HEX32.match(config["id"])
+
+    def test_nested_ids_fixed(self):
+        config = {
+            "benchmarks": {
+                "questions": [
+                    {"id": "INVALID_NOT_HEX_AT_ALL_32CHARS!!", "question": ["Q1"]},
+                    {"id": "a1b2c3d4e5f60000000000000000000b", "question": ["Q2"]},
+                ]
+            }
+        }
+        _sanitize_ids(config)
+        assert HEX32.match(config["benchmarks"]["questions"][0]["id"])
+        # Valid ID should be unchanged
+        assert config["benchmarks"]["questions"][1]["id"] == "a1b2c3d4e5f60000000000000000000b"
+
+    def test_non_id_fields_untouched(self):
+        config = {"name": "NOT_HEX", "identifier": "catalog.schema.table"}
+        _sanitize_ids(config)
+        assert config["name"] == "NOT_HEX"
+        assert config["identifier"] == "catalog.schema.table"

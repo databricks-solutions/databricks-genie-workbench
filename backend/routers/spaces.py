@@ -229,20 +229,41 @@ async def toggle_star(space_id: SpaceId, request: StarToggleRequest) -> dict:
 
 @router.post("/spaces/{space_id}/fix")
 async def run_fix_agent(space_id: SpaceId, request: FixRequest):
-    """Run the AI fix agent on a space. Returns SSE stream."""
+    """Run the AI fix agent on a space. Returns SSE stream with keepalives."""
+    import asyncio
     from backend.services.fix_agent import get_fix_agent
+
+    _KEEPALIVE_INTERVAL = 10  # seconds between SSE keepalive comments
 
     async def generate():
         agent = get_fix_agent()
-        async for event in agent.run(
+        agent_iter = agent.run(
             space_id=space_id,
             findings=request.findings,
             space_config=request.space_config,
-        ):
-            yield f"data: {json.dumps(event)}\n\n"
+        ).__aiter__()
+        next_coro = None
+        try:
+            while True:
+                if next_coro is None:
+                    next_coro = asyncio.ensure_future(agent_iter.__anext__())
+                try:
+                    event = await asyncio.wait_for(
+                        asyncio.shield(next_coro), timeout=_KEEPALIVE_INTERVAL
+                    )
+                    next_coro = None
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                except StopAsyncIteration:
+                    break
+        except Exception as e:
+            logger.exception(f"Fix agent stream error: {e}")
+            yield f'data: {json.dumps({"status": "error", "message": str(e)})}\n\n'
 
     headers = {
         "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     }
     return StreamingResponse(generate(), media_type="text/event-stream", headers=headers)

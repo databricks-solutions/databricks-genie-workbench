@@ -427,4 +427,5 @@ If this finding cannot be fixed via a config patch, return:
 Rules:
 - Output ONLY valid JSON. Do NOT include any text, analysis, or explanation outside the JSON.
 - Keep values concise — 1-2 sentences for descriptions.
-- Replace N with actual array indices from the current configuration."""
+- Replace N with actual array indices from the current configuration.
+- Generate AT MOST 50 patches. If the issue affects more items (e.g. 100+ columns need descriptions), fix only the first 50 most important ones. Partial progress is better than a truncated response."""

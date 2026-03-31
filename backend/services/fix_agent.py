@@ -10,6 +10,7 @@ import copy
 import json
 import logging
 import re
+import uuid
 from typing import AsyncGenerator
 
 import mlflow
@@ -71,24 +72,37 @@ class FixAgent:
 
         yield {"status": "thinking", "message": f"Analyzing {len(findings)} issue(s)..."}
 
+        # Frozen snapshot for all parallel LLM calls; mutable copy for applying patches
+        config_snapshot = copy.deepcopy(space_config)
         new_config = copy.deepcopy(space_config)
         applied_patches = []
 
         try:
-            for i, finding in enumerate(findings):
+            # Launch ALL LLM calls in parallel — total wall time ≈ slowest call
+            # instead of sum of all calls, keeping under the ~120s proxy timeout.
+            loop = asyncio.get_running_loop()
+            tasks = []
+            for finding in findings:
+                task = loop.run_in_executor(
+                    None,
+                    run_in_context(lambda f=finding: _generate_patches_for_finding(
+                        space_id=space_id, finding=f, space_config=config_snapshot, model=self.model,
+                    )),
+                )
+                tasks.append(task)
+
+            # Await results in order, yielding progress events as each completes
+            for i, (finding, task) in enumerate(zip(findings, tasks)):
                 yield {
                     "status": "thinking",
                     "message": f"Fixing issue {i + 1}/{len(findings)}: {finding[:80]}...",
                 }
 
-                # One focused LLM call per finding — run in executor to avoid blocking the event loop
-                loop = asyncio.get_running_loop()
-                patches = await loop.run_in_executor(
-                    None,
-                    run_in_context(lambda f=finding: _generate_patches_for_finding(
-                        space_id=space_id, finding=f, space_config=new_config, model=self.model,
-                    )),
-                )
+                try:
+                    patches = await task
+                except Exception as e:
+                    logger.warning(f"LLM call failed for finding: {finding[:80]}: {e}")
+                    patches = []
 
                 if not patches:
                     logger.info(f"No patch generated for finding: {finding[:80]}")
@@ -101,6 +115,7 @@ class FixAgent:
                     }
                     continue
 
+                finding_patches = []
                 for patch in patches:
                     field_path = patch.get("field_path", "")
                     new_value = patch.get("new_value")
@@ -115,7 +130,7 @@ class FixAgent:
 
                     try:
                         _set_value_at_path(new_config, field_path, new_value)
-                        applied_patches.append({
+                        finding_patches.append({
                             "field_path": field_path,
                             "old_value": old_value,
                             "new_value": new_value,
@@ -124,14 +139,16 @@ class FixAgent:
                     except Exception as e:
                         logger.warning(f"Failed to apply patch at {field_path}: {e}")
 
-                # Emit one patch event per finding (summarizing all sub-patches)
-                first_patch = patches[0] if patches else {}
+                applied_patches.extend(finding_patches)
+
+                # Emit one patch event per finding with actual values from first sub-patch
+                first = finding_patches[0] if finding_patches else patches[0]
                 yield {
                     "status": "patch",
-                    "field_path": first_patch.get("field_path", ""),
-                    "old_value": None,
-                    "new_value": None,
-                    "rationale": first_patch.get("rationale", f"Applied {len(patches)} patch(es)"),
+                    "field_path": first.get("field_path", ""),
+                    "old_value": first.get("old_value"),
+                    "new_value": first.get("new_value"),
+                    "rationale": first.get("rationale", f"Applied {len(finding_patches)} patch(es)"),
                 }
 
             # Apply all patches at once to Databricks
@@ -180,7 +197,7 @@ def _generate_patches_for_finding(
     content = _call_llm_for_patch(
         messages=[{"role": "user", "content": prompt}],
         model=model,
-        max_tokens=4096,
+        max_tokens=10000,
     )
 
     return _parse_patches(content)
@@ -284,10 +301,33 @@ def _validate_field_path(field_path: str) -> bool:
     return True
 
 
+_HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _sanitize_ids(obj):
+    """Recursively fix invalid IDs in the config.
+
+    The Genie API requires all `id` fields to be 32-character lowercase hex
+    strings (UUID without hyphens). LLMs sometimes generate IDs with non-hex
+    characters or wrong formats. This replaces any invalid ID with a fresh one.
+    """
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k == "id" and isinstance(v, str) and not _HEX32_RE.match(v):
+                obj[k] = uuid.uuid4().hex
+                logger.info(f"Replaced invalid id '{v}' with '{obj[k]}'")
+            else:
+                _sanitize_ids(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            _sanitize_ids(item)
+
+
 @mlflow.trace(name="fix_apply_config", span_type=SpanType.TOOL)
 def _apply_config_sync(space_id: str, new_config: dict) -> None:
     """Synchronous, traced config application via the Genie API."""
     from backend.genie_creator import _enforce_constraints, _clean_config
+    _sanitize_ids(new_config)
     constrained = _enforce_constraints(new_config)
     cleaned = _clean_config(constrained)
     client = get_workspace_client()
