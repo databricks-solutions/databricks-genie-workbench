@@ -38,7 +38,12 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { streamAgentChat } from "@/lib/api"
 import type { AgentChatMessage, AgentUIElement } from "@/types"
-import type { FixAgentPrefill } from "@/App"
+interface FixAgentPrefill {
+  spaceId: string
+  displayName: string
+  spaceUrl?: string
+  prompt: string
+}
 
 interface CreateAgentChatProps {
   onCreated: (spaceId: string, displayName: string, initialTab?: string) => void

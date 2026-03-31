@@ -2,23 +2,36 @@
  * IQScoreTab - Maturity S-curve + three-column check grid + split recommendations.
  */
 import { useState } from "react"
-import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Check, X, Rocket } from "lucide-react"
+import { Zap, RefreshCw, TrendingUp, CheckCircle, AlertCircle, AlertTriangle, ChevronDown, ChevronRight, Check, X, Rocket, Loader2 } from "lucide-react"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import { MaturityCurve } from "@/components/MaturityCurve"
 import type { ScanResult, CheckDetail } from "@/types"
 
 interface IQScoreTabProps {
   scanResult: ScanResult | null
+  isLoading?: boolean
   onScan: () => void
   isScanning: boolean
   spaceId: string
   spaceConfig?: Record<string, unknown>
-  onFixWithAgent?: () => void
+  /** Single contextual action — label/icon/callback determined by maturity tier */
+  onAction?: () => void
+  actionLabel?: string
+  actionIcon?: React.ReactNode
   onNavigateToOptimize?: () => void
 }
 
-export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onNavigateToOptimize }: IQScoreTabProps) {
+export function IQScoreTab({ scanResult, isLoading, onScan, isScanning, onAction, actionLabel, actionIcon, onNavigateToOptimize }: IQScoreTabProps) {
   const [checksExpanded, setChecksExpanded] = useState(false)
+
+  if (isLoading) {
+    return (
+      <div className="text-center py-16">
+        <Loader2 className="w-8 h-8 text-accent animate-spin mx-auto mb-4" />
+        <p className="text-sm text-muted">Loading score...</p>
+      </div>
+    )
+  }
 
   if (!scanResult) {
     return (
@@ -275,27 +288,16 @@ export function IQScoreTab({ scanResult, onScan, isScanning, onFixWithAgent, onN
             </div>
           )}
 
-          {/* Action buttons */}
-          {(scanResult.findings.length > 0 || hasOpportunities) && (onFixWithAgent || onNavigateToOptimize) && (
-            <div className="mt-4 pt-4 border-t border-default flex items-center gap-2">
-              {onFixWithAgent && (
-                <button
-                  onClick={onFixWithAgent}
-                  className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
-                >
-                  <Zap className="w-4 h-4" />
-                  Fix with AI Agent
-                </button>
-              )}
-              {onNavigateToOptimize && (
-                <button
-                  onClick={onNavigateToOptimize}
-                  className="flex items-center gap-2 text-sm px-3 py-2 rounded-lg border border-accent/40 text-accent hover:bg-accent/10 transition-colors"
-                >
-                  <Rocket className="w-4 h-4" />
-                  Run Optimization
-                </button>
-              )}
+          {/* Single contextual action */}
+          {onAction && actionLabel && (
+            <div className="mt-4 pt-4 border-t border-default">
+              <button
+                onClick={onAction}
+                className="flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-lg bg-accent text-white hover:bg-accent/90 transition-colors"
+              >
+                {actionIcon}
+                {actionLabel}
+              </button>
             </div>
           )}
         </div>

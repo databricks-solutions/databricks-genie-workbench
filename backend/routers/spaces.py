@@ -177,6 +177,8 @@ async def trigger_scan(space_id: SpaceId) -> ScanResult:
             checks=scan_data.get("checks", []),
             findings=scan_data.get("findings", []),
             next_steps=scan_data.get("next_steps", []),
+            warnings=scan_data.get("warnings", []),
+            warning_next_steps=scan_data.get("warning_next_steps", []),
             scanned_at=scan_data["scanned_at"],
         )
     except ValueError as e:

@@ -1,12 +1,11 @@
 """AI Fix Agent - applies targeted fixes to Genie Space configurations.
 
-Replaces the notebook generator from GenieIQ. Uses LLM tool-calling to:
-1. Reason over findings and prioritize fixes
-2. Generate specific config patch operations
-3. Apply patches via Genie API
-4. Return structured results with before/after diffs
+Addresses each finding individually with a separate LLM call, then applies
+all patches together in a single Databricks API call. This avoids token-limit
+truncation and produces more reliable JSON per patch.
 """
 
+import copy
 import json
 import logging
 from typing import AsyncGenerator
@@ -15,9 +14,8 @@ import mlflow
 from mlflow.entities import SpanType
 
 from backend.services.llm_utils import call_serving_endpoint, get_llm_model
-from backend.services.genie_client import get_genie_space, get_serialized_space
 from backend.services.auth import get_workspace_client, run_in_context
-from backend.prompts import get_fix_agent_prompt
+from backend.prompts import get_fix_agent_single_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +32,7 @@ class FixAgent:
         findings: list[str],
         space_config: dict,
     ) -> AsyncGenerator[dict, None]:
-        """Run the fix agent and stream progress updates.
+        """Run the fix agent — one LLM call per finding, then apply all patches.
 
         Yields dicts with:
             - {"status": "thinking", "message": str}
@@ -42,84 +40,84 @@ class FixAgent:
             - {"status": "applying", "message": str}
             - {"status": "complete", "patches_applied": int, "summary": str, "diff": dict}
             - {"status": "error", "message": str}
-
-        Args:
-            space_id: The Genie Space ID
-            findings: List of finding strings from IQ scan
-            space_config: The current space configuration dict
         """
-        import asyncio
+        if not findings:
+            yield {"status": "complete", "patches_applied": 0, "summary": "No findings to fix.", "diff": {}}
+            return
 
-        yield {"status": "thinking", "message": "Analyzing findings and planning fixes..."}
+        yield {"status": "thinking", "message": f"Analyzing {len(findings)} issue(s)..."}
+
+        new_config = copy.deepcopy(space_config)
+        applied_patches = []
 
         try:
-            prompt = get_fix_agent_prompt(
-                space_id=space_id,
-                findings=findings,
-                space_config=space_config,
-            )
-
-            # Call LLM to generate fix plan
-            content = _generate_fix_plan(
-                messages=[{"role": "user", "content": prompt}],
-                model=self.model,
-                max_tokens=4096,
-            )
-
-            # Parse the fix plan
-            fix_plan = _parse_fix_plan(content)
-            patches = fix_plan.get("patches", [])
-            summary = fix_plan.get("summary", "")
-
-            if not patches:
-                yield {"status": "complete", "patches_applied": 0, "summary": "No fixes needed.", "diff": {}}
-                return
-
-            yield {
-                "status": "thinking",
-                "message": f"Identified {len(patches)} fix(es) to apply...",
-            }
-
-            # Apply patches
-            applied_patches = []
-            import copy
-            new_config = copy.deepcopy(space_config)
-
-            for patch in patches:
-                field_path = patch.get("field_path", "")
-                new_value = patch.get("new_value")
-                old_value = _get_value_at_path(space_config, field_path)
-                rationale = patch.get("rationale", "")
-
+            for i, finding in enumerate(findings):
                 yield {
-                    "status": "patch",
-                    "field_path": field_path,
-                    "old_value": old_value,
-                    "new_value": new_value,
-                    "rationale": rationale,
+                    "status": "thinking",
+                    "message": f"Fixing issue {i + 1}/{len(findings)}: {finding[:80]}...",
                 }
 
-                try:
-                    _set_value_at_path(new_config, field_path, new_value)
-                    applied_patches.append({
-                        "field_path": field_path,
-                        "old_value": old_value,
-                        "new_value": new_value,
-                        "rationale": rationale,
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to apply patch at {field_path}: {e}")
+                # One focused LLM call for this finding (may return multiple patches)
+                patches = _generate_patches_for_finding(
+                    space_id=space_id,
+                    finding=finding,
+                    space_config=new_config,
+                    model=self.model,
+                )
 
+                if not patches:
+                    logger.info(f"No patch generated for finding: {finding[:80]}")
+                    yield {
+                        "status": "patch",
+                        "field_path": "",
+                        "old_value": None,
+                        "new_value": None,
+                        "rationale": "No fix needed or could not determine a patch",
+                    }
+                    continue
+
+                for patch in patches:
+                    field_path = patch.get("field_path", "")
+                    new_value = patch.get("new_value")
+                    old_value = _get_value_at_path(new_config, field_path) if field_path else None
+                    rationale = patch.get("rationale", "")
+
+                    if not field_path:
+                        continue
+                    if not _validate_field_path(field_path):
+                        logger.warning(f"Skipping patch with invalid field path: {field_path}")
+                        continue
+
+                    try:
+                        _set_value_at_path(new_config, field_path, new_value)
+                        applied_patches.append({
+                            "field_path": field_path,
+                            "old_value": old_value,
+                            "new_value": new_value,
+                            "rationale": rationale,
+                        })
+                    except Exception as e:
+                        logger.warning(f"Failed to apply patch at {field_path}: {e}")
+
+                # Emit one patch event per finding (summarizing all sub-patches)
+                first_patch = patches[0] if patches else {}
+                yield {
+                    "status": "patch",
+                    "field_path": first_patch.get("field_path", ""),
+                    "old_value": None,
+                    "new_value": None,
+                    "rationale": first_patch.get("rationale", f"Applied {len(patches)} patch(es)"),
+                }
+
+            # Apply all patches at once to Databricks
             if applied_patches:
                 yield {"status": "applying", "message": f"Applying {len(applied_patches)} fix(es) to space configuration..."}
-
-                # Apply to Databricks via API
                 try:
                     await _apply_config_to_databricks(space_id, new_config)
                     yield {
                         "status": "complete",
                         "patches_applied": len(applied_patches),
-                        "summary": summary or f"Successfully applied {len(applied_patches)} fix(es).",
+                        "summary": f"Successfully applied {len(applied_patches)} fix(es).",
                         "diff": {
                             "patches": applied_patches,
                             "original_config": space_config,
@@ -130,48 +128,63 @@ class FixAgent:
                     logger.error(f"Failed to apply config to Databricks: {e}")
                     yield {
                         "status": "error",
-                        "message": f"Generated fixes but failed to apply: {e}. Config diff is available.",
+                        "message": f"Generated fixes but failed to apply: {e}",
                         "diff": {"patches": applied_patches},
                     }
             else:
-                yield {"status": "complete", "patches_applied": 0, "summary": "Could not apply any patches.", "diff": {}}
+                yield {"status": "complete", "patches_applied": 0, "summary": "No applicable patches found.", "diff": {}}
 
         except Exception as e:
             logger.exception(f"Fix agent failed: {e}")
             yield {"status": "error", "message": str(e)}
 
 
-@mlflow.trace(name="fix_generate_plan", span_type=SpanType.LLM)
-def _generate_fix_plan(messages: list[dict], model: str, max_tokens: int) -> str:
-    """Traced wrapper around LLM call for fix plan generation."""
+def _generate_patches_for_finding(
+    space_id: str,
+    finding: str,
+    space_config: dict,
+    model: str,
+) -> list[dict]:
+    """Generate patch(es) for one finding. Returns list of patch dicts."""
+    prompt = get_fix_agent_single_prompt(
+        space_id=space_id,
+        finding=finding,
+        space_config=space_config,
+    )
+
+    content = _call_llm_for_patch(
+        messages=[{"role": "user", "content": prompt}],
+        model=model,
+        max_tokens=4096,
+    )
+
+    return _parse_patches(content)
+
+
+@mlflow.trace(name="fix_generate_patch", span_type=SpanType.LLM)
+def _call_llm_for_patch(messages: list[dict], model: str, max_tokens: int) -> str:
+    """Traced wrapper around LLM call for a single patch."""
     return call_serving_endpoint(messages=messages, model=model, max_tokens=max_tokens)
 
 
-@mlflow.trace(name="fix_parse_plan", span_type=SpanType.TOOL)
-def _parse_fix_plan(content: str) -> dict:
-    """Parse LLM response into a structured fix plan."""
-    content = content.strip()
-
-    if content.startswith("```"):
-        lines = content.split("\n")
-        start_idx = 1
-        end_idx = len(lines)
-        for i in range(len(lines) - 1, 0, -1):
-            if lines[i].strip() == "```":
-                end_idx = i
-                break
-        content = "\n".join(lines[start_idx:end_idx])
-
-    if not content.startswith("{"):
-        json_start = content.find("{")
-        if json_start != -1:
-            content = content[json_start:]
+@mlflow.trace(name="fix_parse_patch", span_type=SpanType.TOOL)
+def _parse_patches(content: str) -> list[dict]:
+    """Parse patch(es) from LLM response. Returns list of patch dicts."""
+    from backend.services.llm_utils import parse_json_from_llm_response
 
     try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        logger.warning("Failed to parse fix plan JSON, returning empty plan")
-        return {"patches": [], "summary": "Could not parse fix plan."}
+        result = parse_json_from_llm_response(content)
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.warning(f"Failed to parse patch JSON: {e}. Content preview: {content[:300]}")
+        return []
+
+    # Handle {"patches": [{...}, {...}]} format
+    if "patches" in result and isinstance(result["patches"], list):
+        return [p for p in result["patches"] if isinstance(p, dict)]
+    # Handle single {"field_path": ...} format
+    if "field_path" in result:
+        return [result]
+    return []
 
 
 def _get_value_at_path(config: dict, field_path: str):
@@ -232,6 +245,43 @@ def _set_value_at_path(config: dict, field_path: str, value) -> None:
         current[final_key] = value
     else:
         current[final_key] = value
+
+
+def _validate_field_path(field_path: str) -> bool:
+    """Check that a patch field_path uses only known Genie API field names.
+
+    Returns True if valid, False if the path contains an unknown field name.
+    See: https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field
+    """
+    # Known top-level and nested field names in serialized_space
+    VALID_FIELDS = {
+        # top-level
+        "version", "config", "data_sources", "instructions", "benchmarks",
+        # config
+        "sample_questions",
+        # data_sources
+        "tables", "metric_views", "identifier", "description", "column_configs",
+        "column_name", "synonyms", "exclude",
+        "enable_entity_matching", "enable_format_assistance",
+        # instructions
+        "text_instructions", "example_question_sqls", "sql_functions",
+        "join_specs", "sql_snippets",
+        "content", "question", "sql", "usage_guidance", "parameters",
+        "left", "right", "comment", "instruction",
+        "filters", "expressions", "measures",
+        "display_name", "alias", "id",
+        # benchmarks
+        "questions", "answer", "format",
+    }
+    import re
+    parts = field_path.split(".")
+    for part in parts:
+        # Strip array index: "tables[0]" → "tables"
+        name = re.sub(r"\[\d+\]$", "", part)
+        if name not in VALID_FIELDS:
+            logger.warning(f"Unknown field name '{name}' in path '{field_path}'")
+            return False
+    return True
 
 
 @mlflow.trace(name="fix_apply_config", span_type=SpanType.TOOL)

@@ -141,3 +141,7 @@ Do NOT suggest running `uvicorn` or `npm run dev` locally. The app depends on Da
 - Path alias `@` maps to `frontend/src/` (configured in `vite.config.ts` and `tsconfig.app.json`)
 - All API routes prefixed with `/api`
 - Pydantic models in `backend/models.py`, TypeScript mirrors in `frontend/src/types/index.ts` — keep in sync
+
+## References
+
+- **Genie Space `serialized_space` schema**: https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field — authoritative field names for the Genie API. The fix agent prompt (`backend/prompts.py`) and local schema reference (`backend/references/schema.md`) must match this.

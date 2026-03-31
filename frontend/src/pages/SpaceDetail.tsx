@@ -1,9 +1,10 @@
 /**
- * SpaceDetail - Unified 4-tab detail view for a Genie Space.
- * Tabs: Overview | Score | Optimize | History
+ * SpaceDetail - 3-tab detail view for a Genie Space.
+ * Tabs: Score (default) | Optimize | History
+ * Score tab includes an inline FixAgentPanel that slides in from the right.
  */
 import { useState, useEffect, useRef } from "react"
-import { ArrowLeft, Star, Eye, BarChart2, Clock, ExternalLink, Rocket, Play } from "lucide-react"
+import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, Zap, ChevronDown, ChevronRight, Settings } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint, OptimizationEvent } from "@/types"
@@ -12,9 +13,10 @@ import { HistoryTab } from "./HistoryTab"
 import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
 import { AutoOptimizeTab } from "@/components/auto-optimize/AutoOptimizeTab"
+import { FixAgentPanel } from "@/components/FixAgentPanel"
 
-type Tab = "overview" | "score" | "optimize" | "history"
-const VALID_TABS: readonly string[] = ["overview", "score", "optimize", "history"]
+type Tab = "score" | "optimize" | "history"
+const VALID_TABS: readonly string[] = ["score", "optimize", "history"]
 
 interface SpaceDetailProps {
   spaceId: string
@@ -23,17 +25,22 @@ interface SpaceDetailProps {
   initialTab?: string
   autoScan?: boolean
   onBack: () => void
-  onFixWithAgent?: (spaceId: string, displayName: string, spaceUrl: string | undefined, scanResult: ScanResult) => void
 }
 
-export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoScan, onBack, onFixWithAgent }: SpaceDetailProps) {
-  const [activeTab, setActiveTab] = useState<Tab>(initialTab && VALID_TABS.includes(initialTab) ? initialTab as Tab : "overview")
+export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoScan, onBack }: SpaceDetailProps) {
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab && VALID_TABS.includes(initialTab) ? initialTab as Tab : "score")
   const [scanResult, setScanResult] = useState<ScanResult | null>(null)
   const [isStarred, setIsStarred] = useState(false)
   const [isScanning, setIsScanning] = useState(false)
   const [history, setHistory] = useState<ScoreHistoryPoint[]>([])
   const [optimizationEvents, setOptimizationEvents] = useState<OptimizationEvent[]>([])
   const [hasActiveOptRun, setHasActiveOptRun] = useState(false)
+  const [isLoadingScan, setIsLoadingScan] = useState(true)
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false)
+  const [fixPanelOpen, setFixPanelOpen] = useState(false)
+  const [fixFindings, setFixFindings] = useState<string[]>([])
+
+  const [configExpanded, setConfigExpanded] = useState(false)
 
   const { state, actions } = useAnalysis()
 
@@ -43,9 +50,9 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
   // Load space data + persisted score on mount
   useEffect(() => {
     freshScanDoneRef.current = false
+    setIsLoadingScan(true)
     if (spaceId) {
       actions.handleFetchSpace(spaceId)
-
       // Load latest persisted scan result (skip if a fresh scan already completed)
       getSpaceDetail(spaceId)
         .then((detail) => {
@@ -67,6 +74,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
           }
         })
         .catch((e) => console.error("Failed to load space detail:", e))
+        .finally(() => setIsLoadingScan(false))
     }
   }, [spaceId])
 
@@ -104,6 +112,19 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
     }
   }
 
+  const openFixPanel = (sr: ScanResult) => {
+    // Collect all fixable items: findings + warnings
+    const items: string[] = [...sr.findings, ...(sr.warnings ?? [])]
+    setFixFindings(items)
+    setFixPanelOpen(true)
+  }
+
+  const handleFixComplete = () => {
+    setFixPanelOpen(false)
+    setFixFindings([])
+    handleScan()
+  }
+
   // Auto-scan on mount when requested (e.g., returning from fix flow)
   useEffect(() => {
     if (autoScan && !isScanning) {
@@ -113,21 +134,44 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
 
   useEffect(() => {
     if (activeTab === "history") {
+      setIsLoadingHistory(true)
       getSpaceHistory(spaceId)
         .then(({ scans, optimization_events }) => {
           setHistory(scans)
           setOptimizationEvents(optimization_events)
         })
         .catch(console.error)
+        .finally(() => setIsLoadingHistory(false))
     }
   }, [activeTab, spaceId])
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
-    { id: "overview", label: "Overview", icon: <Eye className="w-4 h-4" /> },
     { id: "score", label: "Score", icon: <BarChart2 className="w-4 h-4" /> },
     { id: "optimize", label: "Optimize", icon: <Rocket className="w-4 h-4" /> },
     { id: "history", label: "History", icon: <Clock className="w-4 h-4" /> },
   ]
+
+  // Determine contextual action(s) based on scan results
+  const hasFixableItems = scanResult && (
+    scanResult.findings.length > 0 || (scanResult.warnings ?? []).length > 0
+  )
+  const maturity = scanResult?.maturity
+  let actionProps: { onAction?: () => void; actionLabel?: string; actionIcon?: React.ReactNode } = {}
+  if (hasFixableItems && scanResult) {
+    // Show "Fix Issues" whenever there are findings or warnings to address
+    actionProps = {
+      onAction: () => openFixPanel(scanResult),
+      actionLabel: "Fix Issues",
+      actionIcon: <Zap className="w-4 h-4" />,
+    }
+  } else if (maturity === "Ready to Optimize") {
+    // No issues/warnings left — show optimization CTA
+    actionProps = {
+      onAction: () => setActiveTab("optimize"),
+      actionLabel: "Run Optimization",
+      actionIcon: <Rocket className="w-4 h-4" />,
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -196,7 +240,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
 
       {/* Tab content */}
       <div>
-        {activeTab === "overview" && (
+        {activeTab === "score" && (
           <>
             {hasActiveOptRun && (
               <div className="flex items-center justify-between rounded-lg border border-blue-500/30 bg-blue-500/5 px-4 py-3 mb-4">
@@ -213,20 +257,38 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
                 </button>
               </div>
             )}
-            <SpaceOverview spaceData={state.spaceData} isLoading={state.isLoading} />
-          </>
-        )}
+            <IQScoreTab
+              scanResult={scanResult}
+              isLoading={isLoadingScan}
+              onScan={handleScan}
+              isScanning={isScanning}
+              spaceId={spaceId}
+              {...actionProps}
+              onNavigateToOptimize={() => setActiveTab("optimize")}
+            />
 
-        {activeTab === "score" && (
-          <IQScoreTab
-            scanResult={scanResult}
-            onScan={handleScan}
-            isScanning={isScanning}
-            spaceId={spaceId}
-            spaceConfig={state.spaceData ?? undefined}
-            onFixWithAgent={onFixWithAgent && scanResult ? () => onFixWithAgent(spaceId, displayName, spaceUrl, scanResult) : undefined}
-            onNavigateToOptimize={() => setActiveTab("optimize")}
-          />
+            {/* Collapsible space configuration */}
+            <div className="mt-6 bg-surface border border-default rounded-xl">
+              <button
+                onClick={() => setConfigExpanded(!configExpanded)}
+                className="flex items-center gap-2 w-full px-5 py-3 text-left"
+              >
+                {configExpanded
+                  ? <ChevronDown className="w-4 h-4 text-muted" />
+                  : <ChevronRight className="w-4 h-4 text-muted" />
+                }
+                <Settings className="w-4 h-4 text-muted" />
+                <span className="text-sm font-semibold text-secondary uppercase tracking-wide">
+                  Space Configuration
+                </span>
+              </button>
+              {configExpanded && (
+                <div className="border-t border-default">
+                  <SpaceOverview spaceData={state.spaceData} isLoading={state.isLoading} />
+                </div>
+              )}
+            </div>
+          </>
         )}
 
         {activeTab === "optimize" && (
@@ -234,9 +296,31 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
         )}
 
         {activeTab === "history" && (
-          <HistoryTab history={history} optimizationEvents={optimizationEvents} />
+          <HistoryTab history={history} optimizationEvents={optimizationEvents} isLoading={isLoadingHistory} />
         )}
       </div>
+
+      {/* Fix agent modal overlay */}
+      {fixPanelOpen && fixFindings.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            onClick={() => { setFixPanelOpen(false); setFixFindings([]) }}
+          />
+          {/* Panel */}
+          <div className="relative w-full max-w-xl mx-4">
+            <FixAgentPanel
+              spaceId={spaceId}
+              displayName={displayName}
+              findings={fixFindings}
+              spaceConfig={state.spaceData ?? {}}
+              onClose={() => { setFixPanelOpen(false); setFixFindings([]) }}
+              onComplete={handleFixComplete}
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

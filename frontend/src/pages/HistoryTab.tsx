@@ -6,12 +6,14 @@
  * X-axis:       Time-based
  * Markers:      Diamond icons for optimization runs (color-coded by status)
  */
+import { Loader2 } from "lucide-react"
 import { getScoreHex } from "@/lib/utils"
 import type { ScoreHistoryPoint, OptimizationEvent } from "@/types"
 
 interface HistoryTabProps {
   history: ScoreHistoryPoint[]
   optimizationEvents: OptimizationEvent[]
+  isLoading?: boolean
 }
 
 const OPT_STATUS_COLORS: Record<string, { fill: string; stroke: string; label: string }> = {
@@ -28,7 +30,16 @@ function getOptColor(status: string) {
 
 const ACCURACY_COLOR = "#8b5cf6" // purple for accuracy line
 
-export function HistoryTab({ history, optimizationEvents }: HistoryTabProps) {
+export function HistoryTab({ history, optimizationEvents, isLoading }: HistoryTabProps) {
+  if (isLoading) {
+    return (
+      <div className="text-center py-16">
+        <Loader2 className="w-8 h-8 text-accent animate-spin mx-auto mb-4" />
+        <p className="text-sm text-muted">Loading history...</p>
+      </div>
+    )
+  }
+
   const hasScans = history.length > 0
   const hasOptEvents = optimizationEvents.length > 0
   const hasAccuracy = history.some((h) => h.optimization_accuracy != null)

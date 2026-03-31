@@ -11,7 +11,6 @@ import { SpaceList } from "@/pages/SpaceList"
 import { SpaceDetail } from "@/pages/SpaceDetail"
 import { AdminDashboard } from "@/pages/AdminDashboard"
 import { CreateAgentChat } from "@/components/CreateAgentChat"
-import type { ScanResult } from "@/types"
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null }
@@ -42,18 +41,10 @@ interface DetailState {
   autoScan?: boolean
 }
 
-export interface FixAgentPrefill {
-  spaceId: string
-  displayName: string
-  spaceUrl?: string
-  prompt: string
-}
-
 export default function App() {
   useTheme()
   const [currentView, setCurrentView] = useState<View>("list")
   const [detailState, setDetailState] = useState<DetailState | null>(null)
-  const [fixPrefill, setFixPrefill] = useState<FixAgentPrefill | null>(null)
 
   const handleSelectSpace = (spaceId: string, displayName: string, spaceUrl?: string, initialTab?: string, autoScan?: boolean) => {
     setDetailState({ spaceId, displayName, spaceUrl, initialTab, autoScan })
@@ -76,7 +67,6 @@ export default function App() {
   }
 
   const handleNavCreate = () => {
-    setFixPrefill(null)
     setCurrentView("create")
     setDetailState(null)
   }
@@ -84,37 +74,6 @@ export default function App() {
   const handleCreated = (spaceId: string, displayName: string, initialTab?: string) => {
     handleSelectSpace(spaceId, displayName, undefined, initialTab, initialTab === "score")
   }
-
-  const handleFixWithAgent = (spaceId: string, displayName: string, spaceUrl: string | undefined, scanResult: ScanResult) => {
-    const lines: string[] = []
-    const count = Math.min(scanResult.findings.length, scanResult.next_steps.length)
-    for (let i = 0; i < count; i++) {
-      lines.push(`${i + 1}. ${scanResult.findings[i]} — ${scanResult.next_steps[i]}`)
-    }
-    // Include any remaining findings or next_steps
-    for (let i = count; i < scanResult.findings.length; i++) {
-      lines.push(`${i + 1}. ${scanResult.findings[i]}`)
-    }
-    for (let i = count; i < scanResult.next_steps.length; i++) {
-      lines.push(`${i + 1}. ${scanResult.next_steps[i]}`)
-    }
-
-    const prompt = [
-      `Fix my Genie Space "${displayName}" (ID: ${spaceId}).`,
-      "",
-      `IQ Score: ${scanResult.score}/${scanResult.total ?? 12} (${scanResult.maturity})`,
-      "",
-      "Issues found:",
-      ...lines,
-      "",
-      "Please analyze these issues and apply fixes to improve the space.",
-    ].join("\n")
-
-    setFixPrefill({ spaceId, displayName, spaceUrl, prompt })
-    setCurrentView("create")
-  }
-
-  const isFixMode = currentView === "create" && fixPrefill !== null
 
   return (
     <ErrorBoundary>
@@ -180,7 +139,6 @@ export default function App() {
             initialTab={detailState.initialTab}
             autoScan={detailState.autoScan}
             onBack={handleBack}
-            onFixWithAgent={handleFixWithAgent}
           />
         )}
 
@@ -192,21 +150,12 @@ export default function App() {
             and component state survive navigation to other pages. */}
         <div className={currentView === "create" ? undefined : "hidden"}>
           <div className="mb-4">
-            <h1 className="text-2xl font-bold text-primary">
-              {isFixMode ? `Fix: ${fixPrefill.displayName}` : "Create Genie Space"}
-            </h1>
+            <h1 className="text-2xl font-bold text-primary">Create Genie Space</h1>
             <p className="text-muted text-sm mt-1">
-              {isFixMode
-                ? "AI-guided fix — the agent will analyze issues and apply updates to your space"
-                : "AI-guided creation with live progress tracking — describe what you need and fill in details as you go"
-              }
+              AI-guided creation with live progress tracking — describe what you need and fill in details as you go
             </p>
           </div>
-          <CreateAgentChat
-            onCreated={handleCreated}
-            prefill={fixPrefill}
-            onPrefillConsumed={() => setFixPrefill(null)}
-          />
+          <CreateAgentChat onCreated={handleCreated} />
         </div>
       </main>
     </div>
