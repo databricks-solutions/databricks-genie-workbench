@@ -30,9 +30,9 @@ import {
   ListChecks,
   Search,
   Trash2,
-  FastForward,
   Clock,
   GitBranch,
+  ShieldCheck,
 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -127,8 +127,9 @@ const EMPTY_PROGRESS: BuildProgress = {
 
 const STEPS = [
   { key: "requirements", label: "Requirements", Icon: FileText, backtrackMsg: "Let's go back to the requirements. I want to change the title or purpose." },
-  { key: "data", label: "Data Sources", Icon: Database, backtrackMsg: "Let's go back to data selection. I want to change which tables to use." },
-  { key: "inspection", label: "Data Inspection", Icon: Search, backtrackMsg: "Let's re-inspect the data. I want to review quality or lineage again." },
+  { key: "discovery", label: "Discovery", Icon: Database, backtrackMsg: "Let's go back to data selection. I want to change which tables to use." },
+  { key: "feasibility", label: "Feasibility", Icon: ShieldCheck, backtrackMsg: "Let's re-assess data feasibility." },
+  { key: "inspection", label: "Inspection", Icon: Search, backtrackMsg: "Let's re-inspect the data. I want to review quality or profiles again." },
   { key: "plan", label: "Plan", Icon: ListChecks, backtrackMsg: "Let's go back to the plan. I want to adjust questions, instructions, or benchmarks." },
   { key: "config", label: "Configuration", Icon: Settings, backtrackMsg: "Let's revisit the configuration before creating the space." },
   { key: "create", label: "Create Space", Icon: Rocket, backtrackMsg: "" },
@@ -141,12 +142,12 @@ const FIX_STEPS = [
 ] as const
 
 function currentStep(p: BuildProgress): number {
-  if (p.spaceId) return 5
-  if (p.configReady) return 4
-  if (p.planReady) return 3
-  if (p.inspectionDone) return 2
-  if (p.tables.length > 0) return 1
-  if (p.catalog || p.schemas.length > 0) return 0
+  if (p.spaceId) return 6
+  if (p.configReady) return 5
+  if (p.planReady) return 4
+  if (p.inspectionDone) return 3
+  if (p.tables?.length) return 2  // feasibility (tables selected)
+  if (p.catalog || p.schemas?.length) return 1  // discovery
   return 0
 }
 
@@ -316,7 +317,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [agentStatus, setAgentStatus] = useState<string | null>(null)
   const [editedPlan, setEditedPlan] = useState<EditablePlan | null>(restored.current?.editedPlan ?? null)
   const [editingPlanItem, setEditingPlanItem] = useState<string | null>(null)
-  const [autoPilot, setAutoPilot] = useState(false)
   const [elementSearch, setElementSearch] = useState<Record<string, string>>({})
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null)
   const [fixMode, setFixMode] = useState(false)
@@ -2480,18 +2480,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                   >
                     {s.label}
                   </span>
-                  {active && !autoPilot && !isStreaming && s.key !== "create" && (
-                    <button
-                      onClick={() =>
-                        sendMessage(`Skip ${s.label} — let AI decide`, { skip_step: s.key })
-                      }
-                      className="flex items-center gap-1 ml-auto px-2 py-0.5 rounded-full bg-accent/10 text-accent text-[10px] font-medium hover:bg-accent/20 transition-colors"
-                      title={`Let AI handle ${s.label} automatically`}
-                    >
-                      <FastForward className="w-2.5 h-2.5" />
-                      skip — let AI decide
-                    </button>
-                  )}
                 </div>
 
                 {/* Step-specific details */}
@@ -2788,42 +2776,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           </div>
         )}
 
-        {/* Auto-pilot + Input area */}
-        {messages.length > 0 && (
-          <div className="flex items-center justify-between">
-            <label
-              className={`flex items-center gap-2 cursor-pointer select-none ${isStreaming ? "opacity-40 pointer-events-none" : ""}`}
-            >
-              <button
-                type="button"
-                role="switch"
-                aria-checked={autoPilot}
-                onClick={() => {
-                  const next = !autoPilot
-                  setAutoPilot(next)
-                  sendMessage(
-                    next
-                      ? "Switch to auto-pilot — handle everything from here, pause only at the plan review step."
-                      : "Switch back to guided mode — pause at each step for my input.",
-                    { auto_pilot: next },
-                  )
-                }}
-                className={`relative inline-flex h-4 w-7 flex-shrink-0 items-center rounded-full transition-colors ${
-                  autoPilot ? "bg-accent" : "bg-[var(--border-color)]"
-                }`}
-              >
-                <span
-                  className={`inline-block h-3 w-3 rounded-full bg-white shadow-sm transition-transform ${
-                    autoPilot ? "translate-x-3.5" : "translate-x-0.5"
-                  }`}
-                />
-              </button>
-              <span className={`text-[11px] ${autoPilot ? "text-accent font-medium" : "text-muted"}`}>
-                {autoPilot ? "Auto-Pilot ON" : "Auto-Pilot"}
-              </span>
-            </label>
-          </div>
-        )}
         <form onSubmit={handleSubmit} className="relative">
           <textarea
             ref={inputRef}
