@@ -94,6 +94,23 @@ Generate the plan via `generate_plan` (parallel LLM calls, same as today). Prese
 - Ensure table/column descriptions are always populated (generate if UC metadata is missing)
 - Text instructions: target 50-2000 char range (IQ scan thresholds)
 
+**SQL validation improvements (plan_builder.py):**
+
+The existing `_validate_plan_sqls` pipeline tests example SQLs and benchmarks. Three additions:
+
+1. **Validate analytics SQL (new).** Measures, filters, expressions, and join specs are currently generated but never tested. Add `_validate_analytics_sql()` that wraps each snippet in a synthetic query and executes it:
+   - Measure: `SELECT {measure_sql} FROM {table} LIMIT 1`
+   - Filter: `SELECT COUNT(*) FROM {table} WHERE {filter_sql}`
+   - Expression: `SELECT {expression_sql} FROM {table} LIMIT 1`
+   - Join: `SELECT 1 FROM {left} JOIN {right} ON {condition} LIMIT 1`
+   Drop or warn on failures. Runs in parallel alongside existing validation.
+
+2. **Benchmark row count check.** Extend `_validate_plan_sqls` to verify benchmarks return at least 1 row. A benchmark returning 0 rows means the filter values are likely hallucinated. On 0-row results: attempt LLM repair (substitute real values from column profiles), re-test, drop if still empty.
+
+3. **Benchmark question-SQL alignment check (new).** After benchmarks pass execution, run an LLM check per benchmark: "Given this question, is this expected SQL the most direct answer? Are there unnecessary WHERE clauses, JOINs, or defensive NULL checks that the question didn't ask for? Would a simpler but correct SQL be marked wrong because of extra clauses in this expected SQL?" Repair misaligned pairs by simplifying the SQL or tightening the question. This is worth the LLM cost (10 calls) because benchmarks are the accuracy measurement — polluted benchmarks corrupt the entire optimization loop.
+
+   The benchmark generation prompt (`_gen_benchmarks`) should also be updated to explicitly instruct: "The expected SQL must be the most direct, natural answer to the question. No extra WHERE clauses, no unnecessary JOINs, no defensive NULL checks unless the question specifically asks for them."
+
 **Available tools:** `generate_plan`, `present_plan`, `test_sql`.
 
 #### 6. `config_create` (same)
