@@ -1,4 +1,7 @@
-"""Step 6: Post-Creation — updates, benchmarking, and further adjustments."""
+"""Step 7: Post-Creation — updates, benchmarking, and further adjustments.
+
+Note: This is step 7 after discovery (2) + feasibility (3) were added.
+"""
 
 STEP = """\
 ### Current Step: Post-Creation
@@ -46,4 +49,4 @@ Be explicit about what this agent **cannot** do:
 
 **If the space has already been created** (space_id exists in the conversation), use `update_space` instead of `create_space` when the user finishes making changes. Do NOT create a duplicate space."""
 
-SUMMARY = "Step 6 (Post-Creation): Use update_config + update_space for changes. Offer benchmarking."
+SUMMARY = "Step 7 (Post-Creation): Use update_config + update_space for changes. Offer benchmarking."

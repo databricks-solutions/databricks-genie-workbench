@@ -1,9 +1,12 @@
-"""Step 5: Generate, Validate & Create — produce the JSON, validate it, and create the space."""
+"""Step 6: Generate, Validate & Create — produce the JSON, validate it, and create the space.
+
+Note: This is step 6 after discovery (2) + feasibility (3) were added.
+"""
 
 STEP = """\
 ### Current Step: Generate & Create
 
-**IMPORTANT: Only enter this step when the user explicitly approves.** This happens when `action: "create"` is in their message, or they clearly say "create it" / "looks good, go ahead". Do NOT proceed to this step on your own — even in auto-pilot mode.
+**IMPORTANT: Only enter this step when the user explicitly approves.** This happens when `action: "create"` is in their message, or they clearly say "create it" / "looks good, go ahead". Do NOT proceed to this step on your own.
 
 Once approved:
 1. Call `discover_warehouses` to find SQL warehouses
@@ -35,4 +38,4 @@ After creation, present the result with column-level detail:
 >
 > Want me to run the benchmark queries to validate the space? Or would you like to adjust anything?\""""
 
-SUMMARY = "Step 5 (Generate & Create): Discover warehouses, generate_config, validate_config, create_space."
+SUMMARY = "Step 6 (Generate & Create): Discover warehouses, generate_config, validate_config, create_space."

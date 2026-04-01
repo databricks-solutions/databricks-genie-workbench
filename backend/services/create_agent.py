@@ -24,7 +24,8 @@ MAX_TOOL_ROUNDS = 15
 
 STEP_LABELS: dict[str, str] = {
     "requirements": "Understanding requirements",
-    "data_sources": "Exploring data sources",
+    "discovery": "Discovering data sources",
+    "feasibility": "Assessing feasibility",
     "inspection": "Inspecting tables",
     "plan": "Building plan",
     "config_create": "Generating configuration",
@@ -33,16 +34,30 @@ STEP_LABELS: dict[str, str] = {
 
 STEP_THINKING: dict[str, str] = {
     "requirements": "Understanding your requirements…",
-    "data_sources": "Exploring your data catalog…",
+    "discovery": "Exploring your data catalog…",
+    "feasibility": "Assessing data feasibility…",
     "inspection": "Analyzing table structure and data quality…",
     "plan": "Designing your Genie Space plan…",
     "config_create": "Generating the configuration…",
     "post_creation": "Finalizing your Genie Space…",
 }
 
+# Tools allowed per step — structural guardrail to prevent the LLM from
+# calling tools outside the current step's scope.
+STEP_TOOLS: dict[str, set[str] | None] = {
+    "requirements": None,  # No tools — pure conversation
+    "discovery": {"discover_catalogs", "discover_schemas", "discover_tables"},
+    "feasibility": None,  # No tools — LLM reasoning only
+    "inspection": {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"},
+    "plan": {"generate_plan", "present_plan", "test_sql"},
+    "config_create": {"discover_warehouses", "generate_config", "validate_config", "create_space"},
+    "post_creation": {"update_config", "validate_config", "update_space"},
+}
+
 STEP_ORDER = [
     "requirements",
-    "data_sources",
+    "discovery",
+    "feasibility",
     "inspection",
     "plan",
     "config_create",
@@ -147,11 +162,22 @@ class CreateGenieAgent:
         try:
             messages = self._build_messages(session)
 
+            # Filter tools based on current step
+            allowed_tools = STEP_TOOLS.get(step)
+            if allowed_tools is None:
+                # No tools for this step (requirements, feasibility)
+                step_tool_defs = []
+            else:
+                step_tool_defs = [
+                    td for td in TOOL_DEFINITIONS
+                    if td.get("function", {}).get("name") in allowed_tools
+                ]
+
             content_parts: list[str] = []
             tool_calls_acc: dict[int, dict] = {}
             tool_call_signaled = False
 
-            async for chunk in self._async_stream_llm(messages):
+            async for chunk in self._async_stream_llm(messages, tools=step_tool_defs or None):
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue
@@ -853,7 +879,7 @@ class CreateGenieAgent:
     _MAX_LLM_RETRIES = 4
     _RETRY_BACKOFF_BASE = 2  # seconds
 
-    def _stream_llm(self, messages: list[dict]) -> Generator[dict, None, None]:
+    def _stream_llm(self, messages: list[dict], tools: list[dict] | None = None) -> Generator[dict, None, None]:
         """Stream LLM response chunks from the serving endpoint (sync).
 
         Uses the SDK's pre-authenticated requests.Session so auth works
@@ -866,10 +892,13 @@ class CreateGenieAgent:
 
         body = {
             "messages": messages,
-            "tools": TOOL_DEFINITIONS,
             "max_tokens": 16384,
             "stream": True,
         }
+        # Only include tools if the step has tools available
+        effective_tools = tools if tools is not None else TOOL_DEFINITIONS
+        if effective_tools:
+            body["tools"] = effective_tools
 
         url = f"{host}/serving-endpoints/{self.model}/invocations"
         logger.info("Streaming LLM call to %s with %d messages", self.model, len(messages))
@@ -922,7 +951,7 @@ class CreateGenieAgent:
         finally:
             resp.close()
 
-    async def _async_stream_llm(self, messages: list[dict]) -> AsyncGenerator[dict, None]:
+    async def _async_stream_llm(self, messages: list[dict], tools: list[dict] | None = None) -> AsyncGenerator[dict, None]:
         """Async wrapper that bridges the sync streaming generator to async.
 
         Captures context once and reuses across all iterations (can't use
@@ -931,7 +960,7 @@ class CreateGenieAgent:
         import contextvars as _cv
         loop = asyncio.get_event_loop()
         ctx = _cv.copy_context()
-        gen = self._stream_llm(messages)
+        gen = self._stream_llm(messages, tools=tools)
         _sentinel = object()
 
         while True:

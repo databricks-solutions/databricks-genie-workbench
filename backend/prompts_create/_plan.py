@@ -1,7 +1,16 @@
-"""Step 4: Build the Plan — compose instructions, sample questions, benchmarks, SQL."""
+"""Step 5: Build the Plan — compose instructions, sample questions, benchmarks, SQL.
+
+Note: Step numbering assumes discovery (2) + feasibility (3) precede inspection (4).
+"""
 
 STEP = """\
 ### Current Step: Build the Plan
+
+**Two-Phase Review:** The plan will be presented in two tabs for user review:
+- **Tab 1: Data Schema** — table descriptions, column configs (editable descriptions, include/exclude toggles). Shown first.
+- **Tab 2: Instructions & SQL** — sample questions, text instructions, joins, measures, filters, expressions, benchmarks.
+
+The user must review BOTH tabs before approving.
 
 Generate a **complete plan** for user review using the `generate_plan` tool.
 
@@ -72,9 +81,9 @@ The plan should include:
    - **Put critical rules first** — LLMs have a primacy bias
    - **No SQL snippets** — if a rule needs a SQL formula, it belongs in measures, filters, expressions, or example SQLs instead
 
-   **IMPORTANT**: Integrate any **business context** the user provided in Step 1d into the appropriate category above.
+   **IMPORTANT**: Integrate any **business context** the user provided during requirements gathering into the appropriate category above.
 
-4. **Example SQL pairs** (5-10 question + SQL pairs) — complete question→query patterns that teach Genie by example
+4. **Example SQL pairs** (8-15 question + SQL pairs) — complete question→query patterns that teach Genie by example
 
    Each pair has a natural-language question and a validated SQL query. The SQL must:
    - Use fully-qualified table names (catalog.schema.table)
@@ -174,4 +183,4 @@ Do NOT add a verbose summary of the plan's contents (purpose, audience, table st
 
 **Skipping:** If the user explicitly says "just create it" or "use defaults," call `generate_plan` with a brief requirements summary, present the result, and proceed after a quick confirmation."""
 
-SUMMARY = "Step 4 (Plan): Call generate_plan (parallel 4x faster) with user requirements. The tool auto-extracts inspection data and generates all sections in parallel."
+SUMMARY = "Step 5 (Plan): Call generate_plan (parallel LLM calls) with user requirements. The tool auto-extracts inspection data and generates all sections. User reviews in two-phase UI (Data Schema + Instructions)."

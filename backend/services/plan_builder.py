@@ -81,9 +81,20 @@ def generate_plan(
 
     plan = _assemble(results, tables_context)
 
+    # Validate example SQLs and benchmarks (test execution + repair)
     validated = _validate_plan_sqls(plan, shared_context=shared_context)
     if validated:
         errors.extend(validated)
+
+    # Validate analytics SQL (measures, filters, expressions, joins)
+    analytics_warnings = _validate_analytics_sql(plan)
+    if analytics_warnings:
+        errors.extend(analytics_warnings)
+
+    # Check benchmark question-SQL alignment (LLM-based)
+    alignment_warnings = _validate_benchmark_alignment(plan, shared_context)
+    if alignment_warnings:
+        errors.extend(alignment_warnings)
 
     if errors:
         plan["_generation_warnings"] = errors
@@ -332,27 +343,28 @@ def _gen_questions_instructions(shared: str) -> dict:
 def _gen_example_sqls(shared: str) -> dict:
     """Generate example_sqls (question + SQL pairs that teach Genie query patterns).
 
-    Hard cap: exactly 5 pairs. At ~300 tokens each (question + SQL + params + JSON),
-    5 pairs = ~1500 tokens — well within the 3000 max_tokens budget even for
+    Hard cap: exactly 10 pairs. At ~300 tokens each (question + SQL + params + JSON),
+    10 pairs = ~3000 tokens — within the 5000 max_tokens budget even for
     complex multi-table queries with CTEs.
     """
     prompt = (
         "You are creating example SQL queries for a Databricks Genie Space.\n\n"
-        "Generate EXACTLY 5 question+SQL pairs that teach Genie how to write correct queries.\n"
+        "Generate EXACTLY 10 question+SQL pairs that teach Genie how to write correct queries.\n"
         "   - Use fully-qualified table names (catalog.schema.table)\n"
         "   - Use parameterized SQL (:param_name) when the question involves user-supplied values\n"
         "   - Each parameter needs: name, type_hint (STRING/INTEGER/DOUBLE/DECIMAL/DATE/BOOLEAN), "
         "default_value (real value from data), description\n"
         "   - The question should be concrete (use the default value, not a placeholder)\n"
-        "   - Mix: ~2 hardcoded patterns + ~3 parameterized queries\n"
-        "   - IMPORTANT: Generate no more than 5 pairs total.\n"
+        "   - Mix: ~4 hardcoded patterns + ~6 parameterized queries\n"
+        "   - Cover diverse patterns: aggregation, filtering, grouping, joins, date ranges, top-N\n"
+        "   - IMPORTANT: Generate no more than 10 pairs total.\n"
         "   - CRITICAL: Only use filter values that appear in the Column Profiles section below.\n"
         "     Do NOT invent status values, tier names, or category labels — use real data.\n\n"
         "Return ONLY valid JSON:\n"
         '{"example_sqls": [{"question": "...", "sql": "...", "parameters": [...]}]}\n\n'
         f"Context:\n{shared}"
     )
-    return _call_llm_section(prompt, max_tokens=3000, section_name="example_sqls")
+    return _call_llm_section(prompt, max_tokens=5000, section_name="example_sqls")
 
 
 def _gen_benchmarks(shared: str) -> dict:
@@ -373,6 +385,14 @@ def _gen_benchmarks(shared: str) -> dict:
         "   - IMPORTANT: Generate no more than 10 pairs total.\n"
         "   - CRITICAL: Only use filter values that appear in the Column Profiles section below.\n"
         "     Do NOT invent status values, tier names, or category labels — use real data.\n\n"
+        "BENCHMARK QUALITY RULES:\n"
+        "   - The expected SQL must be the MOST DIRECT, NATURAL answer to the question.\n"
+        "   - Do NOT add extra WHERE clauses the question didn't ask for (e.g., IS NOT NULL checks).\n"
+        "   - Do NOT add unnecessary JOINs that the question doesn't require.\n"
+        "   - Do NOT add defensive NULL filters or data quality guards.\n"
+        "   - The SQL should be what a skilled analyst would write to answer EXACTLY that question.\n"
+        "   - If Genie writes a simpler but correct SQL, it should NOT be marked wrong because\n"
+        "     your expected SQL has extra unnecessary clauses.\n\n"
         "Return ONLY valid JSON:\n"
         '{"benchmarks": [{"question": "...", "expected_sql": "..."}]}\n\n'
         f"Context:\n{shared}"
@@ -468,6 +488,162 @@ def _repair_unbound_sql(item: dict, kind: str, shared_context: str) -> dict | No
         return None
 
 
+def _validate_analytics_sql(plan: dict) -> list[str]:
+    """Test measures, filters, expressions, and join specs by wrapping in synthetic queries.
+
+    These snippets are SQL fragments, not full queries, so they need to be wrapped
+    to test execution. Failures are warnings (snippet dropped from plan).
+    """
+    warnings: list[str] = []
+    tasks: list[tuple[str, int, str]] = []
+
+    # Build synthetic test queries for each snippet type
+    measures = plan.get("measures", [])
+    for i, m in enumerate(measures):
+        sql_expr = m.get("sql", "")
+        # Measures reference fully-qualified columns; extract table from the SQL
+        table = _extract_table_from_sql(sql_expr)
+        if table and sql_expr:
+            tasks.append(("measure", i, f"SELECT {sql_expr} FROM {table} LIMIT 1"))
+
+    filters = plan.get("filters", [])
+    for i, f in enumerate(filters):
+        sql_expr = f.get("sql", "")
+        table = _extract_table_from_sql(sql_expr)
+        if table and sql_expr:
+            tasks.append(("filter", i, f"SELECT COUNT(*) FROM {table} WHERE {sql_expr} LIMIT 1"))
+
+    expressions = plan.get("expressions", [])
+    for i, e in enumerate(expressions):
+        sql_expr = e.get("sql", "")
+        table = _extract_table_from_sql(sql_expr)
+        if table and sql_expr:
+            tasks.append(("expression", i, f"SELECT {sql_expr} FROM {table} LIMIT 1"))
+
+    join_specs = plan.get("join_specs", [])
+    for i, j in enumerate(join_specs):
+        left = j.get("left_table", "")
+        right = j.get("right_table", "")
+        left_col = j.get("left_column", "")
+        right_col = j.get("right_column", "")
+        if left and right and left_col and right_col:
+            tasks.append(("join", i, f"SELECT 1 FROM {left} JOIN {right} ON {left}.{left_col} = {right}.{right_col} LIMIT 1"))
+
+    if not tasks:
+        return warnings
+
+    failed_idxs: dict[str, set[int]] = {"measure": set(), "filter": set(), "expression": set(), "join": set()}
+
+    with ThreadPoolExecutor(max_workers=_VALIDATION_CONCURRENCY) as pool:
+        futures = {
+            pool.submit(run_in_context(_test_sql, sql, None)): (kind, idx)
+            for kind, idx, sql in tasks
+        }
+        for future in as_completed(futures):
+            kind, idx = futures[future]
+            try:
+                result = future.result()
+                if not result.get("success"):
+                    failed_idxs[kind].add(idx)
+                    items = {"measure": measures, "filter": filters, "expression": expressions, "join": join_specs}
+                    item = items[kind][idx]
+                    name = item.get("display_name") or item.get("alias") or f"#{idx+1}"
+                    warnings.append(f"Dropped {kind} {name}: {result.get('error', 'unknown')[:120]}")
+            except Exception as e:
+                failed_idxs[kind].add(idx)
+                warnings.append(f"Dropped {kind} #{idx+1}: {e}")
+
+    # Remove failed items from plan
+    if failed_idxs["measure"]:
+        plan["measures"] = [m for i, m in enumerate(measures) if i not in failed_idxs["measure"]]
+    if failed_idxs["filter"]:
+        plan["filters"] = [f for i, f in enumerate(filters) if i not in failed_idxs["filter"]]
+    if failed_idxs["expression"]:
+        plan["expressions"] = [e for i, e in enumerate(expressions) if i not in failed_idxs["expression"]]
+    if failed_idxs["join"]:
+        plan["join_specs"] = [j for i, j in enumerate(join_specs) if i not in failed_idxs["join"]]
+
+    total_dropped = sum(len(v) for v in failed_idxs.values())
+    logger.info("Analytics SQL validation: tested %d, dropped %d", len(tasks), total_dropped)
+    return warnings
+
+
+def _extract_table_from_sql(sql_fragment: str) -> str | None:
+    """Extract a fully-qualified table name (catalog.schema.table) from a SQL fragment."""
+    match = re.search(r"(\w+\.\w+\.\w+)", sql_fragment)
+    return match.group(1) if match else None
+
+
+def _validate_benchmark_alignment(plan: dict, shared_context: str) -> list[str]:
+    """Check that benchmark expected_sql is the most direct answer to the question.
+
+    Uses an LLM to verify alignment — flags benchmarks where the SQL has unnecessary
+    clauses that would cause correct-but-different Genie SQL to be marked wrong.
+    """
+    benchmarks = plan.get("benchmarks", [])
+    if not benchmarks:
+        return []
+
+    warnings: list[str] = []
+    repaired_count = 0
+
+    with ThreadPoolExecutor(max_workers=_CONCURRENCY) as pool:
+        futures = {
+            pool.submit(run_in_context(_check_benchmark_alignment, bm, shared_context)): i
+            for i, bm in enumerate(benchmarks)
+        }
+        for future in as_completed(futures):
+            idx = futures[future]
+            try:
+                result = future.result()
+                if result and result.get("needs_repair"):
+                    new_sql = result.get("simplified_sql", "")
+                    new_question = result.get("tightened_question", "")
+                    if new_sql:
+                        benchmarks[idx]["expected_sql"] = new_sql
+                        repaired_count += 1
+                    if new_question:
+                        benchmarks[idx]["question"] = new_question
+                    reason = result.get("reason", "alignment issue")
+                    warnings.append(f"Repaired benchmark #{idx+1}: {reason[:120]}")
+            except Exception as e:
+                logger.warning("Benchmark alignment check failed for #%d: %s", idx + 1, e)
+
+    if repaired_count:
+        logger.info("Benchmark alignment: repaired %d/%d benchmarks", repaired_count, len(benchmarks))
+    return warnings
+
+
+def _check_benchmark_alignment(benchmark: dict, shared_context: str) -> dict | None:
+    """Check a single benchmark for question-SQL alignment."""
+    question = benchmark.get("question", "")
+    sql = benchmark.get("expected_sql", "")
+    if not question or not sql:
+        return None
+
+    prompt = (
+        "You are reviewing a benchmark test for a Databricks Genie Space.\n\n"
+        f"Question: {question}\n"
+        f"Expected SQL: {sql}\n\n"
+        "Check if this expected SQL is the MOST DIRECT answer to the question:\n"
+        "1. Are there unnecessary WHERE clauses the question didn't ask for? (e.g., IS NOT NULL, status checks)\n"
+        "2. Are there unnecessary JOINs that the question doesn't require?\n"
+        "3. Are there defensive NULL filters or data quality guards not implied by the question?\n"
+        "4. Would a simpler but correct SQL be marked wrong because this SQL has extra clauses?\n\n"
+        "If the SQL is already the most direct answer, return: {\"needs_repair\": false}\n"
+        "If it needs fixing, return:\n"
+        '{"needs_repair": true, "reason": "...", "simplified_sql": "...", "tightened_question": "..."}\n'
+        "simplified_sql: The SQL rewritten as the most direct answer.\n"
+        "tightened_question: Only provide if the question itself is vague and should be more specific.\n\n"
+        "Return ONLY valid JSON."
+    )
+    try:
+        result = _call_llm_section(prompt, max_tokens=1024, section_name="benchmark alignment")
+        return result
+    except Exception:
+        return None
+
+
 def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
     """Test all example_sqls and benchmark SQLs in parallel.
 
@@ -519,6 +695,7 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
                 test_results[key] = {"success": False, "error": str(e)}
 
         # Triage: unbound params are repairable; everything else is a hard failure
+        # Also check benchmark row counts — 0-row benchmarks have hallucinated filter values
         for (kind, idx), result in test_results.items():
             if not result.get("success"):
                 err = result.get("error", "unknown")
@@ -526,6 +703,12 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
                     needs_repair.append((kind, idx))
                 else:
                     hard_failures[(kind, idx)] = err
+            elif kind == "benchmark" and result.get("success"):
+                row_count = len(result.get("data", []))
+                if row_count == 0:
+                    # Benchmark SQL ran but returned no rows — filter values likely hallucinated
+                    needs_repair.append((kind, idx))
+                    warnings.append(f"Benchmark #{idx+1} returned 0 rows — attempting repair with real values")
 
         # Phase 2: repair unbound-param failures
         if needs_repair and shared_context:
