@@ -251,6 +251,20 @@ Currently catalog/schema scoping is prompt-level enforcement only. A future enha
 - `backend/services/create_agent_tools.py` — `_validate_config` IQ scanner alignment, column cap (50) in describe_table/profile_columns
 - `backend/services/plan_builder.py` — bump example SQLs from 5 to 10, ensure description generation
 
+### Backend (schema)
+- `sql/setup_lakebase.sql` — add `selected_catalogs`, `selected_schemas`, `selected_tables`, `feasibility_confirmed` columns to sessions table (or handle via JSON in existing column)
+
 ### Frontend
-- `frontend/src/components/CreateAgentChat.tsx` — two-phase plan review UI (Data Schema tab + Instructions tab), remove auto-pilot toggle/skip buttons
+- `frontend/src/components/CreateAgentChat.tsx` — two-phase plan review UI (Data Schema tab + Instructions tab), remove auto-pilot toggle/skip buttons, update `STEPS` array (add `discovery`/`feasibility`, remove `data`), update `currentStep()` function
 - `frontend/src/types/index.ts` — update types for new plan review structure if needed
+
+### Tests
+- `tests/test_inspection_loop.py` — update for new step order, remove auto-pilot references
+- `tests/test_compaction_400.py` — update for new step order, remove auto-pilot references
+- `backend/tests/test_dynamic_prompts.py` — update for new step order, `detect_step()` changes
+- `tests/test_full_schema.py` — may need updates for new `_validate_config` warnings
+
+### Dependency notes
+- `plan_builder.py` `_build_shared_context()` and `_summarize_usage()` handle missing `profile_table_usage` data gracefully (check for presence) — no structural change needed, just less data available
+- Scanner (`scanner.py`) is NOT modified
+- Fix agent, optimizer, spaces router, admin router are NOT affected — blast radius is contained to the create agent flow
