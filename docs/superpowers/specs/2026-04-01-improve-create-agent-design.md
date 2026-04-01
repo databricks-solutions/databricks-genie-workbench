@@ -257,7 +257,7 @@ Currently catalog/schema scoping is prompt-level enforcement only. A future enha
 - `backend/prompts_create/_data_sources.py` — **delete** (replaced by `_discovery.py`)
 - **New:** `backend/prompts_create/_discovery.py` — high-level UC scan with pause rules
 - **New:** `backend/prompts_create/_feasibility.py` — LLM-only data fitness assessment
-- `backend/prompts_create/_inspection.py` — narrow to describe/profile/quality only, drop profile_table_usage
+- `backend/prompts_create/_inspection.py` — rewrite to be conversational, add explanation for profile_table_usage, enforce column cap
 - `backend/prompts_create/_plan.py` — update for two-phase review
 - `backend/prompts_create/_tools.py` — remove auto-pilot section, update tool sequence guidelines
 
@@ -265,7 +265,7 @@ Currently catalog/schema scoping is prompt-level enforcement only. A future enha
 - `backend/services/create_agent.py` — new STEP_ORDER/STEP_LABELS/STEP_THINKING, tool filtering per step, session state gating, remove auto-pilot selections handling
 - `backend/services/create_agent_session.py` — add `selected_catalogs`, `selected_schemas`, `selected_tables`, `feasibility_confirmed` fields + Lakebase persistence
 - `backend/services/create_agent_tools.py` — `_validate_config` IQ scanner alignment, column cap (50) in describe_table/profile_columns
-- `backend/services/plan_builder.py` — bump example SQLs from 5 to 10, ensure description generation
+- `backend/services/plan_builder.py` — bump example SQLs from 5 to 10, ensure description generation, add `_validate_analytics_sql()`, add benchmark row count check, add benchmark question-SQL alignment check, update `_gen_benchmarks` prompt for directness
 
 ### Backend (schema)
 - `sql/setup_lakebase.sql` — add `selected_catalogs`, `selected_schemas`, `selected_tables`, `feasibility_confirmed` columns to sessions table (or handle via JSON in existing column)
