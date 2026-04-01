@@ -71,12 +71,11 @@ User decides: proceed to deep inspection, go back to add tables, or adjust requi
 
 #### 4. `inspection` (narrowed)
 
-Deep profiling only on confirmed tables. Three tools per table:
+Deep profiling only on confirmed tables. Four tools per table:
 - `describe_table` — schema, columns, sample rows
 - `profile_columns` — distinct values, null rates
 - `assess_data_quality` — quality issues
-
-**Dropped:** `profile_table_usage` (cross-table UC scanning). This was confusing to users (#52) and slow (#38). The information it provides (query history, lineage, frequently-used columns) is not essential for plan generation.
+- `profile_table_usage` — query history, frequently-used columns, lineage. **Kept** because it provides critical signal for generating accurate SQL expressions and sample SQL. The #52 confusion was about lack of explanation, not the tool itself — the prompt must tell the agent to explain what it's doing: "I'm checking how these tables are used in existing queries — this helps me write better SQL expressions and sample questions."
 
 **Column cap:** Limit to first 50 columns per table for both `describe_table` and `profile_columns`. If a table has more, note "showing 50 of N columns" and let the user request specific columns.
 
@@ -84,7 +83,7 @@ Deep profiling only on confirmed tables. Three tools per table:
 
 If UC metadata lacks table or column descriptions, the agent generates them during this step.
 
-**Available tools:** `describe_table`, `profile_columns`, `assess_data_quality`, `test_sql`.
+**Available tools:** `describe_table`, `profile_columns`, `assess_data_quality`, `profile_table_usage`, `test_sql`.
 
 #### 5. `plan` (improved)
 
@@ -265,6 +264,6 @@ Currently catalog/schema scoping is prompt-level enforcement only. A future enha
 - `tests/test_full_schema.py` — may need updates for new `_validate_config` warnings
 
 ### Dependency notes
-- `plan_builder.py` `_build_shared_context()` and `_summarize_usage()` handle missing `profile_table_usage` data gracefully (check for presence) — no structural change needed, just less data available
+- `plan_builder.py` — no structural changes needed; `profile_table_usage` data still flows into shared context as before
 - Scanner (`scanner.py`) is NOT modified
 - Fix agent, optimizer, spaces router, admin router are NOT affected — blast radius is contained to the create agent flow
