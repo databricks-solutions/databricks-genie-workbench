@@ -386,7 +386,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setExpandedPlanSections(new Set(["sample_questions"]))
     setEditedPlan(null)
     setEditingPlanItem(null)
-    setAutoPilot(false)
     reconnectCountRef.current = 0
     queuedMessageRef.current = null
     setQueuedMessage(null)
@@ -2563,7 +2562,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                   </div>
                 )}
 
-                {s.key === "data" && (progress.catalog || progress.tables.length > 0) && (
+                {s.key === "discovery" && (progress.catalog || progress.tables.length > 0) && (
                   <div className="mt-1 space-y-1">
                     {progress.catalog && (
                       <span className="text-[10px] text-muted font-mono block truncate">
