@@ -190,7 +190,8 @@ if [ "$UPDATE_ONLY" = "true" ]; then
     # databricks sync --full only uploads — it never removes stale remote files.
     echo "  Cleaning stale workspace files..."
     databricks workspace delete "$WS_PATH" --profile "$PROFILE" --recursive 2>/dev/null || true
-    databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full
+    databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full \
+        --exclude-from "$PROJECT_DIR/.databricksignore"
     # frontend/dist/ is gitignored so databricks sync skips it — upload explicitly
     echo "  Uploading frontend build artifacts..."
     databricks workspace import-dir "$PROJECT_DIR/frontend/dist" \
@@ -227,7 +228,8 @@ else
     # databricks sync --full only uploads — it never removes stale remote files.
     echo "  Cleaning stale workspace files..."
     databricks workspace delete "$WS_PATH" --profile "$PROFILE" --recursive 2>/dev/null || true
-    databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full
+    databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full \
+        --exclude-from "$PROJECT_DIR/.databricksignore"
     # frontend/dist/ is gitignored so databricks sync skips it — upload explicitly
     echo "  Uploading frontend build artifacts..."
     databricks workspace import-dir "$PROJECT_DIR/frontend/dist" \
