@@ -18,9 +18,16 @@ _GSO_PG_SCHEMA = os.environ.get("GSO_SCHEMA", "genie_space_optimizer")
 # Synced tables are created with this suffix in the same UC schema.
 _SYNCED_SUFFIX = "_synced"
 
+# Disabled until Databricks SDK supports Lakebase Autoscaling synced table
+# creation. All reads fall through to Delta table queries via SQL Warehouse.
+# Flip to True and redeploy once synced tables are provisioned.
+_SYNCED_TABLES_ENABLED = False
+
 
 def _get_pool():
     """Return the live Lakebase pool, or None if unavailable."""
+    if not _SYNCED_TABLES_ENABLED:
+        return None
     if not _lb._lakebase_available or _lb._pool is None:
         return None
     return _lb._pool
@@ -44,8 +51,8 @@ async def load_gso_run(run_id: str) -> dict | None:
                 run_id,
             )
             return dict(row) if row else None
-    except Exception as exc:
-        logger.warning("GSO synced table query failed (genie_opt_runs): %s", exc)
+    except Exception:
+        logger.warning("Lakebase query failed for genie_opt_runs", exc_info=True)
         return None
 
 
@@ -66,8 +73,8 @@ async def load_gso_runs_for_space(space_id: str) -> list[dict]:
                 space_id,
             )
             return [dict(r) for r in rows]
-    except Exception as exc:
-        logger.warning("GSO synced table query failed (genie_opt_runs): %s", exc)
+    except Exception:
+        logger.warning("Lakebase query failed for genie_opt_runs", exc_info=True)
         return []
 
 
@@ -86,8 +93,8 @@ async def load_gso_stages(run_id: str) -> list[dict]:
                 run_id,
             )
             return [dict(r) for r in rows]
-    except Exception as exc:
-        logger.warning("GSO synced table query failed (genie_opt_stages): %s", exc)
+    except Exception:
+        logger.warning("Lakebase query failed for genie_opt_stages", exc_info=True)
         return []
 
 
@@ -116,8 +123,8 @@ async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -
                 run_id,
             )
             return [dict(r) for r in rows]
-    except Exception as exc:
-        logger.warning("GSO synced table query failed (genie_opt_iterations): %s", exc)
+    except Exception:
+        logger.warning("Lakebase query failed for genie_opt_iterations", exc_info=True)
         return []
 
 
@@ -136,8 +143,8 @@ async def load_gso_patches(run_id: str) -> list[dict]:
                 run_id,
             )
             return [dict(r) for r in rows]
-    except Exception as exc:
-        logger.warning("GSO synced table query failed (genie_opt_patches): %s", exc)
+    except Exception:
+        logger.warning("Lakebase query failed for genie_opt_patches", exc_info=True)
         return []
 
 
@@ -156,8 +163,8 @@ async def load_gso_asi_results(run_id: str, iteration: int) -> list[dict]:
                 iteration,
             )
             return [dict(r) for r in rows]
-    except Exception as exc:
-        logger.warning("GSO synced table query failed (genie_eval_asi_results): %s", exc)
+    except Exception:
+        logger.warning("Lakebase query failed for genie_eval_asi_results", exc_info=True)
         return []
 
 
@@ -190,8 +197,8 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
                     iteration,
                 )
             return row["rows_json"] if row else None
-    except Exception as exc:
-        logger.warning("GSO synced table query failed (genie_opt_iterations): %s", exc)
+    except Exception:
+        logger.warning("Lakebase query failed for genie_opt_iterations (rows_json)", exc_info=True)
         return None
 
 
@@ -210,6 +217,6 @@ async def load_gso_suggestions(run_id: str) -> list[dict]:
                 run_id,
             )
             return [dict(r) for r in rows]
-    except Exception as exc:
-        logger.warning("GSO synced table query failed (genie_opt_suggestions): %s", exc)
+    except Exception:
+        logger.warning("Lakebase query failed for genie_opt_suggestions", exc_info=True)
         return []
