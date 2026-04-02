@@ -28,11 +28,14 @@ def search_tables(
     if not keywords:
         return {"error": "No search keywords provided", "tables": []}
 
-    # Build LIKE conditions for each keyword
+    # Build LIKE conditions for each keyword — match table names, column names,
+    # comments, AND catalog/schema names for broader discovery
     like_conditions = []
     for kw in keywords:
         safe_kw = kw.replace("'", "''").replace("%", "\\%").replace("_", "\\_").lower()
         like_conditions.extend([
+            f"lower(t.table_catalog) LIKE '%{safe_kw}%'",
+            f"lower(t.table_schema) LIKE '%{safe_kw}%'",
             f"lower(t.table_name) LIKE '%{safe_kw}%'",
             f"lower(t.comment) LIKE '%{safe_kw}%'",
             f"lower(c.column_name) LIKE '%{safe_kw}%'",

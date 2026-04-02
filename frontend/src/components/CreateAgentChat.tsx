@@ -2988,15 +2988,16 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
           selectedTables={progress.tables}
-          onAddTable={(fullName) => {
-            setProgress((p) => ({ ...p, tables: [...p.tables, fullName] }))
-            const short = fullName.split(".").pop() || fullName
-            sendMessage(`I added \`${short}\` (${fullName}) to the selection`)
-          }}
-          onRemoveTable={(fullName) => {
-            setProgress((p) => ({ ...p, tables: p.tables.filter((t) => t !== fullName) }))
-            const short = fullName.split(".").pop() || fullName
-            sendMessage(`I removed \`${short}\` (${fullName}) from the selection`)
+          onApplyChanges={(added, removed) => {
+            setProgress((p) => {
+              const next = p.tables.filter((t) => !removed.includes(t))
+              return { ...p, tables: [...next, ...added] }
+            })
+            const parts: string[] = []
+            if (added.length) parts.push(`Added: ${added.map((t) => `\`${t}\``).join(", ")}`)
+            if (removed.length) parts.push(`Removed: ${removed.map((t) => `\`${t}\``).join(", ")}`)
+            if (parts.length) sendMessage(`I updated my table selection. ${parts.join(". ")}`)
+            setDrawerOpen(false)
           }}
         />
       )}

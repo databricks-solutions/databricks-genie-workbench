@@ -1,13 +1,14 @@
-import { useState, useEffect, useCallback } from "react"
-import { X, Search, ChevronRight, ChevronDown, Check, Loader2 } from "lucide-react"
+import { useState, useEffect, useCallback, useMemo } from "react"
+import { X, Search, ChevronRight, ChevronDown, Check, Loader2, CheckSquare } from "lucide-react"
 import { discoverCatalogs, discoverSchemas, discoverTables, searchTables } from "@/lib/api"
+
+const MAX_TABLES = 30
 
 interface TableBrowserDrawerProps {
   open: boolean
   onClose: () => void
   selectedTables: string[]
-  onAddTable: (fullName: string) => void
-  onRemoveTable: (fullName: string) => void
+  onApplyChanges: (added: string[], removed: string[]) => void
 }
 
 interface CatalogNode {
@@ -25,15 +26,23 @@ interface TableNode {
   full_name: string
   name: string
   comment?: string | null
+  table_type?: string | null
 }
 
 export function TableBrowserDrawer({
   open,
   onClose,
   selectedTables,
-  onAddTable,
-  onRemoveTable,
+  onApplyChanges,
 }: TableBrowserDrawerProps) {
+  // Pending selection (local draft — not committed until "Apply")
+  const [pending, setPending] = useState<Set<string>>(new Set(selectedTables))
+
+  // Sync pending with selectedTables when drawer opens or selectedTables changes
+  useEffect(() => {
+    setPending(new Set(selectedTables))
+  }, [selectedTables, open])
+
   // Tree state
   const [catalogs, setCatalogs] = useState<CatalogNode[]>([])
   const [schemas, setSchemas] = useState<Record<string, SchemaNode[]>>({})
@@ -47,6 +56,14 @@ export function TableBrowserDrawer({
   const [searchResults, setSearchResults] = useState<TableNode[] | null>(null)
   const [searchGrouped, setSearchGrouped] = useState<Record<string, TableNode[]>>({})
   const [searching, setSearching] = useState(false)
+
+  // Diff from committed selection
+  const diff = useMemo(() => {
+    const committed = new Set(selectedTables)
+    const added = [...pending].filter((t) => !committed.has(t))
+    const removed = selectedTables.filter((t) => !pending.has(t))
+    return { added, removed, hasChanges: added.length > 0 || removed.length > 0 }
+  }, [pending, selectedTables])
 
   // Load catalogs when drawer opens
   useEffect(() => {
@@ -66,7 +83,6 @@ export function TableBrowserDrawer({
         next.delete(catalogName)
       } else {
         next.add(catalogName)
-        // Load schemas if not already loaded
         if (!schemas[catalogName]) {
           setLoading((l) => ({ ...l, [catalogName]: true }))
           discoverSchemas(catalogName)
@@ -116,7 +132,6 @@ export function TableBrowserDrawer({
         comment: t.comment || null,
       }))
       setSearchResults(tableNodes)
-      // Group by catalog.schema
       const grouped: Record<string, TableNode[]> = {}
       for (const t of tableNodes) {
         const parts = t.full_name.split(".")
@@ -139,21 +154,50 @@ export function TableBrowserDrawer({
     setSearchGrouped({})
   }, [])
 
-  const isSelected = useCallback(
-    (fullName: string) => selectedTables.includes(fullName),
-    [selectedTables]
-  )
+  const isPending = useCallback((fullName: string) => pending.has(fullName), [pending])
+
+  const atLimit = pending.size >= MAX_TABLES
 
   const toggleTable = useCallback(
     (fullName: string) => {
-      if (isSelected(fullName)) {
-        onRemoveTable(fullName)
-      } else {
-        onAddTable(fullName)
-      }
+      setPending((prev) => {
+        const next = new Set(prev)
+        if (next.has(fullName)) {
+          next.delete(fullName)
+        } else if (next.size < MAX_TABLES) {
+          next.add(fullName)
+        }
+        return next
+      })
     },
-    [isSelected, onAddTable, onRemoveTable]
+    []
   )
+
+  const selectAllInSchema = useCallback(
+    (schemaKey: string) => {
+      const schemaTables = tables[schemaKey] || []
+      setPending((prev) => {
+        const next = new Set(prev)
+        const allSelected = schemaTables.every((t) => next.has(t.full_name))
+        if (allSelected) {
+          // Deselect all in schema
+          for (const t of schemaTables) next.delete(t.full_name)
+        } else {
+          // Select all (up to limit)
+          for (const t of schemaTables) {
+            if (next.size >= MAX_TABLES) break
+            next.add(t.full_name)
+          }
+        }
+        return next
+      })
+    },
+    [tables]
+  )
+
+  const handleApply = useCallback(() => {
+    onApplyChanges(diff.added, diff.removed)
+  }, [onApplyChanges, diff])
 
   if (!open) return null
 
@@ -167,13 +211,20 @@ export function TableBrowserDrawer({
         </button>
       </div>
 
+      {/* Limit warning */}
+      {atLimit && (
+        <div className="px-3 py-1.5 bg-amber-500/10 text-amber-400 text-[10px] border-b border-default">
+          Maximum {MAX_TABLES} tables reached. Remove a table to add more.
+        </div>
+      )}
+
       {/* Search bar */}
       <div className="px-3 py-2 border-b border-default">
         <div className="relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted" />
           <input
             className="w-full text-xs bg-elevated border border-default rounded px-2 py-1.5 pl-7 text-primary placeholder:text-muted focus:outline-none focus:border-accent"
-            placeholder="Search tables..."
+            placeholder="Search tables, columns, comments..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSearch()}
@@ -196,7 +247,6 @@ export function TableBrowserDrawer({
             <Loader2 className="w-4 h-4 animate-spin mr-2" /> Searching...
           </div>
         ) : searchResults !== null ? (
-          // Search results grouped by catalog.schema
           Object.keys(searchGrouped).length === 0 ? (
             <div className="px-3 py-6 text-center text-muted">No tables found</div>
           ) : (
@@ -205,13 +255,14 @@ export function TableBrowserDrawer({
               .map(([group, groupTables]) => (
                 <div key={group}>
                   <div className="px-3 py-1.5 text-[10px] font-medium text-muted bg-elevated sticky top-0">
-                    {group}
+                    {group} <span className="text-muted/60">({groupTables.length})</span>
                   </div>
                   {groupTables.map((t) => (
                     <TableRow
                       key={t.full_name}
                       table={t}
-                      selected={isSelected(t.full_name)}
+                      selected={isPending(t.full_name)}
+                      disabled={atLimit && !isPending(t.full_name)}
                       onToggle={() => toggleTable(t.full_name)}
                       indent={1}
                     />
@@ -224,7 +275,6 @@ export function TableBrowserDrawer({
             <Loader2 className="w-4 h-4 animate-spin mr-2" /> Loading catalogs...
           </div>
         ) : (
-          // Catalog tree
           catalogs.map((cat) => (
             <div key={cat.name}>
               <button
@@ -248,19 +298,34 @@ export function TableBrowserDrawer({
                   ) : (
                     (schemas[cat.name] || []).map((sch) => {
                       const schemaKey = `${cat.name}.${sch.name}`
+                      const schemaTables = tables[schemaKey] || []
+                      const allSelected = schemaTables.length > 0 && schemaTables.every((t) => pending.has(t.full_name))
                       return (
                         <div key={schemaKey}>
-                          <button
-                            onClick={() => toggleSchema(schemaKey, cat.name, sch.name)}
-                            className="flex items-center gap-1.5 w-full pl-7 pr-3 py-1.5 hover:bg-elevated transition-colors text-left"
-                          >
-                            {expandedSchemas.has(schemaKey) ? (
-                              <ChevronDown className="w-3 h-3 text-muted flex-shrink-0" />
-                            ) : (
-                              <ChevronRight className="w-3 h-3 text-muted flex-shrink-0" />
+                          <div className="flex items-center w-full pl-7 pr-3 py-1.5 hover:bg-elevated transition-colors">
+                            <button
+                              onClick={() => toggleSchema(schemaKey, cat.name, sch.name)}
+                              className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
+                            >
+                              {expandedSchemas.has(schemaKey) ? (
+                                <ChevronDown className="w-3 h-3 text-muted flex-shrink-0" />
+                              ) : (
+                                <ChevronRight className="w-3 h-3 text-muted flex-shrink-0" />
+                              )}
+                              <span className="text-secondary truncate">{sch.name}</span>
+                            </button>
+                            {/* Select all in schema */}
+                            {expandedSchemas.has(schemaKey) && schemaTables.length > 0 && (
+                              <button
+                                onClick={() => selectAllInSchema(schemaKey)}
+                                className="text-[10px] text-accent hover:underline flex items-center gap-0.5 flex-shrink-0"
+                                title={allSelected ? "Deselect all" : "Select all"}
+                              >
+                                <CheckSquare className="w-3 h-3" />
+                                {allSelected ? "None" : "All"}
+                              </button>
                             )}
-                            <span className="text-secondary truncate">{sch.name}</span>
-                          </button>
+                          </div>
 
                           {expandedSchemas.has(schemaKey) && (
                             <div>
@@ -269,11 +334,12 @@ export function TableBrowserDrawer({
                                   <Loader2 className="w-3 h-3 animate-spin" /> Loading...
                                 </div>
                               ) : (
-                                (tables[schemaKey] || []).map((t) => (
+                                schemaTables.map((t) => (
                                   <TableRow
                                     key={t.full_name}
                                     table={t}
-                                    selected={isSelected(t.full_name)}
+                                    selected={isPending(t.full_name)}
+                                    disabled={atLimit && !isPending(t.full_name)}
                                     onToggle={() => toggleTable(t.full_name)}
                                     indent={3}
                                   />
@@ -292,14 +358,25 @@ export function TableBrowserDrawer({
         )}
       </div>
 
-      {/* Selected tables footer */}
+      {/* Footer: selected count + apply button */}
       <div className="border-t border-default px-3 py-2 bg-surface">
-        <div className="text-[10px] text-muted mb-1.5">
-          {selectedTables.length} table{selectedTables.length !== 1 ? "s" : ""} selected
+        <div className="flex items-center justify-between mb-1.5">
+          <span className="text-[10px] text-muted">
+            {pending.size}/{MAX_TABLES} table{pending.size !== 1 ? "s" : ""}
+          </span>
+          {diff.hasChanges && (
+            <span className="text-[10px] text-accent">
+              {diff.added.length > 0 && `+${diff.added.length}`}
+              {diff.added.length > 0 && diff.removed.length > 0 && " / "}
+              {diff.removed.length > 0 && `-${diff.removed.length}`}
+            </span>
+          )}
         </div>
-        {selectedTables.length > 0 && (
-          <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
-            {selectedTables.map((t) => {
+
+        {/* Selected table chips */}
+        {pending.size > 0 && (
+          <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto mb-2">
+            {[...pending].map((t) => {
               const short = t.split(".").pop() || t
               return (
                 <span
@@ -308,7 +385,7 @@ export function TableBrowserDrawer({
                 >
                   {short}
                   <button
-                    onClick={() => onRemoveTable(t)}
+                    onClick={() => toggleTable(t)}
                     className="hover:text-red-400 transition-colors"
                   >
                     <X className="w-2.5 h-2.5" />
@@ -318,6 +395,15 @@ export function TableBrowserDrawer({
             })}
           </div>
         )}
+
+        {/* Apply button */}
+        <button
+          onClick={handleApply}
+          disabled={!diff.hasChanges}
+          className="w-full py-1.5 text-xs font-medium rounded-lg transition-colors disabled:opacity-30 disabled:cursor-not-allowed bg-accent text-white hover:bg-accent/90"
+        >
+          Apply Changes
+        </button>
       </div>
     </div>
   )
@@ -328,11 +414,13 @@ export function TableBrowserDrawer({
 function TableRow({
   table,
   selected,
+  disabled,
   onToggle,
   indent,
 }: {
   table: TableNode
   selected: boolean
+  disabled?: boolean
   onToggle: () => void
   indent: number
 }) {
@@ -340,7 +428,8 @@ function TableRow({
   return (
     <button
       onClick={onToggle}
-      className={`flex items-center gap-2 w-full ${pl} pr-3 py-1.5 hover:bg-elevated transition-colors text-left`}
+      disabled={disabled}
+      className={`flex items-center gap-2 w-full ${pl} pr-3 py-1.5 hover:bg-elevated transition-colors text-left ${disabled ? "opacity-40 cursor-not-allowed" : ""}`}
     >
       <div
         className={`w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0 ${
@@ -352,7 +441,12 @@ function TableRow({
         {selected && <Check className="w-2.5 h-2.5 text-green-400" />}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-primary truncate">{table.name}</div>
+        <div className="text-primary truncate">
+          {table.name}
+          {table.table_type && table.table_type !== "MANAGED" && table.table_type !== "TABLE" && (
+            <span className="ml-1 text-[9px] text-muted">({table.table_type})</span>
+          )}
+        </div>
         {table.comment && (
           <div className="text-[10px] text-muted truncate">{table.comment}</div>
         )}
