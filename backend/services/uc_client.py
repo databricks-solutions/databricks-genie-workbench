@@ -100,7 +100,7 @@ def search_tables(
     """
 
     try:
-        result = execute_sql(sql, timeout="30s")
+        result = execute_sql(sql)
         if not result.get("success"):
             return {"error": result.get("error", "Search query failed"), "tables": []}
 
