@@ -138,6 +138,33 @@ Do NOT suggest running `uvicorn` or `npm run dev` locally. The app depends on Da
 - **Python 3.11+** required (`pyproject.toml`). Uses `uv` for dependency management (`uv.lock` present).
 - **Root `package.json`** exists solely as a build hook for Databricks Apps — `postinstall` chains to `frontend/npm install`, `build` chains to `frontend/npm run build`.
 
+## Agent Deployment Layer
+
+The `agents/` directory provides an optional agent deployment layer using `@app_agent` from `dbx-agent-app`. Each agent wraps existing domain logic from `backend/services/` and exposes it as a standalone Databricks agent with A2A discovery, MCP server, and eval support.
+
+See `docs/architecture-proposal.md` for the full design and implementation roadmap.
+
+```
+agents/
+  _shared/              # Auth bridge, Lakebase pool, SP fallback
+  scorer/app.py         # Wraps scanner.py
+  analyzer/app.py       # Wraps analyzer.py
+  creator/app.py        # Wraps create_agent.py
+  optimizer/app.py      # Wraps optimizer.py
+  fixer/app.py          # Wraps fix_agent.py
+  supervisor/proxy.py   # Frontend proxy for agent deployment mode
+agents.yaml             # Multi-agent deployment config
+```
+
+## GenieRX Specification
+
+`docs/genierx-spec.md` defines the analysis and recommendation taxonomy. Key concepts:
+- **Authoritative Facts** — raw data from systems of record, safe to surface directly
+- **Canonical Metrics** — governed KPIs with stable definitions
+- **Heuristic Signals** — derived fields with subjective thresholds; must carry caveats
+
+Consult the spec when working on analysis, scoring, or recommendation features.
+
 ## Code Style
 
 - Backend: Python, Pydantic models, FastAPI routers, no class-based views
