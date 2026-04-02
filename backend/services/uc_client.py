@@ -111,7 +111,18 @@ def search_tables(
         tables = []
         for row in result.get("data", []):
             full_name = f"{row[0]}.{row[1]}.{row[2]}"
-            matching_cols = [c for c in (row[6] or []) if c is not None]
+            # collect_set returns a string like '["col1","col2"]' from the API
+            raw_cols = row[6] if len(row) > 6 else None
+            if isinstance(raw_cols, str):
+                import json as _json
+                try:
+                    matching_cols = [c for c in _json.loads(raw_cols) if c is not None]
+                except (ValueError, TypeError):
+                    matching_cols = []
+            elif isinstance(raw_cols, list):
+                matching_cols = [c for c in raw_cols if c is not None]
+            else:
+                matching_cols = []
 
             # Determine which keywords matched this table
             matched_kws = set()
