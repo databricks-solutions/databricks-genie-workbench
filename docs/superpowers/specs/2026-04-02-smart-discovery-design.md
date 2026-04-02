@@ -155,7 +155,7 @@ STEP_TOOLS["discovery"] = {
 
 ## Error Handling
 
-- **Warehouse not running:** `search_tables` returns an error suggesting the user start a warehouse or use the direct path (`discover_catalogs` → `discover_schemas` → `discover_tables`)
+- **Warehouse not running:** `search_tables` auto-starts the configured SQL warehouse before executing the query. The app already has `SQL_WAREHOUSE_ID` configured — use the existing `sql_executor` to start it if stopped.
 - **Query timeout:** If information_schema query takes >30s, cancel and fall back to `list_summaries` API (faster but name-only, single catalog)
 - **No results:** Agent tells the user no matches were found, asks for more context or a different description, suggests trying the direct path
 - **Too many results:** Capped at `max_results` (default 50). Agent filters to the most relevant in its response.
