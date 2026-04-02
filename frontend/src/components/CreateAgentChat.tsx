@@ -39,6 +39,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { streamAgentChat } from "@/lib/api"
 import type { AgentChatMessage, AgentUIElement } from "@/types"
+import { TableBrowserDrawer } from "@/components/TableBrowserDrawer"
 interface CreateAgentChatProps {
   onCreated: (spaceId: string, displayName: string, initialTab?: string) => void
 }
@@ -340,6 +341,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [multiSelections, setMultiSelections] = useState<Record<string, Set<string>>>({})
   const [progress, setProgress] = useState<BuildProgress>(restored.current?.progress ?? EMPTY_PROGRESS)
   const [panelOpen] = useState(true)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
   const [businessContextDraft, setBusinessContextDraft] = useState("")
@@ -2812,6 +2814,20 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         })}
       </div>
 
+      {/* Browse Tables button */}
+      <button
+        onClick={() => setDrawerOpen(true)}
+        className="mx-4 mb-2 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-accent bg-accent/5 border border-accent/20 rounded-lg hover:bg-accent/10 transition-colors"
+      >
+        <Database className="w-3 h-3" />
+        Browse Tables
+        {progress.tables.length > 0 && (
+          <span className="ml-1 bg-accent/20 text-accent text-[10px] px-1.5 py-0.5 rounded-full">
+            {progress.tables.length}
+          </span>
+        )}
+      </button>
+
       {/* Panel footer — space links */}
       {fixMode && fixResult ? (
         <div className="border-t border-default px-4 py-3 flex gap-2">
@@ -2965,6 +2981,25 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           )}
         </form>
       </div>
+
+      {/* Table browser drawer */}
+      {drawerOpen && (
+        <TableBrowserDrawer
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          selectedTables={progress.tables}
+          onAddTable={(fullName) => {
+            setProgress((p) => ({ ...p, tables: [...p.tables, fullName] }))
+            const short = fullName.split(".").pop() || fullName
+            sendMessage(`I added \`${short}\` (${fullName}) to the selection`)
+          }}
+          onRemoveTable={(fullName) => {
+            setProgress((p) => ({ ...p, tables: p.tables.filter((t) => t !== fullName) }))
+            const short = fullName.split(".").pop() || fullName
+            sendMessage(`I removed \`${short}\` (${fullName}) from the selection`)
+          }}
+        />
+      )}
 
       {/* Progress panel */}
       {panelOpen && renderPanel()}

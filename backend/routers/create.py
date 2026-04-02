@@ -43,6 +43,20 @@ async def discover_columns(catalog: str, schema: str, table: str):
     return {"columns": get_table_columns(catalog, schema, table)}
 
 
+@router.get("/discover/search")
+async def discover_search(keywords: str, catalogs: str | None = None):
+    """Search for tables across Unity Catalog by keywords.
+
+    Args:
+        keywords: Comma-separated search terms (e.g., "bank,loan,customer")
+        catalogs: Optional comma-separated catalog names to scope search
+    """
+    from backend.services.uc_client import search_tables
+    kw_list = [k.strip() for k in keywords.split(",") if k.strip()]
+    cat_list = [c.strip() for c in catalogs.split(",") if c.strip()] if catalogs else None
+    return search_tables(kw_list, catalogs=cat_list)
+
+
 # ── Config validation ─────────────────────────────────────────────────────────
 
 class ValidateRequest(BaseModel):
