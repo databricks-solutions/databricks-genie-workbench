@@ -170,7 +170,6 @@ def search_tables(
             "search_terms_used": keywords,
             "catalogs_searched": catalogs_searched,
             "total_matches": len(tables),
-            "ui_hint": {"type": "multi_select", "id": "table_selection", "label": "Select tables to include"},
         }
 
     except Exception as e:
