@@ -118,7 +118,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
 
   if (!isOpen) return null
 
-  const stepsCompleted = run?.steps?.filter((s) => s.status === "completed").length ?? 0
+  const stepsCompleted = run?.steps?.filter((s) => s.status === "completed" || s.status === "skipped").length ?? 0
   const totalSteps = 6
   const progressPct = Math.round((stepsCompleted / totalSteps) * 100)
   const allComplete = stepsCompleted === totalSteps

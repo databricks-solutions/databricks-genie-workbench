@@ -1202,7 +1202,7 @@ async def get_run_status(run_id: RunId):
         status = _normalize_step_status_for_terminal_run(
             status=status, run_status=run_status_str,
         )
-        if status == "completed":
+        if status in ("completed", "skipped"):
             steps_completed += 1
         elif status == "running" and current_step_name is None:
             current_step_name = step_def["name"]

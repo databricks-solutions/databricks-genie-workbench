@@ -19,9 +19,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
 
-[tool.uv.sources]
-genie-space-optimizer = { path = "packages/genie-space-optimizer" }
-
 [project.scripts]
 start-server = "backend.main:main"
 
