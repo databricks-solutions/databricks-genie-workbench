@@ -1547,13 +1547,15 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                               )}
                               setEditedPlan(updated)
                             }}
-                            className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${
-                              col.excluded ? "border-red-400/50 bg-red-500/10" : "border-green-400/50 bg-green-500/10"
+                            className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-medium flex-shrink-0 ${
+                              col.excluded
+                                ? "border-red-400/30 bg-red-500/10 text-red-400"
+                                : "border-green-400/30 bg-green-500/10 text-green-400"
                             }`}
                           >
                             {col.excluded
-                              ? <X className="w-2.5 h-2.5 text-red-400" />
-                              : <Check className="w-2.5 h-2.5 text-green-400" />
+                              ? <><X className="w-2.5 h-2.5" /> Excluded</>
+                              : <><Check className="w-2.5 h-2.5" /> Included</>
                             }
                           </button>
                           {/* Column name */}
