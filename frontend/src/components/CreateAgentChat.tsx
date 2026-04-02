@@ -6,6 +6,7 @@ import {
   Loader2,
   Wrench,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Check,
   ExternalLink,
@@ -153,7 +154,21 @@ function currentStep(p: BuildProgress): number {
 
 // ─── Editable plan ─────────────────────────────────────────────
 
+interface EditableColumnConfig {
+  column_name: string
+  description?: string
+  type_hint?: string
+  excluded?: boolean
+}
+
+interface EditableTable {
+  identifier: string
+  description: string
+  column_configs: EditableColumnConfig[]
+}
+
 interface EditablePlan {
+  tables: EditableTable[]
   sample_questions: string[]
   text_instructions: string
   join_specs: Record<string, string>[]
@@ -167,7 +182,18 @@ interface EditablePlan {
 function planFromResult(result: Record<string, unknown>): EditablePlan {
   const s = (result.sections as Record<string, unknown[]>) || {}
   const tiArr = (s.text_instructions as string[]) || []
+  const rawTables = (s.tables as Record<string, unknown>[]) || []
   return {
+    tables: rawTables.map((t) => ({
+      identifier: (t.identifier as string) || "",
+      description: (t.description as string) || "",
+      column_configs: ((t.column_configs as Record<string, unknown>[]) || []).map((c) => ({
+        column_name: (c.column_name as string) || "",
+        description: (c.description as string) || undefined,
+        type_hint: (c.type_hint as string) || undefined,
+        excluded: (c.excluded as boolean) || false,
+      })),
+    })),
     sample_questions: [...((s.sample_questions as string[]) || [])],
     text_instructions: tiArr.join("\n"),
     join_specs: (((s.join_specs || s.joins) as Record<string, string>[]) || []).map((j) => ({ ...j })),
@@ -226,6 +252,10 @@ function loadState(): PersistedState | null {
     // Migrate editedPlan: ensure benchmarks array exists
     if (parsed.editedPlan && !Array.isArray(parsed.editedPlan.benchmarks)) {
       parsed.editedPlan.benchmarks = []
+    }
+    // Migrate editedPlan: ensure tables array exists
+    if (parsed.editedPlan && !Array.isArray(parsed.editedPlan.tables)) {
+      parsed.editedPlan.tables = []
     }
     // Migrate text_instructions from string[] to single string
     if (parsed.editedPlan && Array.isArray((parsed.editedPlan as any).text_instructions)) {
@@ -317,6 +347,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [agentStatus, setAgentStatus] = useState<string | null>(null)
   const [editedPlan, setEditedPlan] = useState<EditablePlan | null>(restored.current?.editedPlan ?? null)
   const [editingPlanItem, setEditingPlanItem] = useState<string | null>(null)
+  const [planTab, setPlanTab] = useState<"schema" | "instructions">("schema")
+  const [expandedTableId, setExpandedTableId] = useState<string | null>(null)
   const [elementSearch, setElementSearch] = useState<Record<string, string>>({})
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null)
   const [fixMode, setFixMode] = useState(false)
@@ -386,6 +418,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setExpandedPlanSections(new Set(["sample_questions"]))
     setEditedPlan(null)
     setEditingPlanItem(null)
+    setPlanTab("schema")
+    setExpandedTableId(null)
     reconnectCountRef.current = 0
     queuedMessageRef.current = null
     setQueuedMessage(null)
@@ -1414,6 +1448,166 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           <span className="text-[10px] text-muted">Click any item to edit</span>
         </div>
 
+        {/* Tab bar */}
+        <div className="flex border-b border-default">
+          <button
+            onClick={() => setPlanTab("schema")}
+            className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+              planTab === "schema"
+                ? "text-accent border-b-2 border-accent"
+                : "text-muted hover:text-primary"
+            }`}
+          >
+            Data Schema
+            <span className="ml-1.5 text-[10px] text-muted">{plan.tables.length} tables</span>
+          </button>
+          <button
+            onClick={() => setPlanTab("instructions")}
+            className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+              planTab === "instructions"
+                ? "text-accent border-b-2 border-accent"
+                : "text-muted hover:text-primary"
+            }`}
+          >
+            Instructions &amp; SQL
+            <span className="ml-1.5 text-[10px] text-muted">{totalItems} items</span>
+          </button>
+        </div>
+
+        {/* Data Schema tab */}
+        {planTab === "schema" && (
+          expandedTableId === null ? (
+            <div className="divide-y divide-[var(--border-color)]">
+              {plan.tables.map((table) => {
+                const includedCols = table.column_configs.filter(c => !c.excluded)
+                const excludedCols = table.column_configs.filter(c => c.excluded)
+                const shortName = table.identifier.split(".").pop() || table.identifier
+                return (
+                  <div key={table.identifier} className="px-3 py-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-medium text-primary text-xs">{shortName}</span>
+                      <div className="flex gap-1.5">
+                        <span className="text-[10px] bg-blue-500/15 text-blue-400 px-1.5 py-0.5 rounded">{includedCols.length} included</span>
+                        {excludedCols.length > 0 && (
+                          <span className="text-[10px] bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded">{excludedCols.length} excluded</span>
+                        )}
+                      </div>
+                    </div>
+                    {/* Editable table description */}
+                    <input
+                      className="w-full text-[11px] text-muted bg-transparent border-b border-transparent hover:border-default focus:border-accent focus:outline-none py-0.5 mb-1.5"
+                      value={table.description}
+                      placeholder="Add table description..."
+                      onChange={(e) => {
+                        const updated = { ...plan, tables: plan.tables.map(t =>
+                          t.identifier === table.identifier ? { ...t, description: e.target.value } : t
+                        )}
+                        setEditedPlan(updated)
+                      }}
+                    />
+                    {/* Column name chips (first 10) */}
+                    <div className="flex flex-wrap gap-1 mb-1.5">
+                      {includedCols.slice(0, 10).map(c => (
+                        <span key={c.column_name} className="text-[10px] bg-elevated px-1.5 py-0.5 rounded text-secondary">{c.column_name}</span>
+                      ))}
+                      {includedCols.length > 10 && (
+                        <span className="text-[10px] text-muted">+{includedCols.length - 10} more</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => setExpandedTableId(table.identifier)}
+                      className="text-[11px] text-accent hover:underline"
+                    >
+                      Edit columns &rarr;
+                    </button>
+                  </div>
+                )
+              })}
+              {plan.tables.length === 0 && (
+                <div className="px-3 py-4 text-center text-muted text-[11px]">No tables in plan</div>
+              )}
+            </div>
+          ) : (
+            <div className="px-3 py-2">
+              <button
+                onClick={() => setExpandedTableId(null)}
+                className="flex items-center gap-1 text-[11px] text-accent hover:underline mb-3"
+              >
+                <ChevronLeft className="w-3 h-3" /> Back to tables
+              </button>
+              {(() => {
+                const table = plan.tables.find(t => t.identifier === expandedTableId)
+                if (!table) return null
+                const shortName = table.identifier.split(".").pop() || table.identifier
+                return (
+                  <div>
+                    <div className="font-medium text-primary text-xs mb-3">{shortName}</div>
+                    <div className="space-y-1">
+                      {table.column_configs.map((col, ci) => (
+                        <div
+                          key={col.column_name}
+                          className={`flex items-center gap-2 px-2 py-1.5 rounded ${col.excluded ? "opacity-50" : ""}`}
+                        >
+                          {/* Include/exclude toggle */}
+                          <button
+                            onClick={() => {
+                              const updated = { ...plan, tables: plan.tables.map(t =>
+                                t.identifier === expandedTableId
+                                  ? { ...t, column_configs: t.column_configs.map((c, idx) =>
+                                      idx === ci ? { ...c, excluded: !c.excluded } : c
+                                    )}
+                                  : t
+                              )}
+                              setEditedPlan(updated)
+                            }}
+                            className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${
+                              col.excluded ? "border-red-400/50 bg-red-500/10" : "border-green-400/50 bg-green-500/10"
+                            }`}
+                          >
+                            {col.excluded
+                              ? <X className="w-2.5 h-2.5 text-red-400" />
+                              : <Check className="w-2.5 h-2.5 text-green-400" />
+                            }
+                          </button>
+                          {/* Column name */}
+                          <span className={`text-xs font-mono w-36 flex-shrink-0 truncate ${col.excluded ? "line-through text-muted" : "text-primary"}`}>
+                            {col.column_name}
+                          </span>
+                          {/* Type hint badge */}
+                          {col.type_hint && (
+                            <span className="text-[9px] bg-blue-500/10 text-blue-400 px-1 py-0.5 rounded flex-shrink-0">
+                              {col.type_hint}
+                            </span>
+                          )}
+                          {/* Editable description */}
+                          <input
+                            className="flex-1 text-[11px] text-muted bg-transparent border-b border-transparent hover:border-default focus:border-accent focus:outline-none py-0.5 min-w-0"
+                            value={col.description || ""}
+                            placeholder={col.excluded ? "Excluded" : "Add description..."}
+                            disabled={col.excluded}
+                            onChange={(e) => {
+                              const updated = { ...plan, tables: plan.tables.map(t =>
+                                t.identifier === expandedTableId
+                                  ? { ...t, column_configs: t.column_configs.map((c, idx) =>
+                                      idx === ci ? { ...c, description: e.target.value } : c
+                                    )}
+                                  : t
+                              )}
+                              setEditedPlan(updated)
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+          )
+        )}
+
+        {/* Instructions & SQL tab */}
+        {planTab === "instructions" && (
         <div className="divide-y divide-[var(--border-color)]">
           {PLAN_SECTIONS.map((sec) => {
             if (sec.count === 0 && !ALWAYS_SHOW_PLAN_SECTIONS.has(sec.key)) return null
@@ -1692,6 +1886,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             )
           })}
         </div>
+        )}
 
         {/* Action buttons footer */}
         <div className="px-3 py-2.5 bg-surface-secondary border-t border-default flex flex-wrap items-center gap-2">
