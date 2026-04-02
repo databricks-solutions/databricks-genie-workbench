@@ -100,6 +100,7 @@ def search_tables(
     """
 
     try:
+        sql = sql.strip()
         logger.info("search_tables: keywords=%s, catalogs=%s", keywords, catalogs)
         logger.debug("search_tables SQL:\n%s", sql)
         result = execute_sql(sql)
