@@ -8,7 +8,7 @@ import asyncio
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 
 from backend.services.genie_client import get_genie_space, get_serialized_space
@@ -344,7 +344,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         "next_steps": next_steps[:8],
         "warnings": warnings[:8],
         "warning_next_steps": warning_next_steps[:8],
-        "scanned_at": datetime.utcnow().isoformat(),
+        "scanned_at": datetime.now(UTC).isoformat(),
     }
 
 

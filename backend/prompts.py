@@ -276,6 +276,52 @@ After completing the skipped step, resume guided mode for the next step.
 """
 
 
+_VALID_FIELD_PATHS_BLOCK = """## Valid Field Paths (ONLY use these exact names per the Databricks Genie API):
+
+**data_sources:**
+- `data_sources.tables[N].identifier` — string, catalog.schema.table format
+- `data_sources.tables[N].description` — array of strings
+- `data_sources.tables[N].column_configs[N].column_name` — string
+- `data_sources.tables[N].column_configs[N].description` — array of strings
+- `data_sources.tables[N].column_configs[N].synonyms` — array of strings
+- `data_sources.tables[N].column_configs[N].exclude` — boolean
+- `data_sources.tables[N].column_configs[N].enable_entity_matching` — boolean
+- `data_sources.tables[N].column_configs[N].enable_format_assistance` — boolean
+- `data_sources.metric_views[N].identifier` — string (same structure as tables)
+
+**instructions:**
+- `instructions.text_instructions[N].content` — array of strings (max 1 per space)
+- `instructions.example_question_sqls[N].question` — array of strings
+- `instructions.example_question_sqls[N].sql` — array of strings (each line as element)
+- `instructions.example_question_sqls[N].usage_guidance` — array of strings
+- `instructions.sql_functions[N].identifier` — string (catalog.schema.function)
+- `instructions.join_specs[N].sql` — array of strings
+- `instructions.join_specs[N].comment` — array of strings
+- `instructions.join_specs[N].instruction` — array of strings
+- `instructions.sql_snippets.filters[N].display_name` — string
+- `instructions.sql_snippets.filters[N].sql` — array of strings
+- `instructions.sql_snippets.filters[N].synonyms` — array of strings
+- `instructions.sql_snippets.filters[N].instruction` — array of strings
+- `instructions.sql_snippets.expressions[N].alias` — string
+- `instructions.sql_snippets.expressions[N].display_name` — string
+- `instructions.sql_snippets.expressions[N].sql` — array of strings
+- `instructions.sql_snippets.measures[N].alias` — string
+- `instructions.sql_snippets.measures[N].display_name` — string
+- `instructions.sql_snippets.measures[N].sql` — array of strings
+
+**config & benchmarks:**
+- `config.sample_questions[N].question` — array of strings
+- `benchmarks.questions[N].question` — array of strings
+- `benchmarks.questions[N].answer[N].format` — string ("SQL")
+- `benchmarks.questions[N].answer[N].content` — array of strings
+
+CRITICAL: Do NOT invent field names. Common mistakes:
+- Example SQL queries: use `example_question_sqls` (NOT `sql_examples`, `example_sqls`, or `sql_queries`)
+- Text instructions: use `text_instructions` (NOT `general_instructions`)
+- Column synonyms: use `synonyms` inside `column_configs` (NOT a top-level field)
+Use ONLY the exact paths listed above."""
+
+
 def get_fix_agent_prompt(
     space_id: str,
     findings: list[str],
@@ -306,20 +352,25 @@ def get_fix_agent_prompt(
 {config_json}
 ```
 
+{_VALID_FIELD_PATHS_BLOCK}
+
 ## Your Task:
 Generate a JSON fix plan with specific field-level patches to address the findings above.
 
 For each fix:
-1. Identify the exact field path using dot notation (e.g., "instructions.text_instructions[0].content")
+1. Identify the exact field path using dot notation from the valid paths above
 2. Specify the new value that resolves the issue
 3. Explain why this fix helps
 
 Rules:
 - Only fix actual issues from the findings list
-- Be conservative - improve existing values rather than replacing entirely
+- Be conservative — improve existing values rather than replacing entirely
 - For missing sections, add minimal but useful content
 - Text instructions should explain business context in plain English
 - SQL examples should be realistic for the configured tables
+- All string content fields (description, content, sql, question) are arrays of strings
+- Keep values CONCISE — descriptions should be 1-2 sentences, not paragraphs
+- Keep the total JSON response under 4000 tokens to avoid truncation
 
 Output JSON with this exact structure:
 {{
@@ -334,3 +385,47 @@ Output JSON with this exact structure:
 }}
 
 Generate only the patches needed to address the specific findings. Do not over-engineer."""
+
+
+def get_fix_agent_single_prompt(
+    space_id: str,
+    finding: str,
+    space_config: dict,
+) -> str:
+    """Build a focused prompt for fixing ONE finding.
+
+    Called once per finding so the LLM produces a small, reliable JSON response.
+    """
+    config_json = json.dumps(space_config, indent=2)
+
+    return f"""You are a Databricks Genie Space configuration repair agent. Fix ONE specific issue.
+
+## Space ID: {space_id}
+
+## Issue to Fix:
+{finding}
+
+## Current Configuration:
+```json
+{config_json}
+```
+
+{_VALID_FIELD_PATHS_BLOCK}
+
+## Output:
+Respond with ONLY a JSON object — no explanation, no analysis, no markdown, no text before or after.
+
+If the fix requires changing one field, return:
+{{"field_path": "exact.path.to.field", "new_value": "the new value", "rationale": "Why this fixes the issue"}}
+
+If the fix requires changing multiple fields (e.g. adding usage_guidance to several entries), return:
+{{"patches": [{{"field_path": "path1", "new_value": "val1", "rationale": "reason"}}, {{"field_path": "path2", "new_value": "val2", "rationale": "reason"}}]}}
+
+If this finding cannot be fixed via a config patch, return:
+{{"field_path": "", "new_value": null, "rationale": "Explanation"}}
+
+Rules:
+- Output ONLY valid JSON. Do NOT include any text, analysis, or explanation outside the JSON.
+- Keep values concise — 1-2 sentences for descriptions.
+- Replace N with actual array indices from the current configuration.
+- Generate AT MOST 50 patches. If the issue affects more items (e.g. 100+ columns need descriptions), fix only the first 50 most important ones. Partial progress is better than a truncated response."""

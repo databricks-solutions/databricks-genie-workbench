@@ -20,6 +20,11 @@ npm run build # Triggers cd frontend && npm run build
 ./scripts/install.sh       # First-time setup (interactive, creates .env.deploy)
 ./scripts/deploy.sh        # Build, bundle deploy, app deploy (idempotent)
 
+# Dependency management
+# requirements.txt is auto-generated from uv.lock — do not edit manually.
+# After adding/bumping a Python dep in pyproject.toml:
+uv lock && uv export --frozen --no-hashes --no-emit-project --no-dev -o requirements.txt
+
 # Tests (require running backend at localhost:8000)
 python tests/test_e2e_local.py    # E2E create agent tests
 python tests/test_full_schema.py  # Schema validation
@@ -141,3 +146,8 @@ Do NOT suggest running `uvicorn` or `npm run dev` locally. The app depends on Da
 - Path alias `@` maps to `frontend/src/` (configured in `vite.config.ts` and `tsconfig.app.json`)
 - All API routes prefixed with `/api`
 - Pydantic models in `backend/models.py`, TypeScript mirrors in `frontend/src/types/index.ts` — keep in sync
+
+## References
+
+- **Genie Space `serialized_space` schema**: https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field — authoritative field names for the Genie API. The fix agent prompt (`backend/prompts.py`) and local schema reference (`backend/references/schema.md`) must match this.
+- **Genie Space validation rules**: https://docs.databricks.com/aws/en/genie/conversation-api#validation-rules-for-serialized_space — ID format (32-char lowercase hex), sorting requirements, uniqueness constraints, size limits. The fix agent (`backend/services/fix_agent.py`) sanitizes IDs via `_sanitize_ids()` before applying patches.

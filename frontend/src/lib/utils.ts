@@ -27,6 +27,14 @@ export function getOptimizationLabel(accuracy: number | null | undefined): strin
   return "Not yet optimized"
 }
 
+/** Returns Tailwind badge classes for optimization accuracy tiers. */
+export function getAccuracyBadgeClass(accuracy: number | null | undefined): string {
+  if (accuracy == null) return "border-default bg-elevated text-muted"
+  if (accuracy >= 0.85) return "border-emerald-500/30 bg-emerald-500/20 text-emerald-400"
+  if (accuracy >= 0.61) return "border-amber-500/30 bg-amber-500/20 text-amber-400"
+  return "border-red-500/30 bg-red-500/20 text-red-400"
+}
+
 /** Maturity tier color definitions — single source of truth for all views. */
 export const MATURITY_COLORS: Record<string, { hex: string; bg: string; border: string; badge: string; bar: string }> = {
   // 3-tier system

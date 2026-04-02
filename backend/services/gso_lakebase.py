@@ -37,12 +37,16 @@ async def load_gso_run(run_id: str) -> dict | None:
     if pool is None:
         return None
 
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f"SELECT * FROM {_tbl('genie_opt_runs')} WHERE run_id = $1",
-            run_id,
-        )
-        return dict(row) if row else None
+    try:
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT * FROM {_tbl('genie_opt_runs')} WHERE run_id = $1",
+                run_id,
+            )
+            return dict(row) if row else None
+    except Exception as exc:
+        logger.warning("GSO synced table query failed (genie_opt_runs): %s", exc)
+        return None
 
 
 async def load_gso_runs_for_space(space_id: str) -> list[dict]:
@@ -51,16 +55,20 @@ async def load_gso_runs_for_space(space_id: str) -> list[dict]:
     if pool is None:
         return []
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"""SELECT run_id, space_id, status, started_at, completed_at,
-                      best_accuracy, best_iteration, convergence_reason, triggered_by
-               FROM {_tbl('genie_opt_runs')}
-               WHERE space_id = $1
-               ORDER BY started_at DESC""",
-            space_id,
-        )
-        return [dict(r) for r in rows]
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT run_id, space_id, status, started_at, completed_at,
+                          best_accuracy, best_iteration, convergence_reason, triggered_by
+                   FROM {_tbl('genie_opt_runs')}
+                   WHERE space_id = $1
+                   ORDER BY started_at DESC""",
+                space_id,
+            )
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("GSO synced table query failed (genie_opt_runs): %s", exc)
+        return []
 
 
 async def load_gso_stages(run_id: str) -> list[dict]:
@@ -69,14 +77,18 @@ async def load_gso_stages(run_id: str) -> list[dict]:
     if pool is None:
         return []
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"""SELECT * FROM {_tbl('genie_opt_stages')}
-               WHERE run_id = $1
-               ORDER BY started_at ASC""",
-            run_id,
-        )
-        return [dict(r) for r in rows]
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT * FROM {_tbl('genie_opt_stages')}
+                   WHERE run_id = $1
+                   ORDER BY started_at ASC""",
+                run_id,
+            )
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("GSO synced table query failed (genie_opt_stages): %s", exc)
+        return []
 
 
 async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -> list[dict]:
@@ -95,14 +107,18 @@ async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -
         "remaining_failures, arbiter_actions_json, repeatability_pct, repeatability_json, "
         "thresholds_met, reflection_json"
     )
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"""SELECT {cols} FROM {_tbl('genie_opt_iterations')}
-               WHERE run_id = $1
-               ORDER BY iteration ASC""",
-            run_id,
-        )
-        return [dict(r) for r in rows]
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT {cols} FROM {_tbl('genie_opt_iterations')}
+                   WHERE run_id = $1
+                   ORDER BY iteration ASC""",
+                run_id,
+            )
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("GSO synced table query failed (genie_opt_iterations): %s", exc)
+        return []
 
 
 async def load_gso_patches(run_id: str) -> list[dict]:
@@ -111,14 +127,18 @@ async def load_gso_patches(run_id: str) -> list[dict]:
     if pool is None:
         return []
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"""SELECT * FROM {_tbl('genie_opt_patches')}
-               WHERE run_id = $1
-               ORDER BY iteration, lever, patch_index""",
-            run_id,
-        )
-        return [dict(r) for r in rows]
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT * FROM {_tbl('genie_opt_patches')}
+                   WHERE run_id = $1
+                   ORDER BY iteration, lever, patch_index""",
+                run_id,
+            )
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("GSO synced table query failed (genie_opt_patches): %s", exc)
+        return []
 
 
 async def load_gso_asi_results(run_id: str, iteration: int) -> list[dict]:
@@ -127,14 +147,18 @@ async def load_gso_asi_results(run_id: str, iteration: int) -> list[dict]:
     if pool is None:
         return []
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"""SELECT * FROM {_tbl('genie_eval_asi_results')}
-               WHERE run_id = $1 AND iteration = $2""",
-            run_id,
-            iteration,
-        )
-        return [dict(r) for r in rows]
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT * FROM {_tbl('genie_eval_asi_results')}
+                   WHERE run_id = $1 AND iteration = $2""",
+                run_id,
+                iteration,
+            )
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("GSO synced table query failed (genie_eval_asi_results): %s", exc)
+        return []
 
 
 async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str | None = "full") -> str | None:
@@ -148,23 +172,27 @@ async def load_gso_iteration_rows(run_id: str, iteration: int, eval_scope: str |
         return None
 
     tbl = _tbl('genie_opt_iterations')
-    async with pool.acquire() as conn:
-        if eval_scope is not None:
-            row = await conn.fetchrow(
-                f"SELECT rows_json FROM {tbl} "
-                "WHERE run_id = $1 AND iteration = $2 AND eval_scope = $3",
-                run_id,
-                iteration,
-                eval_scope,
-            )
-        else:
-            row = await conn.fetchrow(
-                f"SELECT rows_json FROM {tbl} "
-                "WHERE run_id = $1 AND iteration = $2 AND rows_json IS NOT NULL",
-                run_id,
-                iteration,
-            )
-        return row["rows_json"] if row else None
+    try:
+        async with pool.acquire() as conn:
+            if eval_scope is not None:
+                row = await conn.fetchrow(
+                    f"SELECT rows_json FROM {tbl} "
+                    "WHERE run_id = $1 AND iteration = $2 AND eval_scope = $3",
+                    run_id,
+                    iteration,
+                    eval_scope,
+                )
+            else:
+                row = await conn.fetchrow(
+                    f"SELECT rows_json FROM {tbl} "
+                    "WHERE run_id = $1 AND iteration = $2 AND rows_json IS NOT NULL",
+                    run_id,
+                    iteration,
+                )
+            return row["rows_json"] if row else None
+    except Exception as exc:
+        logger.warning("GSO synced table query failed (genie_opt_iterations): %s", exc)
+        return None
 
 
 async def load_gso_suggestions(run_id: str) -> list[dict]:
@@ -173,11 +201,15 @@ async def load_gso_suggestions(run_id: str) -> list[dict]:
     if pool is None:
         return []
 
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"""SELECT * FROM {_tbl('genie_opt_suggestions')}
-               WHERE run_id = $1
-               ORDER BY created_at ASC""",
-            run_id,
-        )
-        return [dict(r) for r in rows]
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT * FROM {_tbl('genie_opt_suggestions')}
+                   WHERE run_id = $1
+                   ORDER BY created_at ASC""",
+                run_id,
+            )
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.warning("GSO synced table query failed (genie_opt_suggestions): %s", exc)
+        return []

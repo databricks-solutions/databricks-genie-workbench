@@ -194,6 +194,7 @@ app.include_router(auto_optimize_router)
 
 # Serve static files from React build
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
+FRONTEND_DIST_RESOLVED = FRONTEND_DIST.resolve()
 
 if FRONTEND_DIST.exists():
     if (FRONTEND_DIST / "assets").exists():
@@ -209,8 +210,10 @@ if FRONTEND_DIST.exists():
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        static_file = FRONTEND_DIST / full_path
-        if static_file.is_file():
+        # Serve static files from dist/ (e.g. favicon.svg) if they exist
+        # .resolve() + .is_relative_to() prevents path traversal via encoded ..
+        static_file = (FRONTEND_DIST / full_path).resolve()
+        if static_file.is_file() and static_file.is_relative_to(FRONTEND_DIST_RESOLVED):
             return FileResponse(static_file)
         return FileResponse(FRONTEND_DIST / "index.html", headers=_NO_CACHE)
 

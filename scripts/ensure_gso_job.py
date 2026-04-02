@@ -63,20 +63,26 @@ def _run_json(cmd: list[str], **kwargs) -> dict:
 
 def _update_run_as(profile: str, job_id: str, sp_client_id: str) -> None:
     """Ensure the job's run_as is set to the app service principal."""
-    payload = json.dumps({
+    payload = {
+        "job_id": int(job_id),
         "new_settings": {
             "run_as": {"service_principal_name": sp_client_id},
         },
-    })
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(payload, f)
+        tmp = f.name
     try:
         _run_json([
-            "databricks", "jobs", "update", job_id,
+            "databricks", "jobs", "update",
             "--profile", profile,
-            "--json", payload,
+            "--json", f"@{tmp}",
         ])
         _log(f"  ✓ Job run_as updated to SP {sp_client_id}")
     except Exception as exc:
         _log(f"  ⚠ Could not update job run_as: {exc}")
+    finally:
+        os.unlink(tmp)
 
 
 def _update_wheel_dependency(profile: str, job_id: str, vol_wheel_path: str) -> None:
