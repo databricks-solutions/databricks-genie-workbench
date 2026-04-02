@@ -193,12 +193,13 @@ def _traced_llm_call(
 
         for attempt in range(max_retries):
             try:
+                messages: list[dict[str, str]] = []
+                if system_msg and system_msg.strip():
+                    messages.append({"role": "system", "content": system_msg})
+                messages.append({"role": "user", "content": prompt})
                 call_kwargs: dict[str, Any] = {
                     "model": LLM_ENDPOINT,
-                    "messages": [
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": prompt},
-                    ],
+                    "messages": messages,
                     "temperature": temperature,
                 }
                 if max_tokens is not None:
@@ -7524,7 +7525,8 @@ def _convert_instructions_to_sql_expressions(
 
     try:
         text, _response = _traced_llm_call(
-            w, "", prompt, span_name="instruction_to_sql_expression",
+            w, "You are a SQL expression expert.", prompt,
+            span_name="instruction_to_sql_expression",
         )
     except Exception:
         logger.warning("Instruction-to-SQL-expression LLM call failed", exc_info=True)
