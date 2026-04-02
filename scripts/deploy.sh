@@ -366,6 +366,26 @@ else
     echo "  ⚠ Could not set job permissions — SP may not be able to trigger optimization runs."
 fi
 
+# Grant SP access to bundle workspace notebooks so the job can read them.
+# Bundle deploys notebooks under the deployer's .bundle/ directory, which is
+# private by default. The SP needs CAN_MANAGE to run notebooks from there.
+WS_BUNDLE_ROOT="/Workspace/Users/$DEPLOYER/.bundle/genie-workbench/app"
+BUNDLE_DIR_OBJ_ID=$(
+    databricks workspace get-status "$WS_BUNDLE_ROOT" --profile "$PROFILE" -o json 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['object_id'])" 2>/dev/null
+) || true
+if [ -n "$BUNDLE_DIR_OBJ_ID" ]; then
+    if databricks api patch "/api/2.0/permissions/directories/$BUNDLE_DIR_OBJ_ID" \
+        --profile "$PROFILE" \
+        --json "{\"access_control_list\": [{\"service_principal_name\": \"$SP_CLIENT_ID\", \"permission_level\": \"CAN_MANAGE\"}]}" 2>/dev/null; then
+        echo "  ✓ SP granted CAN_MANAGE on bundle workspace directory"
+    else
+        echo "  ⚠ Could not grant SP access to bundle notebooks — job may fail to read notebooks"
+    fi
+else
+    echo "  ⚠ Could not resolve bundle workspace directory — SP may lack notebook access"
+fi
+
 # Clean up legacy jobs created by the old ensure_gso_job.py script.
 # These have name "genie-space-optimizer-job" and tag "persistent-dag"
 # but are NOT the bundle-managed job (different ID).
