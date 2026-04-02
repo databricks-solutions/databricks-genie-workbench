@@ -122,7 +122,6 @@ for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', [])):
     if (cd "$PROJECT_DIR" && databricks bundle destroy -t app \
         --var="catalog=${CATALOG}" \
         --var="warehouse_id=${WAREHOUSE_ID:-placeholder}" \
-        --var="sp_client_id=placeholder" \
         --profile "$PROFILE" --auto-approve 2>&1 | sed 's/^/  /'); then
         echo "  ✓ Bundle resources destroyed"
     else
@@ -280,7 +279,7 @@ STEP=$((STEP + 1))
 echo ""
 echo "▸ Step $STEP/$TOTAL_STEPS: Deploying optimization job via bundle..."
 
-# Pre-validate: SP must be resolved (needed for job run_as)
+# Pre-validate: SP must be resolved (needed for post-deploy job permissions)
 if [ -z "$SP_CLIENT_ID" ]; then
     echo "  ✗ Cannot deploy optimization job: SP client ID is empty."
     echo ""
@@ -300,14 +299,15 @@ fi
 #   - Builds the GSO wheel (artifacts block)
 #   - Syncs job notebooks to workspace
 #   - Creates/updates the optimization job (Terraform-managed)
-#   - Sets run_as to the app service principal
+# run_as is NOT set in the bundle — the app self-heals it at startup
+# via _ensure_gso_job_run_as() in backend/main.py (avoids needing
+# servicePrincipal.user role on the deployer).
 # The "app" target uses mode: development (per-deployer Terraform state)
 # with presets.name_prefix: "" (clean job names, no [dev] prefix).
 set +e
 BUNDLE_OUTPUT=$(cd "$PROJECT_DIR" && databricks bundle deploy -t app \
     --var="catalog=$CATALOG" \
     --var="warehouse_id=$WAREHOUSE_ID" \
-    --var="sp_client_id=$SP_CLIENT_ID" \
     --profile "$PROFILE" 2>&1)
 BUNDLE_EXIT=$?
 set -e
@@ -329,6 +329,8 @@ if [ "$BUNDLE_EXIT" -ne 0 ]; then
 fi
 
 JOB_ID=$(cd "$PROJECT_DIR" && databricks bundle summary -t app \
+    --var="catalog=$CATALOG" \
+    --var="warehouse_id=$WAREHOUSE_ID" \
     --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "
 import sys, json
