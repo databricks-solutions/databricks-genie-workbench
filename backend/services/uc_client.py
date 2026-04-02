@@ -100,8 +100,11 @@ def search_tables(
     """
 
     try:
+        logger.info("search_tables: keywords=%s, catalogs=%s", keywords, catalogs)
+        logger.debug("search_tables SQL:\n%s", sql)
         result = execute_sql(sql)
         if not result.get("success"):
+            logger.warning("search_tables query failed: %s", result.get("error", "unknown"))
             return {"error": result.get("error", "Search query failed"), "tables": []}
 
         tables = []
@@ -132,11 +135,30 @@ def search_tables(
 
         catalogs_searched = sorted(set(t["full_name"].split(".")[0] for t in tables)) if tables else []
 
+        # Build table list in the format the frontend expects for multi-select UI
+        ui_tables = []
+        for t in tables:
+            desc_parts = []
+            if t["comment"]:
+                desc_parts.append(t["comment"])
+            if t["matching_columns"]:
+                desc_parts.append(f"Matching columns: {', '.join(t['matching_columns'][:5])}")
+            if t["matched_keywords"]:
+                desc_parts.append(f"Matched: {', '.join(t['matched_keywords'])}")
+
+            ui_tables.append({
+                "full_name": t["full_name"],
+                "name": t["full_name"].split(".")[-1],
+                "comment": " | ".join(desc_parts) if desc_parts else "",
+            })
+
         return {
-            "tables": tables,
+            "tables": ui_tables,
+            "search_results": tables,  # Full results for LLM context
             "search_terms_used": keywords,
             "catalogs_searched": catalogs_searched,
             "total_matches": len(tables),
+            "ui_hint": {"type": "multi_select", "id": "table_selection", "label": "Select tables to include"},
         }
 
     except Exception as e:
