@@ -796,13 +796,13 @@ class CreateGenieAgent:
         yield {"event": "step", "data": {
             "step": "create",
             "label": "Creating Space",
-            "index": STEP_ORDER.index("create") if "create" in STEP_ORDER else len(STEP_ORDER) - 1,
+            "index": STEP_ORDER.index("config_create") if "config_create" in STEP_ORDER else len(STEP_ORDER) - 1,
             "total": len(STEP_ORDER),
         }}
 
         # Build config args from edited plan, then backfill gaps from session
         config_args: dict = {}
-        for key in ("sample_questions", "text_instructions", "example_sqls",
+        for key in ("tables", "sample_questions", "text_instructions", "example_sqls",
                      "join_specs", "measures", "filters", "expressions", "benchmarks"):
             val = edited_plan.get(key)
             if val:
@@ -1079,6 +1079,23 @@ class CreateGenieAgent:
                 continue
 
         user_requirements = tool_args.get("user_requirements", "")
+
+        # If the LLM specified which tables to include (e.g., after user removed some),
+        # filter tables_context to only those tables.
+        requested_tables = tool_args.get("tables")
+        if requested_tables and isinstance(requested_tables, list):
+            requested_ids = set()
+            for t in requested_tables:
+                if isinstance(t, str):
+                    requested_ids.add(t)
+                elif isinstance(t, dict):
+                    requested_ids.add(t.get("identifier", ""))
+            if requested_ids:
+                tables_context = [
+                    t for t in tables_context
+                    if (t.get("table") or t.get("table_name") or "") in requested_ids
+                ]
+                logger.info("Filtered tables_context to %d tables (requested: %s)", len(tables_context), requested_ids)
 
         if not tables_context:
             return {

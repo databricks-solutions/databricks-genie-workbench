@@ -285,11 +285,11 @@ def _gen_tables(shared: str, tables_context: list[dict]) -> dict:
         column_configs = []
         for c in cols:
             col_name = c.get("name", "?")
-            if col_name in exclude:
-                continue
-            entry: dict[str, str] = {"column_name": col_name}
+            entry: dict = {"column_name": col_name}
             if c.get("description"):
                 entry["description"] = c["description"]
+            if col_name in exclude:
+                entry["excluded"] = True
             column_configs.append(entry)
 
         tables.append({
@@ -303,9 +303,11 @@ def _gen_tables(shared: str, tables_context: list[dict]) -> dict:
 
     prompt = (
         "You are enriching table and column metadata for a Databricks Genie Space.\n\n"
-        "For each table below, improve the table description (1-2 sentences) and add "
-        "a brief description for any column that doesn't already have one. "
-        "Only describe columns whose names are ambiguous or domain-specific.\n\n"
+        "For each table below:\n"
+        "1. If the table description is empty or vague, write a clear 1-2 sentence description.\n"
+        "2. Add a brief description for EVERY column that doesn't already have one.\n"
+        "   Even columns with obvious names (like 'date') benefit from context (e.g., 'Order placement date').\n"
+        "3. Keep existing descriptions unchanged unless they are clearly wrong.\n\n"
         "Return ONLY valid JSON: {\"tables\": [...]}\n\n"
         f"Current tables:\n```json\n{json.dumps(tables, indent=2)}\n```\n\n"
         f"Context:\n{shared[:3000]}"
