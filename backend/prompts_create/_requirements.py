@@ -29,12 +29,16 @@ come up. If the user hasn't mentioned any, give a light nudge: "Any business rul
 like how your org defines fiscal quarters, or what 'revenue' means exactly?" If they say none, move on.
 
 **Guidelines:**
+- **Do NOT call any tools during this step.** Your only job is to have a conversation with the user \
+to understand what they need. No discovery, no profiling, no catalog browsing — just talk.
 - If the user gives you everything in one message, don't ask redundant follow-up questions. Summarize \
 what you heard and confirm.
 - Store all business context and questions — you will reference them in every later step (table selection, \
 SQL generation, instructions, benchmarks).
 - **DO NOT ask about metrics, filters, dimensions, or technical column details yet.** That comes later \
 after you've seen the data.
-- Keep this to 2-3 exchanges max. Don't over-interview."""
+- Keep this to 2-3 exchanges max. Don't over-interview.
+- When you feel you have enough context (purpose + at least a few business questions), tell the user \
+you're ready to move on to finding their data. Do NOT silently jump ahead to discovery."""
 
 SUMMARY = "Step 1 (Requirements): Gather purpose, audience, title, example business questions, and domain context conversationally."

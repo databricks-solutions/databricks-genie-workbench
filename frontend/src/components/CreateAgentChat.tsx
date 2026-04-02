@@ -1487,7 +1487,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                     <div className="flex items-center justify-between mb-1.5">
                       <span className="font-medium text-primary text-xs">{shortName}</span>
                       <div className="flex gap-1.5">
-                        <span className="text-[10px] bg-blue-500/15 text-blue-400 px-1.5 py-0.5 rounded">{includedCols.length} included</span>
+                        <span className="text-[10px] bg-green-500/15 text-green-400 px-1.5 py-0.5 rounded">{includedCols.length} profiled</span>
                         {excludedCols.length > 0 && (
                           <span className="text-[10px] bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded">{excludedCols.length} excluded</span>
                         )}
@@ -2719,41 +2719,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                         + Set name
                       </button>
                     ) : null}
-                    {progress.businessContext.length > 0 && (
-                      <div className="space-y-0.5">
-                        {progress.businessContext.map((ctx, ci) => (
-                          <div key={ci} className="group flex items-start gap-1">
-                            <p className="text-[10px] text-muted flex-1 truncate" title={ctx}>
-                              &bull; {ctx}
-                            </p>
-                            <button
-                              onClick={() => removeBusinessContext(ci)}
-                              className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                            >
-                              <X className="w-2.5 h-2.5 text-muted hover:text-red-400" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {(active || done) && (
-                      <div className="flex gap-1">
-                        <input
-                          value={businessContextDraft}
-                          onChange={(e) => setBusinessContextDraft(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter") addBusinessContext() }}
-                          placeholder="Add a business rule..."
-                          className="flex-1 text-[10px] border border-default rounded px-2 py-1 bg-surface text-primary focus:outline-none focus:border-accent/40"
-                        />
-                        <button
-                          onClick={addBusinessContext}
-                          disabled={!businessContextDraft.trim()}
-                          className="px-1.5 text-accent disabled:opacity-30"
-                        >
-                          <Plus className="w-3 h-3" />
-                        </button>
-                      </div>
-                    )}
                   </div>
                 )}
 

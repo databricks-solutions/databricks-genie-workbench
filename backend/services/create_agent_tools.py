@@ -889,6 +889,10 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
         elif name == "update_config":
             return {"error": "No config to update — call generate_config first"}
 
+    # Normalize common LLM argument name variations
+    if name == "profile_columns" and "column_names" in arguments and "columns" not in arguments:
+        arguments["columns"] = arguments.pop("column_names")
+
     try:
         return handler(**arguments)
     except TypeError as e:

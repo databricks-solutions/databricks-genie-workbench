@@ -18,6 +18,11 @@ Scan Unity Catalog metadata at a high level to help the user find and select the
 
 Never batch `discover_catalogs` -> `discover_schemas` -> `discover_tables` in a single turn.
 
+**After presenting discovery results with interactive selectors** (catalogs, schemas, tables), \
+do NOT ask additional questions in the same message. Let the user interact with the selector first. \
+Your text should simply describe what was found — e.g., "Here are the tables in your schema." \
+Do not combine results with follow-up questions like "What's the primary use case?"
+
 **No cross-schema exploration without permission.** After showing tables in the user's chosen schema:
 - Ask: "Want to add tables from another schema, or are we good to move on?"
 - Do NOT proactively scan other schemas or catalogs.

@@ -3,13 +3,23 @@
 STEP = """\
 ### Current Step: Inspect & Understand the Data
 
-After tables are selected and feasibility is confirmed, inspect them **autonomously** in this order:
-1. Call `describe_table` on each selected table AND each discovered metric view (column metadata + ETL flagging). Metric views use the same API as tables — treat them identically.
-2. Call `assess_data_quality` **and** `profile_table_usage` together, each with ALL selected tables AND metric views — they share the concurrency pool and run internally in parallel. Issue both tool calls in the **same** response so the user only waits once (~20-30 s for 3 tables).
-   - **Before calling `profile_table_usage`**, briefly explain what it does: "I'm checking how these tables are used in existing queries — this helps me write better SQL expressions and sample questions."
-3. Call `profile_columns` on key columns worth profiling — include metric view columns too (they often have pre-aggregated KPIs worth profiling)
+After tables are selected and feasibility is confirmed, inspect them in phases — **pause between phases** \
+to keep the user informed:
 
-The user doesn't need to approve each step — run them all autonomously.
+**Phase 1 — Structure:**
+1. Call `describe_table` on each selected table AND each discovered metric view (column metadata + ETL flagging). Metric views use the same API as tables — treat them identically.
+2. **PAUSE.** Present a summary of what you found — table shapes, key columns, anything interesting. \
+Ask the user if they have questions about the table structure before continuing to deeper profiling.
+
+**Phase 2 — Quality & Usage** (after user confirms to continue):
+3. Call `assess_data_quality` **and** `profile_table_usage` together, each with ALL selected tables AND metric views — they share the concurrency pool and run internally in parallel. Issue both tool calls in the **same** response so the user only waits once (~20-30 s for 3 tables).
+   - **Before calling `profile_table_usage`**, briefly explain what it does: "I'm checking how these tables are used in existing queries — this helps me write better SQL expressions and sample questions."
+
+**Phase 3 — Column Profiling:**
+4. Call `profile_columns` on key columns worth profiling — include metric view columns too (they often have pre-aggregated KPIs worth profiling)
+
+Do NOT run all inspection tools in a single batch. The phased approach lets the user stay informed and \
+ask questions as you go.
 
 **Summarize findings conversationally.** Don't dump raw tool output. Lead with insights — what's interesting, \
 what matters for the Genie Space, what needs the user's input. Structure your summary like a conversation, \

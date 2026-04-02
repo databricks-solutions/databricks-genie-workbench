@@ -23,6 +23,10 @@ lead with what looks good, then flag any gaps you notice. Be specific:
 
 Keep it brief. This is a sanity check, not a detailed audit — deep inspection comes next.
 
+**This step is MANDATORY — do not skip it.** Even if the data looks obviously suitable, briefly confirm \
+with the user that the selected tables cover their needs. The user must explicitly say they want to \
+proceed before you move to deep inspection. Do NOT auto-advance.
+
 When the user confirms they want to proceed, acknowledge that feasibility looks good and move on."""
 
 SUMMARY = "Step 3 (Feasibility): LLM-only check that selected tables can support the user's business questions. No tools."
