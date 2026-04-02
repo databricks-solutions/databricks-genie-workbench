@@ -46,7 +46,7 @@ STEP_THINKING: dict[str, str] = {
 # calling tools outside the current step's scope.
 STEP_TOOLS: dict[str, set[str] | None] = {
     "requirements": None,  # No tools — pure conversation
-    "discovery": {"discover_catalogs", "discover_schemas", "discover_tables"},
+    "discovery": {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"},
     "feasibility": None,  # No tools — LLM reasoning only
     "inspection": {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"},
     "plan": {"generate_plan", "present_plan", "test_sql"},

@@ -75,8 +75,35 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "search_tables",
+            "description": "Search for tables across Unity Catalog by keywords. Matches against table names, column names, table comments, and column comments. Use this to find relevant tables based on the user's business requirements instead of browsing catalog/schema/table hierarchically.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keywords": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Search terms — include exact words, synonyms, abbreviations, and domain patterns. E.g., for 'healthcare claims': ['claims', 'clm', 'medical', 'diagnosis', 'dx', 'patient', 'member', 'procedure', 'px']",
+                    },
+                    "catalogs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional: scope search to specific catalogs. Omit to search all accessible catalogs.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum tables to return (default 50).",
+                    },
+                },
+                "required": ["keywords"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "discover_catalogs",
-            "description": "List all Unity Catalog catalogs the user has access to.",
+            "description": "List all Unity Catalog catalogs the user has access to. Use when the user wants to browse hierarchically or you need to see what catalogs exist.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -858,6 +885,7 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
     omits the config argument.
     """
     handlers = {
+        "search_tables": _search_tables,
         "discover_catalogs": _discover_catalogs,
         "discover_schemas": _discover_schemas,
         "discover_tables": _discover_tables,
@@ -917,6 +945,13 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
     except Exception as e:
         logger.exception(f"Tool {name} failed")
         return {"error": str(e)}
+
+
+@mlflow.trace(name="search_tables", span_type=SpanType.TOOL)
+def _search_tables(keywords: list[str], catalogs: list[str] | None = None, max_results: int = 50) -> dict:
+    """Search for tables across Unity Catalog using information_schema."""
+    from backend.services.uc_client import search_tables
+    return search_tables(keywords, catalogs=catalogs, max_results=max_results)
 
 
 def _discover_catalogs() -> dict:

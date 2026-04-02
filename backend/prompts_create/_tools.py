@@ -15,6 +15,8 @@ Bad:
 **Exception:** For `generate_plan` and `present_plan`, keep the accompanying text very brief (1 sentence). The plan card itself is the content — don't summarize it in markdown.
 
 **Tool sequence guidelines:**
+- `search_tables` → primary discovery tool. Generate broad keywords (synonyms, abbreviations, domain terms) from the user's requirements. Use instead of catalog→schema→table browsing.
+- `discover_catalogs` / `discover_schemas` / `discover_tables` → fallback for direct path when user knows their catalog/schema
 - `describe_table` → always first when exploring a new table
 - `assess_data_quality` + `profile_table_usage` → call together after describe_table
 - `profile_columns` → after describe, on columns that need deeper inspection

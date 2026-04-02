@@ -1,8 +1,147 @@
 """Unity Catalog browser for the Create Wizard."""
 import logging
 from backend.services.auth import get_workspace_client
+from backend.sql_executor import execute_sql
 
 logger = logging.getLogger(__name__)
+
+
+def search_tables(
+    keywords: list[str],
+    catalogs: list[str] | None = None,
+    max_results: int = 50,
+) -> dict:
+    """Search for tables across Unity Catalog using information_schema.
+
+    Matches keywords against table names, column names, table comments,
+    and column comments via OR + LIKE patterns. Returns matching tables
+    with their matching columns and metadata.
+
+    Args:
+        keywords: Search terms (the LLM should generate synonyms, abbreviations, etc.)
+        catalogs: Optional list of catalogs to scope the search. Empty/None = all accessible.
+        max_results: Maximum tables to return.
+
+    Returns:
+        Dict with 'tables' list, 'search_terms_used', 'catalogs_searched', 'total_matches'.
+    """
+    if not keywords:
+        return {"error": "No search keywords provided", "tables": []}
+
+    # Build LIKE conditions for each keyword
+    like_conditions = []
+    for kw in keywords:
+        safe_kw = kw.replace("'", "''").replace("%", "\\%").replace("_", "\\_").lower()
+        like_conditions.extend([
+            f"lower(t.table_name) LIKE '%{safe_kw}%'",
+            f"lower(t.comment) LIKE '%{safe_kw}%'",
+            f"lower(c.column_name) LIKE '%{safe_kw}%'",
+            f"lower(c.comment) LIKE '%{safe_kw}%'",
+        ])
+
+    where_clause = " OR ".join(like_conditions)
+
+    # Optional catalog filter
+    catalog_filter = ""
+    if catalogs:
+        safe_catalogs = ", ".join(f"'{c.replace(chr(39), chr(39)*2)}'" for c in catalogs)
+        catalog_filter = f"AND t.table_catalog IN ({safe_catalogs})"
+
+    # Build keyword match expressions for the matching_columns and matched_keywords fields
+    keyword_case_exprs = []
+    for kw in keywords:
+        safe_kw = kw.replace("'", "''").replace("%", "\\%").replace("_", "\\_").lower()
+        keyword_case_exprs.append(
+            f"CASE WHEN lower(c.column_name) LIKE '%{safe_kw}%' "
+            f"OR lower(c.comment) LIKE '%{safe_kw}%' "
+            f"THEN c.column_name END"
+        )
+
+    matching_cols_expr = "collect_set(COALESCE(" + ", ".join(
+        f"CASE WHEN lower(c.column_name) LIKE '%{kw.replace(chr(39), chr(39)*2).lower()}%' "
+        f"OR lower(c.comment) LIKE '%{kw.replace(chr(39), chr(39)*2).lower()}%' "
+        f"THEN c.column_name END"
+        for kw in keywords
+    ) + "))"
+
+    # Simpler approach: just collect columns that matched any keyword
+    col_match_parts = []
+    for kw in keywords:
+        safe_kw = kw.replace("'", "''").replace("%", "\\%").replace("_", "\\_").lower()
+        col_match_parts.append(
+            f"lower(c.column_name) LIKE '%{safe_kw}%' OR lower(c.comment) LIKE '%{safe_kw}%'"
+        )
+    col_match_condition = " OR ".join(col_match_parts)
+
+    sql = f"""
+    SELECT
+        t.table_catalog,
+        t.table_schema,
+        t.table_name,
+        t.comment AS table_comment,
+        t.table_type,
+        t.last_altered,
+        collect_set(
+            CASE WHEN {col_match_condition} THEN c.column_name END
+        ) AS matching_columns,
+        count(DISTINCT c.column_name) AS total_columns
+    FROM system.information_schema.tables t
+    LEFT JOIN system.information_schema.columns c
+        ON t.table_catalog = c.table_catalog
+        AND t.table_schema = c.table_schema
+        AND t.table_name = c.table_name
+    WHERE ({where_clause})
+    {catalog_filter}
+    AND t.table_schema != 'information_schema'
+    GROUP BY t.table_catalog, t.table_schema, t.table_name,
+             t.comment, t.table_type, t.last_altered
+    ORDER BY t.last_altered DESC NULLS LAST
+    LIMIT {max_results}
+    """
+
+    try:
+        result = execute_sql(sql, timeout="30s")
+        if not result.get("success"):
+            return {"error": result.get("error", "Search query failed"), "tables": []}
+
+        tables = []
+        for row in result.get("data", []):
+            full_name = f"{row[0]}.{row[1]}.{row[2]}"
+            matching_cols = [c for c in (row[6] or []) if c is not None]
+
+            # Determine which keywords matched this table
+            matched_kws = set()
+            table_name_lower = (row[2] or "").lower()
+            table_comment_lower = (row[3] or "").lower()
+            for kw in keywords:
+                kw_lower = kw.lower()
+                if kw_lower in table_name_lower or kw_lower in table_comment_lower:
+                    matched_kws.add(kw)
+                for col in matching_cols:
+                    if kw_lower in col.lower():
+                        matched_kws.add(kw)
+
+            tables.append({
+                "full_name": full_name,
+                "comment": row[3] or "",
+                "table_type": row[4] or "",
+                "total_columns": row[7] or 0,
+                "matching_columns": matching_cols[:10],  # Cap to avoid bloat
+                "matched_keywords": sorted(matched_kws),
+            })
+
+        catalogs_searched = sorted(set(t["full_name"].split(".")[0] for t in tables)) if tables else []
+
+        return {
+            "tables": tables,
+            "search_terms_used": keywords,
+            "catalogs_searched": catalogs_searched,
+            "total_matches": len(tables),
+        }
+
+    except Exception as e:
+        logger.exception("search_tables failed")
+        return {"error": str(e), "tables": []}
 
 
 def list_catalogs() -> list[dict]:
