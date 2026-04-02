@@ -922,21 +922,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     sendMessage(`Please remove the ${short} table from the selection`)
   }
 
-  // Panel: business context management
-  const addBusinessContext = () => {
-    if (!businessContextDraft.trim()) return
-    const rule = businessContextDraft.trim()
-    setProgress((p) => ({ ...p, businessContext: [...p.businessContext, rule] }))
-    setBusinessContextDraft("")
-    sendMessage(`Business rule to keep in mind: "${rule}"`)
-  }
-  const removeBusinessContext = (i: number) => {
-    const removed = progress.businessContext[i]
-    setProgress((p) => ({ ...p, businessContext: p.businessContext.filter((_, j) => j !== i) }))
-    if (removed) {
-      sendMessage(`Please disregard the previous business rule: "${removed}"`)
-    }
-  }
+  // Business context management (kept for backwards compat with session restore)
+  void businessContextDraft
 
   // ─── Render helpers ───────────────────────────────────────────
 
