@@ -410,7 +410,7 @@ echo "  Checking critical files on workspace..."
 CRITICAL_FILES=(
     "$WS_PATH/backend/main.py"
     "$WS_PATH/backend/__init__.py"
-    "$WS_PATH/requirements.txt"
+    "$WS_PATH/pyproject.toml"
     "$WS_PATH/frontend/dist/index.html"
     "$WS_PATH/app.yaml"
 )
