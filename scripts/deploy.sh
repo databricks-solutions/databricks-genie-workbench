@@ -304,6 +304,14 @@ fi
 # servicePrincipal.user role on the deployer).
 # The "app" target uses mode: development (per-deployer Terraform state)
 # with presets.name_prefix: "" (clean job names, no [dev] prefix).
+
+# Force full file sync on every deploy. The bundle CLI uses local snapshot
+# files to do incremental uploads; if the snapshot drifts from the workspace
+# (e.g. interrupted upload, workspace cleanup) notebooks silently go missing
+# and the job fails at runtime. Deleting the snapshots is cheap — the wheel
+# upload dominates deploy time, not the ~350 small file uploads.
+rm -f "$PROJECT_DIR/.databricks/bundle/app/sync-snapshots/"*.json 2>/dev/null || true
+
 set +e
 BUNDLE_OUTPUT=$(cd "$PROJECT_DIR" && databricks bundle deploy -t app \
     --var="catalog=$CATALOG" \
@@ -327,6 +335,24 @@ if [ "$BUNDLE_EXIT" -ne 0 ]; then
     echo "    3. Fix the issue and re-run: ./scripts/deploy.sh --update"
     exit 1
 fi
+
+# Verify critical job notebooks actually landed on the workspace.
+# The bundle's incremental sync can silently skip files if the local snapshot
+# diverges from workspace reality. This catches that failure at deploy time
+# rather than at job runtime.
+_PREFLIGHT_NB="/Workspace/Users/$DEPLOYER/.bundle/genie-workbench/app/files/packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_preflight"
+if ! databricks workspace get-status "$_PREFLIGHT_NB" --profile "$PROFILE" -o json >/dev/null 2>&1; then
+    echo ""
+    echo "  ✗ FATAL: Bundle file sync failed — job notebook not found at:"
+    echo "    $_PREFLIGHT_NB"
+    echo ""
+    echo "  Remediation:"
+    echo "    1. Delete stale sync snapshots:"
+    echo "       rm -f .databricks/bundle/app/sync-snapshots/*.json"
+    echo "    2. Re-run: ./scripts/deploy.sh --update"
+    exit 1
+fi
+echo "  ✓ Job notebooks verified on workspace"
 
 JOB_ID=$(cd "$PROJECT_DIR" && databricks bundle summary -t app \
     --var="catalog=$CATALOG" \
