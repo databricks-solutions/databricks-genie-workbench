@@ -240,7 +240,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                           {/* Per-Judge Score Progression */}
                           <JudgePassRates iterations={iterations} baselineJudgeScores={baselineJudgeScores} />
                           {/* Optimization Narrative — rich per-iteration reflections */}
-                          <OptimizationNarrative iterations={iterations} convergenceReason={run.convergenceReason} />
+                          <OptimizationNarrative run={run} iterations={iterations} convergenceReason={run.convergenceReason} />
                         </div>
                       </TabsContent>
 

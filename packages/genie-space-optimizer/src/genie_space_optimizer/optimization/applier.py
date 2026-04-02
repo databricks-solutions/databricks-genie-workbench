@@ -1264,6 +1264,16 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                 )
             if not _validate_example_sql_entry(new_entry, config=config):
                 return False
+            q_lower = question_text.strip().lower()
+            for existing in eqs:
+                eq_val = existing.get("question", [])
+                existing_q = eq_val[0] if isinstance(eq_val, list) and eq_val else str(eq_val)
+                if existing_q.strip().lower() == q_lower:
+                    logger.info(
+                        "Example SQL add skipped — duplicate question: %.80s",
+                        question_text,
+                    )
+                    return True
             eqs.append(new_entry)
             return True
         if op == "update":

@@ -253,6 +253,28 @@ def _log_token_usage(span: Any, response: Any) -> None:
         pass
 
 
+def _get_existing_example_sqls(metadata_snapshot: dict) -> list:
+    """Extract example_question_sqls from the correct config path.
+
+    The Genie API stores these under ``instructions.example_question_sqls``,
+    not at the top level.  Falls back through several layouts to handle
+    both parsed-space dicts and wrapper dicts.
+    """
+    instr = metadata_snapshot.get("instructions", {})
+    if isinstance(instr, dict):
+        eqs = instr.get("example_question_sqls", [])
+        if eqs:
+            return eqs
+    cfg = metadata_snapshot.get("config")
+    if isinstance(cfg, dict):
+        instr2 = cfg.get("instructions", {})
+        if isinstance(instr2, dict):
+            eqs2 = instr2.get("example_question_sqls", [])
+            if eqs2:
+                return eqs2
+    return []
+
+
 def _row_qid(row: dict, *, fallback: str = "unknown") -> str:
     """Extract question_id from an eval-results row regardless of column layout.
 
@@ -3747,7 +3769,7 @@ def _derive_blame_from_sql(cluster: dict) -> list[str] | None:
 
 def _format_existing_example_sqls(metadata_snapshot: dict) -> str:
     """Format existing example_question_sqls for inclusion in the Lever 6 prompt."""
-    example_sqls = metadata_snapshot.get("example_question_sqls", [])
+    example_sqls = _get_existing_example_sqls(metadata_snapshot)
     if not example_sqls:
         return "(none)"
     lines: list[str] = []
@@ -4347,7 +4369,7 @@ def _build_join_specs_data(metadata_snapshot: dict) -> list[dict]:
 
 def _build_example_sqls_data(metadata_snapshot: dict) -> list[dict]:
     """Build existing example SQL as structured dicts."""
-    example_sqls = metadata_snapshot.get("example_question_sqls", [])
+    example_sqls = _get_existing_example_sqls(metadata_snapshot)
     if not example_sqls:
         return []
     result: list[dict] = []
@@ -6946,11 +6968,7 @@ def _validate_lever5_proposals(
 
     id_allowlist = _build_identifier_allowlist(metadata_snapshot)
 
-    existing_eqs_raw = (
-        (metadata_snapshot.get("config") or metadata_snapshot).get("example_question_sqls")
-        or metadata_snapshot.get("example_question_sqls")
-        or []
-    )
+    existing_eqs_raw = _get_existing_example_sqls(metadata_snapshot)
     existing_questions: set[str] = set()
     for e in existing_eqs_raw:
         if isinstance(e, dict):
@@ -7131,11 +7149,7 @@ def _mine_benchmark_example_sqls(
         )
         return []
 
-    existing_eqs_raw = (
-        (metadata_snapshot.get("config") or metadata_snapshot).get("example_question_sqls")
-        or metadata_snapshot.get("example_question_sqls")
-        or []
-    )
+    existing_eqs_raw = _get_existing_example_sqls(metadata_snapshot)
     existing_questions: set[str] = set()
     for e in existing_eqs_raw:
         if isinstance(e, dict):
@@ -7881,11 +7895,7 @@ def _filter_no_op_proposals(proposals: list[dict], metadata_snapshot: dict) -> l
                 existing_descs[(tbl_name, col_name)] = desc
                 existing_descs[(short_name, col_name)] = desc
 
-    existing_eqs_raw = (
-        (metadata_snapshot.get("config") or metadata_snapshot).get("example_question_sqls")
-        or metadata_snapshot.get("example_question_sqls")
-        or []
-    )
+    existing_eqs_raw = _get_existing_example_sqls(metadata_snapshot)
     existing_eq_questions: set[str] = set()
     for e in existing_eqs_raw:
         if isinstance(e, dict):

@@ -1716,7 +1716,7 @@ def _apply_instruction_sql_expressions(
         }
         if c.get("display_name"):
             entry["display_name"] = c["display_name"]
-        if c.get("alias"):
+        if c.get("alias") and stype != "filter":
             entry["alias"] = c["alias"]
         if c.get("synonyms"):
             entry["synonyms"] = c["synonyms"]
