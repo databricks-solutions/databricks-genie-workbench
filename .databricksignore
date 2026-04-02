@@ -47,6 +47,14 @@ venv/
 mlruns/
 mlflow.db
 
+# Python dependency management — exclude requirements.txt so the platform uses
+# uv (pyproject.toml + uv.lock) instead of pip.  uv installs into a clean venv
+# with SHA256-verified hashes, avoiding conflicts with pre-installed packages
+# (dash, gradio, streamlit, databricks-sql-connector) and providing supply-chain
+# tamper detection.  requirements.txt is kept in the repo as a pip-compatible
+# reference but must NOT be synced to the workspace.
+requirements.txt
+
 # Other non-runtime files
 *.md
 !backend/references/schema.md

@@ -13,9 +13,11 @@ Databricks Apps platform — there is no local dev server.
   and destroys the existing configuration.
 - **DO NOT use `npm install` in build or deploy scripts** — always use `npm ci`.
   `npm install` can silently upgrade packages within `^` ranges; `npm ci` enforces the
-  exact lockfile.
-- **DO NOT edit `requirements.txt` manually.** It is generated from `uv.lock`. See the
-  Dependency Security section below.
+  exact lockfile. (Exception: the root `package.json` is intentionally a no-op for the
+  Databricks Apps platform — see Platform Build Strategy below.)
+- **DO NOT edit `requirements.txt` manually.** It is generated from `uv.lock` as a
+  pip-compatible reference but is excluded from deployment via `.databricksignore`.
+  The platform uses `uv sync` (pyproject.toml + uv.lock) for hash-verified installs.
 - All testing is done by deploying to a real Databricks workspace, not by running locally.
 
 ## Build Commands
@@ -51,11 +53,26 @@ cd frontend && npm ci && npm run build
 ```
 
 The deploy script:
-1. Runs `npm ci && npm run build` (not `npm install`)
+1. Runs `npm ci && npm run build` locally (not `npm install`) — strict lockfile build
 2. Syncs the repo to the Databricks workspace with `databricks sync --full`
 3. Explicitly uploads `frontend/dist/` (gitignored but NOT databricksignored)
 4. Patches `app.yaml` placeholders with real config values
 5. Deploys the app with `databricks apps deploy`
+
+### Platform Build Strategy
+
+The Databricks Apps platform detects `package.json` at the root and runs `npm install`
+then `npm run build`. To avoid cross-platform failures (macOS lockfile vs Linux container)
+and redundant rebuilds, the root `package.json` is configured as follows:
+
+- **`postinstall`**: No-op. Frontend deps are installed by `deploy.sh` locally.
+- **`build`**: Checks for pre-built `frontend/dist/index.html`. If present (uploaded by
+  `deploy.sh`), skips the rebuild. Falls back to a full build only if dist is missing.
+- **`start`**: Runs uvicorn (though `app.yaml` `command` takes precedence).
+
+Python dependencies use `uv sync` on the platform (because `requirements.txt` is excluded
+from `.databricksignore`). This gives a clean venv with SHA256-verified hashes, avoiding
+conflicts with pre-installed platform packages (dash, gradio, streamlit, etc.).
 
 ## Architecture
 
@@ -118,22 +135,30 @@ on `\n\n`.
 
 ## Dependency Security Policy
 
-This project pins all dependencies to exact versions following a supply chain security
-hardening (see README.md § Dependency Security).
+This project pins all dependencies to exact versions with integrity hashes following
+supply chain security hardening. Lock files are the source of truth — they prevent
+attacks like the litellm PyPI credential stealer (March 2026) and axios npm RAT
+(March 2026) by rejecting any package whose hash doesn't match the lockfile.
 
 **Lock files — always commit these:**
 
-| File | Covers |
-|---|---|
-| `uv.lock` | Root Python transitive deps with SHA256 hashes |
-| `packages/genie-space-optimizer/uv.lock` | GSO Python deps with SHA256 hashes |
-| `frontend/package-lock.json` | Frontend npm deps with SHA-512 integrity hashes |
-| `packages/genie-space-optimizer/bun.lock` | GSO UI deps |
+| File | Covers | Verification |
+|---|---|---|
+| `uv.lock` | Root Python transitive deps | SHA256 hashes |
+| `packages/genie-space-optimizer/uv.lock` | GSO Python deps | SHA256 hashes |
+| `frontend/package-lock.json` | Frontend npm deps | SHA-512 integrity |
+| `packages/genie-space-optimizer/bun.lock` | GSO UI deps | Integrity hashes |
+
+**`requirements.txt`** is kept in the repo as a pip-compatible reference (generated from
+`uv.lock`) but is **excluded from deployment** via `.databricksignore`. The platform uses
+`uv sync` with `pyproject.toml` + `uv.lock` for hash-verified installs. Do not delete
+`requirements.txt` — it serves as documentation and a fallback for non-uv environments.
 
 **To update a Python dependency:**
 
 ```bash
 uv lock --upgrade-package <package-name>
+# Regenerate pip-compatible reference (not used in deploy, but kept in sync)
 uv export --frozen --no-dev --no-hashes --format requirements-txt \
   | grep -v "^-e " > requirements.txt
 echo "-e ./packages/genie-space-optimizer" >> requirements.txt
@@ -161,6 +186,9 @@ python tests/test_e2e_deployed.py # Playwright E2E — requires:
 ## Common Gotchas
 
 - `frontend/dist/` is **gitignored** but **NOT databricksignored** — build before syncing
+- `requirements.txt` is **databricksignored** — the platform uses `uv sync` instead of
+  `pip install`. If you see pip dependency conflicts, verify `requirements.txt` is in
+  `.databricksignore`.
 - `*.md` files are excluded from Databricks sync **except** `backend/references/schema.md`,
   which is needed at runtime by the create agent and analysis prompts
 - The Vite `/api` proxy (dev, port 5173 → 8000) is dev-only; in production FastAPI serves
@@ -169,3 +197,5 @@ python tests/test_e2e_deployed.py # Playwright E2E — requires:
   silently disables tracing if the experiment doesn't exist
 - `frontend/dist/` must be explicitly uploaded with `databricks workspace import-dir`
   because `databricks sync --full` only uploads non-gitignored files
+- The root `package.json` `build` script is a **no-op** when `frontend/dist/` exists —
+  this prevents cross-platform Rollup failures on the Linux deploy container
