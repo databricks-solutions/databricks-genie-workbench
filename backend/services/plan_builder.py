@@ -307,7 +307,11 @@ def _gen_tables(shared: str, tables_context: list[dict]) -> dict:
         "1. If the table description is empty or vague, write a clear 1-2 sentence description.\n"
         "2. Add a brief description for EVERY column that doesn't already have one.\n"
         "   Even columns with obvious names (like 'date') benefit from context (e.g., 'Order placement date').\n"
-        "3. Keep existing descriptions unchanged unless they are clearly wrong.\n\n"
+        "3. Keep existing descriptions unchanged unless they are clearly wrong.\n"
+        "4. Add `synonyms` (array of strings) for columns with abbreviated or technical names that "
+        "users might refer to differently. E.g., 'cust_id' → [\"customer ID\", \"account number\"], "
+        "'txn_amt' → [\"transaction amount\", \"payment amount\"]. Only add synonyms where they add value "
+        "— skip columns with clear, unambiguous names.\n\n"
         "Return ONLY valid JSON: {\"tables\": [...]}\n\n"
         f"Current tables:\n```json\n{json.dumps(tables, indent=2)}\n```\n\n"
         f"Context:\n{shared[:3000]}"
@@ -333,6 +337,11 @@ def _gen_questions_instructions(shared: str) -> dict:
         "category headers (## Terminology, ## Default Assumptions, ## Data Quality Warnings, etc.)\n\n"
         "Text instructions should contain ONLY business logic and terminology — NOT SQL formulas, "
         "filter expressions, or join definitions (those go in other sections).\n"
+        "IMPORTANT: Keep text_instructions UNDER 2,000 characters total. Be concise — use bullet points, "
+        "not paragraphs. If you have more than 2,000 chars of context, prioritize the most important rules "
+        "and drop the rest. Long instructions push out higher-value SQL context in Genie's prompt window.\n"
+        "NEVER include SQL code (SELECT, WHERE, JOIN, GROUP BY, etc.) in text instructions — "
+        "those patterns belong in Example SQLs, Measures, Filters, or Expressions.\n"
         "CRITICAL: Only reference category names, tiers, statuses, and labels that appear in the "
         "Column Profiles section below. Do NOT invent terms — use real data values.\n\n"
         "Return ONLY valid JSON:\n"
@@ -345,28 +354,31 @@ def _gen_questions_instructions(shared: str) -> dict:
 def _gen_example_sqls(shared: str) -> dict:
     """Generate example_sqls (question + SQL pairs that teach Genie query patterns).
 
-    Hard cap: exactly 10 pairs. At ~300 tokens each (question + SQL + params + JSON),
-    10 pairs = ~3000 tokens — within the 5000 max_tokens budget even for
+    Hard cap: exactly 12 pairs. At ~350 tokens each (question + SQL + params + guidance + JSON),
+    12 pairs = ~4200 tokens — within the 6000 max_tokens budget even for
     complex multi-table queries with CTEs.
     """
     prompt = (
         "You are creating example SQL queries for a Databricks Genie Space.\n\n"
-        "Generate EXACTLY 10 question+SQL pairs that teach Genie how to write correct queries.\n"
+        "Generate EXACTLY 12 question+SQL pairs that teach Genie how to write correct queries.\n"
         "   - Use fully-qualified table names (catalog.schema.table)\n"
         "   - Use parameterized SQL (:param_name) when the question involves user-supplied values\n"
         "   - Each parameter needs: name, type_hint (STRING/INTEGER/DOUBLE/DECIMAL/DATE/BOOLEAN), "
         "default_value (real value from data), description\n"
         "   - The question should be concrete (use the default value, not a placeholder)\n"
-        "   - Mix: ~4 hardcoded patterns + ~6 parameterized queries\n"
+        "   - Mix: ~4 hardcoded patterns + ~8 parameterized queries\n"
         "   - Cover diverse patterns: aggregation, filtering, grouping, joins, date ranges, top-N\n"
-        "   - IMPORTANT: Generate no more than 10 pairs total.\n"
+        "   - IMPORTANT: Each example MUST include a `usage_guidance` field — a short sentence "
+        "describing when Genie should use this pattern. E.g., 'Use for any top-N ranking question', "
+        "'Use when filtering by date range', 'Use for revenue aggregation by region'.\n"
+        "   - IMPORTANT: Generate no more than 12 pairs total.\n"
         "   - CRITICAL: Only use filter values that appear in the Column Profiles section below.\n"
         "     Do NOT invent status values, tier names, or category labels — use real data.\n\n"
         "Return ONLY valid JSON:\n"
-        '{"example_sqls": [{"question": "...", "sql": "...", "parameters": [...]}]}\n\n'
+        '{"example_sqls": [{"question": "...", "sql": "...", "usage_guidance": "...", "parameters": [...]}]}\n\n'
         f"Context:\n{shared}"
     )
-    return _call_llm_section(prompt, max_tokens=5000, section_name="example_sqls")
+    return _call_llm_section(prompt, max_tokens=6000, section_name="example_sqls")
 
 
 def _gen_benchmarks(shared: str) -> dict:

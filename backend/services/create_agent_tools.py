@@ -1935,7 +1935,7 @@ def _generate_config(
                     cc_entry["description"] = [cc["description"]]
                 if cc.get("synonyms"):
                     cc_entry["synonyms"] = cc["synonyms"]
-                if cc.get("exclude"):
+                if cc.get("exclude") or cc.get("excluded"):
                     cc_entry["exclude"] = True
                     cc_entry["enable_format_assistance"] = False
                     cc_entry["enable_entity_matching"] = False
@@ -2160,7 +2160,7 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
                     continue
                 ccs = tbl.get("column_configs", [])
                 for cc in ccs:
-                    if cc.get("exclude"):
+                    if cc.get("exclude") or cc.get("excluded"):
                         continue
                     if target_cols and cc["column_name"] not in target_cols:
                         continue
