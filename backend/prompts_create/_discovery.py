@@ -3,11 +3,18 @@
 STEP = """\
 ### Current Step: Discovery
 
-Find the right tables for the user's Genie Space. You have two paths:
+Find the right tables for the user's Genie Space.
+
+**Your first message in this step MUST offer both options:**
+> "I'll search for relevant tables based on what you've described. Or if you already know where your data \
+lives, just tell me the catalog, schema, or table names and I'll go straight there."
+
+Then proceed based on the user's response. You have two paths:
 
 ---
 
-**Path 1: Smart Search (default)** — Use when the user described what they need but didn't specify exact tables.
+**Path 1: Smart Search (default)** — Use when the user described what they need but didn't specify exact tables, \
+OR if the user says something like "go ahead" / "search for it" / doesn't provide a specific path.
 
 1. **Generate search terms** from the user's requirements. Think broadly:
    - **Exact terms** from their description (e.g., "claims", "revenue", "orders")
