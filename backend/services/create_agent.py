@@ -177,7 +177,9 @@ class CreateGenieAgent:
             tool_calls_acc: dict[int, dict] = {}
             tool_call_signaled = False
 
-            async for chunk in self._async_stream_llm(messages, tools=step_tool_defs or None):
+            # Pass filtered tools: None = all tools (fallback), [] = no tools (requirements/feasibility)
+            effective_tools = step_tool_defs if allowed_tools is not None else TOOL_DEFINITIONS
+            async for chunk in self._async_stream_llm(messages, tools=effective_tools):
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue

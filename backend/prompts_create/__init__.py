@@ -167,10 +167,12 @@ def detect_step(session: AgentSession) -> str:
     if getattr(session, "feasibility_confirmed", False):
         return "inspection"
 
-    # Feasibility: requires tables selected
+    # Feasibility: requires tables selected or search/discovery completed
     if getattr(session, "selected_tables", None):
         return "feasibility"
     if _has_tool(session.history, "discover_tables"):
+        return "feasibility"
+    if _has_tool(session.history, "search_tables"):
         return "feasibility"
 
     # Discovery: any discovery tool called
