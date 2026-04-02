@@ -104,9 +104,9 @@ def search_tables(
         logger.info("search_tables: keywords=%s, catalogs=%s", keywords, catalogs)
         logger.debug("search_tables SQL:\n%s", sql)
         result = execute_sql(sql)
-        if not result.get("success"):
-            logger.warning("search_tables query failed: %s", result.get("error", "unknown"))
-            return {"error": result.get("error", "Search query failed"), "tables": []}
+        if result.get("error"):
+            logger.warning("search_tables query failed: %s", result["error"])
+            return {"error": result["error"], "tables": []}
 
         tables = []
         for row in result.get("data", []):
