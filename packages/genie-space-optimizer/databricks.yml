@@ -152,6 +152,10 @@ resources:
         - task_key: deploy
           depends_on:
             - task_key: finalize
+          condition_task:
+            op: EQUAL_TO
+            left: "deploy"
+            right: "disabled"
           notebook_task:
             notebook_path: ./src/genie_space_optimizer/jobs/run_deploy.py
           environment_key: default

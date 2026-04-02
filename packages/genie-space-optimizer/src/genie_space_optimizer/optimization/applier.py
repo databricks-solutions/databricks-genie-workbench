@@ -1431,6 +1431,18 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                 js = ensure_join_spec_fields(js, config=config)
                 if not _validate_join_spec_entry(js):
                     return False
+                new_lt = _join_spec_left_id(js)
+                new_rt = _join_spec_right_id(js)
+                if new_lt and new_rt:
+                    new_pair = tuple(sorted((new_lt, new_rt)))
+                    for existing in specs:
+                        ex_pair = tuple(sorted((_join_spec_left_id(existing), _join_spec_right_id(existing))))
+                        if ex_pair == new_pair:
+                            logger.info(
+                                "Join spec add skipped — pair already exists: %s ↔ %s",
+                                new_lt, new_rt,
+                            )
+                            return True
                 specs.append(js)
             return True
         if op == "remove":

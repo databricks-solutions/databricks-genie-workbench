@@ -355,7 +355,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                         <PipelineStepCard
                           stepNumber={stepNum}
                           name={step?.name ?? meta?.name ?? `Step ${stepNum}`}
-                          status={step?.status ?? "pending"}
+                          status={stepNum === 6 ? "skipped" : (step?.status ?? "pending")}
                           durationSeconds={step?.durationSeconds ?? null}
                           description={meta?.description ?? ""}
                           summary={step?.summary ?? null}

@@ -105,23 +105,6 @@ _log(
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 🚪 Baseline Gate Check
-# MAGIC
-# MAGIC If the baseline already meets all quality thresholds, skip enrichment and forward baseline values.
-
-# COMMAND ----------
-
-if thresholds_met:
-    _banner("Baseline Gate: SKIP Enrichment")
-    _log("Skip reason", reason="baseline_meets_thresholds")
-    dbutils.jobs.taskValues.set(key="enrichment_model_id", value=baseline_model_id)
-    dbutils.jobs.taskValues.set(key="enrichment_skipped", value=True)
-    dbutils.jobs.taskValues.set(key="total_enrichments", value=0)
-    dbutils.notebook.exit("SKIPPED: baseline meets thresholds")
-
-# COMMAND ----------
-
-# MAGIC %md
 # MAGIC ## 📦 Loading Benchmarks
 
 # COMMAND ----------
@@ -138,6 +121,10 @@ if not benchmarks:
 
 # MAGIC %md
 # MAGIC ## 🔧 Running Proactive Enrichment
+# MAGIC
+# MAGIC Enrichment always runs regardless of whether the baseline meets thresholds.
+# MAGIC On failure, the pipeline falls back to the baseline model ID so downstream
+# MAGIC tasks are unaffected.
 
 # COMMAND ----------
 
@@ -154,15 +141,21 @@ try:
         enrichment_skipped=enrichment_out["enrichment_skipped"],
         summary=enrichment_out["summary"],
     )
+    if enrichment_out["enrichment_skipped"]:
+        enrichment_out["enrichment_model_id"] = baseline_model_id
 except Exception as exc:
-    _banner("Enrichment FAILED")
+    _banner("Enrichment FAILED — falling back to baseline model")
     _log(
         "Failure details",
         error_type=type(exc).__name__,
         error_message=str(exc),
         traceback=traceback.format_exc(),
     )
-    raise
+    enrichment_out = {
+        "enrichment_model_id": baseline_model_id,
+        "enrichment_skipped": True,
+        "summary": {"total_enrichments": 0},
+    }
 
 # COMMAND ----------
 

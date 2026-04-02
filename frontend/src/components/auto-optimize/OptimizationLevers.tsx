@@ -101,10 +101,12 @@ function SqlExpressionTable({ patches }: { patches: GSOPatchDetail[] }) {
           {patches.map((p, i) => {
             const pat = parseCommand(p.patch)
             const cmd = parseCommand(p.command)
-            const snippet = (cmd.sql_snippet || {}) as Record<string, unknown>
-            const snippetType = String(pat.snippet_type || snippet.snippet_type || cmd.snippet_type || "expression")
-            const displayName = String(pat.display_name || snippet.display_name || cmd.display_name || "")
-            const sql = String(pat.sql || snippet.sql || cmd.sql || "")
+            const patSnippet = (pat.sql_snippet || {}) as Record<string, unknown>
+            const cmdSnippet = (cmd.snippet || cmd.sql_snippet || {}) as Record<string, unknown>
+            const snippetType = String(pat.snippet_type || cmdSnippet.snippet_type || cmd.snippet_type || "expression")
+            const displayName = String(patSnippet.display_name || pat.display_name || cmdSnippet.display_name || cmd.display_name || "")
+            const rawSql = patSnippet.sql ?? pat.sql ?? cmdSnippet.sql ?? cmd.sql ?? ""
+            const sql = Array.isArray(rawSql) ? (rawSql as string[]).join("\n") : String(rawSql)
             return (
               <tr key={i} className="border-b border-default last:border-0">
                 <td className="px-3 py-2 text-muted tabular-nums">{i + 1}</td>

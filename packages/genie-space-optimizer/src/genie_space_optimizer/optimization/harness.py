@@ -6875,11 +6875,28 @@ def optimize_genie_space(
         prev_accuracy = float(baseline_out["overall_accuracy"])
         thresholds_met = bool(baseline_out["thresholds_met"])
 
+        # Stage 2.5: Proactive Enrichment (always runs)
+        _enrichment_out = None
+        _effective_model_id = model_id
+        try:
+            _enrichment_out = _run_enrichment(
+                w, spark, run_id_str, space_id, domain, train_benchmarks, exp_name,
+                catalog, schema,
+                baseline_model_id=model_id,
+            )
+            if not _enrichment_out["enrichment_skipped"]:
+                _effective_model_id = _enrichment_out["enrichment_model_id"]
+        except Exception:
+            logger.exception(
+                "Enrichment failed for run %s — continuing with baseline model",
+                run_id_str,
+            )
+
         if thresholds_met:
             result.status = "CONVERGED"
             result.convergence_reason = "baseline_meets_thresholds"
             result.best_accuracy = prev_accuracy
-            result.best_model_id = model_id
+            result.best_model_id = _effective_model_id
             result.final_scores = prev_scores
             update_run_status(
                 spark, run_id_str, catalog, schema,
@@ -6913,7 +6930,7 @@ def optimize_genie_space(
             result.status = "CONVERGED"
             result.convergence_reason = "arbiter_saturated"
             result.best_accuracy = prev_accuracy
-            result.best_model_id = model_id
+            result.best_model_id = _effective_model_id
             result.final_scores = prev_scores
             write_stage(
                 spark, run_id_str, "ARBITER_SATURATED_EXIT", "COMPLETE",
@@ -6932,23 +6949,16 @@ def optimize_genie_space(
                 convergence_reason="arbiter_saturated",
             )
         else:
-            # Stage 2.5: Proactive Enrichment
-            enrichment_out = _run_enrichment(
-                w, spark, run_id_str, space_id, domain, train_benchmarks, exp_name,
-                catalog, schema,
-                baseline_model_id=model_id,
-            )
-
             # Stage 3: Lever Loop (enrichment already done)
             loop_out = _run_lever_loop(
                 w, spark, run_id_str, space_id, domain, train_benchmarks, exp_name,
                 prev_scores, prev_accuracy, model_id,
-                enrichment_out["config"],
+                _enrichment_out["config"] if _enrichment_out else {},
                 catalog, schema, levers, max_iterations, thresholds, apply_mode,
                 triggered_by=triggered_by or "",
                 human_corrections=human_corrections,
-                enrichment_done=True,
-                enrichment_model_id=enrichment_out["enrichment_model_id"],
+                enrichment_done=bool(_enrichment_out),
+                enrichment_model_id=_effective_model_id,
             )
             result.levers_attempted = cast(list[int], loop_out["levers_attempted"])
             result.levers_accepted = cast(list[int], loop_out["levers_accepted"])

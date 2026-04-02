@@ -63,11 +63,10 @@ backend/
   references/schema.md     # Genie Space JSON schema reference
 scripts/
   install.sh               # Guided first-time setup (creates .env.deploy, provisions resources)
-  deploy.sh                # Build + bundle deploy + app deploy (idempotent)
+  deploy.sh                # Build + bundle deploy (job) + app deploy (idempotent)
   preflight.sh             # Pre-deploy validation checks
   build.sh                 # Frontend build
   deploy-config.sh         # Shared deploy configuration/variables
-  ensure_gso_job.py        # Ensures GSO optimization job exists in workspace
   grant_permissions.py     # Grants required permissions for app resources
   setup_synced_tables.py   # Sets up GSO synced tables in Lakebase
 frontend/
@@ -137,6 +136,7 @@ Do NOT suggest running `uvicorn` or `npm run dev` locally. The app depends on Da
 - **Vite proxy** — dev frontend at :5173 proxies `/api` to :8000. In production, FastAPI serves static files from `frontend/dist/` directly.
 - **Python 3.11+** required (`pyproject.toml`). Uses `uv` for dependency management (`uv.lock` present).
 - **Root `package.json`** exists solely as a build hook for Databricks Apps — `postinstall` chains to `frontend/npm install`, `build` chains to `frontend/npm run build`.
+- **Two deployment mechanisms** — `deploy.sh` manages the app (create, sync, `databricks apps deploy`) while the optimization job is managed by DABs (`databricks bundle deploy -t app`). The `app` target uses `mode: development` for per-deployer Terraform state with `presets.name_prefix: ""` for clean job names (no `[dev]` prefix). Do NOT run `databricks bundle deploy -t dev` for production — it creates prefixed orphan jobs.
 
 ## Code Style
 

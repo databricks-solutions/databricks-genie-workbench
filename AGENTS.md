@@ -56,8 +56,10 @@ The deploy script:
 1. Runs `npm ci && npm run build` locally (not `npm install`) — strict lockfile build
 2. Syncs the repo to the Databricks workspace with `databricks sync --full`
 3. Explicitly uploads `frontend/dist/` (gitignored but NOT databricksignored)
-4. Patches `app.yaml` placeholders with real config values
-5. Deploys the app with `databricks apps deploy`
+4. Deploys the GSO optimization job via `databricks bundle deploy -t app` (clean name,
+   no `[dev]` prefix, Terraform-managed with shared state)
+5. Patches `app.yaml` placeholders (including `GSO_JOB_ID` from bundle state) with real values
+6. Deploys the app with `databricks apps deploy`
 
 ### Platform Build Strategy
 
@@ -199,3 +201,10 @@ python tests/test_e2e_deployed.py # Playwright E2E — requires:
   because `databricks sync --full` only uploads non-gitignored files
 - The root `package.json` `build` script is a **no-op** when `frontend/dist/` exists —
   this prevents cross-platform Rollup failures on the Linux deploy container
+- **Two deployment mechanisms coexist** — the app is deployed via `deploy.sh` +
+  `databricks apps deploy`; the GSO optimization job is deployed via `databricks bundle
+  deploy -t app`. The `app` target uses `mode: development` (per-deployer Terraform
+  state) with `presets.name_prefix: ""` (clean job names, no `[dev]` prefix). The deployer
+  shares access to the app and job via permissions. Do NOT run `databricks bundle deploy
+  -t dev` for production deployments — it creates `[dev username]` prefixed orphan jobs.
+- **Databricks CLI >= 0.239.0 required** — `preflight.sh` validates this automatically

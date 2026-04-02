@@ -275,9 +275,11 @@ _log(
 if thresholds_met:
     _banner("Baseline Gate: SKIP Lever Loop")
     _log("Skip reason", reason="baseline_meets_thresholds", baseline_accuracy=prev_accuracy)
+    effective_model_id = enrichment_model_id if not enrichment_skipped else prev_model_id
+    _log("Effective model ID", effective_model_id=effective_model_id, enrichment_model_id=enrichment_model_id, baseline_model_id=prev_model_id)
     dbutils.jobs.taskValues.set(key="scores", value=scores_json)
     dbutils.jobs.taskValues.set(key="accuracy", value=prev_accuracy)
-    dbutils.jobs.taskValues.set(key="model_id", value=prev_model_id)
+    dbutils.jobs.taskValues.set(key="model_id", value=effective_model_id)
     dbutils.jobs.taskValues.set(key="iteration_counter", value=0)
     dbutils.jobs.taskValues.set(key="skipped", value=True)
     dbutils.notebook.exit("SKIPPED: baseline meets thresholds")

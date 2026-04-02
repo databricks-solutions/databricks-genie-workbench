@@ -146,15 +146,11 @@ import mlflow
 mlflow.set_experiment(exp_name)
 mlflow.openai.autolog()
 
-# Read from lever_loop (or baseline if lever_loop was skipped)
+# lever_loop always publishes model_id (enrichment-aware, even when skipped)
+prev_model_id = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="model_id")
 lever_skipped_raw = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="skipped")
 lever_skipped = str(lever_skipped_raw).lower() in ("true", "1")
-if lever_skipped:
-    prev_model_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="model_id")
-    iteration_counter = 0
-else:
-    prev_model_id = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="model_id")
-    iteration_counter = int(dbutils.jobs.taskValues.get(taskKey="lever_loop", key="iteration_counter"))
+iteration_counter = 0 if lever_skipped else int(dbutils.jobs.taskValues.get(taskKey="lever_loop", key="iteration_counter"))
 
 _banner("Resolved Upstream Task Values")
 _log(

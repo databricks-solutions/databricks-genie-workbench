@@ -7931,6 +7931,7 @@ def _deduplicate_proposals(proposals: list[dict]) -> list[dict]:
     """Remove duplicate proposals using type-aware deduplication.
 
     - ``update_column_description`` / ``add_column_synonym``: dedup by (table, column).
+    - ``add_join_spec``: dedup by sorted (left_table, right_table) pair.
     - ``add_instruction``: merge near-duplicates (ngram similarity > 0.7).
     - ``add_example_sql``: dedup by normalized SQL text.
     - Others: dedup by exact (patch_type, proposed_value).
@@ -7938,6 +7939,7 @@ def _deduplicate_proposals(proposals: list[dict]) -> list[dict]:
     out: list[dict] = []
 
     col_desc_best: dict[tuple[str, str], int] = {}
+    join_spec_best: dict[tuple[str, str], int] = {}
     instruction_entries: list[tuple[int, dict]] = []
     example_sql_seen: dict[str, int] = {}
     exact_seen: dict[tuple[str, str], int] = {}
@@ -7957,6 +7959,22 @@ def _deduplicate_proposals(proposals: list[dict]) -> list[dict]:
                     out[existing_idx] = p
                 continue
             col_desc_best[key] = len(out)
+            out.append(p)
+
+        elif ptype == "add_join_spec":
+            js = p.get("join_spec", {})
+            left_obj = js.get("left", {})
+            right_obj = js.get("right", {})
+            lt = left_obj.get("identifier", "") if isinstance(left_obj, dict) else ""
+            rt = right_obj.get("identifier", "") if isinstance(right_obj, dict) else ""
+            if lt and rt:
+                key = tuple(sorted((lt, rt)))
+                if key in join_spec_best:
+                    existing_idx = join_spec_best[key]
+                    if impact > out[existing_idx].get("net_impact", 0):
+                        out[existing_idx] = p
+                    continue
+                join_spec_best[key] = len(out)
             out.append(p)
 
         elif ptype == "add_instruction" and val:
@@ -8246,6 +8264,23 @@ def generate_proposals_from_strategy(
 
         # ── Lever 4: join specs ──────────────────────────────────────────
         elif target_lever == 4:
+            _inst_l4 = metadata_snapshot.get("instructions", {})
+            if not isinstance(_inst_l4, dict):
+                _inst_l4 = {}
+            _existing_join_specs = _inst_l4.get("join_specs", [])
+            if not isinstance(_existing_join_specs, list):
+                _existing_join_specs = []
+            _existing_join_pairs: set[tuple[str, str]] = set()
+            for _ejs in _existing_join_specs:
+                if not isinstance(_ejs, dict):
+                    continue
+                _ej_left = _ejs.get("left", {})
+                _ej_right = _ejs.get("right", {})
+                _ej_lt = _ej_left.get("identifier", "") if isinstance(_ej_left, dict) else ""
+                _ej_rt = _ej_right.get("identifier", "") if isinstance(_ej_right, dict) else ""
+                if _ej_lt and _ej_rt:
+                    _existing_join_pairs.add(tuple(sorted((_ej_lt, _ej_rt))))
+
             for js_entry in lever_dir.get("join_specs", []):
                 if not isinstance(js_entry, dict):
                     continue
@@ -8253,6 +8288,9 @@ def generate_proposals_from_strategy(
                 right_table = js_entry.get("right_table", "")
                 guidance = js_entry.get("join_guidance", "")
                 if left_table and right_table:
+                    if tuple(sorted((left_table, right_table))) in _existing_join_pairs:
+                        logger.info("[%s] Join spec skipped (already defined): %s ↔ %s", ag_id, left_table, right_table)
+                        continue
                     sanitized_guidance = _sanitize_join_sql(guidance) if guidance else ""
                     join_spec = ensure_join_spec_fields({
                         "left": {"identifier": left_table},
@@ -8299,7 +8337,7 @@ def generate_proposals_from_strategy(
                 tuple(sorted((p["join_spec"]["left"]["identifier"],
                                p["join_spec"]["right"]["identifier"])))
                 for p in proposals if p.get("join_spec")
-            }
+            } | _existing_join_pairs
             for _ja in _ja_entries:
                 _lt = _ja.get("left_table", "")
                 _rt = _ja.get("right_table", "")
