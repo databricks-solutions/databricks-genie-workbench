@@ -1,12 +1,14 @@
 # Created by https://www.toptal.com/developers/gitignore/api/python
 # Edit at https://www.toptal.com/developers/gitignore?templates=python
 
-databricks.yml
 /scratch
 /output
+/.build/
 .cursor/
 .codex/
 context/
+.env.deploy
+*.bak
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
@@ -235,5 +237,3 @@ lerna-debug.log*
 *.njsproj
 *.sln
 *.sw?
-
-.databricks
