@@ -1,0 +1,184 @@
+bundle:
+  name: "genie-workbench"
+  databricks_cli_version: ">= 0.239.0"
+
+variables:
+  app_name:
+    description: "Databricks App name (must be unique in your workspace)"
+    default: "genie-workbench"
+  catalog:
+    description: "Unity Catalog name for GSO optimization state tables (must have CREATE SCHEMA permission)"
+  warehouse_id:
+    description: "SQL Warehouse ID for query execution"
+  llm_model:
+    description: "LLM serving endpoint name"
+    default: "databricks-claude-sonnet-4-6"
+
+sync:
+  include:
+    - .build
+    - .build/**
+    - packages/genie-space-optimizer/src/genie_space_optimizer/jobs
+    - packages/genie-space-optimizer/src/genie_space_optimizer/jobs/**
+    - packages/genie-space-optimizer/src/genie_space_optimizer/_metadata.py
+  exclude:
+    - backend/**
+    - frontend/**
+    - tests/**
+    - sql/**
+    - TODO/**
+    - packages/genie-space-optimizer/tests/**
+    - packages/genie-space-optimizer/src/genie_space_optimizer/ui/**
+    - packages/genie-space-optimizer/src/genie_space_optimizer/backend/**
+    - packages/genie-space-optimizer/node_modules/**
+    - packages/genie-space-optimizer/.build/**
+
+artifacts:
+  default:
+    build: |
+      rm -f .build/genie_space_optimizer-*.whl && cd packages/genie-space-optimizer && uv run --with build python -m build --wheel -o ../../.build/ && cd ../.. && cp .build/genie_space_optimizer-*.whl .build/genie_space_optimizer-0.0.0-py3-none-any.whl
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+# The app resource is NOT bundle-managed — deploy.sh handles app creation,
+# config patching (GSO_JOB_ID, GSO_CATALOG, etc.), and apps deploy.
+# Only the optimization job is managed by the bundle.
+# ---------------------------------------------------------------------------
+resources:
+  jobs:
+    gso-optimization-runner:
+      name: "gso-optimization-job"
+      description: >-
+        Persistent DAG optimization runner managed by Genie Workbench
+        (preflight -> baseline_eval -> enrichment -> lever_loop -> finalize -> deploy).
+        SP executes with granted privileges on user schemas.
+      max_concurrent_runs: 20
+      queue:
+        enabled: true
+      tags:
+        app: "genie-workbench"
+        managed-by: "databricks-bundle"
+        pattern: "persistent-dag"
+      parameters:
+        - name: run_id
+          default: ""
+        - name: space_id
+          default: ""
+        - name: domain
+          default: "default"
+        - name: catalog
+          default: ""
+        - name: schema
+          default: ""
+        - name: apply_mode
+          default: "genie_config"
+        - name: levers
+          default: "[1,2,3,4,5,6]"
+        - name: max_iterations
+          default: "5"
+        - name: triggered_by
+          default: ""
+        - name: experiment_name
+          default: ""
+        - name: deploy_target
+          default: ""
+        - name: warehouse_id
+          default: ""
+      tasks:
+        - task_key: preflight
+          notebook_task:
+            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_preflight.py
+            base_parameters:
+              run_id: "{{job.parameters.run_id}}"
+              space_id: "{{job.parameters.space_id}}"
+              domain: "{{job.parameters.domain}}"
+              catalog: "{{job.parameters.catalog}}"
+              schema: "{{job.parameters.schema}}"
+              apply_mode: "{{job.parameters.apply_mode}}"
+              levers: "{{job.parameters.levers}}"
+              max_iterations: "{{job.parameters.max_iterations}}"
+              experiment_name: "{{job.parameters.experiment_name}}"
+              deploy_target: "{{job.parameters.deploy_target}}"
+              warehouse_id: "{{job.parameters.warehouse_id}}"
+          environment_key: default
+          timeout_seconds: 7200
+          max_retries: 0
+        - task_key: baseline_eval
+          depends_on:
+            - task_key: preflight
+          notebook_task:
+            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_baseline.py
+          environment_key: default
+          timeout_seconds: 7200
+          max_retries: 0
+        - task_key: enrichment
+          depends_on:
+            - task_key: baseline_eval
+          notebook_task:
+            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_enrichment.py
+          environment_key: default
+          timeout_seconds: 7200
+          max_retries: 0
+        - task_key: lever_loop
+          depends_on:
+            - task_key: enrichment
+          notebook_task:
+            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_lever_loop.py
+          environment_key: default
+          timeout_seconds: 7200
+          max_retries: 0
+        - task_key: finalize
+          depends_on:
+            - task_key: lever_loop
+          notebook_task:
+            notebook_path: ./packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_finalize.py
+          environment_key: default
+          timeout_seconds: 7200
+          max_retries: 0
+        - task_key: deploy
+          depends_on:
+            - task_key: finalize
+          condition_task:
+            op: EQUAL_TO
+            left: "deploy"
+            right: "disabled"
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+            dependencies:
+              - .build/genie_space_optimizer-0.0.0-py3-none-any.whl
+              - "mlflow[databricks]>=3.10.1"
+              - "databricks-sdk>=0.40.0"
+              - "openai>=1.17"
+              - "litellm"
+
+# ---------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------
+# - dev:          Personal development (mode: development adds [dev user] prefix)
+# - app:          Deploy via deploy.sh — mode: development for per-deployer
+#                 Terraform state, but name_prefix: "" for clean resource names.
+#                 run_as is NOT set here; the app self-heals it at startup
+#                 (avoids needing servicePrincipal.user role on the deployer).
+# - dev-lakebase: Development with Lakebase provisioning
+# ---------------------------------------------------------------------------
+targets:
+  dev:
+    mode: development
+    default: true
+  app:
+    mode: development
+    presets:
+      name_prefix: ""
+  dev-lakebase:
+    mode: development
+    resources:
+      postgres_projects:
+        genie-workbench-db:
+          project_id: ${var.app_name}-db
+          default_endpoint_settings:
+            autoscaling_limit_min_cu: 0.5
+            autoscaling_limit_max_cu: 4
+            suspend_timeout_duration: "3600s"

@@ -118,7 +118,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
 
   if (!isOpen) return null
 
-  const stepsCompleted = run?.steps?.filter((s) => s.status === "completed").length ?? 0
+  const stepsCompleted = run?.steps?.filter((s) => s.status === "completed" || s.status === "skipped").length ?? 0
   const totalSteps = 6
   const progressPct = Math.round((stepsCompleted / totalSteps) * 100)
   const allComplete = stepsCompleted === totalSteps
@@ -240,7 +240,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                           {/* Per-Judge Score Progression */}
                           <JudgePassRates iterations={iterations} baselineJudgeScores={baselineJudgeScores} />
                           {/* Optimization Narrative — rich per-iteration reflections */}
-                          <OptimizationNarrative iterations={iterations} convergenceReason={run.convergenceReason} />
+                          <OptimizationNarrative run={run} iterations={iterations} convergenceReason={run.convergenceReason} />
                         </div>
                       </TabsContent>
 
@@ -355,7 +355,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                         <PipelineStepCard
                           stepNumber={stepNum}
                           name={step?.name ?? meta?.name ?? `Step ${stepNum}`}
-                          status={step?.status ?? "pending"}
+                          status={stepNum === 6 ? "skipped" : (step?.status ?? "pending")}
                           durationSeconds={step?.durationSeconds ?? null}
                           description={meta?.description ?? ""}
                           summary={step?.summary ?? null}

@@ -248,12 +248,14 @@ function JoinSpecCard({ cmd }: { cmd: Record<string, unknown> }) {
 }
 
 function SqlSnippetCard({ cmd }: { cmd: Record<string, unknown> }) {
-  const snippet = (cmd.sql_snippet || {}) as Record<string, unknown>
+  const snippet = (cmd.snippet || cmd.sql_snippet || {}) as Record<string, unknown>
   const snippetType = String(cmd.snippet_type || snippet.snippet_type || "expression")
   const displayName = String(snippet.display_name || cmd.display_name || "")
   const alias = String(snippet.alias || cmd.alias || "")
-  const sql = String(snippet.sql || cmd.sql || "")
-  const instruction = String(snippet.instruction || "")
+  const rawSql = snippet.sql ?? cmd.sql ?? ""
+  const sql = Array.isArray(rawSql) ? (rawSql as string[]).join("\n") : String(rawSql)
+  const rawInstruction = snippet.instruction ?? ""
+  const instruction = Array.isArray(rawInstruction) ? (rawInstruction as string[]).join(" ") : String(rawInstruction)
 
   const typeColor: Record<string, string> = {
     measures: "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400",

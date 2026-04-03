@@ -179,19 +179,18 @@ import mlflow
 mlflow.set_experiment(exp_name)
 mlflow.openai.autolog()
 
-# Read from lever_loop (or baseline if lever_loop was skipped)
+# lever_loop always publishes model_id (enrichment-aware, even when skipped)
+prev_model_id = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="model_id")
 lever_skipped_raw = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="skipped")
 lever_skipped = str(lever_skipped_raw).lower() in ("true", "1")
 if lever_skipped:
     scores_json = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="scores")
-    prev_model_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="model_id")
     iteration_counter = 0
     _baseline_mlflow_run_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="mlflow_run_id", default="")
     all_eval_mlflow_run_ids = [_baseline_mlflow_run_id] if _baseline_mlflow_run_id else []
     all_failure_question_ids = []
 else:
     scores_json = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="scores")
-    prev_model_id = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="model_id")
     iteration_counter = int(dbutils.jobs.taskValues.get(taskKey="lever_loop", key="iteration_counter"))
     _baseline_mlflow_run_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="mlflow_run_id", default="")
     _lever_eval_ids_raw = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="all_eval_mlflow_run_ids", default="[]")

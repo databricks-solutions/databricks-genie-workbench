@@ -280,6 +280,12 @@ _banner("Ensuring Delta State Tables")
 ensure_optimization_tables(spark, catalog, schema)
 _log("State tables verified", catalog=catalog, schema=schema)
 
+if catalog:
+    spark.sql(f"USE CATALOG `{catalog}`")
+if schema:
+    spark.sql(f"USE SCHEMA `{schema}`")
+_log("Spark SQL context set", catalog=catalog, schema=schema)
+
 # COMMAND ----------
 
 # MAGIC %md

@@ -58,6 +58,13 @@ function StatusIndicator({ status }: { status: string }) {
       </div>
     )
   }
+  if (status === "skipped") {
+    return (
+      <div className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-default bg-elevated/50 opacity-50">
+        <Circle className="h-4 w-4 text-muted" />
+      </div>
+    )
+  }
   return (
     <div className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-default bg-elevated/50">
       <Circle className="h-4 w-4 text-muted" />
@@ -95,8 +102,10 @@ export function PipelineStepCard({
           ? "border-emerald-500/20"
           : "border-default"
 
+  const isSkipped = status === "skipped"
+
   return (
-    <div className={`rounded-xl border transition-all duration-300 ${borderColor} bg-surface overflow-hidden`}>
+    <div className={`rounded-xl border transition-all duration-300 ${borderColor} bg-surface overflow-hidden ${isSkipped ? "opacity-50" : ""}`}>
       <button
         type="button"
         onClick={() => isExpandable && setOpen(!open)}
@@ -110,7 +119,7 @@ export function PipelineStepCard({
               {stepIcons[stepNumber]}
               Step {stepNumber}
             </span>
-            <span className={`text-sm font-semibold ${status === "pending" ? "text-muted" : "text-primary"}`}>
+            <span className={`text-sm font-semibold ${status === "pending" || status === "skipped" ? "text-muted" : "text-primary"}`}>
               {name}
             </span>
           </div>
@@ -136,6 +145,7 @@ export function PipelineStepCard({
             {status === "completed" ? "Complete"
               : status === "failed" ? "Failed"
               : status === "running" ? "Running"
+              : status === "skipped" ? "Skipped"
               : "Pending"}
           </Badge>
           {isExpandable && (

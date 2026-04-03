@@ -75,24 +75,9 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
           {/* Apply Mode */}
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted">Apply mode</p>
-            <div className="inline-flex rounded-lg border border-default p-1">
-              <button
-                className="px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-white"
-              >
-                Config Only
-              </button>
-              <div className="relative">
-                <button
-                  disabled
-                  className="px-3 py-1.5 rounded-md text-sm font-medium text-muted cursor-not-allowed opacity-50"
-                >
-                  Config + UC Write Backs
-                </button>
-                <span className="absolute -top-2 -right-2 rounded-full bg-amber-100 text-amber-700 text-[10px] font-medium px-1.5 py-0.5 border border-amber-200">
-                  Coming soon
-                </span>
-              </div>
-            </div>
+            <span className="inline-block px-3 py-1.5 rounded-lg border border-default text-sm font-medium bg-accent text-white">
+              Config Only
+            </span>
             <p className="text-xs text-muted max-w-xs">
               Changes will be applied only to the selected Genie Space configuration. Underlying Unity Catalog tables, columns, and descriptions will not be modified.
             </p>

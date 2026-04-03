@@ -193,12 +193,13 @@ def _traced_llm_call(
 
         for attempt in range(max_retries):
             try:
+                messages: list[dict[str, str]] = []
+                if system_msg and system_msg.strip():
+                    messages.append({"role": "system", "content": system_msg})
+                messages.append({"role": "user", "content": prompt})
                 call_kwargs: dict[str, Any] = {
                     "model": LLM_ENDPOINT,
-                    "messages": [
-                        {"role": "system", "content": system_msg},
-                        {"role": "user", "content": prompt},
-                    ],
+                    "messages": messages,
                     "temperature": temperature,
                 }
                 if max_tokens is not None:
@@ -250,6 +251,28 @@ def _log_token_usage(span: Any, response: Any) -> None:
         })
     except Exception:
         pass
+
+
+def _get_existing_example_sqls(metadata_snapshot: dict) -> list:
+    """Extract example_question_sqls from the correct config path.
+
+    The Genie API stores these under ``instructions.example_question_sqls``,
+    not at the top level.  Falls back through several layouts to handle
+    both parsed-space dicts and wrapper dicts.
+    """
+    instr = metadata_snapshot.get("instructions", {})
+    if isinstance(instr, dict):
+        eqs = instr.get("example_question_sqls", [])
+        if eqs:
+            return eqs
+    cfg = metadata_snapshot.get("config")
+    if isinstance(cfg, dict):
+        instr2 = cfg.get("instructions", {})
+        if isinstance(instr2, dict):
+            eqs2 = instr2.get("example_question_sqls", [])
+            if eqs2:
+                return eqs2
+    return []
 
 
 def _row_qid(row: dict, *, fallback: str = "unknown") -> str:
@@ -3746,7 +3769,7 @@ def _derive_blame_from_sql(cluster: dict) -> list[str] | None:
 
 def _format_existing_example_sqls(metadata_snapshot: dict) -> str:
     """Format existing example_question_sqls for inclusion in the Lever 6 prompt."""
-    example_sqls = metadata_snapshot.get("example_question_sqls", [])
+    example_sqls = _get_existing_example_sqls(metadata_snapshot)
     if not example_sqls:
         return "(none)"
     lines: list[str] = []
@@ -4346,7 +4369,7 @@ def _build_join_specs_data(metadata_snapshot: dict) -> list[dict]:
 
 def _build_example_sqls_data(metadata_snapshot: dict) -> list[dict]:
     """Build existing example SQL as structured dicts."""
-    example_sqls = metadata_snapshot.get("example_question_sqls", [])
+    example_sqls = _get_existing_example_sqls(metadata_snapshot)
     if not example_sqls:
         return []
     result: list[dict] = []
@@ -6945,11 +6968,7 @@ def _validate_lever5_proposals(
 
     id_allowlist = _build_identifier_allowlist(metadata_snapshot)
 
-    existing_eqs_raw = (
-        (metadata_snapshot.get("config") or metadata_snapshot).get("example_question_sqls")
-        or metadata_snapshot.get("example_question_sqls")
-        or []
-    )
+    existing_eqs_raw = _get_existing_example_sqls(metadata_snapshot)
     existing_questions: set[str] = set()
     for e in existing_eqs_raw:
         if isinstance(e, dict):
@@ -7130,11 +7149,7 @@ def _mine_benchmark_example_sqls(
         )
         return []
 
-    existing_eqs_raw = (
-        (metadata_snapshot.get("config") or metadata_snapshot).get("example_question_sqls")
-        or metadata_snapshot.get("example_question_sqls")
-        or []
-    )
+    existing_eqs_raw = _get_existing_example_sqls(metadata_snapshot)
     existing_questions: set[str] = set()
     for e in existing_eqs_raw:
         if isinstance(e, dict):
@@ -7395,6 +7410,16 @@ def _generate_lever6_proposal(
                 return None
             sql_raw = _valid_result[2] if len(_valid_result) > 2 else sql_raw
 
+        from genie_space_optimizer.common.genie_schema import count_sql_snippets, MAX_SQL_SNIPPETS
+
+        current_snippet_count = count_sql_snippets(metadata_snapshot)
+        if current_snippet_count >= MAX_SQL_SNIPPETS:
+            logger.info(
+                "Lever 6: Snippet budget exhausted (%d/%d), skipping",
+                current_snippet_count, MAX_SQL_SNIPPETS,
+            )
+            return None
+
         existing = metadata_snapshot.get("sql_snippets", {})
         type_key = {"measure": "measures", "filter": "filters", "expression": "expressions"}[snippet_type]
         for existing_item in (existing.get(type_key, []) or []):
@@ -7524,7 +7549,8 @@ def _convert_instructions_to_sql_expressions(
 
     try:
         text, _response = _traced_llm_call(
-            w, "", prompt, span_name="instruction_to_sql_expression",
+            w, "You are a SQL expression expert.", prompt,
+            span_name="instruction_to_sql_expression",
         )
     except Exception:
         logger.warning("Instruction-to-SQL-expression LLM call failed", exc_info=True)
@@ -7879,11 +7905,7 @@ def _filter_no_op_proposals(proposals: list[dict], metadata_snapshot: dict) -> l
                 existing_descs[(tbl_name, col_name)] = desc
                 existing_descs[(short_name, col_name)] = desc
 
-    existing_eqs_raw = (
-        (metadata_snapshot.get("config") or metadata_snapshot).get("example_question_sqls")
-        or metadata_snapshot.get("example_question_sqls")
-        or []
-    )
+    existing_eqs_raw = _get_existing_example_sqls(metadata_snapshot)
     existing_eq_questions: set[str] = set()
     for e in existing_eqs_raw:
         if isinstance(e, dict):
@@ -7931,6 +7953,7 @@ def _deduplicate_proposals(proposals: list[dict]) -> list[dict]:
     """Remove duplicate proposals using type-aware deduplication.
 
     - ``update_column_description`` / ``add_column_synonym``: dedup by (table, column).
+    - ``add_join_spec``: dedup by sorted (left_table, right_table) pair.
     - ``add_instruction``: merge near-duplicates (ngram similarity > 0.7).
     - ``add_example_sql``: dedup by normalized SQL text.
     - Others: dedup by exact (patch_type, proposed_value).
@@ -7938,6 +7961,7 @@ def _deduplicate_proposals(proposals: list[dict]) -> list[dict]:
     out: list[dict] = []
 
     col_desc_best: dict[tuple[str, str], int] = {}
+    join_spec_best: dict[tuple[str, str], int] = {}
     instruction_entries: list[tuple[int, dict]] = []
     example_sql_seen: dict[str, int] = {}
     exact_seen: dict[tuple[str, str], int] = {}
@@ -7957,6 +7981,22 @@ def _deduplicate_proposals(proposals: list[dict]) -> list[dict]:
                     out[existing_idx] = p
                 continue
             col_desc_best[key] = len(out)
+            out.append(p)
+
+        elif ptype == "add_join_spec":
+            js = p.get("join_spec", {})
+            left_obj = js.get("left", {})
+            right_obj = js.get("right", {})
+            lt = left_obj.get("identifier", "") if isinstance(left_obj, dict) else ""
+            rt = right_obj.get("identifier", "") if isinstance(right_obj, dict) else ""
+            if lt and rt:
+                key = tuple(sorted((lt, rt)))
+                if key in join_spec_best:
+                    existing_idx = join_spec_best[key]
+                    if impact > out[existing_idx].get("net_impact", 0):
+                        out[existing_idx] = p
+                    continue
+                join_spec_best[key] = len(out)
             out.append(p)
 
         elif ptype == "add_instruction" and val:
@@ -8246,6 +8286,23 @@ def generate_proposals_from_strategy(
 
         # ── Lever 4: join specs ──────────────────────────────────────────
         elif target_lever == 4:
+            _inst_l4 = metadata_snapshot.get("instructions", {})
+            if not isinstance(_inst_l4, dict):
+                _inst_l4 = {}
+            _existing_join_specs = _inst_l4.get("join_specs", [])
+            if not isinstance(_existing_join_specs, list):
+                _existing_join_specs = []
+            _existing_join_pairs: set[tuple[str, str]] = set()
+            for _ejs in _existing_join_specs:
+                if not isinstance(_ejs, dict):
+                    continue
+                _ej_left = _ejs.get("left", {})
+                _ej_right = _ejs.get("right", {})
+                _ej_lt = _ej_left.get("identifier", "") if isinstance(_ej_left, dict) else ""
+                _ej_rt = _ej_right.get("identifier", "") if isinstance(_ej_right, dict) else ""
+                if _ej_lt and _ej_rt:
+                    _existing_join_pairs.add(tuple(sorted((_ej_lt, _ej_rt))))
+
             for js_entry in lever_dir.get("join_specs", []):
                 if not isinstance(js_entry, dict):
                     continue
@@ -8253,6 +8310,9 @@ def generate_proposals_from_strategy(
                 right_table = js_entry.get("right_table", "")
                 guidance = js_entry.get("join_guidance", "")
                 if left_table and right_table:
+                    if tuple(sorted((left_table, right_table))) in _existing_join_pairs:
+                        logger.info("[%s] Join spec skipped (already defined): %s ↔ %s", ag_id, left_table, right_table)
+                        continue
                     sanitized_guidance = _sanitize_join_sql(guidance) if guidance else ""
                     join_spec = ensure_join_spec_fields({
                         "left": {"identifier": left_table},
@@ -8299,7 +8359,7 @@ def generate_proposals_from_strategy(
                 tuple(sorted((p["join_spec"]["left"]["identifier"],
                                p["join_spec"]["right"]["identifier"])))
                 for p in proposals if p.get("join_spec")
-            }
+            } | _existing_join_pairs
             for _ja in _ja_entries:
                 _lt = _ja.get("left_table", "")
                 _rt = _ja.get("right_table", "")

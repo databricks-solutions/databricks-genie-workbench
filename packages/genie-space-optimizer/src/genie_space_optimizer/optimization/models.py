@@ -653,19 +653,20 @@ def register_uc_model(
                 uc_model_name, version, prev_champion_version,
             )
 
-        # ── 7. Link deployment job (optional) ──
-        if ws is not None:
-            try:
-                from genie_space_optimizer.backend.job_launcher import ensure_deployment_job
-                deploy_job_id = ensure_deployment_job(
-                    ws, space_id=space_id, catalog=catalog, schema=schema,
-                )
-                client.update_registered_model(
-                    uc_model_name, deployment_job_id=str(deploy_job_id),
-                )
-                logger.info("Linked deployment job %s to UC model %s", deploy_job_id, uc_model_name)
-            except Exception:
-                logger.exception("Failed to link deployment job (non-fatal)")
+        # ── 7. Link deployment job (disabled — deploy step is currently hidden) ──
+        # Re-enable when deploy UI is fully fleshed out.
+        # if ws is not None:
+        #     try:
+        #         from genie_space_optimizer.backend.job_launcher import ensure_deployment_job
+        #         deploy_job_id = ensure_deployment_job(
+        #             ws, space_id=space_id, catalog=catalog, schema=schema,
+        #         )
+        #         client.update_registered_model(
+        #             uc_model_name, deployment_job_id=str(deploy_job_id),
+        #         )
+        #         logger.info("Linked deployment job %s to UC model %s", deploy_job_id, uc_model_name)
+        #     except Exception:
+        #         logger.exception("Failed to link deployment job (non-fatal)")
 
         return {
             "uc_model_name": uc_model_name,

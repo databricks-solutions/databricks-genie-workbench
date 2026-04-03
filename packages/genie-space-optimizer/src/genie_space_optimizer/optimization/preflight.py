@@ -42,6 +42,7 @@ from genie_space_optimizer.optimization.applier import _get_general_instructions
 from genie_space_optimizer.optimization.evaluation import (
     _drop_benchmark_table,
     _flag_stale_temporal_benchmarks,
+    _set_sql_context,
     create_evaluation_dataset,
     extract_genie_space_benchmarks,
     generate_benchmarks,
@@ -1577,6 +1578,7 @@ def preflight_setup_experiment(
     prompt_registrations.
     """
     uc_schema = f"{catalog}.{schema}"
+    _set_sql_context(spark, catalog, schema)
 
     if experiment_name is None:
         experiment_name = _resolve_experiment_path(space_id=space_id, domain=domain)

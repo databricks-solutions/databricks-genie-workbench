@@ -99,7 +99,7 @@ def _delta_query(sql: str) -> list[dict]:
         return []
     try:
         from genie_space_optimizer.common.warehouse import sql_warehouse_query
-        ws = get_workspace_client()
+        ws = get_service_principal_client()
         df = sql_warehouse_query(ws, config.warehouse_id, sql)
         if df.empty:
             return []
@@ -1202,7 +1202,7 @@ async def get_run_status(run_id: RunId):
         status = _normalize_step_status_for_terminal_run(
             status=status, run_status=run_status_str,
         )
-        if status == "completed":
+        if status in ("completed", "skipped"):
             steps_completed += 1
         elif status == "running" and current_step_name is None:
             current_step_name = step_def["name"]

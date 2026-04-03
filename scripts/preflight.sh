@@ -13,14 +13,39 @@ _preflight_check_tools() {
     command -v python3 &>/dev/null    || missing+=("python3")
     command -v node &>/dev/null       || missing+=("node")
     command -v npm &>/dev/null        || missing+=("npm")
+    command -v uv &>/dev/null         || missing+=("uv")
     if [ ${#missing[@]} -gt 0 ]; then
         echo ""
         echo "  ✗ Missing required tools: ${missing[*]}"
         echo ""
+        if [[ " ${missing[*]} " == *" uv "* ]]; then
+            echo "  Install uv:"
+            echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"
+            echo "    or: brew install uv"
+            echo ""
+        fi
         echo "  Remediation: install the missing tools and re-run scripts/deploy.sh"
         exit 1
     fi
-    echo "  ✓ All required tools available (databricks, python3, node, npm)"
+    echo "  ✓ All required tools available (databricks, python3, node, npm, uv)"
+
+    # Verify Databricks CLI version meets minimum for bundle app/job support
+    local cli_version
+    cli_version=$(databricks --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+    if [ -n "$cli_version" ]; then
+        local minor
+        minor=$(echo "$cli_version" | cut -d. -f2)
+        if [ "$(echo "$cli_version" | cut -d. -f1)" -eq 0 ] && [ "$minor" -lt 239 ]; then
+            echo ""
+            echo "  ✗ Databricks CLI version $cli_version is too old (minimum: 0.239.0)."
+            echo ""
+            echo "  Remediation:"
+            echo "    pip install --upgrade databricks-cli"
+            echo "    or: brew upgrade databricks"
+            exit 1
+        fi
+        echo "  ✓ Databricks CLI version $cli_version"
+    fi
 }
 
 _preflight_check_profile() {

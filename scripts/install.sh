@@ -118,6 +118,12 @@ else
     MISSING+=("npm — installed with Node.js")
 fi
 
+if command -v uv &>/dev/null; then
+    _ok "uv ($(uv --version 2>/dev/null))"
+else
+    MISSING+=("uv — https://docs.astral.sh/uv/  (curl -LsSf https://astral.sh/uv/install.sh | sh)")
+fi
+
 if [ ${#MISSING[@]} -gt 0 ]; then
     echo ""
     _error "Missing prerequisites:"

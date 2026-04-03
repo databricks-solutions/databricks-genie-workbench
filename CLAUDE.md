@@ -1,29 +1,40 @@
 # Genie Workbench
 
-Databricks App for creating, scoring, and optimizing Genie Spaces. FastAPI backend + React/Vite frontend deployed together on Databricks Apps.
+Databricks App for creating, scoring, and optimizing Genie Spaces. FastAPI backend + React/Vite frontend deployed together on Databricks Apps. It runs exclusively on the Databricks Apps platform — there is no local dev server.
+
+## Critical Rules
+
+- **DO NOT run `uvicorn` locally.** The app requires Databricks OBO auth, Lakebase PostgreSQL, and model-serving endpoints that are only available inside a Databricks App.
+- **DO NOT run `databricks bundle init`.** It overwrites the project's `databricks.yml` and destroys the existing configuration.
+- **DO NOT use `npm install` in build or deploy scripts** — always use `npm ci`. `npm install` can silently upgrade packages within `^` ranges; `npm ci` enforces the exact lockfile.
+- **DO NOT edit `requirements.txt` manually.** It is generated from `uv.lock` as a pip-compatible reference but is excluded from deployment via `.databricksignore`. The platform uses `uv sync` (pyproject.toml + uv.lock) for hash-verified installs.
+- All testing is done by deploying to a real Databricks workspace, not by running locally.
 
 ## Commands
 
 ```bash
-# Install
-uv pip install -e .                          # Install Python deps
+# Python (local tooling only — not required for deploy)
+uv sync --frozen                         # Install from uv.lock (strict)
+uv pip install -e .                      # Fallback: install without lock enforcement
 
 # Frontend (from frontend/)
-cd frontend && npm install && npm run build  # Build for production
-cd frontend && npm run lint                  # ESLint
-
-# Full build (what Databricks Apps runs)
-npm install   # Triggers postinstall -> cd frontend && npm install
-npm run build # Triggers cd frontend && npm run build
+cd frontend && npm ci && npm run build   # Build for production (strict lockfile)
+cd frontend && npm run lint              # ESLint
 
 # Deploy
-./scripts/install.sh       # First-time setup (interactive, creates .env.deploy)
-./scripts/deploy.sh        # Build, bundle deploy, app deploy (idempotent)
+./scripts/install.sh                     # First-time setup (interactive, creates .env.deploy)
+./scripts/deploy.sh                      # Full deploy: build + sync + configure + redeploy
+./scripts/deploy.sh --update             # Code-only update (faster, skips app creation)
+./scripts/deploy.sh --destroy            # Tear down app and clean up jobs (see Gotchas for scope)
+./scripts/deploy.sh --destroy --auto-approve  # Tear down without confirmation prompt
 
 # Dependency management
 # requirements.txt is auto-generated from uv.lock — do not edit manually.
 # After adding/bumping a Python dep in pyproject.toml:
-uv lock && uv export --frozen --no-hashes --no-emit-project --no-dev -o requirements.txt
+uv lock --upgrade-package <package-name>
+uv export --frozen --no-dev --no-hashes --format requirements-txt \
+  | grep -v "^-e " > requirements.txt
+echo "-e ./packages/genie-space-optimizer" >> requirements.txt
 
 # Tests (require running backend at localhost:8000)
 python tests/test_e2e_local.py    # E2E create agent tests
@@ -63,11 +74,10 @@ backend/
   references/schema.md     # Genie Space JSON schema reference
 scripts/
   install.sh               # Guided first-time setup (creates .env.deploy, provisions resources)
-  deploy.sh                # Build + bundle deploy + app deploy (idempotent)
+  deploy.sh                # Build + bundle deploy (job) + app deploy (idempotent)
   preflight.sh             # Pre-deploy validation checks
   build.sh                 # Frontend build
   deploy-config.sh         # Shared deploy configuration/variables
-  ensure_gso_job.py        # Ensures GSO optimization job exists in workspace
   grant_permissions.py     # Grants required permissions for app resources
   setup_synced_tables.py   # Sets up GSO synced tables in Lakebase
 frontend/
@@ -136,7 +146,20 @@ Do NOT suggest running `uvicorn` or `npm run dev` locally. The app depends on Da
 - **Two separate optimization paths** — Fix Agent (`fix_agent.py`, from scan findings, auto-applies JSON patches) and Auto-Optimize (`auto_optimize.py` + GSO engine in `packages/genie-space-optimizer/`, full benchmark-driven optimization pipeline). They're independent.
 - **Vite proxy** — dev frontend at :5173 proxies `/api` to :8000. In production, FastAPI serves static files from `frontend/dist/` directly.
 - **Python 3.11+** required (`pyproject.toml`). Uses `uv` for dependency management (`uv.lock` present).
-- **Root `package.json`** exists solely as a build hook for Databricks Apps — `postinstall` chains to `frontend/npm install`, `build` chains to `frontend/npm run build`.
+- **Root `package.json`** exists solely as a build hook for Databricks Apps. `postinstall` is a no-op (frontend deps are installed by `deploy.sh` locally). `build` checks for pre-built `frontend/dist/index.html` — if present (uploaded by `deploy.sh`), skips the rebuild; falls back to a full build only if dist is missing. This prevents cross-platform Rollup failures on the Linux deploy container.
+- **Two deployment mechanisms** — `deploy.sh` manages the app (create, sync, `databricks apps deploy`) while the optimization job is managed by DABs (`databricks bundle deploy -t app`). The `app` target uses `mode: development` for per-deployer Terraform state with `presets.name_prefix: ""` for clean job names (no `[dev]` prefix). Do NOT run `databricks bundle deploy -t dev` for production — it creates prefixed orphan jobs.
+- **Databricks CLI >= 0.239.0 required** — `preflight.sh` validates this automatically.
+- **`--destroy` does not remove all resources** — it deletes the app and jobs but leaves behind: Lakebase data (`genie` schema), UC schema/tables (`<catalog>.genie_space_optimizer`), Genie Space SP permissions, MLflow experiments, and synced tables. Clean these up manually if needed.
+
+## Platform Build Strategy
+
+The Databricks Apps platform detects `package.json` at the root and runs `npm install` then `npm run build`. To avoid cross-platform failures (macOS lockfile vs Linux container) and redundant rebuilds, the root `package.json` is configured as follows:
+
+- **`postinstall`**: No-op. Frontend deps are installed by `deploy.sh` locally.
+- **`build`**: Checks for pre-built `frontend/dist/index.html`. If present (uploaded by `deploy.sh`), skips the rebuild. Falls back to a full build only if dist is missing.
+- **`start`**: Runs uvicorn (though `app.yaml` `command` takes precedence).
+
+Python dependencies use `uv sync` on the platform (because `requirements.txt` is excluded from `.databricksignore`). This gives a clean venv with SHA256-verified hashes, avoiding conflicts with pre-installed platform packages (dash, gradio, streamlit, etc.).
 
 ## Code Style
 

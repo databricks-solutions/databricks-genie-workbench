@@ -16,7 +16,8 @@ The app is a FastAPI backend serving a React/Vite frontend, deployed as a [Datab
 
 ## Prerequisites
 
-* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.230+ recommended)
+* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.239.0+ required)
+* [uv](https://docs.astral.sh/uv/) — Python package manager (used for dependency management and hash-verified installs)
 * Node.js (18+ recommended) and npm
 * Python 3.11+
 * A Databricks workspace with:
@@ -49,14 +50,18 @@ databricks auth login --profile <workspace-profile>
 ```
 
 The installer will:
-1. Check prerequisites (CLI, Node, Python)
+1. Check prerequisites (CLI, Node, Python, npm, uv)
 2. Ask for your Databricks CLI profile
-3. Ask for catalog and SQL warehouse (auto-discovered from your workspace)
-4. Ask for LLM model endpoint
-5. Ask for Lakebase instance name and app name
-6. Write `.env.deploy` with your configuration
-7. Run `scripts/deploy.sh` to build and deploy the app
-8. Resolve the app's service principal and optionally grant access to your existing Genie Spaces
+3. Ask for catalog (auto-discovered from your workspace)
+4. Ask for SQL warehouse (auto-discovered from your workspace)
+5. Ask for LLM model endpoint
+6. Optionally configure MLflow tracing (creates or links an experiment)
+7. Ask for Lakebase instance name
+8. Ask for app name
+9. Write `.env.deploy` with your configuration
+10. Run `scripts/deploy.sh` to build and deploy the app
+11. Resolve the app's service principal
+12. Optionally grant the SP access to your existing Genie Spaces
 
 ### 4. Attach Lakebase (optional but recommended)
 
@@ -122,9 +127,20 @@ Set these in `.env.deploy` or as environment variables:
 ```bash
 ./scripts/deploy.sh                           # Full deploy: create app, sync code, configure, deploy
 ./scripts/deploy.sh --update                  # Code-only update: sync + redeploy (faster)
-./scripts/deploy.sh --destroy                 # Delete the app and clean up jobs
-./scripts/deploy.sh --destroy --auto-approve  # Delete without confirmation prompt
+./scripts/deploy.sh --destroy                 # Tear down app and clean up jobs
+./scripts/deploy.sh --destroy --auto-approve  # Tear down without confirmation prompt
 ```
+
+### What `--destroy` cleans up (and what it doesn't)
+
+`--destroy` deletes the Databricks App, runtime-created jobs, and the bundle-managed optimization job. It does **not** remove:
+- Lakebase data (the `genie` schema in `databricks_postgres`)
+- Unity Catalog schema/tables (`<catalog>.genie_space_optimizer` and its 8 tables)
+- Genie Space SP permissions granted during install
+- MLflow experiments created during install
+- Synced tables (if manually created)
+
+Clean these up manually if you want a full teardown.
 
 ### What `deploy.sh` does
 
@@ -184,8 +200,7 @@ The app uses On-Behalf-Of (OBO) auth — users see only Genie Spaces they have p
 | `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps |
 | Auto-Optimize fails at "Baseline Evaluation" with `FEATURE_DISABLED` | Prompt Registry not enabled on workspace | Contact workspace admin to enable MLflow Prompt Registry |
 | Unresolved `__GSO_*__` placeholders | deploy.sh couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
-| GSO job creation fails during deploy | Missing build dependencies or UC Volume permission | Check `ensure_gso_job.py` output; run `pip install build` if needed |
-| `ModuleNotFoundError: build` | `build` package not installed for wheel creation | `pip install build` |
+| GSO job creation fails during deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.239.0 and `pip install build` |
 | Notebook upload fails (`RESOURCE_DOES_NOT_EXIST`) | `/Workspace/Shared/` not writable by deployer | Check workspace-level permissions on the upload path |
 
 > **Note on MLflow tracing:** The `MLFLOW_EXPERIMENT_ID` in `app.yaml` is workspace-specific. The app validates it at startup and silently disables tracing if the experiment doesn't exist in your workspace. To enable tracing, create an MLflow experiment and update the value in `app.yaml` before deploying.

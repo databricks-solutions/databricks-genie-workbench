@@ -608,30 +608,14 @@ function SpaceDetail() {
             {/* Apply mode toggle */}
             <div className="space-y-2">
               <p className="text-xs font-medium text-muted">Apply mode</p>
-              <div className="inline-flex rounded-md border border-db-gray-border p-1">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={applyMode === "genie_config" ? "default" : "ghost"}
-                  onClick={() => setApplyMode("genie_config")}
-                >
-                  Config Only
-                </Button>
-                <div className="relative">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    disabled
-                    className="opacity-50"
-                  >
-                    Config + UC Write Backs
-                  </Button>
-                  <span className="absolute -top-2 -right-2 rounded-full bg-amber-100 text-amber-700 text-[10px] font-medium px-1.5 py-0.5 border border-amber-200">
-                    Coming soon
-                  </span>
-                </div>
-              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant={applyMode === "genie_config" ? "default" : "ghost"}
+                onClick={() => setApplyMode("genie_config")}
+              >
+                Config Only
+              </Button>
               <p className="text-xs text-muted max-w-xs">
                 Changes will be applied only to the selected Genie Space configuration. Underlying Unity Catalog tables, columns, and descriptions will not be modified.
               </p>

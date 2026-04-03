@@ -386,8 +386,8 @@ async def scan_space(space_id: str, user_token: Optional[str] = None) -> dict:
                 if catalog and wh_id:
                     try:
                         from genie_space_optimizer.common.warehouse import sql_warehouse_query
-                        from backend.services.auth import get_workspace_client
-                        ws = get_workspace_client()
+                        from backend.services.auth import get_service_principal_client
+                        ws = get_service_principal_client()
                         df = sql_warehouse_query(
                             ws, wh_id,
                             f"SELECT run_id, space_id, status, best_accuracy, completed_at, started_at "

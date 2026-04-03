@@ -1264,6 +1264,16 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                 )
             if not _validate_example_sql_entry(new_entry, config=config):
                 return False
+            q_lower = question_text.strip().lower()
+            for existing in eqs:
+                eq_val = existing.get("question", [])
+                existing_q = eq_val[0] if isinstance(eq_val, list) and eq_val else str(eq_val)
+                if existing_q.strip().lower() == q_lower:
+                    logger.info(
+                        "Example SQL add skipped — duplicate question: %.80s",
+                        question_text,
+                    )
+                    return True
             eqs.append(new_entry)
             return True
         if op == "update":
@@ -1431,6 +1441,18 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                 js = ensure_join_spec_fields(js, config=config)
                 if not _validate_join_spec_entry(js):
                     return False
+                new_lt = _join_spec_left_id(js)
+                new_rt = _join_spec_right_id(js)
+                if new_lt and new_rt:
+                    new_pair = tuple(sorted((new_lt, new_rt)))
+                    for existing in specs:
+                        ex_pair = tuple(sorted((_join_spec_left_id(existing), _join_spec_right_id(existing))))
+                        if ex_pair == new_pair:
+                            logger.info(
+                                "Join spec add skipped — pair already exists: %s ↔ %s",
+                                new_lt, new_rt,
+                            )
+                            return True
                 specs.append(js)
             return True
         if op == "remove":
@@ -1473,6 +1495,24 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                 snippet["id"] = generate_genie_id()
             if not _validate_sql_snippet_entry(snippet, snippet_type_key):
                 return False
+            new_sql_val = snippet.get("sql", [])
+            new_sql_str = (
+                new_sql_val[0] if isinstance(new_sql_val, list) and new_sql_val
+                else str(new_sql_val)
+            ).strip().lower()
+            if new_sql_str:
+                for existing in items:
+                    ex_sql_val = existing.get("sql", [])
+                    ex_sql_str = (
+                        ex_sql_val[0] if isinstance(ex_sql_val, list) and ex_sql_val
+                        else str(ex_sql_val)
+                    ).strip().lower()
+                    if ex_sql_str == new_sql_str:
+                        logger.info(
+                            "SQL snippet add skipped — duplicate SQL: %.80s",
+                            new_sql_str,
+                        )
+                        return True
             items.append(snippet)
             return True
 
@@ -1705,7 +1745,9 @@ def apply_patch_set(
 
     from genie_space_optimizer.common.genie_schema import (
         count_instruction_slots,
+        count_sql_snippets,
         MAX_INSTRUCTION_SLOTS,
+        MAX_SQL_SNIPPETS,
         validate_serialized_space,
     )
 
@@ -1739,6 +1781,29 @@ def apply_patch_set(
                 "Cannot trim enough instruction slots — %d excess slots from "
                 "table/metric descriptions alone. Manual description cleanup required.",
                 excess,
+            )
+
+    snippet_count = count_sql_snippets(config)
+    if snippet_count > MAX_SQL_SNIPPETS:
+        snippet_excess = snippet_count - MAX_SQL_SNIPPETS
+        logger.warning(
+            "Post-apply config exceeds SQL snippet budget (%d/%d, excess=%d) — "
+            "trimming expressions, then measures, then filters",
+            snippet_count, MAX_SQL_SNIPPETS, snippet_excess,
+        )
+        snippets_block = (config.get("instructions") or {}).get("sql_snippets", {})
+        for trim_key in ("expressions", "measures", "filters"):
+            if snippet_excess <= 0:
+                break
+            trim_items = snippets_block.get(trim_key, [])
+            if trim_items:
+                trim_n = min(len(trim_items), snippet_excess)
+                snippets_block[trim_key] = trim_items[:-trim_n]
+                snippet_excess -= trim_n
+        if snippet_excess > 0:
+            logger.error(
+                "Cannot trim enough SQL snippets — %d excess remain.",
+                snippet_excess,
             )
 
     config_ok, validation_errors = validate_serialized_space(config, strict=True)

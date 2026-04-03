@@ -35,6 +35,7 @@ _THREE_LEVEL_RE = re.compile(r"^[^.]+\.[^.]+\.[^.]+$")
 MAX_STRING_LENGTH = 25_000
 MAX_ARRAY_SIZE = 10_000
 MAX_INSTRUCTION_SLOTS = 100
+MAX_SQL_SNIPPETS = 200
 
 
 # ── ID generation utility ────────────────────────────────────────────
@@ -642,6 +643,19 @@ def count_instruction_slots(config: dict) -> int:
     return text_count + example_count + function_count + table_desc_count + mv_desc_count
 
 
+def count_sql_snippets(config: dict) -> int:
+    """Count total SQL snippets (expressions + measures + filters) in *config*.
+
+    The Genie API enforces a separate limit of 200 for SQL snippets.
+    These do **not** count toward the 100 instruction-slot budget.
+    """
+    snippets = (config.get("instructions") or {}).get("sql_snippets") or {}
+    return sum(
+        len(snippets.get(k) or [])
+        for k in ("expressions", "measures", "filters")
+    )
+
+
 def _strict_validate(config: dict) -> list[str]:
     """Run all strict validation rules against a parsed config dict.
 
@@ -812,6 +826,18 @@ def _strict_validate(config: dict) -> list[str]:
             f"Instruction slot budget exceeded: {slot_count}/{MAX_INSTRUCTION_SLOTS} "
             f"(example_sqls={_eq_ct}, sql_functions={_fn_ct}, "
             f"text_instructions={_text_ct}, table_descs={_tbl_ct}, mv_descs={_mv_ct})"
+        )
+
+    # ── SQL snippet budget (200 total) ──────────────────────────
+    snippet_count = count_sql_snippets(config)
+    if snippet_count > MAX_SQL_SNIPPETS:
+        _snip = (config.get("instructions") or {}).get("sql_snippets") or {}
+        _exp_ct = len(_snip.get("expressions") or [])
+        _meas_ct = len(_snip.get("measures") or [])
+        _filt_ct = len(_snip.get("filters") or [])
+        errors.append(
+            f"SQL snippet budget exceeded: {snippet_count}/{MAX_SQL_SNIPPETS} "
+            f"(expressions={_exp_ct}, measures={_meas_ct}, filters={_filt_ct})"
         )
 
     # ── Table identifier format ──────────────────────────────────

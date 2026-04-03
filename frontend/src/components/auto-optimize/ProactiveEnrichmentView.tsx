@@ -39,14 +39,33 @@ const SECTIONS = [
 
 function parsePatchData(raw: Record<string, unknown> | string | null): Record<string, unknown> {
   if (!raw) return {}
+  if (typeof raw === "object") return raw
   if (typeof raw === "string") {
     try {
-      return JSON.parse(raw)
+      let parsed = JSON.parse(raw)
+      if (typeof parsed === "string") parsed = JSON.parse(parsed)
+      if (typeof parsed === "string") parsed = JSON.parse(parsed)
+      return typeof parsed === "object" && parsed !== null ? parsed : {}
     } catch {
       return {}
     }
   }
-  return raw
+  return {}
+}
+
+const STRUCTURED_SECTION_KEYS = [
+  "purpose", "definition", "best_for", "grain", "values", "aggregation",
+  "scd", "relationships", "join", "grain_note", "important_filters",
+  "synonyms", "use_instead_of", "parameters", "example",
+] as const
+
+function extractStructuredDesc(sections: Record<string, string>): string {
+  const parts: string[] = []
+  for (const key of STRUCTURED_SECTION_KEYS) {
+    const val = sections[key]
+    if (val && typeof val === "string") parts.push(val)
+  }
+  return parts.join(" · ")
 }
 
 function ExampleSqlsSection({ patches }: { patches: GSOPatchDetail[] }) {
@@ -57,16 +76,25 @@ function ExampleSqlsSection({ patches }: { patches: GSOPatchDetail[] }) {
           <tr className="border-b border-default">
             <th className="text-left px-3 py-1.5 text-muted font-medium w-8">#</th>
             <th className="text-left px-3 py-1.5 text-muted font-medium">Question</th>
+            <th className="text-left px-3 py-1.5 text-muted font-medium">SQL</th>
           </tr>
         </thead>
         <tbody>
           {patches.map((p, i) => {
             const patchData = parsePatchData(p.patch)
             const question = String(patchData.question || patchData.example_question || "—")
+            const sql = String(patchData.sql || patchData.example_sql || "")
             return (
               <tr key={i} className="border-b border-default last:border-0">
-                <td className="px-3 py-2 text-muted tabular-nums">{i + 1}</td>
-                <td className="px-3 py-2 text-primary">{question}</td>
+                <td className="px-3 py-2 text-muted tabular-nums align-top">{i + 1}</td>
+                <td className="px-3 py-2 text-primary align-top max-w-[300px]">{question}</td>
+                <td className="px-3 py-2 align-top">
+                  {sql ? (
+                    <code className="text-[11px] font-mono bg-elevated/50 rounded px-1.5 py-0.5 text-primary block whitespace-pre-wrap leading-relaxed">
+                      {sql}
+                    </code>
+                  ) : "—"}
+                </td>
               </tr>
             )
           })}
@@ -133,7 +161,14 @@ function DescriptionsSection({ patches }: { patches: GSOPatchDetail[] }) {
           {patches.map((p, i) => {
             const patchData = parsePatchData(p.patch)
             const cmdData = parsePatchData(p.command)
-            const desc = String(patchData.description || cmdData.description || "—")
+            const patStructured = (patchData.structured_sections || {}) as Record<string, string>
+            const cmdStructured = (cmdData.structured_sections || {}) as Record<string, string>
+            const desc =
+              extractStructuredDesc(patStructured)
+              || extractStructuredDesc(cmdStructured)
+              || String(patchData.description || cmdData.description
+                 || cmdData.new_text || patchData.new_text
+                 || "—")
             return (
               <tr key={i} className="border-b border-default last:border-0">
                 <td className="px-3 py-2 text-muted tabular-nums">{i + 1}</td>
@@ -158,21 +193,30 @@ function JoinsSection({ patches }: { patches: GSOPatchDetail[] }) {
           <tr className="border-b border-default">
             <th className="text-left px-3 py-1.5 text-muted font-medium w-8">#</th>
             <th className="text-left px-3 py-1.5 text-muted font-medium">Target</th>
-            <th className="text-left px-3 py-1.5 text-muted font-medium">Details</th>
+            <th className="text-left px-3 py-1.5 text-muted font-medium">Relationship</th>
+            <th className="text-left px-3 py-1.5 text-muted font-medium">Condition</th>
           </tr>
         </thead>
         <tbody>
           {patches.map((p, i) => {
             const cmdData = parsePatchData(p.command)
-            const detail = typeof cmdData === "object" && Object.keys(cmdData).length > 0
-              ? JSON.stringify(cmdData)
-              : "—"
+            const patchData = parsePatchData(p.patch)
+            const src = Object.keys(cmdData).length > 0 ? cmdData : patchData
+            const joinSpec = (src.join_spec || src) as Record<string, unknown>
+            const relationship = String(joinSpec.relationship || "")
+            const sqlArr = Array.isArray(joinSpec.sql) ? joinSpec.sql : []
+            const condition = sqlArr[0] ? String(sqlArr[0]) : ""
             return (
               <tr key={i} className="border-b border-default last:border-0">
                 <td className="px-3 py-2 text-muted tabular-nums">{i + 1}</td>
                 <td className="px-3 py-2 text-primary font-mono">{p.targetObject || "—"}</td>
-                <td className="px-3 py-2 text-muted font-mono text-[11px] truncate max-w-[400px]" title={detail}>
-                  {detail}
+                <td className="px-3 py-2 text-muted">{relationship || "—"}</td>
+                <td className="px-3 py-2">
+                  {condition ? (
+                    <code className="text-[11px] font-mono bg-elevated/50 rounded px-1.5 py-0.5 text-primary">
+                      {condition}
+                    </code>
+                  ) : "—"}
                 </td>
               </tr>
             )

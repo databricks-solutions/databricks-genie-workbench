@@ -101,17 +101,14 @@ env:
 # ---------------------------------------------------------------------------
 # Deployment
 # ---------------------------------------------------------------------------
-# Recommended: Use the bundle deploy for automated setup:
+# Recommended:
 #   ./scripts/install.sh        # Guided first-time setup
 #   ./scripts/deploy.sh          # Subsequent deploys
 #
-# The bundle (databricks.yml) automatically:
-#   - Configures all OAuth scopes (no UI clicks needed)
-#   - Deploys the GSO optimization job
-#   - Injects GSO_JOB_ID into the app env
-#   - Sets up the SQL warehouse resource
-#
-# Manual deploy (without bundle):
-#   npm run build && databricks apps deploy <app-name> --source-code-path .
-#   Then configure scopes and permissions manually per docs/DEPLOY.md
+# deploy.sh handles:
+#   - App creation/sync/deploy
+#   - OAuth scopes and resource configuration
+#   - GSO optimization job via `databricks bundle deploy -t app`
+#   - Injects GSO_JOB_ID into this file before running `apps deploy`
+#   - UC permissions and job permissions
 # ---------------------------------------------------------------------------

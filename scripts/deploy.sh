@@ -11,7 +11,7 @@ set -euo pipefail
 #     3. Create app (if not exists)
 #     4. Full-sync files to workspace
 #     5. Resolve app SP + Grant UC permissions (+ enable CDF on GSO tables)
-#     6. Resolve job ID + Grant job permissions
+#     6. Deploy optimization job via bundle (databricks bundle deploy -t app)
 #     7. Redeploy app (apps deploy --source-code-path)
 #     8. Verify deployment
 #
@@ -20,7 +20,7 @@ set -euo pipefail
 #     2. Build frontend
 #     3. Sync files to workspace
 #     4. Resolve app SP + Grant UC permissions (+ enable CDF on GSO tables)
-#     5. Resolve job ID + Grant job permissions
+#     5. Deploy optimization job via bundle
 #     6. Redeploy app (apps deploy --source-code-path)
 #     7. Verify deployment
 #     Skips app creation.
@@ -28,7 +28,8 @@ set -euo pipefail
 #
 #   Destroy mode (--destroy):
 #     1. Clean up runtime-created jobs
-#     2. Delete the app
+#     2. Destroy bundle-managed optimization job
+#     3. Delete the app
 #
 # Usage:
 #   export GENIE_WAREHOUSE_ID=<your-warehouse-id>   # required
@@ -71,9 +72,20 @@ if [ "$DESTROY_MODE" = "true" ]; then
     echo "╚══════════════════════════════════════════════════════════════╝"
     _print_config
 
+    if [ "$AUTO_APPROVE" != "true" ]; then
+        echo ""
+        echo "  This will permanently delete the app, optimization job, and all bundle state."
+        echo -n "  Continue? [y/N]: "
+        read -r confirm
+        if [[ ! "$confirm" =~ ^[Yy] ]]; then
+            echo "  Cancelled."
+            exit 0
+        fi
+    fi
+
     # ── Step 1: Clean up runtime-created jobs ──────────────────────────
     echo ""
-    echo "▸ Step 1/2: Cleaning up runtime-created jobs..."
+    echo "▸ Step 1/3: Cleaning up runtime-created jobs..."
     RUNTIME_JOBS=$(
         databricks jobs list --profile "$PROFILE" -o json 2>/dev/null \
         | python3 -c "
@@ -104,19 +116,22 @@ for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', [])):
         echo "  ✓ Cleaned up $DELETED runtime job(s)"
     fi
 
-    # ── Step 2: Delete the app ───────────────────────────────────────
+    # ── Step 2: Destroy bundle-managed optimization job ───────────────
     echo ""
-    echo "▸ Step 2/2: Deleting app '$APP_NAME'..."
+    echo "▸ Step 2/3: Destroying bundle-managed optimization job..."
+    if (cd "$PROJECT_DIR" && databricks bundle destroy -t app \
+        --var="catalog=${CATALOG}" \
+        --var="warehouse_id=${WAREHOUSE_ID:-placeholder}" \
+        --profile "$PROFILE" --auto-approve 2>&1 | sed 's/^/  /'); then
+        echo "  ✓ Bundle resources destroyed"
+    else
+        echo "  ⚠ Bundle destroy failed or no bundle state found (OK on first deploy)"
+    fi
+
+    # ── Step 3: Delete the app ───────────────────────────────────────
+    echo ""
+    echo "▸ Step 3/3: Deleting app '$APP_NAME'..."
     if databricks apps get "$APP_NAME" --profile "$PROFILE" &>/dev/null; then
-        if [ "$AUTO_APPROVE" != "true" ]; then
-            echo "  This will permanently delete the app and its compute."
-            echo -n "  Continue? [y/N]: "
-            read -r confirm
-            if [[ ! "$confirm" =~ ^[Yy] ]]; then
-                echo "  Cancelled."
-                exit 0
-            fi
-        fi
         if databricks apps delete "$APP_NAME" --profile "$PROFILE" 2>/dev/null; then
             echo "  ✓ App '$APP_NAME' deleted"
         else
@@ -190,7 +205,8 @@ if [ "$UPDATE_ONLY" = "true" ]; then
     # databricks sync --full only uploads — it never removes stale remote files.
     echo "  Cleaning stale workspace files..."
     databricks workspace delete "$WS_PATH" --profile "$PROFILE" --recursive 2>/dev/null || true
-    databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full
+    databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full \
+        --exclude-from "$PROJECT_DIR/.databricksignore"
     # frontend/dist/ is gitignored so databricks sync skips it — upload explicitly
     echo "  Uploading frontend build artifacts..."
     databricks workspace import-dir "$PROJECT_DIR/frontend/dist" \
@@ -227,7 +243,8 @@ else
     # databricks sync --full only uploads — it never removes stale remote files.
     echo "  Cleaning stale workspace files..."
     databricks workspace delete "$WS_PATH" --profile "$PROFILE" --recursive 2>/dev/null || true
-    databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full
+    databricks sync "$PROJECT_DIR" "$WS_PATH" --profile "$PROFILE" --full \
+        --exclude-from "$PROJECT_DIR/.databricksignore"
     # frontend/dist/ is gitignored so databricks sync skips it — upload explicitly
     echo "  Uploading frontend build artifacts..."
     databricks workspace import-dir "$PROJECT_DIR/frontend/dist" \
@@ -257,22 +274,102 @@ python3 "$SCRIPT_DIR/grant_permissions.py" \
     --warehouse-id "$WAREHOUSE_ID"
 echo "  ✓ UC grants applied"
 
-# ── Set up GSO optimization job ──────────────────────────────────────────
+# ── Deploy optimization job via bundle ────────────────────────────────────
 STEP=$((STEP + 1))
 echo ""
-echo "▸ Step $STEP/$TOTAL_STEPS: Setting up optimization job..."
+echo "▸ Step $STEP/$TOTAL_STEPS: Deploying optimization job via bundle..."
 
-# Find existing job or create one (builds wheel, uploads notebooks, creates job)
-if JOB_ID=$(python3 "$SCRIPT_DIR/ensure_gso_job.py" \
-    --profile "$PROFILE" \
-    --catalog "$CATALOG" \
-    --schema "$GSO_SCHEMA" \
-    --app-name "$APP_NAME" \
-    --project-dir "$PROJECT_DIR" \
-    --sp-client-id "$SP_CLIENT_ID"); then
+# Pre-validate: SP must be resolved (needed for post-deploy job permissions)
+if [ -z "$SP_CLIENT_ID" ]; then
+    echo "  ✗ Cannot deploy optimization job: SP client ID is empty."
+    echo ""
+    echo "  Remediation: ensure the app '$APP_NAME' exists and has a service principal."
+    exit 1
+fi
 
-    # Grant job permissions to deployer and SP
-    PERM_PAYLOAD=$(python3 -c "
+# databricks bundle deploy -t app:
+#   - Builds the GSO wheel (artifacts block)
+#   - Syncs job notebooks to workspace
+#   - Creates/updates the optimization job (Terraform-managed)
+# run_as is NOT set in the bundle — the app self-heals it at startup
+# via _ensure_gso_job_run_as() in backend/main.py (avoids needing
+# servicePrincipal.user role on the deployer).
+# The "app" target uses mode: development (per-deployer Terraform state)
+# with presets.name_prefix: "" (clean job names, no [dev] prefix).
+
+# Force full file sync on every deploy. The bundle CLI uses local snapshot
+# files to do incremental uploads; if the snapshot drifts from the workspace
+# (e.g. interrupted upload, workspace cleanup) notebooks silently go missing
+# and the job fails at runtime. Deleting the snapshots is cheap — the wheel
+# upload dominates deploy time, not the ~350 small file uploads.
+rm -f "$PROJECT_DIR/.databricks/bundle/app/sync-snapshots/"*.json 2>/dev/null || true
+
+set +e
+BUNDLE_OUTPUT=$(cd "$PROJECT_DIR" && databricks bundle deploy -t app \
+    --var="catalog=$CATALOG" \
+    --var="warehouse_id=$WAREHOUSE_ID" \
+    --profile "$PROFILE" 2>&1)
+BUNDLE_EXIT=$?
+set -e
+echo "$BUNDLE_OUTPUT" | sed 's/^/  /'
+
+if [ "$BUNDLE_EXIT" -ne 0 ]; then
+    echo ""
+    echo "  ✗ Bundle deploy failed (exit code $BUNDLE_EXIT)."
+    echo ""
+    echo "  Remediation:"
+    echo "    1. Check the error output above"
+    echo "    2. Common causes:"
+    echo "       - Databricks CLI too old (need >= 0.239.0)"
+    echo "       - Auth issue with profile '$PROFILE'"
+    echo "       - GSO wheel build failure (missing 'build' package)"
+    echo "       - Terraform state conflict (try: databricks bundle deploy -t app --force-lock)"
+    echo "    3. Fix the issue and re-run: ./scripts/deploy.sh --update"
+    exit 1
+fi
+
+# Verify critical job notebooks actually landed on the workspace.
+# The bundle's incremental sync can silently skip files if the local snapshot
+# diverges from workspace reality. This catches that failure at deploy time
+# rather than at job runtime.
+_PREFLIGHT_NB="/Workspace/Users/$DEPLOYER/.bundle/genie-workbench/app/files/packages/genie-space-optimizer/src/genie_space_optimizer/jobs/run_preflight"
+if ! databricks workspace get-status "$_PREFLIGHT_NB" --profile "$PROFILE" -o json >/dev/null 2>&1; then
+    echo ""
+    echo "  ✗ FATAL: Bundle file sync failed — job notebook not found at:"
+    echo "    $_PREFLIGHT_NB"
+    echo ""
+    echo "  Remediation:"
+    echo "    1. Delete stale sync snapshots:"
+    echo "       rm -f .databricks/bundle/app/sync-snapshots/*.json"
+    echo "    2. Re-run: ./scripts/deploy.sh --update"
+    exit 1
+fi
+echo "  ✓ Job notebooks verified on workspace"
+
+JOB_ID=$(cd "$PROJECT_DIR" && databricks bundle summary -t app \
+    --var="catalog=$CATALOG" \
+    --var="warehouse_id=$WAREHOUSE_ID" \
+    --profile "$PROFILE" -o json 2>/dev/null \
+    | python3 -c "
+import sys, json
+s = json.load(sys.stdin)
+print(s['resources']['jobs']['gso-optimization-runner']['id'])
+" 2>/dev/null) || true
+
+if [ -z "$JOB_ID" ]; then
+    echo "  ✗ Bundle deployed but could not resolve job ID from Terraform state."
+    echo ""
+    echo "  Remediation:"
+    echo "    1. Run: databricks bundle summary -t app --profile $PROFILE -o json"
+    echo "    2. Check if resources.jobs.gso-optimization-runner.id exists"
+    echo "    3. Re-run: ./scripts/deploy.sh --update"
+    exit 1
+fi
+
+echo "  ✓ Optimization job deployed: $JOB_ID"
+
+# Grant job permissions (bundle manages run_as; API call sets ownership + SP access)
+PERM_PAYLOAD=$(python3 -c "
 import json
 acl = [
     {'user_name': '$DEPLOYER', 'permission_level': 'IS_OWNER'},
@@ -281,16 +378,56 @@ acl = [
 ]
 print(json.dumps({'access_control_list': acl}))
 ")
-    if databricks api put "/api/2.0/permissions/jobs/$JOB_ID" --profile "$PROFILE" --json "$PERM_PAYLOAD" 2>/dev/null; then
-        echo "  ✓ Job permissions updated (owner=$DEPLOYER, SP=CAN_MANAGE, users=CAN_VIEW)"
+if databricks api put "/api/2.0/permissions/jobs/$JOB_ID" --profile "$PROFILE" --json "$PERM_PAYLOAD" 2>/dev/null; then
+    echo "  ✓ Job permissions updated (owner=$DEPLOYER, SP=CAN_MANAGE, users=CAN_VIEW)"
+else
+    echo "  ⚠ Could not set job permissions — SP may not be able to trigger optimization runs."
+fi
+
+# Grant SP access to bundle workspace notebooks so the job can read them.
+# Bundle deploys notebooks under the deployer's .bundle/ directory, which is
+# private by default. The SP needs CAN_MANAGE to run notebooks from there.
+WS_BUNDLE_ROOT="/Workspace/Users/$DEPLOYER/.bundle/genie-workbench/app"
+BUNDLE_DIR_OBJ_ID=$(
+    databricks workspace get-status "$WS_BUNDLE_ROOT" --profile "$PROFILE" -o json 2>/dev/null \
+    | python3 -c "import sys,json; print(json.load(sys.stdin)['object_id'])" 2>/dev/null
+) || true
+if [ -n "$BUNDLE_DIR_OBJ_ID" ]; then
+    if databricks api patch "/api/2.0/permissions/directories/$BUNDLE_DIR_OBJ_ID" \
+        --profile "$PROFILE" \
+        --json "{\"access_control_list\": [{\"service_principal_name\": \"$SP_CLIENT_ID\", \"permission_level\": \"CAN_MANAGE\"}]}" 2>/dev/null; then
+        echo "  ✓ SP granted CAN_MANAGE on bundle workspace directory"
     else
-        echo "  ⚠ Could not set job permissions — SP may not be able to trigger optimization runs."
+        echo "  ⚠ Could not grant SP access to bundle notebooks — job may fail to read notebooks"
     fi
 else
-    echo "  ⚠ Could not set up optimization job. Auto-Optimize will not be available."
-    echo "  You can retry by re-running: ./scripts/deploy.sh --update"
-    JOB_ID=""
+    echo "  ⚠ Could not resolve bundle workspace directory — SP may lack notebook access"
 fi
+
+# Clean up legacy jobs created by the old ensure_gso_job.py script.
+# These have name "genie-space-optimizer-job" and tag "persistent-dag"
+# but are NOT the bundle-managed job (different ID).
+LEGACY_JOBS=$(databricks jobs list --profile "$PROFILE" -o json 2>/dev/null \
+    | python3 -c "
+import sys, json
+bundle_id = '$JOB_ID'
+jobs = json.load(sys.stdin)
+for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', [])):
+    tags = (j.get('settings') or {}).get('tags', {})
+    name = (j.get('settings') or {}).get('name', '')
+    jid = str(j.get('job_id', ''))
+    if (tags.get('pattern') == 'persistent-dag'
+        and tags.get('app') in ('genie-workbench', 'genie-space-optimizer')
+        and jid != bundle_id):
+        print(jid)
+" 2>/dev/null || true)
+
+for OLD_JID in $LEGACY_JOBS; do
+    echo "  ℹ Found legacy optimization job $OLD_JID — deleting..."
+    databricks jobs delete "$OLD_JID" --profile "$PROFILE" 2>/dev/null && \
+        echo "  ✓ Legacy job $OLD_JID deleted" || \
+        echo "  ⚠ Could not delete legacy job $OLD_JID — delete it manually"
+done
 
 # ── Redeploy app (ensures freshest code) ─────────────────────────────────
 STEP=$((STEP + 1))
@@ -408,7 +545,7 @@ echo "  Checking critical files on workspace..."
 CRITICAL_FILES=(
     "$WS_PATH/backend/main.py"
     "$WS_PATH/backend/__init__.py"
-    "$WS_PATH/requirements.txt"
+    "$WS_PATH/pyproject.toml"
     "$WS_PATH/frontend/dist/index.html"
     "$WS_PATH/app.yaml"
 )
@@ -490,7 +627,7 @@ print(ad.get('status',{}).get('message','unknown error'))
     echo "  Remediation:"
     echo "    1. Check logs:  databricks apps logs $APP_NAME --profile $PROFILE"
     echo "    2. Common causes:"
-    echo "       - Missing Python dependencies (check requirements.txt)"
+    echo "       - Missing Python dependencies (check pyproject.toml and uv.lock)"
     echo "       - Import errors (check backend/main.py and its imports)"
     echo "       - Missing frontend/dist/ (gitignored, must be built + uploaded)"
     echo "    3. Fix the issue and re-run: ./scripts/deploy.sh --update"

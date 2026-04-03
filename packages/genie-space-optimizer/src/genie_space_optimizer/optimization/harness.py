@@ -17,6 +17,7 @@ Architecture: ``preflight`` → ``baseline_eval`` → ``enrichment`` →
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -1698,14 +1699,15 @@ def _apply_instruction_sql_expressions(
     instr = metadata_snapshot.get("instructions", {})
     if not isinstance(instr, dict):
         instr = {}
-    snippets = instr.setdefault("sql_snippets", {})
+    original_snippets = instr.get("sql_snippets", {})
+    working_snippets = copy.deepcopy(original_snippets) if original_snippets else {}
 
     applied = 0
     for c in candidates:
         stype = c["snippet_type"]
         category = f"{stype}s"
-        if category not in snippets:
-            snippets[category] = []
+        if category not in working_snippets:
+            working_snippets[category] = []
 
         _sql_val = c["sql"]
         entry: dict = {
@@ -1714,19 +1716,20 @@ def _apply_instruction_sql_expressions(
         }
         if c.get("display_name"):
             entry["display_name"] = c["display_name"]
-        if c.get("description"):
-            entry["description"] = c["description"]
-        if c.get("alias"):
+        if c.get("alias") and stype != "filter":
             entry["alias"] = c["alias"]
         if c.get("synonyms"):
             entry["synonyms"] = c["synonyms"]
 
-        snippets[category].append(entry)
+        working_snippets[category].append(entry)
         applied += 1
 
     if applied:
+        patch_copy = copy.deepcopy(metadata_snapshot)
+        patch_copy.setdefault("instructions", {})["sql_snippets"] = working_snippets
         try:
-            patch_space_config(w, space_id, metadata_snapshot)
+            patch_space_config(w, space_id, patch_copy)
+            metadata_snapshot.setdefault("instructions", {})["sql_snippets"] = working_snippets
             logger.info(
                 "Applied %d instruction-derived SQL expressions to space %s",
                 applied, space_id,
@@ -1789,7 +1792,7 @@ def _run_sql_expression_seeding(
         SQL_EXPRESSION_SEEDING_THRESHOLD,
     )
     from genie_space_optimizer.common.genie_client import patch_space_config
-    from genie_space_optimizer.common.genie_schema import generate_genie_id
+    from genie_space_optimizer.common.genie_schema import generate_genie_id, MAX_SQL_SNIPPETS
     from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
     from genie_space_optimizer.optimization.optimizer import (
         _discover_schema_sql_expressions,
@@ -1818,6 +1821,7 @@ def _run_sql_expression_seeding(
         len(existing_snippets.get(k, []) or [])
         for k in ("measures", "filters", "expressions")
     )
+    remaining_snippet_budget = max(0, MAX_SQL_SNIPPETS - existing_count)
 
     if existing_count >= SQL_EXPRESSION_SEEDING_THRESHOLD:
         _lines = [_section("SQL EXPRESSION SEEDING", "-")]
@@ -1875,10 +1879,18 @@ def _run_sql_expression_seeding(
 
         applied_snippets: list[dict] = []
         type_key_map = {"measure": "measures", "filter": "filters", "expression": "expressions"}
+        working_snippets_seed = copy.deepcopy(existing_snippets) if existing_snippets else {}
 
         for candidate in deduped:
             sql_raw = candidate["sql"]
             snippet_type = candidate["snippet_type"]
+
+            if len(applied_snippets) >= remaining_snippet_budget:
+                logger.info(
+                    "SQL expression seeding: stopping — snippet budget exhausted (%d/%d)",
+                    existing_count + len(applied_snippets), MAX_SQL_SNIPPETS,
+                )
+                break
 
             if any(_ngram_similarity(sql_raw.lower(), e) > 0.85 for e in existing_sql_set):
                 result["total_rejected"] += 1
@@ -1908,9 +1920,7 @@ def _run_sql_expression_seeding(
                 snippet_entry["alias"] = candidate["alias"]
 
             type_key = type_key_map[snippet_type]
-            inst = parsed.setdefault("instructions", {})
-            snippets_block = inst.setdefault("sql_snippets", {})
-            items = snippets_block.setdefault(type_key, [])
+            items = working_snippets_seed.setdefault(type_key, [])
             items.append(snippet_entry)
 
             applied_snippets.append({
@@ -1927,8 +1937,11 @@ def _run_sql_expression_seeding(
             existing_sql_set.add(sql_raw.lower())
 
         if applied_snippets:
+            patch_copy = copy.deepcopy(parsed)
+            patch_copy.setdefault("instructions", {})["sql_snippets"] = working_snippets_seed
             try:
-                patch_space_config(w, space_id, parsed)
+                patch_space_config(w, space_id, patch_copy)
+                parsed.setdefault("instructions", {})["sql_snippets"] = working_snippets_seed
             except Exception:
                 logger.warning("SQL expression seeding: PATCH failed", exc_info=True)
                 result["total_seeded"] = 0
@@ -2279,13 +2292,12 @@ def _run_enrichment(
                     w, spark, run_id, space_id, _instr_sql_candidates,
                     metadata_snapshot, catalog, schema,
                 )
-                if _instr_sql_applied > 0:
-                    config = fetch_space_config(w, space_id)
-                    config["_uc_columns"] = uc_columns
-                    metadata_snapshot = config.get("_parsed_space", config)
-                    metadata_snapshot["_data_profile"] = data_profile
-                    if uc_columns:
-                        enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                config = fetch_space_config(w, space_id)
+                config["_uc_columns"] = uc_columns
+                metadata_snapshot = config.get("_parsed_space", config)
+                metadata_snapshot["_data_profile"] = data_profile
+                if uc_columns:
+                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
             # ── 5b. SQL Expression Seeding ────────────────────────────────
             sql_expr_result = _run_sql_expression_seeding(
@@ -2295,7 +2307,7 @@ def _run_enrichment(
                 catalog=catalog, schema=schema,
                 warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
             )
-            if sql_expr_result.get("total_seeded", 0) > 0:
+            if sql_expr_result.get("total_candidates", 0) > 0:
                 config = fetch_space_config(w, space_id)
                 config["_uc_columns"] = uc_columns
                 metadata_snapshot = config.get("_parsed_space", config)
@@ -6875,11 +6887,28 @@ def optimize_genie_space(
         prev_accuracy = float(baseline_out["overall_accuracy"])
         thresholds_met = bool(baseline_out["thresholds_met"])
 
+        # Stage 2.5: Proactive Enrichment (always runs)
+        _enrichment_out = None
+        _effective_model_id = model_id
+        try:
+            _enrichment_out = _run_enrichment(
+                w, spark, run_id_str, space_id, domain, train_benchmarks, exp_name,
+                catalog, schema,
+                baseline_model_id=model_id,
+            )
+            if not _enrichment_out["enrichment_skipped"]:
+                _effective_model_id = _enrichment_out["enrichment_model_id"]
+        except Exception:
+            logger.exception(
+                "Enrichment failed for run %s — continuing with baseline model",
+                run_id_str,
+            )
+
         if thresholds_met:
             result.status = "CONVERGED"
             result.convergence_reason = "baseline_meets_thresholds"
             result.best_accuracy = prev_accuracy
-            result.best_model_id = model_id
+            result.best_model_id = _effective_model_id
             result.final_scores = prev_scores
             update_run_status(
                 spark, run_id_str, catalog, schema,
@@ -6913,7 +6942,7 @@ def optimize_genie_space(
             result.status = "CONVERGED"
             result.convergence_reason = "arbiter_saturated"
             result.best_accuracy = prev_accuracy
-            result.best_model_id = model_id
+            result.best_model_id = _effective_model_id
             result.final_scores = prev_scores
             write_stage(
                 spark, run_id_str, "ARBITER_SATURATED_EXIT", "COMPLETE",
@@ -6932,23 +6961,16 @@ def optimize_genie_space(
                 convergence_reason="arbiter_saturated",
             )
         else:
-            # Stage 2.5: Proactive Enrichment
-            enrichment_out = _run_enrichment(
-                w, spark, run_id_str, space_id, domain, train_benchmarks, exp_name,
-                catalog, schema,
-                baseline_model_id=model_id,
-            )
-
             # Stage 3: Lever Loop (enrichment already done)
             loop_out = _run_lever_loop(
                 w, spark, run_id_str, space_id, domain, train_benchmarks, exp_name,
                 prev_scores, prev_accuracy, model_id,
-                enrichment_out["config"],
+                _enrichment_out["config"] if _enrichment_out else {},
                 catalog, schema, levers, max_iterations, thresholds, apply_mode,
                 triggered_by=triggered_by or "",
                 human_corrections=human_corrections,
-                enrichment_done=True,
-                enrichment_model_id=enrichment_out["enrichment_model_id"],
+                enrichment_done=bool(_enrichment_out),
+                enrichment_model_id=_effective_model_id,
             )
             result.levers_attempted = cast(list[int], loop_out["levers_attempted"])
             result.levers_accepted = cast(list[int], loop_out["levers_accepted"])

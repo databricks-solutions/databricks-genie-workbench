@@ -2,7 +2,6 @@
 name = "genie-workbench"
 version = "0.1.0"
 description = "Unified Databricks Genie Space management platform"
-readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "databricks-sdk>=0.58.0",

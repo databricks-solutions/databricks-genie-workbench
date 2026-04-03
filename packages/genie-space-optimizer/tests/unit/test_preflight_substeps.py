@@ -290,6 +290,61 @@ class TestPreflightLoadHumanFeedback:
 # ---------------------------------------------------------------------------
 
 class TestPreflightSetupExperiment:
+    """Tests for preflight_setup_experiment (step 6).
+
+    All tests share the same decorator stack to mock out external
+    dependencies (MLflow, state writes, benchmark operations).
+    """
+
+    _COMMON_PATCHES = [
+        "genie_space_optimizer.optimization.preflight.write_stage",
+        "genie_space_optimizer.optimization.preflight._resolve_experiment_path",
+        "genie_space_optimizer.optimization.preflight._ensure_experiment_parent_dir",
+        "genie_space_optimizer.optimization.preflight.mlflow",
+        "genie_space_optimizer.optimization.preflight._get_general_instructions",
+        "genie_space_optimizer.optimization.preflight.register_instruction_version",
+        "genie_space_optimizer.optimization.preflight._flag_stale_temporal_benchmarks",
+        "genie_space_optimizer.optimization.preflight.compute_asset_fingerprint",
+        "genie_space_optimizer.optimization.preflight._drop_benchmark_table",
+        "genie_space_optimizer.optimization.preflight.create_evaluation_dataset",
+    ]
+
+    def _call_setup(self, mock_spark=None, catalog="cat", schema="gold", **extra_mocks):
+        """Helper: invoke preflight_setup_experiment with all deps mocked."""
+        from genie_space_optimizer.optimization.preflight import preflight_setup_experiment
+
+        if mock_spark is None:
+            mock_spark = MagicMock(name="spark")
+
+        with (
+            patch(self._COMMON_PATCHES[0]) as mock_ws,
+            patch(self._COMMON_PATCHES[1], return_value="/exp/path"),
+            patch(self._COMMON_PATCHES[2]),
+            patch(self._COMMON_PATCHES[3]) as mock_mlflow,
+            patch(self._COMMON_PATCHES[4], return_value="instructions"),
+            patch(self._COMMON_PATCHES[5]),
+            patch(self._COMMON_PATCHES[6]),
+            patch(self._COMMON_PATCHES[7], return_value="fp123"),
+            patch(self._COMMON_PATCHES[8]) as mock_drop,
+            patch(self._COMMON_PATCHES[9]) as mock_create_ds,
+        ):
+            mock_exp = MagicMock()
+            mock_exp.experiment_id = "exp-123"
+            mock_mlflow.get_experiment_by_name.return_value = mock_exp
+
+            for k, v in extra_mocks.items():
+                if k == "drop_side_effect":
+                    mock_drop.side_effect = v
+                elif k == "create_ds_side_effect":
+                    mock_create_ds.side_effect = v
+
+            result = preflight_setup_experiment(
+                MagicMock(), mock_spark, "run-1", "space-1", catalog, schema, "default",
+                {"_parsed_space": {}}, [{"question": "q1"}],
+                [], [], [], [],
+            )
+        return result
+
     @patch("genie_space_optimizer.optimization.preflight.create_evaluation_dataset")
     @patch("genie_space_optimizer.optimization.preflight._drop_benchmark_table")
     @patch("genie_space_optimizer.optimization.preflight.compute_asset_fingerprint", return_value="fp123")
@@ -319,6 +374,101 @@ class TestPreflightSetupExperiment:
         }
         assert result["model_id"] is None
         assert result["experiment_name"] == "/exp/path"
+
+    def test_sets_sql_context_with_use_catalog_and_schema(self):
+        """USE CATALOG / USE SCHEMA must be issued with the correct values."""
+        mock_spark = MagicMock(name="spark")
+        self._call_setup(mock_spark=mock_spark, catalog="psk", schema="genie_space_optimizer")
+
+        sql_args = [str(call) for call in mock_spark.sql.call_args_list]
+        use_catalog = [s for s in sql_args if "USE CATALOG" in s]
+        use_schema = [s for s in sql_args if "USE SCHEMA" in s]
+        assert use_catalog, "Expected at least one USE CATALOG call"
+        assert use_schema, "Expected at least one USE SCHEMA call"
+        assert "psk" in use_catalog[0]
+        assert "genie_space_optimizer" in use_schema[0]
+
+    def test_sql_context_set_before_drop_and_create(self):
+        """_set_sql_context must run before _drop_benchmark_table and create_evaluation_dataset."""
+        call_order = []
+
+        with patch(
+            "genie_space_optimizer.optimization.preflight._set_sql_context",
+            side_effect=lambda *a, **kw: call_order.append("set_sql_context"),
+        ):
+            self._call_setup(
+                drop_side_effect=lambda *a, **kw: call_order.append("drop_benchmark_table"),
+                create_ds_side_effect=lambda *a, **kw: call_order.append("create_evaluation_dataset"),
+            )
+
+        assert "set_sql_context" in call_order, \
+            f"_set_sql_context was not called; order={call_order}"
+        assert call_order.index("set_sql_context") < call_order.index("drop_benchmark_table"), \
+            f"_set_sql_context must precede _drop_benchmark_table; order={call_order}"
+        assert call_order.index("set_sql_context") < call_order.index("create_evaluation_dataset"), \
+            f"_set_sql_context must precede create_evaluation_dataset; order={call_order}"
+
+    def test_sql_context_receives_correct_catalog_and_schema(self):
+        """_set_sql_context must receive the catalog and schema arguments unchanged."""
+        with patch(
+            "genie_space_optimizer.optimization.preflight._set_sql_context"
+        ) as mock_ctx:
+            self._call_setup(catalog="my_catalog", schema="my_schema")
+
+        mock_ctx.assert_called_once()
+        _, spark_arg, cat_arg, sch_arg = mock_ctx.call_args[0][0], mock_ctx.call_args[0][0], mock_ctx.call_args[0][1], mock_ctx.call_args[0][2]
+        assert cat_arg == "my_catalog"
+        assert sch_arg == "my_schema"
+
+
+# ---------------------------------------------------------------------------
+# _set_sql_context helper (evaluation.py)
+# ---------------------------------------------------------------------------
+
+class TestSetSqlContext:
+    """Direct unit tests for the _set_sql_context helper."""
+
+    def test_sets_catalog_and_schema(self):
+        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+
+        spark = MagicMock()
+        _set_sql_context(spark, "my_catalog", "my_schema")
+        assert spark.sql.call_count == 2
+        calls = [str(c) for c in spark.sql.call_args_list]
+        assert "USE CATALOG" in calls[0] and "my_catalog" in calls[0]
+        assert "USE SCHEMA" in calls[1] and "my_schema" in calls[1]
+
+    def test_skips_when_catalog_empty(self):
+        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+
+        spark = MagicMock()
+        _set_sql_context(spark, "", "my_schema")
+        assert spark.sql.call_count == 1
+        assert "USE SCHEMA" in str(spark.sql.call_args)
+
+    def test_skips_when_schema_empty(self):
+        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+
+        spark = MagicMock()
+        _set_sql_context(spark, "my_catalog", "")
+        assert spark.sql.call_count == 1
+        assert "USE CATALOG" in str(spark.sql.call_args)
+
+    def test_skips_when_both_empty(self):
+        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+
+        spark = MagicMock()
+        _set_sql_context(spark, "", "")
+        spark.sql.assert_not_called()
+
+    def test_escapes_backticks_in_identifiers(self):
+        from genie_space_optimizer.optimization.evaluation import _set_sql_context
+
+        spark = MagicMock()
+        _set_sql_context(spark, "cat`alog", "sch`ema")
+        calls = [str(c) for c in spark.sql.call_args_list]
+        assert "cat``alog" in calls[0]
+        assert "sch``ema" in calls[1]
 
 
 # ---------------------------------------------------------------------------
