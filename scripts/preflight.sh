@@ -13,14 +13,21 @@ _preflight_check_tools() {
     command -v python3 &>/dev/null    || missing+=("python3")
     command -v node &>/dev/null       || missing+=("node")
     command -v npm &>/dev/null        || missing+=("npm")
+    command -v uv &>/dev/null         || missing+=("uv")
     if [ ${#missing[@]} -gt 0 ]; then
         echo ""
         echo "  ✗ Missing required tools: ${missing[*]}"
         echo ""
+        if [[ " ${missing[*]} " == *" uv "* ]]; then
+            echo "  Install uv:"
+            echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"
+            echo "    or: brew install uv"
+            echo ""
+        fi
         echo "  Remediation: install the missing tools and re-run scripts/deploy.sh"
         exit 1
     fi
-    echo "  ✓ All required tools available (databricks, python3, node, npm)"
+    echo "  ✓ All required tools available (databricks, python3, node, npm, uv)"
 
     # Verify Databricks CLI version meets minimum for bundle app/job support
     local cli_version

@@ -7410,6 +7410,16 @@ def _generate_lever6_proposal(
                 return None
             sql_raw = _valid_result[2] if len(_valid_result) > 2 else sql_raw
 
+        from genie_space_optimizer.common.genie_schema import count_sql_snippets, MAX_SQL_SNIPPETS
+
+        current_snippet_count = count_sql_snippets(metadata_snapshot)
+        if current_snippet_count >= MAX_SQL_SNIPPETS:
+            logger.info(
+                "Lever 6: Snippet budget exhausted (%d/%d), skipping",
+                current_snippet_count, MAX_SQL_SNIPPETS,
+            )
+            return None
+
         existing = metadata_snapshot.get("sql_snippets", {})
         type_key = {"measure": "measures", "filter": "filters", "expression": "expressions"}[snippet_type]
         for existing_item in (existing.get(type_key, []) or []):

@@ -287,14 +287,6 @@ if [ -z "$SP_CLIENT_ID" ]; then
     exit 1
 fi
 
-# Pre-validate: wheel build tooling available
-if ! python3 -c "import build" 2>/dev/null; then
-    echo "  ✗ Python 'build' package not installed (required for GSO wheel)."
-    echo ""
-    echo "  Remediation: pip install build"
-    exit 1
-fi
-
 # databricks bundle deploy -t app:
 #   - Builds the GSO wheel (artifacts block)
 #   - Syncs job notebooks to workspace

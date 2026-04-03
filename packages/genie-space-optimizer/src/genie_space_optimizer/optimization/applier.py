@@ -1495,6 +1495,24 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                 snippet["id"] = generate_genie_id()
             if not _validate_sql_snippet_entry(snippet, snippet_type_key):
                 return False
+            new_sql_val = snippet.get("sql", [])
+            new_sql_str = (
+                new_sql_val[0] if isinstance(new_sql_val, list) and new_sql_val
+                else str(new_sql_val)
+            ).strip().lower()
+            if new_sql_str:
+                for existing in items:
+                    ex_sql_val = existing.get("sql", [])
+                    ex_sql_str = (
+                        ex_sql_val[0] if isinstance(ex_sql_val, list) and ex_sql_val
+                        else str(ex_sql_val)
+                    ).strip().lower()
+                    if ex_sql_str == new_sql_str:
+                        logger.info(
+                            "SQL snippet add skipped — duplicate SQL: %.80s",
+                            new_sql_str,
+                        )
+                        return True
             items.append(snippet)
             return True
 
@@ -1727,7 +1745,9 @@ def apply_patch_set(
 
     from genie_space_optimizer.common.genie_schema import (
         count_instruction_slots,
+        count_sql_snippets,
         MAX_INSTRUCTION_SLOTS,
+        MAX_SQL_SNIPPETS,
         validate_serialized_space,
     )
 
@@ -1761,6 +1781,29 @@ def apply_patch_set(
                 "Cannot trim enough instruction slots — %d excess slots from "
                 "table/metric descriptions alone. Manual description cleanup required.",
                 excess,
+            )
+
+    snippet_count = count_sql_snippets(config)
+    if snippet_count > MAX_SQL_SNIPPETS:
+        snippet_excess = snippet_count - MAX_SQL_SNIPPETS
+        logger.warning(
+            "Post-apply config exceeds SQL snippet budget (%d/%d, excess=%d) — "
+            "trimming expressions, then measures, then filters",
+            snippet_count, MAX_SQL_SNIPPETS, snippet_excess,
+        )
+        snippets_block = (config.get("instructions") or {}).get("sql_snippets", {})
+        for trim_key in ("expressions", "measures", "filters"):
+            if snippet_excess <= 0:
+                break
+            trim_items = snippets_block.get(trim_key, [])
+            if trim_items:
+                trim_n = min(len(trim_items), snippet_excess)
+                snippets_block[trim_key] = trim_items[:-trim_n]
+                snippet_excess -= trim_n
+        if snippet_excess > 0:
+            logger.error(
+                "Cannot trim enough SQL snippets — %d excess remain.",
+                snippet_excess,
             )
 
     config_ok, validation_errors = validate_serialized_space(config, strict=True)

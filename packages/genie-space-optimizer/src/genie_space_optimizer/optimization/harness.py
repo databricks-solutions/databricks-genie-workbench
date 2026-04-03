@@ -1792,7 +1792,7 @@ def _run_sql_expression_seeding(
         SQL_EXPRESSION_SEEDING_THRESHOLD,
     )
     from genie_space_optimizer.common.genie_client import patch_space_config
-    from genie_space_optimizer.common.genie_schema import generate_genie_id
+    from genie_space_optimizer.common.genie_schema import generate_genie_id, MAX_SQL_SNIPPETS
     from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
     from genie_space_optimizer.optimization.optimizer import (
         _discover_schema_sql_expressions,
@@ -1821,6 +1821,7 @@ def _run_sql_expression_seeding(
         len(existing_snippets.get(k, []) or [])
         for k in ("measures", "filters", "expressions")
     )
+    remaining_snippet_budget = max(0, MAX_SQL_SNIPPETS - existing_count)
 
     if existing_count >= SQL_EXPRESSION_SEEDING_THRESHOLD:
         _lines = [_section("SQL EXPRESSION SEEDING", "-")]
@@ -1883,6 +1884,13 @@ def _run_sql_expression_seeding(
         for candidate in deduped:
             sql_raw = candidate["sql"]
             snippet_type = candidate["snippet_type"]
+
+            if len(applied_snippets) >= remaining_snippet_budget:
+                logger.info(
+                    "SQL expression seeding: stopping — snippet budget exhausted (%d/%d)",
+                    existing_count + len(applied_snippets), MAX_SQL_SNIPPETS,
+                )
+                break
 
             if any(_ngram_similarity(sql_raw.lower(), e) > 0.85 for e in existing_sql_set):
                 result["total_rejected"] += 1
