@@ -16,7 +16,8 @@ The app is a FastAPI backend serving a React/Vite frontend, deployed as a [Datab
 
 ## Prerequisites
 
-* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.230+ recommended)
+* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.239.0+ required)
+* [uv](https://docs.astral.sh/uv/) — Python package manager (used for dependency management and hash-verified installs)
 * Node.js (18+ recommended) and npm
 * Python 3.11+
 * A Databricks workspace with:
@@ -49,14 +50,18 @@ databricks auth login --profile <workspace-profile>
 ```
 
 The installer will:
-1. Check prerequisites (CLI, Node, Python)
+1. Check prerequisites (CLI, Node, Python, npm, uv)
 2. Ask for your Databricks CLI profile
-3. Ask for catalog and SQL warehouse (auto-discovered from your workspace)
-4. Ask for LLM model endpoint
-5. Ask for Lakebase instance name and app name
-6. Write `.env.deploy` with your configuration
-7. Run `scripts/deploy.sh` to build and deploy the app
-8. Resolve the app's service principal and optionally grant access to your existing Genie Spaces
+3. Ask for catalog (auto-discovered from your workspace)
+4. Ask for SQL warehouse (auto-discovered from your workspace)
+5. Ask for LLM model endpoint
+6. Optionally configure MLflow tracing (creates or links an experiment)
+7. Ask for Lakebase instance name
+8. Ask for app name
+9. Write `.env.deploy` with your configuration
+10. Run `scripts/deploy.sh` to build and deploy the app
+11. Resolve the app's service principal
+12. Optionally grant the SP access to your existing Genie Spaces
 
 ### 4. Attach Lakebase (optional but recommended)
 
@@ -122,9 +127,20 @@ Set these in `.env.deploy` or as environment variables:
 ```bash
 ./scripts/deploy.sh                           # Full deploy: create app, sync code, configure, deploy
 ./scripts/deploy.sh --update                  # Code-only update: sync + redeploy (faster)
-./scripts/deploy.sh --destroy                 # Delete the app and clean up jobs
-./scripts/deploy.sh --destroy --auto-approve  # Delete without confirmation prompt
+./scripts/deploy.sh --destroy                 # Tear down app and clean up jobs
+./scripts/deploy.sh --destroy --auto-approve  # Tear down without confirmation prompt
 ```
+
+### What `--destroy` cleans up (and what it doesn't)
+
+`--destroy` deletes the Databricks App, runtime-created jobs, and the bundle-managed optimization job. It does **not** remove:
+- Lakebase data (the `genie` schema in `databricks_postgres`)
+- Unity Catalog schema/tables (`<catalog>.genie_space_optimizer` and its 8 tables)
+- Genie Space SP permissions granted during install
+- MLflow experiments created during install
+- Synced tables (if manually created)
+
+Clean these up manually if you want a full teardown.
 
 ### What `deploy.sh` does
 

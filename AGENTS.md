@@ -46,20 +46,26 @@ cd frontend && npm ci && npm run build
 ## Deploy Workflow
 
 ```bash
-./scripts/install.sh              # Guided first-time setup (creates .env.deploy)
-./scripts/deploy.sh               # Full deploy: build + sync + configure + redeploy
-./scripts/deploy.sh --update      # Code-only update (faster, skips app creation)
-./scripts/deploy.sh --destroy     # Tear down app and clean up jobs
+./scripts/install.sh                          # Guided first-time setup (creates .env.deploy)
+./scripts/deploy.sh                           # Full deploy: build + sync + configure + redeploy
+./scripts/deploy.sh --update                  # Code-only update (faster, skips app creation)
+./scripts/deploy.sh --destroy                 # Tear down app and clean up jobs
+./scripts/deploy.sh --destroy --auto-approve  # Tear down without confirmation prompt
 ```
 
-The deploy script:
-1. Runs `npm ci && npm run build` locally (not `npm install`) — strict lockfile build
-2. Syncs the repo to the Databricks workspace with `databricks sync --full`
-3. Explicitly uploads `frontend/dist/` (gitignored but NOT databricksignored)
-4. Deploys the GSO optimization job via `databricks bundle deploy -t app` (clean name,
-   no `[dev]` prefix, Terraform-managed with shared state)
-5. Patches `app.yaml` placeholders (including `GSO_JOB_ID` from bundle state) with real values
-6. Deploys the app with `databricks apps deploy`
+The deploy script (full deploy, 8 steps):
+1. Pre-flight checks (tools, CLI version >= 0.239.0, profile, warehouse, catalog, app state)
+2. Builds frontend (`npm ci && npm run build` — strict lockfile, not `npm install`)
+3. Creates the Databricks App (skipped if already exists; `--update` skips this step)
+4. Syncs repo to workspace (`databricks sync --full`) + explicit `frontend/dist/` upload
+5. Resolves app SP and grants UC permissions (schema creation, CDF enablement)
+6. Deploys GSO optimization job via `databricks bundle deploy -t app` (Terraform-managed)
+7. Patches `app.yaml` placeholders with real values, configures scopes, deploys app
+8. Verifies deployment (checks critical files, waits for app to reach RUNNING state)
+
+`--destroy` deletes the app, runtime-created jobs, and the bundle-managed optimization job.
+It does **not** remove: Lakebase data, UC schema/tables (`<catalog>.genie_space_optimizer`),
+Genie Space SP permissions, MLflow experiments, or synced tables.
 
 ### Platform Build Strategy
 
