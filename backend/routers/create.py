@@ -190,6 +190,11 @@ async def agent_chat(body: AgentChatRequest, request: Request):
         # Embed selections in message for LLM context (non-fast paths)
         user_message += f"\n\n[User selections: {json.dumps(selections)}]"
 
+        # Populate session state from structured selections
+        if "selected_tables" in selections and isinstance(selections["selected_tables"], list):
+            session.selected_tables = selections["selected_tables"]
+            logger.info("Session tables updated from selections: %d tables", len(session.selected_tables))
+
     # Capture the user token so the streaming generator can re-establish
     # the OBO context (ContextVars don't propagate into async generators
     # that outlive the middleware's call_next).
