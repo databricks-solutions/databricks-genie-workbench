@@ -1,10 +1,11 @@
-"""Tests for config path navigation and ID sanitization (backend/services/fix_agent.py).
+"""Tests for config path navigation, ID sanitization, and apply-with-retry (backend/services/fix_agent.py).
 
-Tests _get_value_at_path(), _set_value_at_path(), and _sanitize_ids — pure
-functions, no mocking required.
+Tests _get_value_at_path(), _set_value_at_path(), _sanitize_ids (pure functions),
+and _apply_config_sync (retry logic, mocked).
 """
 
 import re
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 
@@ -118,6 +119,21 @@ class TestSetValueAtPath:
         assert left["identifier"] == "c.s.orders"
         assert left["alias"] == "orders"
 
+    def test_set_column_config_creates_entry_without_column_name(self):
+        """When the LLM patches a column_config at a new index,
+        _set_value_at_path creates the entry with only the patched field.
+        column_name will be missing — the apply path must handle this."""
+        config = {"data_sources": {"tables": [
+            {"identifier": "c.s.t1", "column_configs": [
+                {"column_name": "col_a", "description": ["existing"]},
+            ]}
+        ]}}
+        _set_value_at_path(config, "data_sources.tables[0].column_configs[1].description",
+                           ["new desc"])
+        cc = config["data_sources"]["tables"][0]["column_configs"][1]
+        assert cc["description"] == ["new desc"]
+        assert "column_name" not in cc  # no column_name — apply path must clean this
+
     def test_set_join_spec_right_after_left(self):
         config = {"instructions": {"join_specs": [
             {"left": {"identifier": "c.s.orders", "alias": "orders"}}
@@ -219,3 +235,119 @@ class TestSanitizeIds:
         }
         _sanitize_ids(config)
         assert "id" not in config["some_custom_field"][0]
+
+
+# ---------------------------------------------------------------------------
+# _apply_config_sync  (retry logic)
+# ---------------------------------------------------------------------------
+
+def _make_fresh_config():
+    """Minimal valid config returned by get_serialized_space."""
+    return {"version": 2, "instructions": {"text_instructions": [
+        {"id": "a" * 32, "content": ["old instruction\n"]}
+    ]}}
+
+
+_PATCHES = [{"field_path": "instructions.text_instructions[0].content", "new_value": ["new instruction\n"]}]
+
+
+def _retry_sleep_calls(mock_sleep):
+    """Extract only the retry-delay sleep calls (2s, 4s), ignoring MLflow internals."""
+    return [c for c in mock_sleep.call_args_list if c[0][0] in (2, 4)]
+
+
+@patch("backend.services.fix_agent.time.sleep")
+@patch("backend.services.fix_agent.get_workspace_client")
+@patch("backend.services.genie_client.get_genie_space")
+class TestApplyConfigSyncRetry:
+    """Tests for the retry loop in _apply_config_sync."""
+
+    def _call(self, space_id, patches):
+        from backend.services.fix_agent import _apply_config_sync
+        _apply_config_sync(space_id, patches)
+
+    def test_success_first_attempt_no_retry(self, mock_get_space, mock_ws, mock_sleep):
+        import json
+        mock_get_space.return_value = {"serialized_space": json.dumps(_make_fresh_config())}
+        mock_ws.return_value.api_client.do = MagicMock()
+
+        self._call("space123", _PATCHES)
+
+        assert mock_get_space.call_count == 1
+        assert _retry_sleep_calls(mock_sleep) == []
+        mock_ws.return_value.api_client.do.assert_called_once()
+
+    def test_retries_on_failure_then_succeeds(self, mock_get_space, mock_ws, mock_sleep):
+        import json
+        mock_get_space.return_value = {"serialized_space": json.dumps(_make_fresh_config())}
+        mock_do = mock_ws.return_value.api_client.do
+        mock_do.side_effect = [
+            RuntimeError("Space configuration has been modified"),
+            None,  # second attempt succeeds
+        ]
+
+        self._call("space123", _PATCHES)
+
+        assert mock_get_space.call_count == 2  # re-fetched on retry
+        assert mock_do.call_count == 2
+        assert _retry_sleep_calls(mock_sleep) == [call(2)]
+
+    def test_all_attempts_exhausted_raises(self, mock_get_space, mock_ws, mock_sleep):
+        import json
+        mock_get_space.return_value = {"serialized_space": json.dumps(_make_fresh_config())}
+        err = RuntimeError("Space configuration has been modified")
+        mock_ws.return_value.api_client.do.side_effect = err
+
+        with pytest.raises(RuntimeError, match="modified"):
+            self._call("space123", _PATCHES)
+
+        assert mock_get_space.call_count == 3
+        assert mock_ws.return_value.api_client.do.call_count == 3
+        assert _retry_sleep_calls(mock_sleep) == [call(2), call(4)]
+
+    def test_refetches_fresh_config_each_attempt(self, mock_get_space, mock_ws, mock_sleep):
+        """Each retry calls get_serialized_space again — not reusing stale data."""
+        import json
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            cfg = _make_fresh_config()
+            cfg["_call"] = call_count
+            return {"serialized_space": json.dumps(cfg)}
+
+        mock_get_space.side_effect = side_effect
+        mock_ws.return_value.api_client.do.side_effect = [
+            RuntimeError("modified"),
+            RuntimeError("modified"),
+            None,
+        ]
+
+        self._call("space123", _PATCHES)
+
+        assert mock_get_space.call_count == 3
+
+    def test_deduplicates_instruction_ids(self, mock_get_space, mock_ws, mock_sleep):
+        """Duplicate instruction IDs in example_question_sqls are stripped before PATCH."""
+        import json
+        dup_id = "d" * 32  # must differ from _make_fresh_config's text_instruction id
+        cfg = _make_fresh_config()
+        cfg["instructions"]["example_question_sqls"] = [
+            {"id": "b" * 32, "question": ["Q1"], "sql": ["SELECT 1"]},
+            {"id": dup_id, "question": ["Q2"], "sql": ["SELECT 2"]},
+            {"id": dup_id, "question": ["Q3"], "sql": ["SELECT 3"]},  # duplicate
+        ]
+        mock_get_space.return_value = {"serialized_space": json.dumps(cfg)}
+        mock_do = mock_ws.return_value.api_client.do
+        mock_do.return_value = None
+
+        self._call("space123", [])
+
+        # Inspect the serialized_space sent to the API
+        patch_body = mock_do.call_args[1]["body"]
+        patched_config = json.loads(patch_body["serialized_space"])
+        sqls = patched_config["instructions"]["example_question_sqls"]
+        ids = [e["id"] for e in sqls]
+        assert ids.count(dup_id) == 1  # duplicate removed
+        assert len(sqls) == 2

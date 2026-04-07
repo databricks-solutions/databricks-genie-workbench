@@ -10,6 +10,7 @@ import copy
 import json
 import logging
 import re
+import time
 import uuid
 from typing import AsyncGenerator
 
@@ -155,7 +156,7 @@ class FixAgent:
             if applied_patches:
                 yield {"status": "applying", "message": f"Applying {len(applied_patches)} fix(es) to space configuration..."}
                 try:
-                    await _apply_config_to_databricks(space_id, new_config)
+                    await _apply_config_to_databricks(space_id, applied_patches)
                     yield {
                         "status": "complete",
                         "patches_applied": len(applied_patches),
@@ -337,24 +338,168 @@ def _sanitize_ids(obj, _parent_key=None):
 
 
 @mlflow.trace(name="fix_apply_config", span_type=SpanType.TOOL)
-def _apply_config_sync(space_id: str, new_config: dict) -> None:
-    """Synchronous, traced config application via the Genie API."""
-    from backend.genie_creator import _enforce_constraints, _clean_config
-    _sanitize_ids(new_config)
-    constrained = _enforce_constraints(new_config)
-    cleaned = _clean_config(constrained)
-    client = get_workspace_client()
-    client.api_client.do(
-        method="PATCH",
-        path=f"/api/2.0/genie/spaces/{space_id}",
-        body={"serialized_space": json.dumps(cleaned)},
-    )
+def _apply_config_sync(space_id: str, patches: list[dict]) -> None:
+    """Re-fetch the space config, apply patches, then PATCH to Databricks.
+
+    Re-fetching avoids "Space configuration has been modified since this export
+    was taken" errors that occur when the config becomes stale between the scan
+    and the patch application.  If the PATCH still fails (e.g. due to
+    server-side background processing between GET and PATCH), we retry up to
+    2 additional times with back-off, re-fetching on each attempt.
+
+    Only lightweight transforms (ID sanitization, join relationship
+    normalization, sorting) are applied — NOT the full _enforce_constraints /
+    _clean_config pipeline, which can modify existing entries (e.g. removing
+    empty column_names) and make the config diverge from the stored version.
+    """
+    from backend.genie_creator import _normalize_join_relationships, _clean_config
+    from backend.services.genie_client import get_serialized_space
+
+    max_attempts = 3
+    retry_delays = [2, 4]  # seconds between attempt 1→2 and 2→3
+
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            fresh_config = get_serialized_space(space_id)
+            for patch in patches:
+                field_path = patch.get("field_path", "")
+                if field_path:
+                    _set_value_at_path(fresh_config, field_path, patch["new_value"])
+
+            _sanitize_ids(fresh_config)
+            _normalize_join_relationships(fresh_config)
+
+            # Strip incomplete join_specs (missing required left/right fields)
+            join_specs = fresh_config.get("instructions", {}).get("join_specs", [])
+            if isinstance(join_specs, list):
+                fresh_config.setdefault("instructions", {})["join_specs"] = [
+                    js for js in join_specs
+                    if isinstance(js, dict) and js.get("left") and js.get("right")
+                ]
+
+            # Deduplicate column_configs: the API rejects duplicate column_name
+            # entries (including empty names) even though it may return them.
+            for tbl in fresh_config.get("data_sources", {}).get("tables", []):
+                if not isinstance(tbl, dict):
+                    continue
+                ccs = tbl.get("column_configs", [])
+                if not isinstance(ccs, list):
+                    continue
+                seen: set[str] = set()
+                deduped = []
+                for cc in ccs:
+                    if not isinstance(cc, dict):
+                        continue
+                    col = cc.get("column_name", "")
+                    if not col or col in seen:
+                        continue
+                    seen.add(col)
+                    deduped.append(cc)
+                tbl["column_configs"] = deduped
+
+            # Deduplicate instruction IDs: the API rejects duplicate IDs
+            # across instruction arrays even though it may return them.
+            # IDs must be unique across all instruction types.
+            seen_ids: set[str] = set()
+            for arr_name in (
+                "text_instructions", "example_question_sqls",
+                "sql_functions", "join_specs",
+            ):
+                arr = fresh_config.get("instructions", {}).get(arr_name, [])
+                if not isinstance(arr, list):
+                    continue
+                deduped_arr = []
+                for entry in arr:
+                    if not isinstance(entry, dict):
+                        continue
+                    eid = entry.get("id", "")
+                    if eid and eid in seen_ids:
+                        logger.info("Dropping duplicate instruction id %s from %s", eid, arr_name)
+                        continue
+                    if eid:
+                        seen_ids.add(eid)
+                    deduped_arr.append(entry)
+                fresh_config.get("instructions", {})[arr_name] = deduped_arr
+
+            # Same for sql_snippets sub-arrays
+            snippets = fresh_config.get("instructions", {}).get("sql_snippets", {})
+            if isinstance(snippets, dict):
+                for snippet_key in ("filters", "expressions", "measures"):
+                    arr = snippets.get(snippet_key, [])
+                    if not isinstance(arr, list):
+                        continue
+                    deduped_arr = []
+                    for entry in arr:
+                        if not isinstance(entry, dict):
+                            continue
+                        eid = entry.get("id", "")
+                        if eid and eid in seen_ids:
+                            logger.info("Dropping duplicate instruction id %s from sql_snippets.%s", eid, snippet_key)
+                            continue
+                        if eid:
+                            seen_ids.add(eid)
+                        deduped_arr.append(entry)
+                    snippets[snippet_key] = deduped_arr
+
+            # Also deduplicate sample_questions and benchmark questions by id
+            for section, arr_name in (("config", "sample_questions"), ("benchmarks", "questions")):
+                section_dict = fresh_config.get(section, {})
+                if not isinstance(section_dict, dict):
+                    continue
+                arr = section_dict.get(arr_name, [])
+                if not isinstance(arr, list):
+                    continue
+                seen_q: set[str] = set()
+                deduped_arr = []
+                for entry in arr:
+                    if not isinstance(entry, dict):
+                        continue
+                    eid = entry.get("id", "")
+                    if eid and eid in seen_q:
+                        logger.info("Dropping duplicate id %s from %s.%s", eid, section, arr_name)
+                        continue
+                    if eid:
+                        seen_q.add(eid)
+                    deduped_arr.append(entry)
+                section_dict[arr_name] = deduped_arr
+
+            # Sort-only pass: _clean_config handles sorting, null removal, and
+            # string-to-array coercion for LLM-generated values — but does NOT
+            # remove or rewrite existing entries the way _enforce_constraints does.
+            cleaned = _clean_config(fresh_config)
+            client = get_workspace_client()
+            client.api_client.do(
+                method="PATCH",
+                path=f"/api/2.0/genie/spaces/{space_id}",
+                body={"serialized_space": json.dumps(cleaned)},
+            )
+            if attempt > 1:
+                logger.info("PATCH succeeded for space %s on attempt %d/%d", space_id, attempt, max_attempts)
+            return
+
+        except Exception as exc:
+            last_exc = exc
+            if attempt < max_attempts:
+                delay = retry_delays[attempt - 1]
+                logger.warning(
+                    "PATCH attempt %d/%d failed for space %s: %s — retrying in %ds",
+                    attempt, max_attempts, space_id, exc, delay,
+                )
+                time.sleep(delay)
+            else:
+                logger.error(
+                    "PATCH attempt %d/%d failed for space %s: %s — no retries left",
+                    attempt, max_attempts, space_id, exc,
+                )
+
+    raise last_exc  # type: ignore[misc]
 
 
-async def _apply_config_to_databricks(space_id: str, new_config: dict) -> None:
-    """Apply the updated config to Databricks via the Genie API."""
+async def _apply_config_to_databricks(space_id: str, patches: list[dict]) -> None:
+    """Apply patches to Databricks via the Genie API."""
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, run_in_context(lambda: _apply_config_sync(space_id, new_config)))
+    await loop.run_in_executor(None, run_in_context(lambda: _apply_config_sync(space_id, patches)))
 
 
 # Lazy singleton
