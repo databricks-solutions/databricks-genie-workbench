@@ -295,7 +295,9 @@ _VALID_FIELD_PATHS_BLOCK = """## Valid Field Paths (ONLY use these exact names p
 - `instructions.example_question_sqls[N].sql` — array of strings (each line as element)
 - `instructions.example_question_sqls[N].usage_guidance` — array of strings
 - `instructions.sql_functions[N].identifier` — string (catalog.schema.function)
-- `instructions.join_specs[N].sql` — array of strings
+- `instructions.join_specs[N].left` — object with `identifier` (catalog.schema.table) and `alias` (short name) — REQUIRED
+- `instructions.join_specs[N].right` — object with `identifier` (catalog.schema.table) and `alias` (short name) — REQUIRED
+- `instructions.join_specs[N].sql` — array of exactly 2 strings: (1) backtick-quoted equijoin `` `alias`.`col` = `alias`.`col` ``, (2) `--rt=FROM_RELATIONSHIP_TYPE_<TYPE>--` annotation
 - `instructions.join_specs[N].comment` — array of strings
 - `instructions.join_specs[N].instruction` — array of strings
 - `instructions.sql_snippets.filters[N].display_name` — string
