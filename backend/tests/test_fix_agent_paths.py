@@ -110,6 +110,24 @@ class TestSetValueAtPath:
         _set_value_at_path(config, "data.items[0].name", "first")
         assert config["data"]["items"][0]["name"] == "first"
 
+    def test_set_join_spec_left_as_object(self):
+        config = {"instructions": {}}
+        _set_value_at_path(config, "instructions.join_specs[0].left",
+                           {"identifier": "c.s.orders", "alias": "orders"})
+        left = config["instructions"]["join_specs"][0]["left"]
+        assert left["identifier"] == "c.s.orders"
+        assert left["alias"] == "orders"
+
+    def test_set_join_spec_right_after_left(self):
+        config = {"instructions": {"join_specs": [
+            {"left": {"identifier": "c.s.orders", "alias": "orders"}}
+        ]}}
+        _set_value_at_path(config, "instructions.join_specs[0].right",
+                           {"identifier": "c.s.customers", "alias": "customers"})
+        js = config["instructions"]["join_specs"][0]
+        assert js["left"]["identifier"] == "c.s.orders"
+        assert js["right"]["identifier"] == "c.s.customers"
+
     def test_mutates_in_place(self, config):
         original_id = id(config)
         _set_value_at_path(config, "name", "changed")
