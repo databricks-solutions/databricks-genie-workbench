@@ -442,7 +442,9 @@ def _apply_config_sync(space_id: str, patches: list[dict]) -> None:
                         deduped_arr.append(entry)
                     snippets[snippet_key] = deduped_arr
 
-            # Also deduplicate sample_questions and benchmark questions by id
+            # Also deduplicate sample_questions and benchmark questions by id.
+            # One shared set across both sections — matches _enforce_constraints().
+            seen_q: set[str] = set()
             for section, arr_name in (("config", "sample_questions"), ("benchmarks", "questions")):
                 section_dict = fresh_config.get(section, {})
                 if not isinstance(section_dict, dict):
@@ -450,7 +452,6 @@ def _apply_config_sync(space_id: str, patches: list[dict]) -> None:
                 arr = section_dict.get(arr_name, [])
                 if not isinstance(arr, list):
                     continue
-                seen_q: set[str] = set()
                 deduped_arr = []
                 for entry in arr:
                     if not isinstance(entry, dict):

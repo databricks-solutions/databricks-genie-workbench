@@ -351,3 +351,30 @@ class TestApplyConfigSyncRetry:
         ids = [e["id"] for e in sqls]
         assert ids.count(dup_id) == 1  # duplicate removed
         assert len(sqls) == 2
+
+    def test_deduplicates_question_ids_across_sections(self, mock_get_space, mock_ws, mock_sleep):
+        """Same question ID in sample_questions and benchmarks.questions is deduped cross-section."""
+        import json
+        shared_id = "e" * 32  # valid 32-char hex
+        other_id = "f" * 32
+        cfg = _make_fresh_config()
+        cfg["config"] = {"sample_questions": [
+            {"id": shared_id, "question": "What is revenue?"},
+        ]}
+        cfg["benchmarks"] = {"questions": [
+            {"id": shared_id, "question": "What is revenue?"},  # cross-section dup
+            {"id": other_id, "question": "What is cost?"},
+        ]}
+        mock_get_space.return_value = {"serialized_space": json.dumps(cfg)}
+        mock_do = mock_ws.return_value.api_client.do
+        mock_do.return_value = None
+
+        self._call("space123", [])
+
+        patch_body = mock_do.call_args[1]["body"]
+        patched_config = json.loads(patch_body["serialized_space"])
+        sq_ids = [e["id"] for e in patched_config["config"]["sample_questions"]]
+        bq_ids = [e["id"] for e in patched_config["benchmarks"]["questions"]]
+        all_ids = sq_ids + bq_ids
+        assert all_ids.count(shared_id) == 1  # kept in sample_questions, removed from benchmarks
+        assert len(patched_config["benchmarks"]["questions"]) == 1  # only other_id remains
