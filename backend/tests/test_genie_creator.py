@@ -138,6 +138,61 @@ class TestEnforceConstraints:
         # Duplicate in example_question_sqls should be removed
         assert len(result["instructions"]["example_question_sqls"]) == 0
 
+    def test_join_specs_missing_left_right_removed(self):
+        config = {
+            "instructions": {
+                "join_specs": [
+                    {
+                        "id": "a" * 32,
+                        "left": {"identifier": "c.s.orders", "alias": "orders"},
+                        "right": {"identifier": "c.s.customers", "alias": "customers"},
+                        "sql": ["`orders`.`id` = `customers`.`id`",
+                                "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"],
+                    },
+                    {
+                        "id": "b" * 32,
+                        "sql": ["`a`.`id` = `b`.`id`",
+                                "--rt=FROM_RELATIONSHIP_TYPE_ONE_TO_ONE--"],
+                    },
+                ],
+            },
+            "data_sources": {"tables": []},
+        }
+        result = _enforce_constraints(config)
+        join_specs = result["instructions"]["join_specs"]
+        assert len(join_specs) == 1
+        assert join_specs[0]["id"] == "a" * 32
+
+    def test_join_spec_with_only_left_removed(self):
+        config = {
+            "instructions": {
+                "join_specs": [{
+                    "id": "a" * 32,
+                    "left": {"identifier": "c.s.orders", "alias": "orders"},
+                    "sql": ["`orders`.`id` = `customers`.`id`",
+                            "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"],
+                }],
+            },
+            "data_sources": {"tables": []},
+        }
+        result = _enforce_constraints(config)
+        assert len(result["instructions"]["join_specs"]) == 0
+
+    def test_join_spec_with_only_right_removed(self):
+        config = {
+            "instructions": {
+                "join_specs": [{
+                    "id": "a" * 32,
+                    "right": {"identifier": "c.s.customers", "alias": "customers"},
+                    "sql": ["`orders`.`id` = `customers`.`id`",
+                            "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"],
+                }],
+            },
+            "data_sources": {"tables": []},
+        }
+        result = _enforce_constraints(config)
+        assert len(result["instructions"]["join_specs"]) == 0
+
     def test_duplicate_question_ids_deduped(self):
         dup_id = "b" * 32
         config = {

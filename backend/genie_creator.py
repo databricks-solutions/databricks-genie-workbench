@@ -196,6 +196,22 @@ def _enforce_constraints(config: dict) -> dict:
     # Normalize join relationship types to uppercase underscores
     _normalize_join_relationships(config)
 
+    # Remove join_specs missing required left/right fields
+    join_specs = instructions.get("join_specs", [])
+    if isinstance(join_specs, list):
+        valid_js = []
+        for js in join_specs:
+            if not isinstance(js, dict):
+                continue
+            if not js.get("left") or not js.get("right"):
+                logger.warning(
+                    "Removing join_spec '%s' missing required left/right field",
+                    js.get("id", "unknown"),
+                )
+                continue
+            valid_js.append(js)
+        instructions["join_specs"] = valid_js
+
     # Truncate oversized strings in size-checked fields
     _truncate_oversized_strings(config)
 

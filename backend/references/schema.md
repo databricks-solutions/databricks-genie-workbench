@@ -28,7 +28,9 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
             "synonyms": ["area", "territory", "sales region"],
             "exclude": false,
             "enable_entity_matching": true,
-            "enable_format_assistance": true
+            "enable_format_assistance": true,
+            "get_example_values": true,
+            "build_value_dictionary": true
           },
           {
             "column_name": "etl_timestamp",
@@ -196,6 +198,7 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
 - `sql_snippets` require table-qualified column references: `table_alias.column_name`
 - Filters must NOT include `WHERE` keyword — only the boolean condition
 - `join_specs.sql`: exactly **TWO elements** — (1) backtick-quoted condition `` `alias`.`col` = `alias`.`col` `` (2) `--rt=FROM_RELATIONSHIP_TYPE_...--` relationship annotation. **Without the `--rt=` annotation the API rejects the request** with a protobuf parsing error.
+- `join_specs` required fields: `id`, `left` (object: `identifier` + `alias`), `right` (object: `identifier` + `alias`), `sql` (2 elements). Optional: `comment`, `instruction`. **Omitting `left` or `right` causes a protobuf parsing error.**
 
 ### Size limits
 - `version`: Required. Must be `2`.
@@ -209,9 +212,11 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
 ### Prompt matching (column_configs)
 - `enable_format_assistance`: Shows representative values to help Genie understand data formats
 - `enable_entity_matching`: Matches user terms to actual column values (e.g., "NY" → "New York")
-- Both are **OFF by default** in the API, but `generate_config` turns them **ON by default** for non-excluded columns
+- `get_example_values`: Fetches sample values from the column for context
+- `build_value_dictionary`: Builds a dictionary of distinct values for precise matching
+- `enable_format_assistance` and `enable_entity_matching` are **OFF by default** in the API, but `generate_config` turns them **ON by default** for non-excluded columns
 - `enable_entity_matching` requires `enable_format_assistance` to also be true
-- Set both to `false` when `exclude: true`
+- Set all to `false` when `exclude: true`
 
 ## Tool Usage Guide
 

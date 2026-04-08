@@ -33,6 +33,12 @@ class TestFixAgentPromptFieldNames:
     def test_contains_join_specs(self, sample_prompt):
         assert "join_specs" in sample_prompt
 
+    def test_contains_join_specs_left(self, sample_prompt):
+        assert "join_specs[N].left" in sample_prompt
+
+    def test_contains_join_specs_right(self, sample_prompt):
+        assert "join_specs[N].right" in sample_prompt
+
     def test_contains_sql_snippets(self, sample_prompt):
         assert "sql_snippets" in sample_prompt
 
@@ -142,6 +148,8 @@ class TestValidateFieldPath:
         "data_sources.tables[0].description",
         "data_sources.tables[0].column_configs[0].synonyms",
         "data_sources.tables[0].column_configs[0].description",
+        "instructions.join_specs[0].left",
+        "instructions.join_specs[0].right",
         "instructions.join_specs[0].sql",
         "instructions.sql_snippets.filters[0].sql",
         "instructions.sql_snippets.measures[0].alias",
