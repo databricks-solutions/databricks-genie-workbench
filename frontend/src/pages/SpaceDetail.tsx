@@ -4,7 +4,7 @@
  * Score tab includes an inline FixAgentPanel that slides in from the right.
  */
 import { useState, useEffect, useRef } from "react"
-import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, Zap, ChevronDown, ChevronRight, Settings } from "lucide-react"
+import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, Zap, ChevronDown, ChevronRight, Settings, RefreshCw } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint, OptimizationEvent } from "@/types"
@@ -282,19 +282,30 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
 
             {/* Collapsible space configuration */}
             <div className="mt-6 bg-surface border border-default rounded-xl">
-              <button
-                onClick={() => setConfigExpanded(!configExpanded)}
-                className="flex items-center gap-2 w-full px-5 py-3 text-left"
-              >
-                {configExpanded
-                  ? <ChevronDown className="w-4 h-4 text-muted" />
-                  : <ChevronRight className="w-4 h-4 text-muted" />
-                }
-                <Settings className="w-4 h-4 text-muted" />
-                <span className="text-sm font-semibold text-secondary uppercase tracking-wide">
-                  Space Configuration
-                </span>
-              </button>
+              <div className="flex items-center justify-between px-5 py-3">
+                <button
+                  onClick={() => setConfigExpanded(!configExpanded)}
+                  className="flex items-center gap-2 text-left"
+                >
+                  {configExpanded
+                    ? <ChevronDown className="w-4 h-4 text-muted" />
+                    : <ChevronRight className="w-4 h-4 text-muted" />
+                  }
+                  <Settings className="w-4 h-4 text-muted" />
+                  <span className="text-sm font-semibold text-secondary uppercase tracking-wide">
+                    Space Configuration
+                  </span>
+                </button>
+                <button
+                  onClick={() => actions.handleFetchSpace(spaceId)}
+                  disabled={state.isLoading}
+                  className="flex items-center gap-1 text-xs text-muted hover:text-accent transition-colors disabled:opacity-50"
+                  title="Reload space configuration"
+                >
+                  <RefreshCw className={`w-3 h-3 ${state.isLoading ? "animate-spin" : ""}`} />
+                  Reload
+                </button>
+              </div>
               {configExpanded && (
                 <div className="border-t border-default">
                   <SpaceOverview spaceData={state.spaceData} isLoading={state.isLoading} />
