@@ -147,16 +147,10 @@ export function HowItWorks() {
         </span>
 
         <button
-          onClick={goNext}
-          disabled={activeStage === stages.length - 1}
-          className={cn(
-            "flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-colors",
-            activeStage === stages.length - 1
-              ? "text-muted/40 cursor-not-allowed"
-              : "text-secondary hover:text-primary hover:bg-elevated",
-          )}
+          onClick={activeStage === stages.length - 1 ? () => setActiveStage(0) : goNext}
+          className="flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium transition-colors text-secondary hover:text-primary hover:bg-elevated"
         >
-          {activeStage < stages.length - 1 ? stages[activeStage + 1].label : "Next"} <ChevronRight className="h-4 w-4" />
+          {activeStage < stages.length - 1 ? stages[activeStage + 1].label : "Back to Overview"} <ChevronRight className="h-4 w-4" />
         </button>
       </div>
     </div>
@@ -302,25 +296,28 @@ function CreateAgentContent() {
    STAGE 2 — IQ Scanner
    ================================================================ */
 function IQScannerContent() {
-  const checks = [
-    { name: "Has Instructions", severity: "critical", desc: "Space has user-facing instructions" },
-    { name: "Has Sample Questions", severity: "critical", desc: "At least one sample question provided" },
-    { name: "Has Tables", severity: "critical", desc: "One or more tables attached" },
-    { name: "Table Descriptions", severity: "high", desc: "All tables have meaningful descriptions" },
-    { name: "Column Descriptions", severity: "high", desc: "Columns are well-documented" },
-    { name: "Instruction Length", severity: "medium", desc: "Instructions are detailed enough (>100 chars)" },
-    { name: "Question Count", severity: "medium", desc: "Multiple sample questions (3+)" },
-    { name: "Question Quality", severity: "medium", desc: "Questions are specific, not generic" },
-    { name: "Table Count", severity: "low", desc: "Appropriate number of tables" },
-    { name: "No Empty Descriptions", severity: "low", desc: "No placeholder or empty descriptions" },
-    { name: "Naming Conventions", severity: "low", desc: "Consistent, readable naming" },
-    { name: "Column Coverage", severity: "low", desc: "Sufficient % of columns documented" },
+  const configChecks = [
+    { name: "Tables exist", desc: "At least one table attached to the space" },
+    { name: "Table descriptions (≥80%)", desc: "80%+ of tables have meaningful descriptions" },
+    { name: "Column descriptions (≥50%)", desc: "50%+ of columns are documented" },
+    { name: "Text instructions (>50 chars)", desc: "Business context and terminology explained" },
+    { name: "Join specifications", desc: "Join paths defined for multi-table spaces" },
+    { name: "Table count 1–12", desc: "Optimal number of tables for accuracy" },
+    { name: "8+ example SQLs", desc: "Diverse query patterns for the model to learn" },
+    { name: "SQL snippets", desc: "Functions, expressions, measures, or filters defined" },
+    { name: "Entity/format matching", desc: "Categorical and date/number columns annotated" },
+    { name: "10+ benchmark questions", desc: "Ground-truth questions to measure accuracy" },
+  ]
+
+  const optimizationChecks = [
+    { name: "Optimization workflow completed", desc: "Space has been through the optimization pipeline" },
+    { name: "Optimization accuracy ≥ 85%", desc: "Benchmark accuracy meets the trusted threshold" },
   ]
 
   const tiers = [
-    { name: "Not Ready", range: "0–5", color: DANGER, icon: <XCircle className="h-5 w-5" />, desc: "Critical gaps — needs immediate attention" },
-    { name: "Ready to Optimize", range: "6–9", color: INFO, icon: <AlertTriangle className="h-5 w-5" />, desc: "Functional but has improvement areas" },
-    { name: "Trusted", range: "10–12", color: SUCCESS, icon: <CheckCircle2 className="h-5 w-5" />, desc: "Production-quality configuration" },
+    { name: "Not Ready", criteria: "Config gaps remain", color: DANGER, icon: <XCircle className="h-5 w-5" />, desc: "One or more of the 10 config checks fail" },
+    { name: "Ready to Optimize", criteria: "All config checks pass", color: INFO, icon: <AlertTriangle className="h-5 w-5" />, desc: "All 10 config checks pass — optimization pending" },
+    { name: "Trusted", criteria: "All 12 checks pass", color: SUCCESS, icon: <CheckCircle2 className="h-5 w-5" />, desc: "Config + optimization checks all pass" },
   ]
 
   return (
@@ -347,37 +344,41 @@ function IQScannerContent() {
               </div>
             </div>
             <h3 className="font-display font-bold text-primary text-base">{tier.name}</h3>
-            <div className="text-2xl font-bold mt-1" style={{ color: tier.color }}>{tier.range}</div>
-            <p className="text-xs text-muted mt-1">{tier.desc}</p>
+            <div className="text-sm font-semibold mt-1" style={{ color: tier.color }}>{tier.criteria}</div>
+            <p className="text-xs text-muted mt-1.5">{tier.desc}</p>
           </div>
         ))}
       </div>
 
       {/* Score gauge illustration */}
       <StageCard title="12 Quality Checks" subtitle="Each check contributes 1 point" icon={<Gauge className="h-4 w-4" />}>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {checks.map((check) => (
-            <div key={check.name} className="flex items-center gap-2.5 py-1.5">
-              <div
-                className="h-2 w-2 rounded-full shrink-0"
-                style={{
-                  background:
-                    check.severity === "critical" ? DANGER
-                    : check.severity === "high" ? WARNING
-                    : check.severity === "medium" ? INFO
-                    : SUCCESS,
-                }}
-              />
-              <span className="text-sm text-primary font-medium">{check.name}</span>
-              <span className="text-xs text-muted ml-auto hidden sm:block">{check.severity}</span>
-            </div>
-          ))}
+        <div className="mb-3">
+          <h4 className="text-xs font-semibold text-muted uppercase tracking-wide mb-2">Config Checks (1–10)</h4>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {configChecks.map((check) => (
+              <div key={check.name} className="flex items-start gap-2.5 py-1.5">
+                <div className="h-2 w-2 rounded-full shrink-0 mt-1.5" style={{ background: ACCENT }} />
+                <div>
+                  <span className="text-sm text-primary font-medium block">{check.name}</span>
+                  <span className="text-xs text-muted">{check.desc}</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
-        <div className="flex items-center gap-4 mt-4 pt-3 border-t border-default text-xs text-muted">
-          <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full inline-block" style={{ background: DANGER }} /> Critical</span>
-          <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full inline-block" style={{ background: WARNING }} /> High</span>
-          <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full inline-block" style={{ background: INFO }} /> Medium</span>
-          <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full inline-block" style={{ background: SUCCESS }} /> Low</span>
+        <div className="pt-3 border-t border-default">
+          <h4 className="text-xs font-semibold text-muted uppercase tracking-wide mb-2">Optimization Checks (11–12)</h4>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {optimizationChecks.map((check) => (
+              <div key={check.name} className="flex items-start gap-2.5 py-1.5">
+                <div className="h-2 w-2 rounded-full shrink-0 mt-1.5" style={{ background: SUCCESS }} />
+                <div>
+                  <span className="text-sm text-primary font-medium block">{check.name}</span>
+                  <span className="text-xs text-muted">{check.desc}</span>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </StageCard>
     </div>
