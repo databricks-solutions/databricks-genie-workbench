@@ -6,6 +6,8 @@
 /.build/
 .cursor/
 .codex/
+.superpowers/
+docs/superpowers/
 context/
 .env.deploy
 *.bak

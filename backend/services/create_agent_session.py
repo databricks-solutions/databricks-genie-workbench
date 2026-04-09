@@ -26,6 +26,10 @@ class AgentSession:
     space_config: dict | None = None
     space_id: str | None = None
     space_url: str | None = None
+    selected_catalogs: list[str] = field(default_factory=list)
+    selected_schemas: list[str] = field(default_factory=list)
+    selected_tables: list[str] = field(default_factory=list)
+    feasibility_confirmed: bool = False
     continuation_count: int = 0
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
@@ -85,6 +89,10 @@ async def _ensure_table() -> None:
                     space_config JSONB,
                     space_id     TEXT,
                     space_url    TEXT,
+                    selected_catalogs JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    selected_schemas  JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    selected_tables   JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    feasibility_confirmed BOOLEAN NOT NULL DEFAULT false,
                     created_at   DOUBLE PRECISION NOT NULL,
                     last_active  DOUBLE PRECISION NOT NULL
                 )
@@ -93,6 +101,17 @@ async def _ensure_table() -> None:
                 CREATE INDEX IF NOT EXISTS idx_agent_sessions_last_active
                 ON genie.agent_sessions (last_active)
             """)
+            # Migrate existing tables: add columns introduced in the discovery/feasibility update
+            for col_sql in [
+                "ALTER TABLE genie.agent_sessions ADD COLUMN IF NOT EXISTS selected_catalogs JSONB NOT NULL DEFAULT '[]'::jsonb",
+                "ALTER TABLE genie.agent_sessions ADD COLUMN IF NOT EXISTS selected_schemas JSONB NOT NULL DEFAULT '[]'::jsonb",
+                "ALTER TABLE genie.agent_sessions ADD COLUMN IF NOT EXISTS selected_tables JSONB NOT NULL DEFAULT '[]'::jsonb",
+                "ALTER TABLE genie.agent_sessions ADD COLUMN IF NOT EXISTS feasibility_confirmed BOOLEAN NOT NULL DEFAULT false",
+            ]:
+                try:
+                    await conn.execute(col_sql)
+                except Exception:
+                    pass  # Column already exists
         logger.info("agent_sessions table ready")
     except Exception as e:
         logger.warning(f"Failed to ensure agent_sessions table: {e}")
@@ -107,13 +126,19 @@ async def _persist(session: AgentSession) -> None:
         async with pool.acquire() as conn:
             await conn.execute("""
                 INSERT INTO genie.agent_sessions
-                    (session_id, history, space_config, space_id, space_url, created_at, last_active)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    (session_id, history, space_config, space_id, space_url,
+                     selected_catalogs, selected_schemas, selected_tables,
+                     feasibility_confirmed, created_at, last_active)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 ON CONFLICT (session_id) DO UPDATE SET
                     history      = EXCLUDED.history,
                     space_config = EXCLUDED.space_config,
                     space_id     = EXCLUDED.space_id,
                     space_url    = EXCLUDED.space_url,
+                    selected_catalogs     = EXCLUDED.selected_catalogs,
+                    selected_schemas      = EXCLUDED.selected_schemas,
+                    selected_tables       = EXCLUDED.selected_tables,
+                    feasibility_confirmed = EXCLUDED.feasibility_confirmed,
                     last_active  = EXCLUDED.last_active
             """,
                 session.session_id,
@@ -121,6 +146,10 @@ async def _persist(session: AgentSession) -> None:
                 json.dumps(session.space_config) if session.space_config else None,
                 session.space_id,
                 session.space_url,
+                json.dumps(session.selected_catalogs),
+                json.dumps(session.selected_schemas),
+                json.dumps(session.selected_tables),
+                session.feasibility_confirmed,
                 session.created_at,
                 session.last_active,
             )
@@ -149,6 +178,10 @@ async def _load(session_id: str) -> AgentSession | None:
             space_config=json.loads(row["space_config"]) if row["space_config"] else None,
             space_id=row["space_id"],
             space_url=row["space_url"],
+            selected_catalogs=json.loads(row["selected_catalogs"]) if row["selected_catalogs"] else [],
+            selected_schemas=json.loads(row["selected_schemas"]) if row["selected_schemas"] else [],
+            selected_tables=json.loads(row["selected_tables"]) if row["selected_tables"] else [],
+            feasibility_confirmed=row["feasibility_confirmed"] if row["feasibility_confirmed"] is not None else False,
         )
         if session.is_expired():
             return None

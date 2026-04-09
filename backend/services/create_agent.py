@@ -7,6 +7,7 @@ guided by the system prompt (SKILL.md workflow + schema reference).
 import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import AsyncGenerator, Generator
@@ -22,9 +23,16 @@ logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 15
 
+# Strip fake tool-call XML the LLM writes when tools are unavailable
+_FAKE_TOOL_RE = re.compile(
+    r"<tool_call>.*?</tool_call>\s*(?:<tool_response>.*?</tool_response>)?",
+    re.DOTALL,
+)
+
 STEP_LABELS: dict[str, str] = {
     "requirements": "Understanding requirements",
-    "data_sources": "Exploring data sources",
+    "discovery": "Discovering data sources",
+    "feasibility": "Assessing feasibility",
     "inspection": "Inspecting tables",
     "plan": "Building plan",
     "config_create": "Generating configuration",
@@ -33,16 +41,37 @@ STEP_LABELS: dict[str, str] = {
 
 STEP_THINKING: dict[str, str] = {
     "requirements": "Understanding your requirements…",
-    "data_sources": "Exploring your data catalog…",
+    "discovery": "Exploring your data catalog…",
+    "feasibility": "Assessing data feasibility…",
     "inspection": "Analyzing table structure and data quality…",
     "plan": "Designing your Genie Space plan…",
     "config_create": "Generating the configuration…",
     "post_creation": "Finalizing your Genie Space…",
 }
 
+# Tools allowed per step — structural guardrail to prevent the LLM from
+# calling tools outside the current step's scope.
+# Empty set = no tools (pure conversation). Missing key = all tools (fallback).
+STEP_TOOLS: dict[str, set[str]] = {
+    # Requirements has discovery tools so the agent can transition naturally
+    # when the user says "go find my data." The prompt guides the agent to
+    # gather requirements first — tools are available but not encouraged.
+    "requirements": {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"},
+    "discovery": {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"},
+    # Feasibility has inspection tools available so the LLM can call
+    # describe_table after the user confirms. The prompt instructs it to
+    # present an assessment and WAIT before calling tools.
+    "feasibility": {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"},
+    "inspection": {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"},
+    "plan": {"generate_plan", "present_plan", "test_sql"},
+    "config_create": {"discover_warehouses", "generate_config", "validate_config", "create_space"},
+    "post_creation": {"update_config", "validate_config", "update_space"},
+}
+
 STEP_ORDER = [
     "requirements",
-    "data_sources",
+    "discovery",
+    "feasibility",
     "inspection",
     "plan",
     "config_create",
@@ -147,11 +176,22 @@ class CreateGenieAgent:
         try:
             messages = self._build_messages(session)
 
+            # Filter tools based on current step
+            allowed_tools = STEP_TOOLS.get(step)
+            if allowed_tools is not None:
+                # Step has an explicit tool set (possibly empty for requirements/feasibility)
+                step_tool_defs = [
+                    td for td in TOOL_DEFINITIONS
+                    if td.get("function", {}).get("name") in allowed_tools
+                ]
+            else:
+                # Step not in STEP_TOOLS — fallback to all tools
+                step_tool_defs = TOOL_DEFINITIONS
+
             content_parts: list[str] = []
             tool_calls_acc: dict[int, dict] = {}
             tool_call_signaled = False
-
-            async for chunk in self._async_stream_llm(messages):
+            async for chunk in self._async_stream_llm(messages, tools=step_tool_defs):
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue
@@ -351,10 +391,16 @@ class CreateGenieAgent:
                     needs_continuation = True
 
             else:
-                # Text-only response — conversation turn is done
-                session.add_message("assistant", accumulated_content)
+                # Text-only response — conversation turn is done.
+                # Strip fake <tool_call> XML the LLM may emit when tools are blocked.
+                cleaned = _FAKE_TOOL_RE.sub("", accumulated_content).strip()
+                if cleaned != accumulated_content:
+                    logger.warning("Stripped fake tool_call XML from response (%d -> %d chars)", len(accumulated_content), len(cleaned))
+                session.add_message("assistant", cleaned)
                 ui_elements = self._extract_ui_hints(session)
-                yield {"event": "message", "data": {"content": accumulated_content, "ui_elements": ui_elements}}
+                # The frontend's onMessage replaces streamed content with this final version,
+                # so the cleaned content overwrites any <tool_call> junk from message_delta.
+                yield {"event": "message", "data": {"content": cleaned, "ui_elements": ui_elements}}
 
         except Exception as e:
             logger.exception("Create agent chat failed")
@@ -595,15 +641,19 @@ class CreateGenieAgent:
         """
         from backend.services.llm_utils import call_serving_endpoint, parse_json_from_llm_response, get_llm_model
         try:
-            # Only send the instructions section (where most errors live) to keep context small
+            # Send both sections — use a generous limit so the LLM sees the full config
             repair_context = {
                 "instructions": config.get("instructions", {}),
                 "data_sources": config.get("data_sources", {}),
             }
+            config_json = json.dumps(repair_context, default=str)
+            # Truncate only if truly enormous (>24k chars); 16k is typical for 9 tables
+            if len(config_json) > 24000:
+                config_json = config_json[:24000] + "\n... (truncated)"
             prompt = (
                 "The following Genie Space config failed with this API error:\n\n"
                 f"**Error:** {error_msg}\n\n"
-                f"**Config (relevant sections):**\n```json\n{json.dumps(repair_context, default=str)[:6000]}\n```\n\n"
+                f"**Config (relevant sections):**\n```json\n{config_json}\n```\n\n"
                 "Fix ONLY the specific issue described in the error. Return the FULL corrected config "
                 "(with both 'instructions' and 'data_sources' sections intact).\n"
                 "Return ONLY valid JSON: {\"instructions\": {...}, \"data_sources\": {...}}"
@@ -611,7 +661,7 @@ class CreateGenieAgent:
             response = call_serving_endpoint(
                 [{"role": "user", "content": prompt}],
                 model=get_llm_model(),
-                max_tokens=8000,
+                max_tokens=16000,
             )
             repaired = parse_json_from_llm_response(response)
             # Merge repaired sections back into original config
@@ -770,13 +820,13 @@ class CreateGenieAgent:
         yield {"event": "step", "data": {
             "step": "create",
             "label": "Creating Space",
-            "index": STEP_ORDER.index("create") if "create" in STEP_ORDER else len(STEP_ORDER) - 1,
+            "index": STEP_ORDER.index("config_create") if "config_create" in STEP_ORDER else len(STEP_ORDER) - 1,
             "total": len(STEP_ORDER),
         }}
 
         # Build config args from edited plan, then backfill gaps from session
         config_args: dict = {}
-        for key in ("sample_questions", "text_instructions", "example_sqls",
+        for key in ("tables", "sample_questions", "text_instructions", "example_sqls",
                      "join_specs", "measures", "filters", "expressions", "benchmarks"):
             val = edited_plan.get(key)
             if val:
@@ -853,7 +903,7 @@ class CreateGenieAgent:
     _MAX_LLM_RETRIES = 4
     _RETRY_BACKOFF_BASE = 2  # seconds
 
-    def _stream_llm(self, messages: list[dict]) -> Generator[dict, None, None]:
+    def _stream_llm(self, messages: list[dict], tools: list[dict] | None = None) -> Generator[dict, None, None]:
         """Stream LLM response chunks from the serving endpoint (sync).
 
         Uses the SDK's pre-authenticated requests.Session so auth works
@@ -866,10 +916,13 @@ class CreateGenieAgent:
 
         body = {
             "messages": messages,
-            "tools": TOOL_DEFINITIONS,
             "max_tokens": 16384,
             "stream": True,
         }
+        # Only include tools if the step has tools available
+        effective_tools = tools if tools is not None else TOOL_DEFINITIONS
+        if effective_tools:
+            body["tools"] = effective_tools
 
         url = f"{host}/serving-endpoints/{self.model}/invocations"
         logger.info("Streaming LLM call to %s with %d messages", self.model, len(messages))
@@ -922,7 +975,7 @@ class CreateGenieAgent:
         finally:
             resp.close()
 
-    async def _async_stream_llm(self, messages: list[dict]) -> AsyncGenerator[dict, None]:
+    async def _async_stream_llm(self, messages: list[dict], tools: list[dict] | None = None) -> AsyncGenerator[dict, None]:
         """Async wrapper that bridges the sync streaming generator to async.
 
         Captures context once and reuses across all iterations (can't use
@@ -931,7 +984,7 @@ class CreateGenieAgent:
         import contextvars as _cv
         loop = asyncio.get_event_loop()
         ctx = _cv.copy_context()
-        gen = self._stream_llm(messages)
+        gen = self._stream_llm(messages, tools=tools)
         _sentinel = object()
 
         while True:
@@ -1050,6 +1103,23 @@ class CreateGenieAgent:
                 continue
 
         user_requirements = tool_args.get("user_requirements", "")
+
+        # If the LLM specified which tables to include (e.g., after user removed some),
+        # filter tables_context to only those tables.
+        requested_tables = tool_args.get("tables")
+        if requested_tables and isinstance(requested_tables, list):
+            requested_ids = set()
+            for t in requested_tables:
+                if isinstance(t, str):
+                    requested_ids.add(t)
+                elif isinstance(t, dict):
+                    requested_ids.add(t.get("identifier", ""))
+            if requested_ids:
+                tables_context = [
+                    t for t in tables_context
+                    if (t.get("table") or t.get("table_name") or "") in requested_ids
+                ]
+                logger.info("Filtered tables_context to %d tables (requested: %s)", len(tables_context), requested_ids)
 
         if not tables_context:
             return {

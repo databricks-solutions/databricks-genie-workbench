@@ -7,7 +7,7 @@ Each turn includes:
   - Full instructions for the CURRENT step (~40-80 lines)
   - Brief summaries of adjacent steps (previous + next, ~5 lines each)
   - Backtracking rules (~15 lines, always)
-  - Tool/UI/autopilot rules (~60 lines, always)
+  - Tool/UI rules (~40 lines, always)
   - Schema reference (always)
   - (fix mode only) Current space config summary
 
@@ -25,9 +25,13 @@ from backend.prompts_create._requirements import (
     STEP as STEP_REQUIREMENTS,
     SUMMARY as SUMMARY_REQUIREMENTS,
 )
-from backend.prompts_create._data_sources import (
-    STEP as STEP_DATA_SOURCES,
-    SUMMARY as SUMMARY_DATA_SOURCES,
+from backend.prompts_create._discovery import (
+    STEP as STEP_DISCOVERY,
+    SUMMARY as SUMMARY_DISCOVERY,
+)
+from backend.prompts_create._feasibility import (
+    STEP as STEP_FEASIBILITY,
+    SUMMARY as SUMMARY_FEASIBILITY,
 )
 from backend.prompts_create._inspection import (
     STEP as STEP_INSPECTION,
@@ -54,7 +58,8 @@ if TYPE_CHECKING:
 # Ordered list of steps — order matters for adjacency.
 STEP_ORDER = [
     "requirements",
-    "data_sources",
+    "discovery",
+    "feasibility",
     "inspection",
     "plan",
     "config_create",
@@ -63,7 +68,8 @@ STEP_ORDER = [
 
 STEP_PROMPTS = {
     "requirements": STEP_REQUIREMENTS,
-    "data_sources": STEP_DATA_SOURCES,
+    "discovery": STEP_DISCOVERY,
+    "feasibility": STEP_FEASIBILITY,
     "inspection": STEP_INSPECTION,
     "plan": STEP_PLAN,
     "config_create": STEP_CONFIG_CREATE,
@@ -72,7 +78,8 @@ STEP_PROMPTS = {
 
 STEP_SUMMARIES = {
     "requirements": SUMMARY_REQUIREMENTS,
-    "data_sources": SUMMARY_DATA_SOURCES,
+    "discovery": SUMMARY_DISCOVERY,
+    "feasibility": SUMMARY_FEASIBILITY,
     "inspection": SUMMARY_INSPECTION,
     "plan": SUMMARY_PLAN,
     "config_create": SUMMARY_CONFIG_CREATE,
@@ -129,23 +136,60 @@ def _inspection_complete(history: list[dict]) -> bool:
     )
 
 
-def detect_step(session: AgentSession) -> str:
-    """Infer which workflow step the agent is in from session state + tool history.
+def _has_assistant_message(history: list[dict]) -> bool:
+    """Check if the agent has responded at least once (requirements gathered)."""
+    return any(m["role"] == "assistant" for m in history)
 
-    Returns one of the STEP_ORDER values.
+
+def detect_step(session: AgentSession) -> str:
+    """Determine the current workflow step using session state + tool history.
+
+    Uses session state fields as primary gates (robust), with tool-call history
+    as fallback for backwards compatibility:
+    - requirements: default start (must have at least one assistant reply before advancing)
+    - discovery: any discovery tool called (or user has given business questions)
+    - feasibility: selected_tables populated (user confirmed table selection)
+    - inspection: feasibility_confirmed is True
+    - plan: describe_table results exist for selected tables
+    - config_create: generate_plan/present_plan result exists
+    - post_creation: space_id is set
     """
+    # Terminal states (check first, most specific)
     if session.space_id:
         return "post_creation"
     if session.space_config:
         return "config_create"
+
+    # Plan generation done → plan review or config
     if _has_tool(session.history, "present_plan") or _has_tool(session.history, "generate_plan"):
         return "plan"
     if _inspection_complete(session.history):
         return "plan"
+
+    # Inspection: requires feasibility_confirmed OR describe_table in progress
     if _has_tool(session.history, "describe_table"):
         return "inspection"
+    if session.feasibility_confirmed:
+        return "inspection"
+
+    # Requirements must be gathered (at least one assistant reply) before
+    # advancing to discovery/feasibility. If the user selects tables from the
+    # drawer on their very first message, stay in requirements.
+    if not _has_assistant_message(session.history):
+        return "requirements"
+
+    # Feasibility: requires tables selected or search/discovery completed
+    if session.selected_tables:
+        return "feasibility"
     if _has_tool(session.history, "discover_tables"):
-        return "data_sources"
+        return "feasibility"
+    if _has_tool(session.history, "search_tables"):
+        return "feasibility"
+
+    # Discovery: any discovery tool called
+    if _has_tool(session.history, "discover_schemas") or _has_tool(session.history, "discover_catalogs"):
+        return "discovery"
+
     return "requirements"
 
 
@@ -257,6 +301,35 @@ def _summarize_space_config(config: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Session state context
+# ---------------------------------------------------------------------------
+
+def _build_session_context(session: AgentSession) -> str:
+    """Build a grounding block from session state fields.
+
+    Tells the LLM what the user has already selected, so it doesn't
+    re-explore or contradict prior choices.
+    """
+    lines: list[str] = []
+
+    if session.selected_catalogs:
+        lines.append(f"**Selected catalogs:** {', '.join(session.selected_catalogs)}")
+        lines.append("Do NOT explore other catalogs unless the user asks.")
+
+    if session.selected_schemas:
+        lines.append(f"**Selected schemas:** {', '.join(session.selected_schemas)}")
+        lines.append("Do NOT explore other schemas unless the user asks.")
+
+    if session.selected_tables:
+        lines.append(f"**Selected tables ({len(session.selected_tables)}):** {', '.join(session.selected_tables)}")
+
+    if session.feasibility_confirmed:
+        lines.append("**Feasibility:** Confirmed — user approved proceeding with these tables.")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -267,10 +340,11 @@ def assemble_system_prompt(session: AgentSession, schema_reference: str) -> str:
     1. Core identity & principles
     2. Detailed instructions for the CURRENT step
     3. Brief summaries of adjacent steps (for backtracking awareness)
-    4. Backtracking rules
-    5. Tool/UI/autopilot rules
-    6. Schema reference
-    7. (fix mode) Current space config summary
+    4. Session state context (selected catalogs/schemas/tables — grounding)
+    5. Backtracking rules
+    6. Tool/UI rules
+    7. Schema reference
+    8. (fix mode) Current space config summary
     """
     step = detect_step(session)
 
@@ -284,6 +358,11 @@ def assemble_system_prompt(session: AgentSession, schema_reference: str) -> str:
 
     if adjacent:
         sections.append(f"## Adjacent Steps (for context)\n{adjacent}")
+
+    # Ground the prompt with session state — what the user has already selected
+    session_context = _build_session_context(session)
+    if session_context:
+        sections.append(f"## Session State\n{session_context}")
 
     sections.extend([
         BACKTRACKING,

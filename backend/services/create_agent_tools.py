@@ -64,6 +64,16 @@ def _execute_sql_throttled(sql: str, **kwargs) -> dict:
         return execute_sql(sql, **kwargs)
 
 
+def _sql_escape(s: str) -> str:
+    """Escape a string for safe interpolation into a SQL string literal."""
+    return s.replace("'", "''")
+
+
+def _sql_escape_like(s: str) -> str:
+    """Escape a string for safe use inside a SQL LIKE pattern literal."""
+    return s.replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+
+
 def _base_col_type(type_text: str) -> str:
     """Normalize a column type to its base name (strip generics and precision)."""
     return type_text.lower().split("<")[0].split("(")[0].strip()
@@ -75,8 +85,35 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "search_tables",
+            "description": "Search for tables across Unity Catalog by keywords. Matches against table names, column names, table comments, and column comments. Use this to find relevant tables based on the user's business requirements instead of browsing catalog/schema/table hierarchically.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keywords": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Search terms — include exact words, synonyms, abbreviations, and domain patterns. E.g., for 'healthcare claims': ['claims', 'clm', 'medical', 'diagnosis', 'dx', 'patient', 'member', 'procedure', 'px']",
+                    },
+                    "catalogs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional: scope search to specific catalogs. Omit to search all accessible catalogs.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum tables to return (default 50).",
+                    },
+                },
+                "required": ["keywords"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "discover_catalogs",
-            "description": "List all Unity Catalog catalogs the user has access to.",
+            "description": "List all Unity Catalog catalogs the user has access to. Use when the user wants to browse hierarchically or you need to see what catalogs exist.",
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
@@ -858,6 +895,7 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
     omits the config argument.
     """
     handlers = {
+        "search_tables": _search_tables,
         "discover_catalogs": _discover_catalogs,
         "discover_schemas": _discover_schemas,
         "discover_tables": _discover_tables,
@@ -889,6 +927,25 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
         elif name == "update_config":
             return {"error": "No config to update — call generate_config first"}
 
+    # Normalize common LLM argument name variations
+    if name == "profile_columns":
+        if "column_names" in arguments and "columns" not in arguments:
+            arguments["columns"] = arguments.pop("column_names")
+        # LLM sometimes sends columns as a JSON string '["col1","col2"]' instead of
+        # an actual array. Parse it properly to avoid iterating characters or leaving
+        # brackets/quotes in column names.
+        cols = arguments.get("columns")
+        if isinstance(cols, str):
+            cols = cols.strip()
+            try:
+                parsed = json.loads(cols)
+                if isinstance(parsed, list):
+                    arguments["columns"] = [str(c) for c in parsed]
+                else:
+                    arguments["columns"] = [cols]
+            except (json.JSONDecodeError, ValueError):
+                arguments["columns"] = [c.strip().strip('"').strip("'") for c in cols.split(",") if c.strip()]
+
     try:
         return handler(**arguments)
     except TypeError as e:
@@ -913,6 +970,13 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
     except Exception as e:
         logger.exception(f"Tool {name} failed")
         return {"error": str(e)}
+
+
+@mlflow.trace(name="search_tables", span_type=SpanType.TOOL)
+def _search_tables(keywords: list[str], catalogs: list[str] | None = None, max_results: int = 50) -> dict:
+    """Search for tables across Unity Catalog using information_schema."""
+    from backend.services.uc_client import search_tables
+    return search_tables(keywords, catalogs=catalogs, max_results=max_results)
 
 
 def _discover_catalogs() -> dict:
@@ -1005,6 +1069,13 @@ def _describe_table(table_identifier: str) -> dict:
             entry["recommendations"] = recommendations
         columns.append(entry)
 
+    # Cap columns to avoid overwhelming context
+    total_columns = len(columns)
+    column_cap_note = None
+    if total_columns > 50:
+        columns = columns[:50]
+        column_cap_note = f"Showing first 50 of {total_columns} columns. Ask the user if they need specific columns not shown."
+
     # Fetch sample rows (best-effort)
     sample_rows: list[dict] = []
     try:
@@ -1032,10 +1103,13 @@ def _describe_table(table_identifier: str) -> dict:
         "table_type": table_type,
         "comment": table_info.comment,
         "columns": columns,
-        "column_count": len(columns),
+        "column_count": total_columns,
         "sample_rows": sample_rows,
         "uc_url": uc_url,
     }
+
+    if column_cap_note:
+        result_dict["_column_cap_note"] = column_cap_note
 
     if exclude_etl:
         result_dict["recommendations"] = {"exclude_etl": exclude_etl}
@@ -1046,6 +1120,10 @@ def _describe_table(table_identifier: str) -> dict:
 @mlflow.trace(name="profile_columns", span_type=SpanType.TOOL)
 def _profile_columns(table_identifier: str, columns: list[str] | None = None) -> dict:
     """Profile columns by querying distinct values and date ranges."""
+    # Guard: if columns look like iterated characters from a string, fall back to auto-detect
+    if columns and all(len(c) <= 1 for c in columns):
+        logger.warning("profile_columns: columns look like iterated chars %s — falling back to auto-detect", columns)
+        columns = None
     if not columns:
         desc_result = _describe_table(table_identifier)
         if "error" in desc_result:
@@ -1058,6 +1136,13 @@ def _profile_columns(table_identifier: str, columns: list[str] | None = None) ->
             if col_type in string_types or col_type in date_types:
                 columns_to_profile.append(col["name"])
         columns = columns_to_profile[:10]
+
+    # Cap columns to avoid overwhelming context
+    total_columns = len(columns)
+    column_cap_note = None
+    if total_columns > 50:
+        columns = columns[:50]
+        column_cap_note = f"Profiling first 50 of {total_columns} columns. Ask the user if they need specific columns not shown."
 
     profiles = {}
     for col_name in columns:
@@ -1086,7 +1171,12 @@ def _profile_columns(table_identifier: str, columns: list[str] | None = None) ->
         if host:
             uc_url = f"{host}/explore/data/{parts[0]}/{parts[1]}/{parts[2]}"
 
-    return {"table": table_identifier, "profiles": profiles, "uc_url": uc_url}
+    result_dict: dict[str, Any] = {"table": table_identifier, "profiles": profiles, "uc_url": uc_url}
+
+    if column_cap_note:
+        result_dict["_column_cap_note"] = column_cap_note
+
+    return result_dict
 
 
 # ── Data quality assessment ───────────────────────────────────────────────────
@@ -1557,12 +1647,13 @@ def _profile_table_usage(table_identifiers: list[str]) -> dict:
 
 def _fetch_lineage(table_identifier: str) -> dict:
     """Fetch upstream and downstream tables from system.access.table_lineage."""
+    safe_id = _sql_escape(table_identifier)
     sql = (
         f"SELECT source_table_full_name, target_table_full_name, "
         f"source_type, target_type "
         f"FROM system.access.table_lineage "
-        f"WHERE (target_table_full_name = '{table_identifier}' "
-        f"OR source_table_full_name = '{table_identifier}') "
+        f"WHERE (target_table_full_name = '{safe_id}' "
+        f"OR source_table_full_name = '{safe_id}') "
         f"AND event_time >= date_sub(current_date(), 30) "
         f"LIMIT 50"
     )
@@ -1590,7 +1681,7 @@ def _fetch_query_history(table_identifiers: list[str]) -> dict:
         return {"queries": []}
 
     like_clauses = " OR ".join(
-        f"LOWER(statement_text) LIKE '%{tbl.lower()}%'" for tbl in table_identifiers
+        f"LOWER(statement_text) LIKE '%{_sql_escape_like(tbl.lower())}%'" for tbl in table_identifiers
     )
     sql = (
         f"SELECT executed_by, "
@@ -1909,7 +2000,7 @@ def _generate_config(
                     cc_entry["description"] = [cc["description"]]
                 if cc.get("synonyms"):
                     cc_entry["synonyms"] = cc["synonyms"]
-                if cc.get("exclude"):
+                if cc.get("exclude") or cc.get("excluded"):
                     cc_entry["exclude"] = True
                     cc_entry["enable_format_assistance"] = False
                     cc_entry["enable_entity_matching"] = False
@@ -2134,7 +2225,7 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
                     continue
                 ccs = tbl.get("column_configs", [])
                 for cc in ccs:
-                    if cc.get("exclude"):
+                    if cc.get("exclude") or cc.get("excluded"):
                         continue
                     if target_cols and cc["column_name"] not in target_cols:
                         continue
@@ -2466,6 +2557,9 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
 
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _TABLE_ID_PATTERN = re.compile(r"^[^.]+\.[^.]+\.[^.]+$")
+_SQL_IN_TEXT_RE = re.compile(
+    r"\b(SELECT|WHERE|JOIN|GROUP\s+BY|ORDER\s+BY|HAVING)\b", re.IGNORECASE
+)
 
 
 _MAX_STRING_CHARS = 25_000        # per-string limit (API rejects above this)
@@ -2512,8 +2606,8 @@ def _validate_config(config: dict | None = None) -> dict:
         _check_sorted(tables, lambda x: x.get("identifier", ""), "identifier", "data_sources.tables", error)
         if len(tables) > _MAX_TABLES:
             error("data_sources.tables", f"Maximum {_MAX_TABLES} tables allowed (found {len(tables)})")
-        elif len(tables) > 5:
-            warning("data_sources.tables", f"{len(tables)} tables — recommend ≤5 for accuracy")
+        elif len(tables) >= 9:
+            warning("data_sources.tables", f"{len(tables)} tables — consider splitting into focused rooms for >8 tables")
         col_keys: set[tuple[str, str]] = set()
         for i, tbl in enumerate(tables):
             ident = tbl.get("identifier", "")
@@ -2665,6 +2759,154 @@ def _validate_config(config: dict | None = None) -> dict:
         warning(
             "serialized_space",
             f"Serialized config at {serialized_size:,}/{_MAX_SERIALIZED_BYTES:,} bytes — approaching limit"
+        )
+
+    # ── IQ quality warnings (aligned with scanner.py checks) ─────────────
+
+    # 1. Table descriptions: warn if <80% have descriptions; warn at 80-99%
+    if tables:
+        described_tables = sum(
+            1 for t in tables if t.get("description") or t.get("comment")
+        )
+        total_tables = len(tables)
+        tbl_desc_pct = described_tables / total_tables if total_tables else 0
+        if tbl_desc_pct < 0.80:
+            warning(
+                "data_sources.tables",
+                f"{described_tables}/{total_tables} tables have descriptions ({tbl_desc_pct:.0%}) — 80%+ required"
+            )
+        elif tbl_desc_pct < 1.0:
+            warning(
+                "data_sources.tables",
+                f"{described_tables}/{total_tables} tables have descriptions ({tbl_desc_pct:.0%}) — aim for 100%"
+            )
+
+    # 2. Column descriptions: warn if <50%; warn at 50-79%
+    if tables:
+        total_cols = 0
+        described_cols = 0
+        for t in tables:
+            for col in t.get("columns", []) + t.get("column_configs", []):
+                total_cols += 1
+                if col.get("description") or col.get("comment"):
+                    described_cols += 1
+        col_desc_pct = described_cols / total_cols if total_cols else 0
+        if col_desc_pct < 0.50:
+            warning(
+                "data_sources.tables.column_configs",
+                f"{described_cols}/{total_cols} columns have descriptions ({col_desc_pct:.0%}) — 50%+ required"
+            )
+        elif col_desc_pct < 0.80:
+            warning(
+                "data_sources.tables.column_configs",
+                f"{described_cols}/{total_cols} columns have descriptions ({col_desc_pct:.0%}) — aim for 80%+"
+            )
+
+    # 3. Text instructions: warn if missing/short, too long, or contains SQL patterns
+    if not ti or all(not t.get("content") for t in ti):
+        warning("instructions.text_instructions", "No text instructions — add business context and terminology")
+    else:
+        ti_total_chars = 0
+        ti_all_text = ""
+        for t in ti:
+            content = t.get("content", "")
+            text = "".join(content) if isinstance(content, list) else content
+            ti_total_chars += len(text)
+            ti_all_text += text
+        if ti_total_chars <= 50:
+            warning(
+                "instructions.text_instructions",
+                f"Text instructions only {ti_total_chars} chars — add more business context (>50 chars recommended)"
+            )
+        if ti_total_chars > 2000:
+            warning(
+                "instructions.text_instructions",
+                f"Text instructions are {ti_total_chars:,} chars — keep under 2,000 to avoid pushing out higher-value SQL context"
+            )
+        if _SQL_IN_TEXT_RE.search(ti_all_text):
+            warning(
+                "instructions.text_instructions",
+                "SQL patterns (SELECT, WHERE, JOIN, etc.) found in text instructions — move to Example SQLs or SQL Expressions"
+            )
+
+    # 4. Join specs: warn if missing when >1 table
+    if len(tables) > 1 and not jss:
+        warning(
+            "instructions.join_specs",
+            f"No join specs for {len(tables)} tables — add join specifications to help Genie correctly join your tables"
+        )
+
+    # 5. Table count: 9-12 warning already handled above (structural check changed to warn at >=9)
+
+    # 6. Example SQLs: warn if <8; warn at 8-14; warn if >50% lack usage_guidance
+    n_examples = len(eqs)
+    if n_examples < 8:
+        warning(
+            "instructions.example_question_sqls",
+            f"Only {n_examples} example SQLs — 8+ required for good accuracy"
+        )
+    elif n_examples < 15:
+        warning(
+            "instructions.example_question_sqls",
+            f"{n_examples} example SQLs — 10-15 is the sweet spot for largest accuracy jump"
+        )
+    if eqs:
+        missing_guidance = sum(1 for e in eqs if not e.get("usage_guidance"))
+        if missing_guidance > len(eqs) / 2:
+            warning(
+                "instructions.example_question_sqls",
+                f"{missing_guidance}/{n_examples} example SQLs lack usage_guidance — add descriptions of when each should be applied"
+            )
+
+    # 7. SQL snippets: warn if none at all; warn if missing filters or measures
+    iq_sql_functions = config.get("instructions", {}).get("sql_functions", [])
+    iq_sql_snippets = config.get("instructions", {}).get("sql_snippets", {})
+    iq_expressions = iq_sql_snippets.get("expressions", [])
+    iq_measures = iq_sql_snippets.get("measures", [])
+    iq_filters = iq_sql_snippets.get("filters", [])
+    has_any_snippets = bool(iq_sql_functions or iq_expressions or iq_measures or iq_filters)
+    if not has_any_snippets:
+        warning(
+            "instructions.sql_snippets",
+            "No SQL functions, expressions, measures, or filters — add snippets for complex business logic"
+        )
+    else:
+        missing_types = []
+        if not iq_filters:
+            missing_types.append("filters")
+        if not iq_measures:
+            missing_types.append("measures")
+        if missing_types:
+            warning(
+                "instructions.sql_snippets",
+                f"Missing SQL snippet types: {', '.join(missing_types)} — add for better query coverage"
+            )
+
+    # 8. Entity/format matching: warn if none; warn if >100 approaching 120 limit
+    entity_count = 0
+    format_count = 0
+    for t in tables:
+        for col in t.get("column_configs", []) + t.get("columns", []):
+            if col.get("enable_entity_matching"):
+                entity_count += 1
+            if col.get("enable_format_assistance") or col.get("format_assistance_enabled"):
+                format_count += 1
+    if entity_count == 0 and format_count == 0 and tables:
+        warning(
+            "data_sources.tables.column_configs",
+            "No columns have entity matching or format assistance — enable on categorical and date/number columns"
+        )
+    if entity_count > 100:
+        warning(
+            "data_sources.tables.column_configs",
+            f"{entity_count} columns with entity matching — approaching 120/space limit"
+        )
+
+    # 9. Benchmarks: warn if <10
+    if len(bench_questions) < 10:
+        warning(
+            "benchmarks.questions",
+            f"Only {len(bench_questions)} benchmark questions — add at least 10 to measure and track accuracy"
         )
 
     return {

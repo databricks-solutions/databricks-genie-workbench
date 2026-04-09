@@ -255,6 +255,21 @@ export async function discoverTables(catalog: string, schema: string): Promise<{
   )
 }
 
+export interface SearchTablesResult {
+  tables: { full_name: string; name: string; comment: string }[]
+  search_results: { full_name: string; comment: string; table_type: string; total_columns: number; matching_columns: string[]; matched_keywords: string[] }[]
+  search_terms_used: string[]
+  catalogs_searched: string[]
+  total_matches: number
+  error?: string
+}
+
+export async function searchTables(keywords: string[], catalogs?: string[]): Promise<SearchTablesResult> {
+  const params = new URLSearchParams({ keywords: keywords.join(",") })
+  if (catalogs?.length) params.set("catalogs", catalogs.join(","))
+  return fetchWithTimeout<SearchTablesResult>(`${API_BASE}/create/discover/search?${params}`)
+}
+
 export async function validateSpaceConfig(serialized_space: Record<string, unknown>): Promise<ValidateConfigResponse> {
   return fetchWithTimeout<ValidateConfigResponse>(`${API_BASE}/create/validate`, {
     method: "POST",

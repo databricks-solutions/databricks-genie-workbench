@@ -6,6 +6,7 @@ import {
   Loader2,
   Wrench,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Check,
   ExternalLink,
@@ -30,14 +31,15 @@ import {
   ListChecks,
   Search,
   Trash2,
-  FastForward,
   Clock,
   GitBranch,
+  ShieldCheck,
 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { streamAgentChat } from "@/lib/api"
 import type { AgentChatMessage, AgentUIElement } from "@/types"
+import { TableBrowserDrawer } from "@/components/TableBrowserDrawer"
 interface CreateAgentChatProps {
   onCreated: (spaceId: string, displayName: string, initialTab?: string) => void
 }
@@ -127,8 +129,9 @@ const EMPTY_PROGRESS: BuildProgress = {
 
 const STEPS = [
   { key: "requirements", label: "Requirements", Icon: FileText, backtrackMsg: "Let's go back to the requirements. I want to change the title or purpose." },
-  { key: "data", label: "Data Sources", Icon: Database, backtrackMsg: "Let's go back to data selection. I want to change which tables to use." },
-  { key: "inspection", label: "Data Inspection", Icon: Search, backtrackMsg: "Let's re-inspect the data. I want to review quality or lineage again." },
+  { key: "discovery", label: "Discovery", Icon: Database, backtrackMsg: "Let's go back to data selection. I want to change which tables to use." },
+  { key: "feasibility", label: "Feasibility", Icon: ShieldCheck, backtrackMsg: "Let's re-assess data feasibility." },
+  { key: "inspection", label: "Inspection", Icon: Search, backtrackMsg: "Let's re-inspect the data. I want to review quality or profiles again." },
   { key: "plan", label: "Plan", Icon: ListChecks, backtrackMsg: "Let's go back to the plan. I want to adjust questions, instructions, or benchmarks." },
   { key: "config", label: "Configuration", Icon: Settings, backtrackMsg: "Let's revisit the configuration before creating the space." },
   { key: "create", label: "Create Space", Icon: Rocket, backtrackMsg: "" },
@@ -141,18 +144,32 @@ const FIX_STEPS = [
 ] as const
 
 function currentStep(p: BuildProgress): number {
-  if (p.spaceId) return 5
-  if (p.configReady) return 4
-  if (p.planReady) return 3
-  if (p.inspectionDone) return 2
-  if (p.tables.length > 0) return 1
-  if (p.catalog || p.schemas.length > 0) return 0
+  if (p.spaceId) return 6
+  if (p.configReady) return 5
+  if (p.planReady) return 4
+  if (p.inspectionDone) return 3
+  if (p.tables?.length) return 2  // feasibility (tables selected)
+  if (p.catalog || p.schemas?.length) return 1  // discovery
   return 0
 }
 
 // ─── Editable plan ─────────────────────────────────────────────
 
+interface EditableColumnConfig {
+  column_name: string
+  description?: string
+  type_hint?: string
+  excluded?: boolean
+}
+
+interface EditableTable {
+  identifier: string
+  description: string
+  column_configs: EditableColumnConfig[]
+}
+
 interface EditablePlan {
+  tables: EditableTable[]
   sample_questions: string[]
   text_instructions: string
   join_specs: Record<string, string>[]
@@ -166,7 +183,18 @@ interface EditablePlan {
 function planFromResult(result: Record<string, unknown>): EditablePlan {
   const s = (result.sections as Record<string, unknown[]>) || {}
   const tiArr = (s.text_instructions as string[]) || []
+  const rawTables = (s.tables as Record<string, unknown>[]) || []
   return {
+    tables: rawTables.map((t) => ({
+      identifier: (t.identifier as string) || "",
+      description: (t.description as string) || "",
+      column_configs: ((t.column_configs as Record<string, unknown>[]) || []).map((c) => ({
+        column_name: (c.column_name as string) || "",
+        description: (c.description as string) || undefined,
+        type_hint: (c.type_hint as string) || undefined,
+        excluded: (c.excluded as boolean) || false,
+      })),
+    })),
     sample_questions: [...((s.sample_questions as string[]) || [])],
     text_instructions: tiArr.join("\n"),
     join_specs: (((s.join_specs || s.joins) as Record<string, string>[]) || []).map((j) => ({ ...j })),
@@ -225,6 +253,10 @@ function loadState(): PersistedState | null {
     // Migrate editedPlan: ensure benchmarks array exists
     if (parsed.editedPlan && !Array.isArray(parsed.editedPlan.benchmarks)) {
       parsed.editedPlan.benchmarks = []
+    }
+    // Migrate editedPlan: ensure tables array exists
+    if (parsed.editedPlan && !Array.isArray(parsed.editedPlan.tables)) {
+      parsed.editedPlan.tables = []
     }
     // Migrate text_instructions from string[] to single string
     if (parsed.editedPlan && Array.isArray((parsed.editedPlan as any).text_instructions)) {
@@ -309,14 +341,16 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [multiSelections, setMultiSelections] = useState<Record<string, Set<string>>>({})
   const [progress, setProgress] = useState<BuildProgress>(restored.current?.progress ?? EMPTY_PROGRESS)
   const [panelOpen] = useState(true)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
-  const [businessContextDraft, setBusinessContextDraft] = useState("")
+  // businessContextDraft state removed — was only used for add/remove business context UI
   const [expandedPlanSections, setExpandedPlanSections] = useState<Set<string>>(new Set(["sample_questions"]))
   const [agentStatus, setAgentStatus] = useState<string | null>(null)
   const [editedPlan, setEditedPlan] = useState<EditablePlan | null>(restored.current?.editedPlan ?? null)
   const [editingPlanItem, setEditingPlanItem] = useState<string | null>(null)
-  const [autoPilot, setAutoPilot] = useState(false)
+  const [planTab, setPlanTab] = useState<"schema" | "instructions">("schema")
+  const [expandedTableId, setExpandedTableId] = useState<string | null>(null)
   const [elementSearch, setElementSearch] = useState<Record<string, string>>({})
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null)
   const [fixMode, setFixMode] = useState(false)
@@ -382,11 +416,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setProgress(EMPTY_PROGRESS)
     setEditingTitle(false)
     setTitleDraft("")
-    setBusinessContextDraft("")
     setExpandedPlanSections(new Set(["sample_questions"]))
     setEditedPlan(null)
     setEditingPlanItem(null)
-    setAutoPilot(false)
+    setPlanTab("schema")
+    setExpandedTableId(null)
     reconnectCountRef.current = 0
     queuedMessageRef.current = null
     setQueuedMessage(null)
@@ -601,7 +635,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
               setProgress((p) => ({
                 ...p,
                 catalog: cat,
-                schema: sch,
+                schemas: p.schemas.includes(sch) ? p.schemas : [...p.schemas, sch],
                 tables: p.tables.includes(fullName) ? p.tables : [...p.tables, fullName],
               }))
             }
@@ -889,21 +923,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     sendMessage(`Please remove the ${short} table from the selection`)
   }
 
-  // Panel: business context management
-  const addBusinessContext = () => {
-    if (!businessContextDraft.trim()) return
-    const rule = businessContextDraft.trim()
-    setProgress((p) => ({ ...p, businessContext: [...p.businessContext, rule] }))
-    setBusinessContextDraft("")
-    sendMessage(`Business rule to keep in mind: "${rule}"`)
-  }
-  const removeBusinessContext = (i: number) => {
-    const removed = progress.businessContext[i]
-    setProgress((p) => ({ ...p, businessContext: p.businessContext.filter((_, j) => j !== i) }))
-    if (removed) {
-      sendMessage(`Please disregard the previous business rule: "${removed}"`)
-    }
-  }
 
   // ─── Render helpers ───────────────────────────────────────────
 
@@ -1360,15 +1379,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     })
   }
 
-  const requestAIReview = () => {
-    if (!editedPlan) return
-    sendMessage("Please review the plan and suggest improvements before I approve.", { edited_plan: editedPlan, action: "review" })
-  }
-
-  const requestAddMoreTables = () => {
-    sendMessage("I want to add more tables from another schema or catalog before creating.")
-  }
-
   // ─── Plan card renderer ──────────────────────────────────────
 
   const renderPlanCard = (_result: Record<string, unknown>) => {
@@ -1415,6 +1425,168 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           <span className="text-[10px] text-muted">Click any item to edit</span>
         </div>
 
+        {/* Tab bar */}
+        <div className="flex border-b border-default">
+          <button
+            onClick={() => setPlanTab("schema")}
+            className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+              planTab === "schema"
+                ? "text-accent border-b-2 border-accent"
+                : "text-muted hover:text-primary"
+            }`}
+          >
+            Data Schema
+            <span className="ml-1.5 text-[10px] text-muted">{plan.tables.length} tables</span>
+          </button>
+          <button
+            onClick={() => setPlanTab("instructions")}
+            className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
+              planTab === "instructions"
+                ? "text-accent border-b-2 border-accent"
+                : "text-muted hover:text-primary"
+            }`}
+          >
+            Instructions &amp; SQL
+            <span className="ml-1.5 text-[10px] text-muted">{totalItems} items</span>
+          </button>
+        </div>
+
+        {/* Data Schema tab */}
+        {planTab === "schema" && (
+          expandedTableId === null ? (
+            <div className="divide-y divide-[var(--border-color)]">
+              {plan.tables.map((table) => {
+                const includedCols = table.column_configs.filter(c => !c.excluded)
+                const excludedCols = table.column_configs.filter(c => c.excluded)
+                const shortName = table.identifier.split(".").pop() || table.identifier
+                return (
+                  <div key={table.identifier} className="px-3 py-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-medium text-primary text-xs">{shortName}</span>
+                      <div className="flex gap-1.5">
+                        <span className="text-[10px] bg-green-500/15 text-green-400 px-1.5 py-0.5 rounded">{includedCols.length} profiled</span>
+                        {excludedCols.length > 0 && (
+                          <span className="text-[10px] bg-red-500/15 text-red-400 px-1.5 py-0.5 rounded">{excludedCols.length} excluded</span>
+                        )}
+                      </div>
+                    </div>
+                    {/* Editable table description */}
+                    <input
+                      className="w-full text-[11px] text-muted bg-transparent border-b border-transparent hover:border-default focus:border-accent focus:outline-none py-0.5 mb-1.5"
+                      value={table.description}
+                      placeholder="Add table description..."
+                      onChange={(e) => {
+                        const updated = { ...plan, tables: plan.tables.map(t =>
+                          t.identifier === table.identifier ? { ...t, description: e.target.value } : t
+                        )}
+                        setEditedPlan(updated)
+                      }}
+                    />
+                    {/* Column name chips (first 10) */}
+                    <div className="flex flex-wrap gap-1 mb-1.5">
+                      {includedCols.slice(0, 10).map(c => (
+                        <span key={c.column_name} className="text-[10px] bg-elevated px-1.5 py-0.5 rounded text-secondary">{c.column_name}</span>
+                      ))}
+                      {includedCols.length > 10 && (
+                        <span className="text-[10px] text-muted">+{includedCols.length - 10} more</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => setExpandedTableId(table.identifier)}
+                      className="text-[11px] text-accent hover:underline"
+                    >
+                      Edit columns &rarr;
+                    </button>
+                  </div>
+                )
+              })}
+              {plan.tables.length === 0 && (
+                <div className="px-3 py-4 text-center text-muted text-[11px]">No tables in plan</div>
+              )}
+            </div>
+          ) : (
+            <div className="px-3 py-2">
+              <button
+                onClick={() => setExpandedTableId(null)}
+                className="flex items-center gap-1 text-[11px] text-accent hover:underline mb-3"
+              >
+                <ChevronLeft className="w-3 h-3" /> Back to tables
+              </button>
+              {(() => {
+                const table = plan.tables.find(t => t.identifier === expandedTableId)
+                if (!table) return null
+                const shortName = table.identifier.split(".").pop() || table.identifier
+                return (
+                  <div>
+                    <div className="font-medium text-primary text-xs mb-3">{shortName}</div>
+                    <div className="space-y-1">
+                      {table.column_configs.map((col, ci) => (
+                        <div
+                          key={col.column_name}
+                          className={`flex items-center gap-2 px-2 py-1.5 rounded ${col.excluded ? "opacity-50" : ""}`}
+                        >
+                          {/* Include/exclude toggle */}
+                          <button
+                            onClick={() => {
+                              const updated = { ...plan, tables: plan.tables.map(t =>
+                                t.identifier === expandedTableId
+                                  ? { ...t, column_configs: t.column_configs.map((c, idx) =>
+                                      idx === ci ? { ...c, excluded: !c.excluded } : c
+                                    )}
+                                  : t
+                              )}
+                              setEditedPlan(updated)
+                            }}
+                            className={`flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-medium flex-shrink-0 ${
+                              col.excluded
+                                ? "border-red-400/30 bg-red-500/10 text-red-400"
+                                : "border-green-400/30 bg-green-500/10 text-green-400"
+                            }`}
+                          >
+                            {col.excluded
+                              ? <><X className="w-2.5 h-2.5" /> Excluded</>
+                              : <><Check className="w-2.5 h-2.5" /> Included</>
+                            }
+                          </button>
+                          {/* Column name */}
+                          <span className={`text-xs font-mono w-36 flex-shrink-0 truncate ${col.excluded ? "line-through text-muted" : "text-primary"}`}>
+                            {col.column_name}
+                          </span>
+                          {/* Type hint badge */}
+                          {col.type_hint && (
+                            <span className="text-[9px] bg-blue-500/10 text-blue-400 px-1 py-0.5 rounded flex-shrink-0">
+                              {col.type_hint}
+                            </span>
+                          )}
+                          {/* Editable description */}
+                          <input
+                            className="flex-1 text-[11px] text-muted bg-transparent border-b border-transparent hover:border-default focus:border-accent focus:outline-none py-0.5 min-w-0"
+                            value={col.description || ""}
+                            placeholder={col.excluded ? "Excluded" : "Add description..."}
+                            disabled={col.excluded}
+                            onChange={(e) => {
+                              const updated = { ...plan, tables: plan.tables.map(t =>
+                                t.identifier === expandedTableId
+                                  ? { ...t, column_configs: t.column_configs.map((c, idx) =>
+                                      idx === ci ? { ...c, description: e.target.value } : c
+                                    )}
+                                  : t
+                              )}
+                              setEditedPlan(updated)
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+          )
+        )}
+
+        {/* Instructions & SQL tab */}
+        {planTab === "instructions" && (
         <div className="divide-y divide-[var(--border-color)]">
           {PLAN_SECTIONS.map((sec) => {
             if (sec.count === 0 && !ALWAYS_SHOW_PLAN_SECTIONS.has(sec.key)) return null
@@ -1693,6 +1865,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             )
           })}
         </div>
+        )}
 
         {/* Action buttons footer */}
         <div className="px-3 py-2.5 bg-surface-secondary border-t border-default flex flex-wrap items-center gap-2">
@@ -1703,22 +1876,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           >
             <Rocket className="w-3 h-3" />
             Approve &amp; Create
-          </button>
-          <button
-            onClick={requestAIReview}
-            disabled={isStreaming}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-surface border border-default text-secondary rounded-md text-[11px] font-medium hover:bg-elevated transition-colors disabled:opacity-40"
-          >
-            <Sparkles className="w-3 h-3 text-accent" />
-            AI Review &amp; Suggest
-          </button>
-          <button
-            onClick={requestAddMoreTables}
-            disabled={isStreaming}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-surface border border-default text-secondary rounded-md text-[11px] font-medium hover:bg-elevated transition-colors disabled:opacity-40"
-          >
-            <Plus className="w-3 h-3 text-muted" />
-            Add More Tables
           </button>
         </div>
       </div>
@@ -1814,6 +1971,14 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   const renderToolCall = (msg: AgentChatMessage) => {
     if ((msg.tool_name === "present_plan" || msg.tool_name === "generate_plan") && msg.tool_result && !msg.tool_result.error) {
+      // Only render the plan card for the LAST generate_plan/present_plan in messages
+      // to avoid showing duplicate plans when the tool is called multiple times.
+      const lastPlanMsg = [...messages].reverse().find(
+        (m) => m.role === "tool" && (m.tool_name === "present_plan" || m.tool_name === "generate_plan") && m.tool_result && !m.tool_result.error,
+      )
+      if (lastPlanMsg && msg.id !== lastPlanMsg.id) {
+        return null // Skip earlier plan cards
+      }
       return <div key={msg.id} className="mx-4 my-2">{renderPlanCard(msg.tool_result)}</div>
     }
     const isExpanded = expandedTools.has(msg.id)
@@ -2480,18 +2645,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                   >
                     {s.label}
                   </span>
-                  {active && !autoPilot && !isStreaming && s.key !== "create" && (
-                    <button
-                      onClick={() =>
-                        sendMessage(`Skip ${s.label} — let AI decide`, { skip_step: s.key })
-                      }
-                      className="flex items-center gap-1 ml-auto px-2 py-0.5 rounded-full bg-accent/10 text-accent text-[10px] font-medium hover:bg-accent/20 transition-colors"
-                      title={`Let AI handle ${s.label} automatically`}
-                    >
-                      <FastForward className="w-2.5 h-2.5" />
-                      skip — let AI decide
-                    </button>
-                  )}
                 </div>
 
                 {/* Step-specific details */}
@@ -2537,45 +2690,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                         + Set name
                       </button>
                     ) : null}
-                    {progress.businessContext.length > 0 && (
-                      <div className="space-y-0.5">
-                        {progress.businessContext.map((ctx, ci) => (
-                          <div key={ci} className="group flex items-start gap-1">
-                            <p className="text-[10px] text-muted flex-1 truncate" title={ctx}>
-                              &bull; {ctx}
-                            </p>
-                            <button
-                              onClick={() => removeBusinessContext(ci)}
-                              className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                            >
-                              <X className="w-2.5 h-2.5 text-muted hover:text-red-400" />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {(active || done) && (
-                      <div className="flex gap-1">
-                        <input
-                          value={businessContextDraft}
-                          onChange={(e) => setBusinessContextDraft(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === "Enter") addBusinessContext() }}
-                          placeholder="Add a business rule..."
-                          className="flex-1 text-[10px] border border-default rounded px-2 py-1 bg-surface text-primary focus:outline-none focus:border-accent/40"
-                        />
-                        <button
-                          onClick={addBusinessContext}
-                          disabled={!businessContextDraft.trim()}
-                          className="px-1.5 text-accent disabled:opacity-30"
-                        >
-                          <Plus className="w-3 h-3" />
-                        </button>
-                      </div>
-                    )}
                   </div>
                 )}
 
-                {s.key === "data" && (progress.catalog || progress.tables.length > 0) && (
+                {s.key === "discovery" && (progress.catalog || progress.tables.length > 0) && (
                   <div className="mt-1 space-y-1">
                     {progress.catalog && (
                       <span className="text-[10px] text-muted font-mono block truncate">
@@ -2675,6 +2793,20 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           )
         })}
       </div>
+
+      {/* Browse Tables button */}
+      <button
+        onClick={() => setDrawerOpen(true)}
+        className="mx-4 mb-2 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-accent bg-accent/5 border border-accent/20 rounded-lg hover:bg-accent/10 transition-colors"
+      >
+        <Database className="w-3 h-3" />
+        Browse Tables
+        {progress.tables.length > 0 && (
+          <span className="ml-1 bg-accent/20 text-accent text-[10px] px-1.5 py-0.5 rounded-full">
+            {progress.tables.length}
+          </span>
+        )}
+      </button>
 
       {/* Panel footer — space links */}
       {fixMode && fixResult ? (
@@ -2788,42 +2920,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           </div>
         )}
 
-        {/* Auto-pilot + Input area */}
-        {messages.length > 0 && (
-          <div className="flex items-center justify-between">
-            <label
-              className={`flex items-center gap-2 cursor-pointer select-none ${isStreaming ? "opacity-40 pointer-events-none" : ""}`}
-            >
-              <button
-                type="button"
-                role="switch"
-                aria-checked={autoPilot}
-                onClick={() => {
-                  const next = !autoPilot
-                  setAutoPilot(next)
-                  sendMessage(
-                    next
-                      ? "Switch to auto-pilot — handle everything from here, pause only at the plan review step."
-                      : "Switch back to guided mode — pause at each step for my input.",
-                    { auto_pilot: next },
-                  )
-                }}
-                className={`relative inline-flex h-4 w-7 flex-shrink-0 items-center rounded-full transition-colors ${
-                  autoPilot ? "bg-accent" : "bg-[var(--border-color)]"
-                }`}
-              >
-                <span
-                  className={`inline-block h-3 w-3 rounded-full bg-white shadow-sm transition-transform ${
-                    autoPilot ? "translate-x-3.5" : "translate-x-0.5"
-                  }`}
-                />
-              </button>
-              <span className={`text-[11px] ${autoPilot ? "text-accent font-medium" : "text-muted"}`}>
-                {autoPilot ? "Auto-Pilot ON" : "Auto-Pilot"}
-              </span>
-            </label>
-          </div>
-        )}
         <form onSubmit={handleSubmit} className="relative">
           <textarea
             ref={inputRef}
@@ -2865,6 +2961,27 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           )}
         </form>
       </div>
+
+      {/* Table browser drawer */}
+      {drawerOpen && (
+        <TableBrowserDrawer
+          open={drawerOpen}
+          onClose={() => setDrawerOpen(false)}
+          selectedTables={progress.tables}
+          onApplyChanges={(added, removed) => {
+            const nextTables = [...progress.tables.filter((t) => !removed.includes(t)), ...added]
+            setProgress((p) => ({ ...p, tables: nextTables }))
+            const parts: string[] = []
+            if (added.length) parts.push(`Added: ${added.map((t) => `\`${t}\``).join(", ")}`)
+            if (removed.length) parts.push(`Removed: ${removed.map((t) => `\`${t}\``).join(", ")}`)
+            if (parts.length) sendMessage(
+              `I updated my table selection. ${parts.join(". ")}`,
+              { selected_tables: nextTables }
+            )
+            setDrawerOpen(false)
+          }}
+        />
+      )}
 
       {/* Progress panel */}
       {panelOpen && renderPanel()}

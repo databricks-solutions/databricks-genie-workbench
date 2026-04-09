@@ -43,12 +43,19 @@ def test_detect_step_empty_session():
     assert detect_step(session) == "requirements"
 
 
+def test_detect_step_after_discover_schemas():
+    session = _make_session()
+    _add_tool_call(session, "discover_catalogs")
+    _add_tool_call(session, "discover_schemas")
+    assert detect_step(session) == "discovery"
+
+
 def test_detect_step_after_discover_tables():
     session = _make_session()
     _add_tool_call(session, "discover_catalogs")
     _add_tool_call(session, "discover_schemas")
     _add_tool_call(session, "discover_tables")
-    assert detect_step(session) == "data_sources"
+    assert detect_step(session) == "feasibility"
 
 
 def test_detect_step_after_describe_table():
@@ -78,6 +85,30 @@ def test_detect_step_post_creation():
     assert detect_step(session) == "post_creation"
 
 
+def test_detect_step_feasibility_via_session_state():
+    """Session state (selected_tables) should gate feasibility after requirements gathered."""
+    session = _make_session()
+    session.history.append({"role": "assistant", "content": "Got it, let me find tables."})
+    session.selected_tables = ["catalog.schema.table1", "catalog.schema.table2"]
+    assert detect_step(session) == "feasibility"
+
+
+def test_detect_step_stays_in_requirements_if_no_assistant_reply():
+    """Even with selected_tables, stay in requirements if agent hasn't responded yet."""
+    session = _make_session()
+    session.selected_tables = ["catalog.schema.table1", "catalog.schema.table2"]
+    assert detect_step(session) == "requirements"
+
+
+def test_detect_step_inspection_via_feasibility_confirmed():
+    """feasibility_confirmed should advance to inspection even without describe_table."""
+    session = _make_session()
+    session.history.append({"role": "assistant", "content": "Feasibility looks good."})
+    session.selected_tables = ["catalog.schema.table1"]
+    session.feasibility_confirmed = True
+    assert detect_step(session) == "inspection"
+
+
 # --- assemble_system_prompt tests ---
 
 SCHEMA_REF = "## Fake Schema\ntest content"
@@ -88,21 +119,32 @@ def test_assemble_requirements():
     prompt = assemble_system_prompt(session, SCHEMA_REF)
 
     assert "expert Databricks Genie Space creation agent" in prompt
-    assert "Understand the Goal" in prompt
-    assert "Select Data Sources" not in prompt or "Adjacent Steps" in prompt
+    assert "Gather Requirements" in prompt
+    assert "Discovery" not in prompt or "Adjacent Steps" in prompt
     assert "Schema Reference" in prompt
     assert SCHEMA_REF in prompt
 
 
-def test_assemble_data_sources():
+def test_assemble_discovery():
+    session = _make_session()
+    _add_tool_call(session, "discover_schemas")
+    prompt = assemble_system_prompt(session, SCHEMA_REF)
+
+    assert "Discovery" in prompt
+    assert "Adjacent Steps" in prompt
+    assert "Step 1 (Requirements)" in prompt   # previous step summary
+    assert "Step 3 (Feasibility)" in prompt    # next step summary
+
+
+def test_assemble_feasibility():
     session = _make_session()
     _add_tool_call(session, "discover_tables")
     prompt = assemble_system_prompt(session, SCHEMA_REF)
 
-    assert "Select Data Sources" in prompt
+    assert "Feasibility Assessment" in prompt
     assert "Adjacent Steps" in prompt
-    assert "Step 1 (Requirements)" in prompt  # previous step summary
-    assert "Step 3 (Inspection)" in prompt    # next step summary
+    assert "Step 2 (Discovery)" in prompt      # previous step summary
+    assert "Step 4 (Inspection)" in prompt     # next step summary
 
 
 def test_assemble_inspection():
@@ -112,8 +154,8 @@ def test_assemble_inspection():
     prompt = assemble_system_prompt(session, SCHEMA_REF)
 
     assert "Inspect & Understand the Data" in prompt
-    assert "Step 2 (Data Sources)" in prompt  # previous
-    assert "Step 4 (Plan)" in prompt          # next
+    assert "Step 3 (Feasibility)" in prompt    # previous
+    assert "Step 5 (Plan)" in prompt           # next
 
 
 def test_assemble_includes_backtracking():
@@ -126,7 +168,6 @@ def test_assemble_includes_tool_rules():
     session = _make_session()
     prompt = assemble_system_prompt(session, SCHEMA_REF)
     assert "Tool Usage Rules" in prompt
-    assert "Auto-Pilot" in prompt
 
 
 def test_prompt_shrinks_vs_monolithic():

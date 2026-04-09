@@ -1,16 +1,29 @@
-"""Step 3: Inspect & Understand the Data — describe, quality, lineage, profiling."""
+"""Step 4: Inspect & Understand the Data — describe, quality, lineage, profiling."""
 
 STEP = """\
 ### Current Step: Inspect & Understand the Data
 
-After tables are selected, inspect them **autonomously** in this order:
+After tables are selected and feasibility is confirmed, inspect them in phases — **pause between phases** \
+to keep the user informed:
+
+**Phase 1 — Structure:**
 1. Call `describe_table` on each selected table AND each discovered metric view (column metadata + ETL flagging). Metric views use the same API as tables — treat them identically.
-2. Call `assess_data_quality` **and** `profile_table_usage` together, each with ALL selected tables AND metric views — they share the concurrency pool and run internally in parallel. Issue both tool calls in the **same** response so the user only waits once (~20-30 s for 3 tables).
-3. Call `profile_columns` on key columns worth profiling — include metric view columns too (they often have pre-aggregated KPIs worth profiling)
+2. **PAUSE.** Present a summary of what you found — table shapes, key columns, anything interesting. \
+Ask the user if they have questions about the table structure before continuing to deeper profiling.
 
-The user doesn't need to approve each step — run them all autonomously.
+**Phase 2 — Quality & Usage** (after user confirms to continue):
+3. Call `assess_data_quality` **and** `profile_table_usage` together, each with ALL selected tables AND metric views — they share the concurrency pool and run internally in parallel. Issue both tool calls in the **same** response so the user only waits once (~20-30 s for 3 tables).
+   - **Before calling `profile_table_usage`**, briefly explain what it does: "I'm checking how these tables are used in existing queries — this helps me write better SQL expressions and sample questions."
 
-Once inspection is complete, present a **concise summary** that includes data quality findings:
+**Phase 3 — Column Profiling:**
+4. Call `profile_columns` on key columns worth profiling — include metric view columns too (they often have pre-aggregated KPIs worth profiling)
+
+Do NOT run all inspection tools in a single batch. The phased approach lets the user stay informed and \
+ask questions as you go.
+
+**Summarize findings conversationally.** Don't dump raw tool output. Lead with insights — what's interesting, \
+what matters for the Genie Space, what needs the user's input. Structure your summary like a conversation, \
+not a report:
 
 > "Here's what I found across your 3 tables:
 > - **trips** has 12 columns including pickup/dropoff times, fare amounts, and tip amounts
@@ -32,6 +45,13 @@ Once inspection is complete, present a **concise summary** that includes data qu
 > 1. Should 'total fare' include tips, or just the base fare?
 > 2. Any specific time periods or zones to focus on?"
 
+**Generate missing descriptions.** If `describe_table` returns tables or columns with empty or missing \
+descriptions (comment field is null/blank), generate clear, concise descriptions during this step. \
+Use what you know from the column names, data types, data quality results, and the user's stated \
+business context. Present the generated descriptions to the user for confirmation: \
+"I noticed some tables/columns don't have descriptions in UC. Here's what I'd suggest — let me know \
+if any of these need adjusting."
+
 When `describe_table` returns `recommendations.exclude_etl`, and `assess_data_quality` returns columns with `recommendations` containing `action: "exclude"`, automatically add those columns as `exclude: true` in the plan's column configs. For columns flagged with `action: "flag"`, mention them to the user and let them decide.
 
 **Column settings to confirm with the user:**
@@ -48,11 +68,11 @@ If `profile_table_usage` returns `system_tables_available: false`, skip lineage 
 - **Missing tables**: If lineage shows an upstream table that wasn't selected (e.g., a dimension table), mention it.
 
 **Key principles for this step:**
-- Present what you learned, then ask 1-2 targeted questions about business logic
+- Present what you learned conversationally, then ask 1-2 targeted questions about business logic
 - Frame questions as specific choices when possible ("Should X be A or B?")
 - Don't ask generic "any business rules?" — be specific based on the data you found
 - If the data is straightforward, you can skip business logic questions entirely
 - **Always mention data quality findings** — even if minor, they help the user understand the data
 - For columns flagged as boolean-as-string or inconsistent casing, consider adding text instructions warning Genie about the formatting"""
 
-SUMMARY = "Step 3 (Inspection): Run describe_table, assess_data_quality, profile_table_usage, profile_columns autonomously, then summarize findings."
+SUMMARY = "Step 4 (Inspection): Run describe_table, assess_data_quality, profile_table_usage, profile_columns autonomously. Summarize findings conversationally and generate missing descriptions."
