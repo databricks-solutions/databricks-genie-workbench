@@ -7,6 +7,7 @@ guided by the system prompt (SKILL.md workflow + schema reference).
 import asyncio
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import AsyncGenerator, Generator
@@ -21,6 +22,12 @@ from backend.prompts_create import assemble_system_prompt, detect_step
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 15
+
+# Strip fake tool-call XML the LLM writes when tools are unavailable
+_FAKE_TOOL_RE = re.compile(
+    r"<tool_call>.*?</tool_call>\s*(?:<tool_response>.*?</tool_response>)?",
+    re.DOTALL,
+)
 
 STEP_LABELS: dict[str, str] = {
     "requirements": "Understanding requirements",
@@ -44,10 +51,17 @@ STEP_THINKING: dict[str, str] = {
 
 # Tools allowed per step — structural guardrail to prevent the LLM from
 # calling tools outside the current step's scope.
-STEP_TOOLS: dict[str, set[str] | None] = {
-    "requirements": None,  # No tools — pure conversation
+# Empty set = no tools (pure conversation). Missing key = all tools (fallback).
+STEP_TOOLS: dict[str, set[str]] = {
+    # Requirements has discovery tools so the agent can transition naturally
+    # when the user says "go find my data." The prompt guides the agent to
+    # gather requirements first — tools are available but not encouraged.
+    "requirements": {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"},
     "discovery": {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"},
-    "feasibility": None,  # No tools — LLM reasoning only
+    # Feasibility has inspection tools available so the LLM can call
+    # describe_table after the user confirms. The prompt instructs it to
+    # present an assessment and WAIT before calling tools.
+    "feasibility": {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"},
     "inspection": {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"},
     "plan": {"generate_plan", "present_plan", "test_sql"},
     "config_create": {"discover_warehouses", "generate_config", "validate_config", "create_space"},
@@ -164,22 +178,20 @@ class CreateGenieAgent:
 
             # Filter tools based on current step
             allowed_tools = STEP_TOOLS.get(step)
-            if allowed_tools is None:
-                # No tools for this step (requirements, feasibility)
-                step_tool_defs = []
-            else:
+            if allowed_tools is not None:
+                # Step has an explicit tool set (possibly empty for requirements/feasibility)
                 step_tool_defs = [
                     td for td in TOOL_DEFINITIONS
                     if td.get("function", {}).get("name") in allowed_tools
                 ]
+            else:
+                # Step not in STEP_TOOLS — fallback to all tools
+                step_tool_defs = TOOL_DEFINITIONS
 
             content_parts: list[str] = []
             tool_calls_acc: dict[int, dict] = {}
             tool_call_signaled = False
-
-            # Pass filtered tools: None = all tools (fallback), [] = no tools (requirements/feasibility)
-            effective_tools = step_tool_defs if allowed_tools is not None else TOOL_DEFINITIONS
-            async for chunk in self._async_stream_llm(messages, tools=effective_tools):
+            async for chunk in self._async_stream_llm(messages, tools=step_tool_defs):
                 choices = chunk.get("choices", [])
                 if not choices:
                     continue
@@ -379,10 +391,16 @@ class CreateGenieAgent:
                     needs_continuation = True
 
             else:
-                # Text-only response — conversation turn is done
-                session.add_message("assistant", accumulated_content)
+                # Text-only response — conversation turn is done.
+                # Strip fake <tool_call> XML the LLM may emit when tools are blocked.
+                cleaned = _FAKE_TOOL_RE.sub("", accumulated_content).strip()
+                if cleaned != accumulated_content:
+                    logger.warning("Stripped fake tool_call XML from response (%d -> %d chars)", len(accumulated_content), len(cleaned))
+                session.add_message("assistant", cleaned)
                 ui_elements = self._extract_ui_hints(session)
-                yield {"event": "message", "data": {"content": accumulated_content, "ui_elements": ui_elements}}
+                # The frontend's onMessage replaces streamed content with this final version,
+                # so the cleaned content overwrites any <tool_call> junk from message_delta.
+                yield {"event": "message", "data": {"content": cleaned, "ui_elements": ui_elements}}
 
         except Exception as e:
             logger.exception("Create agent chat failed")
@@ -623,15 +641,19 @@ class CreateGenieAgent:
         """
         from backend.services.llm_utils import call_serving_endpoint, parse_json_from_llm_response, get_llm_model
         try:
-            # Only send the instructions section (where most errors live) to keep context small
+            # Send both sections — use a generous limit so the LLM sees the full config
             repair_context = {
                 "instructions": config.get("instructions", {}),
                 "data_sources": config.get("data_sources", {}),
             }
+            config_json = json.dumps(repair_context, default=str)
+            # Truncate only if truly enormous (>24k chars); 16k is typical for 9 tables
+            if len(config_json) > 24000:
+                config_json = config_json[:24000] + "\n... (truncated)"
             prompt = (
                 "The following Genie Space config failed with this API error:\n\n"
                 f"**Error:** {error_msg}\n\n"
-                f"**Config (relevant sections):**\n```json\n{json.dumps(repair_context, default=str)[:6000]}\n```\n\n"
+                f"**Config (relevant sections):**\n```json\n{config_json}\n```\n\n"
                 "Fix ONLY the specific issue described in the error. Return the FULL corrected config "
                 "(with both 'instructions' and 'data_sources' sections intact).\n"
                 "Return ONLY valid JSON: {\"instructions\": {...}, \"data_sources\": {...}}"
@@ -639,7 +661,7 @@ class CreateGenieAgent:
             response = call_serving_endpoint(
                 [{"role": "user", "content": prompt}],
                 model=get_llm_model(),
-                max_tokens=8000,
+                max_tokens=16000,
             )
             repaired = parse_json_from_llm_response(response)
             # Merge repaired sections back into original config

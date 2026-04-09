@@ -86,15 +86,24 @@ def test_detect_step_post_creation():
 
 
 def test_detect_step_feasibility_via_session_state():
-    """Session state (selected_tables) should gate feasibility even without discover_tables tool call."""
+    """Session state (selected_tables) should gate feasibility after requirements gathered."""
     session = _make_session()
+    session.history.append({"role": "assistant", "content": "Got it, let me find tables."})
     session.selected_tables = ["catalog.schema.table1", "catalog.schema.table2"]
     assert detect_step(session) == "feasibility"
+
+
+def test_detect_step_stays_in_requirements_if_no_assistant_reply():
+    """Even with selected_tables, stay in requirements if agent hasn't responded yet."""
+    session = _make_session()
+    session.selected_tables = ["catalog.schema.table1", "catalog.schema.table2"]
+    assert detect_step(session) == "requirements"
 
 
 def test_detect_step_inspection_via_feasibility_confirmed():
     """feasibility_confirmed should advance to inspection even without describe_table."""
     session = _make_session()
+    session.history.append({"role": "assistant", "content": "Feasibility looks good."})
     session.selected_tables = ["catalog.schema.table1"]
     session.feasibility_confirmed = True
     assert detect_step(session) == "inspection"
@@ -191,7 +200,7 @@ if __name__ == "__main__":
         try:
             test()
             print(f"  PASS  {test.__name__}")
-        except AssertionError as e:  # noqa: F821
+        except AssertionError as e:
             print(f"  FAIL  {test.__name__}: {e}")
         except Exception as e:
             print(f"  ERROR {test.__name__}: {e}")

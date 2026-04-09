@@ -344,7 +344,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState("")
-  const [businessContextDraft, setBusinessContextDraft] = useState("")
+  // businessContextDraft state removed — was only used for add/remove business context UI
   const [expandedPlanSections, setExpandedPlanSections] = useState<Set<string>>(new Set(["sample_questions"]))
   const [agentStatus, setAgentStatus] = useState<string | null>(null)
   const [editedPlan, setEditedPlan] = useState<EditablePlan | null>(restored.current?.editedPlan ?? null)
@@ -416,7 +416,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     setProgress(EMPTY_PROGRESS)
     setEditingTitle(false)
     setTitleDraft("")
-    setBusinessContextDraft("")
     setExpandedPlanSections(new Set(["sample_questions"]))
     setEditedPlan(null)
     setEditingPlanItem(null)
@@ -924,8 +923,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     sendMessage(`Please remove the ${short} table from the selection`)
   }
 
-  // Business context management (kept for backwards compat with session restore)
-  void businessContextDraft
 
   // ─── Render helpers ───────────────────────────────────────────
 
@@ -1380,15 +1377,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
       action: "create",
       display_name: progress.title || undefined,
     })
-  }
-
-  const requestAIReview = () => {
-    if (!editedPlan) return
-    sendMessage("Please review the plan and suggest improvements before I approve.", { edited_plan: editedPlan, action: "review" })
-  }
-
-  const requestAddMoreTables = () => {
-    sendMessage("I want to add more tables from another schema or catalog before creating.")
   }
 
   // ─── Plan card renderer ──────────────────────────────────────
@@ -1889,22 +1877,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             <Rocket className="w-3 h-3" />
             Approve &amp; Create
           </button>
-          <button
-            onClick={requestAIReview}
-            disabled={isStreaming}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-surface border border-default text-secondary rounded-md text-[11px] font-medium hover:bg-elevated transition-colors disabled:opacity-40"
-          >
-            <Sparkles className="w-3 h-3 text-accent" />
-            AI Review &amp; Suggest
-          </button>
-          <button
-            onClick={requestAddMoreTables}
-            disabled={isStreaming}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-surface border border-default text-secondary rounded-md text-[11px] font-medium hover:bg-elevated transition-colors disabled:opacity-40"
-          >
-            <Plus className="w-3 h-3 text-muted" />
-            Add More Tables
-          </button>
         </div>
       </div>
     )
@@ -1999,6 +1971,14 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
   const renderToolCall = (msg: AgentChatMessage) => {
     if ((msg.tool_name === "present_plan" || msg.tool_name === "generate_plan") && msg.tool_result && !msg.tool_result.error) {
+      // Only render the plan card for the LAST generate_plan/present_plan in messages
+      // to avoid showing duplicate plans when the tool is called multiple times.
+      const lastPlanMsg = [...messages].reverse().find(
+        (m) => m.role === "tool" && (m.tool_name === "present_plan" || m.tool_name === "generate_plan") && m.tool_result && !m.tool_result.error,
+      )
+      if (lastPlanMsg && msg.id !== lastPlanMsg.id) {
+        return null // Skip earlier plan cards
+      }
       return <div key={msg.id} className="mx-4 my-2">{renderPlanCard(msg.tool_result)}</div>
     }
     const isExpanded = expandedTools.has(msg.id)

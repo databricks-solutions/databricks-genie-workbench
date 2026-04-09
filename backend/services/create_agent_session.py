@@ -101,6 +101,17 @@ async def _ensure_table() -> None:
                 CREATE INDEX IF NOT EXISTS idx_agent_sessions_last_active
                 ON genie.agent_sessions (last_active)
             """)
+            # Migrate existing tables: add columns introduced in the discovery/feasibility update
+            for col_sql in [
+                "ALTER TABLE genie.agent_sessions ADD COLUMN IF NOT EXISTS selected_catalogs JSONB NOT NULL DEFAULT '[]'::jsonb",
+                "ALTER TABLE genie.agent_sessions ADD COLUMN IF NOT EXISTS selected_schemas JSONB NOT NULL DEFAULT '[]'::jsonb",
+                "ALTER TABLE genie.agent_sessions ADD COLUMN IF NOT EXISTS selected_tables JSONB NOT NULL DEFAULT '[]'::jsonb",
+                "ALTER TABLE genie.agent_sessions ADD COLUMN IF NOT EXISTS feasibility_confirmed BOOLEAN NOT NULL DEFAULT false",
+            ]:
+                try:
+                    await conn.execute(col_sql)
+                except Exception:
+                    pass  # Column already exists
         logger.info("agent_sessions table ready")
     except Exception as e:
         logger.warning(f"Failed to ensure agent_sessions table: {e}")

@@ -50,24 +50,7 @@ def search_tables(
         safe_catalogs = ", ".join(f"'{c.replace(chr(39), chr(39)*2)}'" for c in catalogs)
         catalog_filter = f"AND t.table_catalog IN ({safe_catalogs})"
 
-    # Build keyword match expressions for the matching_columns and matched_keywords fields
-    keyword_case_exprs = []
-    for kw in keywords:
-        safe_kw = kw.replace("'", "''").replace("%", "\\%").replace("_", "\\_").lower()
-        keyword_case_exprs.append(
-            f"CASE WHEN lower(c.column_name) LIKE '%{safe_kw}%' "
-            f"OR lower(c.comment) LIKE '%{safe_kw}%' "
-            f"THEN c.column_name END"
-        )
-
-    matching_cols_expr = "collect_set(COALESCE(" + ", ".join(
-        f"CASE WHEN lower(c.column_name) LIKE '%{kw.replace(chr(39), chr(39)*2).lower()}%' "
-        f"OR lower(c.comment) LIKE '%{kw.replace(chr(39), chr(39)*2).lower()}%' "
-        f"THEN c.column_name END"
-        for kw in keywords
-    ) + "))"
-
-    # Simpler approach: just collect columns that matched any keyword
+    # Build column-match condition for the collect_set in the SELECT
     col_match_parts = []
     for kw in keywords:
         safe_kw = kw.replace("'", "''").replace("%", "\\%").replace("_", "\\_").lower()

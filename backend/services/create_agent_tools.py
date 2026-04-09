@@ -918,8 +918,23 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
             return {"error": "No config to update — call generate_config first"}
 
     # Normalize common LLM argument name variations
-    if name == "profile_columns" and "column_names" in arguments and "columns" not in arguments:
-        arguments["columns"] = arguments.pop("column_names")
+    if name == "profile_columns":
+        if "column_names" in arguments and "columns" not in arguments:
+            arguments["columns"] = arguments.pop("column_names")
+        # LLM sometimes sends columns as a JSON string '["col1","col2"]' instead of
+        # an actual array. Parse it properly to avoid iterating characters or leaving
+        # brackets/quotes in column names.
+        cols = arguments.get("columns")
+        if isinstance(cols, str):
+            cols = cols.strip()
+            try:
+                parsed = json.loads(cols)
+                if isinstance(parsed, list):
+                    arguments["columns"] = [str(c) for c in parsed]
+                else:
+                    arguments["columns"] = [cols]
+            except (json.JSONDecodeError, ValueError):
+                arguments["columns"] = [c.strip().strip('"').strip("'") for c in cols.split(",") if c.strip()]
 
     try:
         return handler(**arguments)
@@ -1095,6 +1110,10 @@ def _describe_table(table_identifier: str) -> dict:
 @mlflow.trace(name="profile_columns", span_type=SpanType.TOOL)
 def _profile_columns(table_identifier: str, columns: list[str] | None = None) -> dict:
     """Profile columns by querying distinct values and date ranges."""
+    # Guard: if columns look like iterated characters from a string, fall back to auto-detect
+    if columns and all(len(c) <= 1 for c in columns):
+        logger.warning("profile_columns: columns look like iterated chars %s — falling back to auto-detect", columns)
+        columns = None
     if not columns:
         desc_result = _describe_table(table_identifier)
         if "error" in desc_result:

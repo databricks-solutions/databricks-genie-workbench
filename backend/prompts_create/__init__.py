@@ -136,12 +136,17 @@ def _inspection_complete(history: list[dict]) -> bool:
     )
 
 
+def _has_assistant_message(history: list[dict]) -> bool:
+    """Check if the agent has responded at least once (requirements gathered)."""
+    return any(m["role"] == "assistant" for m in history)
+
+
 def detect_step(session: AgentSession) -> str:
     """Determine the current workflow step using session state + tool history.
 
     Uses session state fields as primary gates (robust), with tool-call history
     as fallback for backwards compatibility:
-    - requirements: default start
+    - requirements: default start (must have at least one assistant reply before advancing)
     - discovery: any discovery tool called (or user has given business questions)
     - feasibility: selected_tables populated (user confirmed table selection)
     - inspection: feasibility_confirmed is True
@@ -164,11 +169,17 @@ def detect_step(session: AgentSession) -> str:
     # Inspection: requires feasibility_confirmed OR describe_table in progress
     if _has_tool(session.history, "describe_table"):
         return "inspection"
-    if getattr(session, "feasibility_confirmed", False):
+    if session.feasibility_confirmed:
         return "inspection"
 
+    # Requirements must be gathered (at least one assistant reply) before
+    # advancing to discovery/feasibility. If the user selects tables from the
+    # drawer on their very first message, stay in requirements.
+    if not _has_assistant_message(session.history):
+        return "requirements"
+
     # Feasibility: requires tables selected or search/discovery completed
-    if getattr(session, "selected_tables", None):
+    if session.selected_tables:
         return "feasibility"
     if _has_tool(session.history, "discover_tables"):
         return "feasibility"
@@ -301,21 +312,18 @@ def _build_session_context(session: AgentSession) -> str:
     """
     lines: list[str] = []
 
-    catalogs = getattr(session, "selected_catalogs", [])
-    if catalogs:
-        lines.append(f"**Selected catalogs:** {', '.join(catalogs)}")
+    if session.selected_catalogs:
+        lines.append(f"**Selected catalogs:** {', '.join(session.selected_catalogs)}")
         lines.append("Do NOT explore other catalogs unless the user asks.")
 
-    schemas = getattr(session, "selected_schemas", [])
-    if schemas:
-        lines.append(f"**Selected schemas:** {', '.join(schemas)}")
+    if session.selected_schemas:
+        lines.append(f"**Selected schemas:** {', '.join(session.selected_schemas)}")
         lines.append("Do NOT explore other schemas unless the user asks.")
 
-    tables = getattr(session, "selected_tables", [])
-    if tables:
-        lines.append(f"**Selected tables ({len(tables)}):** {', '.join(tables)}")
+    if session.selected_tables:
+        lines.append(f"**Selected tables ({len(session.selected_tables)}):** {', '.join(session.selected_tables)}")
 
-    if getattr(session, "feasibility_confirmed", False):
+    if session.feasibility_confirmed:
         lines.append("**Feasibility:** Confirmed — user approved proceeding with these tables.")
 
     return "\n".join(lines)
