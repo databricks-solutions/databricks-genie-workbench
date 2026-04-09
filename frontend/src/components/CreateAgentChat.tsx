@@ -635,7 +635,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
               setProgress((p) => ({
                 ...p,
                 catalog: cat,
-                schema: sch,
+                schemas: p.schemas.includes(sch) ? p.schemas : [...p.schemas, sch],
                 tables: p.tables.includes(fullName) ? p.tables : [...p.tables, fullName],
               }))
             }

@@ -64,6 +64,16 @@ def _execute_sql_throttled(sql: str, **kwargs) -> dict:
         return execute_sql(sql, **kwargs)
 
 
+def _sql_escape(s: str) -> str:
+    """Escape a string for safe interpolation into a SQL string literal."""
+    return s.replace("'", "''")
+
+
+def _sql_escape_like(s: str) -> str:
+    """Escape a string for safe use inside a SQL LIKE pattern literal."""
+    return s.replace("'", "''").replace("%", "\\%").replace("_", "\\_")
+
+
 def _base_col_type(type_text: str) -> str:
     """Normalize a column type to its base name (strip generics and precision)."""
     return type_text.lower().split("<")[0].split("(")[0].strip()
@@ -1637,12 +1647,13 @@ def _profile_table_usage(table_identifiers: list[str]) -> dict:
 
 def _fetch_lineage(table_identifier: str) -> dict:
     """Fetch upstream and downstream tables from system.access.table_lineage."""
+    safe_id = _sql_escape(table_identifier)
     sql = (
         f"SELECT source_table_full_name, target_table_full_name, "
         f"source_type, target_type "
         f"FROM system.access.table_lineage "
-        f"WHERE (target_table_full_name = '{table_identifier}' "
-        f"OR source_table_full_name = '{table_identifier}') "
+        f"WHERE (target_table_full_name = '{safe_id}' "
+        f"OR source_table_full_name = '{safe_id}') "
         f"AND event_time >= date_sub(current_date(), 30) "
         f"LIMIT 50"
     )
@@ -1670,7 +1681,7 @@ def _fetch_query_history(table_identifiers: list[str]) -> dict:
         return {"queries": []}
 
     like_clauses = " OR ".join(
-        f"LOWER(statement_text) LIKE '%{tbl.lower()}%'" for tbl in table_identifiers
+        f"LOWER(statement_text) LIKE '%{_sql_escape_like(tbl.lower())}%'" for tbl in table_identifiers
     )
     sql = (
         f"SELECT executed_by, "

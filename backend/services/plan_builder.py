@@ -718,7 +718,7 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
                 else:
                     hard_failures[(kind, idx)] = err
             elif kind == "benchmark" and result.get("success"):
-                row_count = len(result.get("data", []))
+                row_count = result.get("row_count", 0)
                 if row_count == 0:
                     # Benchmark SQL ran but returned no rows — filter values likely hallucinated
                     needs_repair.append((kind, idx))
