@@ -14,6 +14,51 @@ Genie Workbench is a unified developer tool for creating, scoring, and optimizin
 
 The app is a FastAPI backend serving a React/Vite frontend, deployed as a [Databricks App](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/). User identity flows via OBO (On-Behalf-Of) auth so each user operates under their own Databricks permissions. Score history and session state are persisted in Lakebase (PostgreSQL).
 
+## Permissions & Authentication Model
+
+Genie Workbench uses a **dual-identity model**: the signed-in user's token for interactive operations and the app's Service Principal for background jobs. This section summarizes how each identity is used and why.
+
+> For a full deep dive with code references, sequence diagrams, and GRANT statements, see [docs/03-authentication-and-permissions.md](docs/03-authentication-and-permissions.md).
+
+### OBO (On-Behalf-Of) Auth
+
+All interactive API calls use the signed-in user's identity. The Databricks Apps platform forwards the user's access token via the `x-forwarded-access-token` header. Middleware in `backend/main.py` stores a per-request `WorkspaceClient` in a Python `ContextVar`, so every downstream service call — browsing Unity Catalog, listing Genie Spaces, executing SQL, creating spaces — runs under the user's permissions. Users only see what they have access to.
+
+### Service Principal Fallback for Genie API
+
+Some user OAuth tokens lack the `dashboards.genie` scope. When the app detects a scope error (via `_is_scope_error()` in `backend/services/genie_client.py`), it transparently retries the call with the app's Service Principal. For this fallback to work, the SP must have **CAN_MANAGE** on each Genie Space.
+
+### Service Principal for Optimization Jobs
+
+The Auto-Optimize (GSO) pipeline runs as a **Lakeflow Job** — a long-running, multi-task DAG that can take minutes to complete. Lakeflow Jobs execute in a separate environment with a fixed `run_as` identity; there is no mechanism to forward the user's short-lived OAuth token into a background job. Therefore the optimization job runs as the app's Service Principal.
+
+Security is preserved because:
+
+1. **Authorization at trigger time** — the app verifies the user has `CAN_EDIT` or `CAN_MANAGE` on the Genie Space (via OBO) before submitting the job.
+2. **SP entitlement validated** — the app confirms the SP has `CAN_MANAGE` on the space before job submission.
+3. **Minimum-privilege SP** — the SP only needs read access to referenced data schemas and manage access to the optimization state schema.
+
+### SP Permissions Required
+
+| Scope | Permission | Purpose |
+|-------|-----------|---------|
+| Each Genie Space | `CAN_MANAGE` | API fallback + optimization patches |
+| Referenced data schemas | `SELECT`, `USE_SCHEMA`, `USE_CATALOG` | Data access during optimization benchmarks |
+| GSO optimizer schema | `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `MODIFY`, `CREATE_TABLE`, `CREATE_FUNCTION`, `CREATE_MODEL`, `CREATE_VOLUME`, `EXECUTE`, `MANAGE` | Optimizer state tables, MLflow models, prompt registry |
+
+### Permission Boundary Summary
+
+| Operation | Identity | Rationale |
+|-----------|----------|-----------|
+| Browse Genie Spaces, UC catalogs/schemas/tables | OBO (user) | User sees only what they have access to |
+| Genie API (fetch/list spaces) | OBO, SP fallback on scope error | User token may lack `dashboards.genie` scope |
+| Create Agent (tools, SQL, space creation) | OBO (user) | Space created under user's identity |
+| Fix Agent (generate + apply patches) | OBO (user) | Patches applied as the user |
+| Trigger optimization (permission check) | OBO (user) | Verifies user has CAN_EDIT/CAN_MANAGE |
+| Optimization job execution (6-task DAG) | SP | Lakeflow Jobs have no OBO; SP runs the pipeline |
+| GSO Delta table reads/writes | SP | Optimizer state tables owned by SP |
+| Lakebase persistence | SP | App-level storage, not user-scoped |
+
 ## Prerequisites
 
 * [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.239.0+ required)
@@ -177,6 +222,8 @@ The Auto-Optimize optimization job is created automatically during deploy. The d
 If the job already exists (from a previous deploy), it is reused. To force recreation, delete the job in the Databricks UI and re-run `./scripts/deploy.sh --update`.
 
 ## Post-Deploy: Genie Space Access
+
+> For a full explanation of when OBO vs SP auth is used, see [Permissions & Authentication Model](#permissions--authentication-model) above.
 
 The app uses On-Behalf-Of (OBO) auth — users see only Genie Spaces they have permission to manage. The app's service principal also needs access for fallback operations:
 

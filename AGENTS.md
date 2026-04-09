@@ -200,6 +200,19 @@ Python dependencies use `uv sync` on the platform (because `requirements.txt` is
 - All API routes prefixed with `/api`
 - Pydantic models in `backend/models.py`, TypeScript mirrors in `frontend/src/types/index.ts` — keep in sync
 
+## Documentation
+
+Comprehensive documentation lives in the `docs/` folder:
+
+- `docs/00-index.md` — Documentation hub and table of contents
+- `docs/03-authentication-and-permissions.md` — Deep dive on OBO + SP dual auth model
+- `docs/04-create-agent.md` — Create Agent: multi-turn tool-calling flow
+- `docs/07-auto-optimize.md` — GSO optimization pipeline (6-stage DAG)
+- `docs/appendices/A-api-reference.md` — All API endpoints with auth identity
+
+See `docs/00-index.md` for the full listing. When modifying auth, agents, or
+optimization code, consult the relevant doc for design rationale.
+
 ## References
 
 **Before modifying any Genie Space configuration, schema handling, or space creation/optimization code, you MUST `WebFetch` and read the relevant references below.**
