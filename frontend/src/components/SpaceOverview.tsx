@@ -43,6 +43,7 @@ function safeObj(val: unknown): Record<string, unknown> {
 function extractOverviewData(spaceData: Record<string, unknown>) {
   const dataSources = safeObj(spaceData.data_sources)
   const tables = safeArray(dataSources.tables)
+  const metricViews = safeArray(dataSources.metric_views)
   const instructions = safeObj(spaceData.instructions)
   const textInstructions = safeArray(instructions.text_instructions)
   const exampleSqls = safeArray(instructions.example_question_sqls)
@@ -63,6 +64,7 @@ function extractOverviewData(spaceData: Record<string, unknown>) {
 
   return {
     tables,
+    metricViews,
     instructionText,
     joinSpecs,
     filters,
@@ -110,32 +112,42 @@ export function SpaceOverview({ spaceData, isLoading }: SpaceOverviewProps) {
   const data = extractOverviewData(spaceData)
   const sqlExpressionCount = data.measures.length + data.filters.length + data.expressions.length
 
+  const renderDataSourceList = (items: unknown[], showColumns = false) =>
+    items.length === 0 ? (
+      <p className="text-muted italic">None configured</p>
+    ) : (
+      <div className="space-y-2">
+        {items.map((item, i) => {
+          const obj = safeObj(item)
+          const identifier = String(obj.identifier || "")
+          const description = joinStringArray(obj.description)
+          return (
+            <div key={i} className="border border-default rounded-lg p-3 bg-elevated">
+              <code className="text-xs font-mono text-accent">{identifier}</code>
+              {description && <p className="text-xs text-secondary mt-1">{description}</p>}
+              {showColumns && (
+                <span className="text-[10px] text-muted mt-1 block">{safeArray(obj.column_configs).length} columns</span>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    )
+
   const sections: OverviewSection[] = [
     {
       key: "tables",
       label: "Tables",
       Icon: Table2,
       count: data.tables.length,
-      render: () =>
-        data.tables.length === 0 ? (
-          <p className="text-muted italic">None configured</p>
-        ) : (
-          <div className="space-y-2">
-            {data.tables.map((t, i) => {
-              const table = safeObj(t)
-              const identifier = String(table.identifier || "")
-              const description = joinStringArray(table.description)
-              const columns = safeArray(table.column_configs)
-              return (
-                <div key={i} className="border border-default rounded-lg p-3 bg-elevated">
-                  <code className="text-xs font-mono text-accent">{identifier}</code>
-                  {description && <p className="text-xs text-secondary mt-1">{description}</p>}
-                  <span className="text-[10px] text-muted mt-1 block">{columns.length} columns</span>
-                </div>
-              )
-            })}
-          </div>
-        ),
+      render: () => renderDataSourceList(data.tables, true),
+    },
+    {
+      key: "metric_views",
+      label: "Metric Views",
+      Icon: BarChart3,
+      count: data.metricViews.length,
+      render: () => renderDataSourceList(data.metricViews),
     },
     {
       key: "text_instructions",

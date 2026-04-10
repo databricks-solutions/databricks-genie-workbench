@@ -108,3 +108,13 @@ def empty_space_data():
         "instructions": {},
         "benchmarks": {},
     }
+
+
+@pytest.fixture
+def metric_view_only_space():
+    """Space with only metric views, no tables."""
+    return {
+        "data_sources": {"metric_views": [{"identifier": "cat.sch.mv1"}]},
+        "instructions": {},
+        "benchmarks": {},
+    }
