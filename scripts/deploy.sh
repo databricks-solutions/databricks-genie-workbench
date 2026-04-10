@@ -170,6 +170,7 @@ _print_config
 echo ""
 echo "▸ Step 1/$TOTAL_STEPS: Pre-flight checks..."
 _preflight_check_tools
+_preflight_check_npm_registry
 _preflight_check_profile "$PROFILE"
 
 # Resolve deployer email (needed for workspace paths)

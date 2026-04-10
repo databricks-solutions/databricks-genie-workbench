@@ -8,6 +8,7 @@ Genie Workbench is deployed as a Databricks App using the provided deploy script
 - [uv](https://docs.astral.sh/uv/) — Python package manager
 - Node.js 18+ and npm
 - Python 3.11+
+- **Network access to `registry.npmjs.org`** — required to install frontend npm dependencies during the build step. If you are behind a corporate firewall or VPN that blocks this, you must either allowlist `registry.npmjs.org` or connect via a network that permits outbound HTTPS to it. The deploy script validates this connectivity during pre-flight checks.
 - A Databricks workspace with:
   - Apps enabled
   - A SQL Warehouse (Serverless recommended)
