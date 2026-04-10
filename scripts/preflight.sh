@@ -48,6 +48,25 @@ _preflight_check_tools() {
     fi
 }
 
+_preflight_check_npm_registry() {
+    echo "  Checking npm registry connectivity..."
+    if curl -s -o /dev/null -w "" --connect-timeout 5 https://registry.npmjs.org/react 2>/dev/null; then
+        echo "  ✓ npm registry (registry.npmjs.org) is reachable"
+    else
+        echo ""
+        echo "  ✗ Cannot reach npm registry (registry.npmjs.org)."
+        echo ""
+        echo "  The frontend build requires downloading npm packages from registry.npmjs.org."
+        echo ""
+        echo "  Remediation:"
+        echo "    1. Check your internet connection"
+        echo "    2. If behind a corporate firewall/VPN, ensure registry.npmjs.org is not blocked"
+        echo "    3. If using a proxy, set: npm config set proxy <proxy-url>"
+        echo ""
+        exit 1
+    fi
+}
+
 _preflight_check_profile() {
     local profile="$1"
     echo "  Checking CLI profile '$profile'..."
