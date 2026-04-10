@@ -26,12 +26,12 @@ The first 10 checks evaluate configuration quality. The last 2 checks evaluate o
 
 | # | Check | Pass Criteria | On Failure |
 |---|-------|--------------|------------|
-| 1 | **Tables exist** | At least 1 table configured | "No tables configured" |
+| 1 | **Data sources exist** | At least 1 table or metric view configured | "No tables or metric views configured" |
 | 2 | **Table descriptions** | ≥80% of tables have descriptions | Finding + next step to add descriptions |
 | 3 | **Column descriptions** | ≥50% of columns have descriptions | Finding + next step to add descriptions |
 | 4 | **Text instructions** | Present and >50 characters total | Finding to add business context instructions |
-| 5 | **Join specifications** | At least 1 join spec (for multi-table spaces) | Finding to add join specs |
-| 6 | **Table count 1–12** | Between 1 and 12 tables | Finding to reduce tables or use multi-room architecture |
+| 5 | **Join specifications** | At least 1 join spec (for multi-source spaces) | Finding to add join specs |
+| 6 | **Data source count 1–12** | Between 1 and 12 tables + metric views | Finding to reduce data sources or use multi-room architecture |
 | 7 | **8+ example SQLs** | At least 8 example question-SQL pairs | Finding to add more examples |
 | 8 | **SQL snippets** | At least 1 function, expression, measure, or filter | Finding to add SQL snippets |
 | 9 | **Entity/format matching** | At least 1 column with entity matching or format assistance | Finding to enable on categorical/date/number columns |
@@ -66,10 +66,10 @@ The scanner returns:
   "total": 12,
   "maturity": "Not Ready",
   "checks": [
-    {"label": "Tables exist", "passed": true, "detail": "5 table(s) configured", "severity": "pass"},
+    {"label": "Data sources exist", "passed": true, "detail": "5 table(s) configured", "severity": "pass"},
     ...
   ],
-  "findings": ["No join specifications for multi-table space", ...],
+  "findings": ["No join specifications for multi-source space", ...],
   "next_steps": ["Add join specifications to help Genie correctly join your tables", ...],
   "warnings": ["Instructions total 2,500 chars — keep under 2,000", ...],
   "warning_next_steps": ["Restructure text instructions for optimal LLM context usage", ...],
@@ -91,7 +91,7 @@ Beyond the 12 scored checks, the scanner emits additional warnings for edge case
 | No column synonyms defined | "Add synonyms for columns with abbreviated or technical names" |
 | Text instructions > 2,000 chars | "Keep under 2,000 to avoid pushing out higher-value SQL context" |
 | SQL patterns in text instructions | "Move to Example SQLs or SQL Expressions" |
-| Table count 9–12 | "Consider splitting into focused rooms for >8 tables" |
+| Data source count 9–12 | "Consider splitting into focused rooms for >8 data sources" |
 | Example SQLs 8–14 | "10-15 is the sweet spot for largest accuracy jump" |
 | Missing `usage_guidance` on >50% of example SQLs | "Add descriptions of when each example should be applied" |
 | Missing measures or filters in SQL snippets | "Add missing SQL snippet types for better coverage" |

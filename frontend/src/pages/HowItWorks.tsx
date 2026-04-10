@@ -52,7 +52,7 @@ const stages: Stage[] = [
   { id: "overview", label: "Overview", icon: <Sparkles className="h-4 w-4" />, color: ACCENT },
   { id: "create", label: "Create Agent", icon: <MessageSquarePlus className="h-4 w-4" />, color: CYAN },
   { id: "score", label: "IQ Scanner", icon: <ShieldCheck className="h-4 w-4" />, color: SUCCESS },
-  { id: "fix", label: "Fix Agent", icon: <Wrench className="h-4 w-4" />, color: WARNING },
+  { id: "fix", label: "Quick Fix", icon: <Wrench className="h-4 w-4" />, color: WARNING },
   { id: "optimize", label: "Auto-Optimize", icon: <Zap className="h-4 w-4" />, color: DANGER },
   { id: "permissions", label: "Permissions", icon: <Lock className="h-4 w-4" />, color: INFO },
   { id: "architecture", label: "Architecture", icon: <Layers className="h-4 w-4" />, color: ACCENT },
@@ -185,8 +185,8 @@ function OverviewContent() {
         />
         <FeatureCard
           icon={<Wrench className="h-6 w-6" />}
-          title="Fix"
-          description="Turn scan findings into concrete fixes. The Fix Agent generates JSON patches and applies them directly — no manual editing required."
+          title="Quick Fix"
+          description="Turn scan findings into config-level fixes. Generates JSON patches and applies them directly — for bulk descriptions, use AI Generate in Unity Catalog."
           accentColor={WARNING}
           glowColor={`${WARNING}15`}
         />
@@ -205,7 +205,7 @@ function OverviewContent() {
           steps={[
             { icon: <MessageSquarePlus className="h-5 w-5" />, label: "Create", description: "AI builds your space", color: CYAN },
             { icon: <ShieldCheck className="h-5 w-5" />, label: "Score", description: "12-check quality scan", color: SUCCESS },
-            { icon: <Wrench className="h-5 w-5" />, label: "Fix", description: "Auto-apply patches", color: WARNING },
+            { icon: <Wrench className="h-5 w-5" />, label: "Quick Fix", description: "Auto-apply patches", color: WARNING },
             { icon: <Zap className="h-5 w-5" />, label: "Optimize", description: "Benchmark & refine", color: DANGER },
             { icon: <CheckCircle2 className="h-5 w-5" />, label: "Trusted", description: "Production-ready", color: SUCCESS },
           ]}
@@ -297,12 +297,12 @@ function CreateAgentContent() {
    ================================================================ */
 function IQScannerContent() {
   const configChecks = [
-    { name: "Tables exist", desc: "At least one table attached to the space" },
+    { name: "Data sources exist", desc: "At least one table or metric view attached to the space" },
     { name: "Table descriptions (≥80%)", desc: "80%+ of tables have meaningful descriptions" },
     { name: "Column descriptions (≥50%)", desc: "50%+ of columns are documented" },
     { name: "Text instructions (>50 chars)", desc: "Business context and terminology explained" },
-    { name: "Join specifications", desc: "Join paths defined for multi-table spaces" },
-    { name: "Table count 1–12", desc: "Optimal number of tables for accuracy" },
+    { name: "Join specifications", desc: "Join paths defined for multi-source spaces" },
+    { name: "Data source count 1–12", desc: "Optimal number of tables and metric views for accuracy" },
     { name: "8+ example SQLs", desc: "Diverse query patterns for the model to learn" },
     { name: "SQL snippets", desc: "Functions, expressions, measures, or filters defined" },
     { name: "Entity/format matching", desc: "Categorical and date/number columns annotated" },
@@ -400,8 +400,8 @@ function FixAgentContent() {
   return (
     <div className="space-y-6">
       <div className="text-center mb-2">
-        <h2 className="text-xl font-display font-bold text-primary">Fix Agent</h2>
-        <p className="text-sm text-muted mt-1">Automatically generates and applies fixes from IQ Scanner findings</p>
+        <h2 className="text-xl font-display font-bold text-primary">Quick Fix</h2>
+        <p className="text-sm text-muted mt-1">Automatically generates and applies config-level fixes from IQ Scanner findings</p>
       </div>
 
       <StageCard title="Scan → Fix Pipeline" icon={<Wrench className="h-4 w-4" />}>
@@ -458,6 +458,23 @@ function FixAgentContent() {
           </div>
         </StageCard>
       </div>
+
+      <StageCard title="Limitations" subtitle="What Quick Fix cannot do" icon={<AlertTriangle className="h-4 w-4" />}>
+        <div className="space-y-2.5 text-sm">
+          {[
+            "Column descriptions are capped at 50 per run — use AI Generate in Unity Catalog for bulk coverage",
+            "No data access — descriptions are inferred from column names only, not actual values",
+            "Generated example SQLs are untested — verify them in the Genie Space after applying",
+            "Cannot add or remove tables — manage data sources upstream in Unity Catalog",
+            "Optimization checks (11–12) require running the Optimize pipeline",
+          ].map((item) => (
+            <div key={item} className="flex items-start gap-2.5">
+              <XCircle className="h-4 w-4 text-red-400 shrink-0 mt-0.5" />
+              <span className="text-secondary">{item}</span>
+            </div>
+          ))}
+        </div>
+      </StageCard>
     </div>
   )
 }

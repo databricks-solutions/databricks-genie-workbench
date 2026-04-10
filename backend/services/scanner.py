@@ -79,18 +79,26 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     warning_next_steps = []
 
     tables = space_data.get("data_sources", {}).get("tables", [])
+    metric_views = space_data.get("data_sources", {}).get("metric_views", [])
+    total_sources = len(tables) + len(metric_views)
 
     # --- Config checks (1-10) ---
 
-    # 1. Tables exist
-    passed = bool(tables)
-    _check(checks, "Tables exist", passed,
-           detail=f"{len(tables)} table(s) configured" if passed else "No tables configured")
-    if not passed:
-        findings.append("No tables configured")
-        next_steps.append("Add at least one table to your Genie Space")
+    # 1. Data sources exist (tables or metric views)
+    has_data_sources = bool(tables) or bool(metric_views)
+    ds_parts = []
+    if tables:
+        ds_parts.append(f"{len(tables)} table(s)")
+    if metric_views:
+        ds_parts.append(f"{len(metric_views)} metric view(s)")
+    _check(checks, "Data sources exist", has_data_sources,
+           detail=", ".join(ds_parts) + " configured" if has_data_sources else "No tables or metric views configured")
+    if not has_data_sources:
+        findings.append("No tables or metric views configured")
+        next_steps.append("Add at least one table or metric view to your Genie Space")
 
     # 2. Table descriptions — require ≥80% coverage (Gap 2)
+    #    Auto-pass when no tables (metric-view-only spaces manage descriptions in UC).
     if tables:
         described_tables = sum(
             1 for t in tables if t.get("description") or t.get("comment")
@@ -111,10 +119,13 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         elif severity == "warning":
             warnings.append(detail)
             warning_next_steps.append("Add descriptions to remaining tables for better Intent Agent routing")
+    elif metric_views:
+        _check(checks, "Table descriptions", True, detail="Metric-view-only space — descriptions managed in Unity Catalog", severity="pass")
     else:
-        _check(checks, "Table descriptions", False, detail="No tables configured", severity="fail")
+        _check(checks, "Table descriptions", False, detail="No data sources configured", severity="fail")
 
     # 3. Column descriptions — require ≥50% coverage (Gap 1)
+    #    Auto-pass when no tables (metric-view-only spaces manage columns in UC).
     if tables:
         total_cols = 0
         described_cols = 0
@@ -145,8 +156,10 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
         if passed and not has_synonyms:
             warnings.append("No column synonyms defined")
             warning_next_steps.append("Add synonyms for columns with abbreviated or technical names")
+    elif metric_views:
+        _check(checks, "Column descriptions", True, detail="Metric-view-only space — columns managed in Unity Catalog", severity="pass")
     else:
-        _check(checks, "Column descriptions", False, detail="No tables configured", severity="fail")
+        _check(checks, "Column descriptions", False, detail="No data sources configured", severity="fail")
 
     # 4. Text instructions > 50 chars (Gap 6: length + SQL-in-text warnings)
     text_instructions = space_data.get("instructions", {}).get("text_instructions", [])
@@ -181,28 +194,27 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     # 5. Join specifications
     join_specs = space_data.get("instructions", {}).get("join_specs", [])
     passed = bool(join_specs)
-    detail = f"{len(join_specs)} join spec(s) for {len(tables)} tables" if passed else None
+    detail = f"{len(join_specs)} join spec(s) for {total_sources} data source(s)" if passed else None
     _check(checks, "Join specifications", passed, detail=detail)
-    if not passed and len(tables) > 1:
-        findings.append("No join specifications for multi-table space")
-        next_steps.append("Add join specifications to help Genie correctly join your tables")
+    if not passed and total_sources > 1:
+        findings.append("No join specifications for multi-source space")
+        next_steps.append("Add join specifications to help Genie correctly join your data sources")
 
-    # 6. Table count 1-12 (Gap 10: adjusted from 1-10)
-    table_count = len(tables)
-    passed = 1 <= table_count <= 12
-    detail = f"{table_count} tables"
+    # 6. Data source count 1-12 (Gap 10: adjusted from 1-10)
+    passed = 1 <= total_sources <= 12
+    detail = f"{total_sources} data source(s)"
     severity = "pass"
-    if not passed and table_count > 12:
+    if not passed and total_sources > 12:
         detail += " — consider multi-room architecture"
         severity = "fail"
-    elif passed and table_count > 8:
-        detail += " — consider splitting into focused rooms for >8 tables"
+    elif passed and total_sources > 8:
+        detail += " — consider splitting into focused rooms for >8 data sources"
         severity = "warning"
-    _check(checks, "Table count 1-12", passed, detail=detail, severity=severity)
-    if not passed and tables:
-        if table_count > 12:
-            findings.append(f"{table_count} tables — more than 12 reduces Genie accuracy")
-            next_steps.append("Consider multi-room architecture or reducing to the most relevant 5-12 tables")
+    _check(checks, "Data source count 1-12", passed, detail=detail, severity=severity)
+    if not passed and (tables or metric_views):
+        if total_sources > 12:
+            findings.append(f"{total_sources} data sources — more than 12 reduces Genie accuracy")
+            next_steps.append("Consider multi-room architecture or reducing to the most relevant 5-12 data sources")
     elif severity == "warning":
         warnings.append(detail)
         warning_next_steps.append("Consider splitting into focused rooms for better accuracy")
@@ -265,7 +277,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     entity_count = 0
     format_count = 0
     rls_tables = []
-    for t in tables:
+    for t in tables + metric_views:
         table_has_rls = bool(t.get("row_filter") or t.get("column_mask"))
         for col in t.get("column_configs", []) + t.get("columns", []):
             if col.get("enable_entity_matching"):
@@ -288,7 +300,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
             detail += f" — approaching 120/space limit"
             severity = "warning"
     _check(checks, "Entity/format matching", entity_or_format, detail=detail, severity=severity)
-    if not entity_or_format and tables:
+    if not entity_or_format and (tables or metric_views):
         findings.append("No columns have entity matching or format assistance enabled")
         next_steps.append("Enable entity matching on categorical columns and format assistance on date/number columns")
     elif severity == "warning":

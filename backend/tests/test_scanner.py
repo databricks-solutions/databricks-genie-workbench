@@ -71,18 +71,37 @@ class TestScoreEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# Check 1: Tables exist
+# Check 1: Data sources exist
 # ---------------------------------------------------------------------------
 
-class TestTablesExist:
+class TestDataSourcesExist:
     def test_no_tables(self, empty_space_data):
         result = calculate_score(empty_space_data)
-        check = _check_by_label(result, "Tables exist")
+        check = _check_by_label(result, "Data sources exist")
         assert check["passed"] is False
 
     def test_has_tables(self, full_space_data):
-        check = _check_by_label(calculate_score(full_space_data), "Tables exist")
+        check = _check_by_label(calculate_score(full_space_data), "Data sources exist")
         assert check["passed"] is True
+
+    def test_metric_views_only_passes(self, metric_view_only_space):
+        check = _check_by_label(calculate_score(metric_view_only_space), "Data sources exist")
+        assert check["passed"] is True
+        assert "1 metric view(s)" in check["detail"]
+
+    def test_both_tables_and_metric_views(self):
+        data = {
+            "data_sources": {
+                "tables": [{"name": "t1", "columns": []}],
+                "metric_views": [{"identifier": "cat.sch.mv1"}],
+            },
+            "instructions": {},
+            "benchmarks": {},
+        }
+        check = _check_by_label(calculate_score(data), "Data sources exist")
+        assert check["passed"] is True
+        assert "1 table(s)" in check["detail"]
+        assert "1 metric view(s)" in check["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -120,6 +139,12 @@ class TestTableDescriptions:
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         check = _check_by_label(calculate_score(data), "Table descriptions")
         assert check["passed"] is True
+
+    def test_metric_views_only_auto_passes(self, metric_view_only_space):
+        """No tables but metric views → auto-pass (managed in UC)."""
+        check = _check_by_label(calculate_score(metric_view_only_space), "Table descriptions")
+        assert check["passed"] is True
+        assert "Unity Catalog" in check["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +196,12 @@ class TestColumnDescriptions:
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         check = _check_by_label(calculate_score(data), "Column descriptions")
         assert check["passed"] is True  # 1/2 = 50%
+
+    def test_metric_views_only_auto_passes(self, metric_view_only_space):
+        """No tables but metric views → auto-pass (managed in UC)."""
+        check = _check_by_label(calculate_score(metric_view_only_space), "Column descriptions")
+        assert check["passed"] is True
+        assert "Unity Catalog" in check["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -236,51 +267,72 @@ class TestJoinSpecs:
         check = _check_by_label(calculate_score(full_space_data), "Join specifications")
         assert check["passed"] is True
 
-    def test_absent_multi_table_generates_finding(self):
+    def test_absent_multi_source_generates_finding(self):
         tables = [{"name": "t1", "columns": []}, {"name": "t2", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         result = calculate_score(data)
-        assert "No join specifications for multi-table space" in result["findings"]
+        assert "No join specifications for multi-source space" in result["findings"]
 
     def test_absent_single_table_no_finding(self):
         tables = [{"name": "t1", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
         result = calculate_score(data)
-        assert "No join specifications for multi-table space" not in result["findings"]
+        assert "No join specifications for multi-source space" not in result["findings"]
+
+    def test_absent_with_table_and_metric_view(self):
+        """1 table + 1 metric view = 2 sources → finding generated."""
+        data = {
+            "data_sources": {
+                "tables": [{"name": "t1", "columns": []}],
+                "metric_views": [{"identifier": "cat.sch.mv1"}],
+            },
+            "instructions": {},
+            "benchmarks": {},
+        }
+        result = calculate_score(data)
+        assert "No join specifications for multi-source space" in result["findings"]
 
 
 # ---------------------------------------------------------------------------
-# Check 6: Table count 1-12
+# Check 6: Data source count 1-12
 # ---------------------------------------------------------------------------
 
 class TestTableCount:
     def test_0_tables_fails(self, empty_space_data):
-        check = _check_by_label(calculate_score(empty_space_data), "Table count 1-12")
+        check = _check_by_label(calculate_score(empty_space_data), "Data source count 1-12")
         assert check["passed"] is False
 
     def test_1_table_passes(self):
         tables = [{"name": "t", "columns": []}]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "Table count 1-12")
+        check = _check_by_label(calculate_score(data), "Data source count 1-12")
         assert check["passed"] is True
 
     def test_12_tables_passes(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(12)]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "Table count 1-12")
+        check = _check_by_label(calculate_score(data), "Data source count 1-12")
         assert check["passed"] is True
 
     def test_9_tables_warning(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(9)]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "Table count 1-12")
+        check = _check_by_label(calculate_score(data), "Data source count 1-12")
         assert check["passed"] is True
         assert check["severity"] == "warning"
 
     def test_13_tables_fails(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(13)]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "Table count 1-12")
+        check = _check_by_label(calculate_score(data), "Data source count 1-12")
+        assert check["passed"] is False
+
+    def test_metric_views_counted_toward_limit(self):
+        """10 tables + 5 metric views = 15 data sources → fails."""
+        tables = [{"name": f"t{i}", "columns": []} for i in range(10)]
+        mvs = [{"identifier": f"cat.sch.mv{i}"} for i in range(5)]
+        data = {"data_sources": {"tables": tables, "metric_views": mvs}, "instructions": {}, "benchmarks": {}}
+        check = _check_by_label(calculate_score(data), "Data source count 1-12")
         assert check["passed"] is False
 
 
