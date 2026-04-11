@@ -4552,7 +4552,7 @@ def _run_lever_loop(
                     _set_general_instructions(metadata_snapshot, _restructured_text)
                     try:
                         from genie_space_optimizer.common.genie_client import (
-                            fetch_space_config as _fetch_post_restructure,
+                            fetch_space_config,
                             patch_space_config,
                         )
                         patch_space_config(w, space_id, metadata_snapshot)
@@ -4560,10 +4560,10 @@ def _run_lever_loop(
                         # Without this, metadata_snapshot diverges from the API's
                         # version and all subsequent lever PATCHes fail with
                         # "Space configuration has been modified since this export".
-                        _refreshed = _fetch_post_restructure(w, space_id)
-                        metadata_snapshot = _refreshed.get("_parsed_space", _refreshed)
-                        if data_profile:
-                            metadata_snapshot["_data_profile"] = data_profile
+                        config = fetch_space_config(w, space_id)
+                        config["_uc_columns"] = uc_columns
+                        metadata_snapshot = config.get("_parsed_space", config)
+                        metadata_snapshot["_data_profile"] = data_profile
                         if uc_columns:
                             enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
                         logger.info(
