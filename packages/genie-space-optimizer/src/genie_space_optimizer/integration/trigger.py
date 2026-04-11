@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 _ACTIVE_RUN_STATUSES = frozenset({"QUEUED", "IN_PROGRESS"})
 
+# Inlined from backend.routes.spaces to avoid importing the full GSO FastAPI
+# factory (which requires _metadata.py that may be missing on fresh installs).
+_SUPPORTED_APPLY_MODES = {"genie_config", "uc_artifact", "both"}
+
 
 def trigger_optimization(
     space_id: str,
@@ -61,7 +65,6 @@ def trigger_optimization(
     Returns:
         :class:`TriggerResult` with run_id, job_run_id, job_url, and status.
     """
-    from genie_space_optimizer.backend.routes.spaces import SUPPORTED_APPLY_MODES
     from genie_space_optimizer.common.config import DEFAULT_LEVER_ORDER
     from genie_space_optimizer.common.genie_client import (
         fetch_space_config,
@@ -70,10 +73,10 @@ def trigger_optimization(
     )
 
     requested_apply_mode = (apply_mode or "genie_config").strip().lower()
-    if requested_apply_mode not in SUPPORTED_APPLY_MODES:
+    if requested_apply_mode not in _SUPPORTED_APPLY_MODES:
         raise ValueError(
             f"Unsupported apply_mode '{apply_mode}'. "
-            f"Use one of: {sorted(SUPPORTED_APPLY_MODES)}"
+            f"Use one of: {sorted(_SUPPORTED_APPLY_MODES)}"
         )
 
     caller_email = (user_email or user_name or "").lower()
@@ -155,11 +158,15 @@ def trigger_optimization(
         else "default"
     )
 
-    from genie_space_optimizer.backend.routes.spaces import fetch_uc_metadata_obo
     from genie_space_optimizer.common.uc_metadata import extract_genie_space_table_refs
 
     genie_refs = extract_genie_space_table_refs(space_snapshot) if space_snapshot else []
     try:
+        # Lazy import: fetch_uc_metadata_obo lives in backend.routes.spaces which
+        # transitively imports the GSO FastAPI factory (requires _metadata.py).
+        # This prefetch is optional — degrade gracefully if the import fails.
+        from genie_space_optimizer.backend.routes.spaces import fetch_uc_metadata_obo
+
         obo_uc_metadata = fetch_uc_metadata_obo(
             ws,
             warehouse_id=config.warehouse_id,
