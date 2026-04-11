@@ -12,8 +12,9 @@ wheels/
 # version file
 src/genie_space_optimizer/_version.py
 
-# metadata file
-src/genie_space_optimizer/_metadata.py
+# metadata file — stub is checked in; do NOT re-add to gitignore.
+# See commit 9da7e63 for context.
+# src/genie_space_optimizer/_metadata.py
 
 # build files
 dist
