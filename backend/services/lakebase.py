@@ -152,21 +152,18 @@ async def _ensure_schema():
             if not schema_exists:
                 await conn.execute("CREATE SCHEMA genie")
                 if _lakebase_autoscaling_endpoint:
-                    # On autoscaling Lakebase, rotated OAuth tokens may connect as
-                    # different Postgres roles. Grant schema access to the SP user
-                    # so future credentials can create tables and read/write data.
-                    sp_user = os.environ.get("DATABRICKS_CLIENT_ID", "")
-                    if sp_user:
-                        await conn.execute(
-                            f'GRANT USAGE, CREATE ON SCHEMA genie TO "{sp_user}"'
-                        )
-                        await conn.execute(
-                            f'ALTER DEFAULT PRIVILEGES IN SCHEMA genie '
-                            f'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "{sp_user}"'
-                        )
-                        logger.info(f"Created schema 'genie' (granted to SP '{sp_user[:8]}...')")
-                    else:
-                        logger.info("Created schema 'genie' (no SP user to grant)")
+                    # On autoscaling Lakebase, each OAuth token maps to a different
+                    # internal Postgres role (confirmed: granting to the SP client ID
+                    # does not persist across token rotations). Grant to PUBLIC is
+                    # required because the future role names are unknown. This is
+                    # acceptable because the Lakebase instance is dedicated to this
+                    # app — no other users connect to it.
+                    await conn.execute("GRANT USAGE, CREATE ON SCHEMA genie TO PUBLIC")
+                    await conn.execute(
+                        "ALTER DEFAULT PRIVILEGES IN SCHEMA genie "
+                        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO PUBLIC"
+                    )
+                    logger.info("Created schema 'genie' (autoscaling: granted to PUBLIC)")
                 else:
                     logger.info("Created schema 'genie'")
             await conn.execute("""
