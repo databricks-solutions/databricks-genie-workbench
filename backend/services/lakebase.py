@@ -150,10 +150,15 @@ async def _ensure_schema():
             )
             if not schema_exists:
                 await conn.execute("CREATE SCHEMA genie")
-                # Grant to PUBLIC so rotated SP credentials work across redeploys
-                await conn.execute("GRANT ALL ON SCHEMA genie TO PUBLIC")
-                await conn.execute("ALTER DEFAULT PRIVILEGES IN SCHEMA genie GRANT ALL ON TABLES TO PUBLIC")
-                logger.info("Created schema 'genie' with PUBLIC access")
+                # On autoscaling Lakebase, each OAuth token maps to a different
+                # Postgres role. Grant minimum required privileges so rotated
+                # credentials can create tables and read/write data.
+                await conn.execute("GRANT USAGE, CREATE ON SCHEMA genie TO PUBLIC")
+                await conn.execute(
+                    "ALTER DEFAULT PRIVILEGES IN SCHEMA genie "
+                    "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO PUBLIC"
+                )
+                logger.info("Created schema 'genie' with scoped PUBLIC access")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS genie.scan_results (
                     id          SERIAL PRIMARY KEY,
