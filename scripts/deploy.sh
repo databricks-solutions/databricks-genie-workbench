@@ -528,6 +528,27 @@ if [ -n "$LAKEBASE_INSTANCE" ] && [ -n "$SP_CLIENT_ID" ]; then
     echo "  ⚠ Lakebase setup had errors — app will fall back to in-memory storage"
 fi
 
+# ── Resolve Lakebase database ID (needed for postgres resource) ───────────
+LAKEBASE_DB_RESOURCE=""
+if [ -n "$LAKEBASE_INSTANCE" ]; then
+    LAKEBASE_DB_RESOURCE=$(databricks api get "/api/2.0/postgres/projects/$LAKEBASE_INSTANCE/branches/production/databases" \
+        --profile "$PROFILE" -o json 2>/dev/null \
+        | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    dbs = data.get('databases', [])
+    if dbs:
+        print(dbs[0]['name'])
+except: pass
+" 2>/dev/null || true)
+    if [ -n "$LAKEBASE_DB_RESOURCE" ]; then
+        echo "  ✓ Lakebase database: $LAKEBASE_DB_RESOURCE"
+    else
+        echo "  ⚠ Could not resolve Lakebase database ID — postgres resource won't be auto-configured"
+    fi
+fi
+
 # ── Set app scopes + resources, then deploy ──────────────────────────────
 # Merge existing resources (e.g. manually-added Lakebase) with required ones.
 echo "  Configuring app scopes and resources..."
@@ -555,15 +576,17 @@ for r in existing:
 by_name['sql-warehouse'] = {'name': 'sql-warehouse', 'sql_warehouse': {'id': '$WAREHOUSE_ID', 'permission': 'CAN_USE'}}
 
 # Ensure postgres resource has full config when Lakebase is configured.
-# Always overwrite — existing entry may be an empty stub {'name': 'postgres'}
-# that the platform can't resolve.
-lakebase = '$LAKEBASE_INSTANCE'
-if lakebase:
+# The database field requires the full resource path (e.g.
+# projects/<name>/branches/production/databases/<db-id>), not just the
+# postgres database name.
+lakebase_db = '$LAKEBASE_DB_RESOURCE'
+if lakebase_db:
+    branch = '/'.join(lakebase_db.split('/')[:4])  # projects/<name>/branches/<branch>
     by_name['postgres'] = {
         'name': 'postgres',
         'postgres': {
-            'branch': f'projects/{lakebase}/branches/production',
-            'database': 'databricks_postgres',
+            'branch': branch,
+            'database': lakebase_db,
             'permission': 'CAN_CONNECT_AND_CREATE',
         }
     }
