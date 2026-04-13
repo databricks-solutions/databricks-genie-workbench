@@ -144,13 +144,26 @@ async def _ensure_schema():
         return
     try:
         async with _pool.acquire() as conn:
-            # Check if schema exists first to avoid permission errors on IF NOT EXISTS
+            # Use pg_namespace (visible to all roles) instead of information_schema
+            # (which only shows schemas the current role can access).
             schema_exists = await conn.fetchval(
-                "SELECT 1 FROM information_schema.schemata WHERE schema_name = 'genie'"
+                "SELECT 1 FROM pg_namespace WHERE nspname = 'genie'"
             )
             if not schema_exists:
                 await conn.execute("CREATE SCHEMA genie")
-                logger.info("Created schema 'genie'")
+                if _lakebase_autoscaling_endpoint:
+                    # On autoscaling Lakebase, each OAuth token maps to a different
+                    # Postgres role. Grant schema access so rotated credentials can
+                    # create tables and read/write data. This is safe because the
+                    # Lakebase instance is dedicated to this app — no other users.
+                    await conn.execute("GRANT USAGE, CREATE ON SCHEMA genie TO PUBLIC")
+                    await conn.execute(
+                        "ALTER DEFAULT PRIVILEGES IN SCHEMA genie "
+                        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO PUBLIC"
+                    )
+                    logger.info("Created schema 'genie' (autoscaling: granted to PUBLIC)")
+                else:
+                    logger.info("Created schema 'genie'")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS genie.scan_results (
                     id          SERIAL PRIMARY KEY,
