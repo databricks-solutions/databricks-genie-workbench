@@ -135,9 +135,9 @@ async def _ensure_schema():
     On failure, marks Lakebase unavailable and schedules a retry so the
     app self-heals once Lakebase permissions are fixed (e.g. resource attached).
 
-    On autoscaling Lakebase, each OAuth token maps to a different Postgres role.
-    We GRANT ALL to PUBLIC after creating the schema so that subsequent roles
-    (from token rotation or redeploys) can create tables and read/write data.
+    On autoscaling Lakebase, CREATE SCHEMA IF NOT EXISTS can fail with
+    "permission denied" even when the schema already exists. We check
+    existence first and only CREATE when needed to avoid this.
     """
     global _lakebase_available, _schema_retry_after
     if _pool is None:
@@ -150,15 +150,7 @@ async def _ensure_schema():
             )
             if not schema_exists:
                 await conn.execute("CREATE SCHEMA genie")
-                # On autoscaling Lakebase, each OAuth token maps to a different
-                # Postgres role. Grant minimum required privileges so rotated
-                # credentials can create tables and read/write data.
-                await conn.execute("GRANT USAGE, CREATE ON SCHEMA genie TO PUBLIC")
-                await conn.execute(
-                    "ALTER DEFAULT PRIVILEGES IN SCHEMA genie "
-                    "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO PUBLIC"
-                )
-                logger.info("Created schema 'genie' with scoped PUBLIC access")
+                logger.info("Created schema 'genie'")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS genie.scan_results (
                     id          SERIAL PRIMARY KEY,
