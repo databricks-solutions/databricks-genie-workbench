@@ -518,6 +518,16 @@ else
     echo "  ✓ App compute is already ACTIVE"
 fi
 
+# ── Set up Lakebase Autoscaling (if configured) ──────────────────────────
+if [ -n "$LAKEBASE_INSTANCE" ] && [ -n "$SP_CLIENT_ID" ]; then
+    echo "  Setting up Lakebase Autoscaling..."
+    python3 "$SCRIPT_DIR/setup_lakebase.py" \
+        --profile "$PROFILE" \
+        --project-name "$LAKEBASE_INSTANCE" \
+        --sp-client-id "$SP_CLIENT_ID" 2>&1 || \
+    echo "  ⚠ Lakebase setup had errors — app will fall back to in-memory storage"
+fi
+
 # ── Set app scopes + resources, then deploy ──────────────────────────────
 # Merge existing resources (e.g. manually-added Lakebase) with required ones.
 echo "  Configuring app scopes and resources..."
@@ -543,6 +553,18 @@ for r in existing:
 
 # Ensure sql-warehouse is set with the correct ID
 by_name['sql-warehouse'] = {'name': 'sql-warehouse', 'sql_warehouse': {'id': '$WAREHOUSE_ID', 'permission': 'CAN_USE'}}
+
+# Ensure postgres resource is set when Lakebase is configured
+lakebase = '$LAKEBASE_INSTANCE'
+if lakebase and 'postgres' not in by_name:
+    by_name['postgres'] = {
+        'name': 'postgres',
+        'postgres': {
+            'branch': f'projects/{lakebase}/branches/production',
+            'database': 'databricks_postgres',
+            'permission': 'CAN_CONNECT_AND_CREATE',
+        }
+    }
 
 print(json.dumps({'user_api_scopes': scopes, 'resources': list(by_name.values())}))
 ")
