@@ -136,23 +136,14 @@ async def _ensure_schema():
     app self-heals once Lakebase permissions are fixed (e.g. resource attached).
 
     On Lakebase Autoscaling, the SP must have a Postgres role created via
-    databricks_create_role() with proper grants (CONNECT, CREATE, USAGE).
-    We check schema existence via pg_namespace before CREATE to avoid
-    spurious permission errors from IF NOT EXISTS.
+    the SDK (setup_lakebase.py) with CONNECT + CREATE + USAGE grants.
     """
     global _lakebase_available, _schema_retry_after
     if _pool is None:
         return
     try:
         async with _pool.acquire() as conn:
-            # Use pg_namespace (visible to all roles) instead of information_schema
-            # (which only shows schemas the current role can access).
-            schema_exists = await conn.fetchval(
-                "SELECT 1 FROM pg_namespace WHERE nspname = 'genie'"
-            )
-            if not schema_exists:
-                await conn.execute("CREATE SCHEMA genie")
-                logger.info("Created schema 'genie'")
+            await conn.execute("CREATE SCHEMA IF NOT EXISTS genie")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS genie.scan_results (
                     id          SERIAL PRIMARY KEY,
