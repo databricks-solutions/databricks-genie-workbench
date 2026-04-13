@@ -17,6 +17,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from databricks.sdk import WorkspaceClient
+from genie_space_optimizer._workspace_client import make_workspace_client
 from genie_space_optimizer.optimization.llm_client import (
     _openai_client_cache,
     _resolve_bearer_token,
@@ -91,7 +92,7 @@ def _ws_with_timeout(
     from databricks.sdk.config import Config
 
     if w is None:
-        return WorkspaceClient(config=Config(http_timeout_seconds=timeout))
+        return make_workspace_client(config=Config(http_timeout_seconds=timeout))
 
     cfg_kwargs: dict[str, Any] = {}
     for attr in Config.attributes():
@@ -100,7 +101,7 @@ def _ws_with_timeout(
             cfg_kwargs[attr.name] = val
     cfg_kwargs["http_timeout_seconds"] = timeout
 
-    return WorkspaceClient(
+    return make_workspace_client(
         config=Config(
             credentials_strategy=w.config._credentials_strategy,
             **cfg_kwargs,

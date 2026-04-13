@@ -152,8 +152,9 @@ _log("Config loaded", keys=list(space_config.keys()))
 
 _banner("Connecting to Target Workspace")
 
+from genie_space_optimizer._workspace_client import make_workspace_client
 target_url = target_workspace_url.rstrip("/")
-target_ws = WorkspaceClient(host=target_url)
+target_ws = make_workspace_client(host=target_url)
 
 current_user = target_ws.current_user.me()
 _log(
