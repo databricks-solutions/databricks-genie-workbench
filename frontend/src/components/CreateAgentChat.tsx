@@ -41,7 +41,7 @@ import { streamAgentChat } from "@/lib/api"
 import type { AgentChatMessage, AgentUIElement } from "@/types"
 import { TableBrowserDrawer } from "@/components/TableBrowserDrawer"
 interface CreateAgentChatProps {
-  onCreated: (spaceId: string, displayName: string, initialTab?: string) => void
+  onCreated: (spaceId: string, displayName: string, spaceUrl?: string, initialTab?: string) => void
 }
 
 let msgCounter = 0
@@ -2451,7 +2451,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             Open Genie Space
           </a>
           <button
-            onClick={() => onCreated(space.space_id, space.display_name)}
+            onClick={() => onCreated(space.space_id, space.display_name, space.url)}
             className="flex items-center gap-1.5 px-3 py-1.5 border border-default text-secondary rounded-lg text-xs font-medium hover:bg-elevated transition-colors"
           >
             Diagnose Space
@@ -2484,7 +2484,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             Open Genie Space
           </a>
           <button
-            onClick={() => onCreated(space.space_id, "", "score")}
+            onClick={() => onCreated(space.space_id, "", space.url, "score")}
             className="flex items-center gap-1.5 px-3 py-1.5 border border-default text-secondary rounded-lg text-xs font-medium hover:bg-elevated transition-colors"
           >
             <BarChart3 className="w-3 h-3" />
@@ -2821,7 +2821,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             Open Space
           </a>
           <button
-            onClick={() => onCreated(fixResult.spaceId, "", "score")}
+            onClick={() => onCreated(fixResult.spaceId, "", fixResult.url, "score")}
             className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-secondary border border-default rounded-lg hover:bg-elevated transition-colors"
           >
             <BarChart3 className="w-3 h-3" />
@@ -2840,7 +2840,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             Open Space
           </a>
           <button
-            onClick={() => onCreated(progress.spaceId, progress.spaceDisplayName)}
+            onClick={() => onCreated(progress.spaceId, progress.spaceDisplayName, progress.spaceUrl)}
             className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium text-secondary border border-default rounded-lg hover:bg-elevated transition-colors"
           >
             Diagnose Space

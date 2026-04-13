@@ -277,6 +277,21 @@ class CreateGenieAgent:
                             session.space_config = recovered
                             logger.info("Recovered space_config from session history for %s", tool_name)
 
+                    # Guard: skip duplicate create_space if space already exists (#67)
+                    if tool_name == "create_space" and session.space_id:
+                        logger.info("Skipping duplicate create_space — space %s already exists", session.space_id)
+                        result = {
+                            "success": True,
+                            "space_id": session.space_id,
+                            "space_url": session.space_url or "",
+                            "display_name": tool_args.get("display_name", ""),
+                            "already_existed": True,
+                        }
+                        tools_used.append(tool_name)
+                        yield {"event": "tool_result", "data": {"tool": tool_name, "result": result}}
+                        session.add_tool_result(tc["id"], json.dumps(result, default=str))
+                        continue
+
                     if tool_name in ("generate_plan", "present_plan"):
                         plan_item_count = sum(
                             len(v) for v in tool_args.values() if isinstance(v, list)
@@ -766,7 +781,28 @@ class CreateGenieAgent:
 
         Yields SSE events (tool_call, tool_result, thinking, created).
         Updates session.space_config/space_id/space_url on success.
+
+        Idempotent: if session.space_id is already set (space already created),
+        returns immediately without calling the API again (#67).
         """
+        # Guard: space already created in this session — skip duplicate API call (#67)
+        if session.space_id:
+            logger.info("Space %s already created — skipping duplicate create_space", session.space_id)
+            result = {
+                "success": True,
+                "space_id": session.space_id,
+                "display_name": display_name,
+                "space_url": session.space_url or "",
+                "already_existed": True,
+            }
+            yield {"event": "tool_result", "data": {"tool": "create_space", "result": result}}
+            yield {"event": "created", "data": {
+                "space_id": session.space_id,
+                "url": session.space_url or "",
+                "display_name": display_name,
+            }}
+            return
+
         from backend.services.create_agent_tools import handle_tool_call
         loop = asyncio.get_event_loop()
 

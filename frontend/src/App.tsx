@@ -77,8 +77,8 @@ export default function App() {
     setDetailState(null)
   }
 
-  const handleCreated = (spaceId: string, displayName: string, initialTab?: string) => {
-    handleSelectSpace(spaceId, displayName, undefined, initialTab, initialTab === "score")
+  const handleCreated = (spaceId: string, displayName: string, spaceUrl?: string, initialTab?: string) => {
+    handleSelectSpace(spaceId, displayName, spaceUrl, initialTab, initialTab === "score")
   }
 
   return (

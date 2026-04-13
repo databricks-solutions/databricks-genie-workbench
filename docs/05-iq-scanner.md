@@ -1,8 +1,12 @@
 # IQ Scanner
 
-The IQ Scanner is a **deterministic, rule-based** quality assessment engine for Genie Space configurations. It evaluates 12 binary checks, assigns a maturity tier, and produces actionable findings that feed the Fix Agent.
+The IQ Scanner is a **deterministic, rule-based** quality assessment engine for Genie Space configurations. It evaluates 12 binary checks, assigns a maturity tier, and produces actionable findings that feed Quick Fix.
 
 Unlike the LLM-based analysis tools, the scanner runs instantly with no LLM calls — it inspects the `serialized_space` JSON directly.
+
+### Unity Catalog Enrichment
+
+Before scoring, `scan_space()` fetches table and column descriptions from Unity Catalog via `WorkspaceClient.tables.get()` and merges them into the space config. This means checks 2 (table descriptions) and 3 (column descriptions) reflect metadata that exists in UC even if not inlined in the Genie Space config. Existing inline descriptions are never overwritten. If UC metadata is unavailable (permissions, network), the scan continues with config-only data.
 
 ## Scoring Model
 
@@ -77,7 +81,7 @@ The scanner returns:
 }
 ```
 
-- **`findings`** and **`next_steps`** come from failed checks — these are the inputs for the [Fix Agent](06-fix-agent.md).
+- **`findings`** and **`next_steps`** come from failed checks — these are the inputs for the [Quick Fix](06-fix-agent.md).
 - **`warnings`** and **`warning_next_steps`** come from warning-severity checks — advisory guidance that doesn't block maturity progression.
 - Both lists are capped at 8 items.
 
@@ -128,6 +132,6 @@ Historical scans are available via `GET /api/spaces/{id}/history`.
 
 ## Related Documentation
 
-- [Fix Agent](06-fix-agent.md) — automatically fixes findings from the scanner
+- [Quick Fix](06-fix-agent.md) — automatically fixes findings from the scanner
 - [Auto-Optimize](07-auto-optimize.md) — the optimization pipeline that satisfies checks 11–12
 - [Introduction](01-introduction.md) — how the scanner fits in the feature workflow

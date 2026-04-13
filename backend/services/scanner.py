@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Optional
 
@@ -24,6 +25,9 @@ CONFIG_CHECK_COUNT = 10
 # Subset of auto_optimize._TERMINAL_RUN_STATUSES — only includes statuses
 # where best_accuracy is meaningful for IQ scoring.
 _GSO_TERMINAL = {"CONVERGED", "STALLED", "MAX_ITERATIONS"}
+
+# Shared thread pool for UC metadata fetches — avoids per-scan pool churn.
+_uc_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="uc-enrich")
 
 
 def get_maturity_label(checks: list[dict]) -> str:
@@ -360,6 +364,95 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     }
 
 
+def _parse_identifier(identifier: str) -> tuple[str, str, str]:
+    """Parse a 3-part table identifier into (catalog, schema, table)."""
+    parts = identifier.replace("`", "").split(".")
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    if len(parts) == 2:
+        return "", parts[0], parts[1]
+    return "", "", parts[0] if parts else ""
+
+
+def _enrich_with_uc_descriptions(space_data: dict, ws) -> int:
+    """Fetch UC table/column descriptions and merge into *space_data* in-place.
+
+    Only fills blanks — never overwrites existing ``description`` or ``comment``
+    values in the Genie Space config.  Returns the number of enriched items.
+    """
+    ds = space_data.get("data_sources", {})
+    all_sources = list(ds.get("tables", [])) + list(ds.get("metric_views", []))
+    if not all_sources:
+        return 0
+
+    # Build (cat, sch, tbl) refs + index back to space_data items
+    refs: list[tuple[str, str, str]] = []
+    source_by_fqn: dict[str, dict] = {}
+    for src in all_sources:
+        ident = src.get("identifier", "")
+        if not ident:
+            continue
+        cat, sch, tbl = _parse_identifier(ident)
+        if cat and sch and tbl:
+            fqn = f"{cat}.{sch}.{tbl}"
+            refs.append((cat, sch, tbl))
+            source_by_fqn[fqn] = src
+
+    if not refs:
+        return 0
+
+    # Fetch UC metadata in parallel (sync SDK calls)
+    table_infos: dict[str, object] = {}
+
+    def _fetch_one(ref: tuple[str, str, str]):
+        cat, sch, tbl = ref
+        fqn = f"{cat}.{sch}.{tbl}"
+        try:
+            return fqn, ws.tables.get(full_name=fqn)
+        except Exception as exc:
+            logger.debug("UC metadata fetch failed for %s: %s", fqn, exc)
+            return fqn, None
+
+    for fqn, info in _uc_pool.map(_fetch_one, refs):
+        if info is not None:
+            table_infos[fqn] = info
+
+    if not table_infos:
+        return 0
+
+    enriched = 0
+
+    for fqn, info in table_infos.items():
+        src = source_by_fqn.get(fqn)
+        if not src:
+            continue
+
+        # Enrich table-level description
+        if not (src.get("description") or src.get("comment")):
+            tbl_comment = getattr(info, "comment", None) or ""
+            if tbl_comment:
+                src["comment"] = tbl_comment
+                enriched += 1
+
+        # Enrich column-level descriptions
+        uc_cols = {
+            getattr(c, "name", "").lower(): getattr(c, "comment", None) or ""
+            for c in (getattr(info, "columns", None) or [])
+        }
+        if not uc_cols:
+            continue
+        for col in src.get("column_configs", []) + src.get("columns", []):
+            if col.get("description") or col.get("comment"):
+                continue
+            col_name = (col.get("column_name") or col.get("name", "")).lower()
+            uc_comment = uc_cols.get(col_name, "")
+            if uc_comment:
+                col["comment"] = uc_comment
+                enriched += 1
+
+    return enriched
+
+
 async def scan_space(space_id: str, user_token: Optional[str] = None) -> dict:
     """Fetch space config, calculate IQ score, and persist to Lakebase.
 
@@ -377,6 +470,17 @@ async def scan_space(space_id: str, user_token: Optional[str] = None) -> dict:
     except Exception as e:
         logger.error(f"Failed to fetch space {space_id}: {e}")
         raise ValueError(f"Cannot scan space {space_id}: {e}")
+
+    # Enrich with UC descriptions so checks 2-3 reflect upstream metadata (#62)
+    try:
+        from backend.services.auth import get_workspace_client, run_in_context
+        ws = get_workspace_client()
+        loop = asyncio.get_event_loop()
+        n = await loop.run_in_executor(None, run_in_context(_enrich_with_uc_descriptions, space_data, ws))
+        if n:
+            logger.info("Enriched %d descriptions from Unity Catalog for %s", n, space_id)
+    except Exception as e:
+        logger.warning("UC description enrichment skipped for %s: %s", space_id, e)
 
     # Fetch optimization runs from both sources concurrently
     async def _fetch_opt_run():
