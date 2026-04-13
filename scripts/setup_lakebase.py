@@ -64,6 +64,10 @@ def _ensure_role(w, project_name: str, sp_client_id: str):
 
     branch_path = f"projects/{project_name}/branches/production"
 
+    # role_id must match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ — prefix with "sp-"
+    # if the client ID starts with a digit
+    role_id = sp_client_id if sp_client_id[0].isalpha() else f"sp-{sp_client_id}"
+
     print(f"  Creating Postgres role for SP '{sp_client_id[:8]}...'...")
     try:
         op = w.postgres.create_role(
@@ -74,7 +78,7 @@ def _ensure_role(w, project_name: str, sp_client_id: str):
                 postgres_role=sp_client_id,
                 attributes=RoleAttributes(createdb=True),
             )),
-            role_id=sp_client_id,
+            role_id=role_id,
         )
         # wait() blocks until role is created
         op.wait()
