@@ -530,14 +530,15 @@ scopes = ['sql', 'dashboards.genie', 'serving.serving-endpoints',
            'catalog.catalogs:read', 'catalog.schemas:read',
            'catalog.tables:read', 'files.files']
 
-# Start with existing resources that have full config (not empty stubs).
-# The PATCH API replaces all resources, so we must include everything.
-# Empty stubs like {'name': 'postgres'} are rejected — skip them.
+# Start with existing resources. The PATCH API replaces all resources,
+# so we must include everything. Preserve all resources that either have
+# full config or are referenced by app.yaml (e.g. postgres for Lakebase).
 existing = json.loads('$EXISTING_RESOURCES')
+app_yaml_resources = {'sql-warehouse', 'postgres'}  # referenced by valueFrom in app.yaml
 by_name = {}
 for r in existing:
     has_config = any(k for k in r if k != 'name')
-    if has_config:
+    if has_config or r.get('name') in app_yaml_resources:
         by_name[r['name']] = r
 
 # Ensure sql-warehouse is set with the correct ID
