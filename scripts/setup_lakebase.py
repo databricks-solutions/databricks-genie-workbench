@@ -29,38 +29,29 @@ def _ensure_project(w, project_name: str) -> str:
 
     resource_name = f"projects/{project_name}"
     try:
-        project = w.postgres.get_project(name=resource_name)
+        w.postgres.get_project(name=resource_name)
         print(f"  ✓ Lakebase project exists: {project_name}")
         return resource_name
     except NotFound:
         pass
 
-    print(f"  Creating Lakebase project '{project_name}'...")
+    print(f"  Creating Lakebase project '{project_name}' (this may take 1-2 minutes)...")
     try:
-        w.postgres.create_project(
+        op = w.postgres.create_project(
             project=Project(spec=ProjectSpec()),
             project_id=project_name,
         )
+        # wait() blocks until the long-running operation completes
+        op.wait()
+        print(f"  ✓ Lakebase project ready: {project_name}")
     except AlreadyExists:
-        print(f"  ✓ Project already exists (race condition): {project_name}")
-        return resource_name
+        print(f"  ✓ Project already exists: {project_name}")
+    except Exception as e:
+        if "ALREADY_EXISTS" in str(e):
+            print(f"  ✓ Project already exists: {project_name}")
+        else:
+            raise
 
-    # Poll until project is ready (up to 3 minutes)
-    deadline = time.time() + 180
-    while time.time() < deadline:
-        time.sleep(10)
-        try:
-            project = w.postgres.get_project(name=resource_name)
-            status = project.status
-            if status and hasattr(status, 'state') and str(status.state) == 'ACTIVE':
-                print(f"  ✓ Lakebase project ready: {project_name}")
-                return resource_name
-            state_str = str(status.state) if status and hasattr(status, 'state') else 'UNKNOWN'
-            print(f"    ... project state: {state_str}")
-        except Exception as e:
-            print(f"    ... waiting for project: {e}")
-
-    print(f"  ⚠ Project may not be fully ready after 3 minutes. Continuing anyway.")
     return resource_name
 
 
@@ -75,7 +66,7 @@ def _ensure_role(w, project_name: str, sp_client_id: str):
 
     print(f"  Creating Postgres role for SP '{sp_client_id[:8]}...'...")
     try:
-        w.postgres.create_role(
+        op = w.postgres.create_role(
             parent=branch_path,
             role=Role(spec=RoleRoleSpec(
                 identity_type=RoleIdentityType.SERVICE_PRINCIPAL,
@@ -85,11 +76,12 @@ def _ensure_role(w, project_name: str, sp_client_id: str):
             )),
             role_id=sp_client_id,
         )
+        # wait() blocks until role is created
+        op.wait()
         print(f"  ✓ Postgres role created for SP")
     except AlreadyExists:
         print(f"  ✓ Postgres role already exists for SP")
     except Exception as e:
-        # Some SDK versions may have different error types
         if "ALREADY_EXISTS" in str(e) or "already exists" in str(e).lower():
             print(f"  ✓ Postgres role already exists for SP")
         else:
@@ -119,12 +111,12 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
         print(f"  ⚠ Could not generate database credential — grants will need manual setup.")
         return
 
-    # Determine deployer username
+    # Determine deployer username (human user email or SP client ID)
     deployer_user = w.config.client_id
     if not deployer_user:
         try:
             me = w.current_user.me()
-            deployer_user = me.user_name or me.emails[0].value if me.emails else ""
+            deployer_user = me.user_name or (me.emails[0].value if me.emails else "")
         except Exception:
             pass
     if not deployer_user:
@@ -137,6 +129,7 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
         print(f"  ⚠ psycopg not installed. Install with: pip install 'psycopg[binary]'")
         print(f"  Run these GRANT commands manually in the Lakebase SQL Editor:")
         print(f'    GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}";')
+        print(f'    GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}";')
         print(f'    GRANT CREATE, USAGE ON SCHEMA public TO "{sp_client_id}";')
         return
 
@@ -150,6 +143,7 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
 
         grants = [
             f'GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}"',
+            f'GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}"',
             f'GRANT CREATE, USAGE ON SCHEMA public TO "{sp_client_id}"',
         ]
         for grant in grants:
@@ -167,6 +161,7 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
         print(f"  ⚠ Could not connect to Lakebase for GRANTs: {e}")
         print(f"  Run these commands manually in the Lakebase SQL Editor:")
         print(f'    GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}";')
+        print(f'    GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}";')
         print(f'    GRANT CREATE, USAGE ON SCHEMA public TO "{sp_client_id}";')
 
 
