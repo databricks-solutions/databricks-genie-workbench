@@ -554,9 +554,11 @@ for r in existing:
 # Ensure sql-warehouse is set with the correct ID
 by_name['sql-warehouse'] = {'name': 'sql-warehouse', 'sql_warehouse': {'id': '$WAREHOUSE_ID', 'permission': 'CAN_USE'}}
 
-# Ensure postgres resource is set when Lakebase is configured
+# Ensure postgres resource has full config when Lakebase is configured.
+# Always overwrite — existing entry may be an empty stub {'name': 'postgres'}
+# that the platform can't resolve.
 lakebase = '$LAKEBASE_INSTANCE'
-if lakebase and 'postgres' not in by_name:
+if lakebase:
     by_name['postgres'] = {
         'name': 'postgres',
         'postgres': {
