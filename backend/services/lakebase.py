@@ -135,9 +135,10 @@ async def _ensure_schema():
     On failure, marks Lakebase unavailable and schedules a retry so the
     app self-heals once Lakebase permissions are fixed (e.g. resource attached).
 
-    On autoscaling Lakebase, CREATE SCHEMA IF NOT EXISTS can fail with
-    "permission denied" even when the schema already exists. We check
-    existence first and only CREATE when needed to avoid this.
+    On Lakebase Autoscaling, the SP must have a Postgres role created via
+    databricks_create_role() with proper grants (CONNECT, CREATE, USAGE).
+    We check schema existence via pg_namespace before CREATE to avoid
+    spurious permission errors from IF NOT EXISTS.
     """
     global _lakebase_available, _schema_retry_after
     if _pool is None:
@@ -151,21 +152,7 @@ async def _ensure_schema():
             )
             if not schema_exists:
                 await conn.execute("CREATE SCHEMA genie")
-                if _lakebase_autoscaling_endpoint:
-                    # On autoscaling Lakebase, each OAuth token maps to a different
-                    # internal Postgres role (confirmed: granting to the SP client ID
-                    # does not persist across token rotations). Grant to PUBLIC is
-                    # required because the future role names are unknown. This is
-                    # acceptable because the Lakebase instance is dedicated to this
-                    # app — no other users connect to it.
-                    await conn.execute("GRANT USAGE, CREATE ON SCHEMA genie TO PUBLIC")
-                    await conn.execute(
-                        "ALTER DEFAULT PRIVILEGES IN SCHEMA genie "
-                        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO PUBLIC"
-                    )
-                    logger.info("Created schema 'genie' (autoscaling: granted to PUBLIC)")
-                else:
-                    logger.info("Created schema 'genie'")
+                logger.info("Created schema 'genie'")
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS genie.scan_results (
                     id          SERIAL PRIMARY KEY,
