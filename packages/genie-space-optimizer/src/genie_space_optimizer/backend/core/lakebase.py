@@ -112,7 +112,8 @@ def validate_db(engine: Engine, db_config: DatabaseConfig) -> None:
             f"Validating database connection to instance {db_config.instance_name}"
         )
         try:
-            ws = WorkspaceClient()
+            from genie_space_optimizer._workspace_client import make_workspace_client
+            ws = make_workspace_client()
             ws.database.get_database_instance(db_config.instance_name)
         except NotFound:
             raise ValueError(

@@ -6815,7 +6815,8 @@ def optimize_genie_space(
     (e.g. the backend ``start_optimization`` endpoint), so we skip
     ``create_run`` to avoid duplicating the row.
     """
-    w = WorkspaceClient()
+    from genie_space_optimizer._workspace_client import make_workspace_client
+    w = make_workspace_client()
     from genie_space_optimizer.common.genie_client import (
         configure_connection_pool,
         configure_mlflow_connection_pool,
