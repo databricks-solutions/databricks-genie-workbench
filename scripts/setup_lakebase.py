@@ -102,7 +102,8 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
     # Resolve endpoint host
     print(f"  Resolving endpoint DNS...")
     endpoint = w.postgres.get_endpoint(name=endpoint_path)
-    host = endpoint.status and endpoint.status.hosts and endpoint.status.hosts.host
+    hosts = endpoint.status and endpoint.status.hosts
+    host = hosts.host if hosts else None
     if not host:
         print(f"  ⚠ Endpoint has no host yet — grants will be applied on next deploy.")
         return False
