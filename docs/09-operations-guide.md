@@ -33,9 +33,9 @@ If `LAKEBASE_HOST` is not configured (no Lakebase attached), the app falls back 
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Failed to list spaces" | Lakebase not attached | Attach a `postgres` resource in Apps UI |
+| "Failed to list spaces" | Lakebase not attached | Re-run `deploy.sh --update` to auto-attach the postgres resource |
 | Connection errors after ~1 hour | Token refresh failed | Check app logs for credential generation errors |
-| Tables not created | SP lacks CREATEDB | Grant CREATEDB role on the Lakebase instance |
+| Tables not created | SP lacks database permissions | Re-run `setup_lakebase.py` to create the SP role and grants |
 
 ## MLflow
 

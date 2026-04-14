@@ -284,16 +284,12 @@ _header "Step 7: Lakebase (PostgreSQL)"
 _info "Lakebase provides persistent storage for scan history and starred spaces."
 _info "Without it, the app uses in-memory storage (data lost on restart)."
 echo ""
-_info "If you have a Lakebase instance, enter its name below."
-_info "Leave blank to skip (in-memory fallback — data lost on restart)."
+_info "Enter a Lakebase Autoscaling project name below."
+_info "The deploy script will create the project, set up a Postgres role for"
+_info "the app's SP, and attach it automatically. Leave blank to skip."
 echo ""
 
-_prompt LAKEBASE_INSTANCE "Lakebase instance name" "$APP_NAME_DEFAULT"
-
-echo ""
-_info "After deploy, attach a Lakebase resource in the Databricks Apps UI:"
-_info "  Apps → $APP_NAME_DEFAULT → Resources → + Add → PostgreSQL (Lakebase)"
-_info "  Name it 'postgres' with CAN_CONNECT_AND_CREATE permission."
+_prompt LAKEBASE_INSTANCE "Lakebase project name" "$APP_NAME_DEFAULT"
 
 # ══════════════════════════════════════════════════════════════════════════
 # Step 8: App name

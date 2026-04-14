@@ -43,7 +43,7 @@ These variables are defined in `app.yaml` and injected into the app runtime. Pla
 | `LAKEBASE_HOST` | `valueFrom: postgres` | Hostname, injected from the `postgres` app resource |
 | `LAKEBASE_PORT` | `5432` | PostgreSQL port |
 | `LAKEBASE_DATABASE` | `databricks_postgres` | Database name (standard Lakebase default) |
-| `LAKEBASE_INSTANCE_NAME` | `__LAKEBASE_INSTANCE__` | Lakebase instance name (patched by deploy script) |
+| `LAKEBASE_INSTANCE_NAME` | `__LAKEBASE_INSTANCE__` | Lakebase Autoscaling project name (patched by deploy script) |
 
 ### Auto-Optimize (GSO Engine)
 
@@ -65,7 +65,7 @@ These variables are used by `deploy.sh` and `install.sh` at deploy time. They ar
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (must be unique in your workspace) |
 | `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
 | `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint for analysis |
-| `GENIE_LAKEBASE_INSTANCE` | No | `<app-name>` | Lakebase instance name (patched into `app.yaml` at deploy) |
+| `GENIE_LAKEBASE_INSTANCE` | No | `<app-name>` | Lakebase Autoscaling project name (auto-provisioned by deploy) |
 
 ## How Variables Flow
 
