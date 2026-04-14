@@ -12,7 +12,6 @@ Usage:
 """
 
 import argparse
-import time
 
 
 def _get_client(profile: str):
@@ -91,11 +90,12 @@ def _ensure_role(w, project_name: str, sp_client_id: str):
             raise
 
 
-def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: str):
+def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: str) -> bool:
     """Grant database permissions to the SP via a direct Postgres connection.
 
     Uses psycopg to connect as the deployer and run GRANT commands.
     Requires psycopg[binary] to be installed.
+    Returns True if grants succeeded, False otherwise.
     """
     endpoint_path = f"projects/{project_name}/branches/production/endpoints/{endpoint_name}"
 
@@ -105,14 +105,14 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
     host = endpoint.status and endpoint.status.hosts and endpoint.status.hosts.host
     if not host:
         print(f"  ⚠ Endpoint has no host yet — grants will be applied on next deploy.")
-        return
+        return False
 
     # Generate deployer credential
     cred = w.postgres.generate_database_credential(endpoint=endpoint_path)
     token = cred.token
     if not token:
         print(f"  ⚠ Could not generate database credential — grants will need manual setup.")
-        return
+        return False
 
     # Determine deployer username (human user email or SP client ID)
     deployer_user = w.config.client_id
@@ -124,7 +124,7 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
             pass
     if not deployer_user:
         print(f"  ⚠ Could not determine deployer username — grants will need manual setup.")
-        return
+        return False
 
     try:
         import psycopg
@@ -134,7 +134,7 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
         print(f'    GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}";')
         print(f'    GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}";')
         print(f'    GRANT CREATE, USAGE ON SCHEMA public TO "{sp_client_id}";')
-        return
+        return False
 
     print(f"  Connecting to Lakebase as {deployer_user[:12]}... to run GRANTs...")
     try:
@@ -147,6 +147,7 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
         grants = [
             f'GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}"',
             f'GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}"',
+            # CREATE+USAGE on public schema for SP to create objects if needed
             f'GRANT CREATE, USAGE ON SCHEMA public TO "{sp_client_id}"',
         ]
         for grant in grants:
@@ -160,12 +161,14 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
                     print(f"    ⚠ {grant}: {e}")
         conn.close()
         print(f"  ✓ Database permissions granted to SP")
+        return True
     except Exception as e:
         print(f"  ⚠ Could not connect to Lakebase for GRANTs: {e}")
         print(f"  Run these commands manually in the Lakebase SQL Editor:")
         print(f'    GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}";')
         print(f'    GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}";')
         print(f'    GRANT CREATE, USAGE ON SCHEMA public TO "{sp_client_id}";')
+        return False
 
 
 def main():
@@ -185,11 +188,15 @@ def main():
     _ensure_role(w, args.project_name, args.sp_client_id)
 
     # Step 3: Grant database permissions
-    _grant_permissions(w, args.project_name, args.sp_client_id, args.endpoint_name)
+    grants_ok = _grant_permissions(w, args.project_name, args.sp_client_id, args.endpoint_name)
 
     # Output the endpoint path for resource attachment
     endpoint_path = f"projects/{args.project_name}/branches/production/endpoints/{args.endpoint_name}"
     print(f"\n  Endpoint path: {endpoint_path}")
+
+    if not grants_ok:
+        import sys
+        sys.exit(1)
 
 
 if __name__ == "__main__":

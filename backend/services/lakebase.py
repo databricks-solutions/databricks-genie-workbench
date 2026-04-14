@@ -27,6 +27,7 @@ _token_refresh_task: asyncio.Task | None = None
 _current_token: str | None = None
 _lakebase_instance_name: str | None = None
 _lakebase_autoscaling_endpoint: str | None = None  # autoscaling endpoint path for credential generation
+_lakebase_project_name: str | None = None  # extracted once from endpoint path for logging
 _conn_params: dict | None = None  # stored at init for pool recreation on token refresh
 
 
@@ -47,7 +48,7 @@ def _generate_credential() -> tuple[str, str] | None:
             cred = client.postgres.generate_database_credential(
                 endpoint=_lakebase_autoscaling_endpoint,
             )
-            label = f"autoscaling endpoint '{_lakebase_autoscaling_endpoint.split('/')[1]}'"
+            label = f"autoscaling endpoint '{_lakebase_project_name}'"
         else:
             # Provisioned Lakebase: use database API with instance name
             instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME", "")
@@ -218,7 +219,7 @@ async def init_pool():
     LAKEBASE_HOST and LAKEBASE_PASSWORD as environment variables. Without these,
     the app uses in-memory storage (ephemeral per deployment).
     """
-    global _pool, _lakebase_available, _token_refresh_task, _lakebase_instance_name, _lakebase_autoscaling_endpoint, _conn_params
+    global _pool, _lakebase_available, _token_refresh_task, _lakebase_instance_name, _lakebase_autoscaling_endpoint, _lakebase_project_name, _conn_params
 
     host = os.environ.get("LAKEBASE_HOST")
     if not host:
@@ -230,7 +231,7 @@ async def init_pool():
     # The Apps platform injects either:
     #   - Autoscaling: "projects/<name>/branches/<branch>/endpoints/<endpoint>"
     #   - Provisioned: a resource reference that doesn't end in ".com"
-    if host.startswith("projects/") or not host.endswith(".com"):
+    if host.startswith("projects/") or "." not in host:
         from backend.services.auth import get_service_principal_client
         client = get_service_principal_client()
 
@@ -238,14 +239,16 @@ async def init_pool():
         if host.startswith("projects/"):
             logger.info(f"LAKEBASE_HOST is '{host}', resolving via Lakebase Autoscaling API...")
             _lakebase_autoscaling_endpoint = host  # store for credential generation
+            _lakebase_project_name = host.split("/")[1]  # extract once for logging
             try:
                 endpoint = client.postgres.get_endpoint(name=host)
-                resolved = endpoint.status and endpoint.status.hosts and endpoint.status.hosts.host
+                hosts = endpoint.status and endpoint.status.hosts
+                resolved = hosts.host if hosts else None
                 if resolved:
                     logger.info(f"Resolved Lakebase Autoscaling host: {resolved}")
                     host = resolved
                 else:
-                    logger.warning("Autoscaling endpoint has no host — is it stopped?")
+                    logger.warning("Autoscaling endpoint has no host — endpoint may be stopped or DNS not yet propagated")
                     return
             except Exception as e:
                 logger.warning(f"Could not resolve Lakebase Autoscaling endpoint: {e}")

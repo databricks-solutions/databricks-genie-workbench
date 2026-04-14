@@ -540,7 +540,7 @@ try:
     dbs = data.get('databases', [])
     if dbs:
         print(dbs[0]['name'])
-except: pass
+except Exception: pass
 " 2>/dev/null || true)
     if [ -n "$LAKEBASE_DB_RESOURCE" ]; then
         echo "  ✓ Lakebase database: $LAKEBASE_DB_RESOURCE"
