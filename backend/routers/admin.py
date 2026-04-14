@@ -36,6 +36,8 @@ async def get_dashboard() -> AdminDashboardStats:
 
         # Get all scan summaries from Lakebase
         scan_summaries = await get_all_scan_summaries()
+        valid_ids = {s.get("space_id", "") for s in all_spaces}
+        scan_summaries = [s for s in scan_summaries if s["space_id"] in valid_ids]
         scanned_spaces = len(scan_summaries)
 
         if not scan_summaries:
@@ -76,6 +78,7 @@ async def get_leaderboard(top_n: int = 5) -> dict:
         spaces_map = {s.get("space_id", ""): s for s in all_spaces}
 
         scan_summaries = await get_all_scan_summaries()
+        scan_summaries = [s for s in scan_summaries if s["space_id"] in spaces_map]
         if not scan_summaries:
             return {"top": [], "bottom": []}
 
@@ -107,6 +110,7 @@ async def get_alerts() -> list[AlertItem]:
         spaces_map = {s.get("space_id", ""): s for s in all_spaces}
 
         scan_summaries = await get_all_scan_summaries()
+        scan_summaries = [s for s in scan_summaries if s["space_id"] in spaces_map]
         critical = [s for s in scan_summaries if s.get("maturity") == "Not Ready"]
         critical.sort(key=lambda x: x["score"])  # lowest first
 
