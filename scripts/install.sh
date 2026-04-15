@@ -60,13 +60,66 @@ _prompt_yn() {
     local default="${3:-Y}"
     local result
 
-    echo -en "  ${prompt_text} [${default}]: "
+    local yn_hint="[Y/N]"
+    echo -en "  ${prompt_text} ${yn_hint}: "
     read -r result
     result="${result:-$default}"
     case "$result" in
         [Yy]*) eval "$varname=Y" ;;
         *)     eval "$varname=N" ;;
     esac
+}
+
+# Usage: _select_from VARNAME "Prompt text" [default_idx] item1 item2 item3 ...
+# Optional default_idx (a plain integer) sets a default choice — Enter accepts it.
+# Sets VARNAME to the selected item. Caller must handle empty result.
+_select_from() {
+    local varname="$1"
+    local prompt_text="$2"
+    shift 2
+
+    # If first remaining arg is a plain integer, treat it as the default index (1-based)
+    local default_idx=0
+    if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+        default_idx="$1"
+        shift
+    fi
+
+    local items=("$@")
+
+    if [ ${#items[@]} -eq 0 ]; then
+        printf -v "$varname" '%s' ""
+        return
+    fi
+
+    local i
+    for i in "${!items[@]}"; do
+        if [ "$((i+1))" -eq "$default_idx" ]; then
+            echo "    $((i+1))) ${items[$i]}  (default)"
+        else
+            echo "    $((i+1))) ${items[$i]}"
+        fi
+    done
+    echo ""
+
+    local choice result
+    local range_hint="[1-${#items[@]}]"
+    [ "$default_idx" -gt 0 ] && range_hint="[1-${#items[@]}, Enter for $default_idx]"
+
+    while true; do
+        echo -en "  ${prompt_text} ${range_hint}: "
+        read -r choice
+        if [ -z "$choice" ] && [ "$default_idx" -gt 0 ]; then
+            result="${items[$((default_idx-1))]}"
+            break
+        fi
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#items[@]}" ]; then
+            result="${items[$((choice-1))]}"
+            break
+        fi
+        echo "  Please enter a number between 1 and ${#items[@]}."
+    done
+    printf -v "$varname" '%s' "$result"
 }
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -138,18 +191,34 @@ fi
 # ══════════════════════════════════════════════════════════════════════════
 _header "Step 2: Databricks profile"
 
-# Show available profiles
-_info "Available profiles:"
-databricks auth profiles 2>/dev/null | head -20 || echo "  (could not list profiles)"
-echo ""
+_info "Discovering configured Databricks profiles..."
+# Profile names are ini section headers and cannot contain spaces — $1 is safe
+PROFILE_LINES=$(databricks auth profiles 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -v '^$')
+PROFILES_EXIT=$?
 
-_prompt PROFILE "Databricks CLI profile" "DEFAULT"
+PROFILE_NAMES=()
+while IFS= read -r line; do
+    [ -n "$line" ] && PROFILE_NAMES+=("$line")
+done <<< "$PROFILE_LINES"
+
+if [ ${#PROFILE_NAMES[@]} -eq 0 ]; then
+    if [ "$PROFILES_EXIT" -ne 0 ]; then
+        _warn "Could not list profiles (databricks CLI error). Falling back to DEFAULT."
+    else
+        _warn "No profiles configured. Falling back to DEFAULT."
+    fi
+    PROFILE_NAMES=("DEFAULT")
+fi
+
+_info "Available profiles:"
+_select_from PROFILE "Select a profile" "${PROFILE_NAMES[@]}"
+echo ""
 
 # Validate the profile
 if databricks current-user me --profile "$PROFILE" -o json &>/dev/null; then
     DEPLOYER=$(databricks current-user me --profile "$PROFILE" -o json \
         | python3 -c "import sys,json; print(json.load(sys.stdin)['userName'])")
-    _ok "Authenticated as $DEPLOYER"
+    _ok "Authenticated as $DEPLOYER (profile: $PROFILE)"
 else
     _error "Could not authenticate with profile '$PROFILE'."
     _info "Run: databricks configure --profile $PROFILE"
@@ -157,118 +226,272 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 3: Catalog
+# Step 3: Unity Catalog
 # ══════════════════════════════════════════════════════════════════════════
 _header "Step 3: Unity Catalog"
 
-_info "The optimizer stores state tables in a schema called 'genie_space_optimizer'"
-_info "inside the catalog you choose below."
+_info "Genie Workbench stores run history, benchmark results, and optimization"
+_info "state in a schema called 'genie_space_optimizer' inside the catalog you"
+_info "choose here. The deploy script creates this schema automatically."
 echo ""
-_warn "You must have CREATE SCHEMA permission on this catalog."
-_info "The deploy script will create the schema automatically if it doesn't exist."
+_warn "You must have CREATE SCHEMA permission on the selected catalog."
 echo ""
 
-_info "Available catalogs:"
-databricks catalogs list --profile "$PROFILE" -o json 2>/dev/null \
+_info "Discovering available catalogs..."
+CATALOG_NAMES=()
+while IFS= read -r name; do
+    [ -n "$name" ] && CATALOG_NAMES+=("$name")
+done < <(
+    databricks catalogs list --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "
-import sys,json
+import sys, json
 try:
     data = json.load(sys.stdin)
     cats = data if isinstance(data, list) else data.get('catalogs', [])
-    for c in cats[:20]:
+    for c in cats[:30]:
         name = c.get('name','') if isinstance(c, dict) else str(c)
-        print(f'    {name}')
+        if name:
+            print(name)
 except: pass
-" 2>/dev/null || echo "  (could not list catalogs)"
-echo ""
+" 2>/dev/null
+)
 
-_prompt CATALOG "Catalog name" ""
+if [ ${#CATALOG_NAMES[@]} -eq 0 ]; then
+    _warn "Could not list catalogs. Enter a catalog name manually."
+    _prompt CATALOG "Catalog name" ""
+else
+    _info "Available catalogs:"
+    _select_from CATALOG "Select the catalog to use" "${CATALOG_NAMES[@]}"
+fi
 
 if [ -z "$CATALOG" ]; then
-    _error "Catalog is required." >&2
-    echo "" >&2
-    echo "  The optimizer needs a Unity Catalog to store state tables," >&2
-    echo "  benchmarks, and prompt artifacts." >&2
-    echo "" >&2
-    echo "  Example:" >&2
-    echo "    export GENIE_CATALOG=my_catalog" >&2
+    _error "Catalog is required."
     exit 1
 fi
 
 GSO_SCHEMA="genie_space_optimizer"
-_ok "Will use schema: ${CATALOG}.${GSO_SCHEMA}"
+_ok "Will create schema: ${CATALOG}.${GSO_SCHEMA}"
 
 # ══════════════════════════════════════════════════════════════════════════
 # Step 4: SQL Warehouse
 # ══════════════════════════════════════════════════════════════════════════
 _header "Step 4: SQL Warehouse"
 
-_info "Available SQL warehouses:"
-databricks warehouses list --profile "$PROFILE" -o json 2>/dev/null \
+_info "The warehouse runs SQL queries for the optimizer and catalog discovery."
+echo ""
+_info "Discovering available SQL warehouses..."
+
+# Build parallel arrays: display labels and raw IDs
+WH_LABELS=()
+WH_IDS=()
+while IFS='|' read -r wid wlabel; do
+    [ -n "$wid" ] && WH_IDS+=("$wid") && WH_LABELS+=("$wlabel")
+done < <(
+    databricks warehouses list --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "
-import sys,json
+import sys, json
 try:
     data = json.load(sys.stdin)
     whs = data if isinstance(data, list) else data.get('warehouses', [])
-    for w in whs[:15]:
-        wid = w.get('id','')
-        name = w.get('name','')
-        state = w.get('state','')
-        print(f'    {wid}  {name}  ({state})')
+    for w in whs[:20]:
+        wid   = w.get('id','')
+        name  = w.get('name','Unnamed')
+        state = w.get('state','UNKNOWN')
+        if wid:
+            label = f'{name}  ({state})  — ID: {wid}'
+            print(f'{wid}|{label}')
 except: pass
-" 2>/dev/null || echo "  (could not list warehouses)"
-echo ""
+" 2>/dev/null
+)
 
-_prompt WAREHOUSE_ID "SQL Warehouse ID" ""
+if [ ${#WH_LABELS[@]} -eq 0 ]; then
+    _warn "Could not list warehouses. Enter the warehouse ID manually."
+    _prompt WAREHOUSE_ID "SQL Warehouse ID" ""
+else
+    _info "Available SQL warehouses:"
+    _select_from WH_LABEL "Select a warehouse" "${WH_LABELS[@]}"
+    # Reverse-lookup the ID for the selected label
+    WAREHOUSE_ID=""
+    for i in "${!WH_LABELS[@]}"; do
+        if [ "${WH_LABELS[$i]}" = "$WH_LABEL" ]; then
+            WAREHOUSE_ID="${WH_IDS[$i]}"
+            break
+        fi
+    done
+fi
 
 if [ -z "$WAREHOUSE_ID" ]; then
     _error "Warehouse ID is required."
     exit 1
 fi
 
+_ok "Selected warehouse: $WAREHOUSE_ID"
+
 # ══════════════════════════════════════════════════════════════════════════
 # Step 5: LLM Model
 # ══════════════════════════════════════════════════════════════════════════
 _header "Step 5: LLM Model"
 
-_prompt LLM_MODEL "LLM serving endpoint" "databricks-claude-sonnet-4-6"
+_info "Choose the foundation model Genie Workbench will use to create and"
+_info "optimize Genie Spaces, generate SQL instructions, and explain findings."
+echo ""
+
+CURATED_MODELS=(
+    "Claude Sonnet 4.6  (Recommended — databricks-claude-sonnet-4-6)"
+    "GPT-5.4            (Databricks — databricks-gpt-5-4)"
+    "Other              (browse all serving endpoints or enter a name manually)"
+)
+
+LLM_MODEL=""
+_select_from MODEL_CHOICE "Select a model" 1 "${CURATED_MODELS[@]}"
+
+case "$MODEL_CHOICE" in
+    Claude*)
+        LLM_MODEL="databricks-claude-sonnet-4-6" ;;
+    GPT*)
+        LLM_MODEL="databricks-gpt-5-4" ;;
+    Other*)
+        echo ""
+        echo "    1) Browse all serving endpoints in my workspace"
+        echo "    2) Enter endpoint name manually"
+        echo ""
+        OTHER_CHOICE=""
+        while true; do
+            echo -en "  [1-2]: "
+            read -r OTHER_CHOICE
+            case "$OTHER_CHOICE" in
+                1|2) break ;;
+                *) echo "  Please enter 1 or 2." ;;
+            esac
+        done
+        if [ "$OTHER_CHOICE" = "1" ]; then
+            _info "Fetching all serving endpoints..."
+            ALL_ENDPOINTS=()
+            while IFS= read -r ep; do
+                [ -n "$ep" ] && ALL_ENDPOINTS+=("$ep")
+            done < <(
+                databricks serving-endpoints list --profile "$PROFILE" -o json 2>/dev/null \
+                | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    eps = data if isinstance(data, list) else data.get('endpoints', [])
+    for e in eps:
+        print(e.get('name',''))
+except: pass
+" 2>/dev/null
+            )
+            if [ ${#ALL_ENDPOINTS[@]} -eq 0 ]; then
+                _warn "No serving endpoints found. Enter endpoint name manually."
+                _prompt LLM_MODEL "Endpoint name" ""
+            else
+                _select_from LLM_MODEL "Select endpoint" "${ALL_ENDPOINTS[@]}"
+            fi
+        else
+            _prompt LLM_MODEL "Endpoint name" ""
+        fi
+        ;;
+esac
+
+if [ -z "$LLM_MODEL" ]; then
+    _error "No LLM model selected."
+    exit 1
+fi
+
+_ok "LLM model: $LLM_MODEL"
 
 # ══════════════════════════════════════════════════════════════════════════
 # Step 6: MLflow Tracing (optional)
 # ══════════════════════════════════════════════════════════════════════════
-APP_NAME_DEFAULT="genie-workbench"
-
 _header "Step 6: MLflow Tracing (optional)"
 
-_info "MLflow tracing provides observability for the Create Agent and Fix Agent."
-_info "Traces are logged to an MLflow experiment in your workspace."
+_info "MLflow tracing records every LLM call the Create Agent and Fix Agent make:"
+_info "inputs, outputs, token counts, and latency — viewable in the MLflow"
+_info "Experiments UI. Useful for debugging agent behavior; adds minor overhead."
+_info "You can enable or disable this later by editing .env.deploy."
 echo ""
 
 MLFLOW_EXPERIMENT_ID=""
-_prompt_yn ENABLE_MLFLOW "Enable MLflow tracing for agents?" "N"
+_prompt_yn ENABLE_MLFLOW "Enable MLflow tracing for agents?" "Y"
 
 if [ "$ENABLE_MLFLOW" = "Y" ]; then
     _prompt_yn HAS_EXPERIMENT "Do you already have an MLflow experiment?" "N"
 
     if [ "$HAS_EXPERIMENT" = "Y" ]; then
-        _prompt MLFLOW_EXPERIMENT_ID "MLflow experiment ID" ""
+        _info "Discovering MLflow experiments..."
+        EXP_LABELS=()
+        EXP_IDS=()
+        while IFS='|' read -r eid elabel; do
+            [ -n "$eid" ] && EXP_IDS+=("$eid") && EXP_LABELS+=("$elabel")
+        done < <(
+            databricks api post /api/2.0/mlflow/experiments/search \
+                --profile "$PROFILE" --json '{"max_results": 50}' -o json 2>/dev/null \
+            | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    for e in data.get('experiments', []):
+        eid  = e.get('experiment_id','')
+        name = e.get('name','Unnamed')
+        if eid:
+            print(f'{eid}|{name}  (ID: {eid})')
+except: pass
+" 2>/dev/null
+        )
+
+        if [ ${#EXP_LABELS[@]} -eq 0 ]; then
+            _warn "No MLflow experiments found. Enter an experiment ID manually."
+            _prompt MLFLOW_EXPERIMENT_ID "MLflow experiment ID" ""
+        else
+            _info "Available MLflow experiments:"
+            _select_from EXP_LABEL "Select an experiment" "${EXP_LABELS[@]}"
+            MLFLOW_EXPERIMENT_ID=""
+            for i in "${!EXP_LABELS[@]}"; do
+                if [ "${EXP_LABELS[$i]}" = "$EXP_LABEL" ]; then
+                    MLFLOW_EXPERIMENT_ID="${EXP_IDS[$i]}"
+                    break
+                fi
+            done
+        fi
+
         if [ -z "$MLFLOW_EXPERIMENT_ID" ]; then
-            _warn "No experiment ID provided. MLflow tracing will be disabled."
+            _warn "No experiment selected. MLflow tracing will be disabled."
         else
             _ok "MLflow tracing enabled (experiment: $MLFLOW_EXPERIMENT_ID)"
         fi
     else
         _info "Creating MLflow experiment..."
-        EXPERIMENT_PATH="/Shared/${APP_NAME_DEFAULT}-agent-tracing"
+        _info "Press Enter to accept the default path, or type a custom one."
+        _prompt EXPERIMENT_PATH "Experiment path" "/Shared/genie-workbench-agent-tracing"
+        # Try to create the experiment
         MLFLOW_EXPERIMENT_ID=$(
-            databricks experiments create-experiment "$EXPERIMENT_PATH" \
-                --profile "$PROFILE" -o json 2>/dev/null \
+            databricks api post /api/2.0/mlflow/experiments/create \
+                --profile "$PROFILE" \
+                --json "{\"name\": \"$EXPERIMENT_PATH\"}" -o json 2>/dev/null \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('experiment_id',''))" 2>/dev/null || true
         )
+        # If creation failed (e.g. already exists), look it up by name
+        if [ -z "$MLFLOW_EXPERIMENT_ID" ]; then
+            MLFLOW_EXPERIMENT_ID=$(
+                databricks api post /api/2.0/mlflow/experiments/search \
+                    --profile "$PROFILE" \
+                    --json '{"max_results": 100}' -o json 2>/dev/null \
+                | python3 -c "
+import sys, json
+path = '$EXPERIMENT_PATH'
+try:
+    for e in json.load(sys.stdin).get('experiments', []):
+        if e.get('name','') == path:
+            print(e.get('experiment_id',''))
+            break
+except: pass
+" 2>/dev/null || true
+            )
+        fi
         if [ -n "$MLFLOW_EXPERIMENT_ID" ]; then
-            _ok "Created experiment: $EXPERIMENT_PATH (ID: $MLFLOW_EXPERIMENT_ID)"
+            _ok "MLflow experiment ready: $EXPERIMENT_PATH (ID: $MLFLOW_EXPERIMENT_ID)"
         else
-            _warn "Could not create experiment. MLflow tracing will be disabled."
+            _warn "Could not create or find MLflow experiment. Tracing will be disabled."
             _info "You can create one manually and add the ID to .env.deploy later."
         fi
     fi
@@ -277,30 +500,92 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 7: Lakebase
+# Step 7: Lakebase (PostgreSQL)
 # ══════════════════════════════════════════════════════════════════════════
 _header "Step 7: Lakebase (PostgreSQL)"
 
-_info "Lakebase provides persistent storage for scan history and starred spaces."
-_info "Without it, the app uses in-memory storage (data lost on restart)."
+_info "Lakebase provides persistent PostgreSQL storage for scan history, starred"
+_info "spaces, and Create Agent sessions. Without it, the app uses in-memory"
+_info "storage and all history is lost every time the app restarts."
 echo ""
-_info "If you have a Lakebase instance, enter its name below."
-_info "Leave blank to skip (in-memory fallback — data lost on restart)."
+_info "If you don't have a Lakebase instance yet, you can skip this step and"
+_info "attach one later via Apps UI → Resources → + Add → PostgreSQL (Lakebase)."
 echo ""
 
-_prompt LAKEBASE_INSTANCE "Lakebase instance name" "$APP_NAME_DEFAULT"
+_info "Discovering available Lakebase instances..."
+LB_NAMES=()
+while IFS= read -r name; do
+    [ -n "$name" ] && LB_NAMES+=("$name")
+done < <(
+    databricks api get /api/2.0/database/instances --profile "$PROFILE" -o json 2>/dev/null \
+    | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    instances = data if isinstance(data, list) else data.get('instances', [])
+    for inst in instances:
+        name = inst.get('name','') if isinstance(inst, dict) else str(inst)
+        if name:
+            print(name)
+except: pass
+" 2>/dev/null
+)
 
-echo ""
-_info "After deploy, attach a Lakebase resource in the Databricks Apps UI:"
-_info "  Apps → $APP_NAME_DEFAULT → Resources → + Add → PostgreSQL (Lakebase)"
-_info "  Name it 'postgres' with CAN_CONNECT_AND_CREATE permission."
+LB_OPTIONS=()
+if [ ${#LB_NAMES[@]} -gt 0 ]; then
+    LB_OPTIONS+=("${LB_NAMES[@]}")
+fi
+LB_OPTIONS+=("Skip — use in-memory fallback (history lost on restart)")
+
+_info "Available Lakebase instances:"
+_select_from LB_CHOICE "Select a Lakebase instance" "${LB_OPTIONS[@]}"
+
+if [[ "$LB_CHOICE" == "Skip — use in-memory fallback (history lost on restart)" ]]; then
+    LAKEBASE_INSTANCE=""
+    _warn "Skipping Lakebase. Scan history and stars will not persist across restarts."
+else
+    LAKEBASE_INSTANCE="$LB_CHOICE"
+    _ok "Lakebase instance: $LAKEBASE_INSTANCE"
+fi
 
 # ══════════════════════════════════════════════════════════════════════════
 # Step 8: App name
 # ══════════════════════════════════════════════════════════════════════════
 _header "Step 8: App name"
 
-_prompt APP_NAME "Databricks App name" "$APP_NAME_DEFAULT"
+_info "This is the name of the Databricks App that will be created in your workspace."
+_info "Only lowercase letters, numbers, and hyphens are allowed."
+echo ""
+
+APP_NAME=""
+while true; do
+    echo -en "  Name your Databricks app (e.g. genie-workbench): "
+    read -r APP_NAME_INPUT
+    if [ -z "$APP_NAME_INPUT" ]; then
+        echo "  Please enter an app name."
+        continue
+    fi
+
+    # Auto-fix: lowercase, replace spaces and underscores with hyphens, strip disallowed chars
+    APP_NAME_FIXED=$(echo "$APP_NAME_INPUT" | tr '[:upper:]' '[:lower:]' | tr ' _' '-' | tr -cd 'a-z0-9-')
+
+    if [ "$APP_NAME_FIXED" = "$APP_NAME_INPUT" ]; then
+        # Already valid
+        APP_NAME="$APP_NAME_INPUT"
+        break
+    elif [ -z "$APP_NAME_FIXED" ]; then
+        _warn "That name contains no valid characters. Please try again."
+    else
+        _warn "App names may only contain lowercase letters, numbers, and hyphens. Suggested fix: ${BOLD}${APP_NAME_FIXED}${NC}"
+        _prompt_yn USE_FIXED "Use '$APP_NAME_FIXED' as your app name?" "Y"
+        if [ "$USE_FIXED" = "Y" ]; then
+            APP_NAME="$APP_NAME_FIXED"
+            break
+        fi
+    fi
+done
+
+_ok "App name: $APP_NAME"
 
 # ══════════════════════════════════════════════════════════════════════════
 # Step 9: Write .env.deploy
@@ -312,13 +597,13 @@ cat > "$ENV_FILE" <<EOF
 # Genie Workbench — Deployment Configuration
 # Generated by install.sh on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-GENIE_WAREHOUSE_ID=$WAREHOUSE_ID
-GENIE_CATALOG=$CATALOG
-GENIE_APP_NAME=$APP_NAME
-GENIE_DEPLOY_PROFILE=$PROFILE
-GENIE_LLM_MODEL=$LLM_MODEL
-GENIE_LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE
-GENIE_MLFLOW_EXPERIMENT_ID=$MLFLOW_EXPERIMENT_ID
+GENIE_WAREHOUSE_ID="$WAREHOUSE_ID"
+GENIE_CATALOG="$CATALOG"
+GENIE_APP_NAME="$APP_NAME"
+GENIE_DEPLOY_PROFILE="$PROFILE"
+GENIE_LLM_MODEL="$LLM_MODEL"
+GENIE_LAKEBASE_INSTANCE="$LAKEBASE_INSTANCE"
+GENIE_MLFLOW_EXPERIMENT_ID="$MLFLOW_EXPERIMENT_ID"
 EOF
 
 _ok "Configuration written to .env.deploy"
@@ -339,7 +624,10 @@ echo "  └───────────────────────
 # ══════════════════════════════════════════════════════════════════════════
 _header "Step 10: Deploying"
 
-_prompt_yn DO_DEPLOY "Run deploy now?" "Y"
+_info "This will build the frontend, sync code to your workspace, deploy the"
+_info "optimization job, and start the app (typically 3-5 minutes)."
+echo ""
+_prompt_yn DO_DEPLOY "Deploy now?" "Y"
 
 if [ "$DO_DEPLOY" = "Y" ]; then
     "$SCRIPT_DIR/deploy.sh"
