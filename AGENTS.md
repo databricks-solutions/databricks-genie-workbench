@@ -62,8 +62,8 @@ backend/
   services/
     auth.py                # OBO auth (ContextVar), SP fallback, WorkspaceClient mgmt
     genie_client.py        # Databricks Genie API (fetch space, list spaces, query for SQL)
-    scanner.py             # Rule-based IQ scoring engine (0-12, 12 checks, 3-tier maturity)
-    fix_agent.py           # LLM agent that generates JSON patches and applies via Genie API
+    scanner.py             # Rule-based IQ scoring engine (0-12, 12 checks, 3-tier maturity, UC-enriched)
+    fix_agent.py           # LLM agent (Quick Fix in UI) that generates JSON patches and applies via Genie API
     create_agent.py        # Multi-turn LLM agent for creating new Genie Spaces
     create_agent_session.py # Session persistence for create agent (Lakebase)
     create_agent_tools.py  # Tool definitions for create agent (UC discovery, SQL, etc.)
@@ -117,10 +117,10 @@ Frontend consumes these via manual `fetch` + `ReadableStream` in `lib/api.ts` (n
 All LLM calls go through Databricks model serving endpoints using OpenAI-compatible API. Model configured via `LLM_MODEL` env var (default: `databricks-claude-sonnet-4-6`). MLflow tracing is optional — controlled by `MLFLOW_EXPERIMENT_ID`.
 
 ### Analysis
-IQ Scan (`scanner.py`) is the only analysis path — rule-based, instant, 0-12 score with 12 checks and 3-tier maturity (Not Ready / Ready to Optimize / Trusted). `routers/analysis.py` only handles space fetching/parsing and settings — it does not perform analysis.
+IQ Scan (`scanner.py`) is the only analysis path — rule-based, instant, 0-12 score with 12 checks and 3-tier maturity (Not Ready / Ready to Optimize / Trusted). Before scoring, `scan_space()` enriches the config with upstream Unity Catalog table/column descriptions so checks 2–3 reflect metadata that exists in UC even if not inlined in the Genie Space config. `routers/analysis.py` only handles space fetching/parsing and settings — it does not perform analysis.
 
 ### Two Separate Optimization Paths
-- **Fix Agent** (`fix_agent.py`): triggered from scan findings, auto-applies JSON patches
+- **Quick Fix** (`fix_agent.py`): triggered from scan findings, auto-applies JSON patches
 - **Auto-Optimize** (`auto_optimize.py` + GSO engine in `packages/genie-space-optimizer/`): full benchmark-driven optimization pipeline. They're independent.
 
 ## Environment Variables
@@ -170,7 +170,7 @@ attacks like the litellm PyPI credential stealer (March 2026) and axios npm RAT
 - **`.databricksignore` excludes `*.md`** but explicitly re-includes `backend/references/schema.md` (needed at runtime by create agent and analysis prompts).
 - **OBO ContextVar and streaming** — for SSE endpoints, the ContextVar is NOT cleared after `call_next` because the response streams lazily. Streaming handlers stash the token on `request.state` and re-set it inside the generator.
 - **IQ Scan is the only analysis path** — `scanner.py` runs 12 rule-based checks via `/api/spaces/{id}/scan`. `routers/analysis.py` only handles space fetching/parsing (`/api/space/fetch`, `/api/space/parse`) and settings — it does not perform analysis.
-- **Two separate optimization paths** — Fix Agent (`fix_agent.py`, from scan findings, auto-applies JSON patches) and Auto-Optimize (`auto_optimize.py` + GSO engine in `packages/genie-space-optimizer/`, full benchmark-driven optimization pipeline). They're independent.
+- **Two separate optimization paths** — Quick Fix (`fix_agent.py`, from scan findings, auto-applies JSON patches) and Auto-Optimize (`auto_optimize.py` + GSO engine in `packages/genie-space-optimizer/`, full benchmark-driven optimization pipeline). They're independent.
 - **Vite proxy** — dev frontend at :5173 proxies `/api` to :8000. In production, FastAPI serves static files from `frontend/dist/` directly.
 - **Python 3.11+** required (`pyproject.toml`). Uses `uv` for dependency management (`uv.lock` present).
 - **Root `package.json`** exists solely as a build hook for Databricks Apps. `postinstall` is a no-op (frontend deps are installed by `deploy.sh` locally). `build` checks for pre-built `frontend/dist/index.html` — if present (uploaded by `deploy.sh`), skips the rebuild; falls back to a full build only if dist is missing. This prevents cross-platform Rollup failures on the Linux deploy container.

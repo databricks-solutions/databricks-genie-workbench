@@ -15,6 +15,7 @@ from backend.services.create_agent_tools import (
     _DATE_TYPES,
     _NUMERIC_TYPES,
     _BOOLEAN_TYPES,
+    _update_config,
 )
 
 
@@ -139,3 +140,98 @@ class TestTypeSets:
 
     def test_boolean_types(self):
         assert "boolean" in _BOOLEAN_TYPES
+
+
+# ---------------------------------------------------------------------------
+# _update_config — SQL snippet actions
+# ---------------------------------------------------------------------------
+
+def _empty_config():
+    return {"data_sources": {"tables": []}, "instructions": {}, "benchmarks": {}}
+
+
+class TestUpdateConfigAddMeasure:
+    def test_adds_measure_with_alias(self):
+        cfg = _empty_config()
+        result = _update_config(
+            [{"action": "add_measure", "alias": "total_rev", "display_name": "Total Revenue", "sql": "SUM(revenue)"}],
+            config=cfg,
+        )
+        measures = result["config"]["instructions"]["sql_snippets"]["measures"]
+        assert len(measures) == 1
+        assert measures[0]["alias"] == "total_rev"
+        assert measures[0]["display_name"] == "Total Revenue"
+        assert measures[0]["sql"] == ["SUM(revenue)"]
+        assert len(measures[0]["id"]) == 32  # hex ID
+
+    def test_skips_measure_without_alias(self):
+        cfg = _empty_config()
+        result = _update_config(
+            [{"action": "add_measure", "display_name": "Total Revenue", "sql": "SUM(revenue)"}],
+            config=cfg,
+        )
+        measures = result["config"].get("instructions", {}).get("sql_snippets", {}).get("measures", [])
+        assert len(measures) == 0
+        assert any("Skipped" in a for a in result["applied"])
+
+    def test_skips_measure_without_sql(self):
+        cfg = _empty_config()
+        result = _update_config(
+            [{"action": "add_measure", "alias": "total_rev"}],
+            config=cfg,
+        )
+        measures = result["config"].get("instructions", {}).get("sql_snippets", {}).get("measures", [])
+        assert len(measures) == 0
+
+    def test_display_name_optional(self):
+        cfg = _empty_config()
+        result = _update_config(
+            [{"action": "add_measure", "alias": "total_rev", "sql": "SUM(revenue)"}],
+            config=cfg,
+        )
+        measures = result["config"]["instructions"]["sql_snippets"]["measures"]
+        assert len(measures) == 1
+        assert "display_name" not in measures[0]
+
+
+class TestUpdateConfigAddExpression:
+    def test_adds_expression_with_alias(self):
+        cfg = _empty_config()
+        result = _update_config(
+            [{"action": "add_expression", "alias": "profit_margin", "sql": "(revenue - cost) / revenue"}],
+            config=cfg,
+        )
+        exprs = result["config"]["instructions"]["sql_snippets"]["expressions"]
+        assert len(exprs) == 1
+        assert exprs[0]["alias"] == "profit_margin"
+
+    def test_skips_expression_without_alias(self):
+        cfg = _empty_config()
+        result = _update_config(
+            [{"action": "add_expression", "sql": "SUM(x)"}],
+            config=cfg,
+        )
+        exprs = result["config"].get("instructions", {}).get("sql_snippets", {}).get("expressions", [])
+        assert len(exprs) == 0
+
+
+class TestUpdateConfigAddFilter:
+    def test_adds_filter(self):
+        cfg = _empty_config()
+        result = _update_config(
+            [{"action": "add_filter", "display_name": "Current Year", "sql": "YEAR(date) = YEAR(CURRENT_DATE())"}],
+            config=cfg,
+        )
+        filters = result["config"]["instructions"]["sql_snippets"]["filters"]
+        assert len(filters) == 1
+        assert filters[0]["display_name"] == "Current Year"
+        assert "alias" not in filters[0]  # filters don't have alias
+
+    def test_strips_where_prefix(self):
+        cfg = _empty_config()
+        result = _update_config(
+            [{"action": "add_filter", "display_name": "Active", "sql": "WHERE status = 'active'"}],
+            config=cfg,
+        )
+        filters = result["config"]["instructions"]["sql_snippets"]["filters"]
+        assert filters[0]["sql"] == ["status = 'active'"]

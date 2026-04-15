@@ -2462,12 +2462,15 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
 
         # ── SQL snippet actions (measures, filters, expressions) ──────
         elif action == "add_measure":
+            alias = act.get("alias", "")
             dn = act.get("display_name", "")
             sql = act.get("sql", "")
-            if not dn or not sql:
-                applied.append("Skipped add_measure — display_name and sql required")
+            if not alias or not sql:
+                applied.append("Skipped add_measure — alias and sql required")
                 continue
-            entry_m: dict[str, Any] = {"id": secrets.token_hex(16), "display_name": dn, "sql": [sql]}
+            entry_m: dict[str, Any] = {"id": secrets.token_hex(16), "alias": alias, "sql": [sql]}
+            if dn:
+                entry_m["display_name"] = dn
             if act.get("synonyms"):
                 entry_m["synonyms"] = act["synonyms"]
             if act.get("instruction"):

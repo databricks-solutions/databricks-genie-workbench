@@ -171,10 +171,10 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
   const maturity = scanResult?.maturity
   let actionProps: { onAction?: () => void; actionLabel?: string; actionIcon?: React.ReactNode } = {}
   if (hasFixableItems && scanResult) {
-    // Show "Fix Issues" whenever there are findings or warnings to address
+    // Show "Quick Fix" whenever there are findings or warnings to address
     actionProps = {
       onAction: () => openFixPanel(scanResult),
-      actionLabel: "Fix Issues",
+      actionLabel: "Quick Fix",
       actionIcon: <Zap className="w-4 h-4" />,
     }
   } else if (maturity === "Ready to Optimize") {

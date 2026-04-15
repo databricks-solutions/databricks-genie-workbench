@@ -53,7 +53,7 @@ Security is preserved because:
 | Browse Genie Spaces, UC catalogs/schemas/tables | OBO (user) | User sees only what they have access to |
 | Genie API (fetch/list spaces) | OBO, SP fallback on scope error | User token may lack `dashboards.genie` scope |
 | Create Agent (tools, SQL, space creation) | OBO (user) | Space created under user's identity |
-| Fix Agent (generate + apply patches) | OBO (user) | Patches applied as the user |
+| Quick Fix (generate + apply patches) | OBO (user) | Patches applied as the user |
 | Trigger optimization (permission check) | OBO (user) | Verifies user has CAN_EDIT/CAN_MANAGE |
 | Optimization job execution (6-task DAG) | SP | Lakeflow Jobs have no OBO; SP runs the pipeline |
 | GSO Delta table reads/writes | SP | Optimizer state tables owned by SP |
