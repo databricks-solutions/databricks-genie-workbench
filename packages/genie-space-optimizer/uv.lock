@@ -821,16 +821,16 @@ wheels = [
 
 [[package]]
 name = "databricks-sdk"
-version = "0.91.0"
+version = "0.102.0"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
 dependencies = [
     { name = "google-auth" },
     { name = "protobuf" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/af/a9/83dee5b4bbea94f21c4990aafdb1b1893d25d5bbbe5cd9a95ed2afaf0d42/databricks_sdk-0.91.0.tar.gz", hash = "sha256:7b16f424f509609dd86cb69073a9a80a755c00a7b4be8cdaac3595ce3421a274", size = 857905, upload-time = "2026-02-19T08:22:21.415Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ab/b3/41ff1c3afe092df9085e084e0dc81c45bca5ed65f7b60dc59df0ade43c76/databricks_sdk-0.102.0.tar.gz", hash = "sha256:8fa5f82317ee27cc46323c6e2543d2cfefb4468653f92ba558271043c6f72fb9", size = 887450, upload-time = "2026-03-19T08:15:54.428Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/92/38/3afd8da94fa076226c470f33632d6df726c469738c01224068f009357985/databricks_sdk-0.91.0-py3-none-any.whl", hash = "sha256:f4481780e66a4c7d24d9d2acdf6778efdb82031532852ccc42b8619b81d0f73f", size = 808425, upload-time = "2026-02-19T08:22:19.161Z" },
+    { url = "https://files.pythonhosted.org/packages/02/8c/d082bd5f72d7613524d5b35dfe1f71732b2246be2704fad68cd0e3fdd020/databricks_sdk-0.102.0-py3-none-any.whl", hash = "sha256:75d1253276ee8f3dd5e7b00d62594b7051838435e618f74a8570a6dbd723ec12", size = 838533, upload-time = "2026-03-19T08:15:52.248Z" },
 ]
 
 [package.optional-dependencies]
@@ -1199,7 +1199,9 @@ source = { editable = "." }
 dependencies = [
     { name = "databricks-sdk" },
     { name = "fastapi" },
+    { name = "litellm" },
     { name = "mlflow", extra = ["databricks"] },
+    { name = "openai" },
     { name = "pandas" },
     { name = "psycopg", extra = ["binary", "pool"] },
     { name = "pydantic" },
@@ -1226,9 +1228,11 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "databricks-connect", marker = "extra == 'spark'", specifier = ">=15.0.0" },
-    { name = "databricks-sdk", specifier = ">=0.40.0" },
+    { name = "databricks-sdk", specifier = "==0.102.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "mlflow", extras = ["databricks"], specifier = ">=3.4.0" },
+    { name = "litellm", specifier = "==1.82.6" },
+    { name = "mlflow", extras = ["databricks"], specifier = "==3.10.1" },
+    { name = "openai", specifier = "==2.30.0" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2.11" },
     { name = "pydantic", specifier = ">=2.0" },
@@ -1996,7 +2000,7 @@ wheels = [
 
 [[package]]
 name = "langchain-core"
-version = "1.2.15"
+version = "1.2.27"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
 dependencies = [
     { name = "jsonpatch" },
@@ -2008,23 +2012,23 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uuid-utils" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cc/db/693d81b6c229aceb7c6e6809939c6ab1b023554227a25de438f00c0389c6/langchain_core-1.2.15.tar.gz", hash = "sha256:7d5f5d2daa8ddbe4054a96101dc5d509926f831b9914808c24640987d499758c", size = 835280, upload-time = "2026-02-23T15:04:49.185Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/5c/56d19a252bbb26247b7a7cd20821d48804d7ca03212fec709cd8db7c2516/langchain_core-1.2.27.tar.gz", hash = "sha256:c18372e4c4c1454d49bf23a2e484431e71bd39b64173a0f621f0fc283d7183a4", size = 844935, upload-time = "2026-04-07T14:56:32.364Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/48/e0/a6a83dde94400b43d9b091ecbb41a50d6f86c4fecacb81b13d8452a7712b/langchain_core-1.2.15-py3-none-any.whl", hash = "sha256:8d920d8a31d8c223966a3993d8c79fd6093b9665f2222fc878812f3a52072ab7", size = 502213, upload-time = "2026-02-23T15:04:47.967Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/c3/6e0865bc130c448270eb9511b47863a3f9145cdb519b19f6e4758fa63d6f/langchain_core-1.2.27-py3-none-any.whl", hash = "sha256:9ecd6b0393b969fe88f6b9b309367134080ab095946d79e6937dd3911aa42bd5", size = 508315, upload-time = "2026-04-07T14:56:30.93Z" },
 ]
 
 [[package]]
 name = "langchain-openai"
-version = "1.1.10"
+version = "1.1.12"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
 dependencies = [
     { name = "langchain-core" },
     { name = "openai" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d6/0f/01147f842499338ae3b0dd0a351fb83006d9ed623cf3a999bd68ba5bbe2d/langchain_openai-1.1.10.tar.gz", hash = "sha256:ca6fae7cf19425acc81814efed59c7d205ec9a1f284fd1d08aae9bda85d6501b", size = 1059755, upload-time = "2026-02-17T18:03:44.506Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cc/fd/7dee16e882c4c1577d48db174d85aa3a0ee09ba61eb6a5d41650285ca80c/langchain_openai-1.1.12.tar.gz", hash = "sha256:ccf5ef02c896f6807b4d0e51aaf678a72ce81ae41201cae8d65e11eeff9ecb79", size = 1114119, upload-time = "2026-03-23T18:59:19.211Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/72/17/3785cbcdc81c451179247e4176d2697879cb4f45ab2c59d949ca574e072d/langchain_openai-1.1.10-py3-none-any.whl", hash = "sha256:d91b2c09e9fbc70f7af45345d3aa477744962d41c73a029beb46b4f83b824827", size = 87205, upload-time = "2026-02-17T18:03:43.502Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/a6/68fb22e3604015e6f546fa1d3677d24378b482855ae74710cbf4aec44132/langchain_openai-1.1.12-py3-none-any.whl", hash = "sha256:da71ca3f2d18c16f7a2443cc306aa195ad2a07054335ac9b0626dcae02b6a0c5", size = 88487, upload-time = "2026-03-23T18:59:17.978Z" },
 ]
 
 [[package]]
@@ -2049,7 +2053,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.81.14"
+version = "1.82.6"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
 dependencies = [
     { name = "aiohttp" },
@@ -2065,9 +2069,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c8/ab/4fe5517ac55f72ca90119cd0d894a7b4e394ae76e1ccdeb775bd50154b0d/litellm-1.81.14.tar.gz", hash = "sha256:445efb92ae359e8f40ee984753c5ae752535eb18a2aeef00d3089922de5676b7", size = 16541822, upload-time = "2026-02-22T00:33:35.281Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/29/75/1c537aa458426a9127a92bc2273787b2f987f4e5044e21f01f2eed5244fd/litellm-1.82.6.tar.gz", hash = "sha256:2aa1c2da21fe940c33613aa447119674a3ad4d2ad5eb064e4d5ce5ee42420136", size = 17414147, upload-time = "2026-03-22T06:36:00.452Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d8/b3/e8fe151c1b81666575552835a3a79127c5aa6bd460fcecc51e032d2f4019/litellm-1.81.14-py3-none-any.whl", hash = "sha256:6394e61bbdef7121e5e3800349f6b01e9369e7cf611e034f1832750c481abfed", size = 14603260, upload-time = "2026-02-22T00:33:32.464Z" },
+    { url = "https://files.pythonhosted.org/packages/02/6c/5327667e6dbe9e98cbfbd4261c8e91386a52e38f41419575854248bbab6a/litellm-1.82.6-py3-none-any.whl", hash = "sha256:164a3ef3e19f309e3cabc199bef3d2045212712fefdfa25fc7f75884a5b5b205", size = 15591595, upload-time = "2026-03-22T06:35:56.795Z" },
 ]
 
 [[package]]
@@ -2277,7 +2281,7 @@ wheels = [
 
 [[package]]
 name = "mlflow"
-version = "3.10.0"
+version = "3.10.1"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
 dependencies = [
     { name = "alembic" },
@@ -2303,9 +2307,9 @@ dependencies = [
     { name = "sqlalchemy" },
     { name = "waitress", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bc/ed/048a6a3198516153f8babae7553d2db4e5988501cf84fd1e197cf2133558/mlflow-3.10.0.tar.gz", hash = "sha256:54a6e18100623855d5d2a5b22fdec4a929543088adee49ca164d72439fdce2e3", size = 9534884, upload-time = "2026-02-20T13:48:10.96Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8b/94/a583069259500182c070db798118aee7877d37bd1981e49af5ae9113b100/mlflow-3.10.1.tar.gz", hash = "sha256:609509ccc15eb9c17861748e537cbffa57d2caf488ff3e30efed62951a6977cf", size = 9542009, upload-time = "2026-03-05T11:15:22.677Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d6/60/92e01281968358412b322bc9a7a7e0b28c61ae983ba8428a9039cefa7ae0/mlflow-3.10.0-py3-none-any.whl", hash = "sha256:13655d611fb97972d63e1b78839511470ba9d2de95fb997eb01b2fc4fc4df19c", size = 10159634, upload-time = "2026-02-20T13:48:08.038Z" },
+    { url = "https://files.pythonhosted.org/packages/c2/18/ca682e740b90d5a930981cd375f878a453a713741b5b7d9c0d9516552b5e/mlflow-3.10.1-py3-none-any.whl", hash = "sha256:17bfbd76d4071498d6199c3fc53945e5f50997d14e3e2a6bfd4dc3cb8957f209", size = 10165655, upload-time = "2026-03-05T11:15:19.541Z" },
 ]
 
 [package.optional-dependencies]
@@ -2319,7 +2323,7 @@ databricks = [
 
 [[package]]
 name = "mlflow-skinny"
-version = "3.10.0"
+version = "3.10.1"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
 dependencies = [
     { name = "cachetools" },
@@ -2342,14 +2346,14 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d5/af/135911a40cc65164f92ccbaacdf029c21a96eaecc9d99b60189b17a56e52/mlflow_skinny-3.10.0.tar.gz", hash = "sha256:d864b14241f8e26a565e60b343a9644db3b2279b5039bd4e5cc2d0a6757bce99", size = 2475421, upload-time = "2026-02-20T12:57:22.456Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/71/65/5b2c28e74c167ba8a5afe59399ef44291a0f140487f534db1900f09f59f6/mlflow_skinny-3.10.1.tar.gz", hash = "sha256:3d1c5c30245b6e7065b492b09dd47be7528e0a14c4266b782fe58f9bcd1e0be0", size = 2478631, upload-time = "2026-03-05T10:49:01.47Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9f/16/9fadceaad2659be5974d054ed866855b403a2ba199a909f94b447779f4a5/mlflow_skinny-3.10.0-py3-none-any.whl", hash = "sha256:c711653b446214c863023e49e72ac3bae950aa82a5eeca5bdc642680065117af", size = 2983620, upload-time = "2026-02-20T12:57:20.025Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/52/17460157271e70b0d8444d27f8ad730ef7d95fb82fac59dc19f11519b921/mlflow_skinny-3.10.1-py3-none-any.whl", hash = "sha256:df1dd507d8ddadf53bfab2423c76cdcafc235cd1a46921a06d1a6b4dd04b023c", size = 2987098, upload-time = "2026-03-05T10:48:59.566Z" },
 ]
 
 [[package]]
 name = "mlflow-tracing"
-version = "3.10.0"
+version = "3.10.1"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
 dependencies = [
     { name = "cachetools" },
@@ -2361,9 +2365,9 @@ dependencies = [
     { name = "protobuf" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c5/98/a1d9ea8671f75c4e71633e579ae4dc659d3f160f928bb8123b053da90614/mlflow_tracing-3.10.0.tar.gz", hash = "sha256:206ca8ed2c25c15935fcfb9c9c5102198b1060a61bb2ce9df4eabb6329f3ddbf", size = 1242152, upload-time = "2026-02-20T12:54:43.274Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/7a/4c3c1b7a52a5956b1af81bdd90892019d5927460d520bd4f52063f423029/mlflow_tracing-3.10.1.tar.gz", hash = "sha256:9e54d63cf776d29bb9e2278d35bf27352b93f7b35c8fe8452e9ba5e2a3c5b78f", size = 1243515, upload-time = "2026-03-05T10:46:29.164Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/81/3e/778b559cfa58cd25ccf2020ba6f758c1032d66e942d9dee65b17ab495e97/mlflow_tracing-3.10.0-py3-none-any.whl", hash = "sha256:eb172a48e8f8078b0387e3e044864bf2c83124f7e773b223d37f6da79227a714", size = 1493631, upload-time = "2026-02-20T12:54:41.372Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/9a/7ac1db2ed7b5e21c50fadf925a53f0c77452a8a855ee4a119b084c2fa5d3/mlflow_tracing-3.10.1-py3-none-any.whl", hash = "sha256:649c722cc58d54f1f40559023a6bd6f3f08150c3ce3c3bb27972b3e795890f47", size = 1495173, upload-time = "2026-03-05T10:46:27.395Z" },
 ]
 
 [[package]]
@@ -2634,7 +2638,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "2.21.0"
+version = "2.30.0"
 source = { registry = "https://pypi-proxy.dev.databricks.com/simple/" }
 dependencies = [
     { name = "anyio" },
@@ -2646,9 +2650,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/92/e5/3d197a0947a166649f566706d7a4c8f7fe38f1fa7b24c9bcffe4c7591d44/openai-2.21.0.tar.gz", hash = "sha256:81b48ce4b8bbb2cc3af02047ceb19561f7b1dc0d4e52d1de7f02abfd15aa59b7", size = 644374, upload-time = "2026-02-14T00:12:01.577Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/88/15/52580c8fbc16d0675d516e8749806eda679b16de1e4434ea06fb6feaa610/openai-2.30.0.tar.gz", hash = "sha256:92f7661c990bda4b22a941806c83eabe4896c3094465030dd882a71abe80c885", size = 676084, upload-time = "2026-03-25T22:08:59.96Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cc/56/0a89092a453bb2c676d66abee44f863e742b2110d4dbb1dbcca3f7e5fc33/openai-2.21.0-py3-none-any.whl", hash = "sha256:0bc1c775e5b1536c294eded39ee08f8407656537ccc71b1004104fe1602e267c", size = 1103065, upload-time = "2026-02-14T00:11:59.603Z" },
+    { url = "https://files.pythonhosted.org/packages/2a/9e/5bfa2270f902d5b92ab7d41ce0475b8630572e71e349b2a4996d14bdda93/openai-2.30.0-py3-none-any.whl", hash = "sha256:9a5ae616888eb2748ec5e0c5b955a51592e0b201a11f4262db920f2a78c5231d", size = 1146656, upload-time = "2026-03-25T22:08:58.2Z" },
 ]
 
 [[package]]

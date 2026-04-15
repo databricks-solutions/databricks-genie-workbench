@@ -149,10 +149,6 @@ resources:
             environment_version: "4"
             dependencies:
               - .build/genie_space_optimizer-0.0.0-py3-none-any.whl
-              - "mlflow[databricks]>=3.10.1"
-              - "databricks-sdk>=0.40.0"
-              - "openai>=1.17"
-              - "litellm"
 
 # ---------------------------------------------------------------------------
 # Targets
