@@ -277,7 +277,10 @@ class CreateGenieAgent:
                             session.space_config = recovered
                             logger.info("Recovered space_config from session history for %s", tool_name)
 
-                    # Guard: skip duplicate create_space if space already exists (#67)
+                    # Guard: skip duplicate create_space if space already exists (#67).
+                    # Only emits tool_result (not "created") because the first creation
+                    # already sent "created" to the frontend — re-sending would trigger
+                    # duplicate navigation.
                     if tool_name == "create_space" and session.space_id:
                         logger.info("Skipping duplicate create_space — space %s already exists", session.space_id)
                         result = {
@@ -785,7 +788,9 @@ class CreateGenieAgent:
         Idempotent: if session.space_id is already set (space already created),
         returns immediately without calling the API again (#67).
         """
-        # Guard: space already created in this session — skip duplicate API call (#67)
+        # Guard: space already created in this session — skip duplicate API call (#67).
+        # Emits both tool_result AND "created" because direct callers (e.g. _fast_create)
+        # bypass the tool-call loop, so no prior "created" event was sent to the frontend.
         if session.space_id:
             logger.info("Space %s already created — skipping duplicate create_space", session.space_id)
             result = {

@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Optional
 
+from databricks.sdk.errors import NotFound
+
 from backend.services.genie_client import get_genie_space, get_serialized_space
 from backend.services.lakebase import save_scan_result, get_latest_score, get_latest_optimization_run
 
@@ -409,8 +411,11 @@ def _enrich_with_uc_descriptions(space_data: dict, ws) -> int:
         fqn = f"{cat}.{sch}.{tbl}"
         try:
             return fqn, ws.tables.get(full_name=fqn)
+        except NotFound:
+            logger.debug("UC table not found: %s", fqn)
+            return fqn, None
         except Exception as exc:
-            logger.debug("UC metadata fetch failed for %s: %s", fqn, exc)
+            logger.warning("UC metadata fetch failed for %s: %s", fqn, exc)
             return fqn, None
 
     for fqn, info in _uc_pool.map(_fetch_one, refs):
