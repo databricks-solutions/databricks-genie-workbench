@@ -48,6 +48,19 @@ _preflight_check_tools() {
     fi
 }
 
+_preflight_check_venv() {
+    echo "  Syncing Python venv (uv sync --frozen)..."
+    if uv sync --frozen --quiet 2>/dev/null; then
+        echo "  ✓ Python venv ready (pinned dependencies)"
+    else
+        echo ""
+        echo "  ✗ uv sync --frozen failed. The Python venv could not be created."
+        echo ""
+        echo "  Remediation: run 'uv sync --frozen' manually and check for errors."
+        exit 1
+    fi
+}
+
 _preflight_check_npm_registry() {
     echo "  Checking npm registry connectivity..."
     local registry

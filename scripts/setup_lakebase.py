@@ -57,7 +57,7 @@ def _ensure_role(w, project_name: str, sp_client_id: str):
     """Create a Postgres role for the app's service principal."""
     from databricks.sdk.errors import AlreadyExists
     from databricks.sdk.service.postgres import (
-        Role, RoleRoleSpec, RoleIdentityType, RoleAuthMethod, RoleAttributes,
+        Role, RoleRoleSpec, RoleIdentityType, RoleAuthMethod,
     )
 
     branch_path = f"projects/{project_name}/branches/production"
@@ -74,7 +74,6 @@ def _ensure_role(w, project_name: str, sp_client_id: str):
                 identity_type=RoleIdentityType.SERVICE_PRINCIPAL,
                 auth_method=RoleAuthMethod.LAKEBASE_OAUTH_V1,
                 postgres_role=sp_client_id,
-                attributes=RoleAttributes(createdb=True),
             )),
             role_id=role_id,
         )
@@ -131,10 +130,9 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
         import psycopg
     except ImportError:
         print(f"  ⚠ psycopg not installed. Install with: pip install 'psycopg[binary]'")
-        print(f"  Run these GRANT commands manually in the Lakebase SQL Editor:")
+        print(f"  Run these commands manually in the Lakebase SQL Editor:")
         print(f'    GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}";')
         print(f'    GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}";')
-        print(f'    GRANT CREATE, USAGE ON SCHEMA public TO "{sp_client_id}";')
         return False
 
     print(f"  Connecting to Lakebase as {deployer_user[:12]}... to run GRANTs...")
@@ -145,17 +143,17 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
         )
         conn.autocommit = True
 
+        # Only database-level grants. The app creates the genie schema and
+        # tables at startup via _ensure_schema() — since the SP executes
+        # those DDL statements, it owns everything it creates.
         grants = [
             f'GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}"',
             f'GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}"',
-            # CREATE+USAGE on public schema for SP to create objects if needed
-            f'GRANT CREATE, USAGE ON SCHEMA public TO "{sp_client_id}"',
         ]
         for grant in grants:
             try:
                 conn.execute(grant)
             except Exception as e:
-                # Grant may already exist or role may already have the privilege
                 if "already" in str(e).lower():
                     pass
                 else:
@@ -168,7 +166,6 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
         print(f"  Run these commands manually in the Lakebase SQL Editor:")
         print(f'    GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}";')
         print(f'    GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}";')
-        print(f'    GRANT CREATE, USAGE ON SCHEMA public TO "{sp_client_id}";')
         return False
 
 

@@ -137,7 +137,7 @@ async def _ensure_schema():
     app self-heals once Lakebase permissions are fixed (e.g. resource attached).
 
     On Lakebase Autoscaling, the SP must have a Postgres role created via
-    the SDK (setup_lakebase.py) with CONNECT + CREATE + USAGE grants.
+    the SDK (setup_lakebase.py) with CONNECT + CREATE ON DATABASE grants.
     """
     global _lakebase_available, _schema_retry_after
     if _pool is None:

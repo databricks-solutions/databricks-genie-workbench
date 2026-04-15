@@ -115,14 +115,14 @@ Lakebase provides persistent storage for scan history, starred spaces, and agent
 **Lakebase setup is automated by `deploy.sh`:**
 - Creates a Lakebase Autoscaling project (if it doesn't exist)
 - Creates a Postgres role for the app's service principal
-- Grants database permissions (CONNECT, CREATE, USAGE)
+- Grants database permissions (CONNECT, CREATE)
 - Attaches the `postgres` resource to the app
 
 The installer asks for a Lakebase project name (defaults to the app name). The deploy script calls `scripts/setup_lakebase.py` to provision everything, then attaches the resource via the Apps API. No manual steps required.
 
-> **Note:** The GRANT step requires `psycopg[binary]` installed locally. If missing, the script prints the commands to run manually in the Lakebase SQL Editor.
+> **Note:** The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv sync`). If unavailable, the script prints the commands to run manually in the Lakebase SQL Editor.
 
-The app stores data in the `genie` schema within the `databricks_postgres` database. Tables: `scan_results`, `starred_spaces`, `seen_spaces`, `optimization_runs`, `agent_sessions`.
+The app automatically creates a `genie` schema and tables on first startup within the `databricks_postgres` database. Tables: `scan_results`, `starred_spaces`, `seen_spaces`, `optimization_runs`, `agent_sessions`.
 
 ## Manual Setup (without installer)
 

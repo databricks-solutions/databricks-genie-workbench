@@ -170,6 +170,7 @@ _print_config
 echo ""
 echo "▸ Step 1/$TOTAL_STEPS: Pre-flight checks..."
 _preflight_check_tools
+_preflight_check_venv
 _preflight_check_npm_registry
 _preflight_check_profile "$PROFILE"
 
@@ -521,7 +522,7 @@ fi
 # ── Set up Lakebase Autoscaling (if configured) ──────────────────────────
 if [ -n "$LAKEBASE_INSTANCE" ] && [ -n "$SP_CLIENT_ID" ]; then
     echo "  Setting up Lakebase Autoscaling..."
-    python3 "$SCRIPT_DIR/setup_lakebase.py" \
+    uv run python "$SCRIPT_DIR/setup_lakebase.py" \
         --profile "$PROFILE" \
         --project-name "$LAKEBASE_INSTANCE" \
         --sp-client-id "$SP_CLIENT_ID" 2>&1 || \

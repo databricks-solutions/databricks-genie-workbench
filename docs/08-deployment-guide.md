@@ -60,12 +60,14 @@ Lakebase provides persistent storage for scan history, starred spaces, and agent
 **Lakebase setup is fully automated by `deploy.sh`:**
 - Creates a Lakebase Autoscaling project via the SDK (`scripts/setup_lakebase.py`)
 - Creates a Postgres role for the app's service principal
-- Grants database permissions (CONNECT, CREATE, USAGE)
+- Grants database permissions (CONNECT, CREATE ON DATABASE)
 - Attaches the `postgres` resource to the app via the Apps API
+
+The app creates the `genie` schema and tables on first startup. Since the SP executes the DDL, it owns all objects — no manual grants needed.
 
 The installer asks for a Lakebase project name (defaults to the app name, stored as `GENIE_LAKEBASE_INSTANCE` in `.env.deploy`). No manual steps required.
 
-> **Note:** The GRANT step requires `psycopg[binary]` installed locally. If missing, the script prints the commands to run manually in the Lakebase SQL Editor.
+> **Note:** The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv sync`). If unavailable, the script prints the commands to run manually in the Lakebase SQL Editor.
 
 ## What `deploy.sh` Does
 
