@@ -82,6 +82,7 @@ scripts/
   build.sh                 # Frontend build
   deploy-config.sh         # Shared deploy configuration/variables
   grant_permissions.py     # Grants required permissions for app resources
+  setup_lakebase.py        # Automates Lakebase Autoscaling project, SP role, and grants
   setup_synced_tables.py   # Sets up GSO synced tables in Lakebase
 frontend/
   src/
@@ -111,7 +112,7 @@ Two endpoints use `StreamingResponse` with `text/event-stream`:
 Frontend consumes these via manual `fetch` + `ReadableStream` in `lib/api.ts` (not EventSource). Buffer splitting on `\n\n`.
 
 ### Lakebase Persistence
-`services/lakebase.py` uses asyncpg with graceful fallback to in-memory dicts when `LAKEBASE_HOST` is not set. Credentials auto-generated via Databricks SDK (`/api/2.0/database/credentials`). Schema auto-initialized via inline DDL in `_init_db()`.
+`services/lakebase.py` uses asyncpg with graceful fallback to in-memory dicts when `LAKEBASE_HOST` is not set. Supports both provisioned Lakebase and Lakebase Autoscaling — for autoscaling, uses `client.postgres.get_endpoint()` to resolve DNS and `client.postgres.generate_database_credential()` for OAuth tokens. Schema and tables are created by the app at startup via `_ensure_schema()` (the SP owns everything it creates). Lakebase project, SP role, and database-level grants (CONNECT, CREATE) are automated by `scripts/setup_lakebase.py`, called from `deploy.sh` via `uv run`.
 
 ### LLM Calls
 All LLM calls go through Databricks model serving endpoints using OpenAI-compatible API. Model configured via `LLM_MODEL` env var (default: `databricks-claude-sonnet-4-6`). MLflow tracing is optional — controlled by `MLFLOW_EXPERIMENT_ID`.

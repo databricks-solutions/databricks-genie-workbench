@@ -101,35 +101,28 @@ The installer will:
 4. Ask for SQL warehouse (auto-discovered from your workspace)
 5. Ask for LLM model endpoint
 6. Optionally configure MLflow tracing (creates or links an experiment)
-7. Ask for Lakebase instance name
+7. Ask for Lakebase Autoscaling project name
 8. Ask for app name
 9. Write `.env.deploy` with your configuration
 10. Run `scripts/deploy.sh` to build and deploy the app
 11. Resolve the app's service principal
 12. Optionally grant the SP access to your existing Genie Spaces
 
-### 4. Attach Lakebase (optional but recommended)
+### 4. Lakebase (automated)
 
-Without Lakebase, scan results and starred spaces are lost on app restart.
+Lakebase provides persistent storage for scan history, starred spaces, and agent sessions. Without it, the app uses in-memory storage (data lost on restart).
 
-> **Note:** If you used `install.sh`, it already collected your Lakebase instance name (stored as `GENIE_LAKEBASE_INSTANCE` in `.env.deploy`). You still need to attach the resource manually in the Apps UI as described below.
+**Lakebase setup is automated by `deploy.sh`:**
+- Creates a Lakebase Autoscaling project (if it doesn't exist)
+- Creates a Postgres role for the app's service principal
+- Grants database permissions (CONNECT, CREATE)
+- Attaches the `postgres` resource to the app
 
-**Create a Lakebase instance** (if you don't have one):
-1. In the workspace UI, go to **Catalog → Lakebase** (or **SQL → Lakebase**)
-2. Click **Create** → name it (e.g. `genie-workbench`), capacity **CU_1**
+The installer asks for a Lakebase project name (defaults to the app name). The deploy script calls `scripts/setup_lakebase.py` to provision everything, then attaches the resource via the Apps API. No manual steps required.
 
-**Grant the app's SP access:**
-1. Go to **Databases → your instance → Roles**
-2. Find the app's SP (e.g. `app-xxxx genie-workbench-v0`) and grant **CREATEDB** attribute
-3. Go to **Databases → your instance → Permissions** and grant the SP **Can manage**
+> **Note:** The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv sync`). If unavailable, the script prints the commands to run manually in the Lakebase SQL Editor.
 
-**Attach to your app:**
-1. Open **Databricks Apps UI** → your app → **Resources**
-2. Click **+ Add resource** → **PostgreSQL (Lakebase)** → select your instance
-3. Set resource key to `postgres` with **CAN_CONNECT_AND_CREATE** permission
-4. Save and **redeploy** — the app creates a `genie` schema and all tables automatically
-
-The app stores data in the `genie` schema within the `databricks_postgres` database. Tables: `scan_results`, `starred_spaces`, `seen_spaces`, `optimization_runs`, `agent_sessions`.
+The app automatically creates a `genie` schema and tables on first startup within the `databricks_postgres` database. Tables: `scan_results`, `starred_spaces`, `seen_spaces`, `optimization_runs`, `agent_sessions`.
 
 ## Manual Setup (without installer)
 
@@ -165,7 +158,7 @@ Set these in `.env.deploy` or as environment variables:
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (must be unique in your workspace) |
 | `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
 | `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint for analysis |
-| `GENIE_LAKEBASE_INSTANCE` | No | `<app-name>` | Lakebase instance name (patched into `app.yaml` at deploy) |
+| `GENIE_LAKEBASE_INSTANCE` | No | `<app-name>` | Lakebase Autoscaling project name (auto-provisioned by deploy) |
 
 ## Deploy Commands
 
