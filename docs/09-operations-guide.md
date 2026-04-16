@@ -6,7 +6,7 @@ This guide covers day-to-day operations for a deployed Genie Workbench instance:
 
 ### Schema and Tables
 
-The app stores data in the `genie` schema within the `databricks_postgres` database. Tables are auto-created on first startup:
+The app creates the `genie` schema and all tables on first startup (the SP owns everything it creates). Data is stored in the `databricks_postgres` database:
 
 | Table | Purpose |
 |-------|---------|
@@ -18,7 +18,7 @@ The app stores data in the `genie` schema within the `databricks_postgres` datab
 
 ### Credential Refresh
 
-Lakebase credentials are auto-generated via the Databricks SDK (`/api/2.0/database/credentials`). These OAuth tokens expire after ~1 hour, so the app recreates the asyncpg connection pool every **50 minutes** to stay ahead of expiration.
+Lakebase credentials are auto-generated via the Databricks SDK (`postgres.generate_database_credential` for autoscaling, `database.generate_database_credential` for provisioned). These OAuth tokens expire after ~1 hour, so the app recreates the asyncpg connection pool every **50 minutes** to stay ahead of expiration.
 
 ### Graceful Degradation
 
@@ -33,9 +33,9 @@ If `LAKEBASE_HOST` is not configured (no Lakebase attached), the app falls back 
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Failed to list spaces" | Lakebase not attached | Attach a `postgres` resource in Apps UI |
+| "Failed to list spaces" | Lakebase not attached | Re-run `deploy.sh --update` to auto-attach the postgres resource |
 | Connection errors after ~1 hour | Token refresh failed | Check app logs for credential generation errors |
-| Tables not created | SP lacks CREATEDB | Grant CREATEDB role on the Lakebase instance |
+| Tables not created | SP lacks CONNECT or CREATE ON DATABASE | Re-run `deploy.sh --update` to re-create the SP role and grants |
 
 ## MLflow
 

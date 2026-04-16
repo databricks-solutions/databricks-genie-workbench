@@ -170,6 +170,7 @@ _print_config
 echo ""
 echo "▸ Step 1/$TOTAL_STEPS: Pre-flight checks..."
 _preflight_check_tools
+_preflight_check_venv
 _preflight_check_npm_registry
 _preflight_check_profile "$PROFILE"
 
@@ -518,6 +519,37 @@ else
     echo "  ✓ App compute is already ACTIVE"
 fi
 
+# ── Set up Lakebase Autoscaling (if configured) ──────────────────────────
+if [ -n "$LAKEBASE_INSTANCE" ] && [ -n "$SP_CLIENT_ID" ]; then
+    echo "  Setting up Lakebase Autoscaling..."
+    uv run python "$SCRIPT_DIR/setup_lakebase.py" \
+        --profile "$PROFILE" \
+        --project-name "$LAKEBASE_INSTANCE" \
+        --sp-client-id "$SP_CLIENT_ID" 2>&1 || \
+    echo "  ⚠ Lakebase setup had errors — app will fall back to in-memory storage"
+fi
+
+# ── Resolve Lakebase database ID (needed for postgres resource) ───────────
+LAKEBASE_DB_RESOURCE=""
+if [ -n "$LAKEBASE_INSTANCE" ]; then
+    LAKEBASE_DB_RESOURCE=$(databricks api get "/api/2.0/postgres/projects/$LAKEBASE_INSTANCE/branches/production/databases" \
+        --profile "$PROFILE" -o json 2>/dev/null \
+        | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    dbs = data.get('databases', [])
+    if dbs:
+        print(dbs[0]['name'])
+except Exception: pass
+" 2>/dev/null || true)
+    if [ -n "$LAKEBASE_DB_RESOURCE" ]; then
+        echo "  ✓ Lakebase database: $LAKEBASE_DB_RESOURCE"
+    else
+        echo "  ⚠ Could not resolve Lakebase database ID — postgres resource won't be auto-configured"
+    fi
+fi
+
 # ── Set app scopes + resources, then deploy ──────────────────────────────
 # Merge existing resources (e.g. manually-added Lakebase) with required ones.
 echo "  Configuring app scopes and resources..."
@@ -530,18 +562,35 @@ scopes = ['sql', 'dashboards.genie', 'serving.serving-endpoints',
            'catalog.catalogs:read', 'catalog.schemas:read',
            'catalog.tables:read', 'files.files']
 
-# Start with existing resources that have full config (not empty stubs).
-# The PATCH API replaces all resources, so we must include everything.
-# Empty stubs like {'name': 'postgres'} are rejected — skip them.
+# Start with existing resources. The PATCH API replaces all resources,
+# so we must include everything. Preserve all resources that either have
+# full config or are referenced by app.yaml (e.g. postgres for Lakebase).
 existing = json.loads('$EXISTING_RESOURCES')
+app_yaml_resources = {'sql-warehouse', 'postgres'}  # referenced by valueFrom in app.yaml
 by_name = {}
 for r in existing:
     has_config = any(k for k in r if k != 'name')
-    if has_config:
+    if has_config or r.get('name') in app_yaml_resources:
         by_name[r['name']] = r
 
 # Ensure sql-warehouse is set with the correct ID
 by_name['sql-warehouse'] = {'name': 'sql-warehouse', 'sql_warehouse': {'id': '$WAREHOUSE_ID', 'permission': 'CAN_USE'}}
+
+# Ensure postgres resource has full config when Lakebase is configured.
+# The database field requires the full resource path (e.g.
+# projects/<name>/branches/production/databases/<db-id>), not just the
+# postgres database name.
+lakebase_db = '$LAKEBASE_DB_RESOURCE'
+if lakebase_db:
+    branch = '/'.join(lakebase_db.split('/')[:4])  # projects/<name>/branches/<branch>
+    by_name['postgres'] = {
+        'name': 'postgres',
+        'postgres': {
+            'branch': branch,
+            'database': lakebase_db,
+            'permission': 'CAN_CONNECT_AND_CREATE',
+        }
+    }
 
 print(json.dumps({'user_api_scopes': scopes, 'resources': list(by_name.values())}))
 ")

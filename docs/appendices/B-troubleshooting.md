@@ -30,9 +30,9 @@
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Failed to list spaces" on first load | Lakebase not attached | Attach a `postgres` resource with key `postgres` in Apps UI |
-| Connection timeouts after ~1 hour | Credential refresh failed | Check logs for `database.generate_database_credential` errors |
-| Tables not created on startup | SP lacks CREATEDB on Lakebase | Grant CREATEDB role on the Lakebase instance |
+| "Failed to list spaces" on first load | Lakebase not attached | Re-run `deploy.sh --update` to auto-attach the postgres resource |
+| Connection timeouts after ~1 hour | Credential refresh failed | Check logs for `generate_database_credential` errors |
+| Tables not created on startup | SP lacks CONNECT or CREATE ON DATABASE | Re-run `deploy.sh --update` to re-create the SP role and grants |
 | Scan results not persisting | Lakebase write failed | Check logs for `Failed to persist scan result` |
 | Agent sessions lost on restart | Lakebase not configured | Without Lakebase, sessions use in-memory storage (ephemeral) |
 
