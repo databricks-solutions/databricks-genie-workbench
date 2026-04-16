@@ -556,25 +556,35 @@ _info "Lakebase provides persistent PostgreSQL storage for scan history, starred
 _info "spaces, and Create Agent sessions. Without it, the app uses in-memory"
 _info "storage and all history is lost every time the app restarts."
 echo ""
-_info "If you don't have a Lakebase instance yet, you can skip this step and"
-_info "attach one later via Apps UI → Resources → + Add → PostgreSQL (Lakebase)."
+_warn "Genie Workbench requires Lakebase Autoscaling (Serverless). Provisioned"
+_warn "Lakebase instances are not supported."
+echo ""
+_info "If you don't have a Lakebase Autoscaling project yet, you can skip this"
+_info "step and create one later via the Databricks UI (SQL → Lakebase)."
 echo ""
 
-_info "Discovering available Lakebase instances..."
+_info "Discovering available Lakebase Autoscaling projects..."
 LB_NAMES=()
 while IFS= read -r name; do
     [ -n "$name" ] && LB_NAMES+=("$name")
 done < <(
-    databricks api get /api/2.0/database/instances --profile "$PROFILE" -o json 2>/dev/null \
+    databricks api get /api/2.0/postgres/projects --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    instances = data if isinstance(data, list) else data.get('instances', [])
-    for inst in instances:
-        name = inst.get('name','') if isinstance(inst, dict) else str(inst)
-        if name:
-            print(name)
+    projects = data if isinstance(data, list) else data.get('projects', [])
+    for proj in projects:
+        if isinstance(proj, dict):
+            # resource name is 'projects/<project_id>' — extract the ID
+            resource_name = proj.get('name', '')
+            project_id = resource_name.removeprefix('projects/') if resource_name else proj.get('project_id', '')
+            if project_id:
+                print(project_id)
+        else:
+            val = str(proj)
+            if val:
+                print(val)
 except: pass
 " 2>/dev/null
 )
@@ -585,15 +595,20 @@ if [ ${#LB_NAMES[@]} -gt 0 ]; then
 fi
 LB_OPTIONS+=("Skip — use in-memory fallback (history lost on restart)")
 
-_info "Available Lakebase instances:"
-_select_from LB_CHOICE "Select a Lakebase instance" "${LB_OPTIONS[@]}"
+if [ ${#LB_NAMES[@]} -gt 0 ]; then
+    _info "Available Lakebase Autoscaling projects:"
+else
+    _info "No Lakebase Autoscaling projects found. You can skip for now and create"
+    _info "one in the Databricks UI (SQL → Lakebase), then re-run ./scripts/deploy.sh."
+fi
+_select_from LB_CHOICE "Select a Lakebase Autoscaling project" "${LB_OPTIONS[@]}"
 
 if [[ "$LB_CHOICE" == "Skip — use in-memory fallback (history lost on restart)" ]]; then
     LAKEBASE_INSTANCE=""
     _warn "Skipping Lakebase. Scan history and stars will not persist across restarts."
 else
     LAKEBASE_INSTANCE="$LB_CHOICE"
-    _ok "Lakebase instance: $LAKEBASE_INSTANCE"
+    _ok "Lakebase Autoscaling project: $LAKEBASE_INSTANCE"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
