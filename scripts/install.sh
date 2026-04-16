@@ -192,26 +192,74 @@ fi
 _header "Step 2: Databricks profile"
 
 _info "Discovering configured Databricks profiles..."
-# Profile names are ini section headers and cannot contain spaces — $1 is safe
-PROFILE_LINES=$(databricks auth profiles 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -v '^$')
-PROFILES_EXIT=$?
 
-PROFILE_NAMES=()
+# Parse name + auth status from databricks auth profiles
+DEFAULT_VALID="NO"
+LOGGEDIN_NAMES=()
+NOTLOGGEDIN_NAMES=()
+PROFILES_EXIT=0
 while IFS= read -r line; do
-    [ -n "$line" ] && PROFILE_NAMES+=("$line")
-done <<< "$PROFILE_LINES"
-
-if [ ${#PROFILE_NAMES[@]} -eq 0 ]; then
-    if [ "$PROFILES_EXIT" -ne 0 ]; then
-        _warn "Could not list profiles (databricks CLI error). Falling back to DEFAULT."
+    [ -z "$line" ] && continue
+    name=$(echo "$line" | awk '{print $1}')
+    valid=$(echo "$line" | awk '{print $NF}')
+    [ -z "$name" ] && continue
+    if [ "$name" = "DEFAULT" ]; then
+        DEFAULT_VALID="$valid"
+    elif [ "$valid" = "YES" ]; then
+        LOGGEDIN_NAMES+=("$name")
     else
-        _warn "No profiles configured. Falling back to DEFAULT."
+        NOTLOGGEDIN_NAMES+=("$name")
     fi
-    PROFILE_NAMES=("DEFAULT")
+done < <(databricks auth profiles 2>/dev/null | tail -n +2 | grep -v '^$' || { PROFILES_EXIT=1; true; })
+
+# Build ordered selection array: DEFAULT first, then logged-in, then not-logged-in
+ORDERED_PROFILES=("DEFAULT")
+for n in "${LOGGEDIN_NAMES[@]}";    do ORDERED_PROFILES+=("$n"); done
+for n in "${NOTLOGGEDIN_NAMES[@]}"; do ORDERED_PROFILES+=("$n"); done
+
+if [ "${#ORDERED_PROFILES[@]}" -eq 1 ] && [ "$PROFILES_EXIT" -ne 0 ]; then
+    _warn "Could not list profiles (databricks CLI error). Falling back to DEFAULT."
 fi
 
-_info "Available profiles:"
-_select_from PROFILE "Select a profile" "${PROFILE_NAMES[@]}"
+# Display with sections
+echo ""
+if [ "$DEFAULT_VALID" = "YES" ]; then
+    echo "    1) DEFAULT  ✓"
+else
+    echo "    1) DEFAULT  (not logged in)"
+fi
+
+DISPLAY_IDX=2
+if [ ${#LOGGEDIN_NAMES[@]} -gt 0 ]; then
+    echo ""
+    echo -e "  ${BOLD}Logged in:${NC}"
+    for n in "${LOGGEDIN_NAMES[@]}"; do
+        echo "    $DISPLAY_IDX) $n  ✓"
+        DISPLAY_IDX=$((DISPLAY_IDX + 1))
+    done
+fi
+
+if [ ${#NOTLOGGEDIN_NAMES[@]} -gt 0 ]; then
+    echo ""
+    echo -e "  ${BOLD}Not logged in:${NC}"
+    for n in "${NOTLOGGEDIN_NAMES[@]}"; do
+        echo "    $DISPLAY_IDX) $n"
+        DISPLAY_IDX=$((DISPLAY_IDX + 1))
+    done
+fi
+
+echo ""
+TOTAL_PROFILES=${#ORDERED_PROFILES[@]}
+PROFILE=""
+while true; do
+    echo -en "  Select a profile [1-$TOTAL_PROFILES]: "
+    read -r choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$TOTAL_PROFILES" ]; then
+        PROFILE="${ORDERED_PROFILES[$((choice-1))]}"
+        break
+    fi
+    echo "  Please enter a number between 1 and $TOTAL_PROFILES."
+done
 echo ""
 
 # Validate the profile

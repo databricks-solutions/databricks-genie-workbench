@@ -441,6 +441,7 @@ echo "▸ Step $STEP/$TOTAL_STEPS: Redeploying app with freshest code..."
 echo "  Patching app.yaml on workspace with GSO config..."
 PATCHED_APP_YAML="/tmp/app.yaml.patched"
 cp "$PROJECT_DIR/app.yaml" "$PATCHED_APP_YAML"
+sed -i.bak "s|__WAREHOUSE_ID__|$WAREHOUSE_ID|" "$PATCHED_APP_YAML"
 sed -i.bak "s|__GSO_CATALOG__|$CATALOG|" "$PATCHED_APP_YAML"
 sed -i.bak "s|__LAKEBASE_INSTANCE__|$LAKEBASE_INSTANCE|" "$PATCHED_APP_YAML"
 sed -i.bak "s|__LLM_MODEL__|$LLM_MODEL|" "$PATCHED_APP_YAML"
@@ -460,7 +461,7 @@ fi
 
 databricks workspace import "$WS_PATH/app.yaml" \
     --profile "$PROFILE" --file "$PATCHED_APP_YAML" --format AUTO --overwrite 2>/dev/null && \
-echo "  ✓ app.yaml patched (GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>}, LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE, LLM_MODEL=$LLM_MODEL, MLFLOW=${MLFLOW_EXPERIMENT_ID:-<disabled>})" || \
+echo "  ✓ app.yaml patched (WAREHOUSE=$WAREHOUSE_ID, GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>}, LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE, LLM_MODEL=$LLM_MODEL, MLFLOW=${MLFLOW_EXPERIMENT_ID:-<disabled>})" || \
 echo "  ⚠ Could not patch app.yaml — config may not be set"
 
 # Sync _metadata.py — required at runtime for the genie_space_optimizer
@@ -518,17 +519,16 @@ else
     echo "  ✓ App compute is already ACTIVE"
 fi
 
-# ── Set app scopes + resources, then deploy ──────────────────────────────
-# Merge existing resources (e.g. manually-added Lakebase) with required ones.
-echo "  Configuring app scopes and resources..."
+# ── Configure app resources ───────────────────────────────────────────────
+# Scopes are set by app.yaml via apps deploy. Only patch resources here.
+# Patching user_api_scopes via the API requires the user token passthrough
+# feature to be enabled, which is not available in all workspaces.
+echo "  Configuring app resources..."
 EXISTING_RESOURCES=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('resources',[])))" 2>/dev/null || echo "[]")
 
 PATCH_PAYLOAD=$(python3 -c "
 import json
-scopes = ['sql', 'dashboards.genie', 'serving.serving-endpoints',
-           'catalog.catalogs:read', 'catalog.schemas:read',
-           'catalog.tables:read', 'files.files']
 
 # Start with existing resources that have full config (not empty stubs).
 # The PATCH API replaces all resources, so we must include everything.
@@ -543,12 +543,12 @@ for r in existing:
 # Ensure sql-warehouse is set with the correct ID
 by_name['sql-warehouse'] = {'name': 'sql-warehouse', 'sql_warehouse': {'id': '$WAREHOUSE_ID', 'permission': 'CAN_USE'}}
 
-print(json.dumps({'user_api_scopes': scopes, 'resources': list(by_name.values())}))
+print(json.dumps({'resources': list(by_name.values())}))
 ")
 databricks api patch "/api/2.0/apps/$APP_NAME" \
     --profile "$PROFILE" --json "$PATCH_PAYLOAD" 2>/dev/null && \
-    echo "  ✓ App scopes and resources configured" || \
-    echo "  ⚠ Could not configure app scopes/resources"
+    echo "  ✓ App resources configured (sql-warehouse: $WAREHOUSE_ID)" || \
+    echo "  ⚠ Could not configure app resources"
 
 databricks apps deploy "$APP_NAME" --profile "$PROFILE" \
     --source-code-path "$WS_PATH" --no-wait
