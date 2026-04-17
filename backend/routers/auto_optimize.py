@@ -883,6 +883,58 @@ async def trigger(body: TriggerRequest, request: Request):
         raise HTTPException(status_code=500, detail="Failed to start optimization job.")
 
 
+class DeployRequest(BaseModel):
+    target_workspace_url: str
+    target_space_id: str | None = None
+    catalog_map: dict[str, str] | None = None
+
+
+@router.post("/runs/{run_id}/deploy")
+async def deploy_run(run_id: RunId, body: DeployRequest):
+    """Trigger cross-workspace deployment for a completed optimization run."""
+    if not _is_configured():
+        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+
+    # Load run to get UC model info
+    run = await gso_lakebase.load_gso_run(run_id)
+    if not run and _is_configured():
+        config = _build_gso_config()
+        run = _fetch_run_via_sql(run_id, config)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    status = run.get("status", "")
+    terminal = {"CONVERGED", "STALLED", "MAX_ITERATIONS", "APPLIED"}
+    if status not in terminal:
+        raise HTTPException(status_code=400, detail=f"Run is {status} — can only deploy terminal runs")
+
+    # Get model name/version from the run's finalize output
+    model_name = run.get("uc_model_name") or run.get("model_name")
+    model_version = run.get("uc_model_version") or run.get("model_version")
+    if not model_name or not model_version:
+        raise HTTPException(status_code=400, detail="Run has no registered UC model — cannot deploy")
+
+    try:
+        import json as _json
+        from genie_space_optimizer.backend.job_launcher import ensure_deployment_job
+        sp_ws = get_service_principal_client()
+        config = _build_gso_config()
+
+        job_run_id = ensure_deployment_job(
+            ws=sp_ws,
+            job_id=config.job_id,
+            model_name=model_name,
+            model_version=str(model_version),
+            target_workspace_url=body.target_workspace_url,
+            target_space_id=body.target_space_id or "",
+            catalog_map=_json.dumps(body.catalog_map) if body.catalog_map else "",
+        )
+        return {"jobRunId": str(job_run_id), "status": "DEPLOYING"}
+    except Exception as e:
+        logger.exception("Failed to trigger deployment: %s", e)
+        raise HTTPException(status_code=500, detail=f"Deployment failed: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Pipeline step definitions — group raw sub-stages into 6 logical steps
 # (Ported from Genie Space Optimizer's map_stages_to_steps)

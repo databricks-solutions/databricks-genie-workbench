@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { AlertTriangle, ChevronDown, ChevronRight, Plus, Rocket, Trash2, Upload } from "lucide-react"
+import { AlertTriangle, Rocket } from "lucide-react"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
 import { triggerAutoOptimize } from "@/lib/api"
@@ -33,12 +33,6 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Deployment config
-  const [deployExpanded, setDeployExpanded] = useState(false)
-  const [deployTarget, setDeployTarget] = useState("")
-  const [deploySpaceId, setDeploySpaceId] = useState("")
-  const [catalogMappings, setCatalogMappings] = useState<{ source: string; target: string }[]>([])
-
   const hasHealthIssues = (healthIssues?.length ?? 0) > 0
   const canStart = permissions?.can_start === true && !hasHealthIssues
 
@@ -56,18 +50,10 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
     setError(null)
     onTriggerStart?.()
     try {
-      const catalogMap = catalogMappings.reduce<Record<string, string>>((acc, m) => {
-        if (m.source.trim() && m.target.trim()) acc[m.source.trim()] = m.target.trim()
-        return acc
-      }, {})
-
       const result = await triggerAutoOptimize({
         space_id: spaceId,
         apply_mode: applyMode,
         levers: Array.from(selectedLevers).sort(),
-        deploy_target: deployTarget.trim() || undefined,
-        deploy_space_id: deploySpaceId.trim() || undefined,
-        catalog_map: Object.keys(catalogMap).length > 0 ? catalogMap : undefined,
       })
       onStarted(result.runId)
     } catch (e) {
@@ -116,99 +102,6 @@ export function OptimizationConfig({ spaceId, onStarted, onTriggerStart, onTrigg
               ))}
             </div>
           </div>
-        </div>
-
-        {/* Deployment (collapsible) */}
-        <div className="border border-default rounded-lg">
-          <button
-            type="button"
-            onClick={() => setDeployExpanded(!deployExpanded)}
-            className="w-full flex items-center gap-2 px-4 py-3 text-sm font-medium text-secondary hover:text-primary transition-colors"
-          >
-            {deployExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            <Upload className="w-4 h-4" />
-            Cross-Workspace Deployment
-            {deployTarget && <span className="ml-2 text-xs text-accent font-normal">Configured</span>}
-          </button>
-          {deployExpanded && (
-            <div className="px-4 pb-4 space-y-3 border-t border-default pt-3">
-              <p className="text-xs text-muted">
-                After optimization, deploy the optimized config to a target workspace. Leave blank to skip deployment.
-              </p>
-
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-muted">Target workspace URL</label>
-                <input
-                  type="url"
-                  value={deployTarget}
-                  onChange={(e) => setDeployTarget(e.target.value)}
-                  placeholder="https://my-prod-workspace.cloud.databricks.com"
-                  className="w-full px-3 py-1.5 text-sm border border-default rounded-lg bg-elevated text-primary placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-muted">Target space ID <span className="text-muted font-normal">(optional — creates new if blank)</span></label>
-                <input
-                  type="text"
-                  value={deploySpaceId}
-                  onChange={(e) => setDeploySpaceId(e.target.value)}
-                  placeholder="01f1347d7f1516ceaea7e5853166498f"
-                  className="w-full px-3 py-1.5 text-sm border border-default rounded-lg bg-elevated text-primary placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-medium text-muted">Catalog mapping <span className="text-muted font-normal">(source → target)</span></label>
-                  <button
-                    type="button"
-                    onClick={() => setCatalogMappings([...catalogMappings, { source: "", target: "" }])}
-                    className="flex items-center gap-1 text-xs text-accent hover:text-accent/80 transition-colors"
-                  >
-                    <Plus className="w-3 h-3" /> Add mapping
-                  </button>
-                </div>
-                {catalogMappings.map((m, i) => (
-                  <div key={i} className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={m.source}
-                      onChange={(e) => {
-                        const next = [...catalogMappings]
-                        next[i] = { ...next[i], source: e.target.value }
-                        setCatalogMappings(next)
-                      }}
-                      placeholder="dev_catalog"
-                      className="flex-1 px-3 py-1.5 text-sm border border-default rounded-lg bg-elevated text-primary placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
-                    />
-                    <span className="text-xs text-muted">→</span>
-                    <input
-                      type="text"
-                      value={m.target}
-                      onChange={(e) => {
-                        const next = [...catalogMappings]
-                        next[i] = { ...next[i], target: e.target.value }
-                        setCatalogMappings(next)
-                      }}
-                      placeholder="prod_catalog"
-                      className="flex-1 px-3 py-1.5 text-sm border border-default rounded-lg bg-elevated text-primary placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setCatalogMappings(catalogMappings.filter((_, j) => j !== i))}
-                      className="text-muted hover:text-danger transition-colors"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ))}
-                {catalogMappings.length === 0 && (
-                  <p className="text-xs text-muted italic">No catalog mappings — table references will be used as-is</p>
-                )}
-              </div>
-            </div>
-          )}
         </div>
 
         {/* Health Issues */}
