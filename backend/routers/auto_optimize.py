@@ -1166,6 +1166,7 @@ async def get_run(run_id: RunId):
         "levers": levers,
         "links": links,
         "convergenceReason": run.get("convergence_reason"),
+        "deployTarget": run.get("deploy_target") or None,
         "deploymentStatus": run.get("deploy_status"),
         "labelingSessionUrl": run.get("labeling_session_url") or None,
         "labelingSessionName": run.get("labeling_session_name") or None,

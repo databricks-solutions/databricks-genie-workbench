@@ -399,6 +399,7 @@ export interface GSOPipelineRun {
   levers: GSOLeverStatus[]
   links: GSOResourceLink[]
   convergenceReason: string | null
+  deployTarget: string | null
   deploymentStatus: string | null
   labelingSessionUrl: string | null
   labelingSessionName: string | null
