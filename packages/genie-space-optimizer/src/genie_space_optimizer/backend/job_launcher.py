@@ -363,6 +363,8 @@ def submit_optimization(
     triggered_by: str = "",
     experiment_name: str = "",
     deploy_target: str = "",
+    deploy_space_id: str = "",
+    catalog_map: str = "",
     warehouse_id: str = "",
     target_benchmark_count: str = "",
 ) -> tuple[str, int]:
@@ -393,6 +395,8 @@ def submit_optimization(
                 "triggered_by": triggered_by,
                 "experiment_name": experiment_name,
                 "deploy_target": deploy_target,
+                "deploy_space_id": deploy_space_id,
+                "catalog_map": catalog_map,
                 "warehouse_id": warehouse_id,
                 "target_benchmark_count": target_benchmark_count,
             },

@@ -264,6 +264,8 @@ export interface GSOTriggerRequest {
   apply_mode?: "genie_config" | "uc_artifact" | "both"
   levers?: number[]
   deploy_target?: string
+  deploy_space_id?: string
+  catalog_map?: Record<string, string>
 }
 
 export interface GSOTriggerResponse {

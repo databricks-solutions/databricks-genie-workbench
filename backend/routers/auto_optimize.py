@@ -61,6 +61,8 @@ class TriggerRequest(BaseModel):
     apply_mode: str = "genie_config"
     levers: list[int] | None = None
     deploy_target: str | None = None
+    deploy_space_id: str | None = None
+    catalog_map: dict[str, str] | None = None
 
 
 class SchemaAccessStatus(BaseModel):
@@ -857,6 +859,8 @@ async def trigger(body: TriggerRequest, request: Request):
             apply_mode=body.apply_mode,
             levers=body.levers,
             deploy_target=body.deploy_target,
+            deploy_space_id=body.deploy_space_id,
+            catalog_map=body.catalog_map,
         )
         return {
             "runId": result.run_id,
