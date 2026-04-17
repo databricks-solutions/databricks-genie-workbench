@@ -551,16 +551,20 @@ except Exception: pass
     fi
 fi
 
-# ── Configure app resources ───────────────────────────────────────────────
-# Scopes are set by app.yaml via apps deploy. Only patch resources here.
-# Patching user_api_scopes via the API requires the user token passthrough
-# feature to be enabled, which is not available in all workspaces.
-echo "  Configuring app resources..."
+# ── Configure app scopes and resources ───────────────────────────────────
+# The PATCH API is the mechanism that configures both user_api_scopes and
+# resources on a Databricks App. app.yaml user_api_scopes are documentation
+# only; apps deploy does not apply them.
+echo "  Configuring app scopes and resources..."
 EXISTING_RESOURCES=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('resources',[])))" 2>/dev/null || echo "[]")
 
 PATCH_PAYLOAD=$(python3 -c "
 import json
+
+scopes = ['sql', 'dashboards.genie', 'serving.serving-endpoints',
+          'catalog.catalogs:read', 'catalog.schemas:read',
+          'catalog.tables:read', 'files.files']
 
 # Start with existing resources. The PATCH API replaces all resources,
 # so we must include everything. Preserve all resources that either have
@@ -592,12 +596,12 @@ if lakebase_db:
         }
     }
 
-print(json.dumps({'resources': list(by_name.values())}))
+print(json.dumps({'user_api_scopes': scopes, 'resources': list(by_name.values())}))
 ")
 databricks api patch "/api/2.0/apps/$APP_NAME" \
     --profile "$PROFILE" --json "$PATCH_PAYLOAD" 2>/dev/null && \
-    echo "  ✓ App resources configured (sql-warehouse: $WAREHOUSE_ID)" || \
-    echo "  ⚠ Could not configure app resources"
+    echo "  ✓ App scopes and resources configured (sql-warehouse: $WAREHOUSE_ID)" || \
+    echo "  ⚠ Could not configure app scopes/resources"
 
 databricks apps deploy "$APP_NAME" --profile "$PROFILE" \
     --source-code-path "$WS_PATH" --no-wait
