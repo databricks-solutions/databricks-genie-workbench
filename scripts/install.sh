@@ -60,7 +60,7 @@ _prompt_yn() {
     local default="${3:-Y}"
     local result
 
-    local yn_hint="[Y/N]"
+    local yn_hint="[Y/N, Enter=${default}]"
     echo -en "  ${prompt_text} ${yn_hint}: "
     read -r result
     result="${result:-$default}"
@@ -198,6 +198,7 @@ DEFAULT_VALID="NO"
 LOGGEDIN_NAMES=()
 NOTLOGGEDIN_NAMES=()
 PROFILES_EXIT=0
+PROFILES_OUTPUT=$(databricks auth profiles 2>/dev/null) || PROFILES_EXIT=1
 while IFS= read -r line; do
     [ -z "$line" ] && continue
     name=$(echo "$line" | awk '{print $1}')
@@ -210,7 +211,7 @@ while IFS= read -r line; do
     else
         NOTLOGGEDIN_NAMES+=("$name")
     fi
-done < <(databricks auth profiles 2>/dev/null | tail -n +2 | grep -v '^$' || { PROFILES_EXIT=1; true; })
+done < <(echo "$PROFILES_OUTPUT" | tail -n +2 | grep -v '^$' || true)
 
 # Build ordered selection array: DEFAULT first, then logged-in, then not-logged-in
 ORDERED_PROFILES=("DEFAULT")
@@ -511,11 +512,13 @@ except: pass
         _info "Creating MLflow experiment..."
         _info "Press Enter to accept the default path, or type a custom one."
         _prompt EXPERIMENT_PATH "Experiment path" "/Shared/genie-workbench-agent-tracing"
+        # Build JSON safely so paths with quotes/special chars don't break the payload
+        MLFLOW_CREATE_JSON=$(python3 -c "import json,sys; print(json.dumps({'name': sys.argv[1]}))" "$EXPERIMENT_PATH")
         # Try to create the experiment
         MLFLOW_EXPERIMENT_ID=$(
             databricks api post /api/2.0/mlflow/experiments/create \
                 --profile "$PROFILE" \
-                --json "{\"name\": \"$EXPERIMENT_PATH\"}" -o json 2>/dev/null \
+                --json "$MLFLOW_CREATE_JSON" -o json 2>/dev/null \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('experiment_id',''))" 2>/dev/null || true
         )
         # If creation failed (e.g. already exists), look it up by name
@@ -524,9 +527,9 @@ except: pass
                 databricks api post /api/2.0/mlflow/experiments/search \
                     --profile "$PROFILE" \
                     --json '{"max_results": 100}' -o json 2>/dev/null \
-                | python3 -c "
-import sys, json
-path = '$EXPERIMENT_PATH'
+                | EXPERIMENT_PATH="$EXPERIMENT_PATH" python3 -c "
+import sys, json, os
+path = os.environ['EXPERIMENT_PATH']
 try:
     for e in json.load(sys.stdin).get('experiments', []):
         if e.get('name','') == path:
