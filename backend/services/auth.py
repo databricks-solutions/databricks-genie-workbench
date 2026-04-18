@@ -16,6 +16,8 @@ from contextvars import ContextVar
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.config import Config
 
+from backend._telemetry import PRODUCT_NAME, PRODUCT_VERSION
+
 logger = logging.getLogger(__name__)
 
 # Singleton client for local dev (or fallback when no user token is available)
@@ -55,7 +57,7 @@ def set_obo_user_token(token: str) -> None:
         client_id=None,
         client_secret=None,  # gitleaks:allow
     )
-    client = WorkspaceClient(config=cfg)
+    client = WorkspaceClient(config=cfg, product=PRODUCT_NAME, product_version=PRODUCT_VERSION)
     _obo_client.set(client)
     logger.debug("OBO client set for current request (host=%s, auth=%s)", host, cfg.auth_type)
 
@@ -70,7 +72,7 @@ def _get_default_client() -> WorkspaceClient:
     global _client, _auth_logged
 
     if _client is None:
-        _client = WorkspaceClient()
+        _client = WorkspaceClient(product=PRODUCT_NAME, product_version=PRODUCT_VERSION)
 
         if not _auth_logged:
             logger.info("=== Databricks SDK Authentication ===")

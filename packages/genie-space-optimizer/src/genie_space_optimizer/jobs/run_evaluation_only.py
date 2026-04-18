@@ -169,7 +169,8 @@ _log(
 
 # COMMAND ----------
 
-w = WorkspaceClient()
+from genie_space_optimizer._workspace_client import make_workspace_client
+w = make_workspace_client()
 spark = SparkSession.builder.getOrCreate()
 
 import mlflow

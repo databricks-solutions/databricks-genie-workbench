@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from databricks.sdk import WorkspaceClient
 from fastapi import Depends, FastAPI, Request
 
+from genie_space_optimizer._workspace_client import make_workspace_client
+
 from ._base import LifespanDependency
 from ._config import AppConfig, logger
 from ._headers import HeadersDependency
@@ -26,7 +28,7 @@ class _ConfigDependency(LifespanDependency):
 class _WorkspaceClientDependency(LifespanDependency):
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:
-        app.state.workspace_client = WorkspaceClient()
+        app.state.workspace_client = make_workspace_client()
         yield
 
     @staticmethod
@@ -49,10 +51,10 @@ def _get_user_ws(
             "OBO token not available — falling back to service principal credentials. "
             "User-scoped permissions will not apply."
         )
-        return WorkspaceClient()
+        return make_workspace_client()
 
     host = os.environ.get("DATABRICKS_HOST", "")
-    return WorkspaceClient(
+    return make_workspace_client(
         host=host,
         token=headers.token.get_secret_value(),
         auth_type="pat",

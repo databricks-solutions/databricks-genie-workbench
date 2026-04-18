@@ -225,7 +225,8 @@ def main():
     print(f"Source: {source_catalog}.{source_schema}")
     print(f"Synced tables: {source_catalog}.{source_schema}.*{SYNCED_SUFFIX}")
 
-    w = WorkspaceClient()
+    from backend._telemetry import PRODUCT_NAME, PRODUCT_VERSION
+    w = WorkspaceClient(product=PRODUCT_NAME, product_version=PRODUCT_VERSION)
 
     # Use explicit warehouse ID if provided, otherwise auto-detect
     if explicit_warehouse_id:
