@@ -91,6 +91,16 @@ export function DeployTab({ spaceId }: DeployTabProps) {
             Deploy this Genie Space's current config to a target workspace. Catalog references are remapped automatically. Settings are remembered for next time.
           </p>
 
+          <div className="rounded-lg bg-surface-secondary border border-default px-4 py-3 text-xs text-muted space-y-1">
+            <p className="font-medium text-secondary">Prerequisites</p>
+            <ul className="list-disc ml-4 space-y-0.5">
+              <li>The app's service principal must be registered in the target workspace</li>
+              <li>The SP needs permission to create Genie Spaces (or CAN_MANAGE on the target space if updating)</li>
+              <li>Target catalog and tables must exist in the target workspace (e.g. <code className="text-accent">prod_bank.retail.*</code>)</li>
+              <li>The SP needs SELECT on the target catalog's tables</li>
+            </ul>
+          </div>
+
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1">
               <label className="text-xs font-medium text-muted">Target workspace URL</label>
