@@ -4,7 +4,7 @@
  * Score tab includes an inline FixAgentPanel that slides in from the right.
  */
 import { useState, useEffect, useRef } from "react"
-import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, Zap, ChevronDown, ChevronRight, Settings, RefreshCw } from "lucide-react"
+import { ArrowLeft, Star, BarChart2, Clock, ExternalLink, Rocket, Play, Upload, Zap, ChevronDown, ChevronRight, Settings, RefreshCw } from "lucide-react"
 import { scanSpace, toggleStar, getSpaceHistory, getSpaceDetail, getActiveRunForSpace } from "@/lib/api"
 import { MATURITY_COLORS, getOptimizationLabel } from "@/lib/utils"
 import type { ScanResult, ScoreHistoryPoint, OptimizationEvent } from "@/types"
@@ -13,10 +13,11 @@ import { HistoryTab } from "./HistoryTab"
 import { useAnalysis } from "@/hooks/useAnalysis"
 import { SpaceOverview } from "@/components/SpaceOverview"
 import { AutoOptimizeTab } from "@/components/auto-optimize/AutoOptimizeTab"
+import { DeployTab } from "./DeployTab"
 import { FixAgentPanel } from "@/components/FixAgentPanel"
 
-type Tab = "score" | "optimize" | "history"
-const VALID_TABS: readonly string[] = ["score", "optimize", "history"]
+type Tab = "score" | "optimize" | "history" | "deploy"
+const VALID_TABS: readonly string[] = ["score", "optimize", "history", "deploy"]
 
 interface SpaceDetailProps {
   spaceId: string
@@ -162,6 +163,7 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
     { id: "score", label: "Score", icon: <BarChart2 className="w-4 h-4" /> },
     { id: "optimize", label: "Optimize", icon: <Rocket className="w-4 h-4" /> },
     { id: "history", label: "History", icon: <Clock className="w-4 h-4" /> },
+    { id: "deploy", label: "Deploy", icon: <Upload className="w-4 h-4" /> },
   ]
 
   // Determine contextual action(s) based on scan results
@@ -321,6 +323,9 @@ export function SpaceDetail({ spaceId, displayName, spaceUrl, initialTab, autoSc
 
         {activeTab === "history" && (
           <HistoryTab history={history} optimizationEvents={optimizationEvents} isLoading={isLoadingHistory} />
+        )}
+        {activeTab === "deploy" && (
+          <DeployTab spaceId={spaceId} />
         )}
       </div>
 
