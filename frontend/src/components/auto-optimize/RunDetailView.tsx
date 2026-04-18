@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { ArrowLeft, Cog, UserCheck, ExternalLink, Upload, CheckCircle2, Clock, AlertTriangle } from "lucide-react"
+import { ArrowLeft, Cog, UserCheck, ExternalLink, CheckCircle2, Clock, AlertTriangle } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ScoreSummary } from "@/components/auto-optimize/ScoreSummary"
