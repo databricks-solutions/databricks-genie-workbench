@@ -39,7 +39,7 @@ export function DeployTab({ spaceId }: DeployTabProps) {
 
   const [deploying, setDeploying] = useState(false)
   const [deployError, setDeployError] = useState<string | null>(null)
-  const [deploySuccess, setDeploySuccess] = useState<{ targetUrl: string; targetSpaceId: string } | null>(null)
+  const [deploySuccess, setDeploySuccess] = useState<{ targetUrl: string; targetSpaceId: string; spaceUrl?: string } | null>(null)
 
   // Load config from localStorage on mount
   useEffect(() => {
@@ -67,7 +67,7 @@ export function DeployTab({ spaceId }: DeployTabProps) {
         catalog_map: Object.keys(catalogMap).length > 0 ? catalogMap : undefined,
       })
       saveDeployConfig({ targetUrl: targetUrl.trim(), spaceId: targetSpaceId.trim(), catalogMappings })
-      setDeploySuccess({ targetUrl: result.targetUrl, targetSpaceId: result.targetSpaceId })
+      setDeploySuccess({ targetUrl: result.targetUrl, targetSpaceId: result.targetSpaceId, spaceUrl: result.spaceUrl })
     } catch (e) {
       const msg = e instanceof Error ? e.message : typeof e === "object" ? JSON.stringify(e) : String(e)
       setDeployError(msg || "Deployment failed")
@@ -190,12 +190,12 @@ export function DeployTab({ spaceId }: DeployTabProps) {
             </p>
           </div>
           <a
-            href={deploySuccess.targetUrl}
+            href={deploySuccess.spaceUrl || deploySuccess.targetUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10 transition-colors"
           >
-            Open Workspace
+            {deploySuccess.spaceUrl ? "Open Genie Space" : "Open Workspace"}
             <ExternalLink className="h-3.5 w-3.5" />
           </a>
         </div>

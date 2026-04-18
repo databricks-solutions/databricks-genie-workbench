@@ -919,9 +919,8 @@ async def deploy_space(space_id: str, body: DeployRequest):
                     remapped += 1
         logger.info("Remapped %d catalog references for deploy", remapped)
 
-    # 3. PATCH to target workspace using the app's SP credentials.
-    #    The SP must be registered in the target workspace with CAN_MANAGE
-    #    on the target Genie Space.
+    # 3. Connect to target workspace using the app's SP credentials.
+    #    The SP must be registered in the target workspace.
     try:
         from databricks.sdk import WorkspaceClient
         sp_ws = get_service_principal_client()
@@ -930,12 +929,50 @@ async def deploy_space(space_id: str, body: DeployRequest):
             client_id=sp_ws.config.client_id,
             client_secret=sp_ws.config.client_secret,
         )
-        target_space = body.target_space_id or space_id
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to connect to target workspace: {e}")
 
-        from genie_space_optimizer.common.genie_client import patch_space_config
-        result = patch_space_config(target_ws, target_space, space_config)
+    # 4. Deploy: PATCH existing space or CREATE new one
+    try:
+        if body.target_space_id:
+            # Update existing space
+            from genie_space_optimizer.common.genie_client import patch_space_config
+            patch_space_config(target_ws, body.target_space_id, space_config)
+            target_space = body.target_space_id
+            logger.info("PATCHed existing space %s in target workspace", target_space)
+        else:
+            # Create new space in target workspace
+            from backend.services.genie_client import get_genie_space
+            source_space = get_genie_space(genie_space_id=space_id)
+            display_name = source_space.get("title", "Deployed Genie Space")
 
-        return {"status": "DEPLOYED", "targetSpaceId": target_space, "targetUrl": body.target_workspace_url}
+            # Find a warehouse in the target workspace
+            warehouses = list(target_ws.warehouses.list())
+            if not warehouses:
+                raise ValueError("No SQL warehouse found in target workspace")
+            target_warehouse_id = warehouses[0].id
+
+            response = target_ws.api_client.do(
+                method="POST",
+                path="/api/2.0/genie/spaces",
+                body={
+                    "title": display_name,
+                    "description": f"Deployed from source workspace (space {space_id})",
+                    "parent_path": "/Shared/",
+                    "warehouse_id": target_warehouse_id,
+                    "serialized_space": _json.dumps(space_config),
+                },
+            )
+            target_space = response.get("space_id", "")
+            logger.info("Created new space %s in target workspace", target_space)
+
+        target_host = body.target_workspace_url.rstrip("/")
+        return {
+            "status": "DEPLOYED",
+            "targetSpaceId": target_space,
+            "targetUrl": target_host,
+            "spaceUrl": f"{target_host}/genie/rooms/{target_space}",
+        }
     except Exception as e:
         logger.exception("Failed to deploy to target workspace: %s", e)
         raise HTTPException(status_code=500, detail=f"Deployment failed: {e}")
