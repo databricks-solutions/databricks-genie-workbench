@@ -96,8 +96,8 @@ export function DeployTab({ spaceId }: DeployTabProps) {
             <ul className="list-disc ml-4 space-y-0.5">
               <li>The app's service principal must be registered in the target workspace</li>
               <li>The SP needs permission to create Genie Spaces (or CAN_MANAGE on the target space if updating)</li>
-              <li>Target catalog and tables must exist in the target workspace (e.g. <code className="text-accent">prod_bank.retail.*</code>)</li>
-              <li>The SP needs SELECT on the target catalog's tables</li>
+              <li>The referenced catalogs must be accessible from the target workspace (shared metastore, or configured in target metastore)</li>
+              <li>The SP needs <code className="text-accent">USE_CATALOG</code>, <code className="text-accent">USE_SCHEMA</code>, and <code className="text-accent">SELECT</code> on the referenced tables</li>
             </ul>
           </div>
 
