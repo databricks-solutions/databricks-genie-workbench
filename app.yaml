@@ -99,6 +99,16 @@ env:
     valueFrom: sql-warehouse
 
 # ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+resources:
+  - name: sql-warehouse
+    description: "SQL Warehouse for queries and catalog discovery"
+    sql_warehouse:
+      id: "__WAREHOUSE_ID__"
+      permission: CAN_USE
+
+# ---------------------------------------------------------------------------
 # Deployment
 # ---------------------------------------------------------------------------
 # Recommended:
