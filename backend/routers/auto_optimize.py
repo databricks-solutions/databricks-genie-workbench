@@ -919,10 +919,21 @@ async def deploy_space(space_id: str, body: DeployRequest):
                     remapped += 1
         logger.info("Remapped %d catalog references for deploy", remapped)
 
-    # 3. PATCH to target workspace
+    # 3. PATCH to target workspace (use OBO token so user's identity authenticates)
     try:
         from databricks.sdk import WorkspaceClient
-        target_ws = WorkspaceClient(host=body.target_workspace_url.rstrip("/"))
+        from databricks.sdk.config import Config
+        from backend.services.auth import get_workspace_client
+        obo_ws = get_workspace_client()
+        obo_token = obo_ws.config.token
+        target_cfg = Config(
+            host=body.target_workspace_url.rstrip("/"),
+            token=obo_token,
+            auth_type="pat",
+            client_id=None,
+            client_secret=None,
+        )
+        target_ws = WorkspaceClient(config=target_cfg)
         target_space = body.target_space_id or space_id
 
         from genie_space_optimizer.common.genie_client import patch_space_config
