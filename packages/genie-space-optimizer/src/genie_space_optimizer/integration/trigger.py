@@ -45,6 +45,8 @@ def trigger_optimization(
     apply_mode: str = "genie_config",
     levers: list[int] | None = None,
     deploy_target: str | None = None,
+    deploy_space_id: str | None = None,
+    catalog_map: dict[str, str] | None = None,
 ) -> TriggerResult:
     """Trigger a GSO optimization run using SQL Warehouse for state management.
 
@@ -227,6 +229,8 @@ def trigger_optimization(
             triggered_by=caller_email,
             experiment_name=experiment_name or "",
             deploy_target=deploy_target or "",
+            deploy_space_id=deploy_space_id or "",
+            catalog_map=json.dumps(catalog_map) if catalog_map else "",
             warehouse_id=config.warehouse_id or "",
         )
 

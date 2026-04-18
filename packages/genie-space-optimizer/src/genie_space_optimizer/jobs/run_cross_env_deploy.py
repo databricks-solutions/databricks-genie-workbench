@@ -56,11 +56,13 @@ dbutils.widgets.text("model_name", "", "UC Model Name")
 dbutils.widgets.text("model_version", "", "Model Version")
 dbutils.widgets.text("target_workspace_url", "", "Target Workspace URL")
 dbutils.widgets.text("target_space_id", "", "Target Space ID")
+dbutils.widgets.text("catalog_map", "", "Catalog Mapping (JSON)")
 
 model_name = dbutils.widgets.get("model_name").strip()
 model_version = dbutils.widgets.get("model_version").strip()
 target_workspace_url = dbutils.widgets.get("target_workspace_url").strip()
 target_space_id = dbutils.widgets.get("target_space_id").strip()
+catalog_map_raw = dbutils.widgets.get("catalog_map").strip()
 
 _banner("Resolved Parameters")
 _log(
@@ -138,6 +140,29 @@ if not space_config:
     )
 
 _log("Config loaded", keys=list(space_config.keys()))
+
+# Remap catalog references if catalog_map is provided
+catalog_map: dict[str, str] = {}
+if catalog_map_raw:
+    try:
+        catalog_map = json.loads(catalog_map_raw)
+    except json.JSONDecodeError:
+        _log("WARNING: Could not parse catalog_map JSON, skipping remapping", raw=catalog_map_raw)
+
+if catalog_map:
+    _banner("Remapping Catalog References")
+    remapped = 0
+    for source_list_key in ("tables", "metric_views"):
+        for src in space_config.get("data_sources", {}).get(source_list_key, []):
+            ident = src.get("identifier", "")
+            parts = ident.replace("`", "").split(".")
+            if len(parts) >= 3 and parts[0] in catalog_map:
+                old_ident = ident
+                parts[0] = catalog_map[parts[0]]
+                src["identifier"] = ".".join(parts)
+                _log("Remapped", old=old_ident, new=src["identifier"])
+                remapped += 1
+    _log("Catalog remapping complete", remapped=remapped, mappings=catalog_map)
 
 # COMMAND ----------
 

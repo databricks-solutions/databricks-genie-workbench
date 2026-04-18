@@ -407,6 +407,21 @@ export async function triggerAutoOptimize(request: GSOTriggerRequest): Promise<G
   )
 }
 
+export async function deploySpace(
+  spaceId: string,
+  config: { target_workspace_url: string; target_space_id?: string; catalog_map?: Record<string, string> }
+): Promise<{ status: string; targetSpaceId: string; targetUrl: string; spaceUrl?: string }> {
+  return fetchWithTimeout<{ status: string; targetSpaceId: string; targetUrl: string; spaceUrl?: string }>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/deploy`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    },
+    LONG_TIMEOUT
+  )
+}
+
 export async function getAutoOptimizeRun(runId: string): Promise<GSOPipelineRun> {
   return fetchWithTimeout<GSOPipelineRun>(`${API_BASE}/auto-optimize/runs/${runId}`)
 }

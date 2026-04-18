@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { ArrowLeft, Cog, UserCheck, ExternalLink } from "lucide-react"
+import { ArrowLeft, Cog, UserCheck, ExternalLink, CheckCircle2, Clock, AlertTriangle } from "lucide-react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ScoreSummary } from "@/components/auto-optimize/ScoreSummary"
@@ -156,6 +156,45 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
           </a>
         </div>
       )}
+
+      {/* Deployment Status Banner (when already deployed) */}
+      {run.deployTarget && run.deploymentStatus && (
+        <div className={`flex items-start gap-3 rounded-lg border px-4 py-3 ${
+          run.deploymentStatus === "DEPLOYED"
+            ? "border-emerald-500/30 bg-emerald-500/5"
+            : run.deploymentStatus === "FAILED"
+              ? "border-red-500/30 bg-red-500/5"
+              : "border-blue-500/30 bg-blue-500/5"
+        }`}>
+          {run.deploymentStatus === "DEPLOYED" ? (
+            <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-600 shrink-0" />
+          ) : run.deploymentStatus === "FAILED" ? (
+            <AlertTriangle className="mt-0.5 h-5 w-5 text-red-600 shrink-0" />
+          ) : (
+            <Clock className="mt-0.5 h-5 w-5 text-blue-600 shrink-0" />
+          )}
+          <div className="flex-1">
+            <h3 className={`text-sm font-semibold ${
+              run.deploymentStatus === "DEPLOYED" ? "text-emerald-900 dark:text-emerald-300"
+                : run.deploymentStatus === "FAILED" ? "text-red-900 dark:text-red-300"
+                : "text-blue-900 dark:text-blue-300"
+            }`}>
+              {run.deploymentStatus === "DEPLOYED" ? "Deployed to target workspace"
+                : run.deploymentStatus === "PENDING_APPROVAL" ? "Deployment awaiting approval"
+                : run.deploymentStatus === "FAILED" ? "Deployment failed"
+                : `Deployment: ${run.deploymentStatus}`}
+            </h3>
+            <p className="mt-0.5 text-xs text-muted">Target: {run.deployTarget}</p>
+          </div>
+          {run.deploymentStatus === "DEPLOYED" && (
+            <a href={run.deployTarget} target="_blank" rel="noopener noreferrer"
+              className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10 transition-colors">
+              Open Workspace <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          )}
+        </div>
+      )}
+
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-default">

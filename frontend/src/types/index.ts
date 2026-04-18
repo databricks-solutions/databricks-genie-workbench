@@ -264,6 +264,8 @@ export interface GSOTriggerRequest {
   apply_mode?: "genie_config" | "uc_artifact" | "both"
   levers?: number[]
   deploy_target?: string
+  deploy_space_id?: string
+  catalog_map?: Record<string, string>
 }
 
 export interface GSOTriggerResponse {
@@ -397,6 +399,7 @@ export interface GSOPipelineRun {
   levers: GSOLeverStatus[]
   links: GSOResourceLink[]
   convergenceReason: string | null
+  deployTarget: string | null
   deploymentStatus: string | null
   labelingSessionUrl: string | null
   labelingSessionName: string | null

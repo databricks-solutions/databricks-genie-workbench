@@ -592,12 +592,24 @@ if lakebase_db:
         }
     }
 
-print(json.dumps({'user_api_scopes': scopes, 'resources': list(by_name.values())}))
+resources_list = list(by_name.values())
+print(json.dumps({'user_api_scopes': scopes, 'resources': resources_list}) + '|||' + json.dumps({'resources': resources_list}))
 ")
-databricks api patch "/api/2.0/apps/$APP_NAME" \
-    --profile "$PROFILE" --json "$PATCH_PAYLOAD" 2>/dev/null && \
-    echo "  ✓ App scopes and resources configured" || \
-    echo "  ⚠ Could not configure app scopes/resources"
+
+# Split into scopes+resources and resources-only payloads
+PATCH_WITH_SCOPES="${PATCH_PAYLOAD%%|||*}"
+PATCH_RESOURCES_ONLY="${PATCH_PAYLOAD##*|||}"
+
+# Try with scopes first; if workspace doesn't support token passthrough, retry resources-only
+if databricks api patch "/api/2.0/apps/$APP_NAME" \
+    --profile "$PROFILE" --json "$PATCH_WITH_SCOPES" 2>/dev/null; then
+    echo "  ✓ App scopes and resources configured"
+elif databricks api patch "/api/2.0/apps/$APP_NAME" \
+    --profile "$PROFILE" --json "$PATCH_RESOURCES_ONLY" 2>/dev/null; then
+    echo "  ✓ App resources configured (user_api_scopes not supported on this workspace)"
+else
+    echo "  ⚠ Could not configure app resources"
+fi
 
 databricks apps deploy "$APP_NAME" --profile "$PROFILE" \
     --source-code-path "$WS_PATH" --no-wait
