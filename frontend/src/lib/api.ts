@@ -407,12 +407,12 @@ export async function triggerAutoOptimize(request: GSOTriggerRequest): Promise<G
   )
 }
 
-export async function deployOptimizationRun(
-  runId: string,
+export async function deploySpace(
+  spaceId: string,
   config: { target_workspace_url: string; target_space_id?: string; catalog_map?: Record<string, string> }
-): Promise<{ jobRunId: string; status: string }> {
-  return fetchWithTimeout<{ jobRunId: string; status: string }>(
-    `${API_BASE}/auto-optimize/runs/${runId}/deploy`,
+): Promise<{ status: string; targetSpaceId: string; targetUrl: string }> {
+  return fetchWithTimeout<{ status: string; targetSpaceId: string; targetUrl: string }>(
+    `${API_BASE}/auto-optimize/spaces/${spaceId}/deploy`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },

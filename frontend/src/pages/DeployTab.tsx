@@ -1,16 +1,14 @@
 /**
- * DeployTab — Cross-workspace deployment for optimized Genie Spaces.
- * Shows deployment config (remembered via localStorage), completed runs to deploy, and deployment status.
+ * DeployTab — Cross-workspace deployment for Genie Spaces.
+ * Deploys the current space config to a target workspace with optional catalog remapping.
+ * Settings are remembered via localStorage.
  */
 import { useState, useEffect } from "react"
 import { CheckCircle2, ExternalLink, Plus, Rocket, Trash2, Upload } from "lucide-react"
-import { Badge } from "@/components/ui/badge"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
-import { getAutoOptimizeRunsForSpace, deployOptimizationRun } from "@/lib/api"
-import type { GSORunSummary } from "@/types"
+import { deploySpace } from "@/lib/api"
 
 const DEPLOY_STORAGE_KEY = "genie-workbench:deploy-config"
-const TERMINAL_STATUSES = new Set(["CONVERGED", "STALLED", "MAX_ITERATIONS", "APPLIED"])
 
 interface DeployConfig {
   targetUrl: string
@@ -35,20 +33,13 @@ interface DeployTabProps {
 }
 
 export function DeployTab({ spaceId }: DeployTabProps) {
-  // Config state (loaded from localStorage)
   const [targetUrl, setTargetUrl] = useState("")
   const [targetSpaceId, setTargetSpaceId] = useState("")
   const [catalogMappings, setCatalogMappings] = useState<{ source: string; target: string }[]>([])
 
-  // Runs
-  const [runs, setRuns] = useState<GSORunSummary[]>([])
-  const [runsLoading, setRunsLoading] = useState(true)
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
-
-  // Deploy state
   const [deploying, setDeploying] = useState(false)
   const [deployError, setDeployError] = useState<string | null>(null)
-  const [deploySuccess, setDeploySuccess] = useState(false)
+  const [deploySuccess, setDeploySuccess] = useState<{ targetUrl: string; targetSpaceId: string } | null>(null)
 
   // Load config from localStorage on mount
   useEffect(() => {
@@ -58,26 +49,11 @@ export function DeployTab({ spaceId }: DeployTabProps) {
     setCatalogMappings(saved.catalogMappings)
   }, [])
 
-  // Fetch completed runs
-  useEffect(() => {
-    setRunsLoading(true)
-    getAutoOptimizeRunsForSpace(spaceId)
-      .then((allRuns) => {
-        const completed = allRuns.filter((r) => TERMINAL_STATUSES.has(r.status))
-        setRuns(completed)
-        if (completed.length > 0 && !selectedRunId) {
-          setSelectedRunId(completed[0].run_id)
-        }
-      })
-      .catch(() => setRuns([]))
-      .finally(() => setRunsLoading(false))
-  }, [spaceId])
-
   async function handleDeploy() {
-    if (!selectedRunId || !targetUrl.trim()) return
+    if (!targetUrl.trim()) return
     setDeploying(true)
     setDeployError(null)
-    setDeploySuccess(false)
+    setDeploySuccess(null)
 
     const catalogMap = catalogMappings.reduce<Record<string, string>>((acc, m) => {
       if (m.source.trim() && m.target.trim()) acc[m.source.trim()] = m.target.trim()
@@ -85,13 +61,13 @@ export function DeployTab({ spaceId }: DeployTabProps) {
     }, {})
 
     try {
-      await deployOptimizationRun(selectedRunId, {
+      const result = await deploySpace(spaceId, {
         target_workspace_url: targetUrl.trim(),
         target_space_id: targetSpaceId.trim() || undefined,
         catalog_map: Object.keys(catalogMap).length > 0 ? catalogMap : undefined,
       })
       saveDeployConfig({ targetUrl: targetUrl.trim(), spaceId: targetSpaceId.trim(), catalogMappings })
-      setDeploySuccess(true)
+      setDeploySuccess({ targetUrl: result.targetUrl, targetSpaceId: result.targetSpaceId })
     } catch (e) {
       const msg = e instanceof Error ? e.message : typeof e === "object" ? JSON.stringify(e) : String(e)
       setDeployError(msg || "Deployment failed")
@@ -112,7 +88,7 @@ export function DeployTab({ spaceId }: DeployTabProps) {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-muted">
-            Deploy an optimized Genie Space config to a target workspace. Settings are remembered for next time.
+            Deploy this Genie Space's current config to a target workspace. Catalog references are remapped automatically. Settings are remembered for next time.
           </p>
 
           <div className="grid grid-cols-2 gap-4">
@@ -194,101 +170,45 @@ export function DeployTab({ spaceId }: DeployTabProps) {
         </CardContent>
       </Card>
 
-      {/* Select a completed run */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Select a completed run to deploy</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {runsLoading ? (
-            <p className="text-sm text-muted py-4 text-center">Loading optimization runs...</p>
-          ) : runs.length === 0 ? (
-            <p className="text-sm text-muted py-4 text-center">
-              No completed optimization runs yet. Run an optimization first on the Optimize tab.
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {runs.map((run) => (
-                <button
-                  key={run.run_id}
-                  onClick={() => setSelectedRunId(run.run_id)}
-                  className={`w-full flex items-center justify-between px-4 py-3 rounded-lg border text-left transition-colors ${
-                    selectedRunId === run.run_id
-                      ? "border-accent bg-accent/5"
-                      : "border-default hover:bg-elevated"
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={`w-2 h-2 rounded-full ${
-                      selectedRunId === run.run_id ? "bg-accent" : "bg-muted"
-                    }`} />
-                    <div>
-                      <span className="text-sm text-primary">
-                        {run.started_at ? new Date(run.started_at).toLocaleDateString(undefined, {
-                          day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
-                        }) : "Unknown date"}
-                      </span>
-                      <p className="text-xs text-muted mt-0.5">
-                        {run.triggered_by || "system"}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <Badge variant={run.status === "CONVERGED" ? "success" : "warning"}>
-                      {run.status}
-                    </Badge>
-                    {run.best_accuracy != null && (
-                      <span className="text-sm font-semibold text-primary">
-                        {Math.round(run.best_accuracy * 100)}%
-                      </span>
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Deploy button + status */}
+      {/* Error */}
       {deployError && (
         <div className="rounded-lg bg-danger/10 border border-danger/20 px-4 py-3 text-sm text-danger">
           {deployError}
         </div>
       )}
 
+      {/* Success */}
       {deploySuccess && (
         <div className="flex items-start gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
           <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-600 shrink-0" />
           <div className="flex-1">
             <h3 className="text-sm font-semibold text-emerald-900 dark:text-emerald-300">
-              Deployment job triggered
+              Deployed successfully
             </h3>
             <p className="mt-0.5 text-xs text-muted">
-              Target: {targetUrl}
+              Space config deployed to {deploySuccess.targetUrl} (space: {deploySuccess.targetSpaceId})
             </p>
           </div>
-          {targetUrl && (
-            <a
-              href={targetUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10 transition-colors"
-            >
-              Open Workspace
-              <ExternalLink className="h-3.5 w-3.5" />
-            </a>
-          )}
+          <a
+            href={deploySuccess.targetUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md border border-emerald-500/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-500/10 transition-colors"
+          >
+            Open Workspace
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
         </div>
       )}
 
+      {/* Deploy button */}
       <button
         onClick={handleDeploy}
-        disabled={deploying || !selectedRunId || !targetUrl.trim()}
+        disabled={deploying || !targetUrl.trim()}
         className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent text-white font-semibold hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         <Rocket className="w-4 h-4" />
-        {deploying ? "Deploying..." : "Deploy Selected Run"}
+        {deploying ? "Deploying..." : "Deploy to Target Workspace"}
       </button>
     </div>
   )

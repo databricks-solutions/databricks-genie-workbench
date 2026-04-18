@@ -889,49 +889,48 @@ class DeployRequest(BaseModel):
     catalog_map: dict[str, str] | None = None
 
 
-@router.post("/runs/{run_id}/deploy")
-async def deploy_run(run_id: RunId, body: DeployRequest):
-    """Trigger cross-workspace deployment for a completed optimization run."""
-    if not _is_configured():
-        raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
+@router.post("/spaces/{space_id}/deploy")
+async def deploy_space(space_id: str, body: DeployRequest):
+    """Deploy a Genie Space config to a target workspace.
 
-    # Load run to get UC model info
-    run = await gso_lakebase.load_gso_run(run_id)
-    if not run and _is_configured():
-        config = _build_gso_config()
-        run = _fetch_run_via_sql(run_id, config)
-    if not run:
-        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+    Fetches the current space config, applies catalog remapping, and
+    PATCHes it to the target workspace. No UC model or optimization run
+    required — works with any Genie Space.
+    """
+    import json as _json
 
-    status = run.get("status", "")
-    terminal = {"CONVERGED", "STALLED", "MAX_ITERATIONS", "APPLIED"}
-    if status not in terminal:
-        raise HTTPException(status_code=400, detail=f"Run is {status} — can only deploy terminal runs")
-
-    # Get model name/version from the run's finalize output
-    model_name = run.get("uc_model_name") or run.get("model_name")
-    model_version = run.get("uc_model_version") or run.get("model_version")
-    if not model_name or not model_version:
-        raise HTTPException(status_code=400, detail="Run has no registered UC model — cannot deploy")
-
+    # 1. Fetch source space config
     try:
-        import json as _json
-        from genie_space_optimizer.backend.job_launcher import ensure_deployment_job
-        sp_ws = get_service_principal_client()
-        config = _build_gso_config()
-
-        job_run_id = ensure_deployment_job(
-            ws=sp_ws,
-            job_id=config.job_id,
-            model_name=model_name,
-            model_version=str(model_version),
-            target_workspace_url=body.target_workspace_url,
-            target_space_id=body.target_space_id or "",
-            catalog_map=_json.dumps(body.catalog_map) if body.catalog_map else "",
-        )
-        return {"jobRunId": str(job_run_id), "status": "DEPLOYING"}
+        from backend.services.genie_client import get_serialized_space
+        space_config = get_serialized_space(genie_space_id=space_id)
     except Exception as e:
-        logger.exception("Failed to trigger deployment: %s", e)
+        raise HTTPException(status_code=400, detail=f"Failed to fetch space config: {e}")
+
+    # 2. Apply catalog remapping
+    if body.catalog_map:
+        remapped = 0
+        for key in ("tables", "metric_views"):
+            for src in space_config.get("data_sources", {}).get(key, []):
+                ident = src.get("identifier", "")
+                parts = ident.replace("`", "").split(".")
+                if len(parts) >= 3 and parts[0] in body.catalog_map:
+                    parts[0] = body.catalog_map[parts[0]]
+                    src["identifier"] = ".".join(parts)
+                    remapped += 1
+        logger.info("Remapped %d catalog references for deploy", remapped)
+
+    # 3. PATCH to target workspace
+    try:
+        from databricks.sdk import WorkspaceClient
+        target_ws = WorkspaceClient(host=body.target_workspace_url.rstrip("/"))
+        target_space = body.target_space_id or space_id
+
+        from genie_space_optimizer.common.genie_client import patch_space_config
+        result = patch_space_config(target_ws, target_space, space_config)
+
+        return {"status": "DEPLOYED", "targetSpaceId": target_space, "targetUrl": body.target_workspace_url}
+    except Exception as e:
+        logger.exception("Failed to deploy to target workspace: %s", e)
         raise HTTPException(status_code=500, detail=f"Deployment failed: {e}")
 
 
