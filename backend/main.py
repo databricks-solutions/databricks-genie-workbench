@@ -176,6 +176,11 @@ async def startup():
     from backend.services.create_agent_session import _ensure_table
     await _ensure_table()
     _ensure_gso_job_run_as()
+    try:
+        from backend.routers.auto_optimize import probe_iterations_schema
+        probe_iterations_schema()
+    except Exception:
+        logger.warning("iterations schema probe failed", exc_info=True)
 
 
 @app.on_event("shutdown")

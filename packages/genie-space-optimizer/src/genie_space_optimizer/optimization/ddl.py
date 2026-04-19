@@ -104,7 +104,10 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     repeatability_json  STRING                 COMMENT 'JSON: per-question repeatability details',
     thresholds_met      BOOLEAN       NOT NULL COMMENT 'True if all quality thresholds passed',
     rows_json           STRING                 COMMENT 'JSON: per-question evaluation detail rows',
-    reflection_json     STRING                 COMMENT 'JSON: adaptive loop reflection entry for this iteration'
+    reflection_json     STRING                 COMMENT 'JSON: adaptive loop reflection entry for this iteration',
+    evaluated_count     INT                    COMMENT 'Denominator of overall_accuracy (total_questions minus runtime exclusions; see Bug #2 denominator contract)',
+    excluded_count      INT                    COMMENT 'Number of rows removed from the denominator at runtime (ground-truth excluded, both empty, Genie unavailable, temporally stale, etc.)',
+    quarantined_benchmarks_json STRING         COMMENT 'JSON: array of benchmarks removed by pre-evaluation quarantine ({question_id, reason_code, reason_detail, question})'
 )
 USING DELTA
 PARTITIONED BY (run_id)

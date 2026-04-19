@@ -28,8 +28,23 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/auto-optimize")
 
-# Lightweight column list for iterations queries — excludes rows_json (megabytes per row)
-_ITER_COLS = (
+# Lightweight column list for iterations queries — excludes rows_json (megabytes per row).
+# Bug #2: evaluated_count / excluded_count / quarantined_benchmarks_json MUST be
+# included so the frontend can compute `accuracy = correct / evaluated` without
+# falling back to total_questions (the original Bug #2 regression).
+#
+# The V2 list is what we WANT. The LEGACY list is what pre-migration Delta tables
+# actually have. `_select_iterations_delta` tries V2 first, then degrades to
+# LEGACY when the table is behind the GSO job's _migrate_add_columns. This keeps
+# the Workbench UI rendering scores when the job bundle and the app are on
+# slightly different deploy versions.
+_ITER_COLS = _ITER_COLS_V2 = (
+    "iteration, eval_scope, overall_accuracy, total_questions, correct_count, "
+    "evaluated_count, excluded_count, quarantined_benchmarks_json, "
+    "scores_json, failures_json, thresholds_met, lever, repeatability_pct, "
+    "reflection_json, mlflow_run_id"
+)
+_ITER_COLS_LEGACY = (
     "iteration, eval_scope, overall_accuracy, total_questions, correct_count, "
     "scores_json, failures_json, thresholds_met, lever, repeatability_pct, "
     "reflection_json, mlflow_run_id"
@@ -75,8 +90,22 @@ class PermissionCheckResponse(BaseModel):
     sp_application_id: str = ""
     sp_has_manage: bool
     schemas: list[SchemaAccessStatus]
-    prompt_registry_available: bool = True
+    # Fail-closed default: availability must be proven by the probe, not assumed.
+    prompt_registry_available: bool = False
     prompt_registry_error: str | None = None
+    # Stable reason code for UI/alerting; paired with prompt_registry_error.
+    # One of: ok | feature_not_enabled | missing_uc_permissions |
+    # registry_path_not_found | missing_sp_scope | vendor_bug |
+    # unknown (legacy) | probe_error.
+    prompt_registry_reason_code: str | None = None
+    # Raw vendor error code (e.g. ENDPOINT_NOT_FOUND). Surfaced verbatim in
+    # the UI mono block so the next unmapped code is visible without a log
+    # dive. May be None when the probe succeeded or raised a non-SDK error.
+    prompt_registry_error_code: str | None = None
+    # Two-axis actionability: "customer" (admin flips toggle / grants perms)
+    # vs. "platform" (our bug or Databricks' bug). Drives UI chip color and
+    # alert routing. None = unknown (treated as platform by the UI).
+    prompt_registry_actionable_by: str | None = None
     can_start: bool
     errors: list[str] = []
 
@@ -89,10 +118,16 @@ def _is_configured() -> bool:
     return bool(os.environ.get("GSO_CATALOG")) and bool(os.environ.get("GSO_JOB_ID"))
 
 
-def _delta_query(sql: str) -> list[dict]:
+def _delta_query(sql: str, *, strict: bool = False) -> list[dict]:
     """Execute a query against the Delta table via SQL Warehouse.
 
-    Returns a list of dicts (rows).  Returns [] on any failure.
+    Returns a list of dicts (rows).
+
+    By default, any error is swallowed and `[]` is returned (legacy behavior —
+    most callers only need best-effort reads). Pass ``strict=True`` to re-raise
+    the underlying exception so the caller can distinguish "query failed" from
+    "table is empty" — required for `_select_iterations_delta` which needs to
+    detect the pre-migration schema-drift case.
     """
     config = _build_gso_config()
     if not config.warehouse_id:
@@ -105,6 +140,8 @@ def _delta_query(sql: str) -> list[dict]:
             return []
         return df.to_dict(orient="records")
     except Exception as exc:
+        if strict:
+            raise
         logger.warning("Delta query failed: %s", exc, exc_info=True)
         return []
 
@@ -113,6 +150,117 @@ def _delta_table(name: str) -> str:
     """Return fully-qualified Delta table name for a GSO table."""
     config = _build_gso_config()
     return f"{config.catalog}.{config.schema_name}.{name}"
+
+
+# Bug #2 regression (April 2026): `_ITER_COLS_V2` requires three columns that
+# only land on the Delta table when the GSO job's `_migrate_add_columns`
+# runs (see `packages/genie-space-optimizer/.../optimization/state.py`). If
+# the app wheel and the job wheel are on different deploy versions — e.g. the
+# app was redeployed with the new SELECT before the bundle-deployed job ran
+# its first migrated run — the V2 SELECT fails with UNRESOLVED_COLUMN and the
+# UI goes blank. We disambiguate "real error / legacy schema" from "empty
+# table" with the module-level flag below so the second SELECT doesn't run on
+# every empty-iterations run (first-time CONVERGED, brand-new runs, etc.).
+_iterations_schema_legacy: bool | None = None  # None = unknown, True = pre-migration, False = migrated
+
+
+def _reset_iterations_schema_cache() -> None:
+    """Test helper — resets the process-wide schema state."""
+    global _iterations_schema_legacy
+    _iterations_schema_legacy = None
+
+
+def probe_iterations_schema() -> str:
+    """Check the genie_opt_iterations Delta table schema at app startup.
+
+    Returns one of: "ok", "legacy", "unconfigured", "unreachable". Emits an
+    ERROR log in the "legacy" case so oncall sees the schema-drift warning
+    when the app boots on an un-migrated workspace (Bug #2 regression).
+    Designed to be called once from FastAPI startup — all errors are
+    swallowed so a probe failure never blocks boot.
+    """
+    global _iterations_schema_legacy
+    if not _is_configured():
+        return "unconfigured"
+    table = _delta_table("genie_opt_iterations")
+    try:
+        _delta_query(
+            f"SELECT evaluated_count, excluded_count, quarantined_benchmarks_json "
+            f"FROM {table} LIMIT 0",
+            strict=True,
+        )
+    except Exception as exc:
+        if _looks_like_legacy_schema_error(exc):
+            logger.error(
+                "gso.runs.schema_drift_startup %s is missing Bug #2 denominator "
+                "columns. The UI will fall back to stored overall_accuracy but "
+                "accuracy may appear stale until the GSO job bundle redeploys "
+                "and _migrate_add_columns adds evaluated_count / excluded_count "
+                "/ quarantined_benchmarks_json. err=%s",
+                table,
+                str(exc)[:200],
+            )
+            _iterations_schema_legacy = True
+            return "legacy"
+        logger.warning("Schema probe failed: %s", str(exc)[:200])
+        return "unreachable"
+    _iterations_schema_legacy = False
+    logger.info("gso.runs.schema_ok %s has all Bug #2 denominator columns", table)
+    return "ok"
+
+
+_LEGACY_COL_ERROR_MARKERS = (
+    "UNRESOLVED_COLUMN",
+    "cannot resolve",
+    "evaluated_count",
+    "excluded_count",
+    "quarantined_benchmarks_json",
+)
+
+
+def _looks_like_legacy_schema_error(exc: BaseException) -> bool:
+    msg = str(exc)
+    # Cheap: if the error mentions any of our new columns by name, or uses
+    # Databricks' canonical "UNRESOLVED_COLUMN" error code, we treat it as
+    # schema drift and retry with the legacy SELECT.
+    return any(marker in msg for marker in _LEGACY_COL_ERROR_MARKERS)
+
+
+def _select_iterations_delta(run_id: str) -> list[dict]:
+    """Load iteration rows from Delta, tolerating the pre-migration schema.
+
+    Tries `_ITER_COLS_V2` first. If the query raises what looks like a
+    missing-column error (Databricks' `UNRESOLVED_COLUMN` or the column name
+    echoed verbatim), retries with `_ITER_COLS_LEGACY` and flips the module
+    flag so subsequent reads skip the first probe until the process restarts.
+    `_derived_accuracy` handles the legacy shape transparently (falls back to
+    stored `overall_accuracy` when `evaluated_count` is absent).
+    """
+    global _iterations_schema_legacy
+    table = _delta_table("genie_opt_iterations")
+    order = f"WHERE run_id = '{run_id}' ORDER BY iteration ASC"
+
+    if _iterations_schema_legacy is True:
+        return _delta_query(f"SELECT {_ITER_COLS_LEGACY} FROM {table} {order}")
+
+    try:
+        rows = _delta_query(f"SELECT {_ITER_COLS_V2} FROM {table} {order}", strict=True)
+        _iterations_schema_legacy = False
+        return rows
+    except Exception as exc:
+        if not _looks_like_legacy_schema_error(exc):
+            logger.warning("Delta iterations query failed: %s", exc, exc_info=True)
+            return []
+        logger.warning(
+            "gso.runs.schema_drift genie_opt_iterations is missing Bug #2 columns "
+            "(evaluated_count / excluded_count / quarantined_benchmarks_json). "
+            "Falling back to the legacy SELECT — scores render from stored "
+            "overall_accuracy. Redeploy the GSO job bundle so "
+            "_migrate_add_columns can ALTER TABLE ADD COLUMN. err=%s",
+            str(exc)[:200],
+        )
+        _iterations_schema_legacy = True
+        return _delta_query(f"SELECT {_ITER_COLS_LEGACY} FROM {table} {order}")
 
 
 def _build_gso_config() -> IntegrationConfig:
@@ -131,6 +279,55 @@ _safe_int = safe_int
 _safe_float = safe_float
 _finite = safe_finite
 _safe_json_parse = safe_json_parse
+
+
+def _derived_accuracy(
+    iter_row: dict | None,
+    *,
+    run_id: str | None = None,
+    iteration: int | None = None,
+) -> float | None:
+    """Bug #2 — canonical per-iteration accuracy percentage.
+
+    Prefers `correct_count / evaluated_count * 100` (the same math the frontend
+    uses for tab labels via `lib/eval-counts.ts`) so KPI cards and tab labels
+    agree to the decimal. Falls back to the stored `overall_accuracy` only
+    when the count columns are absent (legacy rows written before the
+    `evaluated_count` / `excluded_count` migration).
+
+    When both derived and stored exist and differ by more than 0.5pp, emit an
+    INFO-level drift log so oncall can spot stale `overall_accuracy` rows
+    without page noise. Derived wins — stored is effectively a back-pointer.
+    """
+    if not iter_row:
+        return None
+
+    total = _safe_int(iter_row.get("total_questions")) or 0
+    correct = _safe_int(iter_row.get("correct_count")) or 0
+    excluded = _safe_int(iter_row.get("excluded_count")) or 0
+    evaluated_raw = iter_row.get("evaluated_count")
+    evaluated = _safe_int(evaluated_raw) if evaluated_raw is not None else None
+    if evaluated is None:
+        derived_denom = total - excluded
+        evaluated = derived_denom if derived_denom >= 0 else total
+
+    stored = _safe_float(iter_row.get("overall_accuracy"))
+
+    if evaluated > 0 and evaluated_raw is not None:
+        # Only trust the derived value when we actually have evaluated_count
+        # from the row — otherwise we're just dividing by total_questions
+        # which IS the original Bug #2 regression.
+        derived = round(100.0 * correct / evaluated, 2)
+        if stored is not None and abs(derived - stored) > 0.5:
+            logger.info(
+                "gso.runs.accuracy_drift run_id=%s iteration=%s "
+                "stored_overall_accuracy=%.2f derived=%.2f correct=%d evaluated=%d "
+                "(Bug #2 drift — reading derived; row may need backfill)",
+                run_id, iteration, stored, derived, correct, evaluated,
+            )
+        return derived
+
+    return stored
 
 
 def _parse_detail(stage: dict) -> dict:
@@ -715,8 +912,16 @@ async def health():
 
 
 @router.get("/permissions/{space_id}")
-async def check_permissions(space_id: SpaceId):
-    """Pre-check SP permissions for a Genie Space before optimization."""
+async def check_permissions(
+    space_id: SpaceId,
+    refresh: bool = Query(False, description="Bypass the Prompt Registry probe cache."),
+):
+    """Pre-check SP permissions for a Genie Space before optimization.
+
+    ``?refresh=true`` bypasses the in-process TTL cache of the Prompt
+    Registry probe. The UI's Re-check button should pass it; regular
+    page loads should not.
+    """
     if not _is_configured():
         raise HTTPException(status_code=503, detail="Auto-Optimize is not configured.")
 
@@ -801,25 +1006,31 @@ async def check_permissions(space_id: SpaceId):
         errors.append(f"Could not probe data access: {exc}")
         logger.warning("Could not probe data access for space %s", space_id, exc_info=True)
 
-    # Probe MLflow Prompt Registry availability (read-only check)
-    prompt_registry_available = True
-    prompt_registry_error = None
-    try:
-        sp_ws.api_client.do("GET", "/api/2.0/mlflow/unity-catalog/prompts", query={"max_results": "1"})
-    except Exception as exc:
-        err_msg = str(exc)
-        if "FEATURE_DISABLED" in err_msg or "not enabled" in err_msg.lower():
-            prompt_registry_available = False
-            prompt_registry_error = (
-                "MLflow Prompt Registry is not enabled on this workspace. "
-                "Contact your workspace admin to enable it."
-            )
-            errors.append(prompt_registry_error)
-            logger.warning("Prompt Registry not enabled: %s", err_msg)
-        else:
-            # Other errors (e.g. permissions on a specific schema) don't mean
-            # the feature itself is unavailable.
-            logger.debug("Prompt Registry probe returned non-fatal error: %s", err_msg)
+    # Probe MLflow Prompt Registry availability (fail-closed; structured codes).
+    # Scope the probe to the GSO target schema so permission errors bind to
+    # the exact catalog.schema the job will write to — probe-workload parity.
+    from backend.services.prompt_registry import check_prompt_registry
+
+    gso_config = _build_gso_config()
+    gso_uc_schema = (
+        f"{gso_config.catalog}.{gso_config.schema_name}"
+        if gso_config.catalog and gso_config.schema_name
+        else None
+    )
+
+    probe = check_prompt_registry(
+        sp_ws,
+        mode="read",
+        uc_schema=gso_uc_schema,
+        bypass_cache=refresh,
+    )
+    prompt_registry_available = probe.available
+    prompt_registry_error = None if probe.available else probe.user_message
+    prompt_registry_reason_code = probe.reason_code
+    prompt_registry_error_code = probe.vendor_error_code
+    prompt_registry_actionable_by = probe.actionable_by
+    if not probe.available:
+        errors.append(probe.user_message)
 
     all_read = all(s.read_granted for s in schemas) if schemas else True
     can_start = sp_has_manage and all_read and prompt_registry_available
@@ -831,6 +1042,9 @@ async def check_permissions(space_id: SpaceId):
         schemas=schemas,
         prompt_registry_available=prompt_registry_available,
         prompt_registry_error=prompt_registry_error,
+        prompt_registry_reason_code=prompt_registry_reason_code,
+        prompt_registry_error_code=prompt_registry_error_code,
+        prompt_registry_actionable_by=prompt_registry_actionable_by,
         can_start=can_start,
         errors=errors,
     )
@@ -845,6 +1059,51 @@ async def trigger(body: TriggerRequest, request: Request):
     ws = get_workspace_client()
     sp_ws = get_service_principal_client()
     config = _build_gso_config()
+
+    # Server-side gate: re-verify Prompt Registry is available under the same
+    # identity (sp_ws) the job will use. The UI also checks via /permissions,
+    # but that is advisory — clients can skip it. This closes the bypass.
+    # Always bypass the TTL cache here: /trigger is low-frequency and must
+    # decide on a fresh probe.
+    from backend.services.prompt_registry import (
+        ACTIONABLE_BY_PLATFORM,
+        check_prompt_registry,
+    )
+
+    trigger_uc_schema = (
+        f"{config.catalog}.{config.schema_name}"
+        if config.catalog and config.schema_name
+        else None
+    )
+    probe = check_prompt_registry(
+        sp_ws,
+        mode="read",
+        uc_schema=trigger_uc_schema,
+        bypass_cache=True,
+    )
+    if not probe.available:
+        logger.warning(
+            "Trigger blocked: Prompt Registry unavailable (code=%s actionable_by=%s raw=%s)",
+            probe.reason_code,
+            probe.actionable_by,
+            (probe.raw_error or "")[:200],
+        )
+        # Two different HTTP semantics so the UI and on-call routing can
+        # distinguish "admin fix" from "our outage":
+        #   412 Precondition Failed — customer must grant/enable something.
+        #   503 Service Unavailable — Databricks/our platform is broken;
+        #     the customer cannot fix it from the workspace.
+        status_code = 503 if probe.actionable_by == ACTIONABLE_BY_PLATFORM else 412
+        raise HTTPException(
+            status_code=status_code,
+            detail={
+                "error": probe.user_message,
+                "reason_code": probe.reason_code,
+                "error_code": probe.vendor_error_code,
+                "actionable_by": probe.actionable_by,
+                "prompt_registry_available": False,
+            },
+        )
 
     try:
         result = trigger_optimization(
@@ -1006,10 +1265,7 @@ async def get_run(run_id: RunId):
     # Fetch iterations (lightweight — no rows_json)
     iterations = await gso_lakebase.load_gso_iterations(run_id)
     if not iterations and _is_configured():
-        iterations = _delta_query(
-            f"SELECT {_ITER_COLS} FROM {_delta_table('genie_opt_iterations')} "
-            f"WHERE run_id = '{run_id}' ORDER BY iteration ASC"
-        )
+        iterations = _select_iterations_delta(run_id)
 
     # Fetch patches for lever detail
     patches = await gso_lakebase.load_gso_patches(run_id)
@@ -1026,7 +1282,11 @@ async def get_run(run_id: RunId):
     )
     if not baseline_iter:
         baseline_iter = next((r for r in iterations if _safe_int(r.get("iteration")) == 0), None)
-    baseline_accuracy = _safe_float(baseline_iter.get("overall_accuracy")) if baseline_iter else None
+    # Bug #2: derive from correct/evaluated so the `baselineScore` we return
+    # agrees with what the frontend computes for the Baseline Evaluation tab
+    # label from the same iteration row. Falls back to stored overall_accuracy
+    # for legacy rows without evaluated_count.
+    baseline_accuracy = _derived_accuracy(baseline_iter, run_id=run_id, iteration=0)
     run["baseline_accuracy"] = baseline_accuracy
 
     # Build pipeline steps with rich IO
@@ -1066,7 +1326,10 @@ async def get_run(run_id: RunId):
         for s in stages
     ]
 
-    # Find baseline and best scores from full-scope iterations only
+    # Find baseline and best scores from full-scope iterations only.
+    # Bug #2: optimized_score is derived from correct_count/evaluated_count
+    # per iteration so the optimized card in ScoreSummary agrees to the
+    # decimal with what RunDetailView computes for the Final Evaluation tab.
     baseline_score = baseline_accuracy
     baseline_iteration = 0 if baseline_accuracy is not None else None
     optimized_score = None
@@ -1074,17 +1337,16 @@ async def get_run(run_id: RunId):
     for it in iterations:
         it_num = int(it.get("iteration", -1))
         if it.get("eval_scope") == "full" and it_num > 0:
-            accuracy = _safe_float(it.get("overall_accuracy"))
+            accuracy = _derived_accuracy(it, run_id=run_id, iteration=it_num)
             if accuracy is not None and (optimized_score is None or accuracy > optimized_score):
                 optimized_score = accuracy
                 best_iteration = it_num
 
-    # Fallback: if no iteration > 0 has eval_scope="full", use best with any scope
     if optimized_score is None:
         for it in iterations:
             it_num = int(it.get("iteration", -1))
             if it_num > 0:
-                accuracy = _safe_float(it.get("overall_accuracy"))
+                accuracy = _derived_accuracy(it, run_id=run_id, iteration=it_num)
                 if accuracy is not None and (optimized_score is None or accuracy > optimized_score):
                     optimized_score = accuracy
                     best_iteration = it_num
@@ -1213,34 +1475,34 @@ async def get_run_status(run_id: RunId):
     # Compute baseline vs optimized scores from iterations (lightweight query)
     iterations = await gso_lakebase.load_gso_iterations(run_id)
     if not iterations and _is_configured():
-        iterations = _delta_query(
-            f"SELECT {_ITER_COLS} FROM {_delta_table('genie_opt_iterations')} "
-            f"WHERE run_id = '{run_id}' ORDER BY iteration"
-        ) or []
+        iterations = _select_iterations_delta(run_id) or []
 
+    # Bug #2: derive from correct/evaluated. The monitoring ScoreSummary
+    # card in AutoOptimizeTab consumes these directly and must agree with
+    # RunDetailView's tab labels to the decimal.
     baseline_score = None
     optimized_score = None
     for it in iterations:
         it_num = _safe_int(it.get("iteration"))
-        acc = _safe_float(it.get("overall_accuracy"))
         scope = str(it.get("eval_scope", "")).lower()
-        if it_num == 0 and scope == "full" and acc is not None:
-            baseline_score = acc
-        elif it_num is not None and it_num > 0 and scope == "full" and acc is not None:
-            if optimized_score is None or acc > optimized_score:
+        if it_num == 0 and scope == "full":
+            acc = _derived_accuracy(it, run_id=run_id, iteration=0)
+            if acc is not None:
+                baseline_score = acc
+        elif it_num is not None and it_num > 0 and scope == "full":
+            acc = _derived_accuracy(it, run_id=run_id, iteration=it_num)
+            if acc is not None and (optimized_score is None or acc > optimized_score):
                 optimized_score = acc
-    # Fallback: baseline from any scope if full not available
     if baseline_score is None:
         for it in iterations:
             if _safe_int(it.get("iteration")) == 0:
-                baseline_score = _safe_float(it.get("overall_accuracy"))
+                baseline_score = _derived_accuracy(it, run_id=run_id, iteration=0)
                 break
-    # Fallback: optimized from any scope > 0
     if optimized_score is None:
         for it in iterations:
             it_num = _safe_int(it.get("iteration"))
             if it_num is not None and it_num > 0:
-                acc = _safe_float(it.get("overall_accuracy"))
+                acc = _derived_accuracy(it, run_id=run_id, iteration=it_num)
                 if acc is not None and (optimized_score is None or acc > optimized_score):
                     optimized_score = acc
 
@@ -1396,15 +1658,18 @@ async def list_iterations(run_id: RunId):
     """Get per-iteration evaluation details for a run (excludes rows_json for performance)."""
     iterations = await gso_lakebase.load_gso_iterations(run_id)
     if not iterations and _is_configured():
-        iterations = _delta_query(
-            f"SELECT {_ITER_COLS} FROM {_delta_table('genie_opt_iterations')} "
-            f"WHERE run_id = '{run_id}' ORDER BY iteration ASC"
-        )
-    # Coerce key numeric fields — Delta fallback may return strings
+        iterations = _select_iterations_delta(run_id)
+    # Coerce key numeric fields — Delta fallback may return strings.
+    # Bug #2: evaluated_count / excluded_count must round-trip as ints so the
+    # frontend divides by the same denominator the backend uses.
     for it in iterations:
         it["overall_accuracy"] = _safe_float(it.get("overall_accuracy"))
         it["total_questions"] = _safe_int(it.get("total_questions")) or 0
         it["correct_count"] = _safe_int(it.get("correct_count")) or 0
+        if it.get("evaluated_count") is not None:
+            it["evaluated_count"] = _safe_int(it.get("evaluated_count"))
+        if it.get("excluded_count") is not None:
+            it["excluded_count"] = _safe_int(it.get("excluded_count")) or 0
         it["iteration"] = _safe_int(it.get("iteration")) or 0
         it["lever"] = _safe_int(it.get("lever"))
     return iterations

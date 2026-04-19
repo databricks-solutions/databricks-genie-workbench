@@ -391,8 +391,14 @@ export async function getAutoOptimizeHealth(): Promise<{ configured: boolean; is
   return fetchWithTimeout<{ configured: boolean; issues: string[] }>(`${API_BASE}/auto-optimize/health`)
 }
 
-export async function getAutoOptimizePermissions(spaceId: string): Promise<GSOPermissionCheck> {
-  return fetchWithTimeout<GSOPermissionCheck>(`${API_BASE}/auto-optimize/permissions/${spaceId}`)
+export async function getAutoOptimizePermissions(
+  spaceId: string,
+  options?: { refresh?: boolean },
+): Promise<GSOPermissionCheck> {
+  const qs = options?.refresh ? "?refresh=true" : ""
+  return fetchWithTimeout<GSOPermissionCheck>(
+    `${API_BASE}/auto-optimize/permissions/${spaceId}${qs}`,
+  )
 }
 
 export async function triggerAutoOptimize(request: GSOTriggerRequest): Promise<GSOTriggerResponse> {

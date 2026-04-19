@@ -108,9 +108,15 @@ async def load_gso_iterations(run_id: str, *, include_rows_json: bool = False) -
     if pool is None:
         return []
 
+    # Bug #2: evaluated_count / excluded_count / quarantined_benchmarks_json are
+    # the denominator contract columns. If they're missing from the SELECT list
+    # the frontend silently falls back to dividing by total_questions, which is
+    # exactly the KPI-vs-tab-label mismatch that the bug exists to prevent.
     cols = "*" if include_rows_json else (
         "run_id, iteration, lever, eval_scope, timestamp, mlflow_run_id, model_id, "
-        "overall_accuracy, total_questions, correct_count, scores_json, failures_json, "
+        "overall_accuracy, total_questions, correct_count, "
+        "evaluated_count, excluded_count, quarantined_benchmarks_json, "
+        "scores_json, failures_json, "
         "remaining_failures, arbiter_actions_json, repeatability_pct, repeatability_json, "
         "thresholds_met, reflection_json"
     )

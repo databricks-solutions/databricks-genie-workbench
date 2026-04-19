@@ -400,8 +400,14 @@ class IterationSummary(SafeModel):
     lever: int | None = None
     evalScope: str
     overallAccuracy: float
+    # Bug #2 denominator contract — see _resolve_eval_counts in routes/runs.py.
+    # totalQuestions is retained for back-compat; UI should prefer
+    # evaluatedCount as the denominator of overallAccuracy.
     totalQuestions: int
+    evaluatedCount: int = 0
     correctCount: int
+    excludedCount: int = 0
+    quarantinedCount: int = 0
     repeatabilityPct: float | None = None
     thresholdsMet: bool
     judgeScores: dict[str, float | None] = {}
@@ -462,6 +468,13 @@ class QuestionResult(SafeModel):
     matchType: str | None = None
     expectedSql: str | None = None
     generatedSql: str | None = None
+    # Bug #3 — when a row was excluded from the arbiter-adjusted denominator,
+    # these fields explain why. The UI renders these in the iteration
+    # drill-down so items no longer silently disappear. reasonCode is the
+    # stable enum (maps to copy/icons); reasonDetail is a human sentence.
+    excluded: bool = False
+    exclusionReasonCode: str | None = None
+    exclusionReasonDetail: str | None = None
 
 
 class GateResult(SafeModel):
@@ -492,20 +505,36 @@ class ReflectionEntry(SafeModel):
     refinementMode: str = ""
 
 
+class QuarantinedBenchmark(SafeModel):
+    """A benchmark removed by pre-eval quarantine (invalid/permission/etc)."""
+
+    questionId: str
+    question: str = ""
+    reasonCode: str = "quarantined"
+    reasonDetail: str = ""
+
+
 class IterationDetail(SafeModel):
     iteration: int
     agId: str | None = None
     status: str
     overallAccuracy: float
     judgeScores: dict[str, float | None] = {}
+    # Bug #2 denominator contract — prefer evaluatedCount for UI math.
     totalQuestions: int = 0
+    evaluatedCount: int = 0
     correctCount: int = 0
+    excludedCount: int = 0
+    quarantinedCount: int = 0
     mlflowRunId: str | None = None
     modelId: str | None = None
     gates: list[GateResult] = []
     patches: list[dict] = []
     reflection: ReflectionEntry | None = None
     questions: list[QuestionResult] = []
+    # Bug #3 — benchmarks removed BEFORE mlflow.genai.evaluate() (quarantine).
+    # Rendered in drill-down alongside per-row runtime exclusions.
+    quarantinedBenchmarks: list[QuarantinedBenchmark] = []
     clusterInfo: dict | None = None
     timestamp: str | None = None
 

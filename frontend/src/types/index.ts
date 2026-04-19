@@ -407,8 +407,15 @@ export interface GSOIterationResult {
   lever: number | null
   eval_scope: string
   overall_accuracy: number
+  // Bug #2 denominator contract. evaluated_count is the denominator of
+  // overall_accuracy; total_questions is the pre-exclusion count kept for
+  // back-compat. excluded_count reflects runtime exclusions;
+  // quarantined_benchmarks_json captures pre-evaluation quarantines.
   total_questions: number
+  evaluated_count?: number | null
   correct_count: number
+  excluded_count?: number | null
+  quarantined_benchmarks_json?: string | null
   scores_json: string | Record<string, number>
   thresholds_met: boolean
   reflection_json?: string | Record<string, any> | null
@@ -436,6 +443,17 @@ export interface GSOQuestionResult {
   confidence: number | null
 }
 
+// Bug #3 — stable exclusion reason codes mirrored from EXCLUSION_* in
+// evaluation.py. The UI must degrade gracefully when it sees a code it
+// doesn't recognize (server may add new codes before clients update).
+export type GSOExclusionReasonCode =
+  | "gt_excluded"
+  | "both_empty"
+  | "genie_result_unavailable"
+  | "quarantined"
+  | "temporal_stale"
+  | string
+
 export interface GSOQuestionDetail {
   question_id: string
   question: string
@@ -445,12 +463,24 @@ export interface GSOQuestionDetail {
   match_type: string | null
   judge_verdicts?: Record<string, string>
   excluded?: boolean
+  exclusion_reason_code?: GSOExclusionReasonCode | null
+  exclusion_reason_detail?: string | null
   genie_sample?: string | null
   gt_sample?: string | null
   genie_columns?: string[]
   gt_columns?: string[]
   genie_rows?: number | null
   gt_rows?: number | null
+}
+
+// Bug #3 — pre-evaluation quarantine entry (SQL failed EXPLAIN, missing
+// permissions, missing ground truth, etc.). Rendered in the Excluded
+// section of the iteration drill-down alongside runtime exclusions.
+export interface GSOQuarantinedBenchmark {
+  question_id: string
+  question: string
+  reason_code: GSOExclusionReasonCode
+  reason_detail: string
 }
 
 export interface GSOSchemaAccessStatus {
@@ -460,6 +490,18 @@ export interface GSOSchemaAccessStatus {
   grant_sql: string | null
 }
 
+export type GSOPromptRegistryReasonCode =
+  | "ok"
+  | "feature_not_enabled"
+  | "missing_uc_permissions"
+  | "registry_path_not_found"
+  | "missing_sp_scope"
+  | "vendor_bug"
+  | "unknown"
+  | "probe_error"
+
+export type GSOPromptRegistryActionableBy = "customer" | "platform"
+
 export interface GSOPermissionCheck {
   sp_display_name: string
   sp_application_id: string
@@ -467,6 +509,9 @@ export interface GSOPermissionCheck {
   schemas: GSOSchemaAccessStatus[]
   prompt_registry_available: boolean
   prompt_registry_error: string | null
+  prompt_registry_reason_code?: GSOPromptRegistryReasonCode | null
+  prompt_registry_error_code?: string | null
+  prompt_registry_actionable_by?: GSOPromptRegistryActionableBy | null
   can_start: boolean
   errors: string[]
 }
