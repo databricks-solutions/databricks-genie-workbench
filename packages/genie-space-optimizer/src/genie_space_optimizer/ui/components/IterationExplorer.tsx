@@ -547,6 +547,7 @@ function BaselineView({
   const {
     evaluated,
     totalExcluded,
+    evaluatedQuestions,
     excludedQuestions,
     quarantinedBenchmarks,
   } = computeBaselineCounts(iteration);

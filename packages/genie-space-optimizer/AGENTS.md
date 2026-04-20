@@ -19,9 +19,14 @@ uv run pytest                     # Run tests
 ### Frontend (uses Bun, not npm)
 
 ```bash
-bun install --frozen-lockfile     # Install from bun.lock (strict)
-bun run build                     # Production build
+npm ci                            # Install from package-lock.json (strict)
+npm run build                     # Production build
 ```
+
+> This package standardizes on **npm** (matches the repo-wide convention
+> used by `frontend/` and `scripts/build.sh`). An older `bun.lock` was
+> removed in PR #79. Don't reintroduce it — either add new dependencies
+> via `npm install --save-exact` or open a discussion first.
 
 ## Package Layout
 
@@ -77,9 +82,9 @@ git add uv.lock
 **To update a Bun dependency:**
 
 ```bash
-bun update <package>@<version>
-# update package.json to exact version (no ^)
-git add package.json bun.lock
+npm install <package>@<version> --save-exact
+# package.json must record the exact version (no ^ or ~)
+git add package.json package-lock.json
 ```
 
 ## Testing

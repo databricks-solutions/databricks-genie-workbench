@@ -65,9 +65,14 @@ export interface BaselineCounts {
 export function computeBaselineCounts(
   iteration: IterationDetail,
 ): BaselineCounts {
-  const evaluated = iteration.evaluatedCount || iteration.totalQuestions;
-  const excludedAtRuntime = iteration.excludedCount || 0;
-  const quarantined = iteration.quarantinedCount || 0;
+  // Use `??` (not `||`) so a legitimate 0 — every benchmark excluded or
+  // quarantined — is trusted as the denominator rather than silently
+  // replaced with totalQuestions (which would reintroduce Bug #2).
+  // `||` also fires on legacy TS responses where the field is missing
+  // entirely; `??` preserves that behavior only for null/undefined.
+  const evaluated = iteration.evaluatedCount ?? iteration.totalQuestions;
+  const excludedAtRuntime = iteration.excludedCount ?? 0;
+  const quarantined = iteration.quarantinedCount ?? 0;
   const totalExcluded = excludedAtRuntime + quarantined;
 
   const evaluatedQuestions = iteration.questions.filter((q) => !q.excluded);

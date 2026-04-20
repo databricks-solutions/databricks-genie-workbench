@@ -169,10 +169,32 @@ describe("computeBaselineCounts — Bug #2 denominator contract", () => {
     expect(counts.totalExcluded).toBe(2);
   });
 
-  test("falls back to totalQuestions when evaluatedCount is 0 (legacy rows)", () => {
+  test("trusts evaluatedCount === 0 (all benchmarks excluded/quarantined)", () => {
+    // Post-fix contract: when the server legitimately reports evaluatedCount=0
+    // (every benchmark was excluded at runtime or quarantined pre-eval), the
+    // UI must NOT fall back to totalQuestions — that was the Bug #2 regression
+    // this helper exists to prevent. `??` makes `0` a real value; only
+    // null/undefined triggers the legacy fallback (see next test).
     const it = iteration({
       totalQuestions: 14,
       evaluatedCount: 0,
+      correctCount: 0,
+      excludedCount: 14,
+    });
+    const counts = computeBaselineCounts(it);
+    expect(counts.evaluated).toBe(0);
+    expect(counts.totalExcluded).toBe(14);
+  });
+
+  test("falls back to totalQuestions only when evaluatedCount is missing (legacy TS shape)", () => {
+    // Older server responses (pre-migration) don't carry evaluatedCount at
+    // all — it comes through as undefined on the JSON payload. For those we
+    // preserve the totalQuestions fallback so old dashboards don't divide
+    // by zero. Cast via unknown because IterationDetail.evaluatedCount is
+    // typed non-nullable on the current contract.
+    const it = iteration({
+      totalQuestions: 14,
+      evaluatedCount: undefined as unknown as number,
       correctCount: 12,
     });
     const counts = computeBaselineCounts(it);

@@ -11,11 +11,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from backend.models import PermissionCheckResponse, SchemaAccessStatus
 from backend.routers._validators import RunId, SpaceId
 
 from backend.services.auth import get_workspace_client, get_service_principal_client, get_databricks_host
 from backend.services import gso_lakebase
 from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
+from genie_space_optimizer.common.accuracy import derived_accuracy as _canonical_derived_accuracy
 from genie_space_optimizer.integration import (
     trigger_optimization,
     apply_optimization,
@@ -78,36 +80,9 @@ class TriggerRequest(BaseModel):
     deploy_target: str | None = None
 
 
-class SchemaAccessStatus(BaseModel):
-    catalog: str
-    schema_name: str
-    read_granted: bool
-    grant_sql: str | None = None
-
-
-class PermissionCheckResponse(BaseModel):
-    sp_display_name: str
-    sp_application_id: str = ""
-    sp_has_manage: bool
-    schemas: list[SchemaAccessStatus]
-    # Fail-closed default: availability must be proven by the probe, not assumed.
-    prompt_registry_available: bool = False
-    prompt_registry_error: str | None = None
-    # Stable reason code for UI/alerting; paired with prompt_registry_error.
-    # One of: ok | feature_not_enabled | missing_uc_permissions |
-    # registry_path_not_found | missing_sp_scope | vendor_bug |
-    # unknown (legacy) | probe_error.
-    prompt_registry_reason_code: str | None = None
-    # Raw vendor error code (e.g. ENDPOINT_NOT_FOUND). Surfaced verbatim in
-    # the UI mono block so the next unmapped code is visible without a log
-    # dive. May be None when the probe succeeded or raised a non-SDK error.
-    prompt_registry_error_code: str | None = None
-    # Two-axis actionability: "customer" (admin flips toggle / grants perms)
-    # vs. "platform" (our bug or Databricks' bug). Drives UI chip color and
-    # alert routing. None = unknown (treated as platform by the UI).
-    prompt_registry_actionable_by: str | None = None
-    can_start: bool
-    errors: list[str] = []
+# PermissionCheckResponse + SchemaAccessStatus now live in `backend.models`
+# alongside the rest of the API Pydantic shapes (mirrored one-to-one on the
+# frontend as `GSOPermissionCheck`). See AGENTS.md §Models for the contract.
 
 
 # ---------------------------------------------------------------------------
@@ -281,53 +256,25 @@ _finite = safe_finite
 _safe_json_parse = safe_json_parse
 
 
+# Bug #2 — canonical per-iteration accuracy derivation lives in
+# `genie_space_optimizer.common.accuracy.derived_accuracy` (mirrors the
+# prompt-registry pattern: one implementation, thin re-exports at the edge).
+# Calls here pass this module's logger so drift lines keep showing up under
+# `backend.routers.auto_optimize`, preserving existing log-scraping rules
+# and the caplog-scoped unit tests in `test_auto_optimize_router.py`.
 def _derived_accuracy(
     iter_row: dict | None,
     *,
     run_id: str | None = None,
     iteration: int | None = None,
 ) -> float | None:
-    """Bug #2 — canonical per-iteration accuracy percentage.
-
-    Prefers `correct_count / evaluated_count * 100` (the same math the frontend
-    uses for tab labels via `lib/eval-counts.ts`) so KPI cards and tab labels
-    agree to the decimal. Falls back to the stored `overall_accuracy` only
-    when the count columns are absent (legacy rows written before the
-    `evaluated_count` / `excluded_count` migration).
-
-    When both derived and stored exist and differ by more than 0.5pp, emit an
-    INFO-level drift log so oncall can spot stale `overall_accuracy` rows
-    without page noise. Derived wins — stored is effectively a back-pointer.
-    """
-    if not iter_row:
-        return None
-
-    total = _safe_int(iter_row.get("total_questions")) or 0
-    correct = _safe_int(iter_row.get("correct_count")) or 0
-    excluded = _safe_int(iter_row.get("excluded_count")) or 0
-    evaluated_raw = iter_row.get("evaluated_count")
-    evaluated = _safe_int(evaluated_raw) if evaluated_raw is not None else None
-    if evaluated is None:
-        derived_denom = total - excluded
-        evaluated = derived_denom if derived_denom >= 0 else total
-
-    stored = _safe_float(iter_row.get("overall_accuracy"))
-
-    if evaluated > 0 and evaluated_raw is not None:
-        # Only trust the derived value when we actually have evaluated_count
-        # from the row — otherwise we're just dividing by total_questions
-        # which IS the original Bug #2 regression.
-        derived = round(100.0 * correct / evaluated, 2)
-        if stored is not None and abs(derived - stored) > 0.5:
-            logger.info(
-                "gso.runs.accuracy_drift run_id=%s iteration=%s "
-                "stored_overall_accuracy=%.2f derived=%.2f correct=%d evaluated=%d "
-                "(Bug #2 drift — reading derived; row may need backfill)",
-                run_id, iteration, stored, derived, correct, evaluated,
-            )
-        return derived
-
-    return stored
+    """Thin re-export of ``common.accuracy.derived_accuracy`` with this
+    module's logger pre-bound. Kept as an underscore-prefixed alias so
+    existing call sites and test imports (``from backend.routers.auto_optimize
+    import _derived_accuracy``) continue to work unchanged."""
+    return _canonical_derived_accuracy(
+        iter_row, run_id=run_id, iteration=iteration, logger=logger,
+    )
 
 
 def _parse_detail(stage: dict) -> dict:

@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from ..constants import ACTIVE_RUN_STATUSES, TERMINAL_JOB_STATES
 from ..core import Dependencies, create_router
 from ..utils import ensure_utc_iso, safe_finite, safe_float, safe_int, safe_json_parse, scrub_nan_inf
+from ...common.accuracy import derived_accuracy as _canonical_derived_accuracy
 from .spaces import _genie_client
 from ..models import (
     ActionResponse,
@@ -1248,56 +1249,23 @@ def _resolve_eval_counts(iter_row: dict | None) -> dict[str, int]:
     }
 
 
+# Bug #2 — canonical per-iteration accuracy derivation lives in
+# `genie_space_optimizer.common.accuracy.derived_accuracy`. Thin re-export
+# here so existing call sites and test imports (``from
+# genie_space_optimizer.backend.routes.runs import _derived_accuracy``)
+# continue to work, and so drift logs still appear under this module's
+# logger (the caplog-scoped unit tests rely on that).
 def _derived_accuracy(
     iter_row: dict | None,
     *,
     run_id: str | None = None,
     iteration: int | None = None,
 ) -> float | None:
-    """Return the canonical per-iteration accuracy percentage.
-
-    Bug #2 contract: the UI must see accuracy that matches correct/evaluated
-    to the decimal point. We prefer deriving from `_resolve_eval_counts` and
-    fall back to stored `overall_accuracy` only when the counts are absent
-    (legacy rows written before the denominator migration).
-
-    When both values are present and disagree by more than 0.5pp, emit an
-    INFO-level drift log so oncall can spot stale `overall_accuracy` rows
-    without page noise. The derived value wins — stored `overall_accuracy`
-    is effectively a read-only back-pointer.
-    """
-    if not iter_row:
-        return None
-
-    stored = _safe_float(iter_row.get("overall_accuracy"))
-
-    # Only trust derived math when `evaluated_count` was explicitly persisted
-    # on the row. Otherwise `_resolve_eval_counts` falls back to
-    # `total - excluded`, which collapses to `total` on rows where
-    # `excluded_count` is also absent — and that IS the pre-Bug-#2
-    # regression (dividing by total instead of evaluated). Better to honour
-    # the stored overall_accuracy for legacy rows than to silently regress.
-    if iter_row.get("evaluated_count") is None:
-        return stored
-
-    counts = _resolve_eval_counts(iter_row)
-    if counts["evaluated"] <= 0:
-        return stored
-
-    derived = round(100.0 * counts["correct"] / counts["evaluated"], 2)
-    if stored is not None and abs(derived - stored) > 0.5:
-        logger.info(
-            "gso.runs.accuracy_drift run_id=%s iteration=%s "
-            "stored_overall_accuracy=%.2f derived=%.2f correct=%d evaluated=%d "
-            "(Bug #2 drift — reading derived; row may need backfill)",
-            run_id,
-            iteration,
-            stored,
-            derived,
-            counts["correct"],
-            counts["evaluated"],
-        )
-    return derived
+    """Thin re-export of ``common.accuracy.derived_accuracy`` with this
+    module's logger pre-bound. See the shared module for the contract."""
+    return _canonical_derived_accuracy(
+        iter_row, run_id=run_id, iteration=iteration, logger=logger,
+    )
 
 
 def _iteration_scores(iter_row: dict | None) -> dict[str, float | None]:
@@ -1918,12 +1886,18 @@ def get_iterations(run_id: str, config: Dependencies.Config):
             scores = {}
 
         _counts = _resolve_eval_counts(row)
+        # Bug #2 (PR #79 review #4) — route overallAccuracy through the
+        # canonical derivation so the iteration strip agrees with the KPI
+        # card and tab label. Falls back to stored overall_accuracy for
+        # legacy rows; _finite catches NaN/Inf and Nones on that fallback.
+        _row_iter = _safe_int(row.get("iteration"))
+        _derived = _derived_accuracy(row, run_id=run_id, iteration=_row_iter)
         results.append(
             IterationSummary(
-                iteration=_safe_int(row.get("iteration")) or 0,
+                iteration=_row_iter or 0,
                 lever=_safe_int(row.get("lever")),
                 evalScope=str(row.get("eval_scope", "full")).lower(),
-                overallAccuracy=_finite(row.get("overall_accuracy", 0)),
+                overallAccuracy=_finite(_derived if _derived is not None else row.get("overall_accuracy", 0)),
                 totalQuestions=_counts["total"],
                 evaluatedCount=_counts["evaluated"],
                 correctCount=_counts["correct"],
@@ -2251,7 +2225,6 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
             continue
 
         scores = _iteration_scores(full_row)
-        accuracy = _finite(full_row.get("overall_accuracy", 0))
         _iter_counts = _resolve_eval_counts(full_row)
         total_q = _iter_counts["total"]
         correct_c = _iter_counts["correct"]
@@ -2259,18 +2232,13 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
         excluded_c = _iter_counts["excluded"]
         quarantined_c = _iter_counts["quarantined"]
 
-        # Cross-check: if overall_accuracy doesn't match correct/evaluated math
-        # (within 0.5pp), emit a consistency warning. Logged at info level to
-        # avoid pager noise on old rows that don't have evaluated_count yet.
-        if evaluated_c > 0 and accuracy > 0:
-            _expected = round(100.0 * correct_c / evaluated_c, 1)
-            if abs(_expected - round(accuracy, 1)) > 0.5:
-                logger.info(
-                    "Iteration detail accuracy mismatch: run_id=%s iteration=%d "
-                    "overall_accuracy=%.2f correct=%d evaluated=%d expected=%.2f "
-                    "(old row or denominator drift — see Bug #2 contract)",
-                    run_id, it_num, accuracy, correct_c, evaluated_c, _expected,
-                )
+        # Bug #2 (PR #79 review #4) — serve the derived accuracy so the
+        # iteration detail tile agrees with the KPI card and iteration
+        # strip. `_derived_accuracy` itself emits the drift log (same
+        # threshold, same logger) on legacy rows, so we no longer need
+        # a parallel mismatch check here.
+        _derived = _derived_accuracy(full_row, run_id=run_id, iteration=it_num)
+        accuracy = _finite(_derived if _derived is not None else full_row.get("overall_accuracy", 0))
         mlflow_rid = full_row.get("mlflow_run_id")
         model_id = full_row.get("model_id")
         timestamp = str(full_row.get("timestamp", ""))

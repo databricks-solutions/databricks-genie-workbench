@@ -568,9 +568,33 @@ def _probe_write(uc_schema: str, probe_name_hint: str | None = None) -> ProbeRes
             diagnostics={"mode": "write"},
         )
 
+    # Mirror the validation from ``_build_uc_filter_string`` (and the read
+    # probe path) so both halves of ``uc_schema`` are SQL-identifier-safe
+    # before we interpolate them into the ``DROP FUNCTION`` fallback inside
+    # ``_cleanup_probe_prompt``. ``mlflow.genai.register_prompt`` will itself
+    # reject a bad identifier, but the fallback cleanup runs on `finally`
+    # and can still see the raw value — so we fail closed here.
+    _catalog, _, _schema = uc_schema.partition(".")
+    if not _UC_IDENT_RE.match(_catalog) or not _UC_IDENT_RE.match(_schema):
+        return ProbeResult(
+            available=False,
+            reason_code=REASON_PROBE_ERROR,
+            actionable_by=ACTIONABLE_BY_PLATFORM,
+            user_message=(
+                "Prompt Registry write probe received a UC schema with "
+                "unexpected characters; refusing to proceed."
+            ),
+            raw_error=f"invalid uc_schema identifier: {uc_schema!r}",
+            diagnostics={"mode": "write"},
+        )
+
     import mlflow  # type: ignore
 
     suffix = probe_name_hint or uuid.uuid4().hex[:8]
+    # Restrict the suffix to the same identifier charset so the final FQN
+    # stays safe under the DROP FUNCTION fallback. UUID hex always passes.
+    if not _UC_IDENT_RE.match(suffix):
+        suffix = uuid.uuid4().hex[:8]
     probe_name = f"{uc_schema}.genie_opt_probe_{suffix}"
 
     try:

@@ -218,6 +218,40 @@ def test_derived_accuracy_no_drift_log_when_in_tolerance(caplog) -> None:
     assert not drift_logs
 
 
+def test_derived_accuracy_ignores_non_numeric_evaluated_count() -> None:
+    """PR #79 review #5 — if ``evaluated_count`` arrives as a non-numeric
+    value (e.g. a stringly-typed legacy row written outside the normal
+    pipeline), the previous guard `evaluated_raw is not None` would still
+    fall through to the derived denominator and divide by `total - excluded`.
+    That IS the Bug #2 regression. Post-fix: parse first, gate on the
+    parsed result → unparseable = honour stored."""
+    from genie_space_optimizer.backend.routes.runs import _derived_accuracy
+
+    row = {
+        "total_questions": 22,
+        "correct_count": 16,
+        "excluded_count": 3,
+        "evaluated_count": "unknown",  # non-numeric, not None
+        "overall_accuracy": 84.21,
+    }
+    # Must return stored, NOT round(100 * 16 / (22 - 3), 2) == 84.21 by
+    # coincidence. Bump correct + stored so the two answers diverge, so
+    # the test actually distinguishes the two branches.
+    row["correct_count"] = 10
+    row["overall_accuracy"] = 55.55
+    assert _derived_accuracy(row, run_id="r1", iteration=0) == 55.55
+
+
+def test_derived_accuracy_trusts_zero_evaluated_returns_stored() -> None:
+    """All benchmarks excluded/quarantined — evaluated_count is legitimately 0.
+    Must not divide by zero; must fall back to stored overall_accuracy."""
+    from genie_space_optimizer.backend.routes.runs import _derived_accuracy
+
+    row = _iter_row(total=14, correct=0, evaluated=0, excluded=14)
+    row["overall_accuracy"] = 0.0
+    assert _derived_accuracy(row, run_id="r1", iteration=0) == 0.0
+
+
 def test_get_baseline_and_best_accuracy_uses_derived_values() -> None:
     """PipelineRun.baselineScore / optimizedScore must match what the tab
     labels compute, not the stored overall_accuracy."""

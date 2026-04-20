@@ -105,3 +105,53 @@ class CreateSpaceResponse(BaseModel):
     space_id: str
     display_name: str
     space_url: str
+
+
+# ── Auto-Optimize preflight permissions ──────────────────────────────────
+# Mirrored on the frontend as `GSOPermissionCheck` in `frontend/src/types/index.ts`.
+# Both halves must stay in sync — update together (see AGENTS.md §Models).
+
+
+class SchemaAccessStatus(BaseModel):
+    """Per-schema access summary returned by the Auto-Optimize preflight.
+
+    Emitted once per UC schema the job SP would read from. ``grant_sql`` is
+    populated when ``read_granted`` is ``False`` so the UI can show a
+    one-click remediation hint."""
+
+    catalog: str
+    schema_name: str
+    read_granted: bool
+    grant_sql: str | None = None
+
+
+class PermissionCheckResponse(BaseModel):
+    """Payload for ``GET /auto-optimize/permissions``.
+
+    Shape contract for the Auto-Optimize permissions preflight. The UI's
+    PermissionAlert consumes the ``prompt_registry_*`` fields to decide
+    whether to show the "Prompt Registry disabled" banner vs. a grant-based
+    remediation; the /trigger endpoint re-checks the same shape."""
+
+    sp_display_name: str
+    sp_application_id: str = ""
+    sp_has_manage: bool
+    schemas: list[SchemaAccessStatus]
+    # Fail-closed default: availability must be proven by the probe, not assumed.
+    prompt_registry_available: bool = False
+    prompt_registry_error: str | None = None
+    # Stable reason code for UI/alerting; paired with prompt_registry_error.
+    # One of: ok | feature_not_enabled | missing_uc_permissions |
+    # registry_path_not_found | missing_sp_scope | vendor_bug |
+    # unknown (legacy) | probe_error.
+    prompt_registry_reason_code: str | None = None
+    # Raw vendor error code (e.g. ENDPOINT_NOT_FOUND). Surfaced verbatim in
+    # the UI mono block so the next unmapped code is visible without a log
+    # dive. May be None when the probe succeeded or raised a non-SDK error.
+    prompt_registry_error_code: str | None = None
+    # Two-axis actionability: "customer" (admin flips toggle / grants perms)
+    # vs. "platform" (our bug or Databricks' bug). Drives UI chip color and
+    # alert routing. None = unknown (treated as platform by the UI).
+    prompt_registry_actionable_by: str | None = None
+    can_start: bool
+    errors: list[str] = []

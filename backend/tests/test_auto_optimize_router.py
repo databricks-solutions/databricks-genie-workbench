@@ -471,6 +471,21 @@ def test_derived_accuracy_logs_drift(caplog) -> None:
     assert "run-xyz" in drift_logs[0].getMessage()
 
 
+def test_derived_accuracy_ignores_non_numeric_evaluated_count() -> None:
+    """PR #79 review #5 — non-numeric evaluated_count must not slip past the
+    guard into the derived-denominator branch."""
+    from backend.routers.auto_optimize import _derived_accuracy
+
+    row = {
+        "total_questions": 22,
+        "correct_count": 10,
+        "excluded_count": 3,
+        "evaluated_count": "unknown",
+        "overall_accuracy": 55.55,
+    }
+    assert _derived_accuracy(row, run_id="r1", iteration=0) == 55.55
+
+
 def test_derived_accuracy_handles_zero_evaluated() -> None:
     """evaluated_count = 0 must return None, not raise a ZeroDivisionError."""
     from backend.routers.auto_optimize import _derived_accuracy

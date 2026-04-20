@@ -6,6 +6,7 @@ Unified Databricks Genie Space management platform combining:
 - GenieIQ: Org-wide IQ scoring, Lakebase persistence, admin dashboard
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -177,8 +178,11 @@ async def startup():
     await _ensure_table()
     _ensure_gso_job_run_as()
     try:
+        # Bug #2 schema probe — synchronous Delta SELECT (a few seconds worst
+        # case on a cold warehouse). Run in a worker thread so we don't pin
+        # the event loop during startup and stall healthcheck responses.
         from backend.routers.auto_optimize import probe_iterations_schema
-        probe_iterations_schema()
+        await asyncio.to_thread(probe_iterations_schema)
     except Exception:
         logger.warning("iterations schema probe failed", exc_info=True)
 
