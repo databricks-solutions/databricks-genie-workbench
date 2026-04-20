@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -24,35 +25,41 @@ _lakebase_available = False
 _schema_retry_after: float = 0  # timestamp after which we retry schema creation
 _token_refresh_task: asyncio.Task | None = None
 _current_token: str | None = None
+_lakebase_instance_name: str | None = None
 _lakebase_autoscaling_endpoint: str | None = None  # autoscaling endpoint path for credential generation
 _lakebase_project_name: str | None = None  # extracted once from endpoint path for logging
 _conn_params: dict | None = None  # stored at init for pool recreation on token refresh
 
 
 def _generate_credential() -> tuple[str, str] | None:
-    """Generate Lakebase credentials via the Autoscaling Postgres credential API.
+    """Generate Lakebase credentials via the Databricks database credential API.
 
-    Genie Workbench is Autoscaling-only: credentials are minted against the
-    `projects/<p>/branches/<b>/endpoints/<e>` path the Apps platform injects
-    as LAKEBASE_ENDPOINT (from the `postgres` resource binding in
-    databricks.yml). Tokens expire after 1 hour; the background refresh loop
-    rotates them.
+    Supports both provisioned Lakebase (database.generate_database_credential)
+    and autoscaling Lakebase (postgres.generate_database_credential).
+    Tokens expire after 1 hour.
     """
     global _current_token
     try:
         from backend.services.auth import get_service_principal_client
         client = get_service_principal_client()
 
-        if not _lakebase_autoscaling_endpoint:
-            logger.info(
-                "Autoscaling endpoint path not set — cannot generate credential"
+        # Autoscaling Lakebase: use postgres API with endpoint path
+        if _lakebase_autoscaling_endpoint:
+            cred = client.postgres.generate_database_credential(
+                endpoint=_lakebase_autoscaling_endpoint,
             )
-            return None
-
-        cred = client.postgres.generate_database_credential(
-            endpoint=_lakebase_autoscaling_endpoint,
-        )
-        label = f"autoscaling endpoint '{_lakebase_project_name}'"
+            label = f"autoscaling endpoint '{_lakebase_project_name}'"
+        else:
+            # Provisioned Lakebase: use database API with instance name
+            instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME", "")
+            if not instance_name:
+                logger.info("LAKEBASE_INSTANCE_NAME not set — cannot generate database credential")
+                return None
+            cred = client.database.generate_database_credential(
+                request_id=str(uuid.uuid4()),
+                instance_names=[instance_name],
+            )
+            label = f"instance '{instance_name}'"
 
         token = cred.token
         if not token:
@@ -208,89 +215,79 @@ async def _maybe_retry_schema():
 async def init_pool():
     """Initialize asyncpg connection pool. Falls back gracefully if unavailable.
 
-    The Databricks Apps platform auto-injects connection env vars from the
-    declarative `postgres` resource binding in databricks.yml:
-      * PGHOST        — DNS hostname of the Autoscaling endpoint
-      * PGPORT        — typically 5432
-      * PGDATABASE    — postgres database name (e.g. databricks_postgres)
-      * PGUSER        — app service principal client_id
-      * PGSSLMODE     — require
-      * LAKEBASE_ENDPOINT — `projects/<p>/branches/<b>/endpoints/<e>` used
-                            to mint short-lived OAuth passwords
-
-    Legacy LAKEBASE_HOST/LAKEBASE_DATABASE env vars are still honoured for
-    backward compatibility with older deployments.
+    When Lakebase is connected via the Databricks Apps UI, the platform injects
+    LAKEBASE_HOST and LAKEBASE_PASSWORD as environment variables. Without these,
+    the app uses in-memory storage (ephemeral per deployment).
     """
-    global _pool, _lakebase_available, _token_refresh_task, _lakebase_autoscaling_endpoint, _lakebase_project_name, _conn_params
+    global _pool, _lakebase_available, _token_refresh_task, _lakebase_instance_name, _lakebase_autoscaling_endpoint, _lakebase_project_name, _conn_params
 
-    host = os.environ.get("PGHOST") or os.environ.get("LAKEBASE_HOST")
+    host = os.environ.get("LAKEBASE_HOST")
     if not host:
-        logger.info(
-            "PGHOST/LAKEBASE_HOST not set — using in-memory fallback. "
-            "Add a `postgres` resource in databricks.yml to enable persistence."
-        )
+        logger.info("LAKEBASE_HOST not set - using in-memory fallback. "
+                     "Connect Lakebase via the Databricks Apps UI for persistent storage.")
         return
 
-    # `LAKEBASE_ENDPOINT` is the Autoscaling resource path used to generate
-    # short-lived OAuth credentials. When LAKEBASE_HOST (legacy) contains the
-    # resource path itself, treat it as the endpoint and resolve to DNS.
-    endpoint_path = os.environ.get("LAKEBASE_ENDPOINT")
-    if not endpoint_path and host.startswith("projects/"):
-        endpoint_path = host
-    if endpoint_path:
-        _lakebase_autoscaling_endpoint = endpoint_path
-        _lakebase_project_name = endpoint_path.split("/")[1]
-
-    if host.startswith("projects/"):
+    # Resolve hostname when LAKEBASE_HOST is a resource path (not a DNS name).
+    # The Apps platform injects either:
+    #   - Autoscaling: "projects/<name>/branches/<branch>/endpoints/<endpoint>"
+    #   - Provisioned: a resource reference that doesn't end in ".com"
+    if host.startswith("projects/") or "." not in host:
         from backend.services.auth import get_service_principal_client
         client = get_service_principal_client()
 
-        logger.info(f"PGHOST is a resource path '{host}', resolving via Lakebase Autoscaling API...")
-        try:
-            endpoint = client.postgres.get_endpoint(name=host)
-            hosts = endpoint.status and endpoint.status.hosts
-            resolved = hosts.host if hosts else None
-            if resolved:
-                logger.info(f"Resolved Lakebase Autoscaling host: {resolved}")
-                host = resolved
-            else:
-                logger.warning("Autoscaling endpoint has no host — endpoint may be stopped or DNS not yet propagated")
+        # Try Lakebase Autoscaling first (projects/... path format)
+        if host.startswith("projects/"):
+            logger.info(f"LAKEBASE_HOST is '{host}', resolving via Lakebase Autoscaling API...")
+            _lakebase_autoscaling_endpoint = host  # store for credential generation
+            _lakebase_project_name = host.split("/")[1]  # extract once for logging
+            try:
+                endpoint = client.postgres.get_endpoint(name=host)
+                hosts = endpoint.status and endpoint.status.hosts
+                resolved = hosts.host if hosts else None
+                if resolved:
+                    logger.info(f"Resolved Lakebase Autoscaling host: {resolved}")
+                    host = resolved
+                else:
+                    logger.warning("Autoscaling endpoint has no host — endpoint may be stopped or DNS not yet propagated")
+                    return
+            except Exception as e:
+                logger.warning(f"Could not resolve Lakebase Autoscaling endpoint: {e}")
                 return
-        except Exception as e:
-            logger.warning(f"Could not resolve Lakebase Autoscaling endpoint: {e}")
-            return
-    elif "." not in host:
-        logger.warning(
-            "PGHOST=%r does not look like an Autoscaling endpoint or DNS "
-            "name; using in-memory fallback.",
-            host,
-        )
-        return
+        else:
+            # Provisioned Lakebase: resolve from instance name
+            instance_name = os.environ.get("LAKEBASE_INSTANCE_NAME", "")
+            if not instance_name:
+                logger.warning("LAKEBASE_HOST requires resolution but LAKEBASE_INSTANCE_NAME is not set")
+                return
+            logger.info(f"LAKEBASE_HOST is '{host}', resolving from instance '{instance_name}'...")
+            try:
+                instance = client.database.get_database_instance(name=instance_name)
+                resolved = instance.read_write_dns
+                if resolved:
+                    logger.info(f"Resolved Lakebase host: {resolved}")
+                    host = resolved
+                else:
+                    logger.warning("Instance has no read_write_dns — is it stopped?")
+                    return
+            except Exception as e:
+                logger.warning(f"Could not resolve Lakebase host from instance: {e}")
+                return
 
-    user = os.environ.get("PGUSER") or os.environ.get("LAKEBASE_USER", "")
     password = os.environ.get("LAKEBASE_PASSWORD")
+    user = os.environ.get("LAKEBASE_USER", "postgres")
 
     if not password:
+        # Generate credentials via Databricks database credential API
         cred = _generate_credential()
         if cred:
-            cred_user, password = cred
-            # Prefer the platform-injected PGUSER if set; otherwise use the
-            # user returned by the credential API.
-            user = user or cred_user
+            user, password = cred
         else:
-            logger.warning(
-                "Lakebase host is set but no password could be minted — "
-                "using in-memory fallback. Ensure LAKEBASE_ENDPOINT is set "
-                "(the Apps platform injects it from the `postgres` resource)."
-            )
+            logger.warning("LAKEBASE_HOST is set but no password available - using in-memory fallback. "
+                           "Ensure the Lakebase postgres resource is properly connected in the Apps UI.")
             return
 
-    port = int(os.environ.get("PGPORT") or os.environ.get("LAKEBASE_PORT", "5432"))
-    database = (
-        os.environ.get("PGDATABASE")
-        or os.environ.get("LAKEBASE_DATABASE")
-        or "databricks_postgres"
-    )
+    port = int(os.environ.get("LAKEBASE_PORT", "5432"))
+    database = os.environ.get("LAKEBASE_DATABASE", "databricks_postgres")
     _conn_params = {"host": host, "port": port, "database": database}
 
     logger.info(f"Connecting to Lakebase: host={host}, user={user[:12]}..., port={port}, db={database}")
