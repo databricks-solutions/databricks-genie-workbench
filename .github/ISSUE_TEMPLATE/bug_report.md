@@ -24,11 +24,6 @@ What you expected to happen.
 
 If applicable, add screenshots to help explain the problem.
 
-## Environment
-
-- Browser: [e.g. Chrome 124]
-- Workspace region: [e.g. us-west-2, do NOT include the workspace URL]
-
 ## Additional context
 
 Add any other context about the problem here.
