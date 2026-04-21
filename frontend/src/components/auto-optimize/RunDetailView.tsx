@@ -9,8 +9,10 @@ import { PipelineDetailsModal } from "@/components/auto-optimize/PipelineDetails
 import {
   getAutoOptimizeRun,
   getAutoOptimizeQuestionResults,
+  getAutoOptimizeIterations,
 } from "@/lib/api"
-import type { GSOPipelineRun, GSOQuestionDetail } from "@/types"
+import type { GSOPipelineRun, GSOQuestionDetail, GSOIterationResult } from "@/types"
+import { evalCountsFromIteration } from "@/lib/eval-counts"
 
 interface RunDetailViewProps {
   runId: string
@@ -34,6 +36,7 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
 
 export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
   const [run, setRun] = useState<GSOPipelineRun | null>(null)
+  const [iterations, setIterations] = useState<GSOIterationResult[]>([])
   const [activeTab, setActiveTab] = useState<EvalTab>("final")
   const [baselineQuestions, setBaselineQuestions] = useState<GSOQuestionDetail[]>([])
   const [finalQuestions, setFinalQuestions] = useState<GSOQuestionDetail[]>([])
@@ -59,6 +62,11 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
               .catch(() => {})
           )
         }
+        fetches.push(
+          getAutoOptimizeIterations(runId)
+            .then(setIterations)
+            .catch(() => {})
+        )
         return Promise.all(fetches)
       })
       .catch(() => {})
@@ -68,28 +76,34 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
     setSelectedQuestionId(null)
   }, [activeTab])
 
+  // Bug #2 — DO NOT recompute the denominator from `questions.filter(...)`.
+  // The tab labels, the header "X% accurate" line, and the ScoreSummary
+  // cards all derive from the server's canonical counts (`evaluated_count`
+  // + `correct_count`) so tabs and cards agree to the decimal. See
+  // `lib/eval-counts.ts` and the AGENTS.md Bug #2 invariant.
   const questions = activeTab === "baseline" ? baselineQuestions : finalQuestions
   const selectedQuestion = questions.find((q) => q.question_id === selectedQuestionId) ?? null
 
-  const nonExcluded = questions.filter((q) => q.passed !== null)
-  const passingCount = nonExcluded.filter((q) => q.passed === true).length
-  const totalCount = nonExcluded.length
+  const fullIterations = iterations.filter(
+    (it) => String(it.eval_scope ?? "full").toLowerCase() === "full",
+  )
+  const baselineIterRow = run?.baselineIteration != null
+    ? fullIterations.find((it) => it.iteration === run.baselineIteration)
+    : fullIterations.find((it) => it.iteration === 0)
+  const finalIterRow = run?.bestIteration != null
+    ? fullIterations.find((it) => it.iteration === run.bestIteration)
+    : null
 
-  const baselineNonExcluded = baselineQuestions.filter((q) => q.passed !== null)
-  const baselinePassing = baselineNonExcluded.filter((q) => q.passed === true).length
-  const finalNonExcluded = finalQuestions.filter((q) => q.passed !== null)
-  const finalPassing = finalNonExcluded.filter((q) => q.passed === true).length
+  const baselineCounts = evalCountsFromIteration(baselineIterRow)
+  const finalCounts = evalCountsFromIteration(finalIterRow)
+  const activeCounts = activeTab === "baseline" ? baselineCounts : finalCounts
 
   if (!run) {
     return <div className="py-8 text-center text-muted text-sm">Loading run details...</div>
   }
 
-  const baselineAccuracy = baselineNonExcluded.length > 0
-    ? Math.round((baselinePassing / baselineNonExcluded.length) * 100)
-    : null
-  const finalAccuracy = finalNonExcluded.length > 0
-    ? Math.round((finalPassing / finalNonExcluded.length) * 100)
-    : null
+  const baselineAccuracy = baselineCounts.accuracyPct
+  const finalAccuracy = finalCounts.accuracyPct
 
   return (
     <div className="space-y-4">
@@ -113,9 +127,9 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
                 {run.status}
               </Badge>
             </div>
-            {totalCount > 0 && (
+            {activeCounts.evaluated > 0 && activeCounts.accuracyPct != null && (
               <p className="text-lg font-semibold text-primary mt-1">
-                {((passingCount / totalCount) * 100).toFixed(0)}% accurate ({passingCount}/{totalCount})
+                {activeCounts.accuracyPct.toFixed(1)}% accurate ({activeCounts.correct}/{activeCounts.evaluated})
               </p>
             )}
           </div>
@@ -169,7 +183,7 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
         >
           Baseline Evaluation
           {baselineAccuracy != null && (
-            <span className="ml-2 text-xs opacity-75">({baselineAccuracy}%)</span>
+            <span className="ml-2 text-xs opacity-75">({baselineAccuracy.toFixed(1)}%)</span>
           )}
         </button>
         <button
@@ -182,7 +196,7 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
         >
           Final Evaluation
           {finalAccuracy != null && (
-            <span className="ml-2 text-xs opacity-75">({finalAccuracy}%)</span>
+            <span className="ml-2 text-xs opacity-75">({finalAccuracy.toFixed(1)}%)</span>
           )}
         </button>
       </div>

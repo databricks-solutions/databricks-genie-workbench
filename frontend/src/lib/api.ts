@@ -40,12 +40,61 @@ const LONG_TIMEOUT = 300_000 // 5 minutes for LLM operations (optimization can b
 
 class ApiError extends Error {
   status: number
+  /**
+   * Structured error payload from the backend, when the router raises
+   * `HTTPException(detail={...})`. Callers that care about fields like
+   * `reason_code`, `error_code`, `actionable_by`, or `prompt_registry_available`
+   * (e.g. the Auto-Optimize PermissionAlert) should read from here rather
+   * than parsing `message`. `null` when the response didn't carry one, or
+   * when `detail` was already a string.
+   */
+  detail: Record<string, unknown> | null
 
-  constructor(message: string, status: number) {
+  constructor(
+    message: string,
+    status: number,
+    detail: Record<string, unknown> | null = null,
+  ) {
     super(message)
     this.name = "ApiError"
     this.status = status
+    this.detail = detail
   }
+}
+
+/**
+ * Pull a human-readable string out of a FastAPI `detail` payload.
+ *
+ * FastAPI routers can raise `HTTPException(detail=...)` with either:
+ *   - a string       → use directly
+ *   - an object      → prefer a well-known message field, else JSON stringify
+ *     so we never surface the JavaScript default `"[object Object]"` from
+ *     `new Error(obj)` coercion.
+ *   - a list of pydantic validation errors (422) → join their `msg` fields.
+ *
+ * Keep this pure / sync; it runs inside an error path and must not throw.
+ */
+export function extractDetailMessage(detail: unknown, fallback: string): string {
+  if (typeof detail === "string" && detail.length > 0) return detail
+  if (Array.isArray(detail)) {
+    const msgs = detail
+      .map((d) => (d && typeof d === "object" && "msg" in d ? String((d as { msg: unknown }).msg) : ""))
+      .filter(Boolean)
+    if (msgs.length > 0) return msgs.join("; ")
+  }
+  if (detail && typeof detail === "object") {
+    const obj = detail as Record<string, unknown>
+    for (const key of ["error", "user_message", "message", "detail"] as const) {
+      const v = obj[key]
+      if (typeof v === "string" && v.length > 0) return v
+    }
+    try {
+      return JSON.stringify(detail)
+    } catch {
+      return fallback
+    }
+  }
+  return fallback
 }
 
 /**
@@ -69,7 +118,12 @@ async function fetchWithTimeout<T>(
       const error = await response
         .json()
         .catch(() => ({ detail: response.statusText }))
-      throw new ApiError(error.detail || "An error occurred", response.status)
+      const message = extractDetailMessage(error.detail, "An error occurred")
+      const structured =
+        error.detail && typeof error.detail === "object" && !Array.isArray(error.detail)
+          ? (error.detail as Record<string, unknown>)
+          : null
+      throw new ApiError(message, response.status, structured)
     }
 
     return response.json()
@@ -391,8 +445,14 @@ export async function getAutoOptimizeHealth(): Promise<{ configured: boolean; is
   return fetchWithTimeout<{ configured: boolean; issues: string[] }>(`${API_BASE}/auto-optimize/health`)
 }
 
-export async function getAutoOptimizePermissions(spaceId: string): Promise<GSOPermissionCheck> {
-  return fetchWithTimeout<GSOPermissionCheck>(`${API_BASE}/auto-optimize/permissions/${spaceId}`)
+export async function getAutoOptimizePermissions(
+  spaceId: string,
+  options?: { refresh?: boolean },
+): Promise<GSOPermissionCheck> {
+  const qs = options?.refresh ? "?refresh=true" : ""
+  return fetchWithTimeout<GSOPermissionCheck>(
+    `${API_BASE}/auto-optimize/permissions/${spaceId}${qs}`,
+  )
 }
 
 export async function triggerAutoOptimize(request: GSOTriggerRequest): Promise<GSOTriggerResponse> {

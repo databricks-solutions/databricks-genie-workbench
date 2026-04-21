@@ -20,7 +20,7 @@ import re
 import time
 import traceback
 from difflib import get_close_matches
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Union
@@ -953,12 +953,117 @@ def _normalize_expected_asset(raw: Any, expected_sql: str) -> str:
 _ARBITER_CORRECT_VERDICTS = frozenset({"genie_correct", "both_correct"})
 
 
+@dataclass
+class RowExclusion:
+    """Why a single benchmark row was dropped from the accuracy denominator.
+
+    Feeds the UI drill-down that answers "where did this question go?" — see
+    Bug #3 in the plan. ``reason_code`` is a stable enum (UI can swap copy);
+    ``reason_detail`` is a human sentence that may include the underlying SQL
+    error message for operator debugging.
+    """
+
+    question_id: str
+    question_text: str | None = None
+    reason_code: str = ""
+    reason_detail: str = ""
+
+
+@dataclass
+class ArbiterAdjustedResult:
+    """Return value of ``_compute_arbiter_adjusted_accuracy``.
+
+    Adding this type replaces a brittle 4-tuple and gives the persistence and
+    API layers a single source of truth for the denominator (``evaluated_count``)
+    of ``overall_accuracy``.
+    """
+
+    accuracy_pct: float
+    correct_count: int
+    evaluated_count: int
+    excluded_count: int
+    failure_ids: list[str] = field(default_factory=list)
+    exclusions: list[RowExclusion] = field(default_factory=list)
+
+
+# Stable per-row exclusion reason codes. Keep in sync with
+# ui/lib/exclusion-reason.ts.
+EXCLUSION_GT_EXCLUDED = "gt_excluded"
+EXCLUSION_BOTH_EMPTY = "both_empty"
+EXCLUSION_GENIE_RESULT_UNAVAILABLE = "genie_result_unavailable"
+EXCLUSION_QUARANTINED = "quarantined"
+EXCLUSION_TEMPORAL_STALE = "temporal_stale"
+
+
+def _extract_row_signals(row: dict) -> dict[str, Any]:
+    """Extract the commonly-needed fields from a raw evaluation row.
+
+    Centralizes the "which key holds what" logic (inputs/question_id vs
+    question_id vs inputs.question_id vs request.kwargs) so the denominator
+    and the exclusion labeling can't drift.
+    """
+    rc = str(
+        row.get("result_correctness/value", row.get("result_correctness", ""))
+    ).lower()
+
+    err_type = str(
+        row.get("outputs/comparison/error_type")
+        or row.get("comparison/error_type")
+        or row.get("comparison.error_type")
+        or ""
+    ).lower()
+
+    err_message = str(
+        row.get("outputs/comparison/error")
+        or row.get("comparison/error")
+        or row.get("comparison.error")
+        or ""
+    )
+
+    rq_obj: Any = row.get("request") or {}
+    if isinstance(rq_obj, str):
+        try:
+            rq_obj = json.loads(rq_obj)
+        except (json.JSONDecodeError, TypeError):
+            rq_obj = {}
+    rqk = rq_obj.get("kwargs", {}) if isinstance(rq_obj, dict) else {}
+
+    qid = str(
+        row.get("inputs/question_id")
+        or (row.get("inputs") or {}).get("question_id", "")
+        or row.get("question_id")
+        or rqk.get("question_id")
+        or (rq_obj.get("question_id") if isinstance(rq_obj, dict) else None)
+        or ""
+    )
+
+    question_text = (
+        row.get("inputs/question")
+        or (row.get("inputs") or {}).get("question")
+        or row.get("question")
+        or rqk.get("question")
+    )
+    if question_text is not None:
+        question_text = str(question_text)
+
+    av = str(row.get("arbiter/value", row.get("arbiter", "skipped"))).lower()
+
+    return {
+        "rc": rc,
+        "err_type": err_type,
+        "err_message": err_message,
+        "qid": qid,
+        "question_text": question_text,
+        "arbiter": av,
+    }
+
+
 def _compute_arbiter_adjusted_accuracy(
     rows: list[dict],
     *,
     quarantined_qids: set[str] | None = None,
     temporal_stale_qids: set[str] | None = None,
-) -> tuple[float, int, list[str], int]:
+) -> ArbiterAdjustedResult:
     """Compute overall accuracy that accounts for arbiter overrides.
 
     A row is considered correct if:
@@ -969,66 +1074,99 @@ def _compute_arbiter_adjusted_accuracy(
     Rows where ``result_correctness`` == "excluded" (GT-side infrastructure
     failures), whose question is quarantined, whose comparison error_type is
     ``both_empty`` or ``genie_result_unavailable``, or whose question is
-    temporal-stale are removed from the denominator entirely.
-
-    Returns ``(accuracy_pct, correct_count, failure_ids, excluded_count)``.
+    temporal-stale are removed from the denominator entirely. Each exclusion
+    is recorded as a ``RowExclusion`` in the returned ``exclusions`` list so
+    the UI can explain "why did this question disappear?".
     """
     if not rows:
-        return 0.0, 0, [], 0
+        return ArbiterAdjustedResult(
+            accuracy_pct=0.0,
+            correct_count=0,
+            evaluated_count=0,
+            excluded_count=0,
+            failure_ids=[],
+            exclusions=[],
+        )
 
     _quarantined = quarantined_qids or set()
     _temporal_stale = temporal_stale_qids or set()
+
     total = 0
     correct = 0
     excluded = 0
     failure_ids: list[str] = []
+    exclusions: list[RowExclusion] = []
+
     for row in rows:
-        rc = str(
-            row.get("result_correctness/value", row.get("result_correctness", ""))
-        ).lower()
+        sig = _extract_row_signals(row)
+        rc = sig["rc"]
+        err_type = sig["err_type"]
+        err_message = sig["err_message"]
+        qid = sig["qid"]
+        question_text = sig["question_text"]
 
         if rc == "excluded":
             excluded += 1
+            exclusions.append(RowExclusion(
+                question_id=qid,
+                question_text=question_text,
+                reason_code=EXCLUSION_GT_EXCLUDED,
+                reason_detail=(
+                    "Ground truth SQL could not be executed; benchmark marked excluded."
+                    + (f" Error: {err_message}" if err_message else "")
+                ),
+            ))
             continue
 
-        _err_type = str(
-            row.get("outputs/comparison/error_type")
-            or row.get("comparison/error_type")
-            or row.get("comparison.error_type")
-            or ""
-        ).lower()
-        if _err_type in ("both_empty", "genie_result_unavailable"):
+        if err_type == "both_empty":
             excluded += 1
+            exclusions.append(RowExclusion(
+                question_id=qid,
+                question_text=question_text,
+                reason_code=EXCLUSION_BOTH_EMPTY,
+                reason_detail=(
+                    "Both expected and actual SQL returned no rows; cannot judge correctness."
+                ),
+            ))
             continue
 
-        _rq = row.get("request") or {}
-        if isinstance(_rq, str):
-            try:
-                _rq = json.loads(_rq)
-            except (json.JSONDecodeError, TypeError):
-                _rq = {}
-        _rqk = _rq.get("kwargs", {}) if isinstance(_rq, dict) else {}
-        qid = str(
-            row.get("inputs/question_id")
-            or (row.get("inputs") or {}).get("question_id", "")
-            or row.get("question_id")
-            or _rqk.get("question_id")
-            or (_rq.get("question_id") if isinstance(_rq, dict) else None)
-            or ""
-        )
+        if err_type == "genie_result_unavailable":
+            excluded += 1
+            exclusions.append(RowExclusion(
+                question_id=qid,
+                question_text=question_text,
+                reason_code=EXCLUSION_GENIE_RESULT_UNAVAILABLE,
+                reason_detail=(
+                    "Genie did not return a result (typically a SQL execution failure)."
+                    + (f" Error: {err_message}" if err_message else "")
+                ),
+            ))
+            continue
 
         if qid and qid in _quarantined:
             excluded += 1
+            exclusions.append(RowExclusion(
+                question_id=qid,
+                question_text=question_text,
+                reason_code=EXCLUSION_QUARANTINED,
+                reason_detail="Benchmark failed pre-evaluation validation and was quarantined.",
+            ))
             continue
 
         if qid and qid in _temporal_stale:
             excluded += 1
+            exclusions.append(RowExclusion(
+                question_id=qid,
+                question_text=question_text,
+                reason_code=EXCLUSION_TEMPORAL_STALE,
+                reason_detail=(
+                    "Benchmark references data outside the workspace's available time window."
+                ),
+            ))
             continue
 
         total += 1
-        av = str(
-            row.get("arbiter/value", row.get("arbiter", "skipped"))
-        ).lower()
+        av = sig["arbiter"]
 
         is_correct = rc in ("yes", "true", "1", "1.0") or (
             rc in ("no", "false", "0", "0.0") and av in _ARBITER_CORRECT_VERDICTS
@@ -1041,7 +1179,14 @@ def _compute_arbiter_adjusted_accuracy(
                 failure_ids.append(str(qid))
 
     accuracy_pct = round((correct / total) * 100, 2) if total > 0 else 0.0
-    return accuracy_pct, correct, failure_ids, excluded
+    return ArbiterAdjustedResult(
+        accuracy_pct=accuracy_pct,
+        correct_count=correct,
+        evaluated_count=total,
+        excluded_count=excluded,
+        failure_ids=failure_ids,
+        exclusions=exclusions,
+    )
 
 
 # ── Benchmark Filtering ─────────────────────────────────────────────────
@@ -3339,12 +3484,17 @@ def _print_eval_summary(
         pct = (cnt / arbiter_total * 100) if arbiter_total else 0
         lines.append(f"|     {verdict:<24s} {cnt:3d}  ({pct:5.1f}%)")
 
-    adj_accuracy, _adj_correct, adj_failures, adj_excluded = (
-        _compute_arbiter_adjusted_accuracy(rows)
-    )
+    _adj_result = _compute_arbiter_adjusted_accuracy(rows)
+    adj_accuracy = _adj_result.accuracy_pct
+    adj_failures = _adj_result.failure_ids
+    adj_excluded = _adj_result.excluded_count
     rc_raw = scores_100.get("result_correctness", 0.0)
     lines.append(f"|")
-    lines.append(f"|   Overall accuracy: {adj_accuracy:.1f}%  (result_correctness raw: {rc_raw:.1f}%)")
+    lines.append(
+        f"|   Overall accuracy: {adj_accuracy:.1f}% "
+        f"({_adj_result.correct_count}/{_adj_result.evaluated_count})  "
+        f"(result_correctness raw: {rc_raw:.1f}%)"
+    )
     if adj_excluded:
         lines.append(f"|   Excluded (GT infra / both-empty / unavailable): {adj_excluded}")
     lines.append(f"|   Thresholds met: {'YES' if thresholds_passed else 'NO'}")
@@ -3861,12 +4011,20 @@ def run_evaluation(
                 if _ts_qid:
                     _temporal_stale_qids.add(_ts_qid)
 
-        arbiter_adjusted_accuracy, arbiter_adjusted_correct, failure_ids, excluded_count = (
-            _compute_arbiter_adjusted_accuracy(
-                rows_for_output,
-                temporal_stale_qids=_temporal_stale_qids if _temporal_stale_qids else None,
-            )
+        _arbiter_result = _compute_arbiter_adjusted_accuracy(
+            rows_for_output,
+            temporal_stale_qids=_temporal_stale_qids if _temporal_stale_qids else None,
         )
+        arbiter_adjusted_accuracy = _arbiter_result.accuracy_pct
+        arbiter_adjusted_correct = _arbiter_result.correct_count
+        failure_ids = _arbiter_result.failure_ids
+        excluded_count = _arbiter_result.excluded_count
+        evaluated_count = _arbiter_result.evaluated_count
+
+        # Index exclusions by qid for O(1) lookup when annotating rows_for_output.
+        _exclusions_by_qid: dict[str, RowExclusion] = {
+            ex.question_id: ex for ex in _arbiter_result.exclusions if ex.question_id
+        }
 
         _arbiter_overridden_qids: list[str] = []
         _soft_signal_qids: list[str] = []
@@ -3973,6 +4131,7 @@ def run_evaluation(
             "overall_accuracy": arbiter_adjusted_accuracy,
             "correct_count": float(arbiter_adjusted_correct),
             "total_questions": float(len(filtered)),
+            "evaluated_count": float(evaluated_count),
             "failure_count": float(len(failure_ids)),
             "excluded_count": float(excluded_count),
         })
@@ -4039,6 +4198,35 @@ def run_evaluation(
             except Exception:
                 logger.debug("Failed to log overall_accuracy metric", exc_info=True)
 
+        # Annotate each row with its exclusion reason (if any) so downstream
+        # persistence (state.write_iteration → rows_json) and the UI drill-down
+        # can explain "why did this question disappear?" without a second pass
+        # over the extraction logic. See Bug #3.
+        for _row in rows_for_output:
+            _row_qid = (
+                _row.get("question_id")
+                or _row.get("inputs/question_id")
+                or (_row.get("inputs") or {}).get("question_id", "")
+            )
+            if _row_qid and str(_row_qid) in _exclusions_by_qid:
+                _ex = _exclusions_by_qid[str(_row_qid)]
+                _row["exclusion"] = {
+                    "reason_code": _ex.reason_code,
+                    "reason_detail": _ex.reason_detail,
+                }
+
+        # Serialize quarantined_benchmarks for persistence. The in-memory shape
+        # may include heavy fields we don't want in Delta; keep a compact view.
+        _quarantined_for_persist = []
+        for _qb in (quarantined_benchmarks or []):
+            if isinstance(_qb, dict):
+                _quarantined_for_persist.append({
+                    "question_id": _qb.get("question_id") or _qb.get("id") or "",
+                    "reason_code": _qb.get("reason_code") or _qb.get("reason") or "quarantined",
+                    "reason_detail": _qb.get("reason_detail") or _qb.get("error") or "",
+                    "question": _qb.get("question") or _qb.get("question_text") or "",
+                })
+
         output: dict[str, Any] = {
             "run_id": run.info.run_id,
             "mlflow_run_id": run.info.run_id,
@@ -4046,7 +4234,14 @@ def run_evaluation(
             "experiment_id": exp.experiment_id if exp else "",
             "iteration": iteration,
             "overall_accuracy": arbiter_adjusted_accuracy,
+            # NOTE on denominator contract (Bug #2):
+            #   - total_questions:   pre-exclusion — retained for back-compat.
+            #   - evaluated_count:   denominator of overall_accuracy (use this).
+            #   - excluded_count:    rows removed from the denominator at runtime.
+            # Downstream readers should prefer evaluated_count; the API layer
+            # (_resolve_eval_counts) falls back to total - excluded for old rows.
             "total_questions": len(filtered),
+            "evaluated_count": evaluated_count,
             "correct_count": arbiter_adjusted_correct,
             "scores": scores_100,
             "thresholds_met": thresholds_passed,
@@ -4065,7 +4260,16 @@ def run_evaluation(
             "unresolved_column_count": unresolved_column_count,
             "harness_retry_count": harness_retry_count,
             "excluded_count": excluded_count,
-            "quarantined_benchmarks": quarantined_benchmarks,
+            "quarantined_benchmarks": _quarantined_for_persist,
+            "row_exclusions": [
+                {
+                    "question_id": ex.question_id,
+                    "question_text": ex.question_text,
+                    "reason_code": ex.reason_code,
+                    "reason_detail": ex.reason_detail,
+                }
+                for ex in _arbiter_result.exclusions
+            ],
             "arbiter_overridden_qids": _arbiter_overridden_qids,
             "soft_signal_qids": _soft_signal_qids,
         }

@@ -1685,6 +1685,84 @@ def preflight_setup_experiment(
     }
 
 
+def preflight_probe_prompt_registry(
+    spark: "SparkSession",
+    run_id: str,
+    catalog: str,
+    schema: str,
+) -> dict:
+    """Sub-step 6.5: write-path probe of MLflow Prompt Registry.
+
+    Runs AFTER experiment setup and BEFORE baseline evaluation. Exercises the
+    exact ``mlflow.genai.register_prompt`` call that ``register_judge_prompts``
+    will make during baseline — so if Prompt Registry is disabled or the SP
+    lacks UC privileges, we abort here rather than in the middle of baseline.
+
+    Gated by the ``GSO_ENABLE_WRITE_PROBE`` env var (default: enabled) so we
+    can roll back quickly if customers report false positives.
+
+    Raises:
+        RuntimeError: when the probe returns ``available=False``. The error
+            message carries the stable ``reason_code`` so downstream alerting
+            can pattern-match without parsing free-form text.
+    """
+    import os as _os
+
+    from genie_space_optimizer.common.prompt_registry import check_prompt_registry
+
+    uc_schema = f"{catalog}.{schema}"
+
+    if _os.getenv("GSO_ENABLE_WRITE_PROBE", "true").lower() not in {"1", "true", "yes", "on"}:
+        logger.info(
+            "Prompt Registry write probe disabled via GSO_ENABLE_WRITE_PROBE; skipping."
+        )
+        write_stage(
+            spark, run_id, "PREFLIGHT_PROMPT_REGISTRY_SKIPPED", "SKIPPED",
+            task_key="preflight",
+            detail={"reason": "disabled_by_env"},
+            catalog=catalog, schema=schema,
+        )
+        return {"skipped": True, "reason_code": "disabled_by_env"}
+
+    probe_hint = run_id[:8] if run_id else None
+    probe = check_prompt_registry(
+        mode="write",
+        uc_schema=uc_schema,
+        probe_name_hint=probe_hint,
+    )
+
+    if not probe.available:
+        logger.error(
+            "Preflight Prompt Registry probe failed: code=%s err=%s",
+            probe.reason_code,
+            (probe.raw_error or "")[:500],
+        )
+        write_stage(
+            spark, run_id, "PREFLIGHT_PROMPT_REGISTRY_FAILED", "FAILED",
+            task_key="preflight",
+            detail={
+                "reason_code": probe.reason_code,
+                "user_message": probe.user_message,
+                "missing_privileges": probe.missing_privileges,
+                "diagnostics": probe.diagnostics,
+            },
+            catalog=catalog, schema=schema,
+            error_message=(probe.raw_error or "")[:1000],
+        )
+        raise RuntimeError(
+            f"Prompt Registry unavailable (reason_code={probe.reason_code}): "
+            f"{probe.user_message}"
+        )
+
+    write_stage(
+        spark, run_id, "PREFLIGHT_PROMPT_REGISTRY_OK", "COMPLETE",
+        task_key="preflight",
+        detail={"probe_name": probe.diagnostics.get("probe_name")},
+        catalog=catalog, schema=schema,
+    )
+    return {"skipped": False, "reason_code": probe.reason_code}
+
+
 def run_preflight(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -1742,6 +1820,11 @@ def run_preflight(
         ctx2["uc_columns"], ctx2["uc_tags"], ctx2["uc_routines"],
         genie_table_refs, experiment_name,
     )
+
+    # Layered defense: write-path probe AFTER experiment exists (so the probe
+    # prompt has a place to live) and BEFORE baseline eval (which depends on
+    # register_judge_prompts succeeding).
+    preflight_probe_prompt_registry(spark, run_id, catalog, schema)
 
     return (
         config,

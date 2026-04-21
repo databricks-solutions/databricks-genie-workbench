@@ -31,6 +31,7 @@ import type {
   IterationDetail,
   IterationDetailResponse,
 } from "@/lib/transparency-api";
+import { computeBaselineCounts, humanizeExclusionReason } from "@/lib/exclusions";
 
 interface IterationExplorerProps {
   detail: IterationDetailResponse;
@@ -536,7 +537,20 @@ function BaselineView({
   experimentLink?: { label: string; url: string; category: string };
 }) {
   const [showAll, setShowAll] = useState(false);
+  const [showExclusions, setShowExclusions] = useState(false);
   const displayed = showAll ? iteration.questions : iteration.questions.slice(0, 20);
+
+  // Bug #2 denominator contract + Bug #3 exclusion partitioning — derived in
+  // a pure helper so it can be unit-tested without React/JSDOM. The helper
+  // prefers evaluatedCount (fallback to totalQuestions for legacy responses)
+  // and splits questions into evaluated vs excluded buckets.
+  const {
+    evaluated,
+    totalExcluded,
+    evaluatedQuestions,
+    excludedQuestions,
+    quarantinedBenchmarks,
+  } = computeBaselineCounts(iteration);
 
   return (
     <div className="space-y-4">
@@ -551,6 +565,11 @@ function BaselineView({
             <span className="text-2xl font-bold">
               {iteration.overallAccuracy.toFixed(1)}%
             </span>
+            {evaluated > 0 && (
+              <div className="mt-1 text-[11px] text-muted">
+                = {iteration.correctCount}/{evaluated} evaluated
+              </div>
+            )}
           </CardContent>
         </Card>
         <Card>
@@ -561,9 +580,15 @@ function BaselineView({
           </CardHeader>
           <CardContent>
             <span className="text-2xl font-bold">
-              {iteration.correctCount}/{iteration.totalQuestions}
+              {iteration.correctCount}/{evaluated}
             </span>
             <span className="ml-1 text-sm text-muted">correct</span>
+            {totalExcluded > 0 && (
+              <div className="mt-1 text-[11px] text-muted">
+                {totalExcluded} of {iteration.totalQuestions} excluded — see
+                details below
+              </div>
+            )}
           </CardContent>
         </Card>
         <Card>
@@ -598,12 +623,14 @@ function BaselineView({
         </CardContent>
       </Card>
 
-      {/* Questions Table */}
-      {iteration.questions.length > 0 && (
+      {/* Questions Table — Bug #3: only show rows actually evaluated; excluded
+          rows live in the collapsible section below so the primary table stays
+          focused on the numbers that drove the accuracy metric. */}
+      {evaluatedQuestions.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm">
-              Baseline Question Results ({iteration.questions.length})
+              Baseline Question Results ({evaluatedQuestions.length})
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -617,7 +644,7 @@ function BaselineView({
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {displayed.map((q) => {
+                  {(showAll ? evaluatedQuestions : evaluatedQuestions.slice(0, 20)).map((q) => {
                     const passed =
                       q.resultCorrectness === "yes" || q.resultCorrectness === "pass";
                     return (
@@ -641,17 +668,129 @@ function BaselineView({
                 </TableBody>
               </Table>
             </div>
-            {iteration.questions.length > 20 && !showAll && (
+            {evaluatedQuestions.length > 20 && !showAll && (
               <Button
                 variant="ghost"
                 size="sm"
                 className="mt-2 w-full text-xs"
                 onClick={() => setShowAll(true)}
               >
-                Show all {iteration.questions.length} questions
+                Show all {evaluatedQuestions.length} questions
               </Button>
             )}
           </CardContent>
+        </Card>
+      )}
+
+      {/* Bug #3 — Excluded from baseline.
+          Surfaces both runtime exclusions (populated on each QuestionResult
+          via its `excluded`/`exclusionReasonCode` fields) AND pre-evaluation
+          quarantine (populated via iteration.quarantinedBenchmarks). Kept
+          collapsed by default so the main view stays simple but one click
+          reveals why any missing benchmark was dropped. */}
+      {(excludedQuestions.length > 0 || quarantinedBenchmarks.length > 0) && (
+        <Card>
+          <CardHeader className="pb-2">
+            <button
+              type="button"
+              onClick={() => setShowExclusions((v) => !v)}
+              className="flex w-full items-center justify-between text-left"
+            >
+              <CardTitle className="text-sm text-muted-foreground">
+                Excluded from baseline ({excludedQuestions.length + quarantinedBenchmarks.length})
+              </CardTitle>
+              <span className="text-xs text-muted">
+                {showExclusions ? "Hide" : "Show"}
+              </span>
+            </button>
+          </CardHeader>
+          {showExclusions && (
+            <CardContent className="space-y-3">
+              <p className="text-[11px] text-muted-foreground">
+                These benchmarks are removed from the accuracy denominator so a
+                single missing Genie result or a flawed ground-truth SQL can't
+                distort the score. Each row lists the reason below.
+              </p>
+              {excludedQuestions.length > 0 && (
+                <div>
+                  <p className="mb-1 text-xs font-medium text-muted-foreground">
+                    Runtime exclusions ({excludedQuestions.length})
+                  </p>
+                  <div className="max-h-[240px] overflow-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="text-xs">Question</TableHead>
+                          <TableHead className="text-xs">Reason</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {excludedQuestions.map((q) => (
+                          <TableRow key={q.questionId}>
+                            <TableCell
+                              className="max-w-[360px] truncate text-xs"
+                              title={q.question}
+                            >
+                              {q.question || q.questionId}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              <span className="font-medium">
+                                {humanizeExclusionReason(q.exclusionReasonCode)}
+                              </span>
+                              {q.exclusionReasonDetail && (
+                                <span className="ml-1 opacity-80">
+                                  — {q.exclusionReasonDetail}
+                                </span>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              )}
+              {quarantinedBenchmarks.length > 0 && (
+                <div>
+                  <p className="mb-1 text-xs font-medium text-muted-foreground">
+                    Pre-evaluation quarantine ({quarantinedBenchmarks.length})
+                  </p>
+                  <div className="max-h-[240px] overflow-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="text-xs">Question</TableHead>
+                          <TableHead className="text-xs">Reason</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {quarantinedBenchmarks.map((qb, idx) => (
+                          <TableRow key={`${qb.questionId || "qb"}-${idx}`}>
+                            <TableCell
+                              className="max-w-[360px] truncate text-xs"
+                              title={qb.question}
+                            >
+                              {qb.question || qb.questionId}
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              <span className="font-medium">
+                                {humanizeExclusionReason(qb.reasonCode)}
+                              </span>
+                              {qb.reasonDetail && (
+                                <span className="ml-1 opacity-80">
+                                  — {qb.reasonDetail}
+                                </span>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          )}
         </Card>
       )}
 

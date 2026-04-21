@@ -166,9 +166,14 @@
 # COMMAND ----------
 
 import json
+import os
 import traceback
 from functools import partial
 from typing import Any, cast
+
+# Pin STRICT prompt registration — mirrors run_preflight.py. Must run BEFORE
+# any genie_space_optimizer imports so the module-level flag captures "true".
+os.environ.setdefault("GENIE_SPACE_OPTIMIZER_STRICT_PROMPT_REGISTRATION", "true")
 
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession

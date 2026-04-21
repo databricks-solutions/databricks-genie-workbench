@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from ..constants import ACTIVE_RUN_STATUSES, TERMINAL_JOB_STATES
 from ..core import Dependencies, create_router
 from ..utils import ensure_utc_iso, safe_finite, safe_float, safe_int, safe_json_parse, scrub_nan_inf
+from ...common.accuracy import derived_accuracy as _canonical_derived_accuracy
 from .spaces import _genie_client
 from ..models import (
     ActionResponse,
@@ -30,6 +31,7 @@ from ..models import (
     PipelineStep,
     ProvenanceRecord,
     ProvenanceSummary,
+    QuarantinedBenchmark,
     QuestionResult,
     ReflectionEntry,
     SpaceConfiguration,
@@ -640,19 +642,23 @@ def _build_step_io(
                 }
             )
 
+        _counts = _resolve_eval_counts(baseline_iter)
         return (
             {
-                "benchmarkCount": baseline_iter.get("total_questions"),
+                "benchmarkCount": _counts["total"],
                 "iteration": 0,
             },
             {
                 "judgeScores": {k: _safe_float(v) for k, v in scores.items()},
-                "totalQuestions": baseline_iter.get("total_questions"),
-                "correctCount": baseline_iter.get("correct_count"),
-                "failedCount": int(
-                    _finite(baseline_iter.get("total_questions", 0))
-                    - _finite(baseline_iter.get("correct_count", 0))
-                ),
+                "totalQuestions": _counts["total"],
+                "evaluatedCount": _counts["evaluated"],
+                "correctCount": _counts["correct"],
+                "excludedCount": _counts["excluded"],
+                "quarantinedCount": _counts["quarantined"],
+                # failedCount preserves "evaluated but wrong" semantics —
+                # drives from evaluated, not total, so the quarantine/excluded
+                # items don't masquerade as failures. See Bug #2 contract.
+                "failedCount": max(_counts["evaluated"] - _counts["correct"], 0),
                 "mlflowRunId": baseline_iter.get("mlflow_run_id"),
                 "invalidBenchmarkCount": _safe_int(detail.get("invalid_benchmark_count")),
                 "permissionBlockedCount": _safe_int(detail.get("permission_blocked_count")),
@@ -814,11 +820,27 @@ def _build_step_summary(
         score = "?"
         questions = "?"
         correct = "?"
+        suffix = ""
         if baseline_iter:
             score = f"{_finite(baseline_iter.get('overall_accuracy', 0)):.1f}"
-            questions = str(baseline_iter.get("total_questions", "?"))
-            correct = str(_safe_int(baseline_iter.get("correct_count")) or "?")
-        return defn["summary_template"].format(questions=questions, score=score, correct=correct)
+            _counts = _resolve_eval_counts(baseline_iter)
+            # "questions" in the template now refers to the evaluated
+            # denominator (matches overall_accuracy math per Bug #2),
+            # not the pre-exclusion total.
+            questions = str(_counts["evaluated"])
+            correct = str(_counts["correct"])
+            _excl = _counts["excluded"] + _counts["quarantined"]
+            if _excl > 0:
+                suffix = (
+                    f" ({_excl} excluded from denominator — "
+                    f"see iteration drill-down for reasons)"
+                )
+        return (
+            defn["summary_template"].format(
+                questions=questions, score=score, correct=correct,
+            )
+            + suffix
+        )
     if step_name == "Proactive Enrichment":
         descriptions = _safe_int(detail.get("descriptions_enriched")) or 0
         joins = _safe_int(detail.get("joins_discovered")) or 0
@@ -1141,6 +1163,7 @@ def _build_lever_iterations(
         if not rollback_reason and status == "rolled_back":
             rollback_reason = "regression"
 
+        _full_counts = _resolve_eval_counts(full_row) if full_row else None
         iteration_payloads.append(
             {
                 "iteration": iteration,
@@ -1153,8 +1176,11 @@ def _build_lever_iterations(
                 "sliceAccuracy": _safe_float(slice_row.get("overall_accuracy")) if slice_row else None,
                 "p0Accuracy": _safe_float(p0_row.get("overall_accuracy")) if p0_row else None,
                 "fullAccuracy": _safe_float(full_row.get("overall_accuracy")) if full_row else None,
-                "totalQuestions": _safe_int(full_row.get("total_questions")) if full_row else None,
-                "correctCount": _safe_int(full_row.get("correct_count")) if full_row else None,
+                "totalQuestions": _full_counts["total"] if _full_counts else None,
+                "evaluatedCount": _full_counts["evaluated"] if _full_counts else None,
+                "correctCount": _full_counts["correct"] if _full_counts else None,
+                "excludedCount": _full_counts["excluded"] if _full_counts else None,
+                "quarantinedCount": _full_counts["quarantined"] if _full_counts else None,
                 "judgeScores": judge_scores,
                 "mlflowRunId": full_row.get("mlflow_run_id") if full_row else None,
                 "rollbackReason": rollback_reason,
@@ -1164,6 +1190,82 @@ def _build_lever_iterations(
         )
 
     return iteration_payloads
+
+
+def _resolve_eval_counts(iter_row: dict | None) -> dict[str, int]:
+    """Return canonical {total, evaluated, correct, excluded, quarantined} counts.
+
+    This is the single source of truth for Bug #2's denominator contract on
+    the API side. All endpoints that emit per-iteration counts must go
+    through this helper so that the values sent to the UI stay aligned with
+    the ones used to compute overall_accuracy by
+    _compute_arbiter_adjusted_accuracy.
+
+    Back-compat rules:
+      * evaluated_count is preferred; if missing (old rows written before
+        Bug #2), fall back to total_questions - excluded_count (clamped ≥ 0),
+        and then to total_questions when excluded is also missing.
+      * excluded_count defaults to 0 (not None) so UI math is safe.
+      * quarantined is derived from quarantined_benchmarks_json (array
+        length); falls back to 0 when column/JSON is absent.
+      * correct_count is always echoed directly.
+
+    Safe against None rows (returns all zeros).
+    """
+    if not iter_row:
+        return {"total": 0, "evaluated": 0, "correct": 0, "excluded": 0, "quarantined": 0}
+
+    total = _safe_int(iter_row.get("total_questions")) or 0
+    correct = _safe_int(iter_row.get("correct_count")) or 0
+    excluded = _safe_int(iter_row.get("excluded_count")) or 0
+
+    evaluated_raw = iter_row.get("evaluated_count")
+    evaluated = _safe_int(evaluated_raw)
+    if evaluated is None:
+        # Old rows: derive from (total - excluded), clamped at 0.
+        # Preserves correctness when excluded_count was backfilled but
+        # evaluated_count is still NULL.
+        derived = total - excluded
+        evaluated = derived if derived >= 0 else total
+
+    quarantined_raw = iter_row.get("quarantined_benchmarks_json")
+    quarantined = 0
+    if isinstance(quarantined_raw, str) and quarantined_raw.strip():
+        try:
+            parsed = json.loads(quarantined_raw)
+            if isinstance(parsed, list):
+                quarantined = len(parsed)
+        except (json.JSONDecodeError, TypeError):
+            quarantined = 0
+    elif isinstance(quarantined_raw, list):
+        quarantined = len(quarantined_raw)
+
+    return {
+        "total": total,
+        "evaluated": evaluated,
+        "correct": correct,
+        "excluded": excluded,
+        "quarantined": quarantined,
+    }
+
+
+# Bug #2 — canonical per-iteration accuracy derivation lives in
+# `genie_space_optimizer.common.accuracy.derived_accuracy`. Thin re-export
+# here so existing call sites and test imports (``from
+# genie_space_optimizer.backend.routes.runs import _derived_accuracy``)
+# continue to work, and so drift logs still appear under this module's
+# logger (the caplog-scoped unit tests rely on that).
+def _derived_accuracy(
+    iter_row: dict | None,
+    *,
+    run_id: str | None = None,
+    iteration: int | None = None,
+) -> float | None:
+    """Thin re-export of ``common.accuracy.derived_accuracy`` with this
+    module's logger pre-bound. See the shared module for the contract."""
+    return _canonical_derived_accuracy(
+        iter_row, run_id=run_id, iteration=iteration, logger=logger,
+    )
 
 
 def _iteration_scores(iter_row: dict | None) -> dict[str, float | None]:
@@ -1225,17 +1327,35 @@ def _normalize_lever_status_for_terminal_run(*, status: str, run_status: str) ->
     return status
 
 
-def _get_baseline_and_best_accuracy(iters_rows: list[dict]) -> tuple[float | None, float | None]:
-    """Return baseline(full iteration 0) and best full-eval accuracy."""
+def _get_baseline_and_best_accuracy(
+    iters_rows: list[dict],
+    *,
+    run_id: str | None = None,
+) -> tuple[float | None, float | None]:
+    """Return baseline(full iteration 0) and best full-eval accuracy.
+
+    Bug #2: both values are derived from `correct_count / evaluated_count`
+    via `_derived_accuracy` so the KPI cards that render these fields agree
+    to the decimal with the tab labels (which are computed from the same
+    counts on the frontend). Legacy rows without counts fall back to the
+    stored `overall_accuracy` so old dashboards don't suddenly go blank.
+    """
     full_rows = [r for r in iters_rows if str(r.get("eval_scope", "")).lower() == "full"]
     if not full_rows:
         return None, None
 
     baseline_row = next((r for r in full_rows if _safe_int(r.get("iteration")) == 0), None)
-    baseline = _safe_float(baseline_row.get("overall_accuracy")) if baseline_row else None
+    baseline = _derived_accuracy(
+        baseline_row,
+        run_id=run_id,
+        iteration=0 if baseline_row else None,
+    )
 
-    scores = [_safe_float(r.get("overall_accuracy")) for r in full_rows]
-    finite_scores = [s for s in scores if s is not None]
+    scored = [
+        _derived_accuracy(r, run_id=run_id, iteration=_safe_int(r.get("iteration")))
+        for r in full_rows
+    ]
+    finite_scores = [s for s in scored if s is not None]
     if not finite_scores:
         return baseline, None
     return baseline, max(finite_scores)
@@ -1404,7 +1524,10 @@ def get_run(
     patches_rows = patches_df.to_dict("records") if not patches_df.empty else []
 
     baseline_iter = next((r for r in iters_rows if r.get("iteration") == 0), None)
-    baseline_accuracy = _safe_float(baseline_iter.get("overall_accuracy")) if baseline_iter else None
+    # Bug #2: derive from correct/evaluated so `PipelineRun.baselineScore`
+    # (what ScoreSummary renders) agrees with the tab labels that compute
+    # the same quantity on the frontend.
+    baseline_accuracy = _derived_accuracy(baseline_iter, run_id=run_id, iteration=0)
     run_data["baseline_accuracy"] = baseline_accuracy
 
     steps = map_stages_to_steps(stages_rows, iters_rows, run_data, patches_rows=patches_rows)
@@ -1445,6 +1568,13 @@ def get_run(
         stages_rows, run_data, host,
     )
 
+    # Bug #2: derive optimized score from iteration counts too. Fall back to
+    # the stored `best_accuracy` only if there are no full iterations to
+    # read (legacy runs written before this migration).
+    _, derived_best = _get_baseline_and_best_accuracy(iters_rows, run_id=run_id)
+    stored_best = _safe_float(run_data.get("best_accuracy"))
+    optimized_score = derived_best if derived_best is not None else stored_best
+
     result = PipelineRun(
         runId=run_id,
         spaceId=run_data.get("space_id", ""),
@@ -1454,7 +1584,7 @@ def get_run(
         completedAt=ensure_utc_iso(run_data.get("completed_at")),
         initiatedBy=run_data.get("triggered_by") or "system",
         baselineScore=baseline_accuracy,
-        optimizedScore=_safe_float(run_data.get("best_accuracy")),
+        optimizedScore=optimized_score,
         steps=steps,
         levers=levers,
         convergenceReason=run_data.get("convergence_reason"),
@@ -1616,7 +1746,7 @@ def apply_optimization(
     requested_mode = str(run_data.get("apply_mode") or "genie_config").lower()
     iters_df = load_iterations(spark, run_id, config.catalog, config.schema_name)
     iters_rows = iters_df.to_dict("records") if not iters_df.empty else []
-    baseline_score, best_score = _get_baseline_and_best_accuracy(iters_rows)
+    baseline_score, best_score = _get_baseline_and_best_accuracy(iters_rows, run_id=run_id)
 
     if requested_mode in _DEFERRED_UC_MODES:
         if baseline_score is None or best_score is None:
@@ -1755,14 +1885,24 @@ def get_iterations(run_id: str, config: Dependencies.Config):
         if not isinstance(scores, dict):
             scores = {}
 
+        _counts = _resolve_eval_counts(row)
+        # Bug #2 (PR #79 review #4) — route overallAccuracy through the
+        # canonical derivation so the iteration strip agrees with the KPI
+        # card and tab label. Falls back to stored overall_accuracy for
+        # legacy rows; _finite catches NaN/Inf and Nones on that fallback.
+        _row_iter = _safe_int(row.get("iteration"))
+        _derived = _derived_accuracy(row, run_id=run_id, iteration=_row_iter)
         results.append(
             IterationSummary(
-                iteration=_safe_int(row.get("iteration")) or 0,
+                iteration=_row_iter or 0,
                 lever=_safe_int(row.get("lever")),
                 evalScope=str(row.get("eval_scope", "full")).lower(),
-                overallAccuracy=_finite(row.get("overall_accuracy", 0)),
-                totalQuestions=_safe_int(row.get("total_questions")) or 0,
-                correctCount=_safe_int(row.get("correct_count")) or 0,
+                overallAccuracy=_finite(_derived if _derived is not None else row.get("overall_accuracy", 0)),
+                totalQuestions=_counts["total"],
+                evaluatedCount=_counts["evaluated"],
+                correctCount=_counts["correct"],
+                excludedCount=_counts["excluded"],
+                quarantinedCount=_counts["quarantined"],
                 repeatabilityPct=_safe_float(row.get("repeatability_pct")),
                 thresholdsMet=bool(row.get("thresholds_met", False)),
                 judgeScores={str(k): _safe_float(v) for k, v in scores.items()},
@@ -2085,9 +2225,20 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
             continue
 
         scores = _iteration_scores(full_row)
-        accuracy = _finite(full_row.get("overall_accuracy", 0))
-        total_q = _safe_int(full_row.get("total_questions")) or 0
-        correct_c = _safe_int(full_row.get("correct_count")) or 0
+        _iter_counts = _resolve_eval_counts(full_row)
+        total_q = _iter_counts["total"]
+        correct_c = _iter_counts["correct"]
+        evaluated_c = _iter_counts["evaluated"]
+        excluded_c = _iter_counts["excluded"]
+        quarantined_c = _iter_counts["quarantined"]
+
+        # Bug #2 (PR #79 review #4) — serve the derived accuracy so the
+        # iteration detail tile agrees with the KPI card and iteration
+        # strip. `_derived_accuracy` itself emits the drift log (same
+        # threshold, same logger) on legacy rows, so we no longer need
+        # a parallel mismatch check here.
+        _derived = _derived_accuracy(full_row, run_id=run_id, iteration=it_num)
+        accuracy = _finite(_derived if _derived is not None else full_row.get("overall_accuracy", 0))
         mlflow_rid = full_row.get("mlflow_run_id")
         model_id = full_row.get("model_id")
         timestamp = str(full_row.get("timestamp", ""))
@@ -2161,6 +2312,30 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
             )
 
         questions: list[QuestionResult] = []
+
+        # Bug #3 — harvest pre-evaluation quarantine reasons so the drill-down
+        # can explain benchmarks that never entered mlflow.genai.evaluate().
+        quarantined_list: list[QuarantinedBenchmark] = []
+        qb_raw = safe_json_parse(full_row.get("quarantined_benchmarks_json"))
+        if isinstance(qb_raw, list):
+            for qb in qb_raw:
+                if not isinstance(qb, dict):
+                    continue
+                quarantined_list.append(QuarantinedBenchmark(
+                    questionId=str(
+                        qb.get("question_id") or qb.get("id") or ""
+                    ),
+                    question=str(
+                        qb.get("question") or qb.get("question_text") or ""
+                    ),
+                    reasonCode=str(
+                        qb.get("reason_code") or qb.get("reason") or "quarantined"
+                    ),
+                    reasonDetail=str(
+                        qb.get("reason_detail") or qb.get("error") or ""
+                    ),
+                ))
+
         rows_json = safe_json_parse(full_row.get("rows_json"))
         if isinstance(rows_json, list):
             for row in rows_json:
@@ -2222,6 +2397,11 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
                     gen_sql = str(row["outputs"].get("generated_sql", ""))[:500] or None
                     expected_sql = str(row["outputs"].get("expected_sql", ""))[:500] or None
 
+                _excl = row.get("exclusion") if isinstance(row.get("exclusion"), dict) else None
+                _is_excluded = bool(_excl)
+                _excl_code = str(_excl.get("reason_code") or "") if _excl else None
+                _excl_detail = str(_excl.get("reason_detail") or "") if _excl else None
+
                 questions.append(QuestionResult(
                     questionId=q_id,
                     question=q_text,
@@ -2231,6 +2411,9 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
                     matchType=match_type,
                     expectedSql=expected_sql,
                     generatedSql=gen_sql,
+                    excluded=_is_excluded,
+                    exclusionReasonCode=_excl_code or None,
+                    exclusionReasonDetail=_excl_detail or None,
                 ))
 
         iterations.append(IterationDetail(
@@ -2240,13 +2423,17 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
             overallAccuracy=accuracy,
             judgeScores=scores,
             totalQuestions=total_q,
+            evaluatedCount=evaluated_c,
             correctCount=correct_c,
+            excludedCount=excluded_c,
+            quarantinedCount=quarantined_c,
             mlflowRunId=mlflow_rid,
             modelId=model_id,
             gates=gates,
             patches=iter_patches,
             reflection=reflection,
             questions=questions,
+            quarantinedBenchmarks=quarantined_list,
             clusterInfo=cluster_info if isinstance(cluster_info, dict) else None,
             timestamp=timestamp,
         ))
@@ -2272,7 +2459,7 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
         ))
     iterations.sort(key=lambda it: it.iteration)
 
-    baseline_score, optimized_score = _get_baseline_and_best_accuracy(iters_rows)
+    baseline_score, optimized_score = _get_baseline_and_best_accuracy(iters_rows, run_id=run_id)
 
     flagged: list[dict] = []
     domain = run_data.get("domain", run_data.get("space_id", ""))

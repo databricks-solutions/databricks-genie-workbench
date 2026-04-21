@@ -98,7 +98,10 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
 
   function refreshPermissions() {
     setPermsLoading(true)
-    getAutoOptimizePermissions(spaceId)
+    // Bypass the backend's TTL probe cache: the user clicked Re-check
+    // because they just fixed something in the workspace; serving a
+    // stale "unavailable" result would be confusing.
+    getAutoOptimizePermissions(spaceId, { refresh: true })
       .then(setPermissions)
       .catch(() => setPermissions(null))
       .finally(() => setPermsLoading(false))

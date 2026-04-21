@@ -113,9 +113,15 @@
 
 import json
 import math
+import os
 import traceback
 from functools import partial
 from typing import Any, cast
+
+# Pin STRICT prompt registration on the job env so missing Prompt Registry
+# privileges fail the run instead of silently degrading baseline accuracy.
+# Must run BEFORE any genie_space_optimizer imports that cache os.getenv.
+os.environ.setdefault("GENIE_SPACE_OPTIMIZER_STRICT_PROMPT_REGISTRATION", "true")
 
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
@@ -473,6 +479,39 @@ try:
 except Exception as exc:
     _banner("Experiment Setup FAILED")
     _log("Failure details", error_type=type(exc).__name__, error_message=str(exc), traceback=traceback.format_exc())
+    raise
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Step 1e.2: Prompt Registry Write-Path Probe
+# MAGIC
+# MAGIC Register and delete a throwaway prompt under ``{catalog}.{schema}`` to
+# MAGIC verify MLflow Prompt Registry is enabled AND the service principal has
+# MAGIC the UC privileges required to register judge prompts during baseline.
+# MAGIC
+# MAGIC Failing here produces a clear operator message and aborts before
+# MAGIC baseline_eval burns a warehouse. The probe is gated by the
+# MAGIC ``GSO_ENABLE_WRITE_PROBE`` env var (default: enabled).
+
+# COMMAND ----------
+
+try:
+    _banner("Step 1e.2 — Prompt Registry Probe")
+    from genie_space_optimizer.optimization.preflight import preflight_probe_prompt_registry
+    _probe_out = preflight_probe_prompt_registry(spark, run_id, catalog, schema)
+    if _probe_out.get("skipped"):
+        _log("Prompt Registry probe skipped", reason=_probe_out.get("reason_code"))
+    else:
+        _log("Prompt Registry probe OK")
+except Exception as exc:
+    _banner("Prompt Registry Probe FAILED")
+    _log(
+        "Failure details",
+        error_type=type(exc).__name__,
+        error_message=str(exc),
+        traceback=traceback.format_exc(),
+    )
     raise
 
 # COMMAND ----------

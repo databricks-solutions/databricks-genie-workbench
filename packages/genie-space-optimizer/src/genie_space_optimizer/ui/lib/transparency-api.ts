@@ -78,12 +78,27 @@ export interface IterationSummary {
   lever: number | null;
   evalScope: string;
   overallAccuracy: number;
+  // Bug #2 denominator contract. Prefer evaluatedCount for UI math
+  // (matches overallAccuracy). totalQuestions is kept for back-compat.
   totalQuestions: number;
+  evaluatedCount: number;
   correctCount: number;
+  excludedCount: number;
+  quarantinedCount: number;
   repeatabilityPct: number | null;
   thresholdsMet: boolean;
   judgeScores: Record<string, number | null>;
 }
+
+// Stable enum mirroring EXCLUSION_* codes in evaluation.py. Extended on the
+// server side first; the UI must accept unknown strings gracefully.
+export type ExclusionReasonCode =
+  | "gt_excluded"
+  | "both_empty"
+  | "genie_result_unavailable"
+  | "quarantined"
+  | "temporal_stale"
+  | string;
 
 export interface QuestionResult {
   questionId: string;
@@ -94,6 +109,17 @@ export interface QuestionResult {
   matchType: string | null;
   expectedSql: string | null;
   generatedSql: string | null;
+  // Bug #3 — runtime exclusion metadata.
+  excluded?: boolean;
+  exclusionReasonCode?: ExclusionReasonCode | null;
+  exclusionReasonDetail?: string | null;
+}
+
+export interface QuarantinedBenchmark {
+  questionId: string;
+  question: string;
+  reasonCode: ExclusionReasonCode;
+  reasonDetail: string;
 }
 
 export interface GateResultEntry {
@@ -130,14 +156,20 @@ export interface IterationDetail {
   status: string;
   overallAccuracy: number;
   judgeScores: Record<string, number | null>;
+  // Bug #2 denominator contract.
   totalQuestions: number;
+  evaluatedCount: number;
   correctCount: number;
+  excludedCount: number;
+  quarantinedCount: number;
   mlflowRunId: string | null;
   modelId: string | null;
   gates: GateResultEntry[];
   patches: Record<string, unknown>[];
   reflection: ReflectionEntry | null;
   questions: QuestionResult[];
+  // Bug #3 — benchmarks removed pre-evaluation.
+  quarantinedBenchmarks: QuarantinedBenchmark[];
   clusterInfo: Record<string, unknown> | null;
   timestamp: string | null;
 }

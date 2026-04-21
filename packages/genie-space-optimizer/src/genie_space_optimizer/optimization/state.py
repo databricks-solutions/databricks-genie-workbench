@@ -100,6 +100,9 @@ def _migrate_add_columns(spark: SparkSession, catalog: str, schema: str) -> None
         (TABLE_RUNS, "labeling_session_url", "STRING COMMENT 'URL to the MLflow Review App labeling session'"),
         (TABLE_ITERATIONS, "reflection_json", "STRING COMMENT 'JSON: adaptive loop reflection entry for this iteration'"),
         (TABLE_DATA_ACCESS_GRANTS, "grant_type", "STRING DEFAULT 'read' COMMENT 'read|write — read grants SELECT/EXECUTE, write adds MODIFY'"),
+        (TABLE_ITERATIONS, "evaluated_count", "INT COMMENT 'Denominator of overall_accuracy (total_questions minus runtime exclusions; see Bug #2 denominator contract)'"),
+        (TABLE_ITERATIONS, "excluded_count", "INT COMMENT 'Number of rows removed from the denominator at runtime (ground-truth excluded, both empty, Genie unavailable, temporally stale, etc.)'"),
+        (TABLE_ITERATIONS, "quarantined_benchmarks_json", "STRING COMMENT 'JSON: array of benchmarks removed by pre-evaluation quarantine ({question_id, reason_code, reason_detail, question})'"),
     ]
     import re as _re
     _default_re = _re.compile(r"\bDEFAULT\s+'[^']*'", _re.IGNORECASE)
@@ -367,11 +370,28 @@ def write_iteration(
 
     mlflow_run_id = eval_result.get("mlflow_run_id")
 
+    # Bug #2 denominator contract fields.
+    # Read from eval_result but fall back sensibly:
+    #   evaluated_count defaults to total_questions (matches pre-Bug#2 behavior
+    #   where no rows were excluded at runtime).
+    #   excluded_count / quarantined default to 0 / empty list.
+    # This keeps the write safe against eval_results emitted by older call
+    # sites (e.g. repeatability-only paths) that don't populate the new keys.
+    _total_questions = int(eval_result.get("total_questions", 0) or 0)
+    _evaluated_count = eval_result.get("evaluated_count")
+    if _evaluated_count is None:
+        _evaluated_count = _total_questions
+    _excluded_count = int(eval_result.get("excluded_count", 0) or 0)
+    _quarantined = eval_result.get("quarantined_benchmarks")
+    if not isinstance(_quarantined, list):
+        _quarantined = []
+
     col_names = (
         "run_id, iteration, lever, eval_scope, timestamp, mlflow_run_id, model_id, "
         "overall_accuracy, total_questions, correct_count, scores_json, failures_json, "
         "remaining_failures, arbiter_actions_json, repeatability_pct, repeatability_json, "
-        "thresholds_met, rows_json, reflection_json"
+        "thresholds_met, rows_json, reflection_json, "
+        "evaluated_count, excluded_count, quarantined_benchmarks_json"
     )
     vals = ", ".join(
         [
@@ -383,7 +403,7 @@ def write_iteration(
             f"'{mlflow_run_id}'" if mlflow_run_id else "NULL",
             f"'{model_id}'" if model_id else "NULL",
             str(eval_result.get("overall_accuracy", 0.0)),
-            str(eval_result.get("total_questions", 0)),
+            str(_total_questions),
             str(eval_result.get("correct_count", 0)),
             f"'{_esc(json.dumps(scores))}'",
             _opt_json(failures),
@@ -394,6 +414,9 @@ def write_iteration(
             str(thresholds_met).lower(),
             _opt_json(rows_data),
             _opt_json(reflection_json),
+            str(int(_evaluated_count)),
+            str(_excluded_count),
+            _opt_json(_quarantined) if _quarantined else "NULL",
         ]
     )
 
