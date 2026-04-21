@@ -333,10 +333,20 @@ def _gen_questions_instructions(shared: str) -> dict:
         "1. **suggested_display_name**: A concise, professional name for the Genie Space "
         "(e.g., 'NYC Taxi Revenue Performance', 'TPC-H Sales Analytics', 'Customer Support Dashboard')\n"
         "2. **sample_questions**: EXACTLY 5 natural-language questions a business user would ask\n"
-        "3. **text_instructions**: Domain knowledge for the Genie agent, organized under "
-        "category headers (## Terminology, ## Default Assumptions, ## Data Quality Warnings, etc.)\n\n"
+        "3. **text_instructions**: Domain knowledge for the Genie agent, organized under the "
+        "canonical GSL section headers (see rules below).\n\n"
         "Text instructions should contain ONLY business logic and terminology — NOT SQL formulas, "
-        "filter expressions, or join definitions (those go in other sections).\n"
+        "filter expressions, or join definitions (those go in other sections).\n\n"
+        "**Section vocabulary (use these exact headers, omit any that are empty, keep this order):**\n"
+        "- `## PURPOSE` — one or two bullets stating the space's scope and audience.\n"
+        "- `## DISAMBIGUATION` — clarification-question triggers and term-resolution rules "
+        "(e.g., \"When the user asks about 'customer performance' without a time range, ask them to clarify the period\"; "
+        "\"'Q1' means calendar Q1 unless the user says 'fiscal Q1'\").\n"
+        "- `## DATA QUALITY NOTES` — caveats the model needs to know: NULL handling, known bad rows, "
+        "column semantics not captured in the column description.\n"
+        "- `## CONSTRAINTS` — hard guardrails: what never to show (PII columns, secrets), what not to do.\n"
+        "- `## Instructions you must follow when providing summaries` — summary-customization behavior "
+        "(rounding rules, mandatory caveats). **Use this exact heading — it is Databricks's blessed string.**\n\n"
         "IMPORTANT: Keep text_instructions UNDER 2,000 characters total. Be concise — use bullet points, "
         "not paragraphs. If you have more than 2,000 chars of context, prioritize the most important rules "
         "and drop the rest. Long instructions push out higher-value SQL context in Genie's prompt window.\n"
@@ -345,7 +355,10 @@ def _gen_questions_instructions(shared: str) -> dict:
         "CRITICAL: Only reference category names, tiers, statuses, and labels that appear in the "
         "Column Profiles section below. Do NOT invent terms — use real data values.\n\n"
         "Return ONLY valid JSON:\n"
-        '{"suggested_display_name": "...", "sample_questions": ["..."], "text_instructions": ["## Terminology\\n- ...", "## Default Assumptions\\n- ..."]}\n\n'
+        '{"suggested_display_name": "...", "sample_questions": ["..."], "text_instructions": '
+        '["## PURPOSE\\n- Answer ... for ... users.", '
+        '"## DISAMBIGUATION\\n- When the user says X, interpret as Y.", '
+        '"## CONSTRAINTS\\n- Never show PII columns."]}\n\n'
         f"Context:\n{shared}"
     )
     return _call_llm_section(prompt, max_tokens=3000, section_name="questions/instructions")

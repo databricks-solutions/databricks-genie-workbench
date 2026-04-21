@@ -194,6 +194,68 @@ def test_all_steps_have_prompts_and_summaries():
         assert len(STEP_SUMMARIES[step]) > 10, f"Summary too short for step: {step}"
 
 
+# --- GSL instruction schema conformance (near-term, epic #87) ---
+# The Create Agent's plan-step prompt and the parallel-generation prompt both
+# must reference the 5 canonical GSL section headers so the agent emits
+# text_instructions that Fix Agent can preserve. See docs/gsl-instruction-schema.md.
+
+CANONICAL_GSL_SECTIONS = [
+    "## PURPOSE",
+    "## DISAMBIGUATION",
+    "## DATA QUALITY NOTES",
+    "## CONSTRAINTS",
+    "## Instructions you must follow when providing summaries",
+]
+
+
+def test_plan_step_prompt_uses_canonical_gsl_sections():
+    plan_prompt = STEP_PROMPTS["plan"]
+    for section in CANONICAL_GSL_SECTIONS:
+        assert section in plan_prompt, (
+            f"Plan-step prompt missing canonical GSL section header: {section!r}. "
+            f"See docs/gsl-instruction-schema.md."
+        )
+
+
+def test_plan_step_prompt_does_not_teach_legacy_sections():
+    """Legacy exemplar headers (## Terminology, ## Default Assumptions, ## Fiscal Calendar,
+    ## Data Quality Warnings) must not appear as instructional examples — they've been
+    replaced by the canonical GSL vocabulary."""
+    plan_prompt = STEP_PROMPTS["plan"]
+    # Each legacy header should not appear as a Markdown section heading in the prompt.
+    for legacy in ["## Terminology", "## Default Assumptions", "## Fiscal Calendar", "## Data Quality Warnings"]:
+        assert legacy not in plan_prompt, (
+            f"Plan-step prompt still teaches legacy section header {legacy!r}. "
+            f"Replace with canonical GSL vocabulary from docs/gsl-instruction-schema.md."
+        )
+
+
+def test_parallel_plan_prompt_uses_canonical_gsl_sections():
+    """The parallel plan generator (_gen_questions_instructions) builds its prompt inline.
+    Capture it by mocking _call_llm_section and assert canonical section names appear."""
+    from backend.services import plan_builder
+
+    captured = {}
+
+    def fake_call(prompt, *, max_tokens, section_name):
+        captured["prompt"] = prompt
+        captured["section_name"] = section_name
+        return {"suggested_display_name": "x", "sample_questions": [], "text_instructions": []}
+
+    original = plan_builder._call_llm_section
+    plan_builder._call_llm_section = fake_call
+    try:
+        plan_builder._gen_questions_instructions("some shared context")
+    finally:
+        plan_builder._call_llm_section = original
+
+    prompt = captured["prompt"]
+    for section in CANONICAL_GSL_SECTIONS:
+        assert section in prompt, (
+            f"_gen_questions_instructions prompt missing canonical GSL section header: {section!r}."
+        )
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for test in tests:
