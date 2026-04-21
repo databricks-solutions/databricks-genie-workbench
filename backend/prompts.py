@@ -290,7 +290,7 @@ _VALID_FIELD_PATHS_BLOCK = """## Valid Field Paths (ONLY use these exact names p
 - `data_sources.metric_views[N].identifier` — string (same structure as tables)
 
 **instructions:**
-- `instructions.text_instructions[N].content` — array of strings (max 1 per space)
+- `instructions.text_instructions[N].content` — array of strings (max 1 per space). Holds the agent's natural-language guidance organized under canonical GSL `## Section` headers (`## PURPOSE`, `## DISAMBIGUATION`, `## DATA QUALITY NOTES`, `## CONSTRAINTS`, `## Instructions you must follow when providing summaries`). When patching, **preserve every existing `## Section` header** — only edit bullets within a section or add a new section at the correct position. See `docs/gsl-instruction-schema.md`.
 - `instructions.example_question_sqls[N].question` — array of strings
 - `instructions.example_question_sqls[N].sql` — array of strings (each line as element)
 - `instructions.example_question_sqls[N].usage_guidance` — array of strings
@@ -373,6 +373,7 @@ Rules:
 - All string content fields (description, content, sql, question) are arrays of strings
 - Keep values CONCISE — descriptions should be 1-2 sentences, not paragraphs
 - Keep the total JSON response under 4000 tokens to avoid truncation
+- When patching `instructions.text_instructions[N].content`, preserve ALL existing `## Section` headers (e.g. `## PURPOSE`, `## DISAMBIGUATION`, `## CONSTRAINTS`). Only edit bullets within a section, or insert a new section at the correct position in the canonical order (PURPOSE → DISAMBIGUATION → DATA QUALITY NOTES → CONSTRAINTS → Instructions you must follow when providing summaries). If the only way to address the finding is to delete a canonical section, SKIP the patch: emit an entry with `"field_path": ""` and a `rationale` explaining which section would be lost.
 
 Output JSON with this exact structure:
 {{
@@ -426,8 +427,12 @@ If the fix requires changing multiple fields (e.g. adding usage_guidance to seve
 If this finding cannot be fixed via a config patch, return:
 {{"field_path": "", "new_value": null, "rationale": "Explanation"}}
 
+If applying the fix would require ERASING a canonical `## Section` header from `instructions.text_instructions[N].content` (`## PURPOSE`, `## DISAMBIGUATION`, `## DATA QUALITY NOTES`, `## CONSTRAINTS`, or `## Instructions you must follow when providing summaries`), DECLINE the patch by returning:
+{{"decline": true, "rationale": "Applying this fix would erase the ## <SECTION> header, which must be preserved. <what the user should do instead>"}}
+
 Rules:
 - Output ONLY valid JSON. Do NOT include any text, analysis, or explanation outside the JSON.
 - Keep values concise — 1-2 sentences for descriptions.
 - Replace N with actual array indices from the current configuration.
-- Generate AT MOST 50 patches. If the issue affects more items (e.g. 100+ columns need descriptions), fix only the first 50 most important ones. Partial progress is better than a truncated response."""
+- Generate AT MOST 50 patches. If the issue affects more items (e.g. 100+ columns need descriptions), fix only the first 50 most important ones. Partial progress is better than a truncated response.
+- When patching `instructions.text_instructions[N].content`, preserve ALL existing `## Section` headers that are already in the content. Only edit bullets within a section, or insert a new canonical section at the correct position (order: PURPOSE → DISAMBIGUATION → DATA QUALITY NOTES → CONSTRAINTS → Instructions you must follow when providing summaries). If the only way to address the finding is to delete a canonical section, DECLINE the patch using the decline shape above."""
