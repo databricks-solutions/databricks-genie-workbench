@@ -60,9 +60,14 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
       {
         "id": "b2c3d4e5f6a70000000000000000000b",
         "content": [
-          "When calculating revenue, sum the order_amount column.\n",
-          "When asked about 'last month', use the previous calendar month.\n",
-          "Round all monetary values to 2 decimal places.\n"
+          "## PURPOSE\n",
+          "- Answer questions about order revenue for FY2024 US retail orders.\n",
+          "\n",
+          "## DISAMBIGUATION\n",
+          "- When asked about 'last month', use the previous calendar month.\n",
+          "\n",
+          "## Instructions you must follow when providing summaries\n",
+          "- Round all monetary values to 2 decimal places.\n"
         ]
       }
     ],
@@ -202,7 +207,7 @@ Reference for `generate_config` and `update_config` tools. The tools handle all 
 
 ### Size limits
 - `version`: Required. Must be `2`.
-- `text_instructions`: Max **1** entry per space. Each content element **must end with `\n`** (the API concatenates without separators — omitting `\n` jams text together).
+- `text_instructions`: Max **1** entry per space. Each content element **must end with `\n`** (the API concatenates without separators — omitting `\n` jams text together). For section vocabulary and format rules (PURPOSE / DISAMBIGUATION / DATA QUALITY NOTES / CONSTRAINTS / summary-behavior), see `docs/gsl-instruction-schema.md`.
 - Max **100** total instructions (each example SQL + each function + 1 for text block).
 - Table identifiers: three-level namespace `catalog.schema.table`.
 - Individual strings: max 25,000 characters.
