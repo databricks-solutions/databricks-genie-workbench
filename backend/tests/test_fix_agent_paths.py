@@ -4,12 +4,20 @@ Tests _get_value_at_path(), _set_value_at_path(), _sanitize_ids (pure functions)
 and _apply_config_sync (retry logic, mocked).
 """
 
+import asyncio
+import json
 import re
 from unittest.mock import MagicMock, patch, call
 
 import pytest
 
-from backend.services.fix_agent import _get_value_at_path, _set_value_at_path, _sanitize_ids
+from backend.services.fix_agent import (
+    FixAgent,
+    _get_value_at_path,
+    _parse_patches,
+    _set_value_at_path,
+    _sanitize_ids,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -378,3 +386,161 @@ class TestApplyConfigSyncRetry:
         all_ids = sq_ids + bq_ids
         assert all_ids.count(shared_id) == 1  # kept in sample_questions, removed from benchmarks
         assert len(patched_config["benchmarks"]["questions"]) == 1  # only other_id remains
+
+
+# ---------------------------------------------------------------------------
+# GSL section-header preservation: _parse_patches and run() (near-term, epic #87)
+# ---------------------------------------------------------------------------
+
+class TestParsePatchesDecline:
+    """_parse_patches must handle the decline shape emitted when a fix would
+    erase a canonical GSL section header in text_instructions.content."""
+
+    def test_decline_true_returns_marker_patch(self):
+        content = json.dumps({
+            "decline": True,
+            "rationale": "Applying this fix would erase the ## PURPOSE header.",
+        })
+        patches = _parse_patches(content)
+        assert len(patches) == 1
+        assert patches[0]["declined"] is True
+        assert patches[0]["field_path"] == ""
+        assert patches[0]["new_value"] is None
+        assert "## PURPOSE" in patches[0]["rationale"]
+
+    def test_decline_true_without_rationale_uses_fallback(self):
+        content = json.dumps({"decline": True})
+        patches = _parse_patches(content)
+        assert len(patches) == 1
+        assert patches[0]["declined"] is True
+        assert patches[0]["rationale"]  # non-empty fallback
+
+    def test_decline_false_is_not_a_decline(self):
+        """Only `decline: true` triggers the decline path — `decline: false` is treated
+        as missing; falls through to normal parsing."""
+        content = json.dumps({"decline": False, "field_path": "x.y", "new_value": "v", "rationale": "r"})
+        patches = _parse_patches(content)
+        assert len(patches) == 1
+        assert patches[0].get("declined") is not True
+        assert patches[0]["field_path"] == "x.y"
+
+    def test_normal_patch_unaffected(self):
+        content = json.dumps({"field_path": "x.y", "new_value": "v", "rationale": "r"})
+        patches = _parse_patches(content)
+        assert len(patches) == 1
+        assert patches[0].get("declined") is not True
+        assert patches[0]["field_path"] == "x.y"
+
+    def test_patches_array_unaffected(self):
+        content = json.dumps({"patches": [
+            {"field_path": "a.b", "new_value": "1", "rationale": "r1"},
+            {"field_path": "c.d", "new_value": "2", "rationale": "r2"},
+        ]})
+        patches = _parse_patches(content)
+        assert len(patches) == 2
+        assert all(p.get("declined") is not True for p in patches)
+
+
+class TestFixAgentRunSkippedEvent:
+    """FixAgent.run must emit {status: "skipped", ...} carrying the LLM's rationale
+    when a patch is declined — not try to apply, not report success as a silent no-op."""
+
+    def _make_agent(self) -> FixAgent:
+        agent = FixAgent.__new__(FixAgent)
+        agent.model = "test-model"
+        return agent
+
+    def _collect_events(self, agent: FixAgent, space_id: str, findings: list[str], space_config: dict) -> list[dict]:
+        async def _drain():
+            events = []
+            async for ev in agent.run(space_id=space_id, findings=findings, space_config=space_config):
+                events.append(ev)
+            return events
+        return asyncio.run(_drain())
+
+    @patch("backend.services.fix_agent._apply_config_to_databricks")
+    @patch("backend.services.fix_agent._generate_patches_for_finding")
+    def test_declined_patch_emits_skipped_event(self, mock_gen, mock_apply):
+        mock_gen.return_value = [{
+            "field_path": "",
+            "new_value": None,
+            "rationale": "Applying this fix would erase the ## PURPOSE header.",
+            "declined": True,
+        }]
+        events = self._collect_events(
+            self._make_agent(),
+            space_id="s1",
+            findings=["text instructions too brief"],
+            space_config={"instructions": {}, "data_sources": {"tables": []}},
+        )
+
+        skipped = [e for e in events if e.get("status") == "skipped"]
+        assert len(skipped) == 1, f"Expected one skipped event, got {[e.get('status') for e in events]}"
+        assert "## PURPOSE" in skipped[0]["rationale"]
+        assert skipped[0]["field_path"] == ""
+        # No config was applied
+        mock_apply.assert_not_called()
+
+    @patch("backend.services.fix_agent._apply_config_to_databricks")
+    @patch("backend.services.fix_agent._generate_patches_for_finding")
+    def test_normal_patch_still_emits_patch_event(self, mock_gen, mock_apply):
+        """Smoke: a normal (non-declined) patch is applied and emits status=patch, not skipped."""
+        mock_gen.return_value = [{
+            "field_path": "data_sources.tables[0].description",
+            "new_value": ["New description"],
+            "rationale": "Add description for the orders table.",
+        }]
+        async def noop(space_id, patches):
+            return None
+        mock_apply.side_effect = noop
+
+        events = self._collect_events(
+            self._make_agent(),
+            space_id="s1",
+            findings=["orders table has no description"],
+            space_config={
+                "instructions": {},
+                "data_sources": {"tables": [{"identifier": "c.s.orders"}]},
+            },
+        )
+
+        statuses = [e.get("status") for e in events]
+        assert "patch" in statuses
+        assert "skipped" not in statuses
+
+    @patch("backend.services.fix_agent._apply_config_to_databricks")
+    @patch("backend.services.fix_agent._generate_patches_for_finding")
+    def test_legacy_empty_field_path_emits_skipped_not_patch(self, mock_gen, mock_apply):
+        """If the LLM picks the legacy no-patch shape (empty field_path, no
+        `declined` flag) — e.g. for a GSL section-erasure case where it did not
+        read the decline instruction — run() must still normalize to skipped
+        so the UI surfaces the rationale and phase resolves to 'complete'.
+        Without this guard, the loop yields a synthetic status=patch event
+        with empty field_path, dropping the rationale and flipping the panel
+        to error."""
+        mock_gen.return_value = [{
+            "field_path": "",
+            "new_value": None,
+            "rationale": "Would erase the ## PURPOSE header; no other field covers this finding.",
+        }]
+
+        events = self._collect_events(
+            self._make_agent(),
+            space_id="s1",
+            findings=["text instructions too brief"],
+            space_config={"instructions": {}, "data_sources": {"tables": []}},
+        )
+
+        statuses = [e.get("status") for e in events]
+        assert "skipped" in statuses, f"Expected 'skipped', got {statuses}"
+        # No synthetic patch event with empty field_path
+        patch_events = [e for e in events if e.get("status") == "patch"]
+        assert not patch_events, (
+            f"Legacy empty-field_path shape must not surface as a 'patch' event, "
+            f"got: {patch_events}"
+        )
+        # Rationale is carried through to the skipped event
+        skipped = [e for e in events if e.get("status") == "skipped"]
+        assert "## PURPOSE" in skipped[0]["rationale"]
+        # Nothing was applied to Databricks
+        mock_apply.assert_not_called()

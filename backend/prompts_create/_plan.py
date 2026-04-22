@@ -53,29 +53,36 @@ The plan should include:
    - **Business rules that span multiple columns/tables**: "an 'active customer' has at least 1 order in the last 90 days AND a non-null email"
    - **Response behavior**: "when results are empty, suggest the user broaden the date range"
 
-   **Format: categorized sections with if-then rules.**
+   **Format: canonical GSL sections.** Use these exact headers, in this order, omitting any that are empty:
 
    ```
-   ## Terminology
+   ## PURPOSE
+   - Answer revenue and customer questions for the FY2024 US retail team.
+   - Audience: merchandising managers — assume retail/e-commerce fluency.
+
+   ## DISAMBIGUATION
    - "revenue" means net revenue (after returns and discounts), NOT gross revenue.
    - "active customer" = customer with at least 1 order in the last 90 days AND a non-null email address.
-
-   ## Default Assumptions
    - When no time range is specified, default to the current calendar year.
-   - When no region is specified, include all regions.
+   - Fiscal quarters: Q1=Feb-Apr, Q2=May-Jul, Q3=Aug-Oct, Q4=Nov-Jan. If the user says "this quarter", use the current fiscal quarter.
 
-   ## Fiscal Calendar
-   - Fiscal quarters: Q1=Feb-Apr, Q2=May-Jul, Q3=Aug-Oct, Q4=Nov-Jan.
-   - If the user says "this quarter", use the current fiscal quarter, not calendar quarter.
-
-   ## Data Quality Warnings
+   ## DATA QUALITY NOTES
    - The `status` column has inconsistent casing ('Active', 'ACTIVE', 'active'). ALWAYS use LOWER(status) when filtering.
    - `discount_code` is 87% NULL — warn the user if results look sparse.
    - `is_premium` stores booleans as strings ('true'/'false') — use LOWER(is_premium) = 'true', not a boolean comparison.
+
+   ## CONSTRAINTS
+   - Never show PII columns (customer_email, customer_phone).
+   - Do not project raw payment tokens.
+
+   ## Instructions you must follow when providing summaries
+   - Round monetary values to 2 decimal places.
+   - Always state the date range used in the summary.
    ```
 
    **Formatting rules:**
-   - **Categorize** under `##` headers (Terminology, Default Assumptions, Fiscal Calendar, Data Quality, etc.)
+   - **Use ONLY the canonical section headers**: `## PURPOSE`, `## DISAMBIGUATION`, `## DATA QUALITY NOTES`, `## CONSTRAINTS`, `## Instructions you must follow when providing summaries`. Keep them in this order. Do not invent new section names (e.g. "Terminology", "Fiscal Calendar") — fold that content into `## DISAMBIGUATION` or `## DATA QUALITY NOTES` as appropriate.
+   - **The summary-behavior header is verbatim** — Databricks's docs call out that exact string as how Genie routes summary-customization behavior. Do not paraphrase it.
    - **Use if-then rules** for conditional behavior: "If the user says X, interpret it as Y"
    - **Use ALWAYS/NEVER** for hard constraints
    - **Put critical rules first** — LLMs have a primacy bias

@@ -14,6 +14,7 @@ import {
   ChevronDown,
   ChevronRight,
   Info,
+  MinusCircle,
 } from "lucide-react"
 import { streamFixAgent } from "@/lib/api"
 import type { FixPatch } from "@/types"
@@ -21,8 +22,9 @@ import type { FixPatch } from "@/types"
 type Phase = "running" | "applying" | "complete" | "error"
 interface Issue {
   text: string
-  status: "pending" | "fixing" | "fixed" | "error"
+  status: "pending" | "fixing" | "fixed" | "skipped" | "error"
   patch?: FixPatch
+  skipReason?: string
 }
 
 interface FixAgentPanelProps {
@@ -46,6 +48,7 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
 
   const abortRef = useRef<(() => void) | null>(null)
   const patchIndexRef = useRef(0)
+  const skipCountRef = useRef(0)
   const phaseRef = useRef<Phase>("running")
 
   // Start fix agent on mount
@@ -67,7 +70,67 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
             break
 
           case "patch":
+            // If the backend emits an empty field_path, the LLM couldn't
+            // produce a config change — route to the skipped rendering path
+            // so the rationale survives and phase resolves to "complete".
+            if (!event.field_path) {
+              skipCountRef.current++
+              setIssues(prev => {
+                const idx = patchIndexRef.current
+                patchIndexRef.current++
+                return prev.map((item, i) => {
+                  if (i === idx) {
+                    return {
+                      ...item,
+                      status: "skipped" as const,
+                      skipReason: event.rationale || "Agent could not generate a patch.",
+                    }
+                  }
+                  if (i === idx + 1 && item.status === "pending") {
+                    return { ...item, status: "fixing" as const }
+                  }
+                  return item
+                })
+              })
+              setStatusMessage("Skipped one fix — see details")
+              break
+            }
             // Advance the next pending/fixing issue to "fixed"
+            {
+              const fieldPath = event.field_path
+              setIssues(prev => {
+                const idx = patchIndexRef.current
+                patchIndexRef.current++
+                return prev.map((item, i) => {
+                  if (i === idx) {
+                    return {
+                      ...item,
+                      status: "fixed" as const,
+                      patch: {
+                        field_path: fieldPath,
+                        old_value: event.old_value,
+                        new_value: event.new_value,
+                        rationale: event.rationale || "",
+                      },
+                    }
+                  }
+                  // Mark the next one as "fixing"
+                  if (i === idx + 1 && item.status === "pending") {
+                    return { ...item, status: "fixing" as const }
+                  }
+                  return item
+                })
+              })
+              setStatusMessage(`Applied patch: ${fieldPath}`)
+            }
+            break
+
+          case "skipped":
+            // Agent declined the patch (e.g. would erase a canonical GSL
+            // section header). Advance the index like "patch" so later events
+            // land on the right row, and surface the rationale so the user
+            // knows why nothing was applied.
+            skipCountRef.current++
             setIssues(prev => {
               const idx = patchIndexRef.current
               patchIndexRef.current++
@@ -75,23 +138,17 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
                 if (i === idx) {
                   return {
                     ...item,
-                    status: "fixed" as const,
-                    patch: event.field_path ? {
-                      field_path: event.field_path,
-                      old_value: event.old_value,
-                      new_value: event.new_value,
-                      rationale: event.rationale || "",
-                    } : undefined,
+                    status: "skipped" as const,
+                    skipReason: event.rationale || "Agent declined to apply this fix.",
                   }
                 }
-                // Mark the next one as "fixing"
                 if (i === idx + 1 && item.status === "pending") {
                   return { ...item, status: "fixing" as const }
                 }
                 return item
               })
             })
-            setStatusMessage(`Applied patch: ${event.field_path || "config update"}`)
+            setStatusMessage("Skipped one fix — see details")
             break
 
           case "applying":
@@ -102,26 +159,31 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
 
           case "complete": {
             const applied = event.patches_applied ?? 0
+            // Leave "skipped" rows alone in both branches so their rationale
+            // stays visible after the run finishes.
             if (applied > 0) {
-              // Only mark remaining as fixed if patches were actually applied
               setIssues(prev => prev.map(item =>
                 item.status === "pending" || item.status === "fixing"
                   ? { ...item, status: "fixed" as const }
                   : item
               ))
             } else {
-              // No patches applied — reset any "fixing" back to pending
               setIssues(prev => prev.map(item =>
                 item.status === "fixing" ? { ...item, status: "pending" as const } : item
               ))
             }
-            const newPhase = applied > 0 ? "complete" : "error"
+            // If all findings were declined (applied===0 but everything ended
+            // up "skipped"), the run still completed — don't flip to "error".
+            const anySkipped = skipCountRef.current > 0
+            const newPhase = applied > 0 || anySkipped ? "complete" : "error"
             setPhase(newPhase)
             phaseRef.current = newPhase
             setSummary(event.summary || (applied > 0
               ? `Applied ${applied} fix(es)`
-              : "Could not generate fixes — try re-scanning first"))
-            if (applied === 0) setErrorMessage(event.summary || "No patches could be generated")
+              : anySkipped
+                ? "All fixes were declined — see details"
+                : "Could not generate fixes — try re-scanning first"))
+            if (applied === 0 && !anySkipped) setErrorMessage(event.summary || "No patches could be generated")
             break
           }
 
@@ -162,6 +224,7 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const fixedCount = issues.filter(i => i.status === "fixed").length
+  const progressCount = issues.filter(i => i.status === "fixed" || i.status === "skipped").length
   const totalCount = issues.length
   // Detect if any finding mentions 50+ columns needing descriptions
   const hasBulkColumns = findings.some(f => {
@@ -221,7 +284,7 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
               className={`h-full rounded-full transition-all duration-500 ${
                 phase === "complete" ? "bg-emerald-500" : phase === "error" ? "bg-red-400" : "bg-accent"
               }`}
-              style={{ width: `${phase === "complete" ? 100 : (fixedCount / totalCount) * 100}%` }}
+              style={{ width: `${phase === "complete" ? 100 : (progressCount / totalCount) * 100}%` }}
             />
           </div>
         )}
@@ -232,9 +295,9 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
         {issues.map((issue, idx) => (
           <div key={idx}>
             <button
-              onClick={() => issue.patch && setExpandedIdx(expandedIdx === idx ? null : idx)}
+              onClick={() => (issue.patch || issue.skipReason) && setExpandedIdx(expandedIdx === idx ? null : idx)}
               className={`flex items-start gap-3 w-full text-left py-2 px-2 rounded-lg transition-colors ${
-                issue.patch ? "hover:bg-surface-secondary cursor-pointer" : "cursor-default"
+                issue.patch || issue.skipReason ? "hover:bg-surface-secondary cursor-pointer" : "cursor-default"
               }`}
             >
               {/* Status icon */}
@@ -246,6 +309,10 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
                 ) : issue.status === "fixing" ? (
                   <div className="w-5 h-5 rounded-full bg-accent/15 flex items-center justify-center">
                     <Loader2 className="w-3 h-3 text-accent animate-spin" />
+                  </div>
+                ) : issue.status === "skipped" ? (
+                  <div className="w-5 h-5 rounded-full bg-amber-500/20 flex items-center justify-center">
+                    <MinusCircle className="w-3 h-3 text-amber-400" />
                   </div>
                 ) : issue.status === "error" ? (
                   <div className="w-5 h-5 rounded-full bg-red-500/20 flex items-center justify-center">
@@ -261,7 +328,10 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
               {/* Issue text */}
               <div className="flex-1 min-w-0">
                 <p className={`text-sm ${
-                  issue.status === "fixed" ? "text-secondary" : issue.status === "error" ? "text-red-400" : "text-primary"
+                  issue.status === "fixed" ? "text-secondary"
+                    : issue.status === "skipped" ? "text-secondary"
+                    : issue.status === "error" ? "text-red-400"
+                    : "text-primary"
                 }`}>
                   {issue.text}
                 </p>
@@ -272,6 +342,15 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
                       : <ChevronRight className="w-3 h-3 text-muted" />
                     }
                     <span className="text-xs text-muted font-mono">{issue.patch.field_path}</span>
+                  </div>
+                )}
+                {issue.skipReason && (
+                  <div className="flex items-center gap-1 mt-0.5">
+                    {expandedIdx === idx
+                      ? <ChevronDown className="w-3 h-3 text-muted" />
+                      : <ChevronRight className="w-3 h-3 text-muted" />
+                    }
+                    <span className="text-xs text-amber-400">Skipped — tap for reason</span>
                   </div>
                 )}
               </div>
@@ -288,6 +367,13 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
                   {" → "}
                   <span className="text-emerald-400">{formatValue(issue.patch.new_value)}</span>
                 </div>
+              </div>
+            )}
+
+            {/* Expanded skip rationale */}
+            {expandedIdx === idx && issue.skipReason && (
+              <div className="ml-10 mb-2 px-3 py-2 bg-amber-500/5 border border-amber-500/20 rounded-lg text-xs space-y-1">
+                <p className="text-amber-300/90">{issue.skipReason}</p>
               </div>
             )}
           </div>
