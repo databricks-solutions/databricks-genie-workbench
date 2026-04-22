@@ -686,6 +686,33 @@ def _is_hidden(cc: dict) -> bool:
     return False
 
 
+def _table_has_rls(tbl_dict: dict) -> bool:
+    """Return True if the table (or any of its columns) has row-level security.
+
+    Tables with ``row_filter`` or ``column_mask`` (at either the table level or
+    on any individual column) silently disable Genie's entity matching / value
+    dictionary features. Enabling entity matching on such tables is a no-op
+    that wastes one of the 120 per-space value-dictionary slots — detect this
+    up front so the optimizer does not spend slots on columns that can't use
+    them.
+
+    Mirrors the detection used in
+    ``genie_space_optimizer.iq_scan.scoring.calculate_score`` (Check 9) so the
+    IQ scan and the auto-applier stay aligned on what counts as RLS.
+    """
+    if bool(tbl_dict.get("row_filter") or tbl_dict.get("column_mask")):
+        return True
+    for col in tbl_dict.get("column_configs", []) + tbl_dict.get("columns", []):
+        if col.get("row_filter") or col.get("column_mask"):
+            return True
+    return False
+
+
+def _column_has_rls(cc: dict) -> bool:
+    """Return True if this column has its own ``row_filter`` or ``column_mask``."""
+    return bool(cc.get("row_filter") or cc.get("column_mask"))
+
+
 def _entity_matching_score(column_name: str) -> int:
     """Score a STRING column for entity matching priority.
 
@@ -781,6 +808,9 @@ def auto_apply_prompt_matching(
     )
 
     entity_candidates: list[tuple[str, str, str, int]] = []
+    # RLS silently disables entity matching on tables with row_filter / column_mask.
+    # Track skipped tables so we can log once per table instead of per column.
+    rls_skipped_tables: list[str] = []
 
     def _table_short_name(identifier: str) -> str:
         parts = identifier.replace("`", "").split(".")
@@ -789,6 +819,9 @@ def auto_apply_prompt_matching(
     for tbl in tables:
         identifier = tbl.get("identifier", "")
         short_name = _table_short_name(identifier)
+        table_rls = _table_has_rls(tbl)
+        if table_rls:
+            rls_skipped_tables.append(identifier)
         for cc in tbl.get("column_configs", []):
             col_name = cc.get("column_name", "")
             if _is_hidden(cc) or not col_name:
@@ -805,12 +838,22 @@ def auto_apply_prompt_matching(
                 dtype.upper().split("(")[0].strip() == "STRING"
                 and not cc.get("enable_entity_matching")
             ):
+                if table_rls or _column_has_rls(cc):
+                    logger.info(
+                        "Skipping entity matching for %s.%s — RLS (row_filter / column_mask) "
+                        "silently disables value dictionary lookup",
+                        identifier, col_name,
+                    )
+                    continue
                 score = _entity_matching_score(col_name)
                 entity_candidates.append((identifier, col_name, dtype, score))
 
     for mv in metric_views:
         identifier = mv.get("identifier", "")
         short_name = _table_short_name(identifier)
+        mv_rls = _table_has_rls(mv)
+        if mv_rls:
+            rls_skipped_tables.append(identifier)
         for cc in mv.get("column_configs", []):
             col_name = cc.get("column_name", "")
             if _is_hidden(cc) or not col_name:
@@ -829,8 +872,24 @@ def auto_apply_prompt_matching(
                 dtype.upper().split("(")[0].strip() == "STRING"
                 and not cc.get("enable_entity_matching")
             ):
+                if mv_rls or _column_has_rls(cc):
+                    logger.info(
+                        "Skipping entity matching for %s.%s — RLS (row_filter / column_mask) "
+                        "silently disables value dictionary lookup",
+                        identifier, col_name,
+                    )
+                    continue
                 score = _entity_matching_score(col_name)
                 entity_candidates.append((identifier, col_name, dtype, score))
+
+    if rls_skipped_tables:
+        # Deduplicate while preserving insertion order (a table can appear in both loops).
+        deduped = list(dict.fromkeys(rls_skipped_tables))
+        print(
+            f"  [PROMPT MATCHING] Skipped entity matching for {len(deduped)} "
+            f"RLS-governed table(s): {', '.join(deduped[:5])}"
+            + ("…" if len(deduped) > 5 else "")
+        )
 
     entity_candidates.sort(key=lambda x: -x[3])
     slots_available = MAX_VALUE_DICTIONARY_COLUMNS - already_dict_count

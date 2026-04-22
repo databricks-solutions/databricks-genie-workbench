@@ -665,6 +665,195 @@ def preflight_fetch_config(
     }
 
 
+# ── Preflight Sub-Step 1.5: IQ SCAN ─────────────────────────────────
+# Flag-gated by GSO_ENABLE_IQ_SCAN_PREFLIGHT. When enabled, a fresh IQ Scan
+# runs between preflight_fetch_config and preflight_collect_uc_metadata and:
+#
+#   - HARD-BLOCKS when Check 1 (data sources exist) fails. The optimizer has
+#     nothing to do without data sources, and the error message is more
+#     actionable than waiting for _validate_core_access to surface a schema
+#     access failure on zero tables.
+#   - WARNS (never blocks) when Check 10 (10+ benchmark questions) fails.
+#     MIN_VALID_BENCHMARKS at line 1119 remains the authoritative
+#     post-validation gate; hard-blocking here would kill synthetic benchmark
+#     generation for fresh spaces.
+#   - Persists a phase='preflight' row to genie_opt_scan_snapshots so the
+#     run-detail view can diff pre vs post.
+#   - Returns a recommended_levers list (union of CTA pre-selection and
+#     levers implied by failing/warning checks via SCAN_CHECK_TO_LEVERS) for
+#     the lever loop's cluster-ranking tiebreaker.
+
+def _iq_scan_preflight_enabled() -> bool:
+    """Return True when the preflight IQ Scan sub-step is enabled via env var."""
+    import os as _os
+    return _os.getenv("GSO_ENABLE_IQ_SCAN_PREFLIGHT", "false").lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _build_scan_summary_for_strategist(scan_result: dict, recommended_levers: list[int]) -> dict:
+    """Narrow the 12-check scan result to the 4 signals the strategist consumes.
+
+    - score / maturity — overall readiness headline
+    - ceilings — warnings about space-wide limits (data source count >8,
+      entity matching nearing 120/space, text instruction length)
+    - rls_tables — tables flagged as row-level-security-governed, because
+      entity matching is silently disabled there
+    - coverage_gaps — the short list of failing checks (findings)
+    - recommended_levers — which levers the scan thinks can fix the gaps
+    """
+    ceilings: list[str] = []
+    rls_tables: list[str] = []
+    warnings = scan_result.get("warnings") or []
+    for warning in warnings:
+        text = str(warning)
+        if "row-level security" in text.lower():
+            # Warning format: "Tables with row-level security (a, b, c) — entity matching is silently disabled for these"
+            # Extract the parenthesized list if present.
+            if "(" in text and ")" in text:
+                inner = text[text.index("(") + 1:text.index(")")]
+                rls_tables.extend(
+                    [t.strip() for t in inner.split(",") if t.strip()]
+                )
+        else:
+            ceilings.append(text)
+
+    return {
+        "score": scan_result.get("score"),
+        "total": scan_result.get("total"),
+        "maturity": scan_result.get("maturity"),
+        "ceilings": ceilings[:6],
+        "rls_tables": sorted(set(rls_tables))[:10],
+        "coverage_gaps": list(scan_result.get("findings") or [])[:6],
+        "recommended_levers": sorted(set(recommended_levers)),
+    }
+
+
+def preflight_run_iq_scan(
+    spark: SparkSession,
+    run_id: str,
+    space_id: str,
+    catalog: str,
+    schema: str,
+    config: dict,
+    *,
+    recommended_levers_from_cta: list[int] | None = None,
+) -> dict:
+    """Sub-step 1.5: Run a fresh IQ Scan against the Genie Space snapshot.
+
+    Enforces the two scan-derived gates (Check 1 hard-block, Check 10 warn),
+    persists a snapshot row, and returns a narrowed summary for the strategist
+    plus the merged ``recommended_levers`` list.
+
+    No-op when ``GSO_ENABLE_IQ_SCAN_PREFLIGHT`` is unset/false — returns a
+    dict with ``scan`` = ``None`` and an empty lever list so callers can use
+    ``.get(...)`` safely.
+    """
+    if not _iq_scan_preflight_enabled():
+        return {
+            "scan": None,
+            "scan_summary_for_strategist": None,
+            "recommended_levers": list(recommended_levers_from_cta or []),
+        }
+
+    from genie_space_optimizer.common.config import SCAN_CHECK_TO_LEVERS
+    from genie_space_optimizer.iq_scan.scoring import calculate_score
+    from genie_space_optimizer.optimization.scan_snapshots import write_scan_snapshot
+
+    parsed = config.get("_parsed_space", config) if isinstance(config, dict) else {}
+    scan_result = calculate_score(parsed or {}, optimization_run=None)
+
+    # Always persist first — if we subsequently hard-block, the scan row still
+    # exists for post-hoc auditing of why the run failed preflight.
+    try:
+        write_scan_snapshot(
+            spark, run_id, space_id, "preflight", scan_result, catalog, schema,
+        )
+    except Exception:
+        logger.warning(
+            "Preflight scan snapshot persist failed for run=%s — continuing",
+            run_id, exc_info=True,
+        )
+
+    checks = scan_result.get("checks") or []
+    check_1 = checks[0] if len(checks) >= 1 else {"passed": True}
+    check_10 = checks[9] if len(checks) >= 10 else {"passed": True}
+
+    findings = scan_result.get("findings") or []
+    next_steps = scan_result.get("next_steps") or []
+
+    _lines = [_pf_section("PREFLIGHT — IQ SCAN")]
+    _lines.append(_pf_kv("Score", f"{scan_result.get('score', 0)}/{scan_result.get('total', 12)}"))
+    _lines.append(_pf_kv("Maturity", scan_result.get("maturity", "Unknown")))
+    _lines.append(_pf_kv("Findings", len(findings)))
+    _lines.append(_pf_kv("Warnings", len(scan_result.get("warnings") or [])))
+    _lines.append(_pf_bar())
+    for finding in findings[:5]:
+        _lines.append(f"    - {finding}")
+    _lines.append(_pf_bar())
+    print("\n".join(_lines))
+
+    # Hard-block: Check 1 (data sources exist).
+    if not check_1.get("passed"):
+        detail = findings[0] if findings else "No tables or metric views configured"
+        step = next_steps[0] if next_steps else "Add at least one table or metric view to your Genie Space"
+        write_stage(
+            spark, run_id, "PREFLIGHT_IQ_SCAN_CHECK1_FAILED", "FAILED",
+            task_key="preflight", catalog=catalog, schema=schema,
+            detail={"finding": detail, "next_step": step},
+        )
+        raise RuntimeError(f"{detail}. {step}")
+
+    # Warn-only: Check 10 (10+ benchmark questions).
+    if not check_10.get("passed"):
+        detail = check_10.get("detail") or ""
+        write_stage(
+            spark, run_id, "PREFLIGHT_IQ_SCAN_BENCHMARK_WARN", "WARNING",
+            task_key="preflight", catalog=catalog, schema=schema,
+            detail={
+                "check": "10+ benchmark questions",
+                "scan_detail": detail,
+                "note": (
+                    "Warning only — MIN_VALID_BENCHMARKS remains the gate. "
+                    "Synthetic benchmark generation will top up to target count."
+                ),
+            },
+        )
+        logger.info(
+            "IQ Scan Check 10 warning for run=%s: %s — continuing, synthetic benchmarks will top up",
+            run_id, detail,
+        )
+
+    # Translate failing/warning config checks (1-10) into recommended levers.
+    cta_levers = list(recommended_levers_from_cta or [])
+    scan_levers: list[int] = []
+    for i, chk in enumerate(checks[:10], start=1):
+        if chk.get("passed") and (chk.get("severity") or "pass") != "warning":
+            continue
+        scan_levers.extend(SCAN_CHECK_TO_LEVERS.get(i, []))
+
+    recommended = sorted(set(cta_levers + scan_levers))
+
+    summary = _build_scan_summary_for_strategist(scan_result, recommended)
+
+    write_stage(
+        spark, run_id, "PREFLIGHT_IQ_SCAN_COMPLETE", "COMPLETE",
+        task_key="preflight", catalog=catalog, schema=schema,
+        detail={
+            "score": scan_result.get("score"),
+            "total": scan_result.get("total"),
+            "maturity": scan_result.get("maturity"),
+            "recommended_levers": recommended,
+        },
+    )
+
+    return {
+        "scan": scan_result,
+        "scan_summary_for_strategist": summary,
+        "recommended_levers": recommended,
+    }
+
+
 def preflight_collect_uc_metadata(
     w: "WorkspaceClient",
     spark: "SparkSession",
@@ -1776,8 +1965,15 @@ def run_preflight(
 ) -> tuple[dict, list[dict], str | None, str, list[dict]]:
     """Execute the full preflight sequence (Stage 1).
 
-    Wrapper that calls 6 sub-steps in sequence. Each sub-step is individually
+    Wrapper that calls the sub-steps in sequence. Each sub-step is individually
     callable from a notebook cell for transparency.
+
+    When ``GSO_ENABLE_IQ_SCAN_PREFLIGHT`` is set, an IQ Scan sub-step runs
+    between ``preflight_fetch_config`` and ``preflight_collect_uc_metadata``
+    and can hard-block on Check 1 (data sources exist). Recommended levers
+    and the strategist-facing scan summary are attached to ``config`` under
+    ``_gso_iq_scan_recommended_levers`` and ``_gso_iq_scan_summary`` so they
+    flow through to the lever loop via the existing config pipe.
 
     Returns:
         (config, benchmarks, model_id, experiment_name, human_corrections)
@@ -1789,6 +1985,14 @@ def run_preflight(
     snapshot = ctx1["snapshot"]
     genie_table_refs = ctx1["genie_table_refs"]
     domain = ctx1["domain"]
+
+    scan_ctx = preflight_run_iq_scan(
+        spark, run_id, space_id, catalog, schema, config,
+    )
+    if scan_ctx.get("recommended_levers"):
+        config["_gso_iq_scan_recommended_levers"] = list(scan_ctx["recommended_levers"])
+    if scan_ctx.get("scan_summary_for_strategist"):
+        config["_gso_iq_scan_summary"] = scan_ctx["scan_summary_for_strategist"]
 
     ctx2 = preflight_collect_uc_metadata(
         w, spark, run_id, catalog, schema, config, snapshot,

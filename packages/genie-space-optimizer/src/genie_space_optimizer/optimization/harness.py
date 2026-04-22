@@ -93,6 +93,7 @@ from genie_space_optimizer.optimization.optimizer import (
     _enrich_blank_descriptions,
     _enrich_table_descriptions,
     _generate_holistic_strategy,
+    _iq_scan_strategist_enabled,
     cluster_failures,
     detect_regressions,
     enrich_metadata_with_uc_types,
@@ -373,6 +374,15 @@ def _run_preflight(
         experiment_id=experiment_id,
     )
 
+    iq_scan_recommended_levers = (
+        config.get("_gso_iq_scan_recommended_levers", [])
+        if isinstance(config, dict) else []
+    )
+    iq_scan_summary = (
+        config.get("_gso_iq_scan_summary")
+        if isinstance(config, dict) else None
+    )
+
     return {
         "benchmarks": benchmarks,
         "config": config,
@@ -380,6 +390,8 @@ def _run_preflight(
         "experiment_name": exp_name,
         "experiment_id": experiment_id,
         "human_corrections": human_corrections,
+        "iq_scan_recommended_levers": iq_scan_recommended_levers,
+        "iq_scan_summary": iq_scan_summary,
     }
 
 
@@ -5153,6 +5165,8 @@ def _run_lever_loop(
     enrichment_done: bool = False,
     enrichment_model_id: str = "",
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
+    iq_scan_recommended_levers: list[int] | None = None,
+    iq_scan_summary: dict | None = None,
 ) -> dict:
     """Stage 3: Iterate levers with convergence checking.
 
@@ -5760,7 +5774,12 @@ def _run_lever_loop(
             break
 
         # ── 3B.3: Priority scoring ───────────────────────────────────
-        ranked = rank_clusters(clusters)
+        _scan_levers = (
+            set(iq_scan_recommended_levers)
+            if iq_scan_recommended_levers and _iq_scan_strategist_enabled()
+            else None
+        )
+        ranked = rank_clusters(clusters, recommended_levers=_scan_levers)
 
         # ── 3B.4: Adaptive strategist (1 LLM call → 1 AG) ───────────
         print(_section(f"ADAPTIVE STRATEGIST — Iteration {iteration_counter}", "="))
@@ -5864,6 +5883,9 @@ def _run_lever_loop(
                 verdict_history=_verdict_history,
                 skill_exemplars=skill_exemplars or None,
                 human_suggestions=_human_suggestions or None,
+                iq_scan_summary=(
+                    iq_scan_summary if _iq_scan_strategist_enabled() else None
+                ),
             )
             strategy["_source_clusters"] = clusters + soft_signal_clusters
             action_groups = strategy.get("action_groups", [])
@@ -7378,6 +7400,24 @@ def _run_finalize(
             reason = "no_further_improvement"
 
         terminal_reason = f"finalize_completed:{reason}"
+
+        # Postflight IQ scan (soft-fail). Flag-gated via scan_snapshots; runs
+        # before the terminal status write so the phase='postflight' row is
+        # committed even if update_run_status subsequently fails.
+        try:
+            from genie_space_optimizer.optimization.scan_snapshots import (
+                run_postflight_scan,
+            )
+            run_postflight_scan(
+                w, spark, run_id, space_id, catalog, schema,
+                best_accuracy=prev_scores.get("accuracy") if isinstance(prev_scores, dict) else None,
+            )
+        except Exception:
+            logger.warning(
+                "Postflight scan hook raised for run=%s — continuing",
+                run_id, exc_info=True,
+            )
+
         update_run_status(
             spark, run_id, catalog, schema,
             status=status,
@@ -7868,6 +7908,19 @@ def optimize_genie_space(
             result.best_accuracy = prev_accuracy
             result.best_model_id = _effective_model_id
             result.final_scores = prev_scores
+            try:
+                from genie_space_optimizer.optimization.scan_snapshots import (
+                    run_postflight_scan,
+                )
+                run_postflight_scan(
+                    w, spark, run_id_str, space_id, catalog, schema,
+                    best_accuracy=prev_accuracy,
+                )
+            except Exception:
+                logger.warning(
+                    "Postflight scan hook raised for run=%s — continuing",
+                    run_id_str, exc_info=True,
+                )
             update_run_status(
                 spark, run_id_str, catalog, schema,
                 status="CONVERGED",
@@ -7913,6 +7966,19 @@ def optimize_genie_space(
                     "scores": prev_scores,
                 },
             )
+            try:
+                from genie_space_optimizer.optimization.scan_snapshots import (
+                    run_postflight_scan,
+                )
+                run_postflight_scan(
+                    w, spark, run_id_str, space_id, catalog, schema,
+                    best_accuracy=prev_accuracy,
+                )
+            except Exception:
+                logger.warning(
+                    "Postflight scan hook raised for run=%s — continuing",
+                    run_id_str, exc_info=True,
+                )
             update_run_status(
                 spark, run_id_str, catalog, schema,
                 status="CONVERGED",
@@ -7929,6 +7995,13 @@ def optimize_genie_space(
                 human_corrections=human_corrections,
                 enrichment_done=bool(_enrichment_out),
                 enrichment_model_id=_effective_model_id,
+                iq_scan_recommended_levers=cast(
+                    list[int],
+                    preflight_out.get("iq_scan_recommended_levers") or [],
+                ),
+                iq_scan_summary=cast(
+                    dict | None, preflight_out.get("iq_scan_summary"),
+                ),
             )
             result.levers_attempted = cast(list[int], loop_out["levers_attempted"])
             result.levers_accepted = cast(list[int], loop_out["levers_accepted"])

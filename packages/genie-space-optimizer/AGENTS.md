@@ -158,3 +158,112 @@ secondary-mining path, and the `publish_benchmarks_to_genie_space` merge
 3. Extend `_resolve_eval_counts()` in `backend/routes/runs.py`
 4. Mirror on both Pydantic (`backend/models.py`) and TS (`ui/lib/transparency-api.ts`) models
 5. Add a test in `test_write_iteration_schema.py` AND `test_iteration_api_contract.py`
+
+## IQ Scan Integration (Epic #179)
+
+The Optimizer consumes IQ Scan signals at two phases of a run and persists a
+pair of snapshots for post-hoc delta analysis. Implementation lives in
+`iq_scan/` (pure scoring) and `optimization/scan_snapshots.py` (UC Delta
+persistence). The backend `scanner` service now delegates to
+`iq_scan.scoring.calculate_score` to avoid cross-package coupling.
+
+### Preflight sub-step — `preflight_run_iq_scan`
+
+Inserted between `preflight_fetch_config` and `preflight_collect_uc_metadata`
+in `optimization/preflight.py`. Behavior:
+
+- **Check 1 (data sources exist) hard-blocks** the run with a user-friendly
+  `RuntimeError` before any UC metadata work is done.
+- **Check 10 (10+ benchmark questions) warn-only.** `MIN_VALID_BENCHMARKS = 5`
+  at `optimization/preflight.py` is the authoritative post-validation gate;
+  synthetic benchmark generation still tops up fresh spaces.
+- Writes `phase='preflight'` to `genie_opt_scan_snapshots` BEFORE the
+  hard-block so failed preflights are auditable.
+- Computes `recommended_levers` = union of the CTA-supplied lever list
+  (from the "Fix with Optimization" deep-link) and levers implied by
+  failing/warning checks via `SCAN_CHECK_TO_LEVERS` in
+  `common/config.py`.
+
+### Strategist signals (four narrow categories)
+
+The strategist sees a condensed summary — not the full 12-check result — via
+`iq_scan_findings` in `_build_context_data`:
+
+1. `score` / `maturity` — readiness headline
+2. `ceilings` — space-wide warnings (data-source count > 12, entity-matching
+   approaching the 120/space cap, text-instruction length)
+3. `rls_tables` — tables flagged as RLS-governed (entity matching is
+   silently disabled on these, so the strategist should prefer other levers)
+4. `coverage_gaps` — short list of failing check findings
+5. `recommended_levers` — lever IDs implied by failing/warning checks
+
+IQ scan findings are **prompt context, not proposals** — the Bug #4 benchmark
+leakage firewall does not apply.
+
+### Ranking tiebreaker — `rank_clusters`
+
+`optimization/optimizer.py::rank_clusters` accepts an optional
+`recommended_levers: set[int] | None`. When two clusters have impact scores
+within `_RANK_TIEBREAK_THRESHOLD = 1.0`, the cluster whose implied lever
+(derived via `_map_to_lever`) overlaps with `recommended_levers` wins.
+Absolute ranking by impact score is preserved outside the threshold.
+
+### Postflight hook
+
+`run_postflight_scan` in `optimization/scan_snapshots.py` fires immediately
+before each terminal status write in `harness.py` (CONVERGED, STALLED,
+MAX_ITERATIONS). Soft-failing: every exception is caught and logged so a
+failed scan never blocks the terminal status write. Writes
+`phase='postflight'` keyed on `(run_id, phase)` so retries are idempotent.
+
+### Feature flags + rollout
+
+Two env vars gate the integration:
+
+| Flag | Scope | Default |
+|---|---|---|
+| `GSO_ENABLE_IQ_SCAN_PREFLIGHT` | Preflight sub-step + postflight hook | `false` |
+| `GSO_ENABLE_IQ_SCAN_STRATEGIST` | Strategist context block + tiebreaker | `false` |
+
+Both parse the same truthy shape as the rest of the package
+(`{"1","true","yes","on"}`, case-insensitive). Postflight deliberately shares
+the preflight flag — a postflight row without a matching preflight row would
+break the delta view.
+
+**Four-release rollout sequence:**
+
+1. **Release N.** All 7 PRs merged. Both flags default `false`. Behavior
+   identical to today. Unit and parity tests verify no regression.
+2. **Release N+1.** `GSO_ENABLE_IQ_SCAN_PREFLIGHT=true` by default after
+   observing scan latency (`PREFLIGHT_IQ_SCAN_COMPLETE` stage timing) for
+   ≥1 week. At this point preflight Check 1 hard-blocks and the snapshot
+   table starts filling with preflight+postflight pairs. Strategist flag
+   stays off — the Strategist LLM still sees the same 13 context blocks as
+   today.
+3. **Release N+2.** `GSO_ENABLE_IQ_SCAN_STRATEGIST=true` by default after
+   A/B comparing strategist lever-selection accuracy with and without the
+   new context block + tiebreaker. The 14th context block (`iq_scan_findings`)
+   becomes part of the strategist prompt and the tiebreaker activates.
+4. **Release N+3.** Remove both flags entirely. `calculate_score` runs
+   unconditionally on every run.
+
+### Files owning the contract
+
+| File | Role |
+|---|---|
+| `iq_scan/scoring.py` | Pure scoring — shared with backend scanner via delegation |
+| `common/config.py` | `SCAN_CHECK_TO_LEVERS`, `TABLE_SCAN_SNAPSHOTS` |
+| `optimization/scan_snapshots.py` | UC Delta writer + postflight helper |
+| `optimization/preflight.py` | `preflight_run_iq_scan` sub-step |
+| `optimization/optimizer.py` | `_format_iq_scan_findings`, `_build_context_data` hook, `rank_clusters` tiebreaker |
+| `optimization/harness.py` | Plumbs `iq_scan_recommended_levers` + `iq_scan_summary` through `_run_preflight` → `_run_lever_loop`; fires postflight hook |
+| `optimization/applier.py` | `_table_has_rls` / `_column_has_rls` — skips entity matching on RLS-governed tables so the scan's RLS warning matches the applier's actual behavior |
+
+### Out of scope for this package (tracked by other teams)
+
+- Frontend Fix-Agent UI removal and the "Fix with Optimization" CTA
+  (owned by the frontend team; GSO only exposes the backend contract).
+- Run-detail pre/post IQ delta widget (GSO guarantees two rows per run;
+  the widget itself is a frontend deliverable).
+- Repo-root `docs/` audit and the fate of `docs/06-fix-agent.md`.
+- End-to-end validation in `tests/test_e2e_deployed.py`.

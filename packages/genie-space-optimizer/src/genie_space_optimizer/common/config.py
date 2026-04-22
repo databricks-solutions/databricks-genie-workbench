@@ -2596,6 +2596,36 @@ shown in the UI as a toggleable option.
 DEFAULT_LEVER_ORDER = [1, 2, 3, 4, 5, 6]
 """Default set of user-selectable levers, in execution order."""
 
+
+SCAN_CHECK_TO_LEVERS: dict[int, list[int]] = {
+    # Check 2 (Table descriptions) / Check 3 (Column descriptions) → lever 1
+    #   (Tables & Columns) — adds/fills descriptions and synonyms.
+    2: [1],
+    3: [1],
+    # Check 4 (Text instructions) → lever 5 (Genie Space Instructions).
+    4: [5],
+    # Check 5 (Join specifications) → lever 4 (Join Specifications).
+    5: [4],
+    # Check 7 (8+ example SQLs) / Check 8 (SQL snippets) → lever 6 (SQL Expressions)
+    #   which covers example SQLs, filters, measures, and expressions.
+    7: [6],
+    8: [6],
+    # Check 9 (Entity / format matching) → lever 1 (Tables & Columns) which
+    #   owns column_configs including enable_entity_matching / format_assistance.
+    9: [1],
+}
+"""IQ Scan check ID → recommended optimizer levers.
+
+1-indexed check IDs match the 12-check order in
+:func:`genie_space_optimizer.iq_scan.scoring.calculate_score`. Checks that
+can't be fixed by the optimizer (1 - data sources exist; 6 - data source
+count; 10 - benchmarks; 11 / 12 - optimization outcomes) are intentionally
+absent.
+
+Consumed by :func:`preflight_run_iq_scan` to translate failing checks into a
+``recommended_levers`` hint for the strategist and cluster-ranking tiebreaker.
+"""
+
 MAX_VALUE_DICTIONARY_COLUMNS = 120
 """Maximum number of string columns per Genie Space that can have
 enable_entity_matching=true. Enforced by auto_apply_prompt_matching()."""
@@ -2639,6 +2669,10 @@ TABLE_SUGGESTIONS = "genie_opt_suggestions"
 TABLE_FINALIZE_ATTESTATION = "genie_opt_finalize_attestation_matrix"
 """Bug #4 Phase 4 — per-qid pass/fail matrix for baseline and finalize
 sweeps. One row per (run_id, qid, iteration_idx)."""
+TABLE_SCAN_SNAPSHOTS = "genie_opt_scan_snapshots"
+"""IQ Scan snapshots captured at preflight and postflight phases of an
+optimization run. One row per (run_id, phase). See
+``genie_space_optimizer.optimization.scan_snapshots``."""
 
 # ── 13. MLflow Conventions ─────────────────────────────────────────────
 

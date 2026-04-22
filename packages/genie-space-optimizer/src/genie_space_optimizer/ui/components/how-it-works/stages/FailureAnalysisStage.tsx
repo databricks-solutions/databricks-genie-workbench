@@ -548,6 +548,7 @@ export function FailureAnalysisStage() {
               { block: "proven_patterns", desc: "Successful fixes to replicate" },
               { block: "persistent_failures", desc: "Questions that keep failing" },
               { block: "human_suggestions", desc: "Manual review feedback" },
+              { block: "iq_scan_findings", desc: "IQ Scan findings and recommended levers" },
               { block: "schema", desc: "Full Genie Space schema" },
               { block: "failure_clusters", desc: "Detailed cluster breakdown" },
               { block: "soft_signal_clusters", desc: "Correct-but-suboptimal signals" },

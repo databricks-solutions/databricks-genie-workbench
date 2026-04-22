@@ -1233,18 +1233,67 @@ def cluster_impact(cluster: dict) -> float:
     return q_count * causal * severity * fixability
 
 
-def rank_clusters(clusters: list[dict]) -> list[dict]:
+_RANK_TIEBREAK_THRESHOLD = 1.0
+"""Impact-score delta under which the IQ-scan tiebreaker is allowed to kick in.
+
+When two clusters are within 1.0 of each other in ``impact_score`` we treat
+the primary ordering as a tie and consult ``recommended_levers`` to choose.
+Anything larger is a clear winner and the scan may not override."""
+
+
+def rank_clusters(
+    clusters: list[dict],
+    recommended_levers: set[int] | frozenset[int] | None = None,
+) -> list[dict]:
     """Return *clusters* sorted by :func:`cluster_impact` (descending).
 
-    Each cluster dict gets ``impact_score`` and ``rank`` keys added.
-    The original list is **not** mutated.
+    Each cluster dict gets ``impact_score`` and ``rank`` keys added. The
+    original list is **not** mutated.
+
+    When ``recommended_levers`` is provided (typically from the IQ Scan
+    preflight) it acts as a tiebreaker: clusters within
+    :data:`_RANK_TIEBREAK_THRESHOLD` of each other in ``impact_score`` are
+    reordered so the one whose implied lever is in ``recommended_levers``
+    wins. Clusters separated by more than the threshold are never reordered,
+    so the scan strictly breaks ties and never overrides a clear impact
+    winner.
     """
-    scored = []
+    scored: list[dict] = []
     for c in clusters:
         enriched = dict(c)
         enriched["impact_score"] = cluster_impact(c)
+        if recommended_levers:
+            implied_lever = _map_to_lever(
+                enriched.get("root_cause", "other"),
+                asi_failure_type=enriched.get("asi_failure_type"),
+                blame_set=enriched.get("asi_blame_set"),
+                judge=enriched.get("affected_judge"),
+            )
+            enriched["_scan_lever_overlap"] = (
+                1.0 if implied_lever in recommended_levers else 0.0
+            )
         scored.append(enriched)
+
     scored.sort(key=lambda c: c["impact_score"], reverse=True)
+
+    if recommended_levers:
+        # Swap adjacent pairs that are within the tiebreak threshold when the
+        # lower-impact cluster matches a scan-recommended lever and the higher
+        # one doesn't. One left-to-right pass is sufficient: the scan never
+        # fires across non-adjacent boundaries, and a single pass preserves
+        # the stable impact-score ordering for all other pairs.
+        i = 0
+        while i < len(scored) - 1:
+            hi, lo = scored[i], scored[i + 1]
+            if (
+                abs(hi["impact_score"] - lo["impact_score"]) <= _RANK_TIEBREAK_THRESHOLD
+                and lo.get("_scan_lever_overlap", 0.0) > hi.get("_scan_lever_overlap", 0.0)
+            ):
+                scored[i], scored[i + 1] = lo, hi
+                i += 2
+            else:
+                i += 1
+
     for i, c in enumerate(scored, 1):
         c["rank"] = i
     return scored
@@ -4754,6 +4803,55 @@ def _truncate_context_to_budget(context: dict, budget_tokens: int) -> dict:
     return result
 
 
+def _iq_scan_strategist_enabled() -> bool:
+    """Return True when the strategist prompt should include IQ Scan findings."""
+    return os.environ.get("GSO_ENABLE_IQ_SCAN_STRATEGIST", "false").lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _format_iq_scan_findings(scan_summary: dict | None) -> str:
+    """Render the scan summary for the strategist prompt.
+
+    Returns an empty string when the strategist flag is disabled or the
+    summary is absent. Each section is omitted when the corresponding field
+    is empty so the prompt stays compact.
+    """
+    if not _iq_scan_strategist_enabled() or not scan_summary:
+        return ""
+
+    lines: list[str] = []
+    score = scan_summary.get("score")
+    total = scan_summary.get("total", 12)
+    maturity = scan_summary.get("maturity")
+    if score is not None and maturity:
+        lines.append(f"IQ Score: {score}/{total} ({maturity})")
+
+    ceilings = scan_summary.get("ceilings") or []
+    for ceiling in ceilings:
+        lines.append(f"WARNING: {ceiling}")
+
+    rls = scan_summary.get("rls_tables") or []
+    if rls:
+        lines.append(
+            "Tables with row-level security (entity matching is silently disabled here): "
+            + ", ".join(rls)
+        )
+
+    gaps = scan_summary.get("coverage_gaps") or []
+    if gaps:
+        lines.append("Coverage gaps: " + "; ".join(gaps))
+
+    levers = scan_summary.get("recommended_levers") or []
+    if levers:
+        # Import locally to avoid cycles and to pick up LEVER_NAMES at call time.
+        from genie_space_optimizer.common.config import LEVER_NAMES
+        pretty = [f"{lv} ({LEVER_NAMES.get(lv, '?')})" for lv in levers]
+        lines.append("Scan-recommended levers: " + ", ".join(pretty))
+
+    return "\n".join(lines)
+
+
 def _build_context_data(
     *,
     clusters: list[dict],
@@ -4767,6 +4865,7 @@ def _build_context_data(
     persistence_text: str,
     proven_patterns_text: str,
     suggestions_text: str,
+    iq_scan_text: str = "",
 ) -> dict:
     """Assemble all context sections as a single Python dict for JSON serialization."""
     from genie_space_optimizer.optimization.applier import _get_general_instructions
@@ -4790,6 +4889,7 @@ def _build_context_data(
         "proven_patterns": proven_patterns_text,
         "persistent_failures": persistence_text,
         "human_suggestions": suggestions_text or None,
+        "iq_scan_findings": iq_scan_text or None,
         "schema": _build_schema_data(metadata_snapshot, filter_tables=relevant_tables),
         "failure_clusters": _build_cluster_data(clusters),
         "soft_signal_clusters": _build_soft_signal_data(soft_signal_clusters),
@@ -6263,6 +6363,7 @@ def _call_llm_for_adaptive_strategy(
     verdict_history: dict | None = None,
     skill_exemplars: list[dict] | None = None,
     human_suggestions: list[dict] | None = None,
+    iq_scan_summary: dict | None = None,
 ) -> dict:
     """Single-call strategist that produces exactly ONE action group.
 
@@ -6360,6 +6461,8 @@ def _call_llm_for_adaptive_strategy(
                 lines_hs.append(f"- {item}")
         suggestions_text = "\n".join(lines_hs)
 
+    iq_scan_text = _format_iq_scan_findings(iq_scan_summary)
+
     # ── Build structured context ────────────────────────────────────
     context_data = _build_context_data(
         clusters=clusters,
@@ -6373,6 +6476,7 @@ def _call_llm_for_adaptive_strategy(
         persistence_text=persistence_text,
         proven_patterns_text=proven_patterns_text,
         suggestions_text=suggestions_text,
+        iq_scan_text=iq_scan_text,
     )
     context_data = _truncate_context_to_budget(context_data, PROMPT_TOKEN_BUDGET)
     context_json = json.dumps(context_data, indent=2, default=str)
