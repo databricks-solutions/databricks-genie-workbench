@@ -1213,7 +1213,16 @@ def _resolve_eval_counts(iter_row: dict | None) -> dict[str, int]:
     Safe against None rows (returns all zeros).
     """
     if not iter_row:
-        return {"total": 0, "evaluated": 0, "correct": 0, "excluded": 0, "quarantined": 0}
+        return {
+            "total": 0, "evaluated": 0, "correct": 0, "excluded": 0, "quarantined": 0,
+            "leakage_count_by_type": {},
+            "firewall_rejection_count_by_type": {},
+            "secondary_mining_blocked": 0,
+            "synthesis_slots_persisted": 0,
+            "arbiter_rejection_count": 0,
+            "cluster_fallback_to_instruction_count": 0,
+            "synthesis_archetype_distribution": {},
+        }
 
     total = _safe_int(iter_row.get("total_questions")) or 0
     correct = _safe_int(iter_row.get("correct_count")) or 0
@@ -1240,12 +1249,55 @@ def _resolve_eval_counts(iter_row: dict | None) -> dict[str, int]:
     elif isinstance(quarantined_raw, list):
         quarantined = len(quarantined_raw)
 
+    # Bug #4 — surface leakage observability. Defensive parsing: accept
+    # either already-decoded dicts (set by mock tests) or JSON strings
+    # written by write_iteration().
+    def _safe_dict_map(raw: Any) -> dict:
+        if isinstance(raw, dict):
+            return {str(k): int(v) for k, v in raw.items() if v is not None}
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return {str(k): int(v) for k, v in parsed.items() if v is not None}
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        return {}
+
+    leakage_count_by_type = _safe_dict_map(iter_row.get("leakage_count_by_type"))
+    firewall_rejection_count_by_type = _safe_dict_map(
+        iter_row.get("firewall_rejection_count_by_type"),
+    )
+    secondary_mining_blocked = _safe_int(
+        iter_row.get("secondary_mining_blocked"),
+    ) or 0
+
+    synthesis_slots_persisted = _safe_int(
+        iter_row.get("synthesis_slots_persisted"),
+    ) or 0
+    arbiter_rejection_count = _safe_int(
+        iter_row.get("arbiter_rejection_count"),
+    ) or 0
+    cluster_fallback_to_instruction_count = _safe_int(
+        iter_row.get("cluster_fallback_to_instruction_count"),
+    ) or 0
+    synthesis_archetype_distribution = _safe_dict_map(
+        iter_row.get("synthesis_archetype_distribution"),
+    )
+
     return {
         "total": total,
         "evaluated": evaluated,
         "correct": correct,
         "excluded": excluded,
         "quarantined": quarantined,
+        "leakage_count_by_type": leakage_count_by_type,
+        "firewall_rejection_count_by_type": firewall_rejection_count_by_type,
+        "secondary_mining_blocked": secondary_mining_blocked,
+        "synthesis_slots_persisted": synthesis_slots_persisted,
+        "arbiter_rejection_count": arbiter_rejection_count,
+        "cluster_fallback_to_instruction_count": cluster_fallback_to_instruction_count,
+        "synthesis_archetype_distribution": synthesis_archetype_distribution,
     }
 
 

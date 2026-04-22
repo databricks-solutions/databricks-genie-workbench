@@ -47,11 +47,25 @@ def _iter_row(
     return row
 
 
+_ZERO_BUG4_COUNTS = {
+    "leakage_count_by_type": {},
+    "firewall_rejection_count_by_type": {},
+    "secondary_mining_blocked": 0,
+    "synthesis_slots_persisted": 0,
+    "arbiter_rejection_count": 0,
+    "cluster_fallback_to_instruction_count": 0,
+    "synthesis_archetype_distribution": {},
+}
+
+
 def test_none_row_returns_all_zeros() -> None:
     counts = _resolve_eval_counts(None)
+    # Bug #2 + Bug #4 zero-defaults — core counts are zero; leakage and
+    # synthesis maps are empty dicts; scalar counters are 0.
     assert counts == {
         "total": 0, "evaluated": 0, "correct": 0,
         "excluded": 0, "quarantined": 0,
+        **_ZERO_BUG4_COUNTS,
     }
 
 
@@ -59,6 +73,7 @@ def test_empty_dict_row_returns_all_zeros() -> None:
     assert _resolve_eval_counts({}) == {
         "total": 0, "evaluated": 0, "correct": 0,
         "excluded": 0, "quarantined": 0,
+        **_ZERO_BUG4_COUNTS,
     }
 
 

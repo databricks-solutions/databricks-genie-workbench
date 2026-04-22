@@ -411,6 +411,15 @@ class IterationSummary(SafeModel):
     repeatabilityPct: float | None = None
     thresholdsMet: bool
     judgeScores: dict[str, float | None] = {}
+    # Bug #4 — benchmark leakage observability. See optimization/leakage.py.
+    leakageCountByType: dict[str, int] = {}
+    firewallRejectionCountByType: dict[str, int] = {}
+    secondaryMiningBlocked: int = 0
+    # Bug #4 Phase 3 — structural synthesis observability.
+    synthesisSlotsPersisted: int = 0
+    arbiterRejectionCount: int = 0
+    clusterFallbackToInstructionCount: int = 0
+    synthesisArchetypeDistribution: dict[str, int] = {}
 
 
 # ── Pending Reviews Models ───────────────────────────────────────────
@@ -537,6 +546,15 @@ class IterationDetail(SafeModel):
     quarantinedBenchmarks: list[QuarantinedBenchmark] = []
     clusterInfo: dict | None = None
     timestamp: str | None = None
+    # Bug #4 — benchmark leakage observability. See optimization/leakage.py.
+    leakageCountByType: dict[str, int] = {}
+    firewallRejectionCountByType: dict[str, int] = {}
+    secondaryMiningBlocked: int = 0
+    # Bug #4 Phase 3 — structural synthesis observability.
+    synthesisSlotsPersisted: int = 0
+    arbiterRejectionCount: int = 0
+    clusterFallbackToInstructionCount: int = 0
+    synthesisArchetypeDistribution: dict[str, int] = {}
 
 
 class IterationDetailResponse(SafeModel):

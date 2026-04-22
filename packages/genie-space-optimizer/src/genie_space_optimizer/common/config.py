@@ -214,12 +214,65 @@ HELD_OUT_RATIO = 0.15
 """Fraction of non-curated benchmarks reserved for held-out generalization
 check in Finalize.  The optimizer never sees these during the lever loop."""
 
-TARGET_BENCHMARK_COUNT = 24
-MAX_BENCHMARK_COUNT = 29
-"""Hard ceiling on benchmark count.  No evaluation should ever run on more
+PUBLISH_BENCHMARKS_TO_SPACE: bool = (
+    os.environ.get("GSO_PUBLISH_BENCHMARKS_TO_SPACE", "true").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""When True (default), benchmark questions used by the optimizer are
+published to the Genie Space's native ``benchmarks.questions`` at finalize
+via ``publish_benchmarks_to_genie_space``. Writes are merged (not replacing)
+with any user-authored benchmarks and tagged with a ``[auto-optimize]``
+prefix + structured source metadata so end users can distinguish them from
+their own curated benchmarks. Set GSO_PUBLISH_BENCHMARKS_TO_SPACE=0 to opt
+out and keep the space's benchmark section untouched."""
+
+# Phase 4 (Bug #4) — corpus sizing for same-corpus before/after evaluation.
+# All Bug-#4-era changes to these values are hidden behind GSO_NEW_SIZING so
+# rollback to previous behaviour is a one-env-var flip. The legacy values
+# were TARGET=24, MAX=29, HELD_OUT=0.15 (~20 train + ~4 held-out); the Phase
+# 4 plan specifies 30 total (~25 train + ~5 held-out), MAX=35 cap.
+_GSO_NEW_SIZING = os.environ.get("GSO_NEW_SIZING", "true").lower() in {
+    "1", "true", "yes", "on",
+}
+
+if _GSO_NEW_SIZING:
+    TARGET_BENCHMARK_COUNT = 30
+    MAX_BENCHMARK_COUNT = 35
+else:
+    TARGET_BENCHMARK_COUNT = 24
+    MAX_BENCHMARK_COUNT = 29
+"""Hard ceiling on benchmark count. No evaluation should ever run on more
 than this many questions, regardless of how many are generated or loaded.
-With HELD_OUT_RATIO=0.15 the train split contains ~20 questions (same as
-the previous TARGET_BENCHMARK_COUNT) and ~4 are held out."""
+With HELD_OUT_RATIO=0.15 the train split contains ~25 questions and ~5 are
+held out (Phase 4 default). Flip GSO_NEW_SIZING=0 to restore the legacy
+24/29 values."""
+
+# Phase 4 (Bug #4) — per-iteration / acceptance-gate defaults.
+# The optimizer re-evaluates the full training corpus each iteration and
+# derives cluster attestation as a slice of that eval (see harness.py and
+# AGENTS.md Bug #4 section).
+MIN_NET_DELTA = int(os.environ.get("GSO_MIN_NET_DELTA", "1") or "1")
+"""Minimum net_delta within the targeted cluster for an iteration to be
+accepted. net_delta = newly_passing_within_cluster - newly_failing_within_cluster.
+A value of 1 (default) matches "at least one more question passes, within
+the cluster". Lower to 0 to allow zero-improvement iterations (not
+recommended — admits pure-noise iterations)."""
+
+OUT_OF_CLUSTER_REGRESSION_TOLERANCE = int(
+    os.environ.get("GSO_OOC_REGRESSION_TOLERANCE", "0") or "0"
+)
+"""Maximum number of questions outside the targeted cluster that may go
+from passing to failing in a single iteration before the iteration is
+rolled back. Default 0 — any out-of-cluster regression triggers rollback."""
+
+ITERATION_ACCEPTANCE_ENABLED: bool = (
+    os.environ.get("GSO_ITERATION_ACCEPTANCE", "true").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""When True, ``apply_iteration_acceptance`` in ``harness.py`` enforces the
+cluster-net-delta + out-of-cluster regression check and rolls back
+iterations that fail. Set to False during debugging to disable rollback
+while keeping the metrics visible on the iteration row."""
 
 FINALIZE_REPEATABILITY_PASSES = 1
 """Number of repeatability passes in Finalize.  Reduced from 2 to make room
@@ -2583,6 +2636,9 @@ TABLE_PATCHES = "genie_opt_patches"
 TABLE_ASI = "genie_eval_asi_results"
 TABLE_PROVENANCE = "genie_opt_provenance"
 TABLE_SUGGESTIONS = "genie_opt_suggestions"
+TABLE_FINALIZE_ATTESTATION = "genie_opt_finalize_attestation_matrix"
+"""Bug #4 Phase 4 — per-qid pass/fail matrix for baseline and finalize
+sweeps. One row per (run_id, qid, iteration_idx)."""
 
 # ── 13. MLflow Conventions ─────────────────────────────────────────────
 

@@ -20,6 +20,7 @@ import pandas as pd
 
 from genie_space_optimizer.common.config import (
     TABLE_ASI,
+    TABLE_FINALIZE_ATTESTATION,
     TABLE_ITERATIONS,
     TABLE_PATCHES,
     TABLE_PROVENANCE,
@@ -103,6 +104,13 @@ def _migrate_add_columns(spark: SparkSession, catalog: str, schema: str) -> None
         (TABLE_ITERATIONS, "evaluated_count", "INT COMMENT 'Denominator of overall_accuracy (total_questions minus runtime exclusions; see Bug #2 denominator contract)'"),
         (TABLE_ITERATIONS, "excluded_count", "INT COMMENT 'Number of rows removed from the denominator at runtime (ground-truth excluded, both empty, Genie unavailable, temporally stale, etc.)'"),
         (TABLE_ITERATIONS, "quarantined_benchmarks_json", "STRING COMMENT 'JSON: array of benchmarks removed by pre-evaluation quarantine ({question_id, reason_code, reason_detail, question})'"),
+        (TABLE_ITERATIONS, "leakage_count_by_type", "STRING COMMENT 'JSON MAP<STRING,BIGINT>: Bug #4 - persisted leak count grouped by patch_type, measured by post-apply audit'"),
+        (TABLE_ITERATIONS, "firewall_rejection_count_by_type", "STRING COMMENT 'JSON MAP<STRING,BIGINT>: Bug #4 - firewall rejections during this iteration grouped by patch_type'"),
+        (TABLE_ITERATIONS, "secondary_mining_blocked", "BIGINT COMMENT 'Bug #4 - count of times the _resolve_lever5_llm_result secondary mining path was blocked this iteration'"),
+        (TABLE_ITERATIONS, "synthesis_slots_persisted", "BIGINT COMMENT 'Bug #4 (Phase 3) - structurally-synthesized example_sqls persisted this iteration'"),
+        (TABLE_ITERATIONS, "arbiter_rejection_count", "BIGINT COMMENT 'Bug #4 (Phase 3) - synthesis proposals rejected by the arbiter gate this iteration'"),
+        (TABLE_ITERATIONS, "cluster_fallback_to_instruction_count", "BIGINT COMMENT 'Bug #4 (Phase 3) - clusters that fell back to instruction-only after synthesis failed repeatedly'"),
+        (TABLE_ITERATIONS, "synthesis_archetype_distribution", "STRING COMMENT 'JSON MAP<STRING,BIGINT>: Bug #4 (Phase 3) - count of persisted synthesized example_sqls per archetype this iteration'"),
     ]
     import re as _re
     _default_re = _re.compile(r"\bDEFAULT\s+'[^']*'", _re.IGNORECASE)
@@ -386,12 +394,36 @@ def write_iteration(
     if not isinstance(_quarantined, list):
         _quarantined = []
 
+    # Bug #4 leakage observability. Callers pass the metrics through
+    # eval_result so the write stays back-compat for call sites that don't
+    # track them (older repeatability-only paths). Defaults: empty maps, 0.
+    _leakage_count_by_type = eval_result.get("leakage_count_by_type") or {}
+    if not isinstance(_leakage_count_by_type, dict):
+        _leakage_count_by_type = {}
+    _firewall_rejection_count_by_type = eval_result.get("firewall_rejection_count_by_type") or {}
+    if not isinstance(_firewall_rejection_count_by_type, dict):
+        _firewall_rejection_count_by_type = {}
+    _secondary_mining_blocked = int(eval_result.get("secondary_mining_blocked", 0) or 0)
+
+    # Bug #4 Phase 3 synthesis observability.
+    _synthesis_slots_persisted = int(eval_result.get("synthesis_slots_persisted", 0) or 0)
+    _arbiter_rejection_count = int(eval_result.get("arbiter_rejection_count", 0) or 0)
+    _cluster_fallback_to_instruction_count = int(
+        eval_result.get("cluster_fallback_to_instruction_count", 0) or 0
+    )
+    _synthesis_archetype_distribution = eval_result.get("synthesis_archetype_distribution") or {}
+    if not isinstance(_synthesis_archetype_distribution, dict):
+        _synthesis_archetype_distribution = {}
+
     col_names = (
         "run_id, iteration, lever, eval_scope, timestamp, mlflow_run_id, model_id, "
         "overall_accuracy, total_questions, correct_count, scores_json, failures_json, "
         "remaining_failures, arbiter_actions_json, repeatability_pct, repeatability_json, "
         "thresholds_met, rows_json, reflection_json, "
-        "evaluated_count, excluded_count, quarantined_benchmarks_json"
+        "evaluated_count, excluded_count, quarantined_benchmarks_json, "
+        "leakage_count_by_type, firewall_rejection_count_by_type, secondary_mining_blocked, "
+        "synthesis_slots_persisted, arbiter_rejection_count, "
+        "cluster_fallback_to_instruction_count, synthesis_archetype_distribution"
     )
     vals = ", ".join(
         [
@@ -417,6 +449,13 @@ def write_iteration(
             str(int(_evaluated_count)),
             str(_excluded_count),
             _opt_json(_quarantined) if _quarantined else "NULL",
+            _opt_json(_leakage_count_by_type) if _leakage_count_by_type else "NULL",
+            _opt_json(_firewall_rejection_count_by_type) if _firewall_rejection_count_by_type else "NULL",
+            str(_secondary_mining_blocked),
+            str(_synthesis_slots_persisted),
+            str(_arbiter_rejection_count),
+            str(_cluster_fallback_to_instruction_count),
+            _opt_json(_synthesis_archetype_distribution) if _synthesis_archetype_distribution else "NULL",
         ]
     )
 
@@ -1045,3 +1084,64 @@ def update_suggestion_status(
         updates["reviewed_by"] = reviewed_by
         updates["reviewed_at"] = now
     update_row(spark, catalog, schema, TABLE_SUGGESTIONS, {"suggestion_id": suggestion_id}, updates)
+
+
+def write_finalize_attestation_matrix(
+    spark: SparkSession,
+    run_id: str,
+    *,
+    iteration_idx: str,
+    train_passes: dict[str, bool],
+    heldout_passes: dict[str, bool],
+    catalog: str,
+    schema: str,
+) -> None:
+    """Bug #4 Phase 4 — persist per-qid pass/fail for a baseline / finalize
+    sweep.
+
+    ``iteration_idx`` is a canonical marker: ``"baseline"`` for the run-
+    start sweep, ``"final"`` for the end-of-run sweep. Integer iteration
+    values are accepted but not emitted by the standard harness.
+
+    Writes one row per (run_id, qid, iteration_idx). Safe to call multiple
+    times per run (different iteration_idx values) but NOT idempotent for
+    the same marker — callers should delete existing rows before rewriting
+    if re-running.
+    """
+    if not train_passes and not heldout_passes:
+        return
+    fqn = _fqn(catalog, schema, TABLE_FINALIZE_ATTESTATION)
+    now = datetime.now(timezone.utc).isoformat()
+    values: list[str] = []
+
+    def _bool_sql(v: bool | None) -> str:
+        if v is None:
+            return "NULL"
+        return "true" if v else "false"
+
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("'", "''")
+
+    for qid, passed in train_passes.items():
+        values.append(
+            f"('{_esc(run_id)}', '{_esc(qid)}', '{_esc(iteration_idx)}', "
+            f"{_bool_sql(passed)}, false, TIMESTAMP '{now}')"
+        )
+    for qid, passed in heldout_passes.items():
+        values.append(
+            f"('{_esc(run_id)}', '{_esc(qid)}', '{_esc(iteration_idx)}', "
+            f"{_bool_sql(passed)}, true, TIMESTAMP '{now}')"
+        )
+
+    if not values:
+        return
+
+    spark.sql(
+        f"INSERT INTO {fqn} "
+        f"(run_id, qid, iteration_idx, passed, is_heldout, logged_at) "
+        f"VALUES {', '.join(values)}"
+    )
+    logger.info(
+        "Wrote %d finalize_attestation rows for run %s (marker=%s)",
+        len(values), run_id, iteration_idx,
+    )

@@ -7,6 +7,7 @@ pulling in pandas or other heavy runtime dependencies.
 
 from genie_space_optimizer.common.config import (
     TABLE_ASI,
+    TABLE_FINALIZE_ATTESTATION,
     TABLE_ITERATIONS,
     TABLE_PATCHES,
     TABLE_PROVENANCE,
@@ -107,7 +108,14 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     reflection_json     STRING                 COMMENT 'JSON: adaptive loop reflection entry for this iteration',
     evaluated_count     INT                    COMMENT 'Denominator of overall_accuracy (total_questions minus runtime exclusions; see Bug #2 denominator contract)',
     excluded_count      INT                    COMMENT 'Number of rows removed from the denominator at runtime (ground-truth excluded, both empty, Genie unavailable, temporally stale, etc.)',
-    quarantined_benchmarks_json STRING         COMMENT 'JSON: array of benchmarks removed by pre-evaluation quarantine ({question_id, reason_code, reason_detail, question})'
+    quarantined_benchmarks_json STRING         COMMENT 'JSON: array of benchmarks removed by pre-evaluation quarantine ({question_id, reason_code, reason_detail, question})',
+    leakage_count_by_type STRING               COMMENT 'JSON MAP<STRING,BIGINT>: Bug #4 — persisted leak count grouped by patch_type, measured by post-apply audit',
+    firewall_rejection_count_by_type STRING    COMMENT 'JSON MAP<STRING,BIGINT>: Bug #4 — firewall rejections during this iteration grouped by patch_type',
+    secondary_mining_blocked BIGINT            COMMENT 'Bug #4 — count of times the _resolve_lever5_llm_result secondary mining path was blocked this iteration',
+    synthesis_slots_persisted BIGINT           COMMENT 'Bug #4 (Phase 3) — structurally-synthesized example_sqls persisted this iteration',
+    arbiter_rejection_count BIGINT             COMMENT 'Bug #4 (Phase 3) — synthesis proposals rejected by the arbiter gate this iteration',
+    cluster_fallback_to_instruction_count BIGINT COMMENT 'Bug #4 (Phase 3) — clusters that fell back to instruction-only after synthesis failed repeatedly',
+    synthesis_archetype_distribution STRING    COMMENT 'JSON MAP<STRING,BIGINT>: Bug #4 (Phase 3) — count of persisted synthesized example_sqls per archetype this iteration'
 )
 USING DELTA
 PARTITIONED BY (run_id)
@@ -231,6 +239,24 @@ TBLPROPERTIES (
     'delta.enableChangeDataFeed' = 'true'
 )"""
 
+_GENIE_OPT_FINALIZE_ATTESTATION_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_finalize_attestation_matrix (
+    run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
+    qid                 STRING        NOT NULL COMMENT 'Benchmark question_id',
+    iteration_idx       STRING        NOT NULL COMMENT 'Canonical marker: "baseline" | "final" | integer iteration index',
+    passed              BOOLEAN                COMMENT 'True if the question passed in this sweep (NULL = quarantined/excluded)',
+    is_heldout          BOOLEAN       NOT NULL COMMENT 'True if qid is in the held-out subset (evaluated only at baseline+finalize)',
+    logged_at           TIMESTAMP     NOT NULL COMMENT 'When this row was written'
+)
+USING DELTA
+PARTITIONED BY (run_id)
+COMMENT 'Bug #4 Phase 4 — per-qid pass/fail matrix from baseline + finalize full-corpus sweeps. Drives the user-visible final_accuracy - baseline_accuracy summary.'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
 _GENIE_OPT_SUGGESTIONS_DDL = """\
 CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_suggestions (
     suggestion_id       STRING        NOT NULL COMMENT 'UUID for this suggestion',
@@ -270,4 +296,5 @@ _ALL_DDL: dict[str, str] = {
     TABLE_DATA_ACCESS_GRANTS: _GENIE_OPT_DATA_ACCESS_GRANTS_DDL,
     TABLE_PROVENANCE: _GENIE_OPT_PROVENANCE_DDL,
     TABLE_SUGGESTIONS: _GENIE_OPT_SUGGESTIONS_DDL,
+    TABLE_FINALIZE_ATTESTATION: _GENIE_OPT_FINALIZE_ATTESTATION_DDL,
 }

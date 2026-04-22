@@ -816,11 +816,73 @@ def update_space_description(
 
 GENIE_MAX_BENCHMARK_QUESTIONS = 500
 
+AUTO_OPTIMIZE_TAG_PREFIX = "[auto-optimize] "
+"""Visible prefix on questions published by the optimizer. End users can
+distinguish optimizer-authored benchmarks from their own curated ones."""
 
-def _benchmarks_to_genie_format(benchmarks: list[dict]) -> list[dict]:
+
+def _normalize_question_text(text: str) -> str:
+    """Lower-case + whitespace-collapse + strip the ``[auto-optimize]`` tag
+    prefix. Used as the dedup key so a tagged question does not double up
+    against its untagged counterpart in the existing space."""
+    if not isinstance(text, str):
+        return ""
+    if text.startswith(AUTO_OPTIMIZE_TAG_PREFIX):
+        text = text[len(AUTO_OPTIMIZE_TAG_PREFIX):]
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def _ngram_similarity_for_dedup(a: str, b: str, n: int = 3) -> float:
+    """Local n-gram Jaccard similarity used for benchmark dedup.
+
+    Duplicated (not imported) to keep this module dependency-free — the
+    original lives in ``optimization/optimizer.py`` and we want this module
+    usable even when the optimization sub-package is not loaded (e.g. from
+    lightweight apply paths).
+    """
+    if not a or not b:
+        return 0.0
+    a_lower, b_lower = a.lower(), b.lower()
+    if len(a_lower) < n or len(b_lower) < n:
+        return 0.0
+    a_ngrams = {a_lower[i : i + n] for i in range(len(a_lower) - n + 1)}
+    b_ngrams = {b_lower[i : i + n] for i in range(len(b_lower) - n + 1)}
+    if not a_ngrams or not b_ngrams:
+        return 0.0
+    return len(a_ngrams & b_ngrams) / len(a_ngrams | b_ngrams)
+
+
+_DEDUP_SIMILARITY_THRESHOLD = 0.90
+
+
+def _extract_existing_question_text(entry: Any) -> str:
+    """Pull the first human-readable question string out of an existing
+    ``benchmarks.questions`` entry. The Genie format stores ``question`` as
+    a list of strings; sometimes a single string slips through."""
+    if not isinstance(entry, dict):
+        return ""
+    q = entry.get("question")
+    if isinstance(q, list) and q:
+        return str(q[0])
+    if isinstance(q, str):
+        return q
+    return ""
+
+
+def _benchmarks_to_genie_format(
+    benchmarks: list[dict],
+    *,
+    tag_as_optimizer: bool = True,
+    run_id: str | None = None,
+) -> list[dict]:
     """Convert optimizer benchmark dicts to Genie-native ``benchmarks.questions`` format.
 
-    Prioritises curated/P0 benchmarks first, then fills with synthetic.
+    When ``tag_as_optimizer`` is True (the default when invoked via
+    ``publish_benchmarks_to_genie_space``), the question text gets a visible
+    ``[auto-optimize]`` prefix and a structured ``metadata`` dict is attached
+    so downstream tools can distinguish these rows from user-curated ones
+    without relying on text-matching. Prioritises curated/P0 benchmarks first,
+    then fills with synthetic.
     """
     curated: list[dict] = []
     synthetic: list[dict] = []
@@ -841,21 +903,36 @@ def _benchmarks_to_genie_format(benchmarks: list[dict]) -> list[dict]:
         question = str(b.get("question", "")).strip()
         if not question:
             continue
-        q_lower = question.lower()
-        if q_lower in seen:
+
+        dedup_key = _normalize_question_text(question)
+        if dedup_key in seen:
             continue
-        seen.add(q_lower)
+        seen.add(dedup_key)
 
         expected_sql = str(b.get("expected_sql", "")).strip()
         if not expected_sql:
             skipped_no_answer += 1
             continue
 
+        display_question = (
+            f"{AUTO_OPTIMIZE_TAG_PREFIX}{question}"
+            if tag_as_optimizer
+            else question
+        )
+
         entry: dict[str, Any] = {
             "id": uuid.uuid4().hex,
-            "question": [question],
+            "question": [display_question],
             "answer": [{"format": "SQL", "content": [expected_sql]}],
         }
+        if tag_as_optimizer:
+            entry["metadata"] = {
+                "source": "gso_optimizer",
+                "run_id": run_id or "",
+                "original_question": question,
+                "benchmark_id": b.get("id", ""),
+                "category": b.get("category", ""),
+            }
         genie_questions.append(entry)
 
     if skipped_no_answer:
@@ -868,44 +945,157 @@ def _benchmarks_to_genie_format(benchmarks: list[dict]) -> list[dict]:
     return genie_questions
 
 
+def _dedupe_and_merge_benchmarks(
+    existing: list[dict], additions: list[dict],
+) -> tuple[list[dict], int, int]:
+    """Merge ``additions`` into ``existing`` preserving user-authored rows.
+
+    Returns ``(merged, added_count, skipped_count)``. A new row is skipped if
+    its normalized question text has n-gram Jaccard >= 0.90 against any
+    existing row (covers "Top 10 products" vs "top 10 products" vs "Top
+    ten  products").
+    """
+    merged: list[dict] = list(existing) if isinstance(existing, list) else []
+
+    existing_norms: list[str] = [
+        _normalize_question_text(_extract_existing_question_text(e))
+        for e in merged
+    ]
+    existing_norms = [n for n in existing_norms if n]
+
+    added = 0
+    skipped = 0
+    for add in additions:
+        add_text = _extract_existing_question_text(add)
+        add_norm = _normalize_question_text(add_text)
+        if not add_norm:
+            skipped += 1
+            continue
+
+        is_dup = False
+        for ex_norm in existing_norms:
+            if ex_norm == add_norm:
+                is_dup = True
+                break
+            if _ngram_similarity_for_dedup(ex_norm, add_norm) >= _DEDUP_SIMILARITY_THRESHOLD:
+                is_dup = True
+                break
+        if is_dup:
+            skipped += 1
+            continue
+
+        merged.append(add)
+        existing_norms.append(add_norm)
+        added += 1
+
+    return merged, added, skipped
+
+
+def _extract_example_sql_questions(parsed: dict) -> set[str]:
+    """Collect normalized question texts already mirrored in the space's
+    ``example_question_sqls``. The space.benchmarks publisher uses this to
+    suppress any question that is already a live example SQL — mirroring
+    the same question into both slots would double-count as training data
+    and re-introduce the Bug #4 leak."""
+    result: set[str] = set()
+
+    def _walk_example_sqls(container: dict) -> None:
+        eqs = container.get("example_question_sqls")
+        if isinstance(eqs, list):
+            for e in eqs:
+                if not isinstance(e, dict):
+                    continue
+                q = e.get("question")
+                if isinstance(q, list) and q:
+                    result.add(_normalize_question_text(str(q[0])))
+                elif isinstance(q, str):
+                    result.add(_normalize_question_text(q))
+
+    _walk_example_sqls(parsed)
+    tables = parsed.get("tables")
+    if isinstance(tables, list):
+        for t in tables:
+            if isinstance(t, dict):
+                _walk_example_sqls(t)
+    return {r for r in result if r}
+
+
 def publish_benchmarks_to_genie_space(
     w: WorkspaceClient,
     space_id: str,
     benchmarks: list[dict],
     max_questions: int = GENIE_MAX_BENCHMARK_QUESTIONS,
+    *,
+    run_id: str | None = None,
 ) -> int:
     """Write optimizer benchmarks into the Genie Space's native benchmarks section.
 
     Fetches the current space config, converts benchmarks to Genie-native
-    format, merges them into ``serialized_space.benchmarks.questions``, and
-    PATCHes the space via the existing ``updateSpace`` API.
+    format, MERGES them into existing ``serialized_space.benchmarks.questions``
+    (preserving any user-authored rows), and PATCHes the space via
+    ``updateSpace``. Published rows are tagged with a ``[auto-optimize]``
+    prefix + structured metadata (``source: gso_optimizer``, ``run_id``).
 
-    Returns the number of benchmark questions published.
+    Questions that are already mirrored in the space's ``example_question_sqls``
+    are excluded — keeping the same question in both slots would restore the
+    exact leak Bug #4 guards against.
+
+    Returns the number of newly-added benchmark questions (not the total).
     """
     config = fetch_space_config(w, space_id)
     parsed = config.get("_parsed_space", {})
     if not isinstance(parsed, dict):
         parsed = {}
 
-    genie_questions = _benchmarks_to_genie_format(benchmarks)
-    if len(genie_questions) > max_questions:
+    existing_benchmarks_container = parsed.get("benchmarks")
+    if not isinstance(existing_benchmarks_container, dict):
+        existing_benchmarks_container = {}
+    existing_questions = existing_benchmarks_container.get("questions")
+    if not isinstance(existing_questions, list):
+        existing_questions = []
+
+    example_sql_questions = _extract_example_sql_questions(parsed)
+    pre_filtered = [
+        b for b in benchmarks
+        if _normalize_question_text(str(b.get("question", "")))
+        not in example_sql_questions
+    ]
+    skipped_mirror = len(benchmarks) - len(pre_filtered)
+    if skipped_mirror:
+        logger.info(
+            "Skipped %d benchmark(s) already mirrored in example_question_sqls "
+            "(Bug #4 leakage guard)",
+            skipped_mirror,
+        )
+
+    new_genie_questions = _benchmarks_to_genie_format(
+        pre_filtered, tag_as_optimizer=True, run_id=run_id,
+    )
+
+    merged_questions, added_count, dedup_skipped = _dedupe_and_merge_benchmarks(
+        existing_questions, new_genie_questions,
+    )
+
+    if len(merged_questions) > max_questions:
         logger.warning(
-            "Truncating benchmarks from %d to %d (Genie space limit)",
-            len(genie_questions),
+            "Truncating benchmarks from %d to %d (Genie space limit). "
+            "User-authored entries are kept first.",
+            len(merged_questions),
             max_questions,
         )
-        genie_questions = genie_questions[:max_questions]
+        merged_questions = merged_questions[:max_questions]
 
-    parsed["benchmarks"] = {"questions": genie_questions}
+    parsed["benchmarks"] = dict(existing_benchmarks_container)
+    parsed["benchmarks"]["questions"] = merged_questions
 
     patch_space_config(w, space_id, parsed)
 
     logger.info(
-        "Published %d benchmark questions to Genie space %s",
-        len(genie_questions),
-        space_id,
+        "Published %d new benchmark question(s) to Genie space %s "
+        "(dedup-skipped: %d, example-sql-mirror-skipped: %d, total after merge: %d)",
+        added_count, space_id, dedup_skipped, skipped_mirror, len(merged_questions),
     )
-    return len(genie_questions)
+    return added_count
 
 
 def configure_connection_pool(w: WorkspaceClient, pool_size: int = 20) -> None:

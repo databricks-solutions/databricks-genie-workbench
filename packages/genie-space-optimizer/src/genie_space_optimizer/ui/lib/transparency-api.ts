@@ -88,6 +88,15 @@ export interface IterationSummary {
   repeatabilityPct: number | null;
   thresholdsMet: boolean;
   judgeScores: Record<string, number | null>;
+  // Bug #4 — benchmark leakage observability.
+  leakageCountByType: Record<string, number>;
+  firewallRejectionCountByType: Record<string, number>;
+  secondaryMiningBlocked: number;
+  // Bug #4 Phase 3 — structural synthesis observability.
+  synthesisSlotsPersisted: number;
+  arbiterRejectionCount: number;
+  clusterFallbackToInstructionCount: number;
+  synthesisArchetypeDistribution: Record<string, number>;
 }
 
 // Stable enum mirroring EXCLUSION_* codes in evaluation.py. Extended on the
@@ -172,6 +181,15 @@ export interface IterationDetail {
   quarantinedBenchmarks: QuarantinedBenchmark[];
   clusterInfo: Record<string, unknown> | null;
   timestamp: string | null;
+  // Bug #4 — benchmark leakage observability.
+  leakageCountByType: Record<string, number>;
+  firewallRejectionCountByType: Record<string, number>;
+  secondaryMiningBlocked: number;
+  // Bug #4 Phase 3 — structural synthesis observability.
+  synthesisSlotsPersisted: number;
+  arbiterRejectionCount: number;
+  clusterFallbackToInstructionCount: number;
+  synthesisArchetypeDistribution: Record<string, number>;
 }
 
 export interface ProactiveChanges {

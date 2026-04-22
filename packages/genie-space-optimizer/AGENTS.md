@@ -94,9 +94,9 @@ uv run pytest                           # Python unit tests (pyproject.toml)
 npx vitest run                          # UI helper unit tests (vitest.config.ts)
 ```
 
-### Auto-Optimize invariant tests (Bug #1, #2, #3)
+### Auto-Optimize invariant tests (Bug #1, #2, #3, #4)
 
-Three customer-visible contracts are protected by dedicated tests. See the
+Four customer-visible contracts are protected by dedicated tests. See the
 root `AGENTS.md` section "Auto-Optimize Invariants" for the full contract.
 Before touching any of these files, run the corresponding tests:
 
@@ -105,6 +105,44 @@ Before touching any of these files, run the corresponding tests:
 | **Bug #1** — Prompt Registry gate | `common/prompt_registry.py`, `backend/routes/trigger.py`, `jobs/run_preflight.py`, `optimization/preflight.py` | `tests/unit/test_prompt_registry_probe.py` |
 | **Bug #2** — `evaluated_count` denominator | `optimization/evaluation.py` (`ArbiterAdjustedResult`), `optimization/ddl.py`, `optimization/state.py` (`write_iteration`), `backend/routes/runs.py` (`_resolve_eval_counts`) | `tests/unit/test_arbiter_adjusted_accuracy.py`, `tests/unit/test_iteration_api_contract.py`, `tests/unit/test_write_iteration_schema.py` |
 | **Bug #3** — Stable exclusion reason codes | `optimization/evaluation.py` (`EXCLUSION_*` constants + `RowExclusion`), `ui/lib/transparency-api.ts` (`ExclusionReasonCode`), `ui/lib/exclusions.ts` (`humanizeExclusionReason`) | `tests/unit/test_arbiter_adjusted_accuracy.py::test_exclusions_carry_stable_reason_codes`, `src/genie_space_optimizer/ui/lib/exclusions.test.ts` |
+| **Bug #4** — Benchmark leakage firewall | `optimization/leakage.py`, `optimization/afs.py` (P2), `optimization/optimizer.py` (`_DEPRECATED_mine_benchmark_example_sqls_verbatim`, `_resolve_lever5_llm_result`, `_BUG4_COUNTERS`), `optimization/harness.py` (`_apply_proactive_example_sqls`, `_seed_new_sql_snippets`, `_merge_bug4_counters`), `common/genie_client.py` (`publish_benchmarks_to_genie_space`) | `tests/unit/test_leakage_firewall.py` |
+
+#### Bug #4 — benchmark leakage invariants
+
+The optimizer is evaluated on a held-out benchmark corpus. Historically
+two paths copied those benchmarks' `expected_sql` into the space being
+evaluated, contaminating the training signal and inflating reported
+accuracy:
+
+1. Primary: `_mine_benchmark_example_sqls` in `optimization/optimizer.py`
+   iterated benchmarks and emitted `add_example_sql` proposals with the
+   verbatim `expected_sql`. **Closed** — function renamed to
+   `_DEPRECATED_mine_benchmark_example_sqls_verbatim` and gated behind
+   `GSO_ALLOW_VERBATIM_MINING=1`. All call sites removed.
+2. Secondary: `_resolve_lever5_llm_result` forced an `add_example_sql`
+   patch using `representative["question"]` / `representative["expected_sql"]`
+   when the LLM returned `text_instruction` for a SQL-pattern root cause.
+   **Closed** — the verbatim-copy branch now just bumps the
+   `secondary_mining_blocked` counter and falls through to the regular
+   text-instruction path.
+
+The firewall in `optimization/leakage.py` is the last-mile guard on every
+write path. Before adding a new path that persists inference-visible
+content:
+
+1. Decide whether the new patch type should be in `_PATCH_TEXT_FIELDS`
+   (it should if its text fields can plausibly echo benchmark content).
+2. Wire `is_benchmark_leak(proposal, patch_type, corpus)` at the write
+   boundary. On rejection call `_incr_bug4_counter("firewall_rejections")`
+   and suppress the proposal.
+3. Add a parametrized case to `test_firewall_per_patch_type` in
+   `tests/unit/test_leakage_firewall.py`.
+
+The full test suite covers: canonicalized-SQL fingerprint matches,
+n-gram near-verbatim catches, per-patch-type shape dispatch,
+empty-corpus safety, the deprecated-mining runtime error, the closed
+secondary-mining path, and the `publish_benchmarks_to_genie_space` merge
++ dedup + `[auto-optimize]` tagging + example-sql mirror guard.
 
 **When adding a new exclusion reason code:**
 1. Add the constant in `optimization/evaluation.py` (Python)

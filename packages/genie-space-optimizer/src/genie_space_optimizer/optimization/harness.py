@@ -93,7 +93,6 @@ from genie_space_optimizer.optimization.optimizer import (
     _enrich_blank_descriptions,
     _enrich_table_descriptions,
     _generate_holistic_strategy,
-    _mine_benchmark_example_sqls,
     cluster_failures,
     detect_regressions,
     enrich_metadata_with_uc_types,
@@ -152,6 +151,49 @@ def _kv(key: str, value: object, indent: int = 2) -> str:
 
 def _bar(char: str = "-") -> str:
     return char * _W
+
+
+def _merge_bug4_counters(eval_result: dict) -> dict:
+    """Inject Bug #4 (benchmark leakage) counters into an eval_result before
+    it is written via ``write_iteration`` for the 'full' scope.
+
+    Reads the module-level counters from ``optimizer._BUG4_COUNTERS`` and
+    resets them. Intended to be called once per iteration, at the
+    ``eval_scope="full"`` write site, so each iteration row carries the
+    counters observed since the prior iteration.
+
+    For 'slice' / 'p0' intermediate evals we deliberately leave counters
+    untouched so the 'full' write aggregates them. If leakage is suppressed
+    on a slice attempt and the iteration gets rolled back, the counts still
+    surface on the full write.
+    """
+    try:
+        from genie_space_optimizer.optimization.optimizer import (
+            get_bug4_counters, reset_bug4_counters,
+        )
+    except ImportError:
+        return eval_result
+    snapshot = get_bug4_counters()
+    eval_result = dict(eval_result)
+    # The shape-by-type maps are collected elsewhere (see
+    # count_example_sql_leaks and firewall_rejection_count_by_type); here we
+    # fold in the flat counter for secondary-mining blocks and a summary
+    # entry for firewall rejections.
+    eval_result.setdefault("secondary_mining_blocked", 0)
+    eval_result["secondary_mining_blocked"] = (
+        int(eval_result.get("secondary_mining_blocked") or 0)
+        + int(snapshot.get("secondary_mining_blocked", 0) or 0)
+    )
+    existing_fw = eval_result.get("firewall_rejection_count_by_type") or {}
+    if not isinstance(existing_fw, dict):
+        existing_fw = {}
+    flat_rejections = int(snapshot.get("firewall_rejections", 0) or 0)
+    if flat_rejections:
+        existing_fw = dict(existing_fw)
+        existing_fw["_total"] = int(existing_fw.get("_total", 0)) + flat_rejections
+    eval_result["firewall_rejection_count_by_type"] = existing_fw
+    reset_bug4_counters()
+    return eval_result
 
 
 _PATCH_TYPE_LABELS: dict[str, str] = {
@@ -478,6 +520,7 @@ def baseline_persist_state(
     scores = scorecard["scores"]
     thresholds_met = scorecard["thresholds_met"]
 
+    eval_result = _merge_bug4_counters(eval_result)
     write_iteration(
         spark, run_id, 0, eval_result,
         catalog=catalog, schema=schema,
@@ -1516,12 +1559,49 @@ def _apply_proactive_example_sqls(
     config: dict,
     catalog: str,
     schema: str,
+    benchmarks: list[dict] | None = None,
 ) -> None:
-    """Apply mined benchmark example SQLs proactively via the Genie API."""
+    """Apply mined benchmark example SQLs proactively via the Genie API.
+
+    Bug #4 firewall — every proposal is passed through ``is_benchmark_leak``
+    before ``proposals_to_patches`` when ``benchmarks`` is provided. Leaky
+    proposals are dropped with a counter increment. Callers are expected to
+    pass the benchmark corpus so the firewall can run; older call sites
+    that omit it degrade gracefully (no firewall, logs a warning).
+    """
     from genie_space_optimizer.optimization.applier import (
         proposals_to_patches,
         apply_patch_set,
     )
+
+    if benchmarks is None:
+        logger.warning(
+            "_apply_proactive_example_sqls called without benchmarks — "
+            "Bug #4 firewall skipped. Caller should pass benchmarks.",
+        )
+    else:
+        from genie_space_optimizer.optimization.leakage import (
+            BenchmarkCorpus, is_benchmark_leak,
+        )
+        from genie_space_optimizer.optimization.optimizer import _incr_bug4_counter
+
+        corpus = BenchmarkCorpus.from_benchmarks(benchmarks)
+        filtered: list[dict] = []
+        for p in mined_proposals:
+            is_leak, reason = is_benchmark_leak(
+                p, p.get("patch_type", "add_example_sql"), corpus,
+            )
+            if is_leak:
+                _incr_bug4_counter("firewall_rejections")
+                logger.info(
+                    "Bug #4 firewall: dropped proactive proposal %s (%s) - %s",
+                    p.get("proposal_id", "?"),
+                    str(p.get("example_question", ""))[:80],
+                    reason,
+                )
+                continue
+            filtered.append(p)
+        mined_proposals = filtered
 
     patches = proposals_to_patches(mined_proposals)
     apply_log = apply_patch_set(w, space_id, patches, metadata_snapshot, apply_mode="api")
@@ -2177,6 +2257,7 @@ def _run_instruction_prose_mining(
     schema: str,
     *,
     warehouse_id: str = "",
+    benchmarks: list[dict] | None = None,
 ) -> dict:
     """Stage 5a (Task C.5): multi-target prose miner + rewrite pipeline.
 
@@ -2263,6 +2344,7 @@ def _run_instruction_prose_mining(
                 _apply_proactive_example_sqls(
                     w, spark, run_id, space_id, _example_proposals,
                     metadata_snapshot, config, catalog, schema,
+                    benchmarks=benchmarks,
                 )
                 example_applied = len(_example_proposals)
                 _collect_spans("example_qsql")
@@ -2533,18 +2615,29 @@ def _seed_new_sql_snippets(
     from genie_space_optimizer.common.genie_client import patch_space_config
     from genie_space_optimizer.common.genie_schema import generate_genie_id, MAX_SQL_SNIPPETS
     from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
+    from genie_space_optimizer.optimization.leakage import (
+        BenchmarkCorpus, is_benchmark_leak,
+    )
     from genie_space_optimizer.optimization.optimizer import (
         _discover_schema_sql_expressions,
         _enrich_candidates_with_llm,
         _format_existing_sql_snippets,
+        _incr_bug4_counter,
         _mine_sql_expression_candidates,
         _ngram_similarity,
     )
+
+    # Bug #4 firewall — mined SQL expression candidates are compared against
+    # the benchmark corpus (train + held-out). Any snippet that closely
+    # matches a benchmark question or expected_sql is rejected before
+    # persistence. This closes the leak via the pre-loop seeding path.
+    benchmark_corpus = BenchmarkCorpus.from_benchmarks(benchmarks)
 
     result: dict = {
         "total_candidates": 0,
         "total_seeded": 0,
         "total_rejected": 0,
+        "firewall_rejected": 0,
         "measures_seeded": 0,
         "filters_seeded": 0,
         "expressions_seeded": 0,
@@ -2632,6 +2725,28 @@ def _seed_new_sql_snippets(
                 break
 
             if any(_ngram_similarity(sql_raw.lower(), e) > 0.85 for e in existing_sql_set):
+                result["total_rejected"] += 1
+                continue
+
+            # Bug #4 firewall — reject snippets whose SQL or question-level
+            # fields are substantially similar to any benchmark.
+            patch_type_key = f"add_sql_snippet_{snippet_type}"
+            candidate_proposal = {
+                "sql": sql_raw,
+                "display_name": candidate.get("display_name", ""),
+                "synonyms": candidate.get("synonyms", []),
+                "instruction": candidate.get("instruction", ""),
+            }
+            is_leak, leak_reason = is_benchmark_leak(
+                candidate_proposal, patch_type_key, benchmark_corpus,
+            )
+            if is_leak:
+                _incr_bug4_counter("firewall_rejections")
+                logger.info(
+                    "Bug #4 firewall: rejected %s candidate (%s) - %s",
+                    patch_type_key, str(sql_raw)[:80], leak_reason,
+                )
+                result["firewall_rejected"] = result.get("firewall_rejected", 0) + 1
                 result["total_rejected"] += 1
                 continue
 
@@ -3069,6 +3184,7 @@ def _run_enrichment(
                 w, spark, run_id, space_id, config, metadata_snapshot,
                 catalog, schema,
                 warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                benchmarks=benchmarks,
             )
             if _miner_out["total_applied"] or _miner_out["keep_in_prose_count"]:
                 config = fetch_space_config(w, space_id)
@@ -3113,22 +3229,10 @@ def _run_enrichment(
                 if uc_columns:
                     enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
-            mined_example_proposals = _mine_benchmark_example_sqls(
-                benchmarks, metadata_snapshot,
-                spark=spark, catalog=catalog, gold_schema=schema,
-                w=w, warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
-            )
-            if mined_example_proposals:
-                _apply_proactive_example_sqls(
-                    w, spark, run_id, space_id, mined_example_proposals,
-                    metadata_snapshot, config, catalog, schema,
-                )
-                config = fetch_space_config(w, space_id)
-                config["_uc_columns"] = uc_columns
-                metadata_snapshot = config.get("_parsed_space", config)
-                metadata_snapshot["_data_profile"] = data_profile
-                if uc_columns:
-                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+            # Bug #4 — benchmark verbatim mining removed. Proposals for
+            # example_sqls now come exclusively from AFS-gated structural
+            # synthesis (Phase 3), never from copying benchmark expected_sql.
+            mined_example_proposals: list = []
 
             # ── Summary ───────────────────────────────────────────────────
             total_enrichments = (
@@ -4891,6 +4995,7 @@ def _run_gate_checks(
             + _kv("Averaged accuracy", f"{full_accuracy:.1f}%")
         )
 
+    full_result = _merge_bug4_counters(full_result)
     write_iteration(
         spark, run_id, iteration_counter, full_result,
         catalog=catalog, schema=schema,
@@ -5266,6 +5371,7 @@ def _run_lever_loop(
                 w, spark, run_id, space_id, config, metadata_snapshot,
                 catalog, schema,
                 warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                benchmarks=benchmarks,
             )
             if _legacy_miner_out["total_applied"] or _legacy_miner_out["keep_in_prose_count"]:
                 from genie_space_optimizer.common.genie_client import fetch_space_config
@@ -5522,26 +5628,10 @@ def _run_lever_loop(
     _correction_state["corrected_qids"] = _pre_loop_corr["corrected_qids"]
     _correction_state["quarantined_qids"] = _pre_loop_corr["quarantined_qids"]
 
-    # ── Mine benchmark examples once (proactive, before loop) ──────────
+    # Bug #4 — benchmark verbatim mining removed from pre-loop setup.
+    # Example SQLs are now proposed only via AFS-gated structural synthesis
+    # during the lever loop, never by copying benchmark expected_sql.
     mined_example_proposals: list = []
-    if not enrichment_done:
-        mined_example_proposals = _mine_benchmark_example_sqls(
-            benchmarks, metadata_snapshot,
-            spark=spark, catalog=catalog, gold_schema=schema,
-            w=w, warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
-        )
-        if mined_example_proposals:
-            _apply_proactive_example_sqls(
-                w, spark, run_id, space_id, mined_example_proposals,
-                metadata_snapshot, config, catalog, schema,
-            )
-            from genie_space_optimizer.common.genie_client import fetch_space_config
-            config = fetch_space_config(w, space_id)
-            config["_uc_columns"] = uc_columns
-            metadata_snapshot = config.get("_parsed_space", config)
-            metadata_snapshot["_data_profile"] = data_profile
-            if uc_columns:
-                enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
     _setup_lines = [_section("PRE-LOOP SETUP — COMPLETE", "-")]
     _setup_lines.append(_kv("Reference SQLs", len(reference_sqls)))
@@ -6075,6 +6165,7 @@ def _run_lever_loop(
                 catalog=catalog,
                 gold_schema=schema,
                 warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                benchmarks=benchmarks,
             )
             all_proposals.extend(lever_proposals)
 
@@ -7220,17 +7311,21 @@ def _run_finalize(
 
         # Publish benchmarks to the Genie Space's native benchmarks section
         # so they appear in the Genie UI and can be used for UI-based eval runs.
+        # Merge-not-overwrite with existing user-authored benchmarks; tagged
+        # with [auto-optimize] + source metadata. Opt-out via
+        # GSO_PUBLISH_BENCHMARKS_TO_SPACE=0.
         benchmark_publish_count = 0
         _check_timeout("publish_benchmarks")
         _emit_heartbeat("publish_benchmarks", force=True)
-        if benchmarks:
+        from genie_space_optimizer.common.config import PUBLISH_BENCHMARKS_TO_SPACE
+        if benchmarks and PUBLISH_BENCHMARKS_TO_SPACE:
             try:
                 from genie_space_optimizer.common.genie_client import (
                     publish_benchmarks_to_genie_space,
                 )
 
                 benchmark_publish_count = publish_benchmarks_to_genie_space(
-                    w, space_id, benchmarks,
+                    w, space_id, benchmarks, run_id=run_id,
                 )
                 write_stage(
                     spark, run_id, "BENCHMARK_PUBLISH", "COMPLETE",

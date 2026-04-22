@@ -812,6 +812,7 @@ def cluster_failures(
     catalog: str = "",
     schema: str = "",
     verbose: bool = True,
+    held_out_qids: set[str] | None = None,
 ) -> list[dict]:
     """Group evaluation failures into actionable clusters.
 
@@ -821,6 +822,13 @@ def cluster_failures(
 
     When ``spark/run_id/catalog/schema`` are provided, enriches with stored
     ASI data from ``genie_eval_asi_results`` Delta table.
+
+    Bug #4 (P4.2) — ``held_out_qids`` (optional) is a set of benchmark ids
+    reserved for baseline/finalize evaluation. Any row whose question_id is
+    in this set is dropped before clustering; downstream LLM prompts
+    (which consume the clusters) therefore NEVER see held-out content.
+    Callers that pass ``held_out_qids=None`` get the legacy "train+held-
+    out mixed" behaviour but SHOULD be updated.
     """
     uc_asi_map: dict[tuple[str, str], dict] = {}
     if spark and run_id and catalog and schema:
@@ -865,8 +873,16 @@ def cluster_failures(
     except ImportError:
         rows_iter = table if isinstance(table, list) else []
 
+    _held_out: set[str] = set(held_out_qids or set())
+
     for row in rows_iter:
         if not isinstance(row, dict):
+            continue
+
+        # Bug #4 (P4.2) — held-out benchmarks must never enter the LLM-
+        # bound clustering path. Drop them before any signal extraction.
+        qid = str(row.get("question_id") or row.get("qid") or "")
+        if qid and qid in _held_out:
             continue
 
         _req = row.get("request") or {}
@@ -4100,65 +4116,108 @@ def _format_cluster_briefs(
     return "\n".join(lines)
 
 
+def _format_cluster_briefs_afs(clusters: list[dict], top_n: int = 5) -> str:
+    """AFS-projected variant of :func:`_format_cluster_briefs`.
+
+    Bug #4 (P2.2) — every cluster is projected through ``format_afs``
+    before rendering so no raw benchmark text (question, expected_sql,
+    generated_sql, sample rows) reaches the strategist/holistic prompt.
+    The legacy ``_format_cluster_briefs`` is retained for debug logging
+    behind ``GSO_DEBUG_RAW_SQL=1`` only.
+    """
+    if not clusters:
+        return "(No failure clusters.)"
+
+    from genie_space_optimizer.optimization.afs import format_afs
+
+    hard = [c for c in clusters if c.get("signal_type") != "soft"]
+    soft = [c for c in clusters if c.get("signal_type") == "soft"]
+    sorted_hard = sorted(
+        hard, key=lambda c: len(c.get("question_ids", [])), reverse=True,
+    )
+
+    lines: list[str] = []
+    for idx, cluster in enumerate(sorted_hard[:top_n], 1):
+        afs = format_afs(cluster)
+        cid = afs.get("cluster_id", f"C{idx:03d}")
+        ft = afs.get("failure_type", "unknown")
+        qc = afs.get("question_count", 0)
+        judge = afs.get("affected_judge", "unknown")
+        lines.append(f"### {cid}: {ft} ({qc} questions, judge: {judge})")
+        blame = afs.get("blame_set") or []
+        if blame:
+            lines.append(f"Blamed objects: {', '.join(blame[:5])}")
+        cf = afs.get("counterfactual_fixes") or []
+        if cf:
+            lines.append("Suggested fixes:")
+            for f in cf[:3]:
+                lines.append(f"  - {f}")
+        sd = afs.get("structural_diff") or {}
+        if sd:
+            lines.append(f"Structural signature: {json.dumps(sd, default=str)}")
+        vp = afs.get("judge_verdict_pattern")
+        if vp:
+            lines.append(f"Judge verdict pattern: {vp}")
+        lines.append("")
+
+    remaining = sorted_hard[top_n:]
+    if remaining:
+        lines.append(f"### Additional hard-failure clusters ({len(remaining)} more):")
+        for cluster in remaining:
+            afs = format_afs(cluster)
+            blame = afs.get("blame_set") or []
+            blame_str = f" blamed=[{', '.join(blame[:3])}]" if blame else ""
+            lines.append(
+                f"  - {afs.get('failure_type', 'unknown')}: "
+                f"{afs.get('question_count', 0)} questions "
+                f"(judge: {afs.get('affected_judge', 'unknown')}){blame_str}"
+            )
+
+    if soft:
+        sorted_soft = sorted(
+            soft, key=lambda c: len(c.get("question_ids", [])), reverse=True,
+        )
+        lines.append("")
+        lines.append("### Correct-but-Suboptimal Patterns (arbiter: correct, individual judges: failed)")
+        lines.append("These queries returned correct results but used suboptimal approaches.")
+        lines.append("Use these to inform best-practice guidance, NOT to fix failures.")
+        lines.append("")
+        for idx, cluster in enumerate(sorted_soft[:top_n], 1):
+            afs = format_afs(cluster)
+            cid = afs.get("cluster_id", f"S{idx:03d}")
+            lines.append(
+                f"#### {cid}: {afs.get('failure_type', 'unknown')} "
+                f"({afs.get('question_count', 0)} questions, "
+                f"judge: {afs.get('affected_judge', 'unknown')})"
+            )
+            blame = afs.get("blame_set") or []
+            if blame:
+                lines.append(f"Blamed objects: {', '.join(blame[:5])}")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Structured-JSON context builders (Phase 7)
 # ---------------------------------------------------------------------------
 
 def _build_cluster_data(clusters: list[dict], *, top_n: int = 5) -> list[dict]:
-    """Convert failure clusters into structured dicts for JSON context."""
+    """Convert failure clusters into structured dicts for JSON context.
+
+    Bug #4 (P2.2) — returns AFS projections, never raw benchmark text.
+    Previously this function copied ``question``/``expected_sql`` /
+    ``generated_sql`` + result samples per cluster; that was the primary
+    raw-text carrier into downstream LLM prompts. Now every cluster is
+    projected through ``format_afs`` which enforces the closed schema.
+    """
+    from genie_space_optimizer.optimization.afs import format_afs
+
     hard = [c for c in clusters if c.get("signal_type") != "soft"]
-    sorted_hard = sorted(hard, key=lambda c: len(c.get("question_ids", [])), reverse=True)
-    result: list[dict] = []
-    for cluster in sorted_hard[:top_n]:
-        questions: list[dict] = []
-        for ctx in cluster.get("sql_contexts", [])[:3]:
-            comp = ctx.get("comparison", {}) or {}
-            q_entry: dict[str, Any] = {
-                "question": ctx.get("question", ""),
-                "expected_sql": ctx.get("expected_sql", ""),
-                "generated_sql": ctx.get("generated_sql", ""),
-            }
-            if isinstance(comp, dict):
-                if comp.get("error"):
-                    q_entry["error"] = comp["error"]
-                elif not comp.get("match"):
-                    q_entry["mismatch_type"] = comp.get("match_type", "unknown")
-                gt_sample = comp.get("gt_sample")
-                if gt_sample:
-                    q_entry["expected_sample"] = str(gt_sample)[:500]
-                genie_sample = comp.get("genie_sample")
-                if genie_sample:
-                    q_entry["genie_sample"] = str(genie_sample)[:500]
-            questions.append(q_entry)
-        entry: dict[str, Any] = {
-            "cluster_id": cluster.get("cluster_id", "?"),
-            "root_cause": cluster.get("root_cause", "unknown"),
-            "judge": cluster.get("affected_judge", "unknown"),
-            "question_count": len(cluster.get("question_ids", [])),
-            "blamed_objects": _normalize_blame(cluster.get("asi_blame_set")),
-            "questions": questions,
-        }
-        cf = cluster.get("asi_counterfactual_fixes", [])
-        if cf:
-            entry["suggested_fixes"] = [str(f)[:200] for f in cf[:5]]
-        ja_list = cluster.get("join_assessments", [])
-        if ja_list:
-            entry["join_assessments"] = [
-                {k: v for k, v in ja.items() if k != "question_id"}
-                for ja in ja_list[:5]
-            ]
-        result.append(entry)
-    if len(sorted_hard) > top_n:
-        for cluster in sorted_hard[top_n:]:
-            result.append({
-                "cluster_id": cluster.get("cluster_id", "?"),
-                "root_cause": cluster.get("root_cause", "unknown"),
-                "judge": cluster.get("affected_judge", "unknown"),
-                "question_count": len(cluster.get("question_ids", [])),
-                "blamed_objects": _normalize_blame(cluster.get("asi_blame_set")),
-                "summary_only": True,
-            })
-    return result
+    sorted_hard = sorted(
+        hard, key=lambda c: len(c.get("question_ids", [])), reverse=True,
+    )
+    return [format_afs(c) for c in sorted_hard]
 
 
 def _build_soft_signal_data(soft_clusters: list[dict]) -> list[dict]:
@@ -4754,6 +4813,31 @@ _SQL_PATTERN_ROOT_CAUSES = frozenset({
 })
 
 
+# ── Bug #4 (benchmark leakage) counters ────────────────────────────────
+# Incremented whenever the optimizer suppresses a path that would have copied
+# benchmark content verbatim. Harvested by write_iteration() and reset per
+# iteration via reset_bug4_counters().
+_BUG4_COUNTERS: dict[str, int] = {
+    "secondary_mining_blocked": 0,
+    "firewall_rejections": 0,
+}
+
+
+def reset_bug4_counters() -> None:
+    """Reset Bug #4 counters. Called at the start of each iteration."""
+    for key in _BUG4_COUNTERS:
+        _BUG4_COUNTERS[key] = 0
+
+
+def get_bug4_counters() -> dict[str, int]:
+    """Snapshot of Bug #4 counters for persistence by write_iteration()."""
+    return dict(_BUG4_COUNTERS)
+
+
+def _incr_bug4_counter(key: str, amount: int = 1) -> None:
+    _BUG4_COUNTERS[key] = _BUG4_COUNTERS.get(key, 0) + amount
+
+
 def _resolve_lever5_llm_result(
     llm_result: dict, original_patch_type: str, cluster: dict | None = None,
 ) -> tuple[str, dict]:
@@ -4800,6 +4884,14 @@ def _resolve_lever5_llm_result(
             "target_table": llm_result.get("target_table", ""),
         }
 
+    # Bug #4 — benchmark leakage prevention. Previously, when the LLM
+    # returned text_instruction for a SQL-pattern root cause, this block would
+    # copy representative["question"]/representative["expected_sql"] verbatim
+    # into an add_example_sql proposal. That channel is closed: it contaminated
+    # the training signal by installing benchmark SQL into the space being
+    # evaluated on those same benchmarks. Structural synthesis (Phase 3) is
+    # the supported replacement. We still record that we blocked this path so
+    # observability can confirm the fix is active.
     if cluster and cluster.get("root_cause") in _SQL_PATTERN_ROOT_CAUSES:
         sql_ctxs = cluster.get("sql_contexts", [])
         representative = next(
@@ -4807,18 +4899,14 @@ def _resolve_lever5_llm_result(
             None,
         )
         if representative:
+            _incr_bug4_counter("secondary_mining_blocked")
             logger.info(
-                "Forcing add_example_sql for SQL-pattern root cause '%s' "
-                "(LLM returned text_instruction)",
+                "Bug #4: secondary mining blocked for SQL-pattern root cause "
+                "'%s' — falling through to text_instruction (was: verbatim "
+                "copy of benchmark question/expected_sql)",
                 cluster["root_cause"],
             )
-            return "add_example_sql", {
-                "example_question": representative["question"],
-                "example_sql": representative["expected_sql"],
-                "parameters": [],
-                "usage_guidance": llm_result.get("rationale", ""),
-                "forced_from_sql_pattern": True,
-            }
+            # Fall through to the standard text_instruction path below.
 
     if original_patch_type == "add_example_sql":
         logger.warning(
@@ -4864,7 +4952,14 @@ def _call_llm_for_proposal(
         if c.get("enable_entity_matching")
     )
 
-    sql_diffs = _format_sql_diffs(cluster)
+    # Bug #4 (P2.2) — Route cluster context through the AFS serializer so no
+    # raw benchmark text (question / expected_sql / generated_sql) reaches the
+    # prompt. The AFS output is a typed, leak-free classification; the legacy
+    # ``_format_sql_diffs`` carries raw SQL tokens and is reserved for
+    # debug-only logging (behind GSO_DEBUG_RAW_SQL=1, see P2.6).
+    from genie_space_optimizer.optimization.afs import format_afs
+    _afs = format_afs(cluster)
+    sql_diffs = json.dumps(_afs.get("structural_diff", {}), default=str)
     blame = cluster.get("asi_blame_set")
     if not blame:
         blame = _derive_blame_from_sql(cluster)
@@ -4898,7 +4993,10 @@ def _call_llm_for_proposal(
             metadata_snapshot, blame
         ),
         "patch_type_description": _describe_patch_type(patch_type),
-        "failures_context": json.dumps(cluster, default=str),
+        # Bug #4 (P2.2) — failures_context is the AFS projection, never the
+        # raw cluster dict. Prevents question/expected_sql/generated_sql +
+        # result samples from reaching the LLM prompt.
+        "failures_context": json.dumps(_afs, default=str),
         "sql_diffs": sql_diffs,
         "current_join_specs": json.dumps(_join_specs, default=str),
         "table_relationships": json.dumps(
@@ -5699,7 +5797,7 @@ def _call_llm_for_holistic_instructions(
     format_kwargs: dict[str, Any] = {
         "space_description": space_desc,
         "eval_summary": _format_eval_summary(focus_clusters),
-        "cluster_briefs": _format_cluster_briefs(focus_clusters, top_n=5),
+        "cluster_briefs": _format_cluster_briefs_afs(focus_clusters, top_n=5),
         "lever_summary": _format_lever_summary(lever_changes),
         "current_instructions": current_instructions or "(No current instructions.)",
         "existing_example_sqls": existing_example_sqls,
@@ -6035,7 +6133,7 @@ def _call_llm_for_strategy(
 
     format_kwargs: dict[str, Any] = {
         "full_schema_context": _format_full_schema_context(metadata_snapshot),
-        "cluster_briefs": _format_cluster_briefs(clusters, top_n=5, max_sql_chars=300),
+        "cluster_briefs": _format_cluster_briefs_afs(clusters, top_n=5),
         "soft_signal_summary": _format_soft_signal_summary(soft_signal_clusters),
         "structured_table_context": _format_structured_table_context(
             metadata_snapshot, blame_set, lever=1,
@@ -6550,12 +6648,18 @@ def _call_llm_for_ag_detail(
     if not relevant_clusters:
         relevant_clusters = clusters[:3]
 
+    # Bug #4 (P2.2) — strategist detail context uses AFS structural_diff,
+    # never raw expected_sql / generated_sql.
+    from genie_space_optimizer.optimization.afs import format_afs as _format_afs_local
     sql_diffs_parts: list[str] = []
     for cluster in relevant_clusters:
         cid = cluster.get("cluster_id", "?")
         rc = cluster.get("root_cause", "unknown")
         sql_diffs_parts.append(f"### Cluster {cid}: {rc}")
-        sql_diffs_parts.append(_format_sql_diffs(cluster))
+        _afs_local = _format_afs_local(cluster)
+        sql_diffs_parts.append(
+            json.dumps(_afs_local.get("structural_diff", {}), default=str, indent=2)
+        )
         sql_diffs_parts.append("")
     sql_diffs_text = "\n".join(sql_diffs_parts) if sql_diffs_parts else "(no SQL context)"
 
@@ -7091,10 +7195,28 @@ def _validate_lever5_proposals(
     gold_schema: str = "",
     w: Any = None,
     warehouse_id: str = "",
+    benchmarks: list[dict] | None = None,
 ) -> list[dict]:
-    """Filter out empty, generic, over-length, or hallucinated Lever 5 proposals."""
+    """Filter out empty, generic, over-length, or hallucinated Lever 5 proposals.
+
+    Bug #4 firewall — when ``benchmarks`` is provided, every proposal is
+    additionally gated by ``is_benchmark_leak``. Proposals whose text or SQL
+    fields match any benchmark at n-gram >= 0.60 (or whose SQL fingerprint
+    matches exactly) are rejected. Callers that omit benchmarks degrade to
+    the pre-Bug-#4 behaviour with a logged warning.
+    """
     from genie_space_optimizer.common.config import MAX_INSTRUCTION_TEXT_CHARS
     from genie_space_optimizer.common.genie_schema import count_instruction_slots, MAX_INSTRUCTION_SLOTS
+
+    bug4_corpus = None
+    if benchmarks:
+        from genie_space_optimizer.optimization.leakage import BenchmarkCorpus
+        bug4_corpus = BenchmarkCorpus.from_benchmarks(benchmarks)
+    else:
+        logger.warning(
+            "_validate_lever5_proposals called without benchmarks — "
+            "Bug #4 firewall skipped. Caller should pass benchmarks.",
+        )
 
     _tables = metadata_snapshot.get("tables") or []
     _funcs = metadata_snapshot.get("functions") or []
@@ -7250,6 +7372,20 @@ def _validate_lever5_proposals(
 
             added_slots += 1
 
+        # Bug #4 firewall — catches near-verbatim copies that slipped past
+        # the per-field duplicate checks. Runs last so cheap validators reject
+        # first; only non-duplicate, well-shaped proposals reach here.
+        if bug4_corpus is not None:
+            from genie_space_optimizer.optimization.leakage import is_benchmark_leak
+            is_leak, leak_reason = is_benchmark_leak(p, ptype, bug4_corpus)
+            if is_leak:
+                _incr_bug4_counter("firewall_rejections")
+                logger.info(
+                    "Bug #4 firewall: Lever 5 %s rejected - %s",
+                    ptype, leak_reason,
+                )
+                continue
+
         valid.append(p)
 
     rejected = len(proposals) - len(valid)
@@ -7260,7 +7396,7 @@ def _validate_lever5_proposals(
     return valid
 
 
-def _mine_benchmark_example_sqls(
+def _DEPRECATED_mine_benchmark_example_sqls_verbatim(
     benchmarks: list[dict],
     metadata_snapshot: dict,
     *,
@@ -7270,16 +7406,26 @@ def _mine_benchmark_example_sqls(
     w: Any = None,
     warehouse_id: str = "",
 ) -> list[dict]:
-    """Mine benchmarks with ``expected_sql`` as ready-made example SQL proposals.
+    """DEPRECATED — disabled as part of Bug #4 (benchmark leakage) remediation.
 
-    Skips benchmarks whose question already exists in the config's
-    ``example_question_sqls``.  Validates each via
-    ``validate_ground_truth_sql(..., execute=True)`` so only SQL that
-    actually runs and returns rows is proposed.
+    This function used to copy benchmark ``expected_sql`` into ``example_sqls``
+    verbatim, which contaminates the training signal: the optimizer was then
+    evaluated on benchmarks whose exact SQL it had just installed into the
+    space. Structural synthesis (see ``_synthesize_example_sqls``) replaces
+    this path.
 
-    Respects the 100-slot instruction budget — stops mining once the
-    remaining slot budget is exhausted.
+    Gated behind ``GSO_ALLOW_VERBATIM_MINING=1`` for emergency rollback only.
+    Without the flag this function raises ``RuntimeError``.
     """
+    import os as _os
+    if _os.getenv("GSO_ALLOW_VERBATIM_MINING", "0").lower() not in {"1", "true", "yes", "on"}:
+        raise RuntimeError(
+            "_DEPRECATED_mine_benchmark_example_sqls_verbatim is disabled "
+            "(benchmark leakage prevention, Bug #4). Use structural synthesis "
+            "via _synthesize_example_sqls instead. Set "
+            "GSO_ALLOW_VERBATIM_MINING=1 only for emergency rollback."
+        )
+
     from genie_space_optimizer.common.genie_schema import count_instruction_slots, MAX_INSTRUCTION_SLOTS
 
     current_slots = count_instruction_slots(metadata_snapshot)
@@ -7475,6 +7621,7 @@ def _generate_lever6_proposal(
     catalog: str = "",
     gold_schema: str = "",
     warehouse_id: str = "",
+    benchmarks: list[dict] | None = None,
 ) -> dict | None:
     """Generate a SQL Expression proposal for a failure cluster.
 
@@ -7484,6 +7631,10 @@ def _generate_lever6_proposal(
 
     The LLM chooses the snippet_type (measure/filter/expression) — the
     static _LEVER_TO_PATCH_TYPE mapping is NOT used here.
+
+    Bug #4 firewall — when ``benchmarks`` is provided, the proposal is
+    checked via ``is_benchmark_leak`` before being returned. Leaky proposals
+    are dropped with a counter increment; callers get ``None``.
     """
     import json as _json
 
@@ -7493,7 +7644,11 @@ def _generate_lever6_proposal(
     root_cause = cluster.get("root_cause", "other")
 
     with mlflow.start_span(name=f"lever6_proposal_{root_cause}", span_type=_SpanType.CHAIN) as span:
-        cluster_context = _format_cluster_briefs([cluster])
+        # Bug #4 (P2.2) — Lever 6 cluster context must be the AFS projection.
+        # _format_cluster_briefs is retained only for debug/logging.
+        from genie_space_optimizer.optimization.afs import format_afs
+        _afs_ctx = format_afs(cluster)
+        cluster_context = _json.dumps(_afs_ctx, indent=2, default=str)
         schema_context = _format_schema_index(metadata_snapshot)
         existing_snippets = _format_existing_sql_snippets(metadata_snapshot)
 
@@ -7592,7 +7747,7 @@ def _generate_lever6_proposal(
 
         span.set_outputs({"snippet_type": snippet_type, "sql": sql_raw[:200]})
 
-        return {
+        proposal = {
             "patch_type": patch_type_map[snippet_type],
             "lever": 6,
             "snippet_type": snippet_type,
@@ -7607,6 +7762,28 @@ def _generate_lever6_proposal(
             "confidence": 0.7,
             "questions_fixed": len(cluster.get("question_traces", [])),
         }
+
+        # Bug #4 firewall — reject proposals whose text/SQL fields are
+        # substantially similar to any benchmark. Without the firewall the
+        # LLM could reproduce expected_sql almost verbatim inside a snippet,
+        # contaminating training.
+        if benchmarks:
+            from genie_space_optimizer.optimization.leakage import (
+                BenchmarkCorpus, is_benchmark_leak,
+            )
+            corpus = BenchmarkCorpus.from_benchmarks(benchmarks)
+            is_leak, leak_reason = is_benchmark_leak(
+                proposal, proposal["patch_type"], corpus,
+            )
+            if is_leak:
+                _incr_bug4_counter("firewall_rejections")
+                logger.info(
+                    "Bug #4 firewall: Lever 6 proposal rejected (%s) - %s",
+                    proposal["patch_type"], leak_reason,
+                )
+                return None
+
+        return proposal
 
 
 # ── Lever 6 / Phase 2: Proactive SQL Expression Mining ─────────────────
@@ -8621,6 +8798,7 @@ def generate_proposals_from_strategy(
     catalog: str = "",
     gold_schema: str = "",
     warehouse_id: str = "",
+    benchmarks: list[dict] | None = None,
 ) -> list[dict]:
     """Generate proposals for a single lever guided by the holistic strategy.
 
@@ -9223,6 +9401,7 @@ def generate_proposals_from_strategy(
                     strategist_hints=strategist_hints,
                     w=w, spark=spark, catalog=catalog,
                     gold_schema=gold_schema, warehouse_id=warehouse_id,
+                    benchmarks=benchmarks,
                 )
                 if proposal:
                     proposal["proposal_id"] = f"P{len(proposals) + 1:03d}"
@@ -9296,6 +9475,7 @@ def generate_proposals_from_strategy(
             proposals, metadata_snapshot,
             spark=spark, catalog=catalog, gold_schema=gold_schema,
             w=w, warehouse_id=warehouse_id,
+            benchmarks=benchmarks,
         )
         proposals = _deduplicate_proposals(proposals)
         proposals = _filter_no_op_proposals(proposals, metadata_snapshot)
@@ -9484,20 +9664,15 @@ def generate_metadata_proposals(
                 },
             })
 
-        if benchmarks:
-            mined = _mine_benchmark_example_sqls(
-                benchmarks, metadata_snapshot,
-                spark=spark, catalog=catalog, gold_schema=gold_schema,
-                w=w, warehouse_id=warehouse_id,
-            )
-            if mined:
-                logger.info("Benchmark mining added %d example SQL proposals", len(mined))
-                proposals.extend(mined)
+        # Bug #4 — verbatim benchmark mining removed from Lever 5 proposal
+        # generation. Example SQLs come exclusively from AFS-gated structural
+        # synthesis (Phase 3), not from copying benchmark expected_sql.
 
         proposals = _validate_lever5_proposals(
             proposals, metadata_snapshot,
             spark=spark, catalog=catalog, gold_schema=gold_schema,
             w=w, warehouse_id=warehouse_id,
+            benchmarks=benchmarks,
         )
         _pre_dedup_p = len(proposals)
         proposals = _deduplicate_proposals(proposals)
@@ -9762,6 +9937,7 @@ def generate_metadata_proposals(
         proposals, metadata_snapshot,
         spark=spark, catalog=catalog, gold_schema=gold_schema,
         w=w, warehouse_id=warehouse_id,
+        benchmarks=benchmarks,
     )
     _pre_dedup_p = len(proposals)
     proposals = _deduplicate_proposals(proposals)
