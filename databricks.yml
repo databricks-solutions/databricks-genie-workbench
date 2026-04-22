@@ -1,6 +1,6 @@
 bundle:
   name: "genie-workbench"
-  databricks_cli_version: ">= 0.239.0"
+  databricks_cli_version: ">= 0.297.2"
 
 variables:
   app_name:
