@@ -1946,11 +1946,22 @@ def _generate_proactive_instructions(
     metadata_snapshot: dict,
     w: WorkspaceClient | None = None,
 ) -> str:
-    """Generate conservative routing instructions for an empty Genie Space.
+    """Generate canonical 5-section routing instructions for an empty space.
 
-    Returns the instruction text (500-4000 chars), or ``""`` on failure.
+    Returns the instruction text (validated against the 5-section schema)
+    or ``""`` on failure. The caller is responsible for persisting the
+    text via ``_set_general_instructions``.
+
+    The output passes :func:`validate_instruction_text` in strict mode
+    before being returned — anything that fails validation is dropped
+    rather than written, so a malformed LLM reply never reaches the
+    Genie Space. On validation failure the (possibly partial) offending
+    text is logged for debugging.
     """
-    from genie_space_optimizer.common.config import PROACTIVE_INSTRUCTION_PROMPT
+    from genie_space_optimizer.common.config import (
+        MAX_TEXT_INSTRUCTIONS_CHARS, PROACTIVE_INSTRUCTION_PROMPT,
+    )
+    from genie_space_optimizer.optimization.applier import validate_instruction_text
 
     ctx = _build_space_schema_context(metadata_snapshot)
 
@@ -1982,16 +1993,161 @@ def _generate_proactive_instructions(
         )
         text = re.sub(r"```[a-z]*\n?", "", text).strip().rstrip("`")
         if len(text) < 50:
-            logger.warning("Proactive instruction generation: result too short (%d chars)", len(text))
+            logger.warning(
+                "Proactive instruction generation: result too short (%d chars)",
+                len(text),
+            )
             return ""
-        if len(text) > 4000:
-            text = text[:4000].rsplit("\n", 1)[0]
-        text = normalize_instructions(text)
-        logger.info("Proactive instruction generation: produced %d chars", len(text))
+        if len(text) > MAX_TEXT_INSTRUCTIONS_CHARS:
+            # Cap at the scanner threshold — never write content that
+            # would immediately fail IQ check #4. Split on a line boundary
+            # so we don't truncate mid-bullet.
+            text = text[:MAX_TEXT_INSTRUCTIONS_CHARS].rsplit("\n", 1)[0]
+        ok, errors = validate_instruction_text(text, strict=True)
+        if not ok:
+            logger.warning(
+                "Proactive instruction generation: validation failed — errors=%s sample=%r",
+                errors, text[:200],
+            )
+            return ""
+        logger.info(
+            "Proactive instruction generation: produced %d chars", len(text),
+        )
         return text
     except Exception:
-        logger.warning("Proactive instruction generation: LLM call failed", exc_info=True)
+        logger.warning(
+            "Proactive instruction generation: LLM call failed", exc_info=True,
+        )
         return ""
+
+
+def _expand_instructions(
+    metadata_snapshot: dict,
+    existing_instructions: str,
+    missing_sections: list[str],
+    w: WorkspaceClient | None = None,
+) -> dict[str, str]:
+    """Generate content for the canonical sections a space is missing.
+
+    Called by the two-phase proactive seeding path (Task B.5) when a
+    space already has instructions but lacks one or more of the five
+    canonical sections. The LLM returns a dict keyed by exact canonical
+    header; we validate every key is in ``missing_sections`` and in
+    :data:`CANONICAL_SECTION_HEADERS` before returning.
+
+    Parameters
+    ----------
+    metadata_snapshot
+        Genie Space config snapshot (tables, MVs, join specs).
+    existing_instructions
+        Current prose — used by the prompt to avoid duplicating content.
+    missing_sections
+        Subset of canonical headers to populate. If empty, returns ``{}``.
+    w
+        WorkspaceClient for the LLM call (optional; pass-through).
+
+    Returns
+    -------
+    dict[str, str]
+        ``{canonical_header: section_body_text}`` for each missing section
+        the LLM chose to populate. Sections the LLM declined to fill
+        (because there was nothing meaningful to say) are absent from
+        the dict — the caller merges only what was returned, never
+        overwriting existing content.
+    """
+    from genie_space_optimizer.common.config import (
+        CANONICAL_SECTION_HEADERS, EXPAND_INSTRUCTION_PROMPT,
+    )
+    from genie_space_optimizer.optimization.evaluation import _extract_json
+
+    if not missing_sections:
+        return {}
+    missing = [s for s in missing_sections if s in CANONICAL_SECTION_HEADERS]
+    if not missing:
+        return {}
+
+    ctx = _build_space_schema_context(metadata_snapshot)
+
+    join_specs: list[str] = []
+    ds = metadata_snapshot.get("data_sources", {})
+    if isinstance(ds, dict):
+        for tbl in ds.get("tables", []):
+            if isinstance(tbl, dict):
+                for js in tbl.get("join_specs", []):
+                    if isinstance(js, dict):
+                        sql_parts = js.get("sql", [])
+                        cond = sql_parts[0] if sql_parts else ""
+                        if cond:
+                            join_specs.append(cond)
+    ctx["join_specs_context"] = (
+        "\n".join(f"- {j}" for j in join_specs) if join_specs else "(none)"
+    )
+    ctx["existing_instructions"] = existing_instructions or "(none)"
+    ctx["missing_sections"] = "\n".join(f"- {h}" for h in missing)
+
+    format_kwargs = _truncate_to_budget(
+        ctx, EXPAND_INSTRUCTION_PROMPT,
+        priority_keys=["existing_instructions", "tables_context"],
+    )
+    prompt = format_mlflow_template(EXPAND_INSTRUCTION_PROMPT, **format_kwargs)
+    system_msg = (
+        "You expand Databricks Genie Space instructions — only the "
+        "missing canonical sections."
+    )
+
+    try:
+        text, _response = _traced_llm_call(
+            w, system_msg, prompt,
+            span_name="expand_instructions",
+            max_tokens=1536,
+        )
+    except Exception:
+        logger.warning("Expand instructions: LLM call failed", exc_info=True)
+        return {}
+
+    try:
+        parsed = _extract_json(text)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning(
+            "Expand instructions: JSON parse failed. raw=%r", (text or "")[:200],
+        )
+        return {}
+
+    if not isinstance(parsed, dict):
+        logger.warning(
+            "Expand instructions: expected JSON object, got %s",
+            type(parsed).__name__,
+        )
+        return {}
+
+    sections_raw = parsed.get("sections", parsed)
+    if not isinstance(sections_raw, dict):
+        return {}
+
+    allowed = set(missing)
+    out: dict[str, str] = {}
+    for header, body in sections_raw.items():
+        header_str = str(header).strip()
+        if header_str not in allowed:
+            logger.info(
+                "Expand instructions: dropping non-requested / non-canonical header %r",
+                header_str,
+            )
+            continue
+        body_str: str
+        if isinstance(body, list):
+            body_str = "\n".join(str(s).rstrip() for s in body if str(s).strip())
+        else:
+            body_str = str(body).strip()
+        if not body_str:
+            continue
+        out[header_str] = body_str
+
+    logger.info(
+        "Expand instructions: produced %d/%d requested sections (%s)",
+        len(out), len(missing), ", ".join(out.keys()) or "(none)",
+    )
+    return out
 
 
 def _generate_sample_questions(
@@ -5289,9 +5445,25 @@ _pre_structure_cache: dict[int, dict[str, list[str]]] = {}
 
 
 def _is_unstructured(text: str) -> bool:
-    """Return True if *text* has no recognized ALL-CAPS section headers."""
+    """Return True if *text* has no recognized section headers.
+
+    Treats both the legacy 12-section ALL-CAPS vocabulary AND the new
+    canonical 5-section schema (PR #178) as "structured" — the lever
+    loop's restructure block must not re-classify a space whose prose
+    has already been normalised by the prose rule miner. That would
+    undo the miner's work on every optimisation run and produce ever-
+    growing churn in the text_instructions content.
+    """
     if not text or not text.strip():
         return True
+    # New canonical-schema detection runs BEFORE sanitisation because
+    # ``_sanitize_plaintext_instructions`` rewrites ``## FOO`` to
+    # ``FOO:`` (legacy shape). If we let it through first, the verbatim
+    # header #5 loses its casing and passes the lever loop's ALL-CAPS
+    # detector only accidentally.
+    from genie_space_optimizer.common.config import CANONICAL_SECTION_HEADERS
+    if any(h in text for h in CANONICAL_SECTION_HEADERS):
+        return False
     sanitized = _sanitize_plaintext_instructions(text)
     sections, preamble = _parse_sections(sanitized)
     return (not sections) and bool(preamble)
@@ -5302,78 +5474,53 @@ def _pre_structure_instructions(
     metadata_snapshot: dict,
     w: WorkspaceClient | None = None,
 ) -> dict[str, list[str]]:
-    """Classify unstructured instructions into canonical section format via LLM.
+    """Heuristic fallback that groups free-form prose into legacy sections.
 
-    Returns a dict keyed by section header (e.g. ``"PURPOSE"``) with lists
-    of bullet lines.  Falls back to ``_merge_structured_instructions`` if the
-    LLM call fails.
+    Historical note: this function used to drive an LLM round-trip via
+    ``INSTRUCTION_RESTRUCTURE_PROMPT`` to classify prose into the legacy
+    12-section ALL-CAPS vocabulary. That prompt and the classifier were
+    deleted as part of the 5-section schema migration — the prose rule
+    miner (:func:`_convert_instructions_to_sql_expressions`) now performs
+    canonical grouping as part of its rewrite step, which subsumes this
+    concern for spaces touched by proactive enrichment.
+
+    What remains is a heuristic fallback used by the in-loop lever
+    machinery (:func:`_ensure_structured`) when a space's prose still
+    lacks recognised section headers. The fallback preserves content
+    rather than inventing structure; the miner re-homes it on the next
+    optimisation run.
     """
-    from genie_space_optimizer.common.config import INSTRUCTION_RESTRUCTURE_PROMPT
+    if not raw or not raw.strip():
+        return {}
 
     cache_key = hash(raw)
     if cache_key in _pre_structure_cache:
         return _pre_structure_cache[cache_key]
 
-    ctx = _build_space_schema_context(metadata_snapshot)
-    format_kwargs = {
-        "existing_instructions": raw,
-        "tables_context": ctx.get("tables_context", "(no tables)"),
-    }
-    prompt = format_mlflow_template(INSTRUCTION_RESTRUCTURE_PROMPT, **format_kwargs)
-    system_msg = "You classify Genie Space instructions into canonical sections."
-
-    try:
-        text, _response = _traced_llm_call(
-            w, system_msg, prompt,
-            span_name="pre_structure_instructions",
-            max_tokens=4096,
-        )
-        text = re.sub(r"```[a-z]*\n?", "", text).strip().rstrip("`")
-        text = _sanitize_plaintext_instructions(text)
-        sections, preamble = _parse_sections(text)
-
-        if not sections:
-            logger.warning(
-                "Pre-structuring LLM returned no sections — falling back to heuristic"
-            )
-            raise ValueError("LLM did not produce structured output")
-
-        if preamble:
-            non_blank = [ln for ln in preamble if ln.strip()]
-            if non_blank:
-                target = "PURPOSE" if "PURPOSE" not in sections else "CONSTRAINTS"
-                sections.setdefault(target, []).extend(non_blank)
-
-        result: dict[str, list[str]] = {}
-        for section in INSTRUCTION_SECTION_ORDER:
-            if section in sections:
-                result[section] = [
-                    ln for ln in sections[section] if ln.strip()
-                ]
-
-        logger.info(
-            "Pre-structured instructions into %d sections (%s)",
-            len(result),
-            ", ".join(result.keys()),
-        )
-        _pre_structure_cache[cache_key] = result
-        return result
-
-    except Exception:
-        logger.warning(
-            "Pre-structuring LLM call failed — falling back to heuristic merge",
-            exc_info=True,
-        )
-        fallback_text = _merge_structured_instructions(
-            existing=raw, contributions=[], global_guidance=""
-        )
-        sections, _ = _parse_sections(fallback_text)
-        result = {
-            section: [ln for ln in lines if ln.strip()]
-            for section, lines in sections.items()
+    fallback_text = _merge_structured_instructions(
+        existing=raw, contributions=[], global_guidance="",
+    )
+    sections, preamble = _parse_sections(fallback_text)
+    if preamble:
+        non_blank = [ln for ln in preamble if ln.strip()]
+        if non_blank:
+            target = "PURPOSE" if "PURPOSE" not in sections else "CONSTRAINTS"
+            sections.setdefault(target, []).extend(non_blank)
+    if not sections:
+        # Nothing parseable — dump under CONSTRAINTS so content is
+        # preserved, not silently dropped. The miner will promote or
+        # re-home it on the next run.
+        sections = {
+            "CONSTRAINTS": [
+                ln.strip() for ln in raw.splitlines() if ln.strip()
+            ],
         }
-        _pre_structure_cache[cache_key] = result
-        return result
+    result: dict[str, list[str]] = {
+        k: [ln for ln in v if ln.strip()]
+        for k, v in sections.items()
+    }
+    _pre_structure_cache[cache_key] = result
+    return result
 
 
 def _ensure_structured(
@@ -7481,6 +7628,85 @@ _DERIVED_PATTERN = re.compile(
 )
 
 
+_MINER_TARGETS: tuple[str, ...] = (
+    "sql_snippet", "join_spec", "example_qsql",
+    "table_desc", "column_synonym", "keep_in_prose",
+)
+
+
+def _format_existing_join_specs_brief(metadata_snapshot: dict) -> str:
+    """Return a terse dedup-hint list of existing join specs for the miner."""
+    instr = metadata_snapshot.get("instructions", {})
+    specs = instr.get("join_specs", []) if isinstance(instr, dict) else []
+    lines: list[str] = []
+    for spec in specs or []:
+        if not isinstance(spec, dict):
+            continue
+        left = spec.get("left", {}) if isinstance(spec.get("left"), dict) else {}
+        right = spec.get("right", {}) if isinstance(spec.get("right"), dict) else {}
+        cond = spec.get("sql", [])
+        cond_str = cond[0] if isinstance(cond, list) and cond else str(cond or "")
+        lines.append(f"- {left.get('identifier', '?')} ↔ {right.get('identifier', '?')} :: {cond_str[:120]}")
+    return "\n".join(lines) if lines else "(none)"
+
+
+def _format_existing_example_sqls_brief(metadata_snapshot: dict) -> str:
+    """Return a terse dedup-hint list of existing example question SQLs."""
+    instr = metadata_snapshot.get("instructions", {})
+    examples = instr.get("example_question_sqls", []) if isinstance(instr, dict) else []
+    lines: list[str] = []
+    for ex in examples or []:
+        if not isinstance(ex, dict):
+            continue
+        question = str(ex.get("question", ""))[:120]
+        sql = ex.get("sql", "")
+        if isinstance(sql, list):
+            sql = " ".join(str(s) for s in sql)
+        lines.append(f"- Q: {question!r} — SQL: {str(sql)[:120]}")
+    return "\n".join(lines) if lines else "(none)"
+
+
+def _validate_miner_candidate(candidate: Any, instructions_text: str) -> tuple[bool, str]:
+    """Structural validation shared by every target.
+
+    Checks the envelope fields (``target``, ``source_span``, ``confidence``,
+    ``payload``) — per-target payload validation lives in the dispatcher.
+    Returns ``(ok, reason)`` where ``reason`` is a short string used in the
+    observability summary on rejection.
+    """
+    from genie_space_optimizer.common.config import (
+        CANONICAL_SECTION_HEADERS, PROMOTE_MIN_CONFIDENCE, SQL_IN_TEXT_RE,
+    )
+
+    if not isinstance(candidate, dict):
+        return False, "not_a_dict"
+    target = str(candidate.get("target", "")).strip()
+    if target not in _MINER_TARGETS:
+        return False, f"bad_target:{target or 'missing'}"
+    span = candidate.get("source_span", "")
+    if not isinstance(span, str) or not span.strip():
+        return False, "missing_source_span"
+    try:
+        confidence = float(candidate.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        return False, "bad_confidence"
+    if confidence < PROMOTE_MIN_CONFIDENCE:
+        return False, f"low_confidence:{confidence:.2f}"
+    payload = candidate.get("payload")
+    if not isinstance(payload, dict):
+        return False, "missing_payload"
+
+    # ``keep_in_prose`` must specify a canonical section, AND the span
+    # must not contain SQL (scanner check #4 would flag the rewrite).
+    if target == "keep_in_prose":
+        section = str(payload.get("section", "")).strip()
+        if section not in CANONICAL_SECTION_HEADERS:
+            return False, f"keep_in_prose_bad_section:{section[:40]!r}"
+        if SQL_IN_TEXT_RE.search(span):
+            return False, "keep_in_prose_contains_sql"
+    return True, "ok"
+
+
 def _convert_instructions_to_sql_expressions(
     metadata_snapshot: dict,
     w: WorkspaceClient | None = None,
@@ -7489,25 +7715,67 @@ def _convert_instructions_to_sql_expressions(
     catalog: str = "",
     gold_schema: str = "",
     warehouse_id: str = "",
-) -> list[dict]:
-    """Parse Genie Space instructions for business rules expressible as SQL snippets.
+) -> dict[str, list[dict]]:
+    """Multi-target prose rule miner (extension of the legacy SQL-only miner).
 
-    Calls an LLM to extract default filters, KPI definitions, and derived
-    attributes from ``text_instructions``, then validates each candidate
-    via ``validate_sql_snippet``.  Returns only validated candidates.
+    Calls an LLM with :data:`PROSE_RULE_MINING_PROMPT` to classify every
+    promotable rule in ``text_instructions`` as one of six targets
+    (sql_snippet, join_spec, example_qsql, table_desc, column_synonym,
+    keep_in_prose). Each candidate carries a ``source_span`` — an exact
+    substring of the input prose that the rewrite step later removes.
+
+    This keeps the legacy function name so existing callers compile, but
+    the shape of the return value is now a dict keyed by target rather
+    than a flat ``list[dict]`` of SQL snippets. Callers that only care
+    about SQL snippets should read ``result["sql_snippet"]``.
+
+    Pipeline per call:
+
+    1. Build context (schema digest + existing structured config for
+       dedup hints).
+    2. LLM call with structured-JSON retry (B.2): on parse failure,
+       re-invoke with a repair prompt asking for a plain JSON array.
+    3. Structural validation (envelope + confidence gate).
+    4. Per-target payload validation (including EXPLAIN for sql_snippet
+       / join_spec / example_qsql, dedup against existing config).
+    5. Observability summary: single INFO line with counts by target
+       and rejection reasons.
+
+    Returns a dict with exactly these keys (never missing, may be empty):
+
+    - ``sql_snippet`` : ``list[dict]`` — each with the legacy shape so
+      :func:`_apply_instruction_sql_expressions` still consumes it.
+    - ``join_spec``    : ``list[dict]`` — shape expected by the join
+      spec applier (Task C.3).
+    - ``example_qsql`` : ``list[dict]`` — question / SQL / usage.
+    - ``table_desc``   : ``list[dict]`` — identifier + description_append.
+    - ``column_synonym``: ``list[dict]`` — identifier + column + synonyms.
+    - ``keep_in_prose``: ``list[dict]`` — section + source_span (used by
+      the rewrite step to regroup content under canonical headers).
+    - ``stats``        : ``dict`` — observability (candidates_total,
+      promoted_by_target, rejected_by_reason, retries).
     """
     from genie_space_optimizer.common.config import (
-        INSTRUCTION_TO_SQL_EXPRESSION_PROMPT,
-        format_mlflow_template,
+        PROSE_RULE_MINING_PROMPT, format_mlflow_template,
     )
     from genie_space_optimizer.optimization.applier import _get_general_instructions
-    from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
+    from genie_space_optimizer.optimization.benchmarks import (
+        validate_ground_truth_sql, validate_sql_snippet,
+    )
+    from genie_space_optimizer.optimization.evaluation import _extract_json
+
+    empty: dict[str, list[dict]] = {t: [] for t in _MINER_TARGETS}
+    empty["stats"] = {
+        "candidates_total": 0, "promoted_by_target": {},
+        "rejected_by_reason": {}, "retries": 0,
+    }
 
     instructions_text = _get_general_instructions(metadata_snapshot)
     if not instructions_text or len(instructions_text.strip()) < 20:
-        logger.info("No substantial instructions to convert to SQL expressions")
-        return []
+        logger.info("miner: no substantial instructions to mine")
+        return empty
 
+    # ── Build prompt context ────────────────────────────────────────
     ds = metadata_snapshot.get("data_sources", {})
     all_sources: list = []
     if isinstance(ds, dict):
@@ -7532,84 +7800,305 @@ def _convert_instructions_to_sql_expressions(
 
     instr = metadata_snapshot.get("instructions", {})
     existing_snippets = instr.get("sql_snippets", {}) if isinstance(instr, dict) else {}
-    existing_strs: list[str] = []
+    existing_sql_strs: list[str] = []
     for category in ("measures", "filters", "expressions"):
         for item in existing_snippets.get(category, []):
             sql_raw = item.get("sql", "")
-            sql_str = "".join(str(s) for s in sql_raw).strip() if isinstance(sql_raw, list) else str(sql_raw).strip()
+            sql_str = (
+                "".join(str(s) for s in sql_raw).strip()
+                if isinstance(sql_raw, list) else str(sql_raw).strip()
+            )
             if sql_str:
-                existing_strs.append(f"{category}: {sql_str}")
-    existing_text = "\n".join(existing_strs) if existing_strs else "(none)"
+                existing_sql_strs.append(f"{category}: {sql_str}")
+    existing_expressions = "\n".join(existing_sql_strs) or "(none)"
 
     prompt = format_mlflow_template(
-        INSTRUCTION_TO_SQL_EXPRESSION_PROMPT,
+        PROSE_RULE_MINING_PROMPT,
         instructions_text=instructions_text,
         schema_context=schema_context,
-        existing_expressions=existing_text,
+        existing_expressions=existing_expressions,
+        existing_join_specs=_format_existing_join_specs_brief(metadata_snapshot),
+        existing_example_sqls=_format_existing_example_sqls_brief(metadata_snapshot),
     )
 
-    try:
-        text, _response = _traced_llm_call(
-            w, "You are a SQL expression expert.", prompt,
-            span_name="instruction_to_sql_expression",
+    # ── LLM call with JSON-repair retry ─────────────────────────────
+    system_msg = (
+        "You are a Databricks Genie Space configuration expert. "
+        "Respond with a single JSON array and nothing else."
+    )
+    raw_text = ""
+    candidates_raw: list[Any] | None = None
+    retries = 0
+    for attempt in range(2):
+        try:
+            text, _response = _traced_llm_call(
+                w, system_msg, prompt,
+                span_name="prose_rule_mining" if attempt == 0 else "prose_rule_mining_retry",
+            )
+        except Exception:
+            logger.warning(
+                "miner: LLM call failed (attempt=%d)", attempt + 1, exc_info=True,
+            )
+            continue
+        raw_text = text or ""
+        try:
+            parsed = _extract_json(raw_text)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(
+                "miner: JSON parse failed (attempt=%d): %s. raw=%r",
+                attempt + 1, exc, raw_text[:200],
+            )
+            if attempt == 0:
+                # Build a one-shot repair prompt that asks the LLM to
+                # emit JUST the JSON — no prose, no fences.
+                prompt = (
+                    "Your previous reply could not be parsed as JSON. "
+                    "Return ONLY the JSON array — no prose, no markdown "
+                    "code fences, no preamble.\n\n"
+                    "Original task:\n" + prompt
+                )
+                retries += 1
+                continue
+            return empty
+        if isinstance(parsed, list):
+            candidates_raw = parsed
+        elif isinstance(parsed, dict):
+            # Tolerate wrapped shape: {"candidates": [...]} or similar.
+            for key in ("candidates", "rules", "expressions"):
+                val = parsed.get(key)
+                if isinstance(val, list):
+                    candidates_raw = val
+                    break
+        if candidates_raw is None:
+            logger.warning(
+                "miner: JSON did not contain an array (attempt=%d)",
+                attempt + 1,
+            )
+            if attempt == 0:
+                retries += 1
+                continue
+            return empty
+        break
+
+    if candidates_raw is None:
+        return empty
+
+    # ── Per-target dispatch and validation ──────────────────────────
+    # Observability contract (see Task C.2 in the plan):
+    # - ``by_target`` counts raw LLM output distribution — one bump per
+    #   candidate BEFORE any validation (envelope + per-target).
+    # - ``promoted_by_target`` counts only candidates that survive ALL
+    #   checks and landed in a bucket.
+    # - ``rejected_by_reason`` buckets rejections for a grep-friendly
+    #   diagnostic; the first rejection per target is logged at INFO.
+    buckets: dict[str, list[dict]] = {t: [] for t in _MINER_TARGETS}
+    by_target: dict[str, int] = {}
+    promoted_by_target: dict[str, int] = {}
+    rejected_by_reason: dict[str, int] = {}
+    # Keyed by the candidate's raw target so we log one sample per target,
+    # per the plan ("First rejection reason per target at INFO").
+    first_rejection_by_target: set[str] = set()
+
+    existing_sql_lower = {s.lower().strip() for s in existing_sql_strs}
+
+    for c in candidates_raw:
+        # Raw-target bump BEFORE validation — safe because the envelope
+        # validator guarantees ``target`` is one of the six valid slugs
+        # for every candidate that reaches promotion. For rejects whose
+        # target is missing / invalid, we attribute to ``"_unknown"``.
+        _raw_target = (
+            c.get("target") if isinstance(c, dict) and isinstance(c.get("target"), str)
+            else "_unknown"
         )
-    except Exception:
-        logger.warning("Instruction-to-SQL-expression LLM call failed", exc_info=True)
-        return []
+        by_target[_raw_target] = by_target.get(_raw_target, 0) + 1
 
-    from genie_space_optimizer.optimization.evaluation import _extract_json
-    try:
-        result = _extract_json(text)
-    except (json.JSONDecodeError, ValueError):
-        logger.warning("Instruction-to-SQL-expression response not valid JSON")
-        return []
-
-    candidates = result if isinstance(result, list) else result.get("expressions", [])
-    validated: list[dict] = []
-
-    existing_sql_lower = {s.lower().strip() for s in existing_strs}
-
-    for c in candidates:
-        if not isinstance(c, dict):
-            continue
-        sql = c.get("sql", "").strip()
-        snippet_type = c.get("snippet_type", "").strip().lower()
-        if not sql or snippet_type not in ("measure", "filter", "expression"):
-            continue
-        if sql.lower().strip() in existing_sql_lower:
+        ok, reason = _validate_miner_candidate(c, instructions_text)
+        if not ok:
+            rejected_by_reason[reason] = rejected_by_reason.get(reason, 0) + 1
+            if _raw_target not in first_rejection_by_target:
+                logger.info(
+                    "miner.reject target=%s reason=%s sample=%r",
+                    _raw_target, reason, str(c)[:200],
+                )
+                first_rejection_by_target.add(_raw_target)
             continue
 
-        _valid_result = validate_sql_snippet(
-            sql, snippet_type, metadata_snapshot,
-            spark=spark, catalog=catalog, gold_schema=gold_schema,
-            w=w, warehouse_id=warehouse_id,
+        target = c["target"]
+        payload = c["payload"]
+        span = c["source_span"]
+        confidence = float(c["confidence"])
+        # Per-candidate DEBUG line per plan — useful for local diagnosis
+        # without flooding INFO in steady state.
+        logger.debug(
+            "miner.candidate target=%s confidence=%.2f span=%r",
+            target, confidence, (span or "")[:80],
         )
-        is_valid = _valid_result[0]
-        err = _valid_result[1]
-        prefixed_sql = _valid_result[2] if len(_valid_result) > 2 else sql
-        if is_valid:
-            validated.append({
+
+        if target == "sql_snippet":
+            sql = str(payload.get("sql", "")).strip()
+            snippet_type = str(payload.get("snippet_type", "")).strip().lower()
+            if not sql or snippet_type not in ("measure", "filter", "expression"):
+                rejected_by_reason["sql_bad_shape"] = rejected_by_reason.get("sql_bad_shape", 0) + 1
+                continue
+            if sql.lower().strip() in existing_sql_lower:
+                rejected_by_reason["sql_duplicate"] = rejected_by_reason.get("sql_duplicate", 0) + 1
+                continue
+            valid = validate_sql_snippet(
+                sql, snippet_type, metadata_snapshot,
+                spark=spark, catalog=catalog, gold_schema=gold_schema,
+                w=w, warehouse_id=warehouse_id,
+            )
+            if not valid[0]:
+                rejected_by_reason["sql_invalid"] = rejected_by_reason.get("sql_invalid", 0) + 1
+                logger.debug("miner: sql_snippet rejected: %s — %s", sql[:80], valid[1])
+                continue
+            prefixed_sql = valid[2] if len(valid) > 2 else sql
+            buckets["sql_snippet"].append({
                 "snippet_type": snippet_type,
                 "sql": prefixed_sql,
-                "display_name": c.get("display_name", ""),
-                "description": c.get("description", ""),
-                "synonyms": c.get("synonyms", []),
-                "alias": c.get("alias", ""),
-                "is_default": c.get("is_default", False),
-                "omit_when": c.get("omit_when"),
+                "display_name": payload.get("display_name", ""),
+                "description": payload.get("description", ""),
+                "synonyms": payload.get("synonyms", []) or [],
+                "alias": payload.get("alias", ""),
+                "is_default": bool(payload.get("is_default", False)),
+                "omit_when": payload.get("omit_when"),
                 "source": "instruction_derived",
+                "source_span": span,
+                "confidence": confidence,
             })
-        else:
-            logger.info(
-                "Instruction-derived SQL expression rejected: %s — %s",
-                sql[:80], err,
-            )
 
+        elif target == "join_spec":
+            left = payload.get("left", {}) if isinstance(payload.get("left"), dict) else {}
+            right = payload.get("right", {}) if isinstance(payload.get("right"), dict) else {}
+            sql_field = payload.get("sql", [])
+            if not isinstance(sql_field, list) or len(sql_field) < 1:
+                rejected_by_reason["join_bad_shape"] = rejected_by_reason.get("join_bad_shape", 0) + 1
+                continue
+            if not (left.get("identifier") and right.get("identifier")):
+                rejected_by_reason["join_missing_identifier"] = rejected_by_reason.get("join_missing_identifier", 0) + 1
+                continue
+            buckets["join_spec"].append({
+                "left": {"identifier": left.get("identifier"), "alias": left.get("alias") or left.get("identifier", "").split(".")[-1]},
+                "right": {"identifier": right.get("identifier"), "alias": right.get("alias") or right.get("identifier", "").split(".")[-1]},
+                "sql": sql_field,
+                "instruction": payload.get("instruction", ""),
+                "source": "instruction_derived",
+                "source_span": span,
+                "confidence": confidence,
+            })
+
+        elif target == "example_qsql":
+            question = str(payload.get("question", "")).strip()
+            sql = str(payload.get("sql", "")).strip()
+            if not question or not sql:
+                rejected_by_reason["example_bad_shape"] = rejected_by_reason.get("example_bad_shape", 0) + 1
+                continue
+            # EXPLAIN via the ground-truth SQL validator (see Task C.2
+            # in the plan). We run without ``execute=True`` so this is
+            # EXPLAIN-only — fast, deterministic, no data dependency.
+            # When no execution backend is available (unit test, offline
+            # run), validation short-circuits to structural checks.
+            try:
+                is_valid, err = validate_ground_truth_sql(
+                    sql, spark=spark, catalog=catalog, gold_schema=gold_schema,
+                    execute=False, w=w, warehouse_id=warehouse_id,
+                )
+            except Exception as exc:
+                # Validator threw — treat as shape error so we don't
+                # promote an unchecked SQL into the space.
+                logger.debug("miner: example_qsql validator raised: %s", exc)
+                is_valid, err = False, f"validator_error: {exc}"
+            if not is_valid and (spark is not None or warehouse_id):
+                rejected_by_reason["example_invalid"] = rejected_by_reason.get("example_invalid", 0) + 1
+                logger.debug(
+                    "miner: example_qsql rejected: %s — %s", sql[:80], err,
+                )
+                continue
+            # Dedup against existing example_question_sqls (normalised by
+            # lower-casing the SQL body).
+            _instr = metadata_snapshot.get("instructions", {}) or {}
+            _existing_examples = _instr.get("example_question_sqls", []) or []
+            _existing_sqls_lower: set[str] = set()
+            for ex in _existing_examples:
+                if not isinstance(ex, dict):
+                    continue
+                s = ex.get("sql", "")
+                if isinstance(s, list):
+                    s = " ".join(str(x) for x in s)
+                s = str(s).strip().lower()
+                if s:
+                    _existing_sqls_lower.add(s)
+            if sql.lower().strip() in _existing_sqls_lower:
+                rejected_by_reason["example_duplicate"] = rejected_by_reason.get("example_duplicate", 0) + 1
+                continue
+            buckets["example_qsql"].append({
+                "question": question,
+                "sql": sql,
+                "usage_guidance": payload.get("usage_guidance", ""),
+                "source": "instruction_derived",
+                "source_span": span,
+                "confidence": confidence,
+            })
+
+        elif target == "table_desc":
+            tid = str(payload.get("table_identifier", "")).strip()
+            desc_append = str(payload.get("description_append", "")).strip()
+            if not tid or not desc_append:
+                rejected_by_reason["table_desc_bad_shape"] = rejected_by_reason.get("table_desc_bad_shape", 0) + 1
+                continue
+            buckets["table_desc"].append({
+                "table_identifier": tid,
+                "description_append": desc_append,
+                "source": "instruction_derived",
+                "source_span": span,
+                "confidence": confidence,
+            })
+
+        elif target == "column_synonym":
+            tid = str(payload.get("table_identifier", "")).strip()
+            col = str(payload.get("column_name", "")).strip()
+            syns = payload.get("synonyms", []) or []
+            if not tid or not col or not isinstance(syns, list) or not syns:
+                rejected_by_reason["synonym_bad_shape"] = rejected_by_reason.get("synonym_bad_shape", 0) + 1
+                continue
+            buckets["column_synonym"].append({
+                "table_identifier": tid,
+                "column_name": col,
+                "synonyms": [str(s) for s in syns if str(s).strip()],
+                "source": "instruction_derived",
+                "source_span": span,
+                "confidence": confidence,
+            })
+
+        else:  # keep_in_prose
+            buckets["keep_in_prose"].append({
+                "section": payload["section"],
+                "source_span": span,
+                "confidence": confidence,
+            })
+
+        promoted_by_target[target] = promoted_by_target.get(target, 0) + 1
+
+    stats = {
+        "candidates_total": len(candidates_raw),
+        "by_target": by_target,  # raw LLM output distribution
+        "promoted_by_target": promoted_by_target,  # after all validators
+        "rejected_by_reason": rejected_by_reason,
+        "retries": retries,
+    }
+    # Single structured summary line for the run log. Keep it parseable
+    # by grep: the k=v format survives log aggregators better than JSON.
+    # Matches the format in Task C.2 ("Observability") of the plan.
     logger.info(
-        "Instruction-to-SQL-expression: %d/%d candidates validated",
-        len(validated), len(candidates),
+        "miner.summary candidates_total=%d by_target=%s promoted=%s "
+        "rejected=%s retries=%d",
+        stats["candidates_total"],
+        by_target,
+        promoted_by_target,
+        rejected_by_reason,
+        retries,
     )
-    return validated
+    return {**buckets, "stats": stats}
 
 
 def _mine_sql_expression_candidates(

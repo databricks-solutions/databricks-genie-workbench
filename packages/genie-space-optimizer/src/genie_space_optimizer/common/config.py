@@ -28,6 +28,73 @@ def format_mlflow_template(template: str, **kwargs: Any) -> str:
 
     return re.sub(r"\{\{\s*(\w+)\s*\}\}", _replacer, template)
 
+# ── 0. Canonical Instruction Schema (PR #178 — docs/gsl-instruction-schema.md) ──
+#
+# Keep in sync with docs/gsl-instruction-schema.md introduced by PR #178.
+# Consolidation into a shared Python module tracked under epic #173 / issue #174;
+# until that lands, this is the authoritative source for GSO. Once the shared
+# module exists, delete these constants in a follow-up PR and import instead.
+#
+# Header rules (from the schema doc):
+#   1-4: matched case-insensitively on the header line (normalized form
+#        compared against these tuples).
+#   5  : VERBATIM required — Databricks' blessed string for the summary-
+#        rendering section. Any variant (case, wording, punctuation) is
+#        rejected in strict mode.
+#   All sections may be absent, never reordered.
+#   Only `##` (h2) headers — `###` subheaders belong in structured targets
+#   (sql_snippets, join_specs, etc.), not prose.
+CANONICAL_SECTION_HEADERS: tuple[str, ...] = (
+    "## PURPOSE",
+    "## DISAMBIGUATION",
+    "## DATA QUALITY NOTES",
+    "## CONSTRAINTS",
+    "## Instructions you must follow when providing summaries",  # verbatim
+)
+CANONICAL_SECTION_ORDER: dict[str, int] = {
+    h: i for i, h in enumerate(CANONICAL_SECTION_HEADERS)
+}
+VERBATIM_REQUIRED_HEADERS: frozenset[str] = frozenset({
+    "## Instructions you must follow when providing summaries",
+})
+
+# Scanner check #4 soft cap. Matches the threshold enforced by
+# backend/services/scanner.py; prose longer than this is flagged as a finding.
+MAX_TEXT_INSTRUCTIONS_CHARS = 2000
+
+# Minimum LLM-reported confidence for a prose-to-structured promotion to be
+# applied. Lower-confidence candidates are dropped; they stay in prose until a
+# later pass (or a human edit) raises the confidence.
+PROMOTE_MIN_CONFIDENCE = 0.7
+
+# Legacy ALL-CAPS section → promotion target, authoritative per
+# docs/gsl-instruction-schema.md (the "What does NOT go in text_instructions"
+# table). Used by the multi-target miner for routing hints; not a strict filter
+# (the miner reads full prose and classifies every span regardless of header).
+SECTION_TO_TARGET: dict[str, str] = {
+    "BUSINESS DEFINITIONS": "sql_snippet",
+    "AGGREGATION RULES":    "sql_snippet",
+    "FUNCTION ROUTING":     "sql_snippet",
+    "TEMPORAL FILTERS":     "sql_snippet",
+    "JOIN GUIDANCE":        "join_spec",
+    "QUERY RULES":          "example_qsql",
+    "QUERY PATTERNS":       "example_qsql",
+    "ASSET ROUTING":        "metadata",  # table_desc + column_synonym
+}
+
+# Mirrors backend/services/scanner.py:65 (_SQL_IN_TEXT_RE). GSO cannot import
+# from backend/ (the optimizer is a standalone wheel), so we duplicate the
+# regex and keep them in sync manually. Tracked alongside the schema
+# consolidation in issue #174.
+#
+# The regex is the authoritative "this bullet contains SQL" trigger — used
+# both by the IQ scanner check #4 and by this optimizer's miner as a
+# pre-filter to reject `keep_in_prose` candidates that should have been
+# promoted to `sql_snippet` or `example_qsql`.
+SQL_IN_TEXT_RE = re.compile(
+    r"\b(SELECT|WHERE|JOIN|GROUP\s+BY|ORDER\s+BY|HAVING)\b", re.IGNORECASE,
+)
+
 # ── 1. Quality Thresholds ───────────────────────────────────────────────
 
 DEFAULT_THRESHOLDS = {
@@ -939,9 +1006,11 @@ SPACE_DESCRIPTION_PROMPT = (
 PROACTIVE_INSTRUCTION_PROMPT = (
     '<role>\n'
     'You are a Databricks Genie Space configuration expert. Your job is to '
-    'write a concise set of routing instructions for a Genie Space that has '
-    'NO instructions yet. These instructions help Genie correctly route '
-    'user questions to the right tables and generate accurate SQL.\n'
+    'write the initial routing instructions for a Genie Space that has NO '
+    'instructions yet (or only empty / whitespace prose). These instructions '
+    'follow the canonical 5-section schema — they help Genie disambiguate '
+    'the user, understand data-quality caveats, respect hard constraints, '
+    'and render result summaries consistently.\n'
     '</role>\n'
     '\n'
     '<context>\n'
@@ -956,80 +1025,140 @@ PROACTIVE_INSTRUCTION_PROMPT = (
     '</context>\n'
     '\n'
     '<instructions>\n'
-    'Write plain-text instructions (500-3750 characters) using ALL-CAPS SECTION HEADERS with a colon.\n'
-    'Use these canonical sections (omit empty ones):\n'
+    'Write Markdown prose using exactly the five canonical `##` headers '
+    'below, in this order, omitting any section with nothing to say. '
+    'Keep total length under 2000 characters.\n'
     '\n'
-    'PURPOSE:\n'
-    '- What this space does and who it serves (1 paragraph)\n'
+    'Exact headers (case-insensitive for #1-#4; header #5 is VERBATIM, '
+    'including capitalization and wording):\n'
     '\n'
-    'ASSET ROUTING:\n'
-    '- Which table(s) to use for which topic/entity\n'
+    '## PURPOSE\n'
+    '- 1-2 bullets stating the space scope and audience.\n'
+    '- Infer from table / metric view descriptions and join specs.\n'
     '\n'
-    'TEMPORAL FILTERS:\n'
-    '- Default date filters, fiscal year logic, time-range rules\n'
+    '## DISAMBIGUATION\n'
+    '- Clarification-question triggers: "When the user asks about X '
+    'without specifying Y, ask them to clarify Y."\n'
+    '- Term-resolution rules: "\'Q1\' means calendar Q1 unless the user '
+    'says \'fiscal Q1\'."\n'
+    '- Source: columns with overlapping synonyms across tables; temporal '
+    'columns admitting multiple calendars.\n'
     '\n'
-    'DATA QUALITY NOTES:\n'
-    '- NULL handling, is_current flags, data caveats\n'
+    '## DATA QUALITY NOTES\n'
+    '- NULL handling, known bad rows, column semantics that are NOT in '
+    'the column description.\n'
+    '- Source: column descriptions mentioning NULL / unknown / effective '
+    '/ is_current; fields flagged as low-completeness.\n'
     '\n'
-    'JOIN GUIDANCE:\n'
-    '- Key join patterns if join specs exist\n'
+    '## CONSTRAINTS\n'
+    '- Hard guardrails: what NEVER to show (PII columns, secrets) and '
+    'what NOT to do (cross-join, ignore a required filter).\n'
+    '- Behavioural rules only — SQL-expressible filters MUST be stored '
+    'as sql_snippets, NOT in this section.\n'
     '\n'
-    'Rules:\n'
+    '## Instructions you must follow when providing summaries\n'
+    '- Summary customisation: rounding rules, mandatory caveats, date-'
+    'range statements.\n'
+    '- This header is Databricks\'s verbatim blessed string — do NOT '
+    'paraphrase, re-case, or shorten it.\n'
+    '\n'
+    'Non-regressive rules:\n'
     '- Be factual — infer ONLY from the schema provided.\n'
-    '- Do NOT invent business rules not evident in column names or descriptions.\n'
-    '- Use short, imperative sentences.\n'
-    '- Do NOT use Markdown formatting (no #, **, ```, etc.).\n'
-    '- Keep total output between 500 and 3750 characters.\n'
+    '- Do NOT invent business rules that are not evident in column names '
+    'or descriptions.\n'
+    '- Do NOT emit a SQL snippet anywhere in the prose; SQL belongs in '
+    'sql_snippets / join_specs / example_question_sqls.\n'
+    '- Do NOT emit any `##` header not in the five above.\n'
+    '- Do NOT use `###` subheaders — they belong to structured targets, '
+    'not prose.\n'
+    '- If a section has nothing to say, OMIT it rather than emitting a '
+    'placeholder.\n'
+    '- Use short, imperative bullets (`- …`) under each header.\n'
     '</instructions>\n'
     '\n'
     '<output_schema>\n'
-    'Respond with ONLY the instruction text — no JSON wrapper, no code fences.\n'
+    'Respond with ONLY the instruction text — no JSON wrapper, no code '
+    'fences, no preamble.\n'
     '</output_schema>'
 )
 
-INSTRUCTION_RESTRUCTURE_PROMPT = (
+# Used by the two-phase proactive seeding path: when a space already has
+# instructions but is missing one or more canonical sections, the expand
+# prompt fills in only the gaps without touching sections that already
+# exist. Output is strict JSON keyed by exact canonical headers so the
+# caller can merge without a re-parse of free-form prose.
+EXPAND_INSTRUCTION_PROMPT = (
     '<role>\n'
-    'You are a Databricks Genie Space instruction classifier. '
-    'Your job is to reorganize existing unstructured instructions into '
-    'canonical ALL-CAPS sections WITHOUT changing the content.\n'
+    'You are a Databricks Genie Space configuration expert. The space '
+    'already has instructions but is missing one or more of the five '
+    'canonical sections. Your job is to write ONLY the missing sections '
+    '— never rewrite or rephrase content that already exists.\n'
     '</role>\n'
     '\n'
     '<context>\n'
-    '## Existing Instructions (unstructured)\n'
+    '## Existing Instructions\n'
     '{{ existing_instructions }}\n'
     '\n'
-    '## Available Tables\n'
+    '## Tables\n'
     '{{ tables_context }}\n'
+    '\n'
+    '## Metric Views\n'
+    '{{ metric_views_context }}\n'
+    '\n'
+    '## Join Specifications\n'
+    '{{ join_specs_context }}\n'
+    '\n'
+    '## Missing Sections (generate each one if there is meaningful '
+    'content to add — otherwise omit)\n'
+    '{{ missing_sections }}\n'
     '</context>\n'
     '\n'
     '<instructions>\n'
-    'Classify each rule or sentence from the existing instructions into '
-    'exactly one of these canonical sections:\n'
+    'Generate content ONLY for the headers listed in "Missing Sections". '
+    'Never emit a header that is not in that list. Emit each header '
+    'VERBATIM as given (case-sensitive for header #5, case-insensitive '
+    'parser for the others — still, copy them as-shown).\n'
     '\n'
-    'PURPOSE:             What this Genie Space does and who it serves\n'
-    'ASSET ROUTING:       Which table/TVF/MV to use for which topic\n'
-    'BUSINESS DEFINITIONS: Term definitions — [term] = [column] from [table]\n'
-    'DISAMBIGUATION:      How to resolve ambiguous terms, hierarchies, synonyms\n'
-    'AGGREGATION RULES:   How to aggregate measures, grain rules, default filters\n'
-    'FUNCTION ROUTING:    When to use TVFs/UDFs vs raw tables\n'
-    'JOIN GUIDANCE:       Explicit join paths and conditions\n'
-    'QUERY RULES:         SQL-level rules — filters, ordering, limits, output formatting\n'
-    'QUERY PATTERNS:      Common multi-step query patterns\n'
-    'TEMPORAL FILTERS:    Date partitioning, time-range rules\n'
-    'DATA QUALITY NOTES:  Known nulls, data caveats\n'
-    'CONSTRAINTS:         Cross-cutting behavioral constraints\n'
+    'Per-section guidance:\n'
     '\n'
-    'Rules:\n'
-    '- PRESERVE every rule from the original — do NOT drop, summarize, or rephrase.\n'
-    '- Each rule goes into exactly one section. If unclear, use CONSTRAINTS.\n'
-    '- Output plain text with ALL-CAPS section headers followed by a colon.\n'
-    '- Use - for bullet points. Use blank lines between sections.\n'
-    '- Do NOT use Markdown syntax (no ##, no **, no backticks).\n'
-    '- Omit sections with no matching rules.\n'
+    '- `## PURPOSE` — 1-2 bullets on space scope and audience. Source: '
+    'the schema digest above.\n'
+    '- `## DISAMBIGUATION` — clarification-question triggers and '
+    'term-resolution rules. Source: columns with overlapping synonyms; '
+    'temporal columns admitting multiple calendars.\n'
+    '- `## DATA QUALITY NOTES` — NULL handling, known bad rows, column '
+    'semantics not captured in descriptions. Source: columns whose '
+    'descriptions mention NULL / unknown / effective / is_current.\n'
+    '- `## CONSTRAINTS` — hard guardrails (PII columns, forbidden '
+    'operations). Source: columns whose names or descriptions suggest PII '
+    '(ssn, email, phone, token, secret); "never" rules from existing prose.\n'
+    '- `## Instructions you must follow when providing summaries` — '
+    'summary-rendering rules (rounding, mandatory caveats, date-range '
+    'statements). Copy the header letter-for-letter.\n'
+    '\n'
+    'If a requested section has nothing meaningful to add, OMIT its key '
+    'from the output JSON rather than emitting an empty string.\n'
+    '\n'
+    'Strict output rules:\n'
+    '- Keep each section under ~400 characters so the merged total stays '
+    'under the 2000-character cap.\n'
+    '- Do NOT include any `##` header not listed in "Missing Sections".\n'
+    '- Do NOT include SQL, code fences, or `###` subheaders.\n'
+    '- Do NOT rewrite or duplicate existing content.\n'
     '</instructions>\n'
     '\n'
     '<output_schema>\n'
-    'Respond with ONLY the restructured instruction text — no JSON wrapper, no code fences.\n'
+    'Return strict JSON. Example:\n'
+    '{\n'
+    '  "sections": {\n'
+    '    "## PURPOSE": "- Analytics for the sales team covering H1 revenue.\\n",\n'
+    '    "## DATA QUALITY NOTES": "- The `status` column has mixed casing; '
+    'use LOWER(status).\\n"\n'
+    '  }\n'
+    '}\n'
+    '\n'
+    'Keys MUST be exact canonical headers. Values are plain text with '
+    'one bullet per line (each starting with `- `).\n'
     '</output_schema>'
 )
 
@@ -3197,7 +3326,14 @@ LEVER_PROMPTS: dict[str, str] = {
     "description_enrichment": DESCRIPTION_ENRICHMENT_PROMPT,
     "table_description_enrichment": TABLE_DESCRIPTION_ENRICHMENT_PROMPT,
     "proactive_instruction": PROACTIVE_INSTRUCTION_PROMPT,
-    "instruction_restructure": INSTRUCTION_RESTRUCTURE_PROMPT,
+    "expand_instruction": EXPAND_INSTRUCTION_PROMPT,
+    # "instruction_restructure" was removed in the 5-section schema
+    # migration (see common/config.py CANONICAL_SECTION_HEADERS and the
+    # prose rule miner). Its reorganize-without-promote semantics are
+    # subsumed by the miner's canonical-grouping rewrite step.
+    # ``prose_rule_mining`` (and its deprecated alias
+    # ``instruction_to_sql_expression``) are registered below, after
+    # ``PROSE_RULE_MINING_PROMPT`` is defined — keep the ordering.
     "space_description": SPACE_DESCRIPTION_PROMPT,
     "sample_questions": SAMPLE_QUESTIONS_PROMPT,
     "gt_repair": GT_REPAIR_PROMPT,
@@ -3346,66 +3482,180 @@ NOT bare `revenue`). The Genie API rejects bare column names.
 - Prefer concise, reusable definitions over question-specific hacks.
 """
 
-# ── 24. Instruction-to-SQL-Expression Conversion ──────────────────────
+# ── 24. Prose Rule Mining (multi-target; prose → structured) ──────────
+#
+# Replaces the earlier INSTRUCTION_TO_SQL_EXPRESSION_PROMPT. A single LLM
+# pass classifies each rule in the space's prose as one of six targets;
+# each target has its own validator and applier downstream. The prompt
+# intentionally reads any vocabulary (legacy ALL-CAPS or new canonical
+# ``##`` headers) so it can migrate pre-PR-#178 spaces on first run.
+#
+# The ``source_span`` field is REQUIRED — the rewrite step uses exact
+# substring removal to strip promoted content from prose, so the LLM
+# must return spans that match the input byte-for-byte.
 
-INSTRUCTION_TO_SQL_EXPRESSION_PROMPT = """\
+PROSE_RULE_MINING_PROMPT = """\
 <role>
-You are a Databricks SQL expert extracting reusable SQL expressions from \
-Genie Space instructions.
+You are a Databricks Genie Space configuration expert. You are given the \
+full text_instructions of a Genie Space and the space's schema. Your job \
+is to promote every rule that belongs in structured config out of the \
+prose, and to keep only the rules that truly belong in text_instructions.
 </role>
 
 <context>
-## Genie Space Instructions
+## Genie Space Instructions (verbatim)
 {{ instructions_text }}
 
 ## Table Schema
 {{ schema_context }}
 
-## Existing SQL Expressions (do NOT duplicate)
+## Existing Structured Config
+### Existing SQL Expressions (do NOT duplicate)
 {{ existing_expressions }}
+
+### Existing Join Specs (do NOT duplicate)
+{{ existing_join_specs }}
+
+### Existing Example Question SQLs (do NOT duplicate)
+{{ existing_example_sqls }}
 </context>
 
 <instructions>
-Extract business rules from the instructions above that can be expressed as \
-reusable SQL snippets.  Focus on:
+Read the instructions top-to-bottom. Split compound bullets (e.g. "join \
+X to Y on Z and filter by status = 'active'") into one candidate per \
+rule. For each candidate, choose exactly one ``target`` from the list \
+below, produce a ``source_span`` that is an EXACT substring of the input \
+(byte-for-byte; the rewrite step removes this substring from prose), \
+and a ``confidence`` in [0.0, 1.0].
 
-1. **Default filters**: Rules like "always filter by X = Y", "default to ...", \
-"exclude ... unless explicitly requested".  These become snippet_type="filter".
-2. **Business KPI definitions**: "PSD sales means ...", "average transaction \
-size = ...".  These become snippet_type="measure".
-3. **Derived attributes**: "growth % = (CY - PY) / PY * 100", "day vs MTD".  \
-These become snippet_type="expression".
+## Target routing
 
-Rules:
-- ALL column references MUST use table_name.column_name syntax \
-(e.g. `mv_7now_fact_sales.same_store_7now = 'Y'`, NOT bare `same_store_7now = 'Y'`). \
-The Genie API rejects bare column names. Use the Table Schema to determine the correct table prefix.
-- SQL must reference ONLY columns that exist in the Table Schema.
-- For filters: SQL must be a valid boolean expression.
-- For measures: SQL must be a valid aggregation (e.g. `SUM(mv_sales.cy_sales) - SUM(mv_sales.py_sales)`).
-- For expressions: SQL must produce a scalar per row.
+Use this table (mirrors docs/gsl-instruction-schema.md — "What does NOT \
+go in text_instructions"):
+
+| Content shape                                            | target             |
+|----------------------------------------------------------|--------------------|
+| Aggregation formula (SUM, AVG, ...)                      | sql_snippet (measure)    |
+| Reusable WHERE / filter clause                           | sql_snippet (filter)     |
+| Computed / derived column                                | sql_snippet (expression) |
+| Table relationship / join path                           | join_spec          |
+| Full question → SQL pattern                              | example_qsql       |
+| "For X questions use table T" / asset routing            | table_desc         |
+| "Term 'revenue' means column net_rev_amt"                | column_synonym     |
+| Disambiguation / data-quality / PII / summary rendering  | keep_in_prose      |
+
+## Per-target rules
+
+### sql_snippet
+- ALL column references MUST use ``catalog.schema.table.column`` syntax. \
+Bare columns are rejected by the Genie serving path.
 - Do NOT wrap in SELECT or WHERE — raw expression only.
-- Do NOT duplicate any Existing SQL Expression.
-- is_default=true means the instruction says to apply this filter BY DEFAULT (Genie SHOULD \
-include it automatically). Do NOT invert the logic — if the instruction says "Default filter: \
-X = Y for all Z queries", then is_default=true and the SQL is `table.X = 'Y'`.
-- Set omit_when to describe when the filter should NOT be applied \
-(e.g. "user explicitly asks for all stores including non-same-store").
+- ``is_default=true`` means the rule says "apply by default"; \
+``omit_when`` describes when the filter should NOT be applied.
+- Drop anything the Existing SQL Expressions list already covers.
+
+### join_spec
+- Both ``left`` and ``right`` carry a fully-qualified ``identifier`` and \
+an ``alias`` (the unqualified table name). \
+- ``sql`` is a two-element array: ``[join_condition, relationship_tag]`` \
+e.g. ``["`fact_sales`.`region_id` = `dim_region`.`region_id`", \
+"--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"]``.
+- Use backtick-quoted aliases in the join condition.
+
+### example_qsql
+- Concrete ``question`` (not a placeholder) paired with a validated SQL \
+statement that uses fully-qualified table names.
+- Add ``usage_guidance`` telling Genie when this pattern applies.
+
+### table_desc
+- Use when a rule pins a topic or question kind to a specific table, e.g. \
+"For sessions, use fact_sessions, not raw_events".
+- ``description_append`` contains the sentence to append to the table's \
+existing description.
+
+### column_synonym
+- Use when a rule pins a business term to a specific column, e.g. \
+"revenue / sales / net sales = net_revenue_amt".
+- ``synonyms`` is the list of aliases the column answers to.
+
+### keep_in_prose
+- Use ONLY when the rule cannot be expressed as SQL or metadata: \
+clarification triggers, NULL handling, PII guardrails, summary-rendering \
+rules.
+- ``section`` MUST be one of the five canonical headers: \
+``## PURPOSE``, ``## DISAMBIGUATION``, ``## DATA QUALITY NOTES``, \
+``## CONSTRAINTS``, ``## Instructions you must follow when providing summaries``.
+- CONSTRAINTS that are SQL-expressible filters MUST be returned as \
+``sql_snippet`` (with ``is_default=true`` and ``snippet_type=filter``), \
+NOT as ``keep_in_prose``.
+- ``source_span`` that contains SQL keywords (SELECT, WHERE, JOIN, \
+GROUP BY, ORDER BY, HAVING) MUST be returned as ``sql_snippet`` or \
+``example_qsql`` — the scanner rejects SQL-in-prose.
+
+## Confidence
+
+- 0.9-1.0 — the rule maps unambiguously onto the target and the payload \
+is fully inferable from the prose + schema.
+- 0.7-0.9 — minor inference required (e.g. picking between two plausible \
+tables).
+- < 0.7 — speculative; the dispatcher will drop these.
+
+Return ``[]`` if nothing is promotable.
 </instructions>
 
 <output_schema>
-Return a JSON array. Each element:
-{{"snippet_type": "measure"|"filter"|"expression", \
-"sql": "...", \
-"display_name": "...", \
-"description": "One sentence on what this computes/filters", \
-"synonyms": ["term1", "term2"], \
-"alias": "snake_case_identifier", \
-"is_default": true|false, \
-"omit_when": "..." or null}}
+Respond with a single JSON array. Each element:
+{{
+  "target": "sql_snippet"|"join_spec"|"example_qsql"|"table_desc"|"column_synonym"|"keep_in_prose",
+  "source_span": "<EXACT substring of the input instructions>",
+  "confidence": 0.0-1.0,
+  "payload": {{
+    // sql_snippet:
+    "snippet_type": "measure"|"filter"|"expression",
+    "sql": "...",
+    "display_name": "...",
+    "description": "One sentence on what this computes/filters",
+    "synonyms": ["term1", "term2"],
+    "alias": "snake_case_identifier",
+    "is_default": true|false,
+    "omit_when": "..." or null,
+    // join_spec:
+    "left":  {{"identifier": "catalog.schema.t1", "alias": "t1"}},
+    "right": {{"identifier": "catalog.schema.t2", "alias": "t2"}},
+    "sql":   ["`t1`.`k` = `t2`.`k`", "--rt=FROM_RELATIONSHIP_TYPE_MANY_TO_ONE--"],
+    "instruction": "when and how to use this join",
+    // example_qsql:
+    "question": "natural-language question",
+    "sql": "SELECT ... FROM catalog.schema.t ...",
+    "usage_guidance": "when this pattern applies",
+    // table_desc:
+    "table_identifier": "catalog.schema.t",
+    "description_append": "sentence to append",
+    // column_synonym:
+    "table_identifier": "catalog.schema.t",
+    "column_name": "net_revenue_amt",
+    "synonyms": ["revenue", "sales", "net sales"],
+    // keep_in_prose:
+    "section": "## PURPOSE" | "## DISAMBIGUATION" | "## DATA QUALITY NOTES" | "## CONSTRAINTS" | "## Instructions you must follow when providing summaries"
+  }}
+}}
 
-Return [] if no extractable business rules are found.
+Respond with a single JSON array and nothing else.
 </output_schema>"""
+
+# Backward-compat alias for call sites that haven't migrated yet. The
+# registry key also gets aliased so MLflow prompt history is preserved
+# across the rename.
+INSTRUCTION_TO_SQL_EXPRESSION_PROMPT = PROSE_RULE_MINING_PROMPT
+
+# Post-definition registration of the miner prompt(s). ``LEVER_PROMPTS``
+# is defined earlier (line ~3315) but ``PROSE_RULE_MINING_PROMPT`` lives
+# further down; registering here keeps the single authoritative location
+# for the dict while respecting definition order. The deprecated
+# ``instruction_to_sql_expression`` key is retained for one release so
+# MLflow prompt-registry history stays linkable.
+LEVER_PROMPTS["prose_rule_mining"] = PROSE_RULE_MINING_PROMPT
+LEVER_PROMPTS["instruction_to_sql_expression"] = PROSE_RULE_MINING_PROMPT
 
 # ── 25. SQL Expression Seeding (Proactive, Lever 0) ───────────────────
 

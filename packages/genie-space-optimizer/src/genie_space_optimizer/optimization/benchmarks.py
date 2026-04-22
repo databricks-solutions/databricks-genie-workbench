@@ -1232,66 +1232,329 @@ def _extract_primary_table(sql: str, metadata_snapshot: dict) -> str | None:
     return None
 
 
-def _auto_prefix_bare_columns(
-    sql: str,
-    table_identifier: str,
-    metadata_snapshot: dict,
+def _resolve_primary_table_fqn(
+    table_identifier: str, *, catalog: str, gold_schema: str,
 ) -> str:
-    """Add table prefix to bare column references in a SQL snippet.
+    """Return the fully-qualified ``catalog.schema.table`` identifier.
 
-    The Genie API requires ``table.column`` syntax in SQL expressions.
-    This function detects bare column names (those not already prefixed
-    with ``table.``) and prepends the short table name.
+    Handles the two shapes we see in practice:
 
-    Returns the SQL with prefixed columns (original SQL unchanged if
-    all columns are already qualified or no columns are recognized).
+    - Already FQ (``foo.bar.baz``) — returned as-is after placeholder
+      substitution (so ``${catalog}.${gold_schema}.t`` resolves too).
+    - Short (``baz``) — wrapped in placeholders, then resolved.
     """
-    import re as _re
+    if not table_identifier:
+        return ""
+    if "." not in table_identifier:
+        templated = f"${{catalog}}.${{gold_schema}}.{table_identifier}"
+    else:
+        templated = table_identifier
+    return resolve_sql(templated, catalog=catalog, gold_schema=gold_schema)
 
+
+def _collect_columns_by_table(metadata_snapshot: dict) -> dict[str, set[str]]:
+    """Build ``{table_identifier_lower: {column_name_lower, ...}}``.
+
+    Includes metric view measures and dimensions alongside regular columns so
+    a SQL snippet like ``SUM(mv_sales.cy_sales)`` has its bare form
+    (``SUM(cy_sales)``) recognised and prefixed.
+    """
     ds = metadata_snapshot.get("data_sources", {})
     all_sources: list = []
     if isinstance(ds, dict):
         all_sources.extend(ds.get("tables", []) or [])
         all_sources.extend(ds.get("metric_views", []) or [])
 
-    short_name = table_identifier.split(".")[-1] if table_identifier else ""
-    if not short_name:
-        return sql
-
-    column_names: set[str] = set()
+    out: dict[str, set[str]] = {}
     for t in all_sources:
         if not isinstance(t, dict):
             continue
-        tid = (t.get("identifier") or t.get("name") or "").lower()
-        if short_name.lower() in tid:
-            for col in (t.get("columns", []) or []):
-                cname = (col.get("name") or "").strip()
-                if cname:
-                    column_names.add(cname.lower())
-            for cc in (t.get("column_configs", []) or []):
-                cname = (cc.get("column_name") or "").strip()
-                if cname:
-                    column_names.add(cname.lower())
-            break
+        tid = (t.get("identifier") or t.get("name") or "").strip().lower()
+        if not tid:
+            continue
+        cols: set[str] = set()
+        for col in (t.get("columns", []) or []):
+            name = (col.get("name") or "").strip().lower()
+            if name:
+                cols.add(name)
+        for cc in (t.get("column_configs", []) or []):
+            name = (cc.get("column_name") or "").strip().lower()
+            if name:
+                cols.add(name)
+        # Metric views expose measures + dimensions as first-class references
+        # that can appear in raw SQL expressions against the MV.
+        for m in (t.get("measures", []) or []):
+            name = (m.get("name") or "").strip().lower()
+            if name:
+                cols.add(name)
+        for d in (t.get("dimensions", []) or []):
+            name = (d.get("name") or "").strip().lower()
+            if name:
+                cols.add(name)
+        out[tid] = cols
+    return out
 
-    if not column_names:
-        return sql
+
+# ``AS alias`` and ``WITH alias AS (`` — their identifiers must never be
+# prefixed as columns. Kept intentionally permissive: a false-positive on an
+# alias just means we skip prefixing, which is always safe.
+_CTE_AS_ALIAS_RE = _re.compile(
+    r"\bAS\s+([A-Za-z_][A-Za-z0-9_]*)", _re.IGNORECASE,
+)
+_WITH_ALIAS_RE = _re.compile(
+    r"\bWITH\s+([A-Za-z_][A-Za-z0-9_]*)\s+AS\s*\(", _re.IGNORECASE,
+)
+# Explicit table references in a SQL body (FROM / JOIN). We do not need a
+# full parser — the goal is to bound the ambiguity guard to tables that the
+# SQL actually touches, not every table in the snapshot.
+_FROM_JOIN_TABLE_RE = _re.compile(
+    r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_.`]*)",
+    _re.IGNORECASE,
+)
+
+
+def _extract_cte_aliases(sql: str) -> set[str]:
+    """Return a set of lowercase identifiers that look like CTE / AS aliases."""
+    aliases: set[str] = set()
+    for m in _CTE_AS_ALIAS_RE.finditer(sql):
+        aliases.add(m.group(1).lower())
+    for m in _WITH_ALIAS_RE.finditer(sql):
+        aliases.add(m.group(1).lower())
+    return aliases
+
+
+def _extract_referenced_tables(sql: str, known_tables: dict[str, set[str]]) -> set[str]:
+    """Return the subset of ``known_tables`` whose identifier appears in ``sql``.
+
+    We match by short name (last segment) OR full identifier — the SQL might
+    reference either. Only tables actually mentioned in ``FROM`` / ``JOIN``
+    are returned; this scopes the ambiguity guard to the query's real
+    universe rather than every source in the snapshot.
+    """
+    referenced: set[str] = set()
+    mentioned: set[str] = set()
+    for m in _FROM_JOIN_TABLE_RE.finditer(sql):
+        raw = m.group(1).strip("`").lower()
+        mentioned.add(raw)
+        if "." in raw:
+            mentioned.add(raw.split(".")[-1])
+    for tid in known_tables:
+        short = tid.split(".")[-1]
+        if tid in mentioned or short in mentioned:
+            referenced.add(tid)
+    return referenced
+
+
+def _auto_prefix_bare_columns(
+    sql: str,
+    table_identifier: str,
+    metadata_snapshot: dict,
+    *,
+    catalog: str = "",
+    gold_schema: str = "",
+) -> tuple[str, list[str]]:
+    """Prefix bare column references with the fully-qualified table name.
+
+    The Genie API rejects ``column`` references and short-form
+    ``table.column`` references at serving time — SQL snippets stored in
+    ``instructions.sql_snippets.*`` must use
+    ``catalog.schema.table.column``. This was the root cause of the bug
+    from the failing run.
+
+    Behaviour:
+
+    - Resolves ``${catalog}`` / ``${gold_schema}`` placeholders via
+      :func:`resolve_sql` before emitting the prefix.
+    - Emits the full identifier (``catalog.schema.table``) — not the short
+      table name — so every stored snippet is usable by the serving path.
+    - Ambiguity guard: if a bare column matches columns on 2+ tables that
+      the SQL references (FROM / JOIN), the column is skipped and a
+      warning is appended. Single-table snippets (the common case) are
+      unaffected.
+    - Metric views: ``measures[].name`` and ``dimensions[].name`` are
+      discovered alongside regular columns so ``SUM(cy_sales)`` against an
+      MV with a ``cy_sales`` measure prefixes correctly.
+    - CTE / subquery aliases (``WITH x AS (...)`` or ``FROM t AS x``) are
+      never rewritten as columns.
+
+    Returns ``(sql, warnings)``. Warnings is a (possibly empty) list of
+    human-readable strings; never raises.
+    """
+    warnings: list[str] = []
+    if not sql:
+        return sql, warnings
+
+    # Resolve the primary table to its FQ form up front. Without a primary
+    # table we cannot decide which prefix to emit — return the SQL as-is and
+    # leave the warning so the caller can drop the snippet if strict.
+    primary_fqn = _resolve_primary_table_fqn(
+        table_identifier, catalog=catalog, gold_schema=gold_schema,
+    )
+    if not primary_fqn:
+        warnings.append(
+            "no primary table identifier provided; columns left un-prefixed"
+        )
+        return sql, warnings
+
+    all_columns = _collect_columns_by_table(metadata_snapshot)
+    primary_lower = primary_fqn.lower()
+
+    # Try the exact FQ key first; fall back to any entry whose short name
+    # matches (handles metadata snapshots that store short-form identifiers).
+    primary_cols: set[str] = set()
+    if primary_lower in all_columns:
+        primary_cols = all_columns[primary_lower]
+    else:
+        primary_short = primary_lower.split(".")[-1]
+        for tid, cols in all_columns.items():
+            if tid.split(".")[-1] == primary_short:
+                primary_cols = cols
+                break
+
+    if not primary_cols:
+        warnings.append(
+            f"no columns known for primary table {primary_fqn!r}; "
+            "columns left un-prefixed"
+        )
+        return sql, warnings
+
+    referenced_tables = _extract_referenced_tables(sql, all_columns)
+    # Scope the ambiguity guard to tables actually mentioned in the SQL plus
+    # the primary. Bare expressions (no FROM/JOIN) shrink the universe to
+    # just the primary, which is the common case for sql_snippets.
+    in_scope = referenced_tables | {primary_lower}
+
+    cte_aliases = _extract_cte_aliases(sql)
 
     result = sql
-    for col in sorted(column_names, key=len, reverse=True):
+    # Longest-column-first so columns whose name is a prefix of another
+    # (``revenue`` vs ``revenue_amt``) don't partially-match.
+    for col in sorted(primary_cols, key=len, reverse=True):
+        col_lower = col.lower()
+        if col_lower in cte_aliases:
+            continue
+        # Ambiguity: column is present on >1 in-scope table.
+        other_tables_with_col = [
+            tid for tid in in_scope
+            if tid != primary_lower and col_lower in all_columns.get(tid, set())
+        ]
+        if other_tables_with_col:
+            warnings.append(
+                f"column {col!r} is ambiguous — present on primary {primary_fqn} "
+                f"and also on {sorted(other_tables_with_col)!r}; skipped"
+            )
+            continue
+
         pattern = _re.compile(
-            r'(?<![.\w])(' + _re.escape(col) + r')(?!\w)',
+            r'(?<![.\w`])(' + _re.escape(col) + r')(?!\w)',
             _re.IGNORECASE,
         )
-        def _replacer(m: _re.Match) -> str:
+
+        def _replacer(m: _re.Match, _cur: str = result) -> str:
             start = m.start()
-            prefix_check = result[:start]
-            if prefix_check.rstrip().endswith("."):
+            # Already qualified (``t.col``, ``schema.t.col``, or backtick-
+            # quoted) — leave alone.
+            prefix_check = _cur[:start]
+            if prefix_check.rstrip().endswith(".") or prefix_check.rstrip().endswith("`"):
                 return m.group(0)
-            return f"{short_name}.{m.group(1)}"
+            return f"{primary_fqn}.{m.group(1)}"
+
         result = pattern.sub(_replacer, result)
 
-    return result
+    return result, warnings
+
+
+def normalize_sql_snippet(
+    sql: str,
+    snippet_type: str,
+    metadata_snapshot: dict,
+    *,
+    catalog: str = "",
+    gold_schema: str = "",
+    spark: Any = None,
+    w: Any = None,
+    warehouse_id: str = "",
+) -> tuple[str, list[str]]:
+    """Return the stored form of a SQL snippet: strip wrappers, FQ-prefix, EXPLAIN.
+
+    This is the *storage* shape — no execution check, no data read. Used
+    for (a) repairing existing snippets in-place (the common case: a
+    space already has snippets with short-form prefixes) and (b) pre-
+    validating freshly-mined candidates before the heavier execution
+    check in :func:`validate_sql_snippet`.
+
+    Steps:
+
+    1. Trim the SQL and drop trailing semicolons.
+    2. Drop wrapper clauses — Genie stores the raw expression, never
+       ``SELECT …`` or ``WHERE …``.
+    3. Prefix bare columns with ``catalog.schema.table`` (see
+       :func:`_auto_prefix_bare_columns`).
+    4. If an execution backend is available, run ``EXPLAIN`` on the
+       wrapped form to catch syntax / resolution errors. This is
+       optional — callers can skip it by omitting both ``spark`` and
+       ``w``/``warehouse_id``.
+
+    Returns ``(normalized_sql, warnings)``. On EXPLAIN failure, the
+    error is added to ``warnings`` but the normalized SQL is still
+    returned so the caller can decide whether to store it anyway.
+    """
+    warnings: list[str] = []
+    if not sql or not isinstance(sql, str):
+        return sql, warnings
+
+    cleaned = sql.strip()
+    # Drop trailing semicolons & comments on a single line.
+    while cleaned.endswith(";"):
+        cleaned = cleaned[:-1].rstrip()
+
+    # Strip ``SELECT``/``WHERE`` wrappers a well-meaning LLM might emit —
+    # Genie rejects them at the snippet boundary. This is a best-effort
+    # unwrap; it won't defeat a legitimate subquery that starts with
+    # SELECT.
+    if snippet_type == "filter":
+        upper = cleaned.upper()
+        if upper.startswith("WHERE "):
+            cleaned = cleaned[6:].lstrip()
+
+    # Locate the primary table so we can FQ-prefix.
+    table = _extract_primary_table(cleaned, metadata_snapshot)
+    if not table:
+        warnings.append("cannot determine primary table; skipping FQ-prefix")
+        prefixed_sql = cleaned
+    else:
+        prefixed_sql, prefix_warnings = _auto_prefix_bare_columns(
+            cleaned, table, metadata_snapshot,
+            catalog=catalog, gold_schema=gold_schema,
+        )
+        warnings.extend(prefix_warnings)
+
+    # EXPLAIN guard — caller opts in by providing an execution backend.
+    have_backend = (spark is not None) or (w is not None and warehouse_id)
+    if have_backend and table:
+        resolved_table = _resolve_primary_table_fqn(
+            table, catalog=catalog, gold_schema=gold_schema,
+        )
+        if snippet_type == "filter":
+            wrapped = f"SELECT 1 FROM {resolved_table} WHERE {prefixed_sql} LIMIT 1"
+        else:
+            wrapped = f"SELECT {prefixed_sql} FROM {resolved_table} LIMIT 1"
+        try:
+            if w and warehouse_id:
+                from genie_space_optimizer.optimization.evaluation import (
+                    _execute_sql_via_warehouse,
+                )
+                _execute_sql_via_warehouse(
+                    w, warehouse_id, f"EXPLAIN {wrapped}",
+                    catalog=catalog, schema=gold_schema,
+                )
+            elif spark is not None:
+                _set_sql_context(spark, catalog, gold_schema)
+                spark.sql(f"EXPLAIN {wrapped}")
+        except Exception as exc:
+            warnings.append(f"EXPLAIN failed: {exc}")
+
+    return prefixed_sql, warnings
 
 
 def validate_sql_snippet(
@@ -1305,38 +1568,45 @@ def validate_sql_snippet(
     w: Any = None,
     warehouse_id: str = "",
 ) -> tuple[bool, str, str]:
-    """Validate a SQL snippet by wrapping it in an executable context and running it.
+    """Validate a SQL snippet: normalize + EXPLAIN + execute.
 
-    Three-phase validation mirroring validate_ground_truth_sql:
-      1. Auto-prefix bare column names with table name (Genie API requirement).
-      2. EXPLAIN — catches syntax errors and unresolvable references.
-      3. Execution — runs the wrapped SQL with LIMIT 1.
+    Three-phase validation mirroring ``validate_ground_truth_sql``:
 
-    Wrapping rules:
-      - measure:    SELECT <sql> FROM <table> LIMIT 1
-      - filter:     SELECT 1 FROM <table> WHERE <sql> LIMIT 1
-      - expression: SELECT <sql> FROM <table> LIMIT 1
+    1. :func:`normalize_sql_snippet` — strip wrappers, FQ-prefix bare
+       columns, EXPLAIN. This is the shape we'll store.
+    2. Execution — runs the wrapped SQL with ``LIMIT 1``.
+
+    Wrapping rules for execution:
+
+    - measure:    ``SELECT <sql> FROM <table> LIMIT 1``
+    - filter:     ``SELECT 1 FROM <table> WHERE <sql> LIMIT 1``
+    - expression: ``SELECT <sql> FROM <table> LIMIT 1``
 
     Returns ``(is_valid, error_message, prefixed_sql)`` — callers should
-    use ``prefixed_sql`` (the 3rd element) when storing the snippet to
-    ensure ``table.column`` syntax required by the Genie API.
+    use ``prefixed_sql`` (the 3rd element) when storing the snippet so
+    the FQ form is persisted.
     """
     table = _extract_primary_table(sql, metadata_snapshot)
     if not table:
         return False, "Cannot determine primary table for SQL snippet", sql
 
-    resolved_table = resolve_sql(
-        f"${{catalog}}.${{gold_schema}}.{table.split('.')[-1]}"
-        if "." not in table else table,
+    prefixed_sql, warnings = normalize_sql_snippet(
+        sql, snippet_type, metadata_snapshot,
         catalog=catalog, gold_schema=gold_schema,
+        spark=spark, w=w, warehouse_id=warehouse_id,
     )
+    # ``normalize_sql_snippet`` surfaces EXPLAIN failures via warnings.
+    for warning in warnings:
+        if warning.startswith("EXPLAIN failed:"):
+            return False, warning, prefixed_sql
 
-    sql = _auto_prefix_bare_columns(sql, table, metadata_snapshot)
-
+    resolved_table = _resolve_primary_table_fqn(
+        table, catalog=catalog, gold_schema=gold_schema,
+    )
     if snippet_type == "filter":
-        wrapped = f"SELECT 1 FROM {resolved_table} WHERE {sql} LIMIT 1"
+        wrapped = f"SELECT 1 FROM {resolved_table} WHERE {prefixed_sql} LIMIT 1"
     else:
-        wrapped = f"SELECT {sql} FROM {resolved_table} LIMIT 1"
+        wrapped = f"SELECT {prefixed_sql} FROM {resolved_table} LIMIT 1"
 
     def _run_sql(statement: str) -> Any:
         if w and warehouse_id:
@@ -1353,13 +1623,8 @@ def validate_sql_snippet(
         raise RuntimeError("No SQL execution backend available")
 
     try:
-        _run_sql(f"EXPLAIN {wrapped}")
-    except Exception as exc:
-        return False, f"EXPLAIN failed: {exc}", sql
-
-    try:
         _run_sql(wrapped)
     except Exception as exc:
-        return False, f"Execution failed: {exc}", sql
+        return False, f"Execution failed: {exc}", prefixed_sql
 
-    return True, "", sql
+    return True, "", prefixed_sql

@@ -264,19 +264,48 @@ def _extract_response_text(outputs: Union[dict, Any]) -> str:
     return ""
 
 
-def _extract_json(content: str) -> dict:
-    """Extract a JSON object from LLM response text that may contain non-JSON wrapping.
+_FENCED_BLOCK_RE = re.compile(
+    r"```(?:json|JSON)?\s*\n?(?P<body>.*?)```", re.DOTALL,
+)
+
+
+def _extract_json(content: str) -> dict | list:
+    """Extract a JSON value from LLM response text with lenient wrapping.
 
     Handles common LLM output patterns:
-    - Pure JSON
-    - JSON wrapped in markdown code fences
+
+    - Pure JSON (object or array)
+    - JSON wrapped in markdown code fences (``` or ```json), anywhere in the
+      string (not only at the start) — some LLMs prefix with "Here is ...".
     - JSON preceded/followed by prose ("Here are my suggestions: {...}")
-    - Multiple JSON objects (takes first)
+    - Trailing "Extra data" (``json.loads`` reports the position of the first
+      extraneous byte; we truncate and retry).
+    - Array output wrapped in prose (``[{...}, {...}]``) — previously only
+      object output was rescued via regex; this caused the instruction-to-SQL
+      conversion to silently return ``[]`` when the LLM added any prose around
+      the array.
+
+    Return type is a union ``dict | list`` so callers that expect an array
+    (the prose-rule miner) aren't forced to re-parse. Existing object-only
+    callers continue to work; the return type is dict for their prompts.
+
+    Raises the saved ``JSONDecodeError`` when every strategy fails — callers
+    that want lenient behaviour can try-except and fall back to ``[]`` / ``{}``.
     """
     content = content.strip()
-    if content.startswith("```"):
-        content = content.split("\n", 1)[1] if "\n" in content else content[3:]
-        content = content.rsplit("```", 1)[0].strip()
+
+    # Fenced block anywhere in the string — prefer it over the surrounding
+    # prose so a preamble like "Here is the JSON:\n```json\n{...}\n```" works.
+    fence_match = _FENCED_BLOCK_RE.search(content)
+    if fence_match:
+        fenced = fence_match.group("body").strip()
+        if fenced:
+            try:
+                return json.loads(fenced)
+            except json.JSONDecodeError:
+                # Fall through — the fenced block might itself be malformed
+                # but the surrounding text could still contain valid JSON.
+                pass
 
     _saved_err: json.JSONDecodeError | None = None
 
@@ -285,20 +314,51 @@ def _extract_json(content: str) -> dict:
     except json.JSONDecodeError as exc:
         _saved_err = exc
 
-    if _saved_err is not None and hasattr(_saved_err, "pos") and _saved_err.msg.startswith("Extra data"):
+    if (
+        _saved_err is not None
+        and hasattr(_saved_err, "pos")
+        and _saved_err.msg.startswith("Extra data")
+    ):
         try:
             return json.loads(content[: _saved_err.pos])
         except json.JSONDecodeError:
             pass
 
-    match = re.search(r"\{.*\}", content, re.DOTALL)
-    if match:
+    # Regex fallbacks — try the first balanced `{...}` and `[...]`; take the
+    # one that parses. We prefer whichever is longer so a nested structure
+    # wins over a short sub-literal.
+    candidates: list[tuple[int, str]] = []
+    obj_match = re.search(r"\{.*\}", content, re.DOTALL)
+    if obj_match:
+        candidates.append((len(obj_match.group(0)), obj_match.group(0)))
+    arr_match = re.search(r"\[.*\]", content, re.DOTALL)
+    if arr_match:
+        candidates.append((len(arr_match.group(0)), arr_match.group(0)))
+    # Longest-first maximises the chance of getting the outermost structure.
+    for _, candidate in sorted(candidates, key=lambda c: -c[0]):
         try:
-            return json.loads(match.group(0))
+            return json.loads(candidate)
         except json.JSONDecodeError:
-            pass
+            continue
 
+    assert _saved_err is not None  # pragma: no cover — invariant
     raise _saved_err
+
+
+def _extract_json_array(content: str) -> list:
+    """Extract a JSON array from LLM response text.
+
+    Thin wrapper over :func:`_extract_json` that asserts a list is returned.
+    Callers that expect an array (the prose-rule miner) should use this
+    function; on non-array output it raises ``ValueError`` so retry logic
+    can kick in.
+    """
+    value = _extract_json(content)
+    if isinstance(value, list):
+        return value
+    raise ValueError(
+        f"Expected JSON array from LLM, got {type(value).__name__}"
+    )
 
 
 def get_registered_prompt_name(judge_name: str) -> str:

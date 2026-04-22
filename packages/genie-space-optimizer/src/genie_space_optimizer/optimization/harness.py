@@ -1576,33 +1576,49 @@ def _run_proactive_instruction_seeding(
     catalog: str,
     schema: str,
 ) -> dict:
-    """Stage 2.95: Seed conservative routing instructions if the space has none.
+    """Two-phase proactive instruction management (Task B.5).
 
-    Only fires when existing instructions are empty or below 50 chars.
+    **Seed phase** — only runs when existing instructions are empty or
+    below ``_INSTRUCTION_SEED_THRESHOLD`` chars. Calls
+    :func:`_generate_proactive_instructions` (5-section schema),
+    validates strictly, writes on pass.
+
+    **Expand phase** — always runs after seed. Parses the (possibly
+    freshly seeded) instructions to determine which canonical sections
+    are missing, calls :func:`_expand_instructions`, validates the
+    merged result strictly, writes on pass. Never overwrites existing
+    canonical sections — expansion only *fills gaps*.
+
+    Compared to the pre-B.5 behaviour this solves the "instructions not
+    comprehensive" bug: a space whose existing prose was ≥50 chars
+    (but only covered PURPOSE) previously got no enrichment at all.
+    Now the expand phase fills the other four canonical sections.
     """
-    from genie_space_optimizer.common.genie_client import patch_space_config
-    from genie_space_optimizer.optimization.optimizer import (
-        _generate_proactive_instructions,
+    from genie_space_optimizer.common.config import (
+        CANONICAL_SECTION_HEADERS, MAX_TEXT_INSTRUCTIONS_CHARS,
     )
+    from genie_space_optimizer.common.genie_client import patch_space_config
     from genie_space_optimizer.optimization.applier import (
-        _get_general_instructions,
-        _set_general_instructions,
+        _get_general_instructions, _set_general_instructions,
+        parse_canonical_sections, render_canonical_sections,
+        validate_instruction_text,
+    )
+    from genie_space_optimizer.optimization.optimizer import (
+        _expand_instructions, _generate_proactive_instructions,
     )
 
     _INSTRUCTION_SEED_THRESHOLD = 50
     parsed = config.get("_parsed_space", config)
     current_instructions = _get_general_instructions(parsed)
-    needs_seeding = len(current_instructions.strip()) < _INSTRUCTION_SEED_THRESHOLD
 
-    result: dict = {"instructions_seeded": False, "instruction_chars": 0}
-
-    if not needs_seeding:
-        _lines = [_section("PROACTIVE INSTRUCTION SEEDING", "-")]
-        _lines.append(_kv("Instructions", f"already present ({len(current_instructions)} chars)"))
-        _lines.append(_kv("Status", "No seeding needed"))
-        _lines.append(_bar("-"))
-        print("\n".join(_lines))
-        return result
+    result: dict = {
+        "instructions_seeded": False,
+        "instructions_expanded": False,
+        "instruction_chars": 0,
+        "seeded_sections": [],
+        "expanded_sections": [],
+        "skipped_reason": None,
+    }
 
     write_stage(
         spark, run_id, "PROACTIVE_INSTRUCTION_SEEDING", "STARTED",
@@ -1610,42 +1626,141 @@ def _run_proactive_instruction_seeding(
     )
 
     try:
-        instruction_text = _generate_proactive_instructions(metadata_snapshot, w)
-        if instruction_text:
-            _set_general_instructions(parsed, instruction_text)
+        # ── Seed phase ──────────────────────────────────────────────
+        needs_seeding = (
+            not current_instructions
+            or len(current_instructions.strip()) < _INSTRUCTION_SEED_THRESHOLD
+        )
+        if needs_seeding:
+            instruction_text = _generate_proactive_instructions(metadata_snapshot, w)
+            if instruction_text:
+                _set_general_instructions(parsed, instruction_text)
+                try:
+                    patch_space_config(w, space_id, parsed)
+                    result["instructions_seeded"] = True
+                    result["instruction_chars"] = len(instruction_text)
+                    canonical_secs, _, _ = parse_canonical_sections(instruction_text)
+                    result["seeded_sections"] = [
+                        h for h in CANONICAL_SECTION_HEADERS if h in canonical_secs
+                    ]
+                    current_instructions = instruction_text
+                    write_patch(
+                        spark, run_id, 0, 0, 0,
+                        {
+                            "patch_type": "proactive_instruction_seeding",
+                            "scope": "genie_config",
+                            "risk_level": "low",
+                            "target_object": "instructions.text_instructions",
+                            "patch": {"instructions": instruction_text[:200] + "..."},
+                            "command": None,
+                            "rollback": None,
+                            "proposal_id": "proactive_instruction_seeding",
+                        },
+                        catalog, schema,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Proactive instruction seeding: PATCH failed",
+                        exc_info=True,
+                    )
+
+        # ── Expand phase ────────────────────────────────────────────
+        # Always runs after seed. Works on whatever prose exists after
+        # the seed phase (if any). Skipped only if existing content
+        # has all five canonical sections or expansion would overflow
+        # the length cap.
+        canonical_secs, _legacy_secs, _preamble = parse_canonical_sections(
+            current_instructions or "",
+        )
+        present_headers = {h for h in CANONICAL_SECTION_HEADERS if h in canonical_secs}
+        missing = [h for h in CANONICAL_SECTION_HEADERS if h not in present_headers]
+
+        if missing and current_instructions:
             try:
-                patch_space_config(w, space_id, parsed)
-                result["instructions_seeded"] = True
-                result["instruction_chars"] = len(instruction_text)
-                write_patch(
-                    spark, run_id, 0, 0, 0,
-                    {
-                        "patch_type": "proactive_instruction_seeding",
-                        "scope": "genie_config",
-                        "risk_level": "low",
-                        "target_object": "instructions.text_instructions",
-                        "patch": {"instructions": instruction_text[:200] + "..."},
-                        "command": None,
-                        "rollback": None,
-                        "proposal_id": "proactive_instruction_seeding",
-                    },
-                    catalog, schema,
+                new_sections = _expand_instructions(
+                    metadata_snapshot, current_instructions, missing, w=w,
                 )
             except Exception:
-                logger.warning(
-                    "Proactive instruction seeding: PATCH failed",
-                    exc_info=True,
-                )
+                logger.warning("Expand instructions call failed", exc_info=True)
+                new_sections = {}
 
-        _status = (
-            f"generated ({len(instruction_text)} chars)"
-            if result["instructions_seeded"]
-            else "FAILED"
-        )
+            if new_sections:
+                merged = dict(canonical_secs)
+                for header, body in new_sections.items():
+                    if header in merged:
+                        continue  # never overwrite existing content
+                    merged[header] = [
+                        ln for ln in body.splitlines() if ln.strip()
+                    ]
+                rendered = render_canonical_sections(merged)
+                new_text = "".join(rendered).rstrip() + "\n"
+
+                ok, errs = validate_instruction_text(new_text, strict=True)
+                if not ok:
+                    logger.warning(
+                        "Expand instructions: strict validation failed "
+                        "— keeping existing prose. errors=%s",
+                        errs,
+                    )
+                elif len(new_text) > MAX_TEXT_INSTRUCTIONS_CHARS:
+                    logger.warning(
+                        "Expand instructions: merged text %d chars > cap %d "
+                        "— keeping existing prose",
+                        len(new_text), MAX_TEXT_INSTRUCTIONS_CHARS,
+                    )
+                else:
+                    _set_general_instructions(parsed, new_text)
+                    try:
+                        patch_space_config(w, space_id, parsed)
+                        result["instructions_expanded"] = True
+                        result["expanded_sections"] = list(new_sections.keys())
+                        result["instruction_chars"] = len(new_text)
+                        write_patch(
+                            spark, run_id, 0, 0, 1,
+                            {
+                                "patch_type": "proactive_instruction_expand",
+                                "scope": "genie_config",
+                                "risk_level": "low",
+                                "target_object": "instructions.text_instructions",
+                                "patch": {
+                                    "added_sections": list(new_sections.keys()),
+                                    "chars": len(new_text),
+                                },
+                                "command": None,
+                                "rollback": None,
+                                "proposal_id": "proactive_instruction_expand",
+                            },
+                            catalog, schema,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Proactive instruction expand: PATCH failed",
+                            exc_info=True,
+                        )
+
+        if not result["instructions_seeded"] and not result["instructions_expanded"]:
+            result["skipped_reason"] = (
+                "already_comprehensive"
+                if not needs_seeding and not missing
+                else "llm_failed_or_validation"
+            )
+
+        # ── Print summary ───────────────────────────────────────────
         _lines = [_section("PROACTIVE INSTRUCTION SEEDING", "-")]
-        _lines.append(_kv("Instructions", _status))
-        if result["instructions_seeded"] and instruction_text:
-            _lines.append(f"|      {instruction_text[:200]}...")
+        if result["instructions_seeded"]:
+            _lines.append(_kv("Seed", f"generated ({result['instruction_chars']} chars)"))
+            _lines.append(_kv("  Sections", ", ".join(result["seeded_sections"]) or "(none)"))
+        else:
+            _lines.append(_kv("Seed", f"skipped (existing {len(current_instructions)} chars)"))
+        if result["instructions_expanded"]:
+            _lines.append(_kv(
+                "Expand",
+                f"added {len(result['expanded_sections'])} sections",
+            ))
+            _lines.append(_kv("  Sections", ", ".join(result["expanded_sections"])))
+        else:
+            missing_str = ", ".join(missing) if missing else "(none missing)"
+            _lines.append(_kv("Expand", f"no-op ({missing_str})"))
         _lines.append(_bar("-"))
         print("\n".join(_lines))
 
@@ -1762,10 +1877,632 @@ def _apply_instruction_sql_expressions(
     return applied
 
 
+# ── Stage 2.96b: INSTRUCTION-DERIVED JOIN SPECS / TABLE DESC / SYNONYMS ─
+
+
+def _apply_instruction_join_specs(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    run_id: str,
+    space_id: str,
+    candidates: list[dict],
+    metadata_snapshot: dict,
+    catalog: str,
+    schema: str,
+) -> int:
+    """Append instruction-derived join_spec candidates to the Genie Space.
+
+    Mirrors the patch pattern used by :func:`_mine_and_apply_proven_joins`:
+    mutate ``metadata_snapshot["instructions"]["join_specs"]`` in place and
+    PATCH the whole config. Dedups against existing pairs by sorted
+    (left_identifier, right_identifier).
+    """
+    from genie_space_optimizer.common.genie_client import patch_space_config
+
+    if not candidates:
+        return 0
+
+    write_stage(
+        spark, run_id, "INSTRUCTION_JOIN_SPECS", "STARTED",
+        task_key="enrichment", catalog=catalog, schema=schema,
+    )
+
+    instr = metadata_snapshot.setdefault("instructions", {})
+    specs = instr.setdefault("join_specs", [])
+
+    existing_pairs: set[tuple[str, str]] = set()
+    for spec in specs:
+        if not isinstance(spec, dict):
+            continue
+        left = spec.get("left", {}) if isinstance(spec.get("left"), dict) else {}
+        right = spec.get("right", {}) if isinstance(spec.get("right"), dict) else {}
+        lt, rt = left.get("identifier", ""), right.get("identifier", "")
+        if lt and rt:
+            existing_pairs.add(tuple(sorted((lt, rt))))
+
+    applied = 0
+    for c in candidates:
+        left = c.get("left", {})
+        right = c.get("right", {})
+        pair = tuple(sorted((left.get("identifier", ""), right.get("identifier", ""))))
+        if not all(pair) or pair in existing_pairs:
+            continue
+        spec_entry = {
+            "left": left,
+            "right": right,
+            "sql": c.get("sql", []),
+        }
+        if c.get("instruction"):
+            spec_entry["instruction"] = c["instruction"]
+        specs.append(spec_entry)
+        existing_pairs.add(pair)
+        applied += 1
+
+    if applied:
+        try:
+            patch_space_config(w, space_id, metadata_snapshot)
+        except Exception:
+            logger.warning(
+                "Instruction-derived join_specs PATCH failed", exc_info=True,
+            )
+            applied = 0
+
+    write_stage(
+        spark, run_id, "INSTRUCTION_JOIN_SPECS", "COMPLETE",
+        task_key="enrichment",
+        detail={"candidates_total": len(candidates), "applied": applied},
+        catalog=catalog, schema=schema,
+    )
+
+    _lines = [_section("INSTRUCTION → JOIN SPECS", "-")]
+    _lines.append(_kv("Candidates", len(candidates)))
+    _lines.append(_kv("Applied", applied))
+    for c in candidates[:5]:
+        left_id = c.get("left", {}).get("identifier", "?").split(".")[-1]
+        right_id = c.get("right", {}).get("identifier", "?").split(".")[-1]
+        _lines.append(f"  |  {left_id} ↔ {right_id}")
+    _lines.append(_bar("-"))
+    print("\n".join(_lines))
+
+    return applied
+
+
+def _apply_instruction_table_descriptions(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    run_id: str,
+    space_id: str,
+    candidates: list[dict],
+    metadata_snapshot: dict,
+    catalog: str,
+    schema: str,
+) -> int:
+    """Append instruction-derived descriptions to matching tables / metric views.
+
+    Idempotent: if ``description_append`` already appears in the target
+    description (case-insensitive), the append is skipped.
+    """
+    from genie_space_optimizer.common.genie_client import patch_space_config
+
+    if not candidates:
+        return 0
+
+    write_stage(
+        spark, run_id, "INSTRUCTION_TABLE_DESCRIPTIONS", "STARTED",
+        task_key="enrichment", catalog=catalog, schema=schema,
+    )
+
+    ds = metadata_snapshot.setdefault("data_sources", {})
+    all_sources: list[dict] = []
+    if isinstance(ds, dict):
+        all_sources.extend(ds.get("tables", []) or [])
+        all_sources.extend(ds.get("metric_views", []) or [])
+
+    # Index by lower(identifier) AND lower(short name) so candidates that
+    # reference a table by short name still resolve.
+    by_full: dict[str, dict] = {}
+    by_short: dict[str, dict] = {}
+    for t in all_sources:
+        if not isinstance(t, dict):
+            continue
+        ident = (t.get("identifier") or t.get("name") or "").strip().lower()
+        if ident:
+            by_full[ident] = t
+            by_short.setdefault(ident.split(".")[-1], t)
+
+    applied = 0
+    updated_ids: list[str] = []
+    for c in candidates:
+        tid_lower = str(c.get("table_identifier", "")).strip().lower()
+        desc_append = str(c.get("description_append", "")).strip()
+        if not tid_lower or not desc_append:
+            continue
+        tbl = by_full.get(tid_lower) or by_short.get(tid_lower.split(".")[-1])
+        if not tbl:
+            continue
+        existing = str(tbl.get("description", "") or "")
+        if desc_append.lower() in existing.lower():
+            continue  # idempotent — already present
+        new_desc = (existing + ("\n" if existing and not existing.endswith("\n") else "")
+                    + desc_append).strip()
+        tbl["description"] = new_desc
+        updated_ids.append(tbl.get("identifier", tbl.get("name", "?")))
+        applied += 1
+
+    if applied:
+        try:
+            patch_space_config(w, space_id, metadata_snapshot)
+        except Exception:
+            logger.warning(
+                "Instruction-derived table descriptions PATCH failed",
+                exc_info=True,
+            )
+            applied = 0
+
+    write_stage(
+        spark, run_id, "INSTRUCTION_TABLE_DESCRIPTIONS", "COMPLETE",
+        task_key="enrichment",
+        detail={"candidates_total": len(candidates), "applied": applied},
+        catalog=catalog, schema=schema,
+    )
+
+    _lines = [_section("INSTRUCTION → TABLE DESCRIPTIONS", "-")]
+    _lines.append(_kv("Candidates", len(candidates)))
+    _lines.append(_kv("Applied", applied))
+    for tid in updated_ids[:5]:
+        _lines.append(f"  |  {tid}")
+    _lines.append(_bar("-"))
+    print("\n".join(_lines))
+
+    return applied
+
+
+def _apply_instruction_column_synonyms(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    run_id: str,
+    space_id: str,
+    candidates: list[dict],
+    metadata_snapshot: dict,
+    catalog: str,
+    schema: str,
+) -> int:
+    """Merge instruction-derived column synonyms into ``column_configs``.
+
+    Dedup is case-insensitive on synonym strings. Missing column_configs
+    rows are created on the fly so the synonym survives the PATCH round-trip.
+    """
+    from genie_space_optimizer.common.genie_client import patch_space_config
+
+    if not candidates:
+        return 0
+
+    write_stage(
+        spark, run_id, "INSTRUCTION_COLUMN_SYNONYMS", "STARTED",
+        task_key="enrichment", catalog=catalog, schema=schema,
+    )
+
+    ds = metadata_snapshot.setdefault("data_sources", {})
+    all_sources: list[dict] = []
+    if isinstance(ds, dict):
+        all_sources.extend(ds.get("tables", []) or [])
+        all_sources.extend(ds.get("metric_views", []) or [])
+
+    by_full: dict[str, dict] = {}
+    by_short: dict[str, dict] = {}
+    for t in all_sources:
+        if not isinstance(t, dict):
+            continue
+        ident = (t.get("identifier") or t.get("name") or "").strip().lower()
+        if ident:
+            by_full[ident] = t
+            by_short.setdefault(ident.split(".")[-1], t)
+
+    applied = 0
+    for c in candidates:
+        tid_lower = str(c.get("table_identifier", "")).strip().lower()
+        col_name = str(c.get("column_name", "")).strip()
+        synonyms = c.get("synonyms", []) or []
+        if not tid_lower or not col_name or not synonyms:
+            continue
+        tbl = by_full.get(tid_lower) or by_short.get(tid_lower.split(".")[-1])
+        if not tbl:
+            continue
+        cc_list = tbl.setdefault("column_configs", [])
+        if not isinstance(cc_list, list):
+            cc_list = []
+            tbl["column_configs"] = cc_list
+        col_entry: dict | None = None
+        for cc in cc_list:
+            if isinstance(cc, dict) and (cc.get("column_name", "") or "").strip().lower() == col_name.lower():
+                col_entry = cc
+                break
+        if col_entry is None:
+            col_entry = {"column_name": col_name, "synonyms": []}
+            cc_list.append(col_entry)
+        existing_syns = col_entry.setdefault("synonyms", []) or []
+        if not isinstance(existing_syns, list):
+            existing_syns = list(existing_syns)
+        existing_lower = {str(s).strip().lower() for s in existing_syns}
+        changed = False
+        for syn in synonyms:
+            s = str(syn).strip()
+            if s and s.lower() not in existing_lower:
+                existing_syns.append(s)
+                existing_lower.add(s.lower())
+                changed = True
+        col_entry["synonyms"] = existing_syns
+        if changed:
+            applied += 1
+
+    if applied:
+        try:
+            patch_space_config(w, space_id, metadata_snapshot)
+        except Exception:
+            logger.warning(
+                "Instruction-derived column synonyms PATCH failed",
+                exc_info=True,
+            )
+            applied = 0
+
+    write_stage(
+        spark, run_id, "INSTRUCTION_COLUMN_SYNONYMS", "COMPLETE",
+        task_key="enrichment",
+        detail={"candidates_total": len(candidates), "applied": applied},
+        catalog=catalog, schema=schema,
+    )
+
+    _lines = [_section("INSTRUCTION → COLUMN SYNONYMS", "-")]
+    _lines.append(_kv("Candidates", len(candidates)))
+    _lines.append(_kv("Applied", applied))
+    for c in candidates[:5]:
+        _lines.append(f"  |  {c.get('table_identifier', '?').split('.')[-1]}.{c.get('column_name')}: {c.get('synonyms', [])[:3]}")
+    _lines.append(_bar("-"))
+    print("\n".join(_lines))
+
+    return applied
+
+
+# ── Stage 2.96c: Instruction prose mining orchestrator ─────────────
+
+
+def _run_instruction_prose_mining(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    run_id: str,
+    space_id: str,
+    config: dict,
+    metadata_snapshot: dict,
+    catalog: str,
+    schema: str,
+    *,
+    warehouse_id: str = "",
+) -> dict:
+    """Stage 5a (Task C.5): multi-target prose miner + rewrite pipeline.
+
+    Runs BEFORE the proactive seed/expand phase so legacy ALL-CAPS prose is
+    promoted into structured config and normalised into the canonical 5-
+    section form before seed/expand run. Idempotent: a second pass on
+    already-normalised prose finds nothing to promote and the rewrite
+    step returns ``SKIP_NO_CHANGE``.
+
+    Pipeline:
+
+    1. ``_convert_instructions_to_sql_expressions`` (multi-target miner).
+    2. Per-target appliers (``_apply_instruction_*``) for every non-empty
+       bucket.
+    3. ``rewrite_instructions_from_miner_output`` — span-based removal +
+       canonical regrouping + strict validation; on ``DECLINE_MALFORMED``
+       the original prose is preserved (Fix Agent contract parity).
+    4. Emit ``set_text_instructions`` via ``_set_general_instructions``
+       + ``patch_space_config`` when ``RewriteResult.WRITE``.
+
+    Returns a dict with per-target applied counts + the raw miner stats so
+    the caller can decide whether to refetch config. Never raises — any
+    downstream failure is logged and treated as a soft miss.
+    """
+    from genie_space_optimizer.common.genie_client import (
+        patch_space_config as _patch,
+    )
+    from genie_space_optimizer.optimization.applier import (
+        RewriteResult, _get_general_instructions,
+        _set_general_instructions,
+        rewrite_instructions_from_miner_output,
+    )
+    from genie_space_optimizer.optimization.optimizer import (
+        _convert_instructions_to_sql_expressions,
+    )
+
+    miner_result = _convert_instructions_to_sql_expressions(
+        metadata_snapshot, w=w,
+        spark=spark, catalog=catalog, gold_schema=schema,
+        warehouse_id=warehouse_id,
+    )
+    miner_stats = miner_result.get("stats", {})
+
+    sql_applied = join_applied = example_applied = desc_applied = synonym_applied = 0
+    applied_spans: list[str] = []
+
+    def _collect_spans(bucket_name: str) -> None:
+        applied_spans.extend(
+            c.get("source_span", "")
+            for c in miner_result.get(bucket_name, [])
+            if c.get("source_span")
+        )
+
+    if miner_result.get("sql_snippet"):
+        sql_applied = _apply_instruction_sql_expressions(
+            w, spark, run_id, space_id, miner_result["sql_snippet"],
+            metadata_snapshot, catalog, schema,
+        )
+        if sql_applied:
+            _collect_spans("sql_snippet")
+
+    if miner_result.get("join_spec"):
+        join_applied = _apply_instruction_join_specs(
+            w, spark, run_id, space_id, miner_result["join_spec"],
+            metadata_snapshot, catalog, schema,
+        )
+        if join_applied:
+            _collect_spans("join_spec")
+
+    if miner_result.get("example_qsql"):
+        # Reuse the existing proactive-example-sql applier shape.
+        _example_proposals = [
+            {
+                "patch_type": "add_example_sql",
+                "example_question": c["question"],
+                "example_sql": c["sql"],
+                "usage_guidance": c.get("usage_guidance", ""),
+                "risk_level": "low",
+            }
+            for c in miner_result["example_qsql"]
+        ]
+        if _example_proposals:
+            try:
+                _apply_proactive_example_sqls(
+                    w, spark, run_id, space_id, _example_proposals,
+                    metadata_snapshot, config, catalog, schema,
+                )
+                example_applied = len(_example_proposals)
+                _collect_spans("example_qsql")
+            except Exception:
+                logger.warning(
+                    "Instruction-derived example SQLs: apply failed",
+                    exc_info=True,
+                )
+
+    if miner_result.get("table_desc"):
+        desc_applied = _apply_instruction_table_descriptions(
+            w, spark, run_id, space_id, miner_result["table_desc"],
+            metadata_snapshot, catalog, schema,
+        )
+        if desc_applied:
+            _collect_spans("table_desc")
+
+    if miner_result.get("column_synonym"):
+        synonym_applied = _apply_instruction_column_synonyms(
+            w, spark, run_id, space_id, miner_result["column_synonym"],
+            metadata_snapshot, catalog, schema,
+        )
+        if synonym_applied:
+            _collect_spans("column_synonym")
+
+    # Span-based prose rewrite: remove promoted spans, regroup keep_in_prose
+    # spans under canonical headers, validate strictly, emit the op or decline.
+    total_applied = (
+        sql_applied + join_applied + example_applied
+        + desc_applied + synonym_applied
+    )
+    keep_in_prose_spans = miner_result.get("keep_in_prose", []) or []
+    rewrite_outcome = "not_run"
+    if total_applied or keep_in_prose_spans:
+        _original_instr = _get_general_instructions(metadata_snapshot)
+        outcome, new_instr, rewrite_errors = rewrite_instructions_from_miner_output(
+            _original_instr, applied_spans, keep_in_prose_spans,
+        )
+        rewrite_outcome = outcome
+        if outcome == RewriteResult.WRITE and new_instr:
+            try:
+                _set_general_instructions(metadata_snapshot, new_instr)
+                _patch(w, space_id, metadata_snapshot)
+                logger.info(
+                    "miner.rewrite.applied chars_before=%d chars_after=%d space_id=%s",
+                    len(_original_instr), len(new_instr), space_id,
+                )
+            except Exception:
+                logger.warning("miner.rewrite.patch_failed", exc_info=True)
+                rewrite_outcome = "patch_failed"
+        elif outcome == RewriteResult.DECLINE_MALFORMED:
+            # Fix Agent decline contract: keep original prose, emit a
+            # decline-shaped log line for triage.
+            logger.warning(
+                "miner.rewrite.declined reason=malformed errors=%s space_id=%s",
+                rewrite_errors[:5], space_id,
+            )
+        else:  # SKIP_NO_CHANGE
+            logger.info(
+                "miner.rewrite.skipped reason=no_change space_id=%s",
+                space_id,
+            )
+
+    _miner_lines = [_section("INSTRUCTION PROSE MINING & PROMOTION", "-")]
+    _miner_lines.append(_kv("Candidates total", miner_stats.get("candidates_total", 0)))
+    _miner_lines.append(_kv("SQL snippets", sql_applied))
+    _miner_lines.append(_kv("Join specs", join_applied))
+    _miner_lines.append(_kv("Example SQLs", example_applied))
+    _miner_lines.append(_kv("Table descriptions", desc_applied))
+    _miner_lines.append(_kv("Column synonyms", synonym_applied))
+    _miner_lines.append(_kv("Kept in prose", len(keep_in_prose_spans)))
+    _miner_lines.append(_kv("Rewrite", rewrite_outcome))
+    if miner_stats.get("rejected_by_reason"):
+        _miner_lines.append(_kv(
+            "Rejected",
+            ", ".join(
+                f"{k}={v}" for k, v in miner_stats["rejected_by_reason"].items()
+            ),
+        ))
+    _miner_lines.append(_bar("-"))
+    print("\n".join(_miner_lines))
+
+    return {
+        "sql_applied": sql_applied,
+        "join_applied": join_applied,
+        "example_applied": example_applied,
+        "desc_applied": desc_applied,
+        "synonym_applied": synonym_applied,
+        "total_applied": total_applied,
+        "keep_in_prose_count": len(keep_in_prose_spans),
+        "rewrite_outcome": rewrite_outcome,
+        "stats": miner_stats,
+    }
+
+
 # ── Stage 2.97: PROACTIVE SQL EXPRESSION SEEDING ─────────────────────
 
 
-def _run_sql_expression_seeding(
+_SNIPPET_TYPE_FROM_KEY = {
+    "measures": "measure",
+    "filters": "filter",
+    "expressions": "expression",
+}
+
+
+def _repair_existing_sql_snippets(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    run_id: str,
+    space_id: str,
+    config: dict,
+    metadata_snapshot: dict,
+    catalog: str,
+    schema: str,
+    *,
+    warehouse_id: str = "",
+) -> dict:
+    """Normalize every existing SQL snippet to fully-qualified form.
+
+    Runs unconditionally — unlike :func:`_seed_new_sql_snippets`, which is
+    gated by ``SQL_EXPRESSION_SEEDING_THRESHOLD``. This is the remediation
+    path for spaces whose stored snippets were produced by an older
+    GSO version (or by the lever loop before A.1) and still use
+    short-form prefixes. The Genie serving path rejects such snippets; the
+    failing run in the bug report is exactly this scenario.
+
+    Algorithm:
+
+    - Iterate ``instructions.sql_snippets.{measures,filters,expressions}``.
+    - For each snippet, call :func:`normalize_sql_snippet` (no execution
+      check; EXPLAIN only). If the normalized form differs from the
+      stored form, replace the snippet's ``sql`` field in-place.
+    - PATCH the space config once at the end if anything changed.
+
+    Returns ``{"scanned": N, "rewritten": M, "rejected": K}``.
+    """
+    from genie_space_optimizer.common.genie_client import patch_space_config
+    from genie_space_optimizer.optimization.benchmarks import normalize_sql_snippet
+
+    result: dict = {"scanned": 0, "rewritten": 0, "rejected": 0}
+
+    parsed = config.get("_parsed_space", config)
+    existing_snippets = parsed.get("instructions", {}).get("sql_snippets", {})
+    if not isinstance(existing_snippets, dict):
+        existing_snippets = {}
+
+    if not any(existing_snippets.get(k) for k in _SNIPPET_TYPE_FROM_KEY):
+        # Nothing to repair — print a terse line so the run log stays tidy.
+        _lines = [_section("SQL EXPRESSION REPAIR", "-")]
+        _lines.append(_kv("Scanned", 0))
+        _lines.append(_kv("Status", "No existing snippets"))
+        _lines.append(_bar("-"))
+        print("\n".join(_lines))
+        return result
+
+    write_stage(
+        spark, run_id, "SQL_EXPRESSION_REPAIR", "STARTED",
+        task_key="sql_expression_repair", catalog=catalog, schema=schema,
+    )
+
+    working = copy.deepcopy(existing_snippets)
+    any_change = False
+    sample_warnings: list[str] = []
+
+    for type_key, snippet_type in _SNIPPET_TYPE_FROM_KEY.items():
+        for snippet in (working.get(type_key) or []):
+            sql_val = snippet.get("sql", [])
+            if isinstance(sql_val, list) and sql_val:
+                original = str(sql_val[0])
+            else:
+                original = str(sql_val) if sql_val else ""
+            if not original:
+                continue
+            result["scanned"] += 1
+            try:
+                normalized, warnings = normalize_sql_snippet(
+                    original, snippet_type, metadata_snapshot,
+                    catalog=catalog, gold_schema=schema,
+                    spark=spark, w=w, warehouse_id=warehouse_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "SQL expression repair: normalize failed for %s: %s",
+                    original[:80], exc,
+                )
+                result["rejected"] += 1
+                continue
+            explain_failed = any(
+                warn.startswith("EXPLAIN failed:") for warn in warnings
+            )
+            if explain_failed:
+                # Don't rewrite one invalid form into another — leave it
+                # alone so the lever loop can later propose a real fix.
+                result["rejected"] += 1
+                if warnings and len(sample_warnings) < 5:
+                    sample_warnings.extend(warnings[:2])
+                continue
+            if normalized != original:
+                snippet["sql"] = [normalized]
+                any_change = True
+                result["rewritten"] += 1
+            elif warnings and len(sample_warnings) < 5:
+                # Informational warnings (ambiguity, unknown table) — keep
+                # a small sample for debugging in the run log.
+                sample_warnings.extend(warnings[:1])
+
+    if any_change:
+        patch_copy = copy.deepcopy(parsed)
+        patch_copy.setdefault("instructions", {})["sql_snippets"] = working
+        try:
+            patch_space_config(w, space_id, patch_copy)
+            parsed.setdefault("instructions", {})["sql_snippets"] = working
+        except Exception:
+            logger.warning("SQL expression repair: PATCH failed", exc_info=True)
+            result["rewritten"] = 0
+            write_stage(
+                spark, run_id, "SQL_EXPRESSION_REPAIR", "FAILED",
+                task_key="sql_expression_repair",
+                error_message="PATCH failed", catalog=catalog, schema=schema,
+            )
+            return result
+
+    _lines = [_section("SQL EXPRESSION REPAIR", "-")]
+    _lines.append(_kv("Scanned", result["scanned"]))
+    _lines.append(_kv("Rewritten", result["rewritten"]))
+    _lines.append(_kv("Rejected", result["rejected"]))
+    for warning in sample_warnings[:5]:
+        _lines.append(_kv("  warn", warning[:120]))
+    _lines.append(_bar("-"))
+    print("\n".join(_lines))
+
+    write_stage(
+        spark, run_id, "SQL_EXPRESSION_REPAIR", "COMPLETE",
+        task_key="sql_expression_repair",
+        detail=result, catalog=catalog, schema=schema,
+    )
+    return result
+
+
+def _seed_new_sql_snippets(
     w: WorkspaceClient,
     spark: SparkSession,
     run_id: str,
@@ -1778,12 +2515,14 @@ def _run_sql_expression_seeding(
     *,
     warehouse_id: str = "",
 ) -> dict:
-    """Proactively seed SQL Expressions (measures, filters, dimensions).
+    """Mine and apply new SQL Expressions (measures, filters, dimensions).
 
-    Mines candidates from benchmark ground-truth SQL and schema patterns.
-    Each candidate is validated by execution before being applied.
+    Gated by ``SQL_EXPRESSION_SEEDING_THRESHOLD``: when the space already has
+    that many snippets, this step skips (repair still runs, see
+    :func:`_repair_existing_sql_snippets`).
 
-    Returns dict with counts of seeded/rejected expressions.
+    Mines candidates from benchmark ground-truth SQL and schema patterns;
+    each candidate is validated by execution before being applied.
     """
     import json as _json
 
@@ -2005,6 +2744,62 @@ def _run_sql_expression_seeding(
             catalog=catalog, schema=schema,
         )
         return result
+
+
+def _run_sql_expression_seeding(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    run_id: str,
+    space_id: str,
+    config: dict,
+    metadata_snapshot: dict,
+    benchmarks: list[dict],
+    catalog: str,
+    schema: str,
+    *,
+    warehouse_id: str = "",
+) -> dict:
+    """Decoupled repair + seed: always repair existing, seed only when thin.
+
+    This function intentionally keeps its name and call signature to stay
+    compatible with all existing callers. The two sub-steps:
+
+    1. :func:`_repair_existing_sql_snippets` runs unconditionally and
+       normalizes every stored snippet to fully-qualified form. This
+       fixes the bug that caused the failing run — snippets stored with
+       short-form prefixes were rejected by Genie's serving path.
+    2. :func:`_seed_new_sql_snippets` runs the legacy threshold-gated
+       seeding path. No behaviour change.
+
+    Returns a backward-compatible dict that carries both old flat keys
+    (``total_candidates`` / ``total_seeded`` / …, used by callers that
+    branch on whether new snippets were added) **and** a nested
+    ``"repair"`` / ``"seed"`` structure for observability.
+    """
+    repair_result = _repair_existing_sql_snippets(
+        w, spark, run_id, space_id, config=config,
+        metadata_snapshot=metadata_snapshot,
+        catalog=catalog, schema=schema,
+        warehouse_id=warehouse_id,
+    )
+    # If repair rewrote any snippets, downstream stages need the fresh
+    # snapshot. The harness-level caller already refetches after this
+    # whole stage when new snippets are seeded; repair feeds the same
+    # path because we mutated ``parsed`` in place inside the repair.
+    seed_result = _seed_new_sql_snippets(
+        w, spark, run_id, space_id, config=config,
+        metadata_snapshot=metadata_snapshot,
+        benchmarks=benchmarks,
+        catalog=catalog, schema=schema,
+        warehouse_id=warehouse_id,
+    )
+    # Preserve legacy flat shape for callers that look at total_seeded /
+    # total_candidates; attach the structured summary alongside.
+    return {
+        **seed_result,
+        "repair": repair_result,
+        "seed": seed_result,
+    }
 
 
 # ── Stage 2.5b: PREPARE LEVER LOOP ──────────────────────────────────
@@ -2266,10 +3061,31 @@ def _run_enrichment(
                 if uc_columns:
                     enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
+            # ── 5a. Instruction prose mining & promotion (miner-first) ────
+            # Runs BEFORE proactive seed/expand (per Task C.5 ordering) so
+            # legacy ALL-CAPS prose is normalised into the canonical 5-
+            # section form before seed/expand see it.
+            _miner_out = _run_instruction_prose_mining(
+                w, spark, run_id, space_id, config, metadata_snapshot,
+                catalog, schema,
+                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+            )
+            if _miner_out["total_applied"] or _miner_out["keep_in_prose_count"]:
+                config = fetch_space_config(w, space_id)
+                config["_uc_columns"] = uc_columns
+                metadata_snapshot = config.get("_parsed_space", config)
+                metadata_snapshot["_data_profile"] = data_profile
+                if uc_columns:
+                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+
+            # ── 5b. Proactive instruction seeding + expand ────────────────
             instruction_result = _run_proactive_instruction_seeding(
                 w, spark, run_id, space_id, config, metadata_snapshot, catalog, schema,
             )
-            if instruction_result.get("instructions_seeded"):
+            if (
+                instruction_result.get("instructions_seeded")
+                or instruction_result.get("instructions_expanded")
+            ):
                 config = fetch_space_config(w, space_id)
                 config["_uc_columns"] = uc_columns
                 metadata_snapshot = config.get("_parsed_space", config)
@@ -2277,29 +3093,8 @@ def _run_enrichment(
                 if uc_columns:
                     enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
-            # ── 5b-pre. Instruction-to-SQL-Expression Conversion ─────────
-            from genie_space_optimizer.optimization.optimizer import (
-                _convert_instructions_to_sql_expressions,
-            )
-            _instr_sql_candidates = _convert_instructions_to_sql_expressions(
-                metadata_snapshot, w=w,
-                spark=spark, catalog=catalog, gold_schema=schema,
-                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
-            )
-            _instr_sql_applied = 0
-            if _instr_sql_candidates:
-                _instr_sql_applied = _apply_instruction_sql_expressions(
-                    w, spark, run_id, space_id, _instr_sql_candidates,
-                    metadata_snapshot, catalog, schema,
-                )
-                config = fetch_space_config(w, space_id)
-                config["_uc_columns"] = uc_columns
-                metadata_snapshot = config.get("_parsed_space", config)
-                metadata_snapshot["_data_profile"] = data_profile
-                if uc_columns:
-                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
-
-            # ── 5b. SQL Expression Seeding ────────────────────────────────
+            # ── 5b. SQL Expression REPAIR + SEEDING ───────────────────────
+            # Repair runs unconditionally; seeding is threshold-gated.
             sql_expr_result = _run_sql_expression_seeding(
                 w, spark, run_id, space_id, config=config,
                 metadata_snapshot=metadata_snapshot,
@@ -2307,7 +3102,10 @@ def _run_enrichment(
                 catalog=catalog, schema=schema,
                 warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
             )
-            if sql_expr_result.get("total_candidates", 0) > 0:
+            if (
+                sql_expr_result.get("total_candidates", 0) > 0
+                or sql_expr_result.get("repair", {}).get("rewritten", 0) > 0
+            ):
                 config = fetch_space_config(w, space_id)
                 config["_uc_columns"] = uc_columns
                 metadata_snapshot = config.get("_parsed_space", config)
@@ -4345,6 +5143,33 @@ def _run_lever_loop(
     _human_suggestions = [c for c in (human_corrections or []) if c.get("type") == "improvement"]
 
     _ensure_sql_context(spark, catalog, schema)
+
+    # ── SQL snippet normalize safety net ──────────────────────────────
+    # Defense-in-depth: the enrichment stage already ran the repair path,
+    # but any intermediate step (instruction prose miner, benchmark miner,
+    # manual edits between runs) could have added a snippet with a short-
+    # form prefix. This pass is cheap (no-op when everything is already
+    # fully-qualified) and guarantees the lever loop only sees
+    # ``catalog.schema.table.col`` references — Genie's serving path
+    # rejects any other form. If repair rewrote anything, refetch config
+    # so the lever loop works against the post-repair state.
+    try:
+        _parsed_pre_repair = config.get("_parsed_space", config) or {}
+        _snippet_repair_result = _repair_existing_sql_snippets(
+            w, spark, run_id, space_id, config=config,
+            metadata_snapshot=_parsed_pre_repair,
+            catalog=catalog, schema=schema,
+            warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+        )
+        if _snippet_repair_result.get("rewritten", 0) > 0:
+            from genie_space_optimizer.common.genie_client import fetch_space_config
+            config = fetch_space_config(w, space_id)
+    except Exception:
+        # Non-fatal: the lever loop will still function against the
+        # current config; EXPLAIN errors on individual snippets surface
+        # later via the lever-specific validators.
+        logger.warning("SQL snippet normalize safety net failed", exc_info=True)
+
     from genie_space_optimizer.optimization.evaluation import build_metric_view_measures
     _mv_measures = build_metric_view_measures(config)
     _instr_prompt = format_mlflow_template(
@@ -4432,10 +5257,17 @@ def _run_lever_loop(
                 if uc_columns:
                     enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
-            instruction_result = _run_proactive_instruction_seeding(
-                w, spark, run_id, space_id, config, metadata_snapshot, catalog, schema,
+            # ── Instruction prose mining & promotion (miner-first) ───────
+            # Mirrors the primary ``_run_enrichment`` path (Task C.5) so
+            # direct-lever-loop invocations with ``enrichment_done=False``
+            # see the same prose-normalisation behaviour as the job-level
+            # entry point. The miner runs BEFORE proactive seed/expand.
+            _legacy_miner_out = _run_instruction_prose_mining(
+                w, spark, run_id, space_id, config, metadata_snapshot,
+                catalog, schema,
+                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
             )
-            if instruction_result.get("instructions_seeded"):
+            if _legacy_miner_out["total_applied"] or _legacy_miner_out["keep_in_prose_count"]:
                 from genie_space_optimizer.common.genie_client import fetch_space_config
                 config = fetch_space_config(w, space_id)
                 config["_uc_columns"] = uc_columns
@@ -4444,7 +5276,23 @@ def _run_lever_loop(
                 if uc_columns:
                     enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
-            # ── SQL Expression Seeding (legacy path) ──────────────────────
+            instruction_result = _run_proactive_instruction_seeding(
+                w, spark, run_id, space_id, config, metadata_snapshot, catalog, schema,
+            )
+            if (
+                instruction_result.get("instructions_seeded")
+                or instruction_result.get("instructions_expanded")
+            ):
+                from genie_space_optimizer.common.genie_client import fetch_space_config
+                config = fetch_space_config(w, space_id)
+                config["_uc_columns"] = uc_columns
+                metadata_snapshot = config.get("_parsed_space", config)
+                metadata_snapshot["_data_profile"] = data_profile
+                if uc_columns:
+                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+
+            # ── SQL Expression REPAIR + SEEDING (legacy path) ────────────
+            # Repair runs unconditionally; seeding is threshold-gated.
             sql_expr_result = _run_sql_expression_seeding(
                 w, spark, run_id, space_id, config=config,
                 metadata_snapshot=metadata_snapshot,
@@ -4452,7 +5300,10 @@ def _run_lever_loop(
                 catalog=catalog, schema=schema,
                 warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
             )
-            if sql_expr_result.get("total_seeded", 0) > 0:
+            if (
+                sql_expr_result.get("total_seeded", 0) > 0
+                or sql_expr_result.get("repair", {}).get("rewritten", 0) > 0
+            ):
                 from genie_space_optimizer.common.genie_client import fetch_space_config
                 config = fetch_space_config(w, space_id)
                 config["_uc_columns"] = uc_columns

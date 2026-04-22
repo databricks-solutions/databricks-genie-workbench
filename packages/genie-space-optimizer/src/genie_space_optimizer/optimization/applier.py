@@ -19,15 +19,20 @@ from databricks.sdk import WorkspaceClient
 
 from genie_space_optimizer.common.config import (
     APPLY_MODE,
+    CANONICAL_SECTION_HEADERS,
+    CANONICAL_SECTION_ORDER,
     CATEGORICAL_COLUMN_PATTERNS,
     FREE_TEXT_COLUMN_PATTERNS,
     HIGH_RISK_PATCHES,
     LOW_RISK_PATCHES,
+    MAX_TEXT_INSTRUCTIONS_CHARS,
     MAX_VALUE_DICTIONARY_COLUMNS,
     MEASURE_NAME_PREFIXES,
     MEDIUM_RISK_PATCHES,
     NUMERIC_DATA_TYPES,
     PATCH_TYPES,
+    SQL_IN_TEXT_RE,
+    VERBATIM_REQUIRED_HEADERS,
     _LEVER_TO_PATCH_TYPE,
 )
 from genie_space_optimizer.optimization.structured_metadata import (
@@ -219,6 +224,444 @@ def _set_general_instructions(
         ti[0] = {"id": effective_id, "content": content}
     else:
         ti.append({"id": effective_id, "content": content})
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 1a.1 Canonical Instruction Schema utilities (PR #178 — local mirror)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Three utilities that are shared by:
+#   - proactive seeding (_run_proactive_instruction_seeding)
+#   - expand-instructions (_expand_instructions)
+#   - prose-to-structured miner (rewrite step)
+#   - lever-loop writeback (compat mode, strict=False)
+#
+# The schema itself lives in common/config.py (CANONICAL_SECTION_HEADERS).
+# These helpers are thin enough that we don't spin a dedicated module for
+# them; the applier is the natural home because lever writeback calls
+# validation from here.
+
+
+# Accepts `## HEADER` (h2 only). Leading whitespace is tolerated so LLMs
+# that indent a header inside a bullet block still parse.
+_CANONICAL_HEADER_LINE_RE = re.compile(r"^\s*##\s+(?P<title>[^\n]+?)\s*$")
+# Legacy ALL-CAPS section header like `PURPOSE:` or `ASSET ROUTING:`. Used by
+# the miner to read pre-#178 spaces; never emitted by the rewrite step.
+_LEGACY_HEADER_LINE_RE = re.compile(r"^\s*(?P<title>[A-Z][A-Z0-9 _/]{2,40})\s*:\s*$")
+# `### Sub-heading` — forbidden in strict mode (subheaders belong to
+# structured targets like sql_snippets, not prose).
+_H3_HEADER_LINE_RE = re.compile(r"^\s*###\s+\S")
+
+_CANONICAL_HEADERS_LOWER: dict[str, str] = {
+    h.lower(): h for h in CANONICAL_SECTION_HEADERS
+}
+
+
+def _normalize_header(line: str) -> str | None:
+    """Return the canonical form of a header line, or ``None`` if not a header.
+
+    Case policy: headers #1-#4 are matched case-insensitively (so
+    ``## Purpose`` normalizes to ``## PURPOSE``). Header #5 is verbatim-only;
+    any casing variant returns the raw matched string unchanged so strict
+    validation can flag it.
+    """
+    m = _CANONICAL_HEADER_LINE_RE.match(line)
+    if not m:
+        return None
+    raw = f"## {m.group('title')}"
+    if raw in CANONICAL_SECTION_HEADERS:
+        return raw
+    lower = raw.lower()
+    # Verbatim-required headers (#5) don't get case normalization — we return
+    # the raw text so validation can reject the variant.
+    for verbatim in VERBATIM_REQUIRED_HEADERS:
+        if lower == verbatim.lower():
+            return raw  # caller checks == verbatim
+    return _CANONICAL_HEADERS_LOWER.get(lower, raw)
+
+
+def _flatten_to_text(value: str | list[str]) -> str:
+    if isinstance(value, list):
+        return "".join(value) if all(isinstance(v, str) for v in value) else "\n".join(
+            str(v) for v in value
+        )
+    return str(value)
+
+
+def parse_canonical_sections(
+    text: str | list[str],
+) -> tuple[dict[str, list[str]], dict[str, list[str]], list[str]]:
+    """Parse instruction prose into canonical / legacy / preamble buckets.
+
+    Returns a 3-tuple:
+      - ``canonical``: ``{canonical_header_exact: [body_line, ...]}``
+        with keys drawn from ``CANONICAL_SECTION_HEADERS``.
+      - ``legacy``: ``{legacy_section_name_upper: [body_line, ...]}``
+        (e.g. ``"BUSINESS DEFINITIONS"``). Used by the miner to read
+        pre-#178 spaces; never written back.
+      - ``preamble``: free-floating lines before any header (rare but seen
+        in the wild). Re-emitted under ``## PURPOSE`` by the rewrite step.
+
+    Body lines are captured verbatim including bullet markers; the renderer
+    re-normalizes indentation on emit. Non-canonical ``##`` headers (e.g.
+    ``## Terminology``) are stored under their raw form in ``canonical`` so
+    ``validate_instruction_text(strict=True)`` can reject them.
+    """
+    raw = _flatten_to_text(text)
+    canonical: dict[str, list[str]] = {}
+    legacy: dict[str, list[str]] = {}
+    preamble: list[str] = []
+
+    current_key: str | None = None
+    current_bucket: str = "preamble"  # "preamble" | "canonical" | "legacy"
+
+    for line in raw.splitlines():
+        stripped = line.rstrip()
+        # ## header?
+        normalized = _normalize_header(stripped) if stripped.lstrip().startswith("##") else None
+        if normalized is not None:
+            current_key = normalized
+            current_bucket = "canonical"
+            canonical.setdefault(normalized, [])
+            continue
+        # Legacy ALL-CAPS header?
+        m_legacy = _LEGACY_HEADER_LINE_RE.match(stripped) if stripped else None
+        if m_legacy is not None:
+            key = m_legacy.group("title").strip().upper()
+            current_key = key
+            current_bucket = "legacy"
+            legacy.setdefault(key, [])
+            continue
+        # Body line — append to whichever bucket we're currently in.
+        if current_bucket == "canonical" and current_key is not None:
+            canonical[current_key].append(stripped)
+        elif current_bucket == "legacy" and current_key is not None:
+            legacy[current_key].append(stripped)
+        else:
+            preamble.append(stripped)
+
+    # Strip trailing blank lines from each section for stable round-tripping.
+    for bucket in (canonical, legacy):
+        for k in list(bucket.keys()):
+            while bucket[k] and not bucket[k][-1].strip():
+                bucket[k].pop()
+    while preamble and not preamble[-1].strip():
+        preamble.pop()
+
+    return canonical, legacy, preamble
+
+
+def render_canonical_sections(sections: dict[str, str | list[str]]) -> list[str]:
+    """Render a canonical-section map into the Genie API ``content`` shape.
+
+    Returns ``list[str]``, one element per line, each terminated with ``\\n``
+    — matches ``backend/references/schema.md`` (per-line items; the Genie UI
+    concatenates them for display). Empty sections are omitted. Headers are
+    re-emitted in ``CANONICAL_SECTION_ORDER``.
+
+    Any key not in ``CANONICAL_SECTION_HEADERS`` is ignored; use
+    :func:`validate_instruction_text` to flag unexpected headers upstream.
+    """
+    lines: list[str] = []
+    ordered_keys = sorted(
+        (k for k in sections if k in CANONICAL_SECTION_HEADERS),
+        key=lambda h: CANONICAL_SECTION_ORDER[h],
+    )
+    for idx, header in enumerate(ordered_keys):
+        body = sections[header]
+        body_lines: list[str]
+        if isinstance(body, list):
+            body_lines = [str(line) for line in body]
+        else:
+            body_lines = str(body).splitlines()
+        # Drop leading/trailing blank lines inside a section; normalise bullets.
+        while body_lines and not body_lines[0].strip():
+            body_lines.pop(0)
+        while body_lines and not body_lines[-1].strip():
+            body_lines.pop()
+        if not body_lines:
+            continue
+        if idx > 0:
+            lines.append("\n")  # blank line between sections
+        lines.append(f"{header}\n")
+        for line in body_lines:
+            lines.append(f"{line.rstrip()}\n" if line.strip() else "\n")
+    return lines
+
+
+class RewriteResult:
+    """Outcome of :func:`rewrite_instructions_from_miner_output`.
+
+    Three disjoint outcomes, modelled as class attributes (a string enum
+    would pull in the typing.Literal complexity without buying clarity):
+
+    - :attr:`WRITE` — validated prose, length dropped or unchanged;
+      ``set_text_instructions`` op should be emitted.
+    - :attr:`SKIP_NO_CHANGE` — nothing to remove or regroup. Caller
+      should leave the space untouched.
+    - :attr:`DECLINE_MALFORMED` — rewrite failed validation or would
+      grow the prose / introduce SQL-in-text. Mirrors Fix Agent's
+      decline contract so GSO + Fix Agent never produce conflicting
+      views on the next cycle.
+    """
+
+    WRITE = "write"
+    SKIP_NO_CHANGE = "skip_no_change"
+    DECLINE_MALFORMED = "decline_malformed"
+
+
+def validate_instruction_text(
+    text_or_list: str | list[str],
+    *,
+    strict: bool = True,
+) -> tuple[bool, list[str]]:
+    """Validate prose against the canonical 5-section schema.
+
+    Strict mode (used for proactive seed, expand, miner rewrite output):
+
+    - Every ``##`` header must be in ``CANONICAL_SECTION_HEADERS``.
+    - ``VERBATIM_REQUIRED_HEADERS`` (header #5) must be byte-identical.
+    - Canonical headers must appear in ``CANONICAL_SECTION_ORDER``.
+    - No ``###`` subheaders.
+    - Total length ≤ ``MAX_TEXT_INSTRUCTIONS_CHARS``.
+    - No prose line matches :data:`SQL_IN_TEXT_RE` (scanner check #4).
+
+    Compat mode (``strict=False``, used by the lever-loop writeback until
+    levers migrate under #175):
+
+    - Tolerates the legacy 12-section ALL-CAPS vocabulary.
+    - Skips the SQL-in-text check (lever output can legitimately reference
+      SQL in QUERY PATTERNS and BUSINESS DEFINITIONS headers).
+    - Still enforces the length cap — no lever output is allowed to push a
+      space over the 2000-char scanner threshold.
+
+    Returns ``(ok, errors)``. ``errors`` is populated on both ok=True and
+    ok=False so callers can log informational warnings even on pass.
+    """
+    errors: list[str] = []
+    text = _flatten_to_text(text_or_list)
+
+    # Length cap — always enforced.
+    if len(text) > MAX_TEXT_INSTRUCTIONS_CHARS:
+        errors.append(
+            f"length {len(text)} exceeds MAX_TEXT_INSTRUCTIONS_CHARS "
+            f"({MAX_TEXT_INSTRUCTIONS_CHARS})"
+        )
+
+    # Forbid ### subheaders in strict mode.
+    if strict:
+        for line in text.splitlines():
+            if _H3_HEADER_LINE_RE.match(line):
+                errors.append(f"forbidden h3 header: {line.strip()!r}")
+                break
+
+    # Header set and order.
+    seen: list[str] = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if not stripped.startswith("##") or stripped.startswith("###"):
+            continue
+        normalized = _normalize_header(line)
+        if normalized is None:
+            continue
+        if strict:
+            if normalized not in CANONICAL_SECTION_HEADERS:
+                errors.append(f"non-canonical header: {normalized!r}")
+                continue
+            # Verbatim check for header #5.
+            if normalized in VERBATIM_REQUIRED_HEADERS:
+                raw = line.strip()
+                if raw != normalized:
+                    errors.append(
+                        f"verbatim header mismatch: got {raw!r} expected {normalized!r}"
+                    )
+        seen.append(normalized)
+
+    if strict and seen:
+        ordered = [h for h in CANONICAL_SECTION_HEADERS if h in seen]
+        # ``seen`` as encountered in the text; ``ordered`` is the canonical
+        # order filtered to what was seen. A mismatch means out-of-order.
+        # Dedupe ``seen`` preserving first occurrence.
+        seen_unique: list[str] = []
+        for h in seen:
+            if h not in seen_unique:
+                seen_unique.append(h)
+        if seen_unique != ordered:
+            errors.append(
+                f"headers out of canonical order: got {seen_unique!r} expected {ordered!r}"
+            )
+
+    # SQL-in-text — strict mode only. We iterate non-header lines.
+    if strict:
+        for line in text.splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue
+            if SQL_IN_TEXT_RE.search(line):
+                errors.append(
+                    f"SQL detected in prose line (scanner check #4): {line.strip()[:80]!r}"
+                )
+                break
+
+    return (not errors, errors)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 1a.2 Span-based prose rewrite (Task C.4)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _normalize_bullet(line: str) -> str:
+    """Strip trailing whitespace and common bullet markers on a line copy."""
+    s = line.rstrip()
+    return s
+
+
+def _remove_span(text: str, span: str) -> tuple[str, bool]:
+    """Remove the first exact occurrence of ``span`` from ``text``.
+
+    Returns ``(new_text, removed)``. If the span is not found, ``text`` is
+    returned unchanged — span-not-found is a soft failure (it typically
+    means a prior run already promoted this rule) and the rewrite step
+    continues with the remaining spans.
+    """
+    if not span:
+        return text, False
+    idx = text.find(span)
+    if idx == -1:
+        return text, False
+    return text[:idx] + text[idx + len(span):], True
+
+
+def rewrite_instructions_from_miner_output(
+    original_text: str,
+    applied_spans: list[str],
+    keep_in_prose_spans: list[dict],
+) -> tuple[str, str, list[str]]:
+    """Span-based canonical rewrite of instruction prose.
+
+    Called once per miner invocation, AFTER every target-specific applier
+    has committed its changes to the Genie Space config. Produces the new
+    ``text_instructions`` content that reflects:
+
+    - Removal of every promoted span (``applied_spans``).
+    - Regrouping of ``keep_in_prose`` spans under their tagged canonical
+      header.
+    - Re-emission in canonical order via :func:`render_canonical_sections`.
+    - Strict validation via :func:`validate_instruction_text` — rejects
+      any output that contains SQL, violates the length cap, carries a
+      non-canonical header, or fails the verbatim-header check.
+
+    Parameters
+    ----------
+    original_text : str
+        The pre-rewrite ``text_instructions`` content as a flat string.
+    applied_spans : list[str]
+        Exact substrings that were successfully promoted to structured
+        config (sql_snippet, join_spec, example_qsql, table_desc,
+        column_synonym). Removed longest-first to avoid nested overlaps.
+    keep_in_prose_spans : list[dict]
+        Entries of shape ``{"section": "## HEADER", "source_span": "..."}``
+        tagged by the miner. Spans are moved under the tagged canonical
+        header; content already under a canonical header in the original
+        is preserved even if not tagged.
+
+    Returns
+    -------
+    (outcome, new_text, errors)
+        ``outcome`` is one of :class:`RewriteResult` string constants.
+        ``new_text`` is the rewritten prose (equal to ``original_text``
+        on ``SKIP_NO_CHANGE`` / ``DECLINE_MALFORMED``, the new content on
+        ``WRITE``). ``errors`` is a list of validation / diagnostic
+        messages (populated on any outcome for logging).
+    """
+    errors: list[str] = []
+    if not original_text or not original_text.strip():
+        if not keep_in_prose_spans and not applied_spans:
+            return RewriteResult.SKIP_NO_CHANGE, original_text, errors
+        # Somehow the miner produced spans for empty input — abort.
+        errors.append("empty original_text but miner produced spans")
+        return RewriteResult.DECLINE_MALFORMED, original_text, errors
+
+    # ── Step 1: remove promoted spans, longest-first ───────────────
+    span_removed_text = original_text
+    spans_found = 0
+    spans_missing = 0
+    for span in sorted({s for s in applied_spans if s}, key=len, reverse=True):
+        span_removed_text, removed = _remove_span(span_removed_text, span)
+        if removed:
+            spans_found += 1
+        else:
+            spans_missing += 1
+            errors.append(
+                f"applied_span not found: {span[:80]!r} — continuing"
+            )
+
+    # ── Step 2: parse what's left + gather canonical content ───────
+    canonical_from_text, legacy_from_text, preamble = parse_canonical_sections(
+        span_removed_text,
+    )
+
+    # ── Step 3: build new canonical map ────────────────────────────
+    # Preserve existing canonical content — the miner only moves what it
+    # explicitly tagged. Content the user hand-curated under canonical
+    # headers stays regardless of miner output.
+    new_sections: dict[str, list[str]] = {}
+    for header, lines in canonical_from_text.items():
+        if header in CANONICAL_SECTION_HEADERS:
+            new_sections[header] = [ln for ln in lines if ln.strip()]
+
+    # Stitch in keep_in_prose spans under their tagged canonical header.
+    # Dedup bullets case-insensitively inside each section.
+    seen_bullets_per_section: dict[str, set[str]] = {
+        h: {ln.strip().lower() for ln in new_sections.get(h, [])}
+        for h in CANONICAL_SECTION_HEADERS
+    }
+    for entry in keep_in_prose_spans:
+        if not isinstance(entry, dict):
+            continue
+        section = str(entry.get("section", "")).strip()
+        span = str(entry.get("source_span", "")).strip()
+        if section not in CANONICAL_SECTION_HEADERS or not span:
+            continue
+        # Remove the span from legacy/preamble buckets if it landed there.
+        # The span might be multi-line — handle each line.
+        for line in span.splitlines():
+            norm = _normalize_bullet(line)
+            if not norm.strip():
+                continue
+            key = norm.strip().lower()
+            if key in seen_bullets_per_section.get(section, set()):
+                continue
+            new_sections.setdefault(section, []).append(
+                norm if norm.startswith("- ") else f"- {norm.lstrip('-').strip()}"
+            )
+            seen_bullets_per_section.setdefault(section, set()).add(key)
+
+    # ── Step 4: render ──────────────────────────────────────────────
+    rendered_list = render_canonical_sections(new_sections)
+    new_text = "".join(rendered_list).rstrip() + ("\n" if rendered_list else "")
+
+    # ── Step 5: validate strictly ───────────────────────────────────
+    ok, validation_errors = validate_instruction_text(new_text, strict=True)
+
+    # ── Step 6: outcome ─────────────────────────────────────────────
+    if not ok:
+        errors.extend(validation_errors)
+        return RewriteResult.DECLINE_MALFORMED, original_text, errors
+    if len(new_text) > len(original_text):
+        errors.append(
+            f"rewrite grew length from {len(original_text)} to {len(new_text)}; declining"
+        )
+        return RewriteResult.DECLINE_MALFORMED, original_text, errors
+    if new_text.strip() == original_text.strip():
+        return RewriteResult.SKIP_NO_CHANGE, original_text, errors
+    # Structural no-op: miner returned nothing and no canonical content
+    # was reshuffled. Skip silently.
+    if not applied_spans and not keep_in_prose_spans and not spans_found:
+        return RewriteResult.SKIP_NO_CHANGE, original_text, errors
+
+    return RewriteResult.WRITE, new_text, errors
 
 
 # ═══════════════════════════════════════════════════════════════════════
