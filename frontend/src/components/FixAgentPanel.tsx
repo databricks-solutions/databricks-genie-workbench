@@ -70,31 +70,59 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
             break
 
           case "patch":
-            // Advance the next pending/fixing issue to "fixed"
-            setIssues(prev => {
-              const idx = patchIndexRef.current
-              patchIndexRef.current++
-              return prev.map((item, i) => {
-                if (i === idx) {
-                  return {
-                    ...item,
-                    status: "fixed" as const,
-                    patch: event.field_path ? {
-                      field_path: event.field_path,
-                      old_value: event.old_value,
-                      new_value: event.new_value,
-                      rationale: event.rationale || "",
-                    } : undefined,
+            // If the backend emits an empty field_path, the LLM couldn't
+            // produce a config change — route to the skipped rendering path
+            // so the rationale survives and phase resolves to "complete".
+            if (!event.field_path) {
+              skipCountRef.current++
+              setIssues(prev => {
+                const idx = patchIndexRef.current
+                patchIndexRef.current++
+                return prev.map((item, i) => {
+                  if (i === idx) {
+                    return {
+                      ...item,
+                      status: "skipped" as const,
+                      skipReason: event.rationale || "Agent could not generate a patch.",
+                    }
                   }
-                }
-                // Mark the next one as "fixing"
-                if (i === idx + 1 && item.status === "pending") {
-                  return { ...item, status: "fixing" as const }
-                }
-                return item
+                  if (i === idx + 1 && item.status === "pending") {
+                    return { ...item, status: "fixing" as const }
+                  }
+                  return item
+                })
               })
-            })
-            setStatusMessage(`Applied patch: ${event.field_path || "config update"}`)
+              setStatusMessage("Skipped one fix — see details")
+              break
+            }
+            // Advance the next pending/fixing issue to "fixed"
+            {
+              const fieldPath = event.field_path
+              setIssues(prev => {
+                const idx = patchIndexRef.current
+                patchIndexRef.current++
+                return prev.map((item, i) => {
+                  if (i === idx) {
+                    return {
+                      ...item,
+                      status: "fixed" as const,
+                      patch: {
+                        field_path: fieldPath,
+                        old_value: event.old_value,
+                        new_value: event.new_value,
+                        rationale: event.rationale || "",
+                      },
+                    }
+                  }
+                  // Mark the next one as "fixing"
+                  if (i === idx + 1 && item.status === "pending") {
+                    return { ...item, status: "fixing" as const }
+                  }
+                  return item
+                })
+              })
+              setStatusMessage(`Applied patch: ${fieldPath}`)
+            }
             break
 
           case "skipped":
@@ -196,6 +224,7 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const fixedCount = issues.filter(i => i.status === "fixed").length
+  const progressCount = issues.filter(i => i.status === "fixed" || i.status === "skipped").length
   const totalCount = issues.length
   // Detect if any finding mentions 50+ columns needing descriptions
   const hasBulkColumns = findings.some(f => {
@@ -255,7 +284,7 @@ export function FixAgentPanel({ spaceId, displayName, findings, spaceConfig, onC
               className={`h-full rounded-full transition-all duration-500 ${
                 phase === "complete" ? "bg-emerald-500" : phase === "error" ? "bg-red-400" : "bg-accent"
               }`}
-              style={{ width: `${phase === "complete" ? 100 : (fixedCount / totalCount) * 100}%` }}
+              style={{ width: `${phase === "complete" ? 100 : (progressCount / totalCount) * 100}%` }}
             />
           </div>
         )}

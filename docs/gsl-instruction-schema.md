@@ -41,11 +41,11 @@ sections** — do not leave an empty header.
 - **Blank line between sections.**
 - **No SQL inside bullets.** SQL goes in `sql_snippets` (reusable
   expressions and measures) or `example_question_sqls` (full query
-  patterns). This is the scanner's rule at
-  `backend/services/scanner.py::_SQL_IN_TEXT_RE`.
-- **Keep total content ≤ 2,000 characters** (the IQ Scanner's soft
-  threshold at `backend/services/scanner.py` L185–186). Longer blocks
-  push out higher-value SQL context in the Genie prompt window.
+  patterns). This is the scanner's rule — see `_SQL_IN_TEXT_RE` in
+  `backend/services/scanner.py`.
+- **Keep total content ≤ 2,000 characters** — the IQ Scanner's soft
+  threshold in check #4 (text-instructions length). Longer blocks push
+  out higher-value SQL context in the Genie prompt window.
 - **Each bullet should reference a concrete asset** (table, column,
   user phrase) or be a specific behavioral rule. Vague guidance ("be
   helpful", "follow best practices") is an anti-pattern per Databricks.
@@ -135,4 +135,4 @@ shared Python module) is tracked in epic #173.
 - Genie Space serialized schema: <https://docs.databricks.com/aws/en/genie/conversation-api#understanding-the-serialized_space-field>
 - Near-term epic: #87 (this doc + #89 Create Agent + #90 Fix Agent)
 - Full unification epic: #173 (Workbench 0.1)
-- IQ Scanner check this schema supports: `backend/services/scanner.py` check #4 (L170–198)
+- IQ Scanner check this schema supports: `backend/services/scanner.py` check #4 (text-instructions length + SQL-in-text)

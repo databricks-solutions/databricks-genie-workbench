@@ -416,23 +416,24 @@ def get_fix_agent_single_prompt(
 {_VALID_FIELD_PATHS_BLOCK}
 
 ## Output:
-Respond with ONLY a JSON object — no explanation, no analysis, no markdown, no text before or after.
+Respond with ONLY a JSON object — no explanation, no analysis, no markdown, no text before or after. Pick the FIRST shape below that applies:
 
-If the fix requires changing one field, return:
+1. (Preferred) single-field patch:
 {{"field_path": "exact.path.to.field", "new_value": "the new value", "rationale": "Why this fixes the issue"}}
 
-If the fix requires changing multiple fields (e.g. adding usage_guidance to several entries), return:
+2. Multi-field patch (e.g. adding usage_guidance to several entries):
 {{"patches": [{{"field_path": "path1", "new_value": "val1", "rationale": "reason"}}, {{"field_path": "path2", "new_value": "val2", "rationale": "reason"}}]}}
 
-If this finding cannot be fixed via a config patch, return:
-{{"field_path": "", "new_value": null, "rationale": "Explanation"}}
-
-If applying the fix would require ERASING a canonical `## Section` header from `instructions.text_instructions[N].content` (`## PURPOSE`, `## DISAMBIGUATION`, `## DATA QUALITY NOTES`, `## CONSTRAINTS`, or `## Instructions you must follow when providing summaries`), DECLINE the patch by returning:
+3. GSL section-erasure decline — use this ONLY when the fix would require deleting a canonical `## Section` header from `instructions.text_instructions[N].content` (`## PURPOSE`, `## DISAMBIGUATION`, `## DATA QUALITY NOTES`, `## CONSTRAINTS`, or `## Instructions you must follow when providing summaries`):
 {{"decline": true, "rationale": "Applying this fix would erase the ## <SECTION> header, which must be preserved. <what the user should do instead>"}}
+
+4. Not addressable via config — use this ONLY when the finding truly cannot be fixed by editing any field in the configuration (e.g. it requires runtime changes or user action):
+{{"field_path": "", "new_value": null, "rationale": "Explanation of why no config patch applies"}}
 
 Rules:
 - Output ONLY valid JSON. Do NOT include any text, analysis, or explanation outside the JSON.
 - Keep values concise — 1-2 sentences for descriptions.
 - Replace N with actual array indices from the current configuration.
 - Generate AT MOST 50 patches. If the issue affects more items (e.g. 100+ columns need descriptions), fix only the first 50 most important ones. Partial progress is better than a truncated response.
-- When patching `instructions.text_instructions[N].content`, preserve ALL existing `## Section` headers that are already in the content. Only edit bullets within a section, or insert a new canonical section at the correct position (order: PURPOSE → DISAMBIGUATION → DATA QUALITY NOTES → CONSTRAINTS → Instructions you must follow when providing summaries). If the only way to address the finding is to delete a canonical section, DECLINE the patch using the decline shape above."""
+- When patching `instructions.text_instructions[N].content`, preserve ALL existing `## Section` headers that are already in the content. Only edit bullets within a section, or insert a new canonical section at the correct position (order: PURPOSE → DISAMBIGUATION → DATA QUALITY NOTES → CONSTRAINTS → Instructions you must follow when providing summaries).
+- For GSL `## Section` erasure you MUST DECLINE via shape 3 (`decline: true`) — NEVER use shape 4 (empty `field_path`). Shape 4 is reserved for findings with no config surface at all."""

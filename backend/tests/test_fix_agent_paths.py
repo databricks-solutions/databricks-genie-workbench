@@ -507,3 +507,40 @@ class TestFixAgentRunSkippedEvent:
         statuses = [e.get("status") for e in events]
         assert "patch" in statuses
         assert "skipped" not in statuses
+
+    @patch("backend.services.fix_agent._apply_config_to_databricks")
+    @patch("backend.services.fix_agent._generate_patches_for_finding")
+    def test_legacy_empty_field_path_emits_skipped_not_patch(self, mock_gen, mock_apply):
+        """If the LLM picks the legacy no-patch shape (empty field_path, no
+        `declined` flag) — e.g. for a GSL section-erasure case where it did not
+        read the decline instruction — run() must still normalize to skipped
+        so the UI surfaces the rationale and phase resolves to 'complete'.
+        Without this guard, the loop yields a synthetic status=patch event
+        with empty field_path, dropping the rationale and flipping the panel
+        to error."""
+        mock_gen.return_value = [{
+            "field_path": "",
+            "new_value": None,
+            "rationale": "Would erase the ## PURPOSE header; no other field covers this finding.",
+        }]
+
+        events = self._collect_events(
+            self._make_agent(),
+            space_id="s1",
+            findings=["text instructions too brief"],
+            space_config={"instructions": {}, "data_sources": {"tables": []}},
+        )
+
+        statuses = [e.get("status") for e in events]
+        assert "skipped" in statuses, f"Expected 'skipped', got {statuses}"
+        # No synthetic patch event with empty field_path
+        patch_events = [e for e in events if e.get("status") == "patch"]
+        assert not patch_events, (
+            f"Legacy empty-field_path shape must not surface as a 'patch' event, "
+            f"got: {patch_events}"
+        )
+        # Rationale is carried through to the skipped event
+        skipped = [e for e in events if e.get("status") == "skipped"]
+        assert "## PURPOSE" in skipped[0]["rationale"]
+        # Nothing was applied to Databricks
+        mock_apply.assert_not_called()

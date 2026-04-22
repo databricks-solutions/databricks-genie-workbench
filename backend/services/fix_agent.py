@@ -133,6 +133,23 @@ class FixAgent:
                     }
                     continue
 
+                # Defense-in-depth: the prompt also authorizes a legacy
+                # "not addressable via config" shape ({"field_path": "",
+                # "new_value": null, "rationale": "..."}) that lacks the
+                # `declined` flag. Treat it the same as a decline so the UI
+                # shows a skipped row with rationale instead of a fake fix.
+                if len(patches) == 1 and not patches[0].get("field_path"):
+                    rationale = patches[0].get("rationale") or "No applicable config patch."
+                    logger.info(f"No applicable patch for finding: {finding[:80]} — {rationale[:120]}")
+                    yield {
+                        "status": "skipped",
+                        "field_path": "",
+                        "old_value": None,
+                        "new_value": None,
+                        "rationale": rationale,
+                    }
+                    continue
+
                 finding_patches = []
                 for patch in patches:
                     field_path = patch.get("field_path", "")
