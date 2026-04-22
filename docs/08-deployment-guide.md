@@ -4,7 +4,7 @@ Genie Workbench is deployed as a Databricks App using the provided deploy script
 
 ## Prerequisites
 
-- [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) **v0.239.0+** (validated by preflight)
+- [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) **v0.297.2+** (validated by preflight)
 - [uv](https://docs.astral.sh/uv/) — Python package manager
 - Node.js 18+ and npm
 - Python 3.11+

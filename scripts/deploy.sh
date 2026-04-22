@@ -188,8 +188,16 @@ echo "  ✓ All pre-flight checks passed"
 STEP=2
 echo ""
 echo "▸ Step $STEP/$TOTAL_STEPS: Building frontend..."
-if ! (cd "$PROJECT_DIR/frontend" && npm ci --silent && npm run build --silent); then
+if ! (cd "$PROJECT_DIR/frontend" && npm ci && npm run build); then
     echo "  ✗ Frontend build failed (npm returned non-zero exit code)."
+    echo ""
+    echo "  See npm's error output above for the root cause."
+    echo "  Common causes:"
+    echo "    - Internal npm mirror missing a package or hash-mismatching"
+    echo "      (npm config set registry https://registry.npmjs.org/)"
+    echo "    - Rollup platform binary missing after npm ci"
+    echo "      (rm -rf frontend/node_modules && cd frontend && npm ci)"
+    echo "    - Node version too old (require >= 18)"
     exit 1
 fi
 if [ ! -f "$PROJECT_DIR/frontend/dist/index.html" ]; then
@@ -322,7 +330,7 @@ if [ "$BUNDLE_EXIT" -ne 0 ]; then
     echo "  Remediation:"
     echo "    1. Check the error output above"
     echo "    2. Common causes:"
-    echo "       - Databricks CLI too old (need >= 0.239.0)"
+    echo "       - Databricks CLI too old (need >= 0.297.2)"
     echo "       - Auth issue with profile '$PROFILE'"
     echo "       - GSO wheel build failure (missing 'build' package)"
     echo "       - Terraform state conflict (try: databricks bundle deploy -t app --force-lock)"

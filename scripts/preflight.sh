@@ -30,18 +30,18 @@ _preflight_check_tools() {
     echo "  ✓ All required tools available (databricks, python3, node, npm, uv)"
 
     # Verify Databricks CLI version meets minimum for bundle app/job support
-    local cli_version
+    local cli_version min_cli_version="0.297.2"
     cli_version=$(databricks --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
     if [ -n "$cli_version" ]; then
-        local minor
-        minor=$(echo "$cli_version" | cut -d. -f2)
-        if [ "$(echo "$cli_version" | cut -d. -f1)" -eq 0 ] && [ "$minor" -lt 239 ]; then
+        local lowest
+        lowest=$(printf '%s\n%s\n' "$min_cli_version" "$cli_version" | sort -V | head -1)
+        if [ "$lowest" != "$min_cli_version" ]; then
             echo ""
-            echo "  ✗ Databricks CLI version $cli_version is too old (minimum: 0.239.0)."
+            echo "  ✗ Databricks CLI version $cli_version is too old (minimum: $min_cli_version)."
             echo ""
             echo "  Remediation:"
-            echo "    pip install --upgrade databricks-cli"
-            echo "    or: brew upgrade databricks"
+            echo "    brew upgrade databricks"
+            echo "    or: curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh"
             exit 1
         fi
         echo "  ✓ Databricks CLI version $cli_version"
@@ -50,13 +50,17 @@ _preflight_check_tools() {
 
 _preflight_check_venv() {
     echo "  Syncing Python venv (uv sync --frozen)..."
-    if uv sync --frozen --quiet 2>/dev/null; then
+    if uv sync --frozen --quiet; then
         echo "  ✓ Python venv ready (pinned dependencies)"
     else
         echo ""
         echo "  ✗ uv sync --frozen failed. The Python venv could not be created."
         echo ""
-        echo "  Remediation: run 'uv sync --frozen' manually and check for errors."
+        echo "  See uv's error output above for the root cause."
+        echo "  Common causes:"
+        echo "    - Internal PyPI mirror missing a package (unset UV_INDEX_URL or set to https://pypi.org/simple)"
+        echo "    - Python 3.11+ not available (try: uv python install 3.11)"
+        echo "    - Corrupt .venv (try: rm -rf .venv && uv sync --frozen)"
         exit 1
     fi
 }

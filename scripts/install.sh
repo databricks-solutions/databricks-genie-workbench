@@ -215,8 +215,8 @@ done < <(echo "$PROFILES_OUTPUT" | tail -n +2 | grep -v '^$' || true)
 
 # Build ordered selection array: DEFAULT first, then logged-in, then not-logged-in
 ORDERED_PROFILES=("DEFAULT")
-for n in "${LOGGEDIN_NAMES[@]}";    do ORDERED_PROFILES+=("$n"); done
-for n in "${NOTLOGGEDIN_NAMES[@]}"; do ORDERED_PROFILES+=("$n"); done
+for n in ${LOGGEDIN_NAMES[@]+"${LOGGEDIN_NAMES[@]}"};       do ORDERED_PROFILES+=("$n"); done
+for n in ${NOTLOGGEDIN_NAMES[@]+"${NOTLOGGEDIN_NAMES[@]}"}; do ORDERED_PROFILES+=("$n"); done
 
 if [ "${#ORDERED_PROFILES[@]}" -eq 1 ] && [ "$PROFILES_EXIT" -ne 0 ]; then
     _warn "Could not list profiles (databricks CLI error). Falling back to DEFAULT."
