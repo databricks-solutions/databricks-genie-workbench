@@ -352,3 +352,144 @@ def _make_arbiter_scorer(
             )
 
     return arbiter_scorer
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Pre-flight synthesis arbiter (Bug #4 P2)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# The stock ``arbiter_scorer`` compares two SQLs against a ground-truth
+# benchmark. Pre-flight synthesis has no ground truth — it asks a
+# different question: "given this question + this SQL + the rows it
+# returned, does the result plausibly answer the question?"
+#
+# Exposed as both ``score_example_sql_correctness`` (the new name) and
+# ``score_synthesized_example_sql`` (the legacy name that
+# ``synthesis.py:342`` already imports defensively). Keeping both as
+# exports means the reactive-synthesis path gets a real arbiter check
+# on the next run; without this, that code was silently falling through
+# to ``skipped_no_arbiter``.
+
+
+def _truncate_rows_for_prompt(
+    rows: list[dict] | None, max_rows: int = 20, max_chars: int = 2000,
+) -> str:
+    """Render a compact table of rows for the arbiter prompt.
+
+    Budget-bounded: caps at ``max_rows`` rows, then trims the rendered
+    JSON string to ``max_chars``. Returns ``"(no rows)"`` for None/empty.
+    """
+    if not rows:
+        return "(no rows)"
+    try:
+        head = rows[:max_rows]
+        text = json.dumps(head, indent=2, default=str)
+    except Exception:
+        return "(rows not JSON-serialisable)"
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "\n... (truncated)"
+    return text
+
+
+_EXAMPLE_SQL_CORRECTNESS_PROMPT = (
+    "You are judging whether a generated SQL query correctly answers a "
+    "natural-language question, given a sample of the rows it returned.\n"
+    "You are NOT comparing against a benchmark or ground truth. Judge the "
+    "SQL + RESULT on its own merit against the question.\n\n"
+    "VERDICT OPTIONS:\n"
+    "- yes  — the SQL and its results plausibly answer the question.\n"
+    "  Minor cosmetic variations (column aliases, ORDER BY, LIMIT size, "
+    "number of columns beyond what was asked) are acceptable.\n"
+    "- no   — the SQL misinterprets the question, references the wrong "
+    "entity, returns an empty/unhelpful result set due to bad filters, "
+    "or materially fails to answer.\n"
+    "- uncertain — the evidence is insufficient to judge (e.g. empty "
+    "result with no clear reason, SQL is parseable but semantics are "
+    "ambiguous).\n\n"
+    "BE CONSERVATIVE: when in doubt, prefer ``uncertain`` over ``yes``.\n"
+    "Responses like ``no`` should cite a concrete, fixable mistake.\n\n"
+    "OUTPUT FORMAT (strict JSON, no prose):\n"
+    '{"value": "yes" | "no" | "uncertain", '
+    '"rationale": "<one sentence>"}'
+)
+
+
+def score_example_sql_correctness(
+    question: str,
+    sql: str,
+    result_rows: list[dict] | None,
+    *,
+    w: "WorkspaceClient",
+    metadata_snapshot: dict | None = None,
+) -> dict:
+    """Arbiter verdict on whether an example SQL answers its question.
+
+    Used by the pre-flight synthesis Genie-vs-synthesized gate
+    (``_gate_genie_agreement``) and, when wired, by the reactive
+    ``synthesis._gate_arbiter`` path. Never compares against benchmarks
+    — pre-flight synthesis runs in a firewall-enforced leak-free context
+    and this prompt must not be the weak link.
+
+    Parameters
+    ----------
+    question : str
+        The natural-language question the SQL purports to answer.
+    sql : str
+        The SQL statement under review.
+    result_rows : list[dict] | None
+        First ~20 rows of the SQL's result set. Empty / None is allowed
+        and surfaces as "no rows" in the prompt; the arbiter judges
+        whether that's plausible for the question.
+    w : WorkspaceClient
+        Used by ``_call_llm_for_scoring`` to reach the judge endpoint.
+    metadata_snapshot : dict | None
+        Currently unused but plumbed so future iterations can quote
+        schema context (column descriptions etc.) for the arbiter.
+
+    Returns
+    -------
+    dict
+        ``{"value": "yes"|"no"|"uncertain", "rationale": "..."}``.
+        Defaults to ``"uncertain"`` on any LLM or parse failure — never
+        silently promotes a doubtful candidate.
+    """
+    _ = metadata_snapshot  # reserved for future schema-quoting
+    rows_block = _truncate_rows_for_prompt(result_rows)
+    prompt = (
+        f"{_EXAMPLE_SQL_CORRECTNESS_PROMPT}\n\n"
+        f"Question: {question}\n\n"
+        f"SQL:\n{sql}\n\n"
+        f"Result sample (first rows):\n{rows_block}\n"
+    )
+    try:
+        result = _call_llm_for_scoring(
+            w, prompt,
+            prompt_name=get_registered_prompt_name("example_sql_correctness"),
+        )
+    except Exception as exc:
+        logger.warning(
+            "score_example_sql_correctness LLM call failed: %s", exc,
+        )
+        return {
+            "value": "uncertain",
+            "rationale": f"arbiter LLM unavailable: {exc}",
+        }
+    if not isinstance(result, dict):
+        return {"value": "uncertain", "rationale": "non-dict arbiter response"}
+    raw_value = str(result.get("value") or result.get("verdict") or "").strip().lower()
+    if raw_value in ("yes", "pass", "correct", "true"):
+        value = "yes"
+    elif raw_value in ("no", "fail", "incorrect", "false"):
+        value = "no"
+    else:
+        value = "uncertain"
+    return {
+        "value": value,
+        "rationale": str(result.get("rationale") or "")[:500],
+    }
+
+
+# Legacy alias — ``synthesis.py:_gate_arbiter`` imports this name via a
+# try/except, so exporting it wires the reactive synthesis path's
+# arbiter gate as well. Signature-compatible with the new function.
+score_synthesized_example_sql = score_example_sql_correctness

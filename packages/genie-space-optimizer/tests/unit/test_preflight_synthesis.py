@@ -653,3 +653,223 @@ class TestTopKColumns:
         )
         cols = _top_k_columns(asset, k=2)
         assert cols[0][1] == "documented"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# P2 — Genie-vs-synthesized arbiter gate
+# ═══════════════════════════════════════════════════════════════════════
+#
+# These exercise ``_gate_genie_agreement`` directly via injected
+# ``genie_ask`` / ``warehouse_executor`` / ``arbiter`` callables so no
+# Databricks SDK is touched in-process.
+
+
+from genie_space_optimizer.optimization.preflight_synthesis import (
+    _gate_genie_agreement,
+)
+
+
+class TestGenieAgreementGateP2:
+    def _candidate(self) -> dict:
+        return {
+            "patch_type": "add_example_sql",
+            "example_question": "Top 5 regions by amount?",
+            "example_sql": "SELECT region, SUM(amount) FROM cat.sch.t GROUP BY 1 ORDER BY 2 DESC LIMIT 5",
+            "rationale": "r",
+            "usage_guidance": "r",
+        }
+
+    def test_arbiter_gate_passes_when_both_correct(self):
+        """Happy path — Genie + synth both arbiter-pass → gate passes."""
+        cand = self._candidate()
+        result = _gate_genie_agreement(
+            cand,
+            space_id="s", w=object(), warehouse_id="wh",
+            catalog="c", gold_schema="sch", metadata_snapshot={},
+            genie_ask=lambda w, sid, q: {
+                "status": "COMPLETED",
+                "sql": "SELECT region, SUM(amount) FROM cat.sch.t GROUP BY 1 ORDER BY 2 DESC LIMIT 5",
+            },
+            warehouse_executor=lambda sql: [{"region": "EMEA", "sum": 100}],
+            arbiter=lambda **kw: {"value": "yes", "rationale": "ok"},
+        )
+        assert result.passed is True
+        assert result.gate == "genie_agreement"
+        assert "both_correct" in result.reason
+
+    def test_arbiter_gate_fails_when_genie_wrong(self):
+        """Arbiter says no on Genie's SQL → reject."""
+        cand = self._candidate()
+        verdicts = iter([
+            {"value": "no", "rationale": "Genie used wrong table"},   # genie SQL
+            {"value": "yes", "rationale": "synth ok"},                 # synth SQL
+        ])
+        result = _gate_genie_agreement(
+            cand,
+            space_id="s", w=object(), warehouse_id="wh",
+            catalog="c", gold_schema="sch", metadata_snapshot={},
+            genie_ask=lambda w, sid, q: {"sql": "SELECT * FROM wrong.table"},
+            warehouse_executor=lambda sql: [{"x": 1}],
+            arbiter=lambda **kw: next(verdicts),
+        )
+        assert result.passed is False
+        assert "genie=no" in result.reason
+        assert "synth=yes" in result.reason
+
+    def test_arbiter_gate_fails_when_synth_wrong(self):
+        """Symmetry — arbiter says no on synthesized SQL → reject."""
+        cand = self._candidate()
+        verdicts = iter([
+            {"value": "yes", "rationale": "genie ok"},
+            {"value": "no", "rationale": "synth hallucinated column"},
+        ])
+        result = _gate_genie_agreement(
+            cand,
+            space_id="s", w=object(), warehouse_id="wh",
+            catalog="c", gold_schema="sch", metadata_snapshot={},
+            genie_ask=lambda w, sid, q: {"sql": "SELECT 1"},
+            warehouse_executor=lambda sql: [{"x": 1}],
+            arbiter=lambda **kw: next(verdicts),
+        )
+        assert result.passed is False
+        assert "genie=yes" in result.reason
+        assert "synth=no" in result.reason
+
+    def test_arbiter_gate_rejects_when_genie_returns_no_sql(self):
+        """Genie didn't return SQL (e.g. clarification question) → reject."""
+        cand = self._candidate()
+        result = _gate_genie_agreement(
+            cand,
+            space_id="s", w=object(), warehouse_id="wh",
+            catalog="c", gold_schema="sch", metadata_snapshot={},
+            genie_ask=lambda w, sid, q: {"status": "COMPLETED", "sql": None},
+            warehouse_executor=lambda sql: [],
+            arbiter=lambda **kw: {"value": "yes"},
+        )
+        assert result.passed is False
+        assert result.reason == "genie_no_sql"
+
+    def test_arbiter_gate_rejects_when_candidate_missing_question(self):
+        """Malformed candidate (no question) → reject before any SDK call."""
+        result = _gate_genie_agreement(
+            {"example_sql": "SELECT 1"},
+            space_id="s", w=object(), warehouse_id="wh",
+            catalog="c", gold_schema="sch", metadata_snapshot={},
+            genie_ask=lambda *a: (_ for _ in ()).throw(
+                AssertionError("must not call Genie without a question"),
+            ),
+            warehouse_executor=lambda sql: [],
+            arbiter=lambda **kw: {"value": "yes"},
+        )
+        assert result.passed is False
+        assert result.reason == "missing_question_or_sql"
+
+
+class TestOrchestratorWithGenieAgreementGate:
+    """End-to-end: run_preflight_example_synthesis with the P2 gate enabled."""
+
+    def test_orchestrator_wires_genie_agreement_when_enabled(self, monkeypatch):
+        snap = _seeded_snapshot(0)
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.preflight_synthesis."
+            "_apply_preflight_proposals",
+            lambda proposals, **kw: len(proposals),
+        )
+        with patch(
+            "genie_space_optimizer.optimization.preflight_synthesis.validate_synthesis_proposal",
+            side_effect=_all_gates_pass,
+        ):
+            result = run_preflight_example_synthesis(
+                w=object(), spark=None, run_id="r", space_id="s", config={},
+                metadata_snapshot=snap,
+                benchmarks=[], catalog="c", schema="sch",
+                llm_caller=_fake_llm_valid_response,
+                target=2, rng=random.Random(99),
+                enforce_genie_agreement=True,
+                genie_ask=lambda w, sid, q: {"sql": "SELECT 1"},
+                warehouse_executor=lambda sql: [{"x": 1}],
+                arbiter=lambda **kw: {"value": "yes"},
+            )
+        # With enforce_genie_agreement=True and stubs returning "yes",
+        # we expect both candidates to pass the Genie-agreement gate.
+        assert result["applied"] == 2
+        assert result["passed_genie_agreement"] == 2
+
+    def test_orchestrator_rejects_via_genie_agreement_gate(self, monkeypatch):
+        snap = _seeded_snapshot(0)
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.preflight_synthesis."
+            "_apply_preflight_proposals",
+            lambda proposals, **kw: len(proposals),
+        )
+        with patch(
+            "genie_space_optimizer.optimization.preflight_synthesis.validate_synthesis_proposal",
+            side_effect=_all_gates_pass,
+        ):
+            result = run_preflight_example_synthesis(
+                w=object(), spark=None, run_id="r", space_id="s", config={},
+                metadata_snapshot=snap,
+                benchmarks=[], catalog="c", schema="sch",
+                llm_caller=_fake_llm_valid_response,
+                target=2, rng=random.Random(100),
+                enforce_genie_agreement=True,
+                genie_ask=lambda w, sid, q: {"sql": "SELECT 1"},
+                warehouse_executor=lambda sql: [{"x": 1}],
+                arbiter=lambda **kw: {"value": "no", "rationale": "wrong"},
+            )
+        assert result["applied"] == 0
+        assert result["rejected_by_gate"].get("genie_agreement", 0) >= 1
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# P2 — Arbiter scorer integration
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestArbiterScorerP2:
+    def test_score_example_sql_correctness_alias_resolves(self):
+        """The legacy import path ``score_synthesized_example_sql`` works."""
+        from genie_space_optimizer.optimization.scorers.arbiter import (
+            score_example_sql_correctness,
+            score_synthesized_example_sql,
+        )
+        assert score_example_sql_correctness is score_synthesized_example_sql
+
+    def test_score_handles_yes_verdict(self, monkeypatch):
+        from genie_space_optimizer.optimization.scorers import arbiter
+        monkeypatch.setattr(
+            arbiter, "_call_llm_for_scoring",
+            lambda w, prompt, **kw: {"value": "yes", "rationale": "ok"},
+        )
+        verdict = arbiter.score_example_sql_correctness(
+            "Q", "SELECT 1", [{"x": 1}],
+            w=object(), metadata_snapshot={},
+        )
+        assert verdict["value"] == "yes"
+
+    def test_score_handles_no_verdict(self, monkeypatch):
+        from genie_space_optimizer.optimization.scorers import arbiter
+        monkeypatch.setattr(
+            arbiter, "_call_llm_for_scoring",
+            lambda w, prompt, **kw: {"value": "no", "rationale": "wrong table"},
+        )
+        verdict = arbiter.score_example_sql_correctness(
+            "Q", "SELECT 1", [],
+            w=object(), metadata_snapshot={},
+        )
+        assert verdict["value"] == "no"
+
+    def test_score_defaults_uncertain_on_llm_failure(self, monkeypatch):
+        """LLM raises → verdict is ``uncertain``, never ``yes`` — never
+        silently promote a doubtful candidate."""
+        from genie_space_optimizer.optimization.scorers import arbiter
+
+        def _boom(*a, **kw):
+            raise RuntimeError("endpoint down")
+        monkeypatch.setattr(arbiter, "_call_llm_for_scoring", _boom)
+        verdict = arbiter.score_example_sql_correctness(
+            "Q", "SELECT 1", [],
+            w=object(), metadata_snapshot={},
+        )
+        assert verdict["value"] == "uncertain"
+        assert "endpoint down" in verdict["rationale"]

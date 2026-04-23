@@ -64,10 +64,13 @@ from genie_space_optimizer.optimization.archetypes import (
     Archetype,
     schema_traits,
 )
-# Module-level import so tests can ``patch("preflight_synthesis.validate_synthesis_proposal")``
-# at the orchestrator's attribute. Synthesis is already a dependency via the
-# reused 5-gate pipeline, so this doesn't add any heaviness at import time.
-from genie_space_optimizer.optimization.synthesis import validate_synthesis_proposal
+# Module-level imports so tests can ``patch("preflight_synthesis.X")`` at the
+# orchestrator's attribute. Synthesis is already a dependency via the reused
+# 5-gate pipeline, so this doesn't add any import-time heaviness.
+from genie_space_optimizer.optimization.synthesis import (
+    GateResult,
+    validate_synthesis_proposal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -888,6 +891,10 @@ def run_preflight_example_synthesis(
     llm_caller: Callable[[str], str] | None = None,
     rng: random.Random | None = None,
     target: int | None = None,
+    enforce_genie_agreement: bool = False,
+    genie_ask: Callable[[Any, str, str], dict] | None = None,
+    warehouse_executor: Callable[[str], list[dict]] | None = None,
+    arbiter: Callable[..., dict] | None = None,
 ) -> dict:
     """Run pre-flight synthesis to fill example_question_sqls up to target.
 
@@ -942,7 +949,8 @@ def run_preflight_example_synthesis(
         "passed_execute": 0,
         "passed_firewall": 0,
         "passed_structural": 0,
-        "passed_arbiter": 0,
+        "passed_arbiter": 0,  # synthesis.py's in-pipeline arbiter gate (no-op today)
+        "passed_genie_agreement": 0,  # P2 Genie-vs-synthesized gate (opt-in)
         "dedup_rejected": 0,
         "rejected_by_gate": {},
         "asset_coverage": {},
@@ -1047,6 +1055,29 @@ def run_preflight_example_synthesis(
         if not passed:
             continue
 
+        # ── P2 Genie-vs-synthesized agreement (opt-in) ────────────
+        if enforce_genie_agreement:
+            agreement = _gate_genie_agreement(
+                proposal,
+                space_id=space_id,
+                w=w, warehouse_id=warehouse_id,
+                catalog=catalog, gold_schema=schema,
+                metadata_snapshot=metadata_snapshot,
+                genie_ask=genie_ask,
+                warehouse_executor=warehouse_executor,
+                arbiter=arbiter,
+            )
+            if not agreement.passed:
+                reject_by_gate["genie_agreement"] = (
+                    reject_by_gate.get("genie_agreement", 0) + 1
+                )
+                logger.info(
+                    "preflight.arbiter.rejected reason=%s question=%r",
+                    agreement.reason, (proposal.get("example_question") or "")[:80],
+                )
+                continue
+            result["passed_genie_agreement"] += 1
+
         # ── Dedup: vs existing config + pairwise within this run ──
         fp = _canonicalize_sql_fingerprint(proposal.get("example_sql", ""))
         if not fp:
@@ -1080,12 +1111,13 @@ def run_preflight_example_synthesis(
     logger.info(
         "preflight.synthesis.summary existing=%d target=%d need=%d generated=%d "
         "passed_parse=%d passed_execute=%d passed_firewall=%d passed_structural=%d "
-        "passed_arbiter=%d dedup_rejected=%d applied=%d "
+        "passed_arbiter=%d passed_genie_agreement=%d dedup_rejected=%d applied=%d "
         "asset_coverage=%s rejected_by_gate=%s archetype=%s",
         existing_count, effective_target, need, result["generated"],
         result["passed_parse"], result["passed_execute"],
         result["passed_firewall"], result["passed_structural"],
-        result["passed_arbiter"], result["dedup_rejected"],
+        result["passed_arbiter"], result["passed_genie_agreement"],
+        result["dedup_rejected"],
         applied, asset_counts, reject_by_gate, archetype_counts,
     )
     _print_summary(result)
@@ -1129,7 +1161,8 @@ def _print_summary(result: dict) -> None:
     lines.append(_kv("Passed EXPLAIN+execute", result.get("passed_execute", 0)))
     lines.append(_kv("Passed firewall", result.get("passed_firewall", 0)))
     lines.append(_kv("Passed structural", result.get("passed_structural", 0)))
-    lines.append(_kv("Passed arbiter (P2)", result.get("passed_arbiter", 0)))
+    lines.append(_kv("Passed arbiter gate", result.get("passed_arbiter", 0)))
+    lines.append(_kv("Passed genie agreement", result.get("passed_genie_agreement", 0)))
     lines.append(_kv("Dedup rejected", result.get("dedup_rejected", 0)))
     lines.append(_kv("Applied", result.get("applied", 0)))
 
@@ -1153,4 +1186,197 @@ def _print_summary(result: dict) -> None:
         ))
     lines.append(_bar())
     print("\n".join(lines))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 5. Genie-vs-synthesized arbiter gate (P2)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Extra confidence gate: ask Genie the synthesized question, execute both
+# Genie's SQL and the synthesized SQL against the warehouse, and call the
+# arbiter on each result-set. Keep iff BOTH verdicts are "yes" — i.e.
+# the example is a reinforcement that matches what Genie would produce
+# for the current config plus what the LLM proposed. Failures on either
+# side reject the candidate.
+#
+# Wired into the orchestrator through ``enforce_genie_agreement=True``
+# (off by default so P1 ships independently; flip the flag to enable P2).
+
+
+# Genie query result cap for the arbiter comparison. Larger than the
+# execution-gate LIMIT 1 because we want enough rows for the arbiter
+# to sanity-check the result set shape.
+_PREFLIGHT_ARBITER_ROW_CAP = 20
+
+
+def _rows_from_warehouse_df(df: Any, max_rows: int) -> list[dict]:
+    """Best-effort conversion of a warehouse DataFrame into a plain list.
+
+    Handles pandas DataFrame + any other object with ``to_dict``.
+    Empty / None → ``[]``. Used for arbiter result-sample input.
+    """
+    if df is None:
+        return []
+    try:
+        head = df.head(max_rows) if hasattr(df, "head") else df[:max_rows]
+    except Exception:
+        head = df
+    try:
+        records = head.to_dict(orient="records")
+    except Exception:
+        try:
+            records = list(head)
+        except Exception:
+            return []
+    return records[:max_rows] if records else []
+
+
+def _ask_genie_for_question(
+    w: Any,
+    space_id: str,
+    question: str,
+    *,
+    max_wait: int = 120,
+) -> dict:
+    """Thin wrapper over :func:`common.genie_client.run_genie_query`.
+
+    Keeps the import local so tests that never call this gate don't
+    have to mock the Genie SDK surface.
+    """
+    try:
+        from genie_space_optimizer.common.genie_client import run_genie_query
+    except Exception as exc:
+        logger.warning("preflight.arbiter: cannot import run_genie_query: %s", exc)
+        return {"status": "ERROR", "sql": None, "error": str(exc)}
+    try:
+        return run_genie_query(w, space_id, question, max_wait=max_wait)
+    except Exception as exc:
+        logger.warning(
+            "preflight.arbiter: run_genie_query raised: %s", exc,
+        )
+        return {"status": "ERROR", "sql": None, "error": str(exc)}
+
+
+def _execute_warehouse_limit(
+    sql: str, w: Any, warehouse_id: str, catalog: str, schema: str,
+    max_rows: int = _PREFLIGHT_ARBITER_ROW_CAP,
+) -> list[dict]:
+    """Execute ``sql`` via the warehouse wrapped in ``SELECT * FROM (...) LIMIT N``.
+
+    Returns plain row dicts. Defensive: any failure → ``[]`` with a
+    WARNING log so the arbiter can still run (the arbiter is then asked
+    whether an empty result is correct for the question).
+    """
+    if not sql or not warehouse_id or not w:
+        return []
+    wrapped = f"SELECT * FROM ({sql.rstrip(';').strip()}) _preflight LIMIT {int(max_rows)}"
+    try:
+        from genie_space_optimizer.optimization.evaluation import (
+            _execute_sql_via_warehouse,
+        )
+        df = _execute_sql_via_warehouse(
+            w, warehouse_id, wrapped,
+            catalog=catalog, schema=schema,
+        )
+    except Exception as exc:
+        logger.info(
+            "preflight.arbiter.execute_failed sql=%r err=%s",
+            sql[:80], str(exc)[:200],
+        )
+        return []
+    return _rows_from_warehouse_df(df, max_rows)
+
+
+def _gate_genie_agreement(
+    candidate: dict,
+    *,
+    space_id: str,
+    w: Any,
+    warehouse_id: str,
+    catalog: str,
+    gold_schema: str,
+    metadata_snapshot: dict,
+    genie_ask: Callable[[Any, str, str], dict] | None = None,
+    warehouse_executor: Callable[[str], list[dict]] | None = None,
+    arbiter: Callable[..., dict] | None = None,
+) -> GateResult:
+    """Genie-vs-synthesized arbiter gate for pre-flight synthesis (P2).
+
+    Pipeline:
+
+    1. Ask Genie the candidate's question (reuses
+       :func:`common.genie_client.run_genie_query`).
+    2. Execute Genie's returned SQL AND the synthesized SQL against the
+       warehouse with ``LIMIT _PREFLIGHT_ARBITER_ROW_CAP``.
+    3. Run :func:`score_example_sql_correctness` on BOTH result-sets.
+    4. Pass iff both arbiter verdicts are ``"yes"`` (``both_correct``
+       mode — see the planning discussion for why this is the only
+       supported mode).
+
+    Injection points (``genie_ask``, ``warehouse_executor``, ``arbiter``)
+    let tests exercise every branch of the gate without touching the
+    Databricks SDK. Production callers leave them ``None``.
+
+    Returns a :class:`synthesis.GateResult`. Caller decides whether to
+    enforce; the orchestrator wires this gate via
+    ``enforce_genie_agreement=True``.
+    """
+    question = str(candidate.get("example_question") or "").strip()
+    synth_sql = str(candidate.get("example_sql") or "").strip()
+    if not question or not synth_sql:
+        return GateResult(False, "genie_agreement", "missing_question_or_sql")
+
+    # ── Step 1: ask Genie ──────────────────────────────────────────
+    if genie_ask is None:
+        genie_response = _ask_genie_for_question(w, space_id, question)
+    else:
+        genie_response = genie_ask(w, space_id, question)
+    genie_sql = str(genie_response.get("sql") or "").strip() if isinstance(
+        genie_response, dict,
+    ) else ""
+    if not genie_sql:
+        return GateResult(False, "genie_agreement", "genie_no_sql")
+
+    # ── Step 2: execute both SQLs ──────────────────────────────────
+    if warehouse_executor is None:
+        def _exec(sql: str) -> list[dict]:
+            return _execute_warehouse_limit(
+                sql, w, warehouse_id, catalog, gold_schema,
+            )
+    else:
+        _exec = warehouse_executor
+    genie_rows = _exec(genie_sql)
+    synth_rows = _exec(synth_sql)
+
+    # ── Step 3: arbiter on both ────────────────────────────────────
+    if arbiter is None:
+        from genie_space_optimizer.optimization.scorers.arbiter import (
+            score_example_sql_correctness,
+        )
+        _arbiter: Callable[..., dict] = score_example_sql_correctness
+    else:
+        _arbiter = arbiter
+
+    try:
+        genie_verdict = _arbiter(
+            question=question, sql=genie_sql, result_rows=genie_rows,
+            w=w, metadata_snapshot=metadata_snapshot,
+        )
+        synth_verdict = _arbiter(
+            question=question, sql=synth_sql, result_rows=synth_rows,
+            w=w, metadata_snapshot=metadata_snapshot,
+        )
+    except Exception as exc:
+        logger.warning("preflight.arbiter.exception: %s", exc)
+        return GateResult(False, "genie_agreement", f"arbiter_error:{exc}")
+
+    gv = str((genie_verdict or {}).get("value", "")).lower()
+    sv = str((synth_verdict or {}).get("value", "")).lower()
+
+    # ── Step 4: both_correct mode ──────────────────────────────────
+    if gv == "yes" and sv == "yes":
+        return GateResult(True, "genie_agreement", "both_correct")
+    return GateResult(
+        False, "genie_agreement", f"genie={gv} synth={sv}",
+    )
 
