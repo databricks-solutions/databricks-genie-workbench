@@ -14,6 +14,15 @@ Usage:
 import argparse
 
 
+def _quote_ident(value: str) -> str:
+    """Quote a Postgres identifier such as a role or table name."""
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _one_line_error(exc: Exception) -> str:
+    return str(exc).strip().splitlines()[0] if str(exc).strip() else repr(exc)
+
+
 def _get_client(profile: str):
     """Create a WorkspaceClient from a CLI profile."""
     from databricks.sdk import WorkspaceClient
@@ -152,6 +161,7 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
             f'GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}"',
             f'GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}"',
         ]
+        grants_ok = True
         for grant in grants:
             try:
                 conn.execute(grant)
@@ -160,11 +170,17 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
                     pass
                 else:
                     print(f"    ⚠ {grant}: {e}")
+                    grants_ok = False
 
-        _reconcile_schema_ownership(conn, new_sp=sp_client_id, project_name=project_name)
+        schema_ok = _reconcile_schema_ownership(
+            conn, new_sp=sp_client_id, project_name=project_name,
+        )
         conn.close()
-        print(f"  ✓ Database permissions granted to SP")
-        return True
+        if grants_ok and schema_ok:
+            print(f"  ✓ Database permissions granted to SP")
+            return True
+        print(f"  ⚠ Database permissions incomplete for SP")
+        return False
     except Exception as e:
         print(f"  ⚠ Could not connect to Lakebase for GRANTs: {e}")
         print(f"  Run these commands manually in the Lakebase SQL Editor:")
@@ -173,7 +189,183 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
         return False
 
 
-def _reconcile_schema_ownership(conn, *, new_sp: str, project_name: str) -> None:
+def _fetch_genie_schema_state(conn) -> dict | None:
+    """Return owner metadata for the app-owned `genie` schema."""
+    row = conn.execute(
+        "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'genie'"
+    ).fetchone()
+    if not row:
+        return None
+
+    tables = conn.execute("""
+        SELECT c.relname, pg_get_userbyid(c.relowner)
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'genie'
+          AND c.relkind IN ('r', 'p')
+        ORDER BY c.relname
+    """).fetchall()
+    sequences = conn.execute("""
+        SELECT c.relname, pg_get_userbyid(c.relowner)
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'genie'
+          AND c.relkind = 'S'
+        ORDER BY c.relname
+    """).fetchall()
+
+    return {
+        "schema_owner": (row[0] or "").strip('"'),
+        "tables": [(r[0], (r[1] or "").strip('"')) for r in tables],
+        "sequences": [(r[0], (r[1] or "").strip('"')) for r in sequences],
+    }
+
+
+def _owners_in_state(state: dict, *, exclude: str = "") -> set[str]:
+    owners = {state["schema_owner"]}
+    owners.update(owner for _, owner in state["tables"])
+    owners.update(owner for _, owner in state["sequences"])
+    return {owner for owner in owners if owner and owner != exclude}
+
+
+def _is_member_of_role(conn, role: str) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT pg_has_role(CURRENT_USER, %s, 'MEMBER')",
+            (role,),
+        ).fetchone()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def _grant_temporary_memberships(conn, roles: list[str]) -> tuple[list[str], list[str]]:
+    """Grant CURRENT_USER temporary membership in roles it does not already have."""
+    granted: list[str] = []
+    errors: list[str] = []
+    for role in roles:
+        if not role or _is_member_of_role(conn, role):
+            continue
+        stmt = f"GRANT {_quote_ident(role)} TO CURRENT_USER"
+        try:
+            conn.execute(stmt)
+            granted.append(role)
+        except Exception as e:
+            errors.append(f"{stmt}: {_one_line_error(e)}")
+    return granted, errors
+
+
+def _revoke_temporary_memberships(conn, roles: list[str]) -> None:
+    for role in reversed(roles):
+        try:
+            conn.execute(f"REVOKE {_quote_ident(role)} FROM CURRENT_USER")
+        except Exception:
+            pass
+
+
+def _transfer_genie_ownership(conn, state: dict, *, new_sp: str) -> int:
+    """Transfer only the app-owned `genie` schema objects to the new SP."""
+    changed = 0
+    if state["schema_owner"] != new_sp:
+        conn.execute(f"ALTER SCHEMA genie OWNER TO {_quote_ident(new_sp)}")
+        changed += 1
+
+    for table, owner in state["tables"]:
+        if owner != new_sp:
+            conn.execute(
+                f"ALTER TABLE genie.{_quote_ident(table)} OWNER TO {_quote_ident(new_sp)}"
+            )
+            changed += 1
+
+    for sequence, owner in state["sequences"]:
+        if owner != new_sp:
+            conn.execute(
+                f"ALTER SEQUENCE genie.{_quote_ident(sequence)} OWNER TO {_quote_ident(new_sp)}"
+            )
+            changed += 1
+
+    return changed
+
+
+def _state_owned_by(state: dict, *, owner: str) -> bool:
+    return (
+        state["schema_owner"] == owner
+        and all(table_owner == owner for _, table_owner in state["tables"])
+        and all(seq_owner == owner for _, seq_owner in state["sequences"])
+    )
+
+
+def _grant_existing_genie_access(conn, *, new_sp: str) -> bool:
+    """Fallback for existing schemas when ownership cannot be transferred.
+
+    This preserves existing data and gives the new app SP enough access to
+    read/write the current app state. Owner-only migrations remain best-effort
+    at startup.
+    """
+    grants = [
+        f"GRANT USAGE, CREATE ON SCHEMA genie TO {_quote_ident(new_sp)}",
+        (
+            "GRANT SELECT, INSERT, UPDATE, DELETE "
+            f"ON ALL TABLES IN SCHEMA genie TO {_quote_ident(new_sp)}"
+        ),
+        (
+            "GRANT USAGE, SELECT, UPDATE "
+            f"ON ALL SEQUENCES IN SCHEMA genie TO {_quote_ident(new_sp)}"
+        ),
+    ]
+    ok = True
+    for stmt in grants:
+        try:
+            conn.execute(stmt)
+        except Exception as e:
+            ok = False
+            print(f"    ⚠ {stmt}: {_one_line_error(e)}")
+    return ok
+
+
+def _print_manual_schema_repair(
+    *, state: dict, new_sp: str, project_name: str, errors: list[str],
+) -> None:
+    owners = sorted(_owners_in_state(state, exclude=new_sp))
+    print("    ✗ Existing `genie` schema is not accessible to the new app SP.")
+    if errors:
+        print("      Automated repair errors:")
+        for err in errors:
+            print(f"        - {err}")
+    print(f"      Fix it in the Lakebase SQL Editor for project '{project_name}':")
+    for owner in owners:
+        print(f"        GRANT {_quote_ident(owner)} TO CURRENT_USER;")
+    print(f"        GRANT {_quote_ident(new_sp)} TO CURRENT_USER;")
+    if state["schema_owner"] != new_sp:
+        print(f"        ALTER SCHEMA genie OWNER TO {_quote_ident(new_sp)};")
+    for table, owner in state["tables"]:
+        if owner != new_sp:
+            print(
+                f"        ALTER TABLE genie.{_quote_ident(table)} "
+                f"OWNER TO {_quote_ident(new_sp)};"
+            )
+    for sequence, owner in state["sequences"]:
+        if owner != new_sp:
+            print(
+                f"        ALTER SEQUENCE genie.{_quote_ident(sequence)} "
+                f"OWNER TO {_quote_ident(new_sp)};"
+            )
+    print(f"        REVOKE {_quote_ident(new_sp)} FROM CURRENT_USER;")
+    for owner in reversed(owners):
+        print(f"        REVOKE {_quote_ident(owner)} FROM CURRENT_USER;")
+    print("      If ownership cannot be transferred, preserve data with grants:")
+    print(f"        GRANT USAGE, CREATE ON SCHEMA genie TO {_quote_ident(new_sp)};")
+    print(
+        "        GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES "
+        f"IN SCHEMA genie TO {_quote_ident(new_sp)};"
+    )
+    print(
+        "        GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES "
+        f"IN SCHEMA genie TO {_quote_ident(new_sp)};"
+    )
+
+
+def _reconcile_schema_ownership(conn, *, new_sp: str, project_name: str) -> bool:
     """Transfer ownership of the `genie` schema + its tables/sequences to
     the new SP, if the schema already exists and is owned by someone else.
 
@@ -183,133 +375,57 @@ def _reconcile_schema_ownership(conn, *, new_sp: str, project_name: str) -> None
     previous install. Without ownership transfer, the new SP gets
     "permission denied for schema genie" when it tries to write.
 
-    Strategy (in order):
-    1. `REASSIGN OWNED BY old TO new` — single atomic statement; requires
-       the deployer to be a member of both roles (typical for project
-       admins who created both SPs).
-    2. Per-object `ALTER ... OWNER TO new` — partial-success path in case
-       REASSIGN isn't allowed but individual ALTERs are.
-
-    If neither works, surfaces remediation SQL the deployer can run in
-    the Lakebase SQL Editor after granting themselves the right role.
-    Never fails the install — the app falls back to in-memory until the
-    ownership is fixed.
+    Only the app-owned `genie` schema is touched. We never use
+    REASSIGN OWNED because that can transfer unrelated objects owned by a
+    previous app SP in the same Lakebase project.
     """
-    # Does the schema exist, and if so who owns it?
-    row = conn.execute(
-        "SELECT nspowner::regrole::text FROM pg_namespace WHERE nspname = 'genie'"
-    ).fetchone()
-    if not row:
+    state = _fetch_genie_schema_state(conn)
+    if not state:
         # Fresh Lakebase — nothing to reconcile; the app SP will create
         # and own `genie` at startup.
-        return
+        return True
 
-    current_owner = (row[0] or "").strip('"')
-    if current_owner == new_sp:
+    if _state_owned_by(state, owner=new_sp):
         print(f"  ✓ genie schema already owned by SP")
-        return
+        return True
 
-    print(f"  genie schema exists, owned by {current_owner[:12]}... — reconciling to new SP...")
+    owners = sorted(_owners_in_state(state, exclude=new_sp))
+    print(
+        "  genie schema exists, owned by "
+        f"{', '.join(o[:12] + '...' for o in owners)} — reconciling to new SP..."
+    )
 
-    reassign = f'REASSIGN OWNED BY "{current_owner}" TO "{new_sp}"'
-
-    # Strategy 1: REASSIGN as-is (works if deployer is already a member of both roles)
+    temp_roles: list[str] = []
+    errors: list[str] = []
     try:
-        conn.execute(reassign)
-        print(f"  ✓ Reassigned all objects owned by previous SP to new SP")
-        return
-    except Exception as e:
-        reassign_err = str(e).strip().splitlines()[0]
-
-    # Strategy 2: GRANT deployer temporary membership in the old SP role,
-    # retry REASSIGN, then REVOKE. Works for any deployer with CREATEROLE
-    # (typically anyone with CAN MANAGE on the Lakebase project).
-    granted_membership = False
-    try:
-        conn.execute(f'GRANT "{current_owner}" TO CURRENT_USER')
-        granted_membership = True
+        temp_roles, grant_errors = _grant_temporary_memberships(
+            conn, owners + [new_sp],
+        )
+        errors.extend(grant_errors)
         try:
-            conn.execute(reassign)
-            print(f"  ✓ Reassigned objects to new SP (after granting deployer "
-                  f"temporary membership in previous SP role)")
-            return
+            changed = _transfer_genie_ownership(conn, state, new_sp=new_sp)
+            updated = _fetch_genie_schema_state(conn)
+            if updated and _state_owned_by(updated, owner=new_sp):
+                print(f"  ✓ Transferred ownership of genie schema ({changed} objects) to SP")
+                return True
+            errors.append("Ownership transfer did not update every genie object")
         except Exception as e:
-            reassign_err = str(e).strip().splitlines()[0]
-    except Exception:
-        # Deployer lacks CREATEROLE — can't escalate this way.
-        pass
+            errors.append(f"Ownership transfer failed: {_one_line_error(e)}")
+
+        # Fallback: preserve data and give the new app SP read/write access.
+        if _grant_existing_genie_access(conn, new_sp=new_sp):
+            print(
+                "  ✓ Granted new SP access to existing genie schema "
+                "(ownership transfer was blocked)"
+            )
+            return True
     finally:
-        if granted_membership:
-            try:
-                conn.execute(f'REVOKE "{current_owner}" FROM CURRENT_USER')
-            except Exception:
-                pass  # Best-effort cleanup; the temporary grant is low-risk
+        _revoke_temporary_memberships(conn, temp_roles)
 
-    # Strategy 3: escalate to Databricks superuser (if the deployer is a
-    # workspace/metastore admin). Only SET ROLE to a role the deployer is
-    # already a member of — this just activates that role for the session.
-    for admin_role in ("databricks_superuser",):
-        try:
-            conn.execute(f'SET ROLE "{admin_role}"')
-            try:
-                conn.execute(reassign)
-                conn.execute("RESET ROLE")
-                print(f"  ✓ Reassigned objects to new SP (escalated via {admin_role})")
-                return
-            finally:
-                try:
-                    conn.execute("RESET ROLE")
-                except Exception:
-                    pass
-        except Exception:
-            continue
-
-    # Strategy 4: per-object ALTER (may partially succeed)
-    statements: list[str] = [f'ALTER SCHEMA genie OWNER TO "{new_sp}"']
-    try:
-        tables = [r[0] for r in conn.execute(
-            "SELECT tablename FROM pg_tables WHERE schemaname = 'genie'"
-        ).fetchall()]
-        for t in tables:
-            statements.append(f'ALTER TABLE genie."{t}" OWNER TO "{new_sp}"')
-        seqs = [r[0] for r in conn.execute(
-            "SELECT sequencename FROM pg_sequences WHERE schemaname = 'genie'"
-        ).fetchall()]
-        for s in seqs:
-            statements.append(f'ALTER SEQUENCE genie."{s}" OWNER TO "{new_sp}"')
-    except Exception as e:
-        print(f"    ⚠ Could not enumerate tables/sequences: {e}")
-
-    succeeded, failed_perms = 0, False
-    for stmt in statements:
-        try:
-            conn.execute(stmt)
-            succeeded += 1
-        except Exception as e:
-            msg = str(e).lower()
-            if "must be owner" in msg or "permission denied" in msg or "must be member" in msg:
-                failed_perms = True
-                break
-            print(f"    ⚠ {stmt}: {e}")
-
-    if failed_perms:
-        print(f"    ✗ Ownership transfer blocked: REASSIGN failed ({reassign_err}); "
-              f"per-object ALTER also blocked by permissions.")
-        print(f"      The deployer's Postgres role must be a member of the previous SP role")
-        print(f"      ({current_owner[:24]}...) OR have the databricks_superuser role on")
-        print(f"      Lakebase project '{project_name}'.")
-        print(f"      Fix it manually — in the Lakebase SQL Editor run ONE of:")
-        print(f"        -- Option A: reassign (preserves data)")
-        print(f"        {reassign};")
-        print(f"        -- Option B: drop and let the new SP recreate (LOSES data)")
-        print(f"        DROP SCHEMA genie CASCADE;")
-        return
-
-    if succeeded == len(statements):
-        print(f"  ✓ Transferred ownership of genie schema ({succeeded} objects) to SP")
-    else:
-        print(f"  ⚠ Transferred ownership partially ({succeeded}/{len(statements)} objects). "
-              f"Re-run deploy to retry.")
+    _print_manual_schema_repair(
+        state=state, new_sp=new_sp, project_name=project_name, errors=errors,
+    )
+    return False
 
 
 def main():

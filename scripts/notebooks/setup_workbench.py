@@ -32,10 +32,10 @@
 # MAGIC %md
 # MAGIC ## 1. Install build dependencies
 # MAGIC
-# MAGIC Installs `build` (for the GSO wheel) and ensures `databricks-sdk` is up to date.
+# MAGIC Installs `build` (for the GSO wheel) and ensures `databricks-sdk` supports the Lakebase and Apps APIs used by setup.
 
 # COMMAND ----------
-# MAGIC %pip install --quiet "build>=1.0.0" "databricks-sdk>=0.30.0"
+# MAGIC %pip install --quiet --upgrade "build>=1.0.0" "databricks-sdk>=0.102.0"
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------

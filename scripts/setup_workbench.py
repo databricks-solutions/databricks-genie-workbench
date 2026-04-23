@@ -124,11 +124,17 @@ def _gso_job_dag(workspace_folder: str, wheel_path: str) -> dict[str, Any]:
     ]
     tasks = []
     prior = None
-    for stage in ("preflight", "baseline_eval", "enrichment",
-                  "lever_loop", "finalize"):
+    stage_notebooks = [
+        ("preflight", "run_preflight"),
+        ("baseline_eval", "run_baseline"),
+        ("enrichment", "run_enrichment"),
+        ("lever_loop", "run_lever_loop"),
+        ("finalize", "run_finalize"),
+    ]
+    for stage, notebook_name in stage_notebooks:
         task: dict[str, Any] = {
             "task_key": stage,
-            "notebook_task": {"notebook_path": f"{notebook_base}/run_{stage}"},
+            "notebook_task": {"notebook_path": f"{notebook_base}/{notebook_name}"},
             "environment_key": "default",
             "timeout_seconds": 7200,
             "max_retries": 0,
@@ -244,8 +250,16 @@ def provision_workbench(
         _ensure_lakebase_role(w, lakebase_project, sp_client_id)
         ok = _grant_lakebase_permissions(w, lakebase_project, sp_client_id, "primary")
         if not ok:
-            _warn("Lakebase grants incomplete — app may fall back to in-memory storage.")
+            raise RuntimeError(
+                "Lakebase grants incomplete. Existing app state may be owned by "
+                "a previous app service principal; see the Lakebase repair SQL above."
+            )
         lakebase_db, lakebase_branch = _resolve_lakebase_db(w, lakebase_project)
+        if not lakebase_db or not lakebase_branch:
+            raise RuntimeError(
+                f"Could not resolve database for Lakebase project '{lakebase_project}'. "
+                "The postgres app resource cannot be configured."
+            )
 
     # 4. GSO job — find by name; non-CLI caller can pass gso_job_id from notebook-side create
     resolved_job_id = gso_job_id or _find_gso_job(w)
@@ -576,7 +590,7 @@ def _patch_app(
         w.api_client.do("PATCH", f"/api/2.0/apps/{app_name}", body=payload)
         _log(f"App scopes + resources configured (warehouse={warehouse_id}, postgres={'yes' if lakebase_db else 'no'})")
     except Exception as e:
-        _warn(f"Could not configure app scopes/resources: {e}")
+        raise RuntimeError(f"Could not configure app scopes/resources: {e}") from e
 
 
 # ── Step 6: Job permissions ────────────────────────────────────────────────

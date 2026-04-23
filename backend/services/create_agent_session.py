@@ -77,6 +77,8 @@ def _get_pool():
 
 async def _ensure_table() -> None:
     """Idempotently create the agent_sessions table in Lakebase."""
+    from backend.services.lakebase import _execute_optional_owner_ddl
+
     pool = _get_pool()
     if pool is None:
         return
@@ -97,10 +99,10 @@ async def _ensure_table() -> None:
                     last_active  DOUBLE PRECISION NOT NULL
                 )
             """)
-            await conn.execute("""
+            await _execute_optional_owner_ddl(conn, """
                 CREATE INDEX IF NOT EXISTS idx_agent_sessions_last_active
                 ON genie.agent_sessions (last_active)
-            """)
+            """, label="idx_agent_sessions_last_active")
             # Migrate existing tables: add columns introduced in the discovery/feasibility update
             for col_sql in [
                 "ALTER TABLE genie.agent_sessions ADD COLUMN IF NOT EXISTS selected_catalogs JSONB NOT NULL DEFAULT '[]'::jsonb",
