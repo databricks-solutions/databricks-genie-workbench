@@ -445,12 +445,20 @@ def _sql(w, warehouse_id: str, statement: str, *, wait_timeout: str = "50s") -> 
 
 
 def _grant_uc(w, securable_type: str, full_name: str, principal: str, privileges: list[str]) -> None:
-    """Idempotent grant. Applies privileges individually so partial success works
-    (e.g. SELECT grants succeed even if MANAGE requires metastore admin)."""
-    from databricks.sdk.service.catalog import (
-        PermissionsChange, Privilege, SecurableType,
-    )
-    secr = SecurableType[securable_type.upper()]
+    """Idempotent grant via the raw UC permissions REST API.
+
+    We hit /api/2.1/unity-catalog/permissions/<lowercase_type>/<full_name>
+    directly instead of w.grants.update() because databricks-sdk 0.102.x
+    serializes SecurableType (a plain Enum, not StrEnum) as
+    'SecurableType.CATALOG' — which the Grants RPC rejects with
+    "SECURABLETYPE.CATALOG is not a valid securable type".
+
+    Applies privileges individually so partial success works
+    (e.g. SELECT/MODIFY grants succeed even if MANAGE requires metastore
+    admin or catalog owner)."""
+    # UC permissions API uses lowercase singular nouns in the URL
+    url_type = securable_type.lower()
+    path = f"/api/2.1/unity-catalog/permissions/{url_type}/{full_name}"
 
     applied: list[str] = []
     needs_admin: list[tuple[str, str]] = []  # (privilege, error)
@@ -458,10 +466,9 @@ def _grant_uc(w, securable_type: str, full_name: str, principal: str, privileges
 
     for p in privileges:
         try:
-            w.grants.update(
-                securable_type=secr,
-                full_name=full_name,
-                changes=[PermissionsChange(principal=principal, add=[Privilege[p]])],
+            w.api_client.do(
+                "PATCH", path,
+                body={"changes": [{"principal": principal, "add": [p]}]},
             )
             applied.append(p)
         except Exception as e:
