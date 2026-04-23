@@ -445,36 +445,56 @@ def _sql(w, warehouse_id: str, statement: str, *, wait_timeout: str = "50s") -> 
 
 
 def _grant_uc(w, securable_type: str, full_name: str, principal: str, privileges: list[str]) -> None:
-    """Idempotent grant. Tolerates missing-securable and missing-MANAGE."""
-    try:
-        from databricks.sdk.service.catalog import (
-            PermissionsChange, Privilege, SecurableType,
-        )
-        secr = SecurableType[securable_type.upper()]
-        privs = [Privilege[p] for p in privileges]
-        w.grants.update(
-            securable_type=secr,
-            full_name=full_name,
-            changes=[PermissionsChange(principal=principal, add=privs)],
-        )
-        _log(f"Granted {','.join(privileges)} on {securable_type} {full_name} to {principal}")
-    except Exception as e:
-        msg = str(e).lower()
-        if "does not exist" in msg or "resource_does_not_exist" in msg:
-            _warn(f"{securable_type} '{full_name}' does not exist — skipping grants")
-            return
-        if any(s in msg for s in ("manage", "permission_denied", "forbidden")):
-            _warn(
-                f"Cannot grant on {securable_type} '{full_name}' — you lack MANAGE. "
-                f"Ask an owner to run:"
+    """Idempotent grant. Applies privileges individually so partial success works
+    (e.g. SELECT grants succeed even if MANAGE requires metastore admin)."""
+    from databricks.sdk.service.catalog import (
+        PermissionsChange, Privilege, SecurableType,
+    )
+    secr = SecurableType[securable_type.upper()]
+
+    applied: list[str] = []
+    needs_admin: list[tuple[str, str]] = []  # (privilege, error)
+    missing_securable = False
+
+    for p in privileges:
+        try:
+            w.grants.update(
+                securable_type=secr,
+                full_name=full_name,
+                changes=[PermissionsChange(principal=principal, add=[Privilege[p]])],
             )
-            for p in privileges:
-                print(
-                    f"    GRANT {p} ON {securable_type.upper()} `{full_name}` TO `{principal}`",
-                    file=sys.stderr,
-                )
-            return
-        raise
+            applied.append(p)
+        except Exception as e:
+            msg = str(e).lower()
+            if "does not exist" in msg or "resource_does_not_exist" in msg:
+                missing_securable = True
+                break
+            # Bucket permission errors — otherwise re-raise so surprises surface
+            if any(s in msg for s in ("permission_denied", "forbidden", "manage", "not authorized")):
+                needs_admin.append((p, str(e).strip().splitlines()[0]))
+            else:
+                raise
+
+    if applied:
+        _log(f"Granted {','.join(applied)} on {securable_type} {full_name} to {principal}")
+    if missing_securable:
+        _warn(f"{securable_type} '{full_name}' does not exist — skipping grants")
+        return
+    if needs_admin:
+        _warn(
+            f"Could not grant {len(needs_admin)}/{len(privileges)} privilege(s) on "
+            f"{securable_type} '{full_name}'. Ask an owner/admin to run:"
+        )
+        for p, err in needs_admin:
+            print(
+                f"    GRANT {p} ON {securable_type.upper()} `{full_name}` TO `{principal}`  -- {err}",
+                file=sys.stderr,
+            )
+        print(
+            "    (The app may still work if the SP has access via group inheritance; "
+            "Auto-Optimize needs these privileges to write optimizer state.)",
+            file=sys.stderr,
+        )
 
 
 # ── Step 3: Lakebase database resolution (project/role/grants are in setup_lakebase) ──
