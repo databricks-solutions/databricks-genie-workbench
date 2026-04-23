@@ -6028,6 +6028,17 @@ def _run_lever_loop(
             logger.info("No actionable clusters remain — stopping at iteration %d", _iter_num)
             break
 
+        # ── Cluster-driven synthesis iteration-scoped state ──────────
+        # Stamp clusters on the snapshot so
+        # ``_resolve_source_cluster_for_ag`` (optimizer.py) can look up
+        # source clusters by id for Lever 5 intercept. Reset the shared
+        # per-iteration budget counter + stamp the active space_id so
+        # the P2 arbiter gate can call Genie (both per Bug #4 Phase 3
+        # Invariants B and C).
+        metadata_snapshot["failure_clusters"] = clusters
+        metadata_snapshot["_cluster_synthesis_count"] = 0
+        metadata_snapshot["_space_id"] = space_id
+
         # ── 3B.3: Priority scoring ───────────────────────────────────
         _scan_levers = (
             set(iq_scan_recommended_levers)

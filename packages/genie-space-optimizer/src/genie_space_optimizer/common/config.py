@@ -4001,3 +4001,50 @@ Respond with a SINGLE JSON object, no prose, no code fences:
 </output_schema>"""
 
 LEVER_PROMPTS["preflight_example_synthesis"] = PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT
+
+
+# ── 27. Cluster-driven example_sql synthesis (Bug #4 Phase 3 — reactive) ──
+#
+# Reactive counterpart to pre-flight. Triggered from within the lever loop
+# when the strategist emits Lever 5 ``example_sqls`` for an action group.
+# Replaces the historical "verbatim-from-strategist" path at
+# ``optimizer.py:9597`` with the AFS-gated pre-flight synthesis engine.
+#
+# Three knobs:
+#   - ENABLE_CLUSTER_DRIVEN_SYNTHESIS: feature flag. Default ON; setting
+#     to false reverts to the legacy strategist-verbatim path (emergency
+#     rollback only). Kept as a kill switch until the new path has
+#     accumulated observability across multiple production runs.
+#   - CLUSTER_SYNTHESIS_PER_ITERATION: hard cap on synthesis attempts
+#     per lever-loop iteration. Shared counter lives in
+#     ``metadata_snapshot['_cluster_synthesis_count']`` and is reset by
+#     the lever loop at the top of each iteration.
+#   - EXAMPLE_QUESTION_SQLS_SAFETY_CAP: ceiling on
+#     ``instructions.example_question_sqls`` size. When reached, cluster-
+#     driven synthesis refuses to add more; Lever 5 falls back to
+#     ``instruction_only_fallback``. Pre-flight's 20-target is enforced
+#     upstream independently and cannot exceed 20 by construction.
+
+ENABLE_CLUSTER_DRIVEN_SYNTHESIS = os.getenv(
+    "GENIE_SPACE_OPTIMIZER_ENABLE_CLUSTER_DRIVEN_SYNTHESIS", "true",
+).lower() in ("true", "1", "yes")
+"""Feature flag for the cluster-driven synthesis path. Default ON for
+every space; set to ``false`` for emergency rollback to the legacy
+Lever 5 free-form example_sql path."""
+
+CLUSTER_SYNTHESIS_PER_ITERATION = int(
+    os.getenv("GENIE_SPACE_OPTIMIZER_CLUSTER_SYNTHESIS_PER_ITERATION", "3") or "3"
+)
+"""Upper bound on synthesis attempts per lever-loop iteration across all
+action groups. Prevents runaway cost when failures are dense. 3 is the
+default; tune via env var."""
+
+EXAMPLE_QUESTION_SQLS_SAFETY_CAP = int(
+    os.getenv("GENIE_SPACE_OPTIMIZER_EXAMPLE_QUESTION_SQLS_SAFETY_CAP", "50") or "50"
+)
+"""Absolute cap on ``instructions.example_question_sqls`` size before
+cluster-driven synthesis refuses to add more. Pre-flight's own 20-target
+is orthogonal — enforced upstream by ``PREFLIGHT_EXAMPLE_SQL_TARGET`` and
+cannot independently exceed 20. This cap is checked at the entry of
+``run_cluster_driven_synthesis_for_single_cluster``. Env var matches
+constant name for grep-ability."""

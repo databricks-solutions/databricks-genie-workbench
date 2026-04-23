@@ -9035,6 +9035,47 @@ def _build_provenance(cluster: dict, lever: int, patch_type: str) -> dict:
     }
 
 
+def _resolve_source_cluster_for_ag(
+    action_group: dict, metadata_snapshot: dict,
+) -> dict | None:
+    """Return the first archetype-eligible source cluster for an action group.
+
+    Used by the Lever 5 cluster-driven synthesis intercept. Action groups
+    can span multiple clusters; synthesis runs once per AG so we pick the
+    first cluster in ``source_cluster_ids`` whose ``root_cause`` maps to a
+    shipped archetype (via :func:`archetypes.pick_archetype`). Clusters
+    whose root_cause is terminology / data-quality / other non-SQL-shape
+    return ``None`` so the caller falls back to text instructions rather
+    than forcing the structural gate to reject every synthesized SQL.
+
+    Returns ``None`` when no source cluster is archetype-eligible.
+    """
+    from genie_space_optimizer.optimization.afs import format_afs
+    from genie_space_optimizer.optimization.archetypes import pick_archetype
+
+    source_ids = action_group.get("source_cluster_ids", []) or []
+    all_clusters = metadata_snapshot.get("failure_clusters", []) or []
+    by_id = {
+        c.get("cluster_id"): c
+        for c in all_clusters if isinstance(c, dict)
+    }
+    for sid in source_ids:
+        cluster = by_id.get(sid)
+        if cluster is None:
+            continue
+        try:
+            afs = format_afs(cluster)
+        except Exception:
+            logger.debug(
+                "cluster-driven: format_afs failed for cluster=%s; skipping",
+                sid, exc_info=True,
+            )
+            continue
+        if pick_archetype(afs, metadata_snapshot) is not None:
+            return cluster
+    return None
+
+
 def generate_proposals_from_strategy(
     strategy: dict,
     action_group: dict,
@@ -9594,39 +9635,195 @@ def generate_proposals_from_strategy(
                     "provenance": {**provenance_base, "patch_type": "rewrite_instruction"},
                 })
 
+            # ── Lever 5 example_sql — cluster-driven synthesis intercept ──
+            # Bug #4 Phase 3. When the feature flag is ON (default),
+            # each strategist-emitted example_sql request becomes a
+            # synthesis attempt driven by the AFS of the action group's
+            # source cluster. The strategist's (question, sql_sketch)
+            # tuple is discarded — those fields were generated from a
+            # prompt that saw raw benchmark text and are therefore
+            # leak-risky. Synthesis uses AFS only (leak-free by
+            # construction).
+            #
+            # When the flag is OFF, the legacy verbatim path runs —
+            # reserved for emergency rollback.
+            #
+            # Invariants (see cluster_driven_synthesis module docstring):
+            #   A. We return proposals here; we do NOT apply directly.
+            #   B. space_id is read from metadata_snapshot["_space_id"].
+            #   C. Budget counter is shared across AGs via
+            #      metadata_snapshot["_cluster_synthesis_count"].
+            #   D. Missing-join-spec fallback handled inside the
+            #      cluster-driven module.
+            from genie_space_optimizer.common.config import (
+                ENABLE_CLUSTER_DRIVEN_SYNTHESIS,
+            )
+
             for ex_idx, example_sql_dir in enumerate(example_sqls_list):
                 if not isinstance(example_sql_dir, dict):
                     continue
-                eq = (example_sql_dir.get("question") or "").strip()
-                es = (example_sql_dir.get("sql_sketch") or "").strip()
-                if eq and es:
+
+                if not ENABLE_CLUSTER_DRIVEN_SYNTHESIS:
+                    # Legacy path preserved behind kill-switch. Unchanged
+                    # shape from before the Bug #4 Phase 3 intercept.
+                    eq = (example_sql_dir.get("question") or "").strip()
+                    es = (example_sql_dir.get("sql_sketch") or "").strip()
+                    if eq and es:
+                        proposals.append({
+                            "proposal_id": f"P{len(proposals) + 1:03d}",
+                            "cluster_id": f"{ag_id}_EX{ex_idx + 1}",
+                            "lever": 5,
+                            "scope": "genie_config",
+                            "patch_type": "add_example_sql",
+                            "change_description": f"[{ag_id}] Example SQL {ex_idx + 1}: {eq[:80]}",
+                            "proposed_value": eq,
+                            "example_question": eq,
+                            "example_sql": es,
+                            "parameters": example_sql_dir.get("parameters", []),
+                            "usage_guidance": example_sql_dir.get("usage_guidance", ""),
+                            "rationale": f"Strategy: {root_cause}. {coordination_notes}",
+                            "dual_persistence": DUAL_PERSIST_PATHS.get(5, DUAL_PERSIST_PATHS[5]),
+                            "confidence": 0.8,
+                            "questions_fixed": 1,
+                            "questions_at_risk": 0,
+                            "net_impact": 0.8,
+                            "asi": {
+                                "failure_type": "asset_routing_error",
+                                "blame_set": source_clusters,
+                                "severity": "major",
+                                "counterfactual_fixes": [],
+                                "ambiguity_detected": False,
+                            },
+                            "provenance": {**provenance_base, "patch_type": "add_example_sql"},
+                        })
+                    continue
+
+                # Cluster-driven path: discard strategist's fields,
+                # synthesize fresh via AFS engine.
+                from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+                    run_cluster_driven_synthesis_for_single_cluster,
+                )
+                from genie_space_optimizer.optimization.afs import format_afs
+                from genie_space_optimizer.optimization.synthesis import (
+                    instruction_only_fallback,
+                )
+
+                source_cluster = _resolve_source_cluster_for_ag(
+                    action_group, metadata_snapshot,
+                )
+                if source_cluster is None:
+                    # No archetype-eligible source cluster — nothing to
+                    # synthesize. Skip silently; strategist's intent is
+                    # already represented elsewhere in the AG (e.g. text
+                    # instruction sections).
+                    logger.info(
+                        "cluster-driven: AG %s has no archetype-eligible "
+                        "source cluster — skipping example_sql %d",
+                        ag_id, ex_idx + 1,
+                    )
+                    continue
+
+                synth_proposal = run_cluster_driven_synthesis_for_single_cluster(
+                    source_cluster,
+                    metadata_snapshot,
+                    benchmarks=benchmarks,
+                    catalog=catalog, gold_schema=gold_schema,
+                    warehouse_id=warehouse_id,
+                    w=w, spark=spark,
+                )
+
+                if synth_proposal is None:
+                    # Synthesis or a gate rejected. Fall back to
+                    # deterministic instruction-only proposal — safe
+                    # under the firewall because it references only AFS
+                    # summary fields.
+                    fallback = instruction_only_fallback(
+                        format_afs(source_cluster),
+                    )
+                    if fallback is None:
+                        continue
                     proposals.append({
                         "proposal_id": f"P{len(proposals) + 1:03d}",
                         "cluster_id": f"{ag_id}_EX{ex_idx + 1}",
                         "lever": 5,
                         "scope": "genie_config",
-                        "patch_type": "add_example_sql",
-                        "change_description": f"[{ag_id}] Example SQL {ex_idx + 1}: {eq[:80]}",
-                        "proposed_value": eq,
-                        "example_question": eq,
-                        "example_sql": es,
-                        "parameters": example_sql_dir.get("parameters", []),
-                        "usage_guidance": example_sql_dir.get("usage_guidance", ""),
-                        "rationale": f"Strategy: {root_cause}. {coordination_notes}",
+                        "patch_type": "add_instruction",
+                        "change_description": (
+                            f"[{ag_id}] Instruction-only fallback "
+                            "(cluster-driven synthesis declined)"
+                        ),
+                        "proposed_value": str(fallback.get("new_text", "")),
+                        "new_text": str(fallback.get("new_text", "")),
+                        "rationale": (
+                            f"Cluster-driven synthesis for cluster "
+                            f"{source_cluster.get('cluster_id', '?')} failed; "
+                            "applying deterministic instruction fallback. "
+                            f"Root cause: {root_cause}"
+                        ),
                         "dual_persistence": DUAL_PERSIST_PATHS.get(5, DUAL_PERSIST_PATHS[5]),
-                        "confidence": 0.8,
+                        "confidence": 0.6,
                         "questions_fixed": 1,
                         "questions_at_risk": 0,
-                        "net_impact": 0.8,
+                        "net_impact": 0.5,
                         "asi": {
                             "failure_type": "asset_routing_error",
                             "blame_set": source_clusters,
-                            "severity": "major",
+                            "severity": "minor",
                             "counterfactual_fixes": [],
                             "ambiguity_detected": False,
                         },
-                        "provenance": {**provenance_base, "patch_type": "add_example_sql"},
+                        "provenance": {
+                            **provenance_base,
+                            "patch_type": "add_instruction",
+                            "synthesis_source": "cluster_driven_fallback",
+                        },
                     })
+                    continue
+
+                # Synthesis succeeded — shape Lever 5 proposal.
+                proposals.append({
+                    "proposal_id": f"P{len(proposals) + 1:03d}",
+                    "cluster_id": f"{ag_id}_EX{ex_idx + 1}",
+                    "lever": 5,
+                    "scope": "genie_config",
+                    "patch_type": "add_example_sql",
+                    "change_description": (
+                        f"[{ag_id}] Synthesized example SQL: "
+                        f"{synth_proposal['example_question'][:80]}"
+                    ),
+                    "proposed_value": synth_proposal["example_question"],
+                    "example_question": synth_proposal["example_question"],
+                    "example_sql": synth_proposal["example_sql"],
+                    "parameters": synth_proposal.get("parameters", []) or [],
+                    "usage_guidance": synth_proposal.get("usage_guidance", ""),
+                    "rationale": (
+                        f"Cluster-driven synthesis "
+                        f"(archetype={synth_proposal.get('_archetype_name', '?')}). "
+                        f"Root cause: {root_cause}. {coordination_notes}"
+                    ),
+                    "dual_persistence": DUAL_PERSIST_PATHS.get(5, DUAL_PERSIST_PATHS[5]),
+                    "confidence": 0.85,
+                    "questions_fixed": 1,
+                    "questions_at_risk": 0,
+                    "net_impact": 0.85,
+                    "asi": {
+                        "failure_type": "asset_routing_error",
+                        "blame_set": source_clusters,
+                        "severity": "major",
+                        "counterfactual_fixes": [],
+                        "ambiguity_detected": False,
+                    },
+                    "provenance": {
+                        **provenance_base,
+                        "patch_type": "add_example_sql",
+                        "synthesis_source": "cluster_driven",
+                        "archetype": synth_proposal.get("_archetype_name", ""),
+                        "source_cluster_id": synth_proposal.get(
+                            "_cluster_id",
+                            source_cluster.get("cluster_id", ""),
+                        ),
+                    },
+                })
 
         # ── Lever 6: SQL Expressions ─────────────────────────────────────
         elif target_lever == 6:

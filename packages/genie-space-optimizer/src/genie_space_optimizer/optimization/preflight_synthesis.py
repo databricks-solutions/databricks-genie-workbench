@@ -49,7 +49,7 @@ import logging
 import random
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Protocol, runtime_checkable
 
 from genie_space_optimizer.common.config import (
     PREFLIGHT_COLUMN_COVERAGE_K,
@@ -76,8 +76,44 @@ logger = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# 1. AssetSlice — a narrowed schema view for one synthesis candidate
+# 1. SynthesisContext protocol + AssetSlice (schema-driven implementor)
 # ═══════════════════════════════════════════════════════════════════════
+#
+# Protocol so the pre-flight engine (synthesis + gates + apply) can serve
+# both the schema-driven ``AssetSlice`` (pre-flight) and the cluster-
+# driven ``ClusterContext`` (Bug #4 Phase 3, see
+# ``optimization/cluster_driven_synthesis.py``).
+#
+# Byte-equivalence contract: pre-flight's prompt rendering MUST stay
+# byte-for-byte identical before and after this refactor. AFS rendering
+# is therefore NOT part of the protocol; it lives in the cluster-driven
+# module and is prepended to the pre-flight prompt output by a wrapper.
+# This avoids adding an "empty AFS block" placeholder to
+# ``PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT`` that would silently change the
+# LLM's prompt surface even when AFS is absent.
+
+
+@runtime_checkable
+class SynthesisContext(Protocol):
+    """Minimal interface the synthesis engine needs from a context.
+
+    Both ``AssetSlice`` (schema-driven, pre-flight) and ``ClusterContext``
+    (failure-driven, cluster-driven) conform. Any future context types
+    (e.g. iterative top-up) can plug into the same engine without
+    touching the synthesis prompt or the 5-gate validator.
+    """
+
+    def to_identifier_allowlist(self) -> str:
+        """Render a narrowed FQ-identifier allowlist for the LLM prompt."""
+        ...
+
+    def asset_ids(self) -> list[str]:
+        """Lower-cased, deduped identifiers this context touches.
+
+        Used by planners for coverage accounting and by orchestrators
+        for per-asset observability.
+        """
+        ...
 
 
 @dataclass
@@ -616,6 +652,7 @@ def plan_asset_coverage(
 # importing from private config module structure.
 __all__ = [
     "AssetSlice",
+    "SynthesisContext",
     "plan_asset_coverage",
     "synthesize_preflight_candidate",
     "render_preflight_prompt",
@@ -708,31 +745,38 @@ def _format_existing_questions(existing_questions: list[str]) -> str:
 
 def render_preflight_prompt(
     archetype: Archetype,
-    slice_: AssetSlice,
+    context: AssetSlice,
     existing_questions: list[str],
 ) -> str:
     """Render :data:`PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT` for one candidate.
 
-    No ``benchmarks`` parameter — leak-free by construction. The slice's
+    No ``benchmarks`` parameter — leak-free by construction. The context's
     narrowed allowlist is the ONLY identifier universe the LLM sees.
+
+    Historical note: ``context`` was previously named ``slice_`` when the
+    only supported context was :class:`AssetSlice`. The signature is now
+    context-typed; the slice-specific helpers below accept any object
+    with the slice's attributes (``AssetSlice`` is the only shipped
+    implementor today). Byte-equivalent with the prior AssetSlice-only
+    render path.
     """
     return format_mlflow_template(
         PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
-        slice_tables=_format_slice_tables(slice_),
-        slice_metric_views=_format_slice_metric_views(slice_),
-        slice_join_spec=_format_slice_join_spec(slice_),
-        slice_columns=_format_slice_columns(slice_),
+        slice_tables=_format_slice_tables(context),
+        slice_metric_views=_format_slice_metric_views(context),
+        slice_join_spec=_format_slice_join_spec(context),
+        slice_columns=_format_slice_columns(context),
         archetype_name=archetype.name,
         archetype_prompt_template=archetype.prompt_template,
         archetype_output_shape=json.dumps(archetype.output_shape),
-        identifier_allowlist=slice_.to_identifier_allowlist(),
+        identifier_allowlist=context.to_identifier_allowlist(),
         existing_questions_list=_format_existing_questions(existing_questions),
     )
 
 
 def synthesize_preflight_candidate(
     archetype: Archetype,
-    slice_: AssetSlice,
+    context: AssetSlice,
     existing_questions: list[str],
     *,
     w: Any = None,
@@ -750,7 +794,7 @@ def synthesize_preflight_candidate(
     Production path uses :func:`_traced_llm_call` with span
     ``"preflight_example_synthesis"``.
     """
-    prompt = render_preflight_prompt(archetype, slice_, existing_questions)
+    prompt = render_preflight_prompt(archetype, context, existing_questions)
 
     def _call() -> str:
         if llm_caller is not None:
