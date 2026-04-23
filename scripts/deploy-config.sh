@@ -14,9 +14,11 @@
 #   GENIE_LLM_MODEL          (optional)  LLM serving endpoint         [default: databricks-claude-sonnet-4-6]
 #   GENIE_LAKEBASE_INSTANCE  (optional)  Lakebase instance name       [default: none]
 #   GENIE_MLFLOW_EXPERIMENT_ID (optional) MLflow experiment ID for agent tracing [default: disabled]
+#   GENIE_GRANT_SPACES       (optional)  Grant app SP CAN_EDIT on user's Genie Spaces (Y/N) [default: Y]
 #
 # After sourcing, the following variables are available:
-#   APP_NAME, CATALOG, GSO_SCHEMA, WAREHOUSE_ID, PROFILE, LLM_MODEL, MLFLOW_EXPERIMENT_ID
+#   APP_NAME, CATALOG, GSO_SCHEMA, WAREHOUSE_ID, PROFILE, LLM_MODEL,
+#   LAKEBASE_INSTANCE, MLFLOW_EXPERIMENT_ID, GRANT_SPACES
 # ---------------------------------------------------------------------------
 
 # ── Load .env.deploy if present (in project root) ─────────────────────────
@@ -38,6 +40,7 @@ PROFILE="${GENIE_DEPLOY_PROFILE:-DEFAULT}"
 LLM_MODEL="${GENIE_LLM_MODEL:-databricks-claude-sonnet-4-6}"
 LAKEBASE_INSTANCE="${GENIE_LAKEBASE_INSTANCE:-}"
 MLFLOW_EXPERIMENT_ID="${GENIE_MLFLOW_EXPERIMENT_ID:-}"
+GRANT_SPACES="${GENIE_GRANT_SPACES:-Y}"
 
 # ── Validate required values ─────────────────────────────────────────────
 if [ -z "$WAREHOUSE_ID" ]; then

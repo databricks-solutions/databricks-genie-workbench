@@ -74,7 +74,18 @@ Security is preserved because:
   * A Unity Catalog with CREATE SCHEMA permission
   * MLflow Prompt Registry enabled (required for Auto-Optimize judge prompt traceability)
 
-## Quick Start
+## Two install paths
+
+| Path | When to use | Details |
+|---|---|---|
+| **CLI** (`./scripts/install.sh`) | You have a laptop with the Databricks CLI, Node.js, and `uv` installed. Faster iteration. | [docs/08-deployment-guide.md](docs/08-deployment-guide.md) |
+| **Non-CLI** (workspace notebook) | Locked-down laptop, no local tooling. Entirely inside Databricks. | [docs/non-cli-install.md](docs/non-cli-install.md) |
+
+Both paths produce the same app, call the same shared provisioning
+module (`scripts/setup_workbench.py`), and are fully interoperable —
+you can switch between them at any time.
+
+## Quick Start (CLI path)
 
 ### 1. Clone the repo
 
@@ -106,10 +117,11 @@ The installer will:
 6. Optionally configure MLflow tracing (creates or links an experiment)
 7. Ask for Lakebase Autoscaling project name
 8. Ask for app name
-9. Write `.env.deploy` with your configuration
-10. Run `scripts/deploy.sh` to build and deploy the app
-11. Resolve the app's service principal
-12. Optionally grant the SP access to your existing Genie Spaces
+9. Ask whether to grant the SP access to your existing Genie Spaces
+10. Write `.env.deploy` with your configuration
+11. Run `scripts/deploy.sh`, which builds the app, bundle-deploys the
+    optimization job, and delegates all UC/Lakebase/Apps-PATCH/Genie
+    grants to `scripts/setup_workbench.py`
 
 ### 4. Lakebase (automated)
 

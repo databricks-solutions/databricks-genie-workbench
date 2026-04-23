@@ -81,9 +81,11 @@ scripts/
   preflight.sh             # Pre-deploy validation checks
   build.sh                 # Frontend build
   deploy-config.sh         # Shared deploy configuration/variables
-  grant_permissions.py     # Grants required permissions for app resources
-  setup_lakebase.py        # Automates Lakebase Autoscaling project, SP role, and grants
-  setup_synced_tables.py   # Sets up GSO synced tables in Lakebase
+  setup_workbench.py       # Shared provisioning module (UC/Lakebase/Apps PATCH/app.yaml/Genie grants)
+  setup_lakebase.py        # Lakebase Autoscaling project, SP role, and database grants (reused by setup_workbench)
+  setup_synced_tables.py   # [deprecated] GSO synced tables in Lakebase — broken feature, not used by install
+  notebooks/
+    setup_workbench.py     # Non-CLI install entry point (serverless notebook; same module, different caller)
 frontend/
   src/
     App.tsx                # Root: SpaceList | SpaceDetail | AdminDashboard | CreateAgentChat
@@ -112,7 +114,7 @@ Two endpoints use `StreamingResponse` with `text/event-stream`:
 Frontend consumes these via manual `fetch` + `ReadableStream` in `lib/api.ts` (not EventSource). Buffer splitting on `\n\n`.
 
 ### Lakebase Persistence
-`services/lakebase.py` uses asyncpg with graceful fallback to in-memory dicts when `LAKEBASE_HOST` is not set. Supports both provisioned Lakebase and Lakebase Autoscaling — for autoscaling, uses `client.postgres.get_endpoint()` to resolve DNS and `client.postgres.generate_database_credential()` for OAuth tokens. Schema and tables are created by the app at startup via `_ensure_schema()` (the SP owns everything it creates). Lakebase project, SP role, and database-level grants (CONNECT, CREATE) are automated by `scripts/setup_lakebase.py`, called from `deploy.sh` via `uv run`.
+`services/lakebase.py` uses asyncpg with graceful fallback to in-memory dicts when `LAKEBASE_HOST` is not set. Supports both provisioned Lakebase and Lakebase Autoscaling — for autoscaling, uses `client.postgres.get_endpoint()` to resolve DNS and `client.postgres.generate_database_credential()` for OAuth tokens. Schema and tables are created by the app at startup via `_ensure_schema()` (the SP owns everything it creates). Lakebase project, SP role, and database-level grants (CONNECT, CREATE) are automated by `scripts/setup_lakebase.py`, which is imported and driven by `scripts/setup_workbench.py` (called from `deploy.sh` and the setup notebook).
 
 ### LLM Calls
 All LLM calls go through Databricks model serving endpoints using OpenAI-compatible API. Model configured via `LLM_MODEL` env var (default: `databricks-claude-sonnet-4-6`). MLflow tracing is optional — controlled by `MLFLOW_EXPERIMENT_ID`.
@@ -141,11 +143,19 @@ Deploy config uses `.env.deploy` (created by `scripts/install.sh` from `.env.dep
 
 ## Dev/Test Workflow
 
-There is no local dev server — all testing is done by syncing code to Databricks and redeploying:
+There is no local dev server — all testing is done by syncing code to Databricks and redeploying. Two install paths (both produce the same app):
 
-1. Edit code locally
-2. Run `./scripts/deploy.sh` to build, bundle deploy, and app deploy
-3. Test in the deployed Databricks App
+- **CLI path** (primary for dev loop):
+  1. Edit code locally
+  2. Run `./scripts/deploy.sh --update` to build, bundle deploy, and app deploy
+  3. Test in the deployed Databricks App
+- **Non-CLI path** (for users without local tooling):
+  1. Clone the repo into a Databricks Git folder
+  2. Run `scripts/notebooks/setup_workbench.py` on serverless compute
+  3. Deploy from Apps UI → "Deploy from a workspace folder"
+  4. See `docs/non-cli-install.md` for the full CUJ
+
+Both paths call `scripts/setup_workbench.py` (the shared provisioning module) for UC/Lakebase/Apps PATCH/app.yaml/Genie Space grants.
 
 Do NOT suggest running `uvicorn` or `npm run dev` locally. The app depends on Databricks-managed resources (OBO auth, Lakebase, serving endpoints) that aren't available outside a Databricks App environment.
 

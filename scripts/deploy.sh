@@ -10,19 +10,22 @@ set -euo pipefail
 #     2. Build frontend
 #     3. Create app (if not exists)
 #     4. Full-sync files to workspace
-#     5. Resolve app SP + Grant UC permissions (+ enable CDF on GSO tables)
-#     6. Deploy optimization job via bundle (databricks bundle deploy -t app)
-#     7. Redeploy app (apps deploy --source-code-path)
-#     8. Verify deployment
+#     5. Deploy optimization job via bundle (databricks bundle deploy -t app)
+#     6. Wait for app compute to reach ACTIVE
+#     7. Run setup_workbench.py (UC + Lakebase + Apps PATCH + app.yaml +
+#        GSO job perms + bundle-dir perms + Genie Space grants)
+#     8. Redeploy app (apps deploy --source-code-path)
+#     9. Verify deployment
 #
 #   Update mode (--update):
 #     1. Pre-flight checks
 #     2. Build frontend
 #     3. Sync files to workspace
-#     4. Resolve app SP + Grant UC permissions (+ enable CDF on GSO tables)
-#     5. Deploy optimization job via bundle
-#     6. Redeploy app (apps deploy --source-code-path)
-#     7. Verify deployment
+#     4. Deploy optimization job via bundle
+#     5. Wait for app compute to reach ACTIVE
+#     6. Run setup_workbench.py
+#     7. Redeploy app (apps deploy --source-code-path)
+#     8. Verify deployment
 #     Skips app creation.
 #     Use for code-only changes when the app already exists.
 #
@@ -154,10 +157,10 @@ fi
 # DEPLOY / UPDATE MODE
 # ═══════════════════════════════════════════════════════════════════════════
 if [ "$UPDATE_ONLY" = "true" ]; then
-    TOTAL_STEPS=7
+    TOTAL_STEPS=8
     DEPLOY_LABEL="Code Update"
 else
-    TOTAL_STEPS=8
+    TOTAL_STEPS=9
     DEPLOY_LABEL="Full Deploy"
 fi
 
@@ -262,40 +265,11 @@ else
     echo "  ✓ Full sync complete"
 fi
 
-# ── Resolve app SP + Grant UC permissions ────────────────────────────────
-STEP=$((STEP + 1))
-echo ""
-echo "▸ Step $STEP/$TOTAL_STEPS: Resolving app SP and granting UC permissions..."
-SP_CLIENT_ID=$(
-    databricks apps get "$APP_NAME" --profile "$PROFILE" -o json \
-    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('service_principal_client_id','') or d.get('service_principal_name',''))"
-)
-if [ -z "$SP_CLIENT_ID" ]; then
-    echo "  ✗ Could not resolve SP for app '$APP_NAME'. Is the app created?"
-    exit 1
-fi
-echo "  ✓ SP client ID: $SP_CLIENT_ID"
-
-python3 "$SCRIPT_DIR/grant_permissions.py" \
-    --profile "$PROFILE" \
-    --app-name "$APP_NAME" \
-    --catalog "$CATALOG" \
-    --schema "$GSO_SCHEMA" \
-    --warehouse-id "$WAREHOUSE_ID"
-echo "  ✓ UC grants applied"
-
 # ── Deploy optimization job via bundle ────────────────────────────────────
+# Must run before setup_workbench.py so the job exists when we wire app.yaml.
 STEP=$((STEP + 1))
 echo ""
 echo "▸ Step $STEP/$TOTAL_STEPS: Deploying optimization job via bundle..."
-
-# Pre-validate: SP must be resolved (needed for post-deploy job permissions)
-if [ -z "$SP_CLIENT_ID" ]; then
-    echo "  ✗ Cannot deploy optimization job: SP client ID is empty."
-    echo ""
-    echo "  Remediation: ensure the app '$APP_NAME' exists and has a service principal."
-    exit 1
-fi
 
 # databricks bundle deploy -t app:
 #   - Builds the GSO wheel (artifacts block)
@@ -304,8 +278,6 @@ fi
 # run_as is NOT set in the bundle — the app self-heals it at startup
 # via _ensure_gso_job_run_as() in backend/main.py (avoids needing
 # servicePrincipal.user role on the deployer).
-# The "app" target uses mode: development (per-deployer Terraform state)
-# with presets.name_prefix: "" (clean job names, no [dev] prefix).
 
 # Force full file sync on every deploy. The bundle CLI uses local snapshot
 # files to do incremental uploads; if the snapshot drifts from the workspace
@@ -378,42 +350,6 @@ fi
 
 echo "  ✓ Optimization job deployed: $JOB_ID"
 
-# Grant job permissions (bundle manages run_as; API call sets ownership + SP access)
-PERM_PAYLOAD=$(python3 -c "
-import json
-acl = [
-    {'user_name': '$DEPLOYER', 'permission_level': 'IS_OWNER'},
-    {'group_name': 'users', 'permission_level': 'CAN_VIEW'},
-    {'service_principal_name': '$SP_CLIENT_ID', 'permission_level': 'CAN_MANAGE'},
-]
-print(json.dumps({'access_control_list': acl}))
-")
-if databricks api put "/api/2.0/permissions/jobs/$JOB_ID" --profile "$PROFILE" --json "$PERM_PAYLOAD" 2>/dev/null; then
-    echo "  ✓ Job permissions updated (owner=$DEPLOYER, SP=CAN_MANAGE, users=CAN_VIEW)"
-else
-    echo "  ⚠ Could not set job permissions — SP may not be able to trigger optimization runs."
-fi
-
-# Grant SP access to bundle workspace notebooks so the job can read them.
-# Bundle deploys notebooks under the deployer's .bundle/ directory, which is
-# private by default. The SP needs CAN_MANAGE to run notebooks from there.
-WS_BUNDLE_ROOT="/Workspace/Users/$DEPLOYER/.bundle/genie-workbench/app"
-BUNDLE_DIR_OBJ_ID=$(
-    databricks workspace get-status "$WS_BUNDLE_ROOT" --profile "$PROFILE" -o json 2>/dev/null \
-    | python3 -c "import sys,json; print(json.load(sys.stdin)['object_id'])" 2>/dev/null
-) || true
-if [ -n "$BUNDLE_DIR_OBJ_ID" ]; then
-    if databricks api patch "/api/2.0/permissions/directories/$BUNDLE_DIR_OBJ_ID" \
-        --profile "$PROFILE" \
-        --json "{\"access_control_list\": [{\"service_principal_name\": \"$SP_CLIENT_ID\", \"permission_level\": \"CAN_MANAGE\"}]}" 2>/dev/null; then
-        echo "  ✓ SP granted CAN_MANAGE on bundle workspace directory"
-    else
-        echo "  ⚠ Could not grant SP access to bundle notebooks — job may fail to read notebooks"
-    fi
-else
-    echo "  ⚠ Could not resolve bundle workspace directory — SP may lack notebook access"
-fi
-
 # Clean up legacy jobs created by the old ensure_gso_job.py script.
 # These have name "genie-space-optimizer-job" and tag "persistent-dag"
 # but are NOT the bundle-managed job (different ID).
@@ -438,40 +374,6 @@ for OLD_JID in $LEGACY_JOBS; do
         echo "  ✓ Legacy job $OLD_JID deleted" || \
         echo "  ⚠ Could not delete legacy job $OLD_JID — delete it manually"
 done
-
-# ── Redeploy app (ensures freshest code) ─────────────────────────────────
-STEP=$((STEP + 1))
-echo ""
-echo "▸ Step $STEP/$TOTAL_STEPS: Redeploying app with freshest code..."
-
-# Patch app.yaml on workspace with real GSO values before apps deploy.
-# apps deploy reads app.yaml and uses it as the complete env config,
-# overwriting whatever was previously set. So we must inject the real values.
-echo "  Patching app.yaml on workspace with GSO config..."
-PATCHED_APP_YAML="/tmp/app.yaml.patched"
-cp "$PROJECT_DIR/app.yaml" "$PATCHED_APP_YAML"
-sed -i.bak "s|__WAREHOUSE_ID__|$WAREHOUSE_ID|" "$PATCHED_APP_YAML"
-sed -i.bak "s|__GSO_CATALOG__|$CATALOG|" "$PATCHED_APP_YAML"
-sed -i.bak "s|__LAKEBASE_INSTANCE__|$LAKEBASE_INSTANCE|" "$PATCHED_APP_YAML"
-sed -i.bak "s|__LLM_MODEL__|$LLM_MODEL|" "$PATCHED_APP_YAML"
-sed -i.bak "s|__MLFLOW_EXPERIMENT_ID__|$MLFLOW_EXPERIMENT_ID|" "$PATCHED_APP_YAML"
-if [ -n "$JOB_ID" ]; then
-    sed -i.bak "s|__GSO_JOB_ID__|$JOB_ID|" "$PATCHED_APP_YAML"
-fi
-
-rm -f "${PATCHED_APP_YAML}.bak"
-
-# Validate all placeholders were resolved
-UNRESOLVED=$(grep -c '__[A-Z_]*__' "$PATCHED_APP_YAML" || true)
-if [ "$UNRESOLVED" -gt 0 ]; then
-    echo "  ⚠ app.yaml has $UNRESOLVED unresolved placeholder(s):"
-    grep '__[A-Z_]*__' "$PATCHED_APP_YAML" | sed 's/^/      /'
-fi
-
-databricks workspace import "$WS_PATH/app.yaml" \
-    --profile "$PROFILE" --file "$PATCHED_APP_YAML" --format AUTO --overwrite 2>/dev/null && \
-echo "  ✓ app.yaml patched (WAREHOUSE=$WAREHOUSE_ID, GSO_CATALOG=$CATALOG, GSO_JOB_ID=${JOB_ID:-<none>}, LAKEBASE_INSTANCE=$LAKEBASE_INSTANCE, LLM_MODEL=$LLM_MODEL, MLFLOW=${MLFLOW_EXPERIMENT_ID:-<disabled>})" || \
-echo "  ⚠ Could not patch app.yaml — config may not be set"
 
 # Sync _metadata.py — required at runtime for the genie_space_optimizer
 # package to import.  Previously gitignored (generated by apx build), now
@@ -503,7 +405,10 @@ databricks workspace import "$METADATA_DST" \
 }
 echo "  ✓ _metadata.py synced"
 
-# Ensure app compute is running before deploying
+# ── Wait for app compute to reach ACTIVE (needed before apps deploy) ─────
+STEP=$((STEP + 1))
+echo ""
+echo "▸ Step $STEP/$TOTAL_STEPS: Waiting for app compute..."
 APP_STATE=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json \
     | python3 -c "import sys,json; print(json.load(sys.stdin).get('compute_status',{}).get('state','UNKNOWN'))")
 if [ "$APP_STATE" != "ACTIVE" ]; then
@@ -528,89 +433,49 @@ else
     echo "  ✓ App compute is already ACTIVE"
 fi
 
-# ── Set up Lakebase Autoscaling (if configured) ──────────────────────────
-if [ -n "$LAKEBASE_INSTANCE" ] && [ -n "$SP_CLIENT_ID" ]; then
-    echo "  Setting up Lakebase Autoscaling..."
-    uv run python "$SCRIPT_DIR/setup_lakebase.py" \
-        --profile "$PROFILE" \
-        --project-name "$LAKEBASE_INSTANCE" \
-        --sp-client-id "$SP_CLIENT_ID" 2>&1 || \
-    echo "  ⚠ Lakebase setup had errors — app will fall back to in-memory storage"
+# ── Provision resources via shared module ────────────────────────────────
+# setup_workbench absorbs: UC schema/tables/grants, Lakebase project/role/grants,
+# Lakebase DB resolution, Apps PATCH (scopes + resources), GSO job permissions,
+# bundle-directory SP grants, app.yaml placeholder substitution, and optional
+# Genie Space SP grants. Pure SDK — no databricks CLI subprocess calls.
+STEP=$((STEP + 1))
+echo ""
+echo "▸ Step $STEP/$TOTAL_STEPS: Provisioning UC / Lakebase / app resources..."
+
+SETUP_ARGS=(
+    --app-name "$APP_NAME"
+    --catalog "$CATALOG"
+    --warehouse-id "$WAREHOUSE_ID"
+    --llm-model "$LLM_MODEL"
+    --mlflow-experiment-id "$MLFLOW_EXPERIMENT_ID"
+    --workspace-folder "$WS_PATH"
+    --gso-job-id "$JOB_ID"
+    --gso-schema "$GSO_SCHEMA"
+    --profile "$PROFILE"
+    --deployer-email "$DEPLOYER"
+)
+if [ -n "${LAKEBASE_INSTANCE:-}" ]; then
+    SETUP_ARGS+=(--lakebase-project "$LAKEBASE_INSTANCE")
+fi
+if [ "${GRANT_SPACES:-Y}" != "Y" ]; then
+    SETUP_ARGS+=(--skip-genie-grants)
 fi
 
-# ── Resolve Lakebase database ID (needed for postgres resource) ───────────
-LAKEBASE_DB_RESOURCE=""
-if [ -n "$LAKEBASE_INSTANCE" ]; then
-    LAKEBASE_DB_RESOURCE=$(databricks api get "/api/2.0/postgres/projects/$LAKEBASE_INSTANCE/branches/production/databases" \
-        --profile "$PROFILE" -o json 2>/dev/null \
-        | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    dbs = data.get('databases', [])
-    if dbs:
-        print(dbs[0]['name'])
-except Exception: pass
-" 2>/dev/null || true)
-    if [ -n "$LAKEBASE_DB_RESOURCE" ]; then
-        echo "  ✓ Lakebase database: $LAKEBASE_DB_RESOURCE"
-    else
-        echo "  ⚠ Could not resolve Lakebase database ID — postgres resource won't be auto-configured"
-    fi
+if ! (cd "$PROJECT_DIR" && uv run python -m scripts.setup_workbench "${SETUP_ARGS[@]}"); then
+    echo ""
+    echo "  ✗ setup_workbench.py failed — see errors above."
+    echo "  Remediation:"
+    echo "    1. Re-run: ./scripts/deploy.sh --update"
+    echo "    2. If UC grants failed, ask a catalog owner to grant USE_CATALOG on '$CATALOG'"
+    echo "    3. If Lakebase failed, verify GENIE_LAKEBASE_INSTANCE is a valid Autoscaling project"
+    exit 1
 fi
+echo "  ✓ Provisioning complete"
 
-# ── Configure app scopes and resources ───────────────────────────────────
-# The PATCH API is the mechanism that configures both user_api_scopes and
-# resources on a Databricks App. app.yaml user_api_scopes are documentation
-# only; apps deploy does not apply them.
-echo "  Configuring app scopes and resources..."
-EXISTING_RESOURCES=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null \
-    | python3 -c "import sys,json; print(json.dumps(json.load(sys.stdin).get('resources',[])))" 2>/dev/null || echo "[]")
-
-PATCH_PAYLOAD=$(python3 -c "
-import json
-
-scopes = ['sql', 'dashboards.genie', 'serving.serving-endpoints',
-          'catalog.catalogs:read', 'catalog.schemas:read',
-          'catalog.tables:read', 'files.files']
-
-# Start with existing resources. The PATCH API replaces all resources,
-# so we must include everything. Preserve all resources that either have
-# full config or are referenced by app.yaml (e.g. postgres for Lakebase).
-existing = json.loads('$EXISTING_RESOURCES')
-app_yaml_resources = {'sql-warehouse', 'postgres'}  # referenced by valueFrom in app.yaml
-by_name = {}
-for r in existing:
-    has_config = any(k for k in r if k != 'name')
-    if has_config or r.get('name') in app_yaml_resources:
-        by_name[r['name']] = r
-
-# Ensure sql-warehouse is set with the correct ID
-by_name['sql-warehouse'] = {'name': 'sql-warehouse', 'sql_warehouse': {'id': '$WAREHOUSE_ID', 'permission': 'CAN_USE'}}
-
-# Ensure postgres resource has full config when Lakebase is configured.
-# The database field requires the full resource path (e.g.
-# projects/<name>/branches/production/databases/<db-id>), not just the
-# postgres database name.
-lakebase_db = '$LAKEBASE_DB_RESOURCE'
-if lakebase_db:
-    branch = '/'.join(lakebase_db.split('/')[:4])  # projects/<name>/branches/<branch>
-    by_name['postgres'] = {
-        'name': 'postgres',
-        'postgres': {
-            'branch': branch,
-            'database': lakebase_db,
-            'permission': 'CAN_CONNECT_AND_CREATE',
-        }
-    }
-
-print(json.dumps({'user_api_scopes': scopes, 'resources': list(by_name.values())}))
-")
-databricks api patch "/api/2.0/apps/$APP_NAME" \
-    --profile "$PROFILE" --json "$PATCH_PAYLOAD" 2>/dev/null && \
-    echo "  ✓ App scopes and resources configured (sql-warehouse: $WAREHOUSE_ID)" || \
-    echo "  ⚠ Could not configure app scopes/resources"
-
+# ── Redeploy app (ensures freshest code) ─────────────────────────────────
+STEP=$((STEP + 1))
+echo ""
+echo "▸ Step $STEP/$TOTAL_STEPS: Redeploying app with freshest code..."
 databricks apps deploy "$APP_NAME" --profile "$PROFILE" \
     --source-code-path "$WS_PATH" --no-wait
 echo "  ✓ App deployment triggered from $WS_PATH"
@@ -720,12 +585,20 @@ else
     echo "  ℹ App deployment state: $DEPLOY_STATE"
 fi
 
+# Resolve SP for summary line (setup_workbench already used/printed it, but we
+# display it here too for the final banner)
+SP_CLIENT_ID=$(
+    databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('service_principal_client_id','') or d.get('service_principal_name',''))" \
+    2>/dev/null || true
+)
+
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Deploy complete!"
 echo "  App:      $APP_NAME"
 echo "  Job:      ${JOB_ID:-<not found>}"
-echo "  SP:       $SP_CLIENT_ID"
+echo "  SP:       ${SP_CLIENT_ID:-<unknown>}"
 echo "  Deployer: $DEPLOYER"
 echo ""
 if [ -n "$APP_URL" ]; then

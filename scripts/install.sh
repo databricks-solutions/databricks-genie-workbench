@@ -13,11 +13,11 @@ set -euo pipefail
 #   6. MLflow tracing (optional — experiment ID for agent observability)
 #   7. Lakebase info (attach manually via Apps UI after deploy)
 #   8. Asks for app name
-#   9. Writes .env.deploy
-#  10. Runs deploy.sh
-#  11. Resolves app service principal
-#  12. Optionally grants SP access to Genie Spaces
-#  13. Prints summary with automated/manual sections
+#   9. Asks whether to grant SP access to Genie Spaces the user can edit
+#  10. Writes .env.deploy
+#  11. Runs deploy.sh (which invokes setup_workbench.py for UC/Lakebase/
+#      Apps PATCH/job perms/app.yaml patch/Genie Space grants)
+#  12. Prints summary
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -654,9 +654,26 @@ done
 _ok "App name: $APP_NAME"
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 9: Write .env.deploy
+# Step 9: Genie Space access (optional)
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 9: Writing configuration"
+_header "Step 9: Genie Space access"
+
+_info "The app uses On-Behalf-Of (OBO) auth, so users see their own spaces."
+_info "However, the service principal needs explicit grants for fallback access."
+echo ""
+
+_prompt_yn GRANT_SPACES "Grant the app access to all Genie Spaces you can edit?" "Y"
+
+if [ "$GRANT_SPACES" = "Y" ]; then
+    _ok "Will grant SP CAN_EDIT on every Genie Space you can edit."
+else
+    _info "Skipping Genie Space grants. You can grant them manually later."
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
+# Step 10: Write .env.deploy
+# ══════════════════════════════════════════════════════════════════════════
+_header "Step 10: Writing configuration"
 
 ENV_FILE="$PROJECT_DIR/.env.deploy"
 cat > "$ENV_FILE" <<EOF
@@ -670,6 +687,7 @@ GENIE_DEPLOY_PROFILE="$PROFILE"
 GENIE_LLM_MODEL="$LLM_MODEL"
 GENIE_LAKEBASE_INSTANCE="$LAKEBASE_INSTANCE"
 GENIE_MLFLOW_EXPERIMENT_ID="$MLFLOW_EXPERIMENT_ID"
+GENIE_GRANT_SPACES="$GRANT_SPACES"
 EOF
 
 _ok "Configuration written to .env.deploy"
@@ -686,12 +704,13 @@ echo "  │  MLflow:       ${MLFLOW_EXPERIMENT_ID:-<disabled>}"
 echo "  └───────────────────────────────────────────────────────────┘"
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 10: Deploy
+# Step 11: Deploy
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 10: Deploying"
+_header "Step 11: Deploying"
 
 _info "This will build the frontend, sync code to your workspace, deploy the"
-_info "optimization job, and start the app (typically 3-5 minutes)."
+_info "optimization job, provision UC/Lakebase/app resources, and start the"
+_info "app (typically 3-5 minutes)."
 echo ""
 _prompt_yn DO_DEPLOY "Deploy now?" "Y"
 
@@ -702,22 +721,12 @@ else
     exit 0
 fi
 
-# Track what was automated for the summary
-AUTOMATED=()
-AUTOMATED_FAIL=()
-
-# ══════════════════════════════════════════════════════════════════════════
-# Step 11: Resolve app service principal
-# ══════════════════════════════════════════════════════════════════════════
-_header "Step 11: Resolving app service principal"
-
+# Resolve SP for the summary banner (deploy.sh already configured permissions)
 SP_CLIENT_ID=$(
     databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('service_principal_client_id','') or d.get('service_principal_name',''))" \
     2>/dev/null || true
 )
-
-# Resolve human-readable SP name for the summary
 SP_DISPLAY_NAME=""
 if [ -n "$SP_CLIENT_ID" ]; then
     SP_DISPLAY_NAME=$(
@@ -735,90 +744,6 @@ try:
 except: pass
 " 2>/dev/null || true
     )
-    _ok "SP: ${SP_DISPLAY_NAME:-$SP_CLIENT_ID} (${SP_CLIENT_ID})"
-else
-    _warn "Could not resolve app service principal. Skipping automated grants."
-    _warn "You can grant permissions manually after the app is fully deployed."
-fi
-
-# ══════════════════════════════════════════════════════════════════════════
-# Step 12: Genie Space permissions (optional)
-# ══════════════════════════════════════════════════════════════════════════
-_header "Step 12: Genie Space access"
-
-_info "The app uses On-Behalf-Of (OBO) auth, so users see their own spaces."
-_info "However, the service principal needs explicit grants for fallback access."
-echo ""
-
-GENIE_SPACES_GRANTED=0
-
-_prompt_yn GRANT_SPACES "Grant the app access to all Genie Spaces you can edit?" "Y"
-
-if [ "$GRANT_SPACES" = "Y" ] && [ -n "$SP_CLIENT_ID" ]; then
-    _info "Discovering your Genie Spaces..."
-
-    # List Genie Spaces and grant SP access
-    GENIE_SPACES_GRANTED=$(python3 -c "
-import json, subprocess, sys
-
-profile = '$PROFILE'
-sp_id = '$SP_CLIENT_ID'
-
-# List all Genie Spaces visible to the deploying user
-try:
-    result = subprocess.run(
-        ['databricks', 'api', 'get', '/api/2.0/genie/spaces', '--profile', profile, '-o', 'json'],
-        capture_output=True, text=True, check=True,
-    )
-    data = json.loads(result.stdout)
-    spaces = data if isinstance(data, list) else data.get('spaces', data.get('genie_spaces', []))
-except Exception as e:
-    print(f'Could not list Genie Spaces: {e}', file=sys.stderr)
-    spaces = []
-
-if not spaces:
-    print('0')
-    sys.exit(0)
-
-granted = 0
-for space in spaces:
-    space_id = space.get('id') or space.get('space_id', '')
-    space_name = space.get('title') or space.get('name', space_id)
-    if not space_id:
-        continue
-
-    try:
-        perm_payload = json.dumps({
-            'access_control_list': [
-                {
-                    'service_principal_name': sp_id,
-                    'permission_level': 'CAN_EDIT',
-                }
-            ]
-        })
-        subprocess.run(
-            ['databricks', 'api', 'put', f'/api/2.0/permissions/dashboards.genie/{space_id}',
-             '--profile', profile, '--json', perm_payload],
-            capture_output=True, text=True, check=True,
-        )
-        print(f'Granted CAN_EDIT on: {space_name} ({space_id})', file=sys.stderr)
-        granted += 1
-    except Exception as e:
-        print(f'Could not grant on {space_name}: {e}', file=sys.stderr)
-
-print(granted)
-" 2>/dev/null || echo "0")
-
-    if [ "$GENIE_SPACES_GRANTED" -gt 0 ] 2>/dev/null; then
-        _ok "Granted access to $GENIE_SPACES_GRANTED Genie Space(s)."
-        AUTOMATED+=("Genie Space SP access ($GENIE_SPACES_GRANTED spaces)")
-    else
-        _warn "No Genie Spaces were granted. You can grant them manually later."
-    fi
-elif [ -z "$SP_CLIENT_ID" ]; then
-    _warn "Skipped — no SP resolved."
-else
-    _info "Skipping Genie Space grants. You can grant them manually later."
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -847,22 +772,12 @@ fi
 # ── Automated (done) ─────────────────────────────────────────────────────
 echo ""
 echo -e "  ${GREEN}${BOLD}Automated (done):${NC}"
-echo -e "    ${GREEN}✓${NC} OAuth scopes (configured in app.yaml)"
+echo -e "    ${GREEN}✓${NC} OAuth scopes + app resources (sql-warehouse, postgres)"
 echo -e "    ${GREEN}✓${NC} GSO optimization job (bundle-managed)"
 echo -e "    ${GREEN}✓${NC} UC grants on ${CATALOG}.${GSO_SCHEMA}"
-
-if [ ${#AUTOMATED[@]} -gt 0 ]; then
-    for item in "${AUTOMATED[@]}"; do
-        echo -e "    ${GREEN}✓${NC} $item"
-    done
-fi
-
-if [ ${#AUTOMATED_FAIL[@]} -gt 0 ]; then
-    echo ""
-    echo -e "  ${YELLOW}${BOLD}Attempted but failed (grant manually):${NC}"
-    for item in "${AUTOMATED_FAIL[@]}"; do
-        echo -e "    ${YELLOW}⚠${NC} $item"
-    done
+echo -e "    ${GREEN}✓${NC} Lakebase project + SP role + database grants"
+if [ "$GRANT_SPACES" = "Y" ]; then
+    echo -e "    ${GREEN}✓${NC} Genie Space SP access (all user-editable spaces)"
 fi
 
 # ── Remaining manual steps ───────────────────────────────────────────────
@@ -871,32 +786,13 @@ SP_NAME_FOR_DISPLAY="${SP_DISPLAY_NAME:-${SP_CLIENT_ID:-<app-service-principal>}
 echo ""
 echo -e "  ${YELLOW}${BOLD}Remaining manual steps:${NC}"
 echo ""
-echo -e "    ${BOLD}1. Create GSO synced tables (for Auto-Optimize history)${NC}"
-echo "       Synced tables replicate GSO Delta tables to Lakebase for"
-echo "       fast reads in the app. They must be created via Catalog Explorer UI."
-echo ""
-echo "       For each of these 8 tables in ${CATALOG}.${GSO_SCHEMA}:"
-echo "         genie_opt_runs, genie_opt_stages, genie_opt_iterations,"
-echo "         genie_opt_patches, genie_eval_asi_results, genie_opt_provenance,"
-echo "         genie_opt_suggestions, genie_opt_data_access_grants"
-echo ""
-echo "       a) Navigate to the source table in Catalog Explorer"
-echo "       b) Click 'Create' → 'Synced table'"
-echo "       c) Name: <table_name>_synced (same schema)"
-echo "       d) Database type: Lakebase Serverless (Autoscaling)"
-echo "       e) Project: ${APP_NAME}-db, Branch: production"
-echo "       f) Sync mode: Triggered"
-echo ""
-echo "       Then verify:"
-echo -e "       ${CYAN}python3 scripts/setup_synced_tables.py --source-catalog ${CATALOG} --warehouse-id \$WAREHOUSE_ID --profile \$PROFILE --verify-only${NC}"
-echo ""
-echo -e "    ${BOLD}2. Genie Space data access${NC}"
+echo -e "    ${BOLD}1. Genie Space data access${NC}"
 echo "       The SP needs SELECT on schemas your Genie Spaces reference."
 echo "       Open the app → Auto-Optimize → Settings to see which schemas"
 echo "       need grants, then run:"
 echo -e "       ${CYAN}GRANT SELECT ON SCHEMA <catalog>.<schema> TO \`${SP_NAME_FOR_DISPLAY}\`${NC}"
 echo ""
-echo -e "    ${BOLD}4. Future Genie Spaces${NC}"
+echo -e "    ${BOLD}2. Future Genie Spaces${NC}"
 echo "       Spaces created after install need SP grants. Open the space"
 echo "       sharing dialog and add '${SP_NAME_FOR_DISPLAY}' with CAN_MANAGE."
 echo ""

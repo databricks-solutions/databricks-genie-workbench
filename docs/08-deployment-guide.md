@@ -1,6 +1,18 @@
 # Deployment Guide
 
-Genie Workbench is deployed as a Databricks App using the provided deploy scripts. This guide covers first-time setup, subsequent deploys, teardown, and configuration.
+Genie Workbench is deployed as a Databricks App. There are two install
+paths — both produce the same app, same UC schema/tables, same
+optimization job, and same resources:
+
+- **CLI path** (this guide): laptop-driven. Requires the Databricks CLI,
+  Node.js, `uv`, and shell access. Faster iteration once set up.
+- **Non-CLI path**: entirely inside the Databricks UI — clone into a Git
+  folder, run a setup notebook on serverless compute, then deploy from
+  the Apps UI. See [non-cli-install.md](non-cli-install.md).
+
+Both paths call the same shared provisioning module
+(`scripts/setup_workbench.py`) for UC grants, Lakebase, Apps PATCH, and
+Genie Space permissions.
 
 ## Prerequisites
 
@@ -48,17 +60,24 @@ The installer will:
 6. Optionally configure MLflow tracing (creates or links an experiment)
 7. Ask for Lakebase Autoscaling project name
 8. Ask for app name
-9. Write `.env.deploy` with your configuration
-10. Run `scripts/deploy.sh` to build and deploy the app
-11. Resolve the app's service principal
-12. Optionally grant the SP access to your existing Genie Spaces
+9. Ask whether to grant the SP access to your existing Genie Spaces
+10. Write `.env.deploy` with your configuration
+11. Run `scripts/deploy.sh` to build, bundle-deploy, and provision resources
+
+Under the hood, `deploy.sh` delegates UC grants, Lakebase provisioning,
+Apps PATCH, `app.yaml` patching, job permissions, bundle-directory
+grants, and Genie Space grants to `scripts/setup_workbench.py` — the
+same module the non-CLI install notebook uses.
 
 ### 4. Lakebase (automated)
 
 Lakebase provides persistent storage for scan history, starred spaces, and agent sessions. Without it, the app uses in-memory storage (data lost on restart).
 
-**Lakebase setup is fully automated by `deploy.sh`:**
-- Creates a Lakebase Autoscaling project via the SDK (`scripts/setup_lakebase.py`)
+**Lakebase setup is fully automated by `setup_workbench.py`** (driven by
+`deploy.sh` on the CLI path, or the setup notebook on the non-CLI path):
+
+- Creates a Lakebase Autoscaling project via the SDK
+  (`scripts/setup_lakebase.py`, reused as a library)
 - Creates a Postgres role for the app's service principal
 - Grants database permissions (CONNECT, CREATE ON DATABASE)
 - Attaches the `postgres` resource to the app via the Apps API
@@ -71,16 +90,17 @@ The installer asks for a Lakebase project name (defaults to the app name, stored
 
 ## What `deploy.sh` Does
 
-### Full Deploy (8 steps)
+### Full Deploy (9 steps)
 
 1. **Pre-flight checks** — validates tools, CLI profile, warehouse, catalog, app state
 2. **Build frontend** — `npm ci` + `npm run build` (strict lockfile)
 3. **Create app** — `databricks apps create` (skipped if app already exists)
 4. **Sync files** — `databricks sync --full` + explicit `frontend/dist/` upload
-5. **Grant UC permissions** — resolves app SP, creates GSO schema/tables, grants SP access, enables CDF
-6. **Set up optimization job** — builds GSO wheel, uploads notebooks, creates/finds the Databricks job, grants SP CAN_MANAGE
-7. **Redeploy app** — patches `app.yaml` with config values, configures scopes, deploys
-8. **Verify** — checks critical files, waits for deployment to succeed
+5. **Bundle deploy** — builds GSO wheel, uploads notebooks, creates the optimization job; syncs `_metadata.py`; cleans up legacy jobs
+6. **Wait for app compute** — starts the app compute and waits for it to reach `ACTIVE` (required by `apps deploy`)
+7. **Provision resources** — calls `scripts/setup_workbench.py` which does UC schema/tables/grants, Lakebase project/role/grants, Apps PATCH (scopes + resources), `app.yaml` placeholder substitution, job permissions, bundle-directory SP grant, and (optional) Genie Space SP grants — all in one pure-SDK pass
+8. **Redeploy app** — `databricks apps deploy --source-code-path`
+9. **Verify** — checks critical files, waits for deployment to succeed
 
 ### Deploy Commands
 
