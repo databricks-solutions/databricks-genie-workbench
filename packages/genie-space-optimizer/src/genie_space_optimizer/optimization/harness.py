@@ -646,11 +646,20 @@ def _run_prompt_matching_setup(
     config: dict,
     catalog: str,
     schema: str,
+    *,
+    benchmarks: list[dict] | None = None,
 ) -> dict:
     """Stage 2.5: Enable format assistance and entity matching as best practice.
 
     Runs between baseline eval and lever loop.  Deterministic (no LLM).
     Returns summary dict with counts of changes applied.
+
+    ``benchmarks`` (optional) is forwarded to the scorer for the
+    benchmark-column-reference boost. Callers that don't have the
+    benchmark corpus yet can pass ``None`` — the scorer falls back to
+    name-based scoring in that case. The first run where benchmarks
+    aren't available still produces sensible results, just without the
+    benchmark boost.
     """
     from genie_space_optimizer.common.genie_client import fetch_space_config
 
@@ -670,23 +679,48 @@ def _run_prompt_matching_setup(
             f"total data sources: {_tbl_count + _mv_count}"
         )
 
-        apply_log = auto_apply_prompt_matching(w, space_id, config)
+        apply_log = auto_apply_prompt_matching(
+            w, space_id, config, benchmarks=benchmarks,
+        )
 
         applied = apply_log.get("applied", [])
         fa_count = apply_log.get("format_assistance_count", 0)
         em_count = apply_log.get("entity_matching_count", 0)
+        em_disabled_count = apply_log.get("entity_matching_disabled_count", 0)
 
+        # Map entry type to the inverse operation so standard rollback can
+        # restore disabled slots (and conversely, undo enables). Format
+        # assistance doesn't need a paired inverse in this table — operator
+        # rollbacks of FA go through the standard genie_config path.
+        _INVERSE_BY_TYPE = {
+            "enable_value_dictionary": {"enable_entity_matching": False},
+            "disable_value_dictionary": {"enable_entity_matching": True},
+            "enable_example_values": {"enable_format_assistance": False},
+        }
         for idx, entry in enumerate(applied):
+            etype = entry.get("type", "unknown")
+            tbl = entry.get("table", "")
+            col = entry.get("column", "")
+            inverse = _INVERSE_BY_TYPE.get(etype)
+            rollback_payload = None
+            if inverse is not None:
+                rollback_payload = json.dumps({
+                    "op": "update",
+                    "section": "column_configs",
+                    "table": tbl,
+                    "column": col,
+                    **inverse,
+                })
             write_patch(
                 spark, run_id, 0, 0, idx,
                 {
-                    "patch_type": entry.get("type", "unknown"),
+                    "patch_type": etype,
                     "scope": "genie_config",
                     "risk_level": "low",
-                    "target_object": f"{entry.get('table', '')}.{entry.get('column', '')}",
+                    "target_object": f"{tbl}.{col}",
                     "patch": entry,
                     "command": None,
-                    "rollback": None,
+                    "rollback": rollback_payload,
                     "proposal_id": "prompt_matching_auto_config",
                 },
                 catalog, schema,
@@ -699,7 +733,8 @@ def _run_prompt_matching_setup(
         _pm_lines = [_section("PROMPT MATCHING", "-")]
         _pm_lines.append(_kv("Total changes", len(applied)))
         _pm_lines.append(_kv("Format assistance", f"{fa_count} columns"))
-        _pm_lines.append(_kv("Entity matching", f"{em_count} columns"))
+        _pm_lines.append(_kv("Entity matching enabled", f"{em_count} columns"))
+        _pm_lines.append(_kv("Entity matching disabled", f"{em_disabled_count} columns"))
         _pm_lines.append(_kv("Tables patched", apply_log.get('patched_objects', [])))
         _pm_lines.append(_kv("Genie API PATCH sent", "YES" if applied else "NO"))
         _pm_lines.append(_kv("Config refreshed", "YES" if applied else "N/A"))
@@ -712,6 +747,7 @@ def _run_prompt_matching_setup(
             detail={
                 "format_assistance_enabled": fa_count,
                 "entity_matching_enabled": em_count,
+                "entity_matching_disabled": em_disabled_count,
                 "total_changes": len(applied),
                 "patched_objects": apply_log.get("patched_objects", []),
             },
@@ -721,6 +757,7 @@ def _run_prompt_matching_setup(
         return {
             "format_assistance_count": fa_count,
             "entity_matching_count": em_count,
+            "entity_matching_disabled_count": em_disabled_count,
             "total_changes": len(applied),
         }
 
@@ -733,7 +770,12 @@ def _run_prompt_matching_setup(
             error_message=err_msg[:500],
             catalog=catalog, schema=schema,
         )
-        return {"format_assistance_count": 0, "entity_matching_count": 0, "total_changes": 0}
+        return {
+            "format_assistance_count": 0,
+            "entity_matching_count": 0,
+            "entity_matching_disabled_count": 0,
+            "total_changes": 0,
+        }
 
 
 # ── Stage 2.75: PROACTIVE DESCRIPTION ENRICHMENT ───────────────────
@@ -2741,7 +2783,9 @@ def _seed_new_sql_snippets(
         "total_candidates": 0,
         "total_seeded": 0,
         "total_rejected": 0,
-        "firewall_rejected": 0,
+        "firewall_rejected": 0,          # Bug #4 benchmark-leakage firewall
+        "validation_rejected": 0,         # EXPLAIN / execution validator
+        "ngram_rejected": 0,              # duplicate of an already-seeded snippet
         "measures_seeded": 0,
         "filters_seeded": 0,
         "expressions_seeded": 0,
@@ -2829,6 +2873,7 @@ def _seed_new_sql_snippets(
                 break
 
             if any(_ngram_similarity(sql_raw.lower(), e) > 0.85 for e in existing_sql_set):
+                result["ngram_rejected"] += 1
                 result["total_rejected"] += 1
                 continue
 
@@ -2864,6 +2909,7 @@ def _seed_new_sql_snippets(
             prefixed_sql = _valid_result[2] if len(_valid_result) > 2 else sql_raw
             if not is_valid:
                 logger.info("SQL expression candidate rejected: %s — %s", sql_raw[:80], err)
+                result["validation_rejected"] += 1
                 result["total_rejected"] += 1
                 continue
 
@@ -2943,6 +2989,9 @@ def _seed_new_sql_snippets(
         _lines.append(_kv("  Filters", result["filters_seeded"]))
         _lines.append(_kv("  Expressions", result["expressions_seeded"]))
         _lines.append(_kv("Rejected", result["total_rejected"]))
+        _lines.append(_kv("  Firewall (leakage)", result["firewall_rejected"]))
+        _lines.append(_kv("  Validation (EXPLAIN)", result["validation_rejected"]))
+        _lines.append(_kv("  Ngram duplicate", result["ngram_rejected"]))
         _lines.append(_bar("-"))
         print("\n".join(_lines))
 
@@ -3031,6 +3080,8 @@ def _prepare_lever_loop(
     space_id: str,
     catalog: str,
     schema: str,
+    *,
+    benchmarks: list[dict] | None = None,
 ) -> dict:
     """Load Genie Space config, enrich UC metadata, run Stage 2.5 prompt matching.
 
@@ -3134,11 +3185,47 @@ def _prepare_lever_loop(
         + "-" * 52
     )
 
+    # ── 3b. RLS audit via information_schema (best-effort) ───────────
+    # Populate config["_rls_audit"] so auto_apply_prompt_matching can use
+    # the view-aware RLS verdict (inherited RLS, dynamic views) that the
+    # serialized_space field check alone can't see. Fail-open: any
+    # probe/query failure logs a WARNING and leaves verdicts as
+    # "unknown", which the scorer treats as clean by default
+    # (STRICT_RLS_MODE flips this to tainted).
+    try:
+        from genie_space_optimizer.iq_scan import collect_rls_audit
+        space_tables = (_ds.get("tables") or []) + (_ds.get("metric_views") or [])
+        config["_rls_audit"] = collect_rls_audit(
+            space_tables,
+            spark=spark, w=w,
+            warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+        )
+        _tainted_count = sum(
+            1 for v in config["_rls_audit"].values()
+            if v.get("verdict") == "tainted"
+        )
+        _unknown_count = sum(
+            1 for v in config["_rls_audit"].values()
+            if v.get("verdict") == "unknown"
+        )
+        print(
+            f"  [RLS AUDIT] {len(config['_rls_audit'])} tables scanned; "
+            f"{_tainted_count} tainted, {_unknown_count} unknown"
+        )
+    except Exception as exc:
+        logger.warning(
+            "RLS audit failed (non-fatal, proceeding without view-aware "
+            "RLS detection): %s: %s",
+            type(exc).__name__, exc,
+        )
+        config["_rls_audit"] = {}
+
     # ── 4–7. Stage 2.5 prompt matching + propagation wait ────────────
     if ENABLE_PROMPT_MATCHING_AUTO_APPLY:
         try:
             pm_result = _run_prompt_matching_setup(
                 w, spark, run_id, space_id, config, catalog, schema,
+                benchmarks=benchmarks,
             )
             logger.info(
                 "Prompt matching complete: FA=%d, EM=%d, total=%d",
@@ -3148,7 +3235,9 @@ def _prepare_lever_loop(
             )
 
             if pm_result.get("total_changes", 0) > 0:
-                has_entity_matching = pm_result.get("entity_matching_count", 0) > 0
+                em_enabled = pm_result.get("entity_matching_count", 0)
+                em_disabled = pm_result.get("entity_matching_disabled_count", 0)
+                has_entity_matching = (em_enabled + em_disabled) > 0
                 wait_time = (
                     PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS if has_entity_matching
                     else PROPAGATION_WAIT_SECONDS
@@ -3157,7 +3246,7 @@ def _prepare_lever_loop(
                     f"\n-- PROPAGATION WAIT " + "-" * 32 + "\n"
                     f"  Changes applied: {pm_result.get('total_changes', 0)}\n"
                     f"  Entity matching changes:"
-                    f" {pm_result.get('entity_matching_count', 0)}\n"
+                    f" +{em_enabled} / -{em_disabled}\n"
                     f"  Wait time: {wait_time}s"
                     + (
                         " (extended for value dictionary rebuild)"
@@ -3220,7 +3309,10 @@ def _run_enrichment(
 
     try:
         # ── 1. Load config (delegates to _prepare_lever_loop) ─────────────
-        config = _prepare_lever_loop(w, spark, run_id, space_id, catalog, schema)
+        config = _prepare_lever_loop(
+            w, spark, run_id, space_id, catalog, schema,
+            benchmarks=benchmarks,
+        )
 
         uc_columns = config.get("_uc_columns", [])
         metadata_snapshot = config.get("_parsed_space", config)
@@ -3339,13 +3431,22 @@ def _run_enrichment(
             mined_example_proposals: list = []
 
             # ── Summary ───────────────────────────────────────────────────
+            # _miner_out carries per-target applied counts from the prose
+            # mining & promotion step (see _run_instruction_prose_mining).
+            # The earlier single `_instr_sql_applied` local was removed when
+            # the miner grew multi-target support; sum every promoted target
+            # so the summary reflects reality.
             total_enrichments = (
                 enrichment_result.get("total_enriched", 0)
                 + join_result.get("total_applied", 0)
                 + (1 if meta_result.get("description_generated") else 0)
                 + (1 if meta_result.get("questions_generated") else 0)
                 + (1 if instruction_result.get("instructions_seeded") else 0)
-                + _instr_sql_applied
+                + _miner_out.get("sql_applied", 0)
+                + _miner_out.get("join_applied", 0)
+                + _miner_out.get("example_applied", 0)
+                + _miner_out.get("desc_applied", 0)
+                + _miner_out.get("synonym_applied", 0)
                 + sql_expr_result.get("total_seeded", 0)
                 + len(mined_example_proposals)
             )
@@ -3358,7 +3459,11 @@ def _run_enrichment(
                 "generated" if meta_result.get("questions_generated") else "unchanged",
             )))
             _enr_summary.append(_kv("Instructions seeded", "yes" if instruction_result.get("instructions_seeded") else "no"))
-            _enr_summary.append(_kv("Instruction-derived SQL expressions", _instr_sql_applied))
+            _enr_summary.append(_kv("Instruction-derived SQL expressions", _miner_out.get("sql_applied", 0)))
+            _enr_summary.append(_kv("Instruction-derived join specs", _miner_out.get("join_applied", 0)))
+            _enr_summary.append(_kv("Instruction-derived example SQLs", _miner_out.get("example_applied", 0)))
+            _enr_summary.append(_kv("Instruction-derived table descriptions", _miner_out.get("desc_applied", 0)))
+            _enr_summary.append(_kv("Instruction-derived column synonyms", _miner_out.get("synonym_applied", 0)))
             _enr_summary.append(_kv("SQL expressions seeded", sql_expr_result.get("total_seeded", 0)))
             _enr_summary.append(_kv("Example SQLs mined", len(mined_example_proposals)))
             _enr_summary.append(_kv("Total enrichments", total_enrichments))

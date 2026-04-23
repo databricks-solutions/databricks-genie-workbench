@@ -19,18 +19,27 @@ from databricks.sdk import WorkspaceClient
 
 from genie_space_optimizer.common.config import (
     APPLY_MODE,
+    BOOLEAN_FLAG_PATTERNS,
     CANONICAL_SECTION_HEADERS,
     CANONICAL_SECTION_ORDER,
     CATEGORICAL_COLUMN_PATTERNS,
+    DESCRIPTION_HINTS_NEGATIVE,
+    DESCRIPTION_HINTS_POSITIVE,
+    ENABLE_SMARTER_SCORING,
     FREE_TEXT_COLUMN_PATTERNS,
+    FREE_TEXT_DISTINCT_RATIO,
     HIGH_RISK_PATCHES,
     LOW_RISK_PATCHES,
+    MAX_ENTITY_MATCHING_CARDINALITY,
     MAX_TEXT_INSTRUCTIONS_CHARS,
     MAX_VALUE_DICTIONARY_COLUMNS,
     MEASURE_NAME_PREFIXES,
     MEDIUM_RISK_PATCHES,
+    MIN_ENTITY_MATCHING_CARDINALITY,
     NUMERIC_DATA_TYPES,
     PATCH_TYPES,
+    PII_COLUMN_PATTERNS,
+    STRICT_RLS_MODE,
     VERBATIM_REQUIRED_HEADERS,
     _LEVER_TO_PATCH_TYPE,
     looks_like_sql_in_prose,
@@ -867,10 +876,14 @@ def _column_has_rls(cc: dict) -> bool:
     return bool(cc.get("row_filter") or cc.get("column_mask"))
 
 
-def _entity_matching_score(column_name: str) -> int:
-    """Score a STRING column for entity matching priority.
+def _entity_matching_score_legacy(column_name: str) -> int:
+    """Legacy 0/1/2 scorer — retained for one release behind
+    ``ENABLE_SMARTER_SCORING=False`` so operators can pin today's
+    behaviour if the new scorer misbehaves on their corpus.
 
-    Higher score = higher priority.  Returns 0-2.
+    Returns 0-2; higher is better. Free-text names get 0 (sorted to
+    bottom but NOT filtered — which is why the silent-PII leak exists
+    on <120-col spaces under this scorer).
     """
     lower = column_name.lower()
     if any(pat in lower for pat in FREE_TEXT_COLUMN_PATTERNS):
@@ -878,6 +891,183 @@ def _entity_matching_score(column_name: str) -> int:
     if any(pat in lower for pat in CATEGORICAL_COLUMN_PATTERNS):
         return 2
     return 1
+
+
+def _entity_matching_score(
+    column_name: str,
+    *,
+    description: str = "",
+    profile: dict | None = None,
+    benchmark_col_refs: frozenset[str] = frozenset(),
+    row_count: int = 0,
+    rls_verdict: str = "clean",
+    strict_rls: bool | None = None,
+) -> tuple[float, str]:
+    """Score a STRING column for entity matching priority (new scorer).
+
+    Returns ``(score, reason)``. A score of 0.0 is a HARD REJECT — the
+    caller is expected to FILTER score<=0 candidates out of the pool
+    before applying the 120-slot cap, rather than sorting and taking
+    top-N (which is what the legacy scorer's callers do, and the root
+    cause of the silent-PII leak on <120-col spaces).
+
+    Parameters
+    ----------
+    column_name
+        The bare column name (not qualified).
+    description
+        Column description from space config or UC metadata. Used for
+        PII detection ("pii", "sensitive") + positive/negative keyword
+        boosts.
+    profile
+        Optional ``_data_profile`` entry for this column:
+        ``{"cardinality": int, "distinct_values": [...]}``. When
+        present AND ``cardinality > 0`` we apply cardinality-based
+        disqualifiers + sweet-spot bonus. When absent (unprofiled — eg.
+        metric views or tables beyond ``MAX_PROFILE_TABLES``), we fall
+        through to name-based scoring rather than hard-rejecting.
+    benchmark_col_refs
+        Lowercased column tokens extracted from benchmark expected_sql.
+        A match grants a +3.0 boost — strong "users actually ask about
+        this column" signal.
+    row_count
+        Table row count from ``_data_profile[table]["row_count"]``. Used
+        with ``profile.cardinality`` to compute distinct_ratio. Skip if 0.
+    rls_verdict
+        One of ``"clean"`` / ``"tainted"`` / ``"unknown"`` from
+        :func:`iq_scan.collect_rls_audit`. Tainted → reject.
+    strict_rls
+        Defaults to the module-level :data:`STRICT_RLS_MODE`. When True,
+        ``"unknown"`` is also rejected.
+
+    Hard disqualifiers (score = 0):
+
+    - RLS verdict ``"tainted"``
+    - RLS verdict ``"unknown"`` AND strict_rls
+    - Column name matches ``FREE_TEXT_COLUMN_PATTERNS``
+    - Column name matches ``PII_COLUMN_PATTERNS``
+    - Column name matches ``BOOLEAN_FLAG_PATTERNS``
+    - Description contains "pii" / "sensitive"
+    - (With profile) cardinality < MIN or > MAX
+    - (With profile) distinct_ratio > FREE_TEXT_DISTINCT_RATIO (ID-like)
+
+    Bonuses (each independently stacks, final capped at 10.0):
+
+    - +3.0 base for categorical-pattern names, else +1.0
+    - +2.0 for cardinality in the 5-200 sweet spot
+    - +1.0 for cardinality 200-1024
+    - +0.3 for cardinality 2-4 (thin benefit but not zero)
+    - +3.0 for benchmark-referenced column name
+    - +1.0 for positive description hints
+    - -2.0 for negative description hints
+    """
+    if strict_rls is None:
+        strict_rls = STRICT_RLS_MODE
+
+    lower = column_name.lower()
+
+    # ── Hard disqualifiers ──────────────────────────────────────────
+    # Check order is meaningful for the reason string: PII before
+    # free-text so ``customer_email`` reports ``pii_name`` (the more
+    # specific / security-relevant reason) rather than ``free_text_name``
+    # when both patterns would match.
+    if rls_verdict == "tainted":
+        return 0.0, "rls_tainted"
+    if rls_verdict == "unknown" and strict_rls:
+        return 0.0, "rls_unknown_strict"
+    if any(pat in lower for pat in PII_COLUMN_PATTERNS):
+        return 0.0, "pii_name"
+    if any(pat in lower for pat in FREE_TEXT_COLUMN_PATTERNS):
+        return 0.0, "free_text_name"
+    if any(pat in lower for pat in BOOLEAN_FLAG_PATTERNS):
+        return 0.0, "boolean_flag"
+
+    desc_lower = (description or "").lower()
+    if any(h in desc_lower for h in ("pii", "sensitive")):
+        return 0.0, "pii_description"
+
+    # Cardinality-based disqualifiers fire ONLY when we actually have
+    # profile data with a non-zero card. Metric views are skipped by
+    # _collect_data_profile (preflight.py:237-241) and tables beyond
+    # MAX_PROFILE_TABLES=20 get no profile; for those unprofiled
+    # columns we fall through to name-based scoring rather than
+    # rejecting on an implicit cardinality=0.
+    has_profile = (
+        isinstance(profile, dict)
+        and int(profile.get("cardinality", 0) or 0) > 0
+    )
+    if has_profile:
+        card = int(profile["cardinality"])
+        if card < MIN_ENTITY_MATCHING_CARDINALITY:
+            return 0.0, "cardinality_too_low"
+        if card > MAX_ENTITY_MATCHING_CARDINALITY:
+            return 0.0, "cardinality_too_high"
+        if row_count > 0 and card / row_count > FREE_TEXT_DISTINCT_RATIO:
+            return 0.0, "id_like_distinct_ratio"
+
+    # ── Base + bonuses ──────────────────────────────────────────────
+    score = 3.0 if any(pat in lower for pat in CATEGORICAL_COLUMN_PATTERNS) else 1.0
+    if has_profile:
+        card = int(profile["cardinality"])
+        if 5 <= card <= 200:
+            score += 2.0
+        elif 200 < card <= 1024:
+            score += 1.0
+        elif 2 <= card < 5:
+            score += 0.3
+    if lower in benchmark_col_refs:
+        score += 3.0
+    if any(h in desc_lower for h in DESCRIPTION_HINTS_POSITIVE):
+        score += 1.0
+    if any(h in desc_lower for h in DESCRIPTION_HINTS_NEGATIVE):
+        score -= 2.0
+
+    return max(0.0, min(score, 10.0)), "ok"
+
+
+_BENCHMARK_TOKEN_RE = re.compile(r"[a-z_][a-z0-9_]*", re.IGNORECASE)
+_BENCHMARK_STRIP_STRING_RE = re.compile(
+    r"'([^'\\]|\\.)*'|\"([^\"\\]|\\.)*\"",
+)
+_BENCHMARK_STRIP_COMMENT_RE = re.compile(
+    r"--[^\n]*|/\*.*?\*/",
+    re.DOTALL,
+)
+
+
+def _extract_benchmark_col_refs(benchmarks: list[dict] | None) -> frozenset[str]:
+    """Approximate column references from benchmark ``expected_sql`` text.
+
+    The scorer applies a +3.0 boost for columns that appear in benchmarks —
+    a strong "users actually ask about this column" signal. This extractor
+    is deliberately lenient:
+
+    * Strips SQL string literals (``'foo'``, ``"bar"``) so quoted values
+      aren't tokenised.
+    * Strips SQL comments (``-- …``, ``/* … */``).
+    * Tokenises remaining text as ``[a-z_][a-z0-9_]*``, lowercased.
+
+    The tokens include SQL keywords (``select``, ``from``, ``where``,
+    ``join``, etc.), function names, and aliases — false positives. They
+    don't matter because the boost only applies when a token **equals**
+    an actual column name, and column names never collide with SQL
+    keywords in practice. A smarter extractor (sqlglot) would be more
+    precise but not materially better for ranking, so we keep it regex-only.
+    """
+    if not benchmarks:
+        return frozenset()
+    refs: set[str] = set()
+    for b in benchmarks:
+        if not isinstance(b, dict):
+            continue
+        sql = str(b.get("expected_sql", "") or "")
+        if not sql:
+            continue
+        stripped = _BENCHMARK_STRIP_STRING_RE.sub("", sql)
+        stripped = _BENCHMARK_STRIP_COMMENT_RE.sub("", stripped)
+        for tok in _BENCHMARK_TOKEN_RE.findall(stripped):
+            refs.add(tok.lower())
+    return frozenset(refs)
 
 
 def _ensure_column_configs_from_uc(
@@ -922,14 +1112,380 @@ def auto_apply_prompt_matching(
     w: WorkspaceClient,
     space_id: str,
     config: dict,
+    *,
+    benchmarks: list[dict] | None = None,
 ) -> dict:
     """Enable format assistance and entity matching as a best-practice step.
 
     Operates deterministically (no LLM calls).  Mutates ``config`` in-place
     and PATCHes the Genie Space via the API.
 
+    When ``ENABLE_SMARTER_SCORING=True`` (default) the scoring path uses
+    the profile / benchmarks / RLS-audit-aware scorer and **filters**
+    score-0 candidates rather than sorting-and-taking-top-N. This closes
+    the silent-PII leak on spaces with <120 STRING columns where today's
+    sort-and-slice path would enable EM on every STRING column regardless
+    of fit.
+
+    The ``_data_profile`` and ``_rls_audit`` dicts are read from ``config``
+    when present (populated by preflight); ``benchmarks`` is passed via
+    kwarg so callers outside the enrichment hot path can omit it without
+    breakage.
+
     Returns an apply_log dict with ``applied`` list, ``patched_objects``,
-    ``pre_snapshot``, ``post_snapshot``, and summary stats.
+    ``pre_snapshot``, ``post_snapshot``, and summary stats including
+    rejection reason counts under ``rejected_by_reason``.
+    """
+    if not ENABLE_SMARTER_SCORING:
+        return _legacy_apply_em(w, space_id, config, benchmarks=benchmarks)
+
+    from genie_space_optimizer.common.config import DRY_RUN_ENTITY_MATCHING
+
+    parsed = config.get("_parsed_space", config)
+    ds = parsed.get("data_sources", {})
+    tables = ds.get("tables", [])
+    metric_views = ds.get("metric_views", [])
+    uc_columns: list[dict] = config.get("_uc_columns", [])
+    data_profile: dict = config.get("_data_profile") or {}
+    rls_audit: dict = config.get("_rls_audit") or {}
+    benchmark_col_refs = _extract_benchmark_col_refs(benchmarks)
+
+    bootstrapped = _ensure_column_configs_from_uc(tables + metric_views, uc_columns)
+    if bootstrapped:
+        print(f"  [PROMPT MATCHING] Bootstrapped {bootstrapped} column_config entries from UC metadata")
+
+    type_lookup: dict[tuple[str, str], str] = {}
+    for col in uc_columns:
+        if not isinstance(col, dict):
+            continue
+        tbl = str(col.get("table_name") or "").strip()
+        cname = str(col.get("column_name") or "").strip()
+        dtype = str(col.get("data_type") or "").strip()
+        if tbl and cname:
+            type_lookup[(tbl.lower(), cname.lower())] = dtype
+
+    pre_snapshot = copy.deepcopy(parsed)
+    changes: list[dict] = []
+
+    rls_skipped_tables: list[str] = []
+
+    def _table_short_name(identifier: str) -> str:
+        parts = identifier.replace("`", "").split(".")
+        return parts[-1] if parts else identifier
+
+    def _rls_verdict_for(identifier: str, tbl_local_rls: bool, cc_local_rls: bool) -> str:
+        """Combine the lineage-aware audit verdict with field-level checks.
+
+        Field-level RLS (row_filter / column_mask) always wins. Otherwise
+        fall back to the lineage-aware audit verdict from ``_rls_audit``.
+        Absent/unknown audit entry defaults to "clean" (preserves today's
+        behaviour; flip with ``STRICT_RLS_MODE`` to treat unknown as
+        tainted).
+        """
+        if tbl_local_rls or cc_local_rls:
+            return "tainted"
+        entry = rls_audit.get(identifier.strip("`").lower())
+        if isinstance(entry, dict):
+            v = entry.get("verdict")
+            if v in ("tainted", "unknown", "clean"):
+                return v
+        return "clean"
+
+    def _score(col_name: str, description: str, dtype: str, identifier: str,
+               tbl_rls: bool, cc_rls: bool) -> tuple[float, str]:
+        """Score a STRING column using the intelligent scorer. Pulls
+        cardinality / distinct-values from ``_data_profile`` (by fully
+        qualified identifier, falling back to short name) and RLS verdict
+        from ``_rls_audit`` (combined with field-level checks)."""
+        col_profile = (
+            data_profile.get(identifier.strip("`").lower(), {})
+            .get("columns", {})
+            .get(col_name, {})
+        ) or (
+            data_profile.get(_table_short_name(identifier).lower(), {})
+            .get("columns", {})
+            .get(col_name, {})
+        )
+        row_count = int(
+            data_profile.get(identifier.strip("`").lower(), {}).get("row_count", 0)
+            or data_profile.get(_table_short_name(identifier).lower(), {}).get("row_count", 0)
+            or 0
+        )
+        rls_verdict = _rls_verdict_for(identifier, tbl_rls, cc_rls)
+        return _entity_matching_score(
+            col_name,
+            description=description,
+            profile=col_profile,
+            benchmark_col_refs=benchmark_col_refs,
+            row_count=row_count,
+            rls_verdict=rls_verdict,
+        )
+
+    def _column_description(cc: dict) -> str:
+        d = cc.get("description") or cc.get("comment") or ""
+        if isinstance(d, list):
+            return " ".join(str(x) for x in d)
+        return str(d)
+
+    # ── 1. Score EVERY visible STRING column (enabled or not) ───────
+    # Key idempotency shift: drop the today's ``not cc.get("enable_entity_matching")``
+    # guard. We need to score every STRING column so the diff step can
+    # work both directions — enable new winners AND disable existing slots
+    # that no longer score highly (PII previously slotted, RLS added, etc.).
+    all_scored: list[tuple[str, str, str, float, str]] = []
+    for tbl in tables + metric_views:
+        identifier = tbl.get("identifier", "")
+        short_name = _table_short_name(identifier)
+        is_mv = tbl in metric_views
+        table_rls = _table_has_rls(tbl)
+        if table_rls:
+            rls_skipped_tables.append(identifier)
+        for cc in tbl.get("column_configs", []):
+            col_name = cc.get("column_name", "")
+            if _is_hidden(cc) or not col_name:
+                continue
+            # Format-assistance side-effect applies to all visible columns,
+            # independent of entity matching.
+            if not cc.get("enable_format_assistance"):
+                cc["enable_format_assistance"] = True
+                changes.append({
+                    "type": "enable_example_values",
+                    "table": identifier,
+                    "column": col_name,
+                })
+            dtype = type_lookup.get((short_name.lower(), col_name.lower()), "")
+            # MV measure columns opt out of EM entirely (numeric aggregates
+            # don't have meaningful value dictionaries).
+            if is_mv and _is_measure_column(col_name, dtype):
+                continue
+            if dtype.upper().split("(")[0].strip() != "STRING":
+                continue
+            score, reason = _score(
+                col_name, _column_description(cc), dtype, identifier,
+                table_rls, _column_has_rls(cc),
+            )
+            all_scored.append((identifier, col_name, dtype, score, reason))
+
+    if rls_skipped_tables:
+        deduped = list(dict.fromkeys(rls_skipped_tables))
+        print(
+            f"  [PROMPT MATCHING] Skipped entity matching for {len(deduped)} "
+            f"RLS-governed table(s): {', '.join(deduped[:5])}"
+            + ("…" if len(deduped) > 5 else "")
+        )
+
+    # ── 2. Filter zero-scores + deterministic sort ───────────────────
+    rejected_candidates = [e for e in all_scored if e[3] <= 0.0]
+    candidates = [e for e in all_scored if e[3] > 0.0]
+    # Sort key: score DESC, then table+column ASC for stable tie-breaks.
+    candidates.sort(key=lambda x: (-x[3], x[0].lower(), x[1].lower()))
+
+    # ── 3. Target = top-120 ──────────────────────────────────────────
+    selected = candidates[:MAX_VALUE_DICTIONARY_COLUMNS]
+    target_set: set[tuple[str, str]] = {
+        (ident, col) for ident, col, _, _, _ in selected
+    }
+    # Build a score+reason lookup for the log block (keyed by (ident,col)).
+    score_lookup: dict[tuple[str, str], tuple[float, str]] = {
+        (ident, col): (sc, rs) for ident, col, _, sc, rs in all_scored
+    }
+
+    # ── 4. Current state ─────────────────────────────────────────────
+    current_set: set[tuple[str, str]] = set()
+    for tbl in tables + metric_views:
+        ident = tbl.get("identifier", "")
+        for cc in tbl.get("column_configs", []):
+            if cc.get("enable_entity_matching") and cc.get("column_name"):
+                current_set.add((ident, cc["column_name"]))
+
+    # ── 5. Diff ──────────────────────────────────────────────────────
+    to_enable = target_set - current_set
+    to_disable = current_set - target_set
+    kept = target_set & current_set
+
+    # Build a deterministic dry-run view (sorted by score DESC).
+    _enable_sorted = sorted(
+        to_enable,
+        key=lambda k: (-score_lookup.get(k, (0.0, ""))[0], k[0].lower(), k[1].lower()),
+    )
+    _disable_sorted = sorted(
+        to_disable,
+        key=lambda k: (score_lookup.get(k, (0.0, ""))[0], k[0].lower(), k[1].lower()),
+    )
+
+    # ── 6. Apply (unless dry-run) ────────────────────────────────────
+    em_enabled_count = 0
+    em_disabled_count = 0
+    if DRY_RUN_ENTITY_MATCHING:
+        print(
+            f"  [PROMPT MATCHING] [DRY-RUN] Would enable {len(to_enable)} "
+            f"slot(s), disable {len(to_disable)} slot(s); keep {len(kept)}"
+        )
+        for ident, col in _enable_sorted[:5]:
+            sc, rs = score_lookup.get((ident, col), (0.0, ""))
+            print(f"    + enable  {_table_short_name(ident)}.{col} score={sc:.1f} [{rs}]")
+        for ident, col in _disable_sorted[:5]:
+            sc, rs = score_lookup.get((ident, col), (0.0, ""))
+            print(f"    - disable {_table_short_name(ident)}.{col} score={sc:.1f} [{rs}]")
+    else:
+        for ident, col in to_disable:
+            tbl_dict = _find_table_in_config(parsed, ident)
+            if not tbl_dict:
+                continue
+            cc = _find_or_create_column_config(tbl_dict, col)
+            cc["enable_entity_matching"] = False
+            sc, rs = score_lookup.get((ident, col), (0.0, "unscored"))
+            changes.append({
+                "type": "disable_value_dictionary",
+                "table": ident,
+                "column": col,
+                "score": sc,
+                "reason": rs,
+            })
+            em_disabled_count += 1
+        for ident, col in to_enable:
+            tbl_dict = _find_table_in_config(parsed, ident)
+            if not tbl_dict:
+                continue
+            cc = _find_or_create_column_config(tbl_dict, col)
+            cc["enable_entity_matching"] = True
+            if not cc.get("enable_format_assistance"):
+                cc["enable_format_assistance"] = True
+            sc, rs = score_lookup.get((ident, col), (0.0, "unscored"))
+            changes.append({
+                "type": "enable_value_dictionary",
+                "table": ident,
+                "column": col,
+                "score": sc,
+                "reason": rs,
+            })
+            em_enabled_count += 1
+
+    fa_count_preview = sum(1 for c in changes if c["type"] == "enable_example_values")
+    fa_skipped = sum(
+        1
+        for t in tables + metric_views
+        for cc in t.get("column_configs", [])
+        if cc.get("enable_format_assistance") and not _is_hidden(cc)
+    ) - fa_count_preview
+
+    fa_lines = [f"\n-- FORMAT ASSISTANCE " + "-" * 31]
+    fa_lines.append(f"  Enabled format assistance on {fa_count_preview} columns")
+    fa_lines.append(f"  Skipped (already enabled): {fa_skipped}")
+    fa_lines.append("-" * 52)
+    print("\n".join(fa_lines))
+
+    # ── Rejected-by-reason tally ─────────────────────────────────────
+    rejected_by_reason: dict[str, int] = {}
+    for _, _, _, _, r in rejected_candidates:
+        rejected_by_reason[r] = rejected_by_reason.get(r, 0) + 1
+
+    # ── ENTITY MATCHING log block (diff view) ────────────────────────
+    em_lines = [f"\n-- ENTITY MATCHING (Value Dictionary) " + "-" * 14]
+    em_lines.append(f"  STRING columns scored: {len(all_scored)}")
+    if rejected_candidates:
+        em_lines.append(
+            f"  Rejected (never slotted): {len(rejected_candidates)}"
+        )
+        for reason, count in sorted(rejected_by_reason.items(), key=lambda x: -x[1]):
+            em_lines.append(f"    - {reason:<26s} {count}")
+        # One example column per reason for debuggability.
+        _shown_per_reason: dict[str, int] = {}
+        for ident, cname, _dt, _sc, reason in rejected_candidates[:30]:
+            if _shown_per_reason.get(reason, 0) < 1:
+                em_lines.append(
+                    f"        e.g. {_table_short_name(ident)}.{cname}"
+                )
+                _shown_per_reason[reason] = _shown_per_reason.get(reason, 0) + 1
+    em_lines.append("  Slot diff vs. current state:")
+    em_lines.append(f"    Keep:    {len(kept):4d}")
+    em_lines.append(f"    Enable:  {len(to_enable):4d}")
+    em_lines.append(f"    Disable: {len(to_disable):4d}"
+                    + ("  (displaced by higher-scoring candidates)"
+                       if to_disable else ""))
+    em_lines.append(
+        f"    Net slots: {len(target_set):3d} / {MAX_VALUE_DICTIONARY_COLUMNS} max"
+        + ("  (no changes)" if not to_enable and not to_disable else "")
+    )
+    if _enable_sorted:
+        em_lines.append("  Top enables:")
+        for ident, col in _enable_sorted[:10]:
+            sc, rs = score_lookup.get((ident, col), (0.0, ""))
+            em_lines.append(
+                f"    {_table_short_name(ident)}.{col:<30s} "
+                f"score={sc:5.1f}  [{rs}]"
+            )
+    if _disable_sorted:
+        em_lines.append("  Top disables (displaced):")
+        for ident, col in _disable_sorted[:10]:
+            sc, rs = score_lookup.get((ident, col), (0.0, ""))
+            em_lines.append(
+                f"    {_table_short_name(ident)}.{col:<30s} "
+                f"score={sc:5.1f}  [{rs}]"
+            )
+    if DRY_RUN_ENTITY_MATCHING:
+        em_lines.append("  [DRY-RUN] Diff logged without PATCHing the space.")
+    em_lines.append("-" * 52)
+    print("\n".join(em_lines))
+
+    if not changes:
+        logger.info("Prompt matching auto-config: no changes needed (already configured)")
+        return {
+            "applied": [],
+            "patched_objects": [],
+            "pre_snapshot": pre_snapshot,
+            "post_snapshot": parsed,
+            "format_assistance_count": 0,
+            "entity_matching_count": 0,
+            "entity_matching_disabled_count": 0,
+            "rejected_by_reason": rejected_by_reason,
+        }
+
+    sort_genie_config(parsed)
+    _enforce_instruction_limit(parsed)
+    patch_space_config(w, space_id, parsed)
+
+    fa_count = sum(1 for c in changes if c["type"] == "enable_example_values")
+    em_count = sum(1 for c in changes if c["type"] == "enable_value_dictionary")
+    em_disabled = sum(1 for c in changes if c["type"] == "disable_value_dictionary")
+    patched_objects = sorted({c["table"] for c in changes})
+
+    print(
+        f"Prompt matching auto-config: format assistance on {fa_count} columns, "
+        f"entity matching enabled on {em_count} + disabled on {em_disabled} "
+        f"({len(target_set)}/{MAX_VALUE_DICTIONARY_COLUMNS} slots in use)"
+    )
+
+    return {
+        "applied": changes,
+        "patched_objects": patched_objects,
+        "pre_snapshot": pre_snapshot,
+        "post_snapshot": copy.deepcopy(parsed),
+        "format_assistance_count": fa_count,
+        "entity_matching_count": em_count,
+        "entity_matching_disabled_count": em_disabled,
+        "rejected_by_reason": rejected_by_reason,
+    }
+
+
+def _legacy_apply_em(
+    w: WorkspaceClient,
+    space_id: str,
+    config: dict,
+    *,
+    benchmarks: list[dict] | None = None,
+) -> dict:
+    """Legacy enable-only entity-matching allocator (pre-idempotent).
+
+    Gated by ``ENABLE_SMARTER_SCORING=False``. Preserves today's exact
+    behaviour: legacy 0/1/2 scorer, no filtering of zero-scores, fill only
+    empty slots (never disable). Includes the silent-PII leak on
+    <120-column spaces by design — this shim exists so operators can pin
+    today's behaviour during rollout if the new allocator surfaces any
+    regression on their corpus.
+
+    Scheduled for removal in a follow-up release (along with the
+    ``ENABLE_SMARTER_SCORING`` flag).
     """
     parsed = config.get("_parsed_space", config)
     ds = parsed.get("data_sources", {})
@@ -961,9 +1517,7 @@ def auto_apply_prompt_matching(
         if cc.get("enable_entity_matching")
     )
 
-    entity_candidates: list[tuple[str, str, str, int]] = []
-    # RLS silently disables entity matching on tables with row_filter / column_mask.
-    # Track skipped tables so we can log once per table instead of per column.
+    entity_candidates: list[tuple[str, str, str, float]] = []
     rls_skipped_tables: list[str] = []
 
     def _table_short_name(identifier: str) -> str:
@@ -973,8 +1527,7 @@ def auto_apply_prompt_matching(
     for tbl in tables:
         identifier = tbl.get("identifier", "")
         short_name = _table_short_name(identifier)
-        table_rls = _table_has_rls(tbl)
-        if table_rls:
+        if _table_has_rls(tbl):
             rls_skipped_tables.append(identifier)
         for cc in tbl.get("column_configs", []):
             col_name = cc.get("column_name", "")
@@ -992,21 +1545,14 @@ def auto_apply_prompt_matching(
                 dtype.upper().split("(")[0].strip() == "STRING"
                 and not cc.get("enable_entity_matching")
             ):
-                if table_rls or _column_has_rls(cc):
-                    logger.info(
-                        "Skipping entity matching for %s.%s — RLS (row_filter / column_mask) "
-                        "silently disables value dictionary lookup",
-                        identifier, col_name,
-                    )
-                    continue
-                score = _entity_matching_score(col_name)
-                entity_candidates.append((identifier, col_name, dtype, score))
+                entity_candidates.append(
+                    (identifier, col_name, dtype, float(_entity_matching_score_legacy(col_name)))
+                )
 
     for mv in metric_views:
         identifier = mv.get("identifier", "")
         short_name = _table_short_name(identifier)
-        mv_rls = _table_has_rls(mv)
-        if mv_rls:
+        if _table_has_rls(mv):
             rls_skipped_tables.append(identifier)
         for cc in mv.get("column_configs", []):
             col_name = cc.get("column_name", "")
@@ -1026,18 +1572,11 @@ def auto_apply_prompt_matching(
                 dtype.upper().split("(")[0].strip() == "STRING"
                 and not cc.get("enable_entity_matching")
             ):
-                if mv_rls or _column_has_rls(cc):
-                    logger.info(
-                        "Skipping entity matching for %s.%s — RLS (row_filter / column_mask) "
-                        "silently disables value dictionary lookup",
-                        identifier, col_name,
-                    )
-                    continue
-                score = _entity_matching_score(col_name)
-                entity_candidates.append((identifier, col_name, dtype, score))
+                entity_candidates.append(
+                    (identifier, col_name, dtype, float(_entity_matching_score_legacy(col_name)))
+                )
 
     if rls_skipped_tables:
-        # Deduplicate while preserving insertion order (a table can appear in both loops).
         deduped = list(dict.fromkeys(rls_skipped_tables))
         print(
             f"  [PROMPT MATCHING] Skipped entity matching for {len(deduped)} "
@@ -1063,11 +1602,16 @@ def auto_apply_prompt_matching(
     fa_lines.append("-" * 52)
     print("\n".join(fa_lines))
 
-    em_lines = [f"\n-- ENTITY MATCHING (Value Dictionary) " + "-" * 14]
-    em_lines.append(f"  STRING columns scored for entity matching: {len(entity_candidates)}")
+    em_lines = [f"\n-- ENTITY MATCHING (Value Dictionary) [LEGACY] " + "-" * 6]
+    em_lines.append(
+        f"  Candidates ranked (legacy scorer): {len(entity_candidates)}"
+    )
     for rank, (ident, cname, _dt, sc) in enumerate(entity_candidates[:20], 1):
         status = "SELECTED" if rank <= len(selected) else "NOT SELECTED (slot limit)"
-        em_lines.append(f"    Rank {rank:2d}: {ident}.{cname:<30s} score={sc}  {status}")
+        em_lines.append(
+            f"    Rank {rank:2d}: {_table_short_name(ident)}.{cname:<30s} "
+            f"score={sc:4.1f}  {status}"
+        )
     em_lines.append(
         f"  Slots used: {already_dict_count} existing + {len(selected)} new = "
         f"{already_dict_count + len(selected)} / {MAX_VALUE_DICTIONARY_COLUMNS} max"
@@ -1098,6 +1642,8 @@ def auto_apply_prompt_matching(
             "post_snapshot": parsed,
             "format_assistance_count": 0,
             "entity_matching_count": 0,
+            "entity_matching_disabled_count": 0,
+            "rejected_by_reason": {},
         }
 
     sort_genie_config(parsed)
@@ -1109,8 +1655,8 @@ def auto_apply_prompt_matching(
     patched_objects = sorted({c["table"] for c in changes})
 
     print(
-        f"Prompt matching auto-config: enabled format assistance on {fa_count} columns, "
-        f"entity matching on {em_count} STRING columns "
+        f"Prompt matching auto-config [LEGACY]: enabled format assistance on {fa_count} "
+        f"columns, entity matching on {em_count} STRING columns "
         f"({already_dict_count + em_count}/{MAX_VALUE_DICTIONARY_COLUMNS} dictionary slots used)"
     )
 
@@ -1121,6 +1667,8 @@ def auto_apply_prompt_matching(
         "post_snapshot": copy.deepcopy(parsed),
         "format_assistance_count": fa_count,
         "entity_matching_count": em_count,
+        "entity_matching_disabled_count": 0,
+        "rejected_by_reason": {},
     }
 
 

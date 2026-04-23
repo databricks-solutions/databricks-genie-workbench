@@ -2672,6 +2672,92 @@ FREE_TEXT_COLUMN_PATTERNS = [
     "narrative", "reason", "explanation",
 ]
 
+# ── 11b. Entity-matching slot allocation (intelligent scoring) ──────────
+# Consumed by ``_entity_matching_score`` + ``auto_apply_prompt_matching``
+# in ``optimization/applier.py``. The scorer returns 0 for any hard
+# disqualifier below; the caller FILTERS score<=0 candidates out of the
+# selection pool rather than sorting-and-taking-top-N. This prevents the
+# silent PII leak that happens today on spaces with <120 STRING columns
+# where every STRING column gets auto-enabled regardless of fit.
+
+MAX_ENTITY_MATCHING_CARDINALITY = 1024
+"""Genie silently drops value dictionaries for columns whose distinct value
+count exceeds this threshold (see docs.databricks.com knowledge-store
+docs). Slot activation on such columns is a no-op that wastes one of the
+120 slots."""
+
+MIN_ENTITY_MATCHING_CARDINALITY = 2
+"""Reject constant columns (cardinality <= 1). Zero benefit from entity
+matching on a column whose only value is 'ACTIVE' or NULL."""
+
+FREE_TEXT_DISTINCT_RATIO = 0.8
+"""Reject columns whose distinct_count / row_count exceeds this threshold —
+near-unique-per-row columns are IDs or free-form text, neither of which
+benefits from value dictionary lookup."""
+
+PII_COLUMN_PATTERNS = [
+    "email", "ssn", "social_security", "phone", "address_line",
+    "dob", "date_of_birth", "tax_id", "credit_card", "passport",
+    "driver_license", "account_number", "bank_account",
+]
+"""Column name substrings that indicate PII. Hard-rejected from entity
+matching because the value dictionary is stored in the workspace storage
+bucket and would leak sensitive values to the space's shared context."""
+
+BOOLEAN_FLAG_PATTERNS = [
+    "_flag", "_yn", "_bool", "is_", "has_", "can_", "should_",
+]
+"""Column name substrings that indicate boolean / 2-value flags. Zero
+benefit from entity matching."""
+
+DESCRIPTION_HINTS_POSITIVE = frozenset({
+    "enum", "category", "lookup", "one of", "valid values",
+})
+"""Description keywords that boost the entity-matching score — explicit
+markers of bounded-value columns."""
+
+DESCRIPTION_HINTS_NEGATIVE = frozenset({
+    "internal", "etl", "audit", "deprecated", "do not use",
+})
+"""Description keywords that penalize the entity-matching score — low
+user-intent signal."""
+
+DYNAMIC_VIEW_FN_RE = re.compile(
+    r"\b(current_user|session_user|is_account_group_member|is_member)\s*\(",
+    re.IGNORECASE,
+)
+"""Identity functions used by dynamic views. Per Databricks docs,
+entity matching on dynamic views is silently no-op'd — treat any view
+whose DDL matches this regex as RLS-tainted."""
+
+ENABLE_SMARTER_SCORING = (
+    os.getenv("GSO_SMARTER_SCORING", "true").lower() in ("1", "true", "yes")
+)
+"""Gate for the intelligent scorer + idempotent diff allocator. When
+False, falls back to the legacy 0/1/2 scorer + enable-only sort-and-take
+shim (today's pre-idempotent behaviour, including the silent PII leak on
+spaces with <120 STRING columns). Default: True. Override via env var
+``GSO_SMARTER_SCORING=false``. The legacy shim will be deleted in a
+follow-up release; use the flag to pin today's behaviour if the new
+allocator surfaces any regressions on your corpus."""
+
+DRY_RUN_ENTITY_MATCHING = (
+    os.getenv("GSO_DRY_RUN_ENTITY_MATCHING", "false").lower() in ("1", "true", "yes")
+)
+"""When True, log the proposed enable/disable diff without PATCHing the
+space. Used for initial rollout / audit. Covers the full enable+disable
+diff produced by the idempotent allocator (not just reclaim).
+Override via env var ``GSO_DRY_RUN_ENTITY_MATCHING=true``."""
+
+STRICT_RLS_MODE = (
+    os.getenv("GSO_STRICT_RLS", "false").lower() in ("1", "true", "yes")
+)
+"""When True, RLS verdict 'unknown' is treated as 'tainted' (refuse to
+enable entity matching). Default: False — unknown verdicts are treated
+as clean + warned, aligning with preflight's warn-and-proceed philosophy
+since ``information_schema.row_filters`` availability is inconsistent
+across DBR versions and workspace configurations."""
+
 NUMERIC_DATA_TYPES = {
     "DOUBLE", "FLOAT", "DECIMAL", "INT", "INTEGER", "BIGINT",
     "SMALLINT", "TINYINT", "LONG", "SHORT", "BYTE", "NUMBER",
