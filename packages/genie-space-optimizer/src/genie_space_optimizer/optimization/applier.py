@@ -389,6 +389,157 @@ def render_canonical_sections(sections: dict[str, str | list[str]]) -> list[str]
     return lines
 
 
+def _trim_bullets_to_budget(body: str, budget: int) -> str:
+    """Drop trailing bullets from ``body`` until total length <= ``budget``.
+
+    Semantics:
+
+    - ``body`` is expected to be newline-separated bullets (``- …``).
+    - Drops bullets from the end until the remaining body fits.
+    - If the very first bullet alone exceeds ``budget``, truncates it at
+      a word boundary (never mid-word) so the section isn't left empty.
+    - Whitespace-only / empty input returns ``""`` unchanged.
+    - Budget of 0 or negative returns ``""``.
+
+    Returns the trimmed body (may be empty, may be unchanged).
+    """
+    if not body or not body.strip():
+        return ""
+    if budget <= 0:
+        return ""
+
+    lines = body.splitlines()
+    # Fast path — body already fits.
+    current = "\n".join(lines)
+    if len(current) <= budget:
+        return current
+
+    # Iterative trim from the tail until we fit or only one bullet remains.
+    while len(lines) > 1 and len("\n".join(lines)) > budget:
+        lines.pop()
+    current = "\n".join(lines)
+    if len(current) <= budget:
+        return current
+
+    # Single bullet still over budget — truncate at word boundary.
+    only = lines[0] if lines else body
+    if len(only) <= budget:
+        return only
+    # Leave a small tail so we never land on a hyphen / punctuation.
+    truncated = only[:budget].rstrip()
+    # Back off to the last whitespace so we don't chop mid-word.
+    last_space = truncated.rfind(" ")
+    if last_space > max(budget // 2, 8):
+        truncated = truncated[:last_space].rstrip()
+    return truncated
+
+
+def _trim_rendered_to_cap(rendered: list[str], cap: int) -> list[str]:
+    """Priority-ordered trim of a rendered ``list[str]`` to fit ``cap``.
+
+    Used as a post-render safety net after Layer 1's ``_trim_bullets_to_budget``
+    has already clipped each section's body to its per-section budget. The
+    pre-render trim can't account for rendering overhead (section headers
+    ``## PURPOSE\\n`` ≈ 14 chars each + blank lines between sections); this
+    function handles the last mile.
+
+    Trim priority (first = trimmed first, last = most load-bearing):
+
+        1. ## DATA QUALITY NOTES   — valuable but droppable in a pinch
+        2. ## DISAMBIGUATION       — clarification rules
+        3. ## CONSTRAINTS          — guardrails
+        4. ## Instructions you must follow when providing summaries — rendering
+        5. ## PURPOSE              — scope + audience; load-bearing
+
+    Within a section, bullets are dropped from the end. When a section
+    becomes empty, its header is also dropped.
+    """
+    if not rendered:
+        return rendered
+
+    # Local import avoids a circular at module load time.
+    from genie_space_optimizer.common.config import CANONICAL_SECTION_HEADERS
+
+    def _total_len(parts: list[str]) -> int:
+        return sum(len(p) for p in parts)
+
+    if _total_len(rendered) <= cap:
+        return rendered
+
+    # Walk the list and segment by canonical headers. Each segment is
+    # (header_line, [body_lines], trailing_blank).
+    segments: list[dict] = []
+    current: dict | None = None
+    for line in rendered:
+        stripped = line.lstrip()
+        # Match exactly our canonical header lines.
+        is_header = any(
+            stripped.startswith(h) and (line.rstrip() == h or line.rstrip() == h + "\n".rstrip())
+            for h in CANONICAL_SECTION_HEADERS
+        )
+        # The renderer emits each header as a distinct element ending "\n",
+        # so we match on the rstripped content.
+        matched_header = None
+        for h in CANONICAL_SECTION_HEADERS:
+            if line.rstrip() == h:
+                matched_header = h
+                break
+        if matched_header:
+            if current is not None:
+                segments.append(current)
+            current = {"header": matched_header, "header_line": line, "body": [], "trailers": []}
+        elif current is not None:
+            if line.strip():
+                current["body"].append(line)
+            else:
+                # Separator / blank line between sections.
+                current["trailers"].append(line)
+        else:
+            # Preamble before any recognised header — keep as-is.
+            current = {"header": None, "header_line": None, "body": [line], "trailers": []}
+    if current is not None:
+        segments.append(current)
+
+    # Priority order: trim-first (LAST element in the list below) to
+    # trim-last (FIRST element). Walk the list in the priority-to-trim
+    # order — we drop from the tail of each section's body until we fit.
+    trim_priority = [
+        "## DATA QUALITY NOTES",
+        "## DISAMBIGUATION",
+        "## CONSTRAINTS",
+        "## Instructions you must follow when providing summaries",
+        "## PURPOSE",
+    ]
+
+    def _reassemble() -> list[str]:
+        out: list[str] = []
+        for i, seg in enumerate(segments):
+            if seg["header_line"] is not None and not seg["body"]:
+                # Entire section emptied — drop the header too.
+                continue
+            # Skip the blank-line separator before the FIRST real segment
+            # to avoid leading blank lines.
+            if seg["header_line"] is not None:
+                out.append(seg["header_line"])
+            out.extend(seg["body"])
+            out.extend(seg["trailers"])
+        return out
+
+    for target_header in trim_priority:
+        target = next(
+            (s for s in segments if s.get("header") == target_header),
+            None,
+        )
+        if target is None:
+            continue
+        while target["body"] and _total_len(_reassemble()) > cap:
+            target["body"].pop()
+        if _total_len(_reassemble()) <= cap:
+            break
+
+    return _reassemble()
+
+
 class RewriteResult:
     """Outcome of :func:`rewrite_instructions_from_miner_output`.
 

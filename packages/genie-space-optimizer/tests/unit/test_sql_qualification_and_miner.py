@@ -787,3 +787,284 @@ class TestProactiveInstructionPromptStrengthened:
         # Old weaker wording is gone.
         # (Old rule used "SQL snippet" — ensure it's been upgraded.)
         assert "any SQL keyword or clause" in PROACTIVE_INSTRUCTION_PROMPT
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Commit 3 — Structural resilience: trim helpers + repair loop + UX
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestTrimBulletsToBudget:
+    """_trim_bullets_to_budget — Layer 1 of the two-level budget enforcement.
+
+    Drops trailing bullets until the body fits, truncates the first bullet
+    at a word boundary if it alone exceeds budget. Empty / over-cap edges.
+    """
+
+    def test_empty_body_returns_empty(self):
+        from genie_space_optimizer.optimization.applier import _trim_bullets_to_budget
+        assert _trim_bullets_to_budget("", 100) == ""
+        assert _trim_bullets_to_budget("   ", 100) == ""
+
+    def test_body_under_budget_unchanged(self):
+        from genie_space_optimizer.optimization.applier import _trim_bullets_to_budget
+        body = "- one\n- two\n- three"
+        assert _trim_bullets_to_budget(body, 100) == body
+
+    def test_drops_trailing_bullets(self):
+        from genie_space_optimizer.optimization.applier import _trim_bullets_to_budget
+        body = "- first\n- second\n- third\n- fourth"
+        # Budget fits only first + second.
+        out = _trim_bullets_to_budget(body, 20)
+        assert "first" in out
+        assert "fourth" not in out
+        assert len(out) <= 20
+
+    def test_truncates_first_bullet_at_word_boundary(self):
+        from genie_space_optimizer.optimization.applier import _trim_bullets_to_budget
+        body = "- this is a single very long bullet that exceeds the budget by quite a lot"
+        out = _trim_bullets_to_budget(body, 30)
+        assert len(out) <= 30
+        # Doesn't end mid-word.
+        assert not out.endswith(("t", "s", "a", "e"))  # heuristic
+        # Actually: should end on a whitespace-ish boundary.
+        assert " " in out
+
+    def test_zero_or_negative_budget_returns_empty(self):
+        from genie_space_optimizer.optimization.applier import _trim_bullets_to_budget
+        assert _trim_bullets_to_budget("- foo\n- bar", 0) == ""
+        assert _trim_bullets_to_budget("- foo\n- bar", -5) == ""
+
+
+class TestTrimRenderedToCap:
+    """_trim_rendered_to_cap — Layer 2 post-render priority trim.
+
+    Trims trailing bullets in priority order: DATA QUALITY NOTES first,
+    PURPOSE last. Drops headers when their section becomes empty.
+    """
+
+    def _make_rendered(self) -> list[str]:
+        # Simulate render_canonical_sections output: each element ends in \n.
+        return [
+            "## PURPOSE\n",
+            "- Analytics for the sales team.\n",
+            "\n",
+            "## DATA QUALITY NOTES\n",
+            "- first dq note that can be trimmed\n",
+            "- second dq note also trimmable\n",
+            "- third dq note\n",
+        ]
+
+    def test_under_cap_unchanged(self):
+        from genie_space_optimizer.optimization.applier import _trim_rendered_to_cap
+        rendered = self._make_rendered()
+        total = sum(len(p) for p in rendered)
+        assert _trim_rendered_to_cap(rendered, total + 100) == rendered
+
+    def test_drops_data_quality_bullets_first(self):
+        from genie_space_optimizer.optimization.applier import _trim_rendered_to_cap
+        rendered = self._make_rendered()
+        total = sum(len(p) for p in rendered)
+        # Force trim: cap just under current total so one DQ bullet drops.
+        out = _trim_rendered_to_cap(rendered, total - 20)
+        out_text = "".join(out)
+        assert "Analytics for the sales team" in out_text  # PURPOSE preserved
+        # At least one DQ note dropped.
+        assert out_text.count("dq note") < 3
+
+    def test_drops_section_header_when_body_empty(self):
+        from genie_space_optimizer.optimization.applier import _trim_rendered_to_cap
+        rendered = [
+            "## PURPOSE\n",
+            "- Sales analytics for the team covering H1 revenue.\n",
+            "\n",
+            "## DATA QUALITY NOTES\n",
+            "- The status column has mixed casing.\n",
+        ]
+        total = sum(len(p) for p in rendered)
+        # Cap after full DQ section is dropped: we want PURPOSE to still fit.
+        # Setting the cap large enough to hold PURPOSE + blank + trailing
+        # but not DQ header + its body.
+        purpose_len = sum(len(p) for p in rendered[:3])
+        out = _trim_rendered_to_cap(rendered, purpose_len + 5)
+        out_text = "".join(out)
+        # Purpose stays, DQ entirely gone.
+        assert "Sales analytics" in out_text
+        assert "status column" not in out_text
+        assert "## DATA QUALITY NOTES" not in out_text
+
+    def test_preserves_purpose_last(self):
+        """Even under aggressive trim, PURPOSE is the last section to lose content."""
+        from genie_space_optimizer.optimization.applier import _trim_rendered_to_cap
+        rendered = self._make_rendered()
+        # Tight cap — aggressive trim.
+        out = _trim_rendered_to_cap(rendered, 50)
+        out_text = "".join(out)
+        # PURPOSE header always survives until the whole section empties.
+        assert "## PURPOSE" in out_text
+
+    def test_empty_input_unchanged(self):
+        from genie_space_optimizer.optimization.applier import _trim_rendered_to_cap
+        assert _trim_rendered_to_cap([], 100) == []
+
+
+class TestExpandRepairLoop:
+    """C1 — expand_instructions retries once on per-section validation failure.
+
+    First LLM call returns content with SQL-in-prose; repair call returns clean.
+    Asserts two attempts + final output is valid.
+    """
+
+    def _empty_metadata(self) -> dict:
+        return {"data_sources": {"tables": [], "metric_views": []}}
+
+    def test_sql_in_prose_triggers_repair(self, monkeypatch):
+        from genie_space_optimizer.optimization.optimizer import _expand_instructions
+
+        attempts = {"n": 0, "span_names": []}
+
+        def _fake(_w, _system, prompt, *, span_name="", **kwargs):
+            attempts["n"] += 1
+            attempts["span_names"].append(span_name)
+            if attempts["n"] == 1:
+                # First call: emit a section containing SQL-in-prose.
+                return (
+                    '{"sections": {"## CONSTRAINTS": '
+                    '"- Do not WHERE col = 1 then SELECT * FROM orders\\n"}}'
+                ), None
+            # Second call: clean content.
+            return (
+                '{"sections": {"## CONSTRAINTS": '
+                '"- Never return customer PII.\\n"}}'
+            ), None
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+            _fake,
+        )
+
+        out = _expand_instructions(
+            self._empty_metadata(),
+            "x" * 200,  # existing prose has enough room to call LLM
+            ["## CONSTRAINTS"],
+            w=MagicMock(),
+        )
+        assert attempts["n"] == 2
+        assert "expand_instructions_repair" in attempts["span_names"]
+        # Clean content retained.
+        assert out.get("## CONSTRAINTS", "").startswith("- Never return")
+
+    def test_clean_output_no_repair(self, monkeypatch):
+        from genie_space_optimizer.optimization.optimizer import _expand_instructions
+
+        attempts = {"n": 0}
+
+        def _fake(*a, **k):
+            attempts["n"] += 1
+            return (
+                '{"sections": {"## CONSTRAINTS": "- Never return PII.\\n"}}'
+            ), None
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+            _fake,
+        )
+
+        out = _expand_instructions(
+            self._empty_metadata(),
+            "x" * 200,
+            ["## CONSTRAINTS"],
+            w=MagicMock(),
+        )
+        # Only one attempt when content is clean.
+        assert attempts["n"] == 1
+        assert "## CONSTRAINTS" in out
+
+
+class TestSeedRepairLoop:
+    """C1 — _generate_proactive_instructions retries once on validation failure."""
+
+    def _metadata_with_orders(self) -> dict:
+        return {
+            "data_sources": {
+                "tables": [{
+                    "identifier": "cat.sch.orders",
+                    "columns": [{"name": "amount"}],
+                }],
+                "metric_views": [],
+            },
+            "instructions": {
+                "text_instructions": [],
+            },
+        }
+
+    def test_validation_failure_triggers_repair(self, monkeypatch):
+        from genie_space_optimizer.optimization.optimizer import (
+            _generate_proactive_instructions,
+        )
+
+        attempts = {"n": 0, "span_names": []}
+
+        def _fake(_w, _system, prompt, *, span_name="", **kwargs):
+            attempts["n"] += 1
+            attempts["span_names"].append(span_name)
+            if attempts["n"] == 1:
+                # First call: include SQL-in-prose that will fail strict
+                # validation (scanner v2 catches "SELECT ... FROM").
+                return (
+                    "## PURPOSE\n"
+                    "- Sales analytics for the team.\n"
+                    "\n"
+                    "## CONSTRAINTS\n"
+                    "- Use SELECT amount FROM orders WHERE status = 'active'\n"
+                ), None
+            # Second call: clean.
+            return (
+                "## PURPOSE\n"
+                "- Sales analytics for the team covering H1 revenue reports.\n"
+                "\n"
+                "## CONSTRAINTS\n"
+                "- Never return customer PII or internal identifiers.\n"
+            ), None
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+            _fake,
+        )
+
+        result = _generate_proactive_instructions(
+            self._metadata_with_orders(), w=MagicMock(),
+        )
+        assert attempts["n"] == 2
+        assert "generate_proactive_instructions_repair" in attempts["span_names"]
+        assert "Never return customer PII" in result
+        assert "SELECT amount FROM" not in result
+
+    def test_repair_also_fails_returns_empty(self, monkeypatch):
+        from genie_space_optimizer.optimization.optimizer import (
+            _generate_proactive_instructions,
+        )
+
+        attempts = {"n": 0}
+
+        def _fake(*a, **k):
+            attempts["n"] += 1
+            # Every call has SQL-in-prose → both attempts fail.
+            return (
+                "## PURPOSE\n"
+                "- Sales data pipeline for the analytics team.\n"
+                "## CONSTRAINTS\n"
+                "- Use WHERE col = 'x' pattern for filtering active records\n"
+            ), None
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+            _fake,
+        )
+
+        result = _generate_proactive_instructions(
+            self._metadata_with_orders(), w=MagicMock(),
+        )
+        # Both attempts failed → empty string.
+        assert result == ""
+        assert attempts["n"] == 2  # one normal + one repair

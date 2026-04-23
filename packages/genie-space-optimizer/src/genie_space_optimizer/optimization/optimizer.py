@@ -2010,6 +2010,9 @@ def _generate_space_description(
 def _generate_proactive_instructions(
     metadata_snapshot: dict,
     w: WorkspaceClient | None = None,
+    *,
+    _repair_attempt: int = 0,
+    _prior_errors: list[str] | None = None,
 ) -> str:
     """Generate canonical 5-section routing instructions for an empty space.
 
@@ -2017,11 +2020,14 @@ def _generate_proactive_instructions(
     or ``""`` on failure. The caller is responsible for persisting the
     text via ``_set_general_instructions``.
 
-    The output passes :func:`validate_instruction_text` in strict mode
-    before being returned — anything that fails validation is dropped
-    rather than written, so a malformed LLM reply never reaches the
-    Genie Space. On validation failure the (possibly partial) offending
-    text is logged for debugging.
+    Self-contained repair loop (Task C.1): on validation failure, the
+    function recurses ONCE with ``_repair_attempt=1`` and the specific
+    errors passed back to the LLM via the prompt prefix. The harness
+    doesn't need to know — ``_generate_proactive_instructions(metadata, w)``
+    still returns ``""`` on total failure.
+
+    Parameters ``_repair_attempt`` and ``_prior_errors`` are private —
+    external callers should leave them at defaults.
     """
     from genie_space_optimizer.common.config import (
         MAX_TEXT_INSTRUCTIONS_CHARS, PROACTIVE_INSTRUCTION_PROMPT,
@@ -2048,12 +2054,28 @@ def _generate_proactive_instructions(
         priority_keys=["tables_context"],
     )
     prompt = format_mlflow_template(PROACTIVE_INSTRUCTION_PROMPT, **format_kwargs)
+
+    # Repair preamble — prepended when the first attempt failed validation.
+    if _prior_errors:
+        prompt = (
+            "REPAIR CALL — your previous reply failed validation with these "
+            "specific errors:\n"
+            + "\n".join(f"  - {e}" for e in _prior_errors[:5])
+            + "\n\nFix ONLY those issues in your regenerated output. "
+            "Keep all other content. Return only the instruction text.\n\n"
+            + prompt
+        )
     system_msg = "You generate routing instructions for Databricks Genie Spaces."
 
+    span_name = (
+        "generate_proactive_instructions_repair"
+        if _repair_attempt > 0
+        else "generate_proactive_instructions"
+    )
     try:
         text, _response = _traced_llm_call(
             w, system_msg, prompt,
-            span_name="generate_proactive_instructions",
+            span_name=span_name,
             max_tokens=2048,
         )
         text = re.sub(r"```[a-z]*\n?", "", text).strip().rstrip("`")
@@ -2069,16 +2091,32 @@ def _generate_proactive_instructions(
             # so we don't truncate mid-bullet.
             text = text[:MAX_TEXT_INSTRUCTIONS_CHARS].rsplit("\n", 1)[0]
         ok, errors = validate_instruction_text(text, strict=True)
-        if not ok:
-            logger.warning(
-                "Proactive instruction generation: validation failed — errors=%s sample=%r",
-                errors, text[:200],
+        if ok:
+            logger.info(
+                "Proactive instruction generation: produced %d chars%s",
+                len(text),
+                " (after repair)" if _repair_attempt > 0 else "",
             )
-            return ""
-        logger.info(
-            "Proactive instruction generation: produced %d chars", len(text),
+            return text
+
+        # Validation failed — attempt one repair round.
+        if _repair_attempt == 0:
+            logger.info(
+                "Proactive instruction generation: validation failed — "
+                "retrying once with repair prompt. errors=%s",
+                errors,
+            )
+            return _generate_proactive_instructions(
+                metadata_snapshot, w,
+                _repair_attempt=1, _prior_errors=errors,
+            )
+
+        logger.warning(
+            "Proactive instruction generation: validation failed after "
+            "repair — giving up. errors=%s sample=%r",
+            errors, text[:200],
         )
-        return text
+        return ""
     except Exception:
         logger.warning(
             "Proactive instruction generation: LLM call failed", exc_info=True,
@@ -2091,6 +2129,9 @@ def _expand_instructions(
     existing_instructions: str,
     missing_sections: list[str],
     w: WorkspaceClient | None = None,
+    *,
+    _repair_attempt: int = 0,
+    _prior_errors: list[str] | None = None,
 ) -> dict[str, str]:
     """Generate content for the canonical sections a space is missing.
 
@@ -2099,6 +2140,11 @@ def _expand_instructions(
     canonical sections. The LLM returns a dict keyed by exact canonical
     header; we validate every key is in ``missing_sections`` and in
     :data:`CANONICAL_SECTION_HEADERS` before returning.
+
+    Self-contained repair loop (Task C.1): on per-section validation
+    failure (SQL-in-prose, over-budget), the function recurses ONCE with
+    ``_repair_attempt=1`` and the offending details passed back to the
+    LLM via the prompt prefix.
 
     Parameters
     ----------
@@ -2118,11 +2164,14 @@ def _expand_instructions(
         the LLM chose to populate. Sections the LLM declined to fill
         (because there was nothing meaningful to say) are absent from
         the dict — the caller merges only what was returned, never
-        overwriting existing content.
+        overwriting existing content. May also return a
+        ``{"__skip_reason__": ...}`` sentinel when budget is too small
+        to call the LLM.
     """
     from genie_space_optimizer.common.config import (
         CANONICAL_SECTION_HEADERS, EXPAND_INSTRUCTION_PROMPT,
         MAX_TEXT_INSTRUCTIONS_CHARS, MIN_EXPAND_BUDGET,
+        sql_in_text_findings,
     )
     from genie_space_optimizer.optimization.evaluation import _extract_json
 
@@ -2184,15 +2233,30 @@ def _expand_instructions(
         priority_keys=["existing_instructions", "tables_context"],
     )
     prompt = format_mlflow_template(EXPAND_INSTRUCTION_PROMPT, **format_kwargs)
+
+    # Repair preamble — prepended on the second attempt with the specific
+    # errors from the first. Same pattern as _generate_proactive_instructions.
+    if _prior_errors:
+        prompt = (
+            "REPAIR CALL — your previous reply failed validation with these "
+            "specific errors:\n"
+            + "\n".join(f"  - {e}" for e in _prior_errors[:5])
+            + "\n\nFix ONLY those issues. Keep all other content. "
+            "Return only the JSON.\n\n"
+            + prompt
+        )
     system_msg = (
         "You expand Databricks Genie Space instructions — only the "
         "missing canonical sections."
     )
 
+    span_name = (
+        "expand_instructions_repair" if _repair_attempt > 0 else "expand_instructions"
+    )
     try:
         text, _response = _traced_llm_call(
             w, system_msg, prompt,
-            span_name="expand_instructions",
+            span_name=span_name,
             max_tokens=1536,
         )
     except Exception:
@@ -2237,9 +2301,57 @@ def _expand_instructions(
             continue
         out[header_str] = body_str
 
+    # ── Per-section validation (repair-loop trigger) ────────────────
+    # The merged-text validation happens in the harness; here we only
+    # check each section INDIVIDUALLY for SQL-in-prose and per-section
+    # over-budget. Those are the two failure modes the LLM can self-heal
+    # via one repair call — other failures (e.g. totally empty output)
+    # aren't worth a retry.
+    errors: list[str] = []
+    for header, body_str in out.items():
+        sql_offenders = sql_in_text_findings(body_str)
+        if sql_offenders:
+            errors.append(
+                f"Section {header!r} contains SQL: "
+                f"{sql_offenders[0].strip()[:100]!r}. "
+                "Rephrase using English verbs (combine, link, pair) — "
+                "never SQL keywords."
+            )
+        if len(body_str) > per_section_budget * 2:
+            # Allow 2× per-section budget headroom before triggering repair.
+            # Layer 1 (harness pre-render trim) will hard-clip whatever lands,
+            # but spending a repair round on a 10× overshoot produces better
+            # output than trimming mid-bullet.
+            errors.append(
+                f"Section {header!r} is {len(body_str)} chars; "
+                f"budget was ~{per_section_budget}. Trim to fit."
+            )
+
+    if errors and _repair_attempt == 0:
+        logger.info(
+            "Expand instructions: per-section validation failed — "
+            "retrying once with repair prompt. errors=%s",
+            errors,
+        )
+        return _expand_instructions(
+            metadata_snapshot, existing_instructions, missing_sections, w=w,
+            _repair_attempt=1, _prior_errors=errors,
+        )
+
+    if errors:
+        logger.warning(
+            "Expand instructions: validation failed after repair — "
+            "dropping offending sections. errors=%s",
+            errors,
+        )
+        # Drop any offending section rather than returning it — the harness
+        # can still merge the clean ones.
+        out = {h: b for h, b in out.items() if not sql_in_text_findings(b)}
+
     logger.info(
-        "Expand instructions: produced %d/%d requested sections (%s)",
+        "Expand instructions: produced %d/%d requested sections (%s)%s",
         len(out), len(missing), ", ".join(out.keys()) or "(none)",
+        " (after repair)" if _repair_attempt > 0 else "",
     )
     return out
 

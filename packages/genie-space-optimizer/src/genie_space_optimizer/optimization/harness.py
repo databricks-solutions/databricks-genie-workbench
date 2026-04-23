@@ -1688,10 +1688,12 @@ def _run_proactive_instruction_seeding(
     """
     from genie_space_optimizer.common.config import (
         CANONICAL_SECTION_HEADERS, MAX_TEXT_INSTRUCTIONS_CHARS,
+        MIN_EXPAND_BUDGET,
     )
     from genie_space_optimizer.common.genie_client import patch_space_config
     from genie_space_optimizer.optimization.applier import (
         _get_general_instructions, _set_general_instructions,
+        _trim_bullets_to_budget, _trim_rendered_to_cap,
         parse_canonical_sections, render_canonical_sections,
         validate_instruction_text,
     )
@@ -1710,6 +1712,10 @@ def _run_proactive_instruction_seeding(
         "seeded_sections": [],
         "expanded_sections": [],
         "skipped_reason": None,
+        # C3 decline-log UX: track disposition of each phase so the summary
+        # line surfaces the actual reason instead of the misleading "no-op".
+        "seed_outcome": "skipped",
+        "expand_outcome": "not_attempted",
     }
 
     write_stage(
@@ -1730,6 +1736,7 @@ def _run_proactive_instruction_seeding(
                 try:
                     patch_space_config(w, space_id, parsed)
                     result["instructions_seeded"] = True
+                    result["seed_outcome"] = "wrote"
                     result["instruction_chars"] = len(instruction_text)
                     canonical_secs, _, _ = parse_canonical_sections(instruction_text)
                     result["seeded_sections"] = [
@@ -1755,19 +1762,39 @@ def _run_proactive_instruction_seeding(
                         "Proactive instruction seeding: PATCH failed",
                         exc_info=True,
                     )
+                    result["seed_outcome"] = "patch_failed"
+            else:
+                # LLM returned "" — either validation failed after repair
+                # or the LLM call raised. Specific reason was logged by
+                # _generate_proactive_instructions.
+                result["seed_outcome"] = "declined_llm_or_validation"
+        else:
+            # Seed is only for empty-or-thin prose; nothing to do otherwise.
+            result["seed_outcome"] = "skipped_existing_prose"
 
         # ── Expand phase ────────────────────────────────────────────
         # Always runs after seed. Works on whatever prose exists after
-        # the seed phase (if any). Skipped only if existing content
-        # has all five canonical sections or expansion would overflow
-        # the length cap.
+        # the seed phase (if any). Declines rather than writes malformed
+        # prose — Fix Agent contract parity.
         canonical_secs, _legacy_secs, _preamble = parse_canonical_sections(
             current_instructions or "",
         )
         present_headers = {h for h in CANONICAL_SECTION_HEADERS if h in canonical_secs}
         missing = [h for h in CANONICAL_SECTION_HEADERS if h not in present_headers]
 
-        if missing and current_instructions:
+        # Budget for Layer 1 pre-render trim — re-derived to match what
+        # _expand_instructions used when calling the LLM.
+        existing_length = len(current_instructions or "")
+        remaining_budget = max(MAX_TEXT_INSTRUCTIONS_CHARS - existing_length, 0)
+        per_section_budget = (
+            remaining_budget // len(missing) if missing else remaining_budget
+        )
+
+        if not missing:
+            result["expand_outcome"] = "skipped_all_sections_present"
+        elif not current_instructions:
+            result["expand_outcome"] = "skipped_no_existing_prose"
+        else:
             try:
                 new_sections = _expand_instructions(
                     metadata_snapshot, current_instructions, missing, w=w,
@@ -1775,46 +1802,73 @@ def _run_proactive_instruction_seeding(
             except Exception:
                 logger.warning("Expand instructions call failed", exc_info=True)
                 new_sections = {}
+                result["expand_outcome"] = "llm_error"
 
-            # _expand_instructions may return a ``__skip_reason__`` sentinel
-            # (e.g. when existing prose leaves < MIN_EXPAND_BUDGET of room).
-            # Pop it so we never try to render it as a canonical header; the
-            # value is informational for decline-log UX (see Commit 3 / C3).
+            # ``__skip_reason__`` sentinel — LLM wasn't called because the
+            # remaining char budget was below MIN_EXPAND_BUDGET.
             _expand_skip_reason = new_sections.pop("__skip_reason__", None)
             if _expand_skip_reason:
                 logger.info(
                     "Expand no-op: skip_reason=%s", _expand_skip_reason,
                 )
+                result["expand_outcome"] = f"skipped_{_expand_skip_reason}"
 
             if new_sections:
+                # ── Layer 1: pre-render per-section clip ────────────
+                # Hard-enforce per_section_budget so the sum of section
+                # bodies can never exceed remaining_budget.
                 merged = dict(canonical_secs)
                 for header, body in new_sections.items():
                     if header in merged:
                         continue  # never overwrite existing content
+                    clipped = _trim_bullets_to_budget(body, per_section_budget)
+                    if not clipped.strip():
+                        continue
                     merged[header] = [
-                        ln for ln in body.splitlines() if ln.strip()
+                        ln for ln in clipped.splitlines() if ln.strip()
                     ]
+
                 rendered = render_canonical_sections(merged)
+
+                # ── Layer 2: post-render global clip ────────────────
+                # Handles rendering overhead (headers + blank lines add
+                # ~15 chars per section) that Layer 1 can't see. This
+                # makes over-cap merge structurally impossible.
+                rendered = _trim_rendered_to_cap(
+                    rendered, MAX_TEXT_INSTRUCTIONS_CHARS,
+                )
                 new_text = "".join(rendered).rstrip() + "\n"
 
                 ok, errs = validate_instruction_text(new_text, strict=True)
                 if not ok:
+                    # Categorise the decline for the summary line.
+                    err_codes: list[str] = []
+                    for e in errs:
+                        le = e.lower()
+                        if "length" in le:
+                            err_codes.append("length")
+                        elif "sql detected" in le:
+                            err_codes.append("sql_in_prose")
+                        elif "verbatim" in le or "non-canonical" in le:
+                            err_codes.append("header")
+                        elif "order" in le:
+                            err_codes.append("order")
+                        else:
+                            err_codes.append("other")
+                    result["expand_outcome"] = (
+                        "declined_" + "+".join(sorted(set(err_codes)))
+                    )
                     logger.warning(
                         "Expand instructions: strict validation failed "
-                        "— keeping existing prose. errors=%s",
-                        errs,
-                    )
-                elif len(new_text) > MAX_TEXT_INSTRUCTIONS_CHARS:
-                    logger.warning(
-                        "Expand instructions: merged text %d chars > cap %d "
-                        "— keeping existing prose",
-                        len(new_text), MAX_TEXT_INSTRUCTIONS_CHARS,
+                        "(outcome=%s) — keeping existing prose. errors=%s",
+                        result["expand_outcome"], errs,
                     )
                 else:
                     _set_general_instructions(parsed, new_text)
                     try:
                         patch_space_config(w, space_id, parsed)
                         result["instructions_expanded"] = True
+                        result["expand_outcome"] = "wrote"
                         result["expanded_sections"] = list(new_sections.keys())
                         result["instruction_chars"] = len(new_text)
                         write_patch(
@@ -1839,6 +1893,10 @@ def _run_proactive_instruction_seeding(
                             "Proactive instruction expand: PATCH failed",
                             exc_info=True,
                         )
+                        result["expand_outcome"] = "patch_failed"
+            elif result["expand_outcome"] == "not_attempted":
+                # No sections generated AND no earlier outcome set.
+                result["expand_outcome"] = "llm_returned_empty"
 
         if not result["instructions_seeded"] and not result["instructions_expanded"]:
             result["skipped_reason"] = (
@@ -1847,22 +1905,46 @@ def _run_proactive_instruction_seeding(
                 else "llm_failed_or_validation"
             )
 
-        # ── Print summary ───────────────────────────────────────────
+        # ── Print summary with explicit outcomes (C3) ───────────────
+        # Surfaces the real disposition of each phase. "declined_*" lines
+        # tell operators exactly what failed validation without having to
+        # correlate with an earlier WARNING.
         _lines = [_section("PROACTIVE INSTRUCTION SEEDING", "-")]
+        seed_outcome = result.get("seed_outcome", "?")
+        expand_outcome = result.get("expand_outcome", "?")
         if result["instructions_seeded"]:
-            _lines.append(_kv("Seed", f"generated ({result['instruction_chars']} chars)"))
+            _lines.append(_kv("Seed", f"WROTE ({result['instruction_chars']} chars)"))
             _lines.append(_kv("  Sections", ", ".join(result["seeded_sections"]) or "(none)"))
+        elif seed_outcome == "skipped_existing_prose":
+            _lines.append(_kv("Seed", f"SKIPPED (existing {len(current_instructions)} chars, threshold={_INSTRUCTION_SEED_THRESHOLD})"))
+        elif seed_outcome.startswith("declined"):
+            _lines.append(_kv("Seed", f"DECLINED — {seed_outcome.removeprefix('declined_')}"))
+        elif seed_outcome == "patch_failed":
+            _lines.append(_kv("Seed", "PATCH_FAILED"))
         else:
-            _lines.append(_kv("Seed", f"skipped (existing {len(current_instructions)} chars)"))
+            _lines.append(_kv("Seed", seed_outcome.upper()))
         if result["instructions_expanded"]:
             _lines.append(_kv(
                 "Expand",
-                f"added {len(result['expanded_sections'])} sections",
+                f"WROTE ({len(result['expanded_sections'])} sections, {result['instruction_chars']} chars)",
             ))
             _lines.append(_kv("  Sections", ", ".join(result["expanded_sections"])))
+        elif expand_outcome.startswith("declined"):
+            _lines.append(_kv(
+                "Expand",
+                f"DECLINED — {expand_outcome.removeprefix('declined_')}",
+            ))
+            if missing:
+                _lines.append(_kv("  Unfilled", ", ".join(missing)))
+        elif expand_outcome.startswith("skipped"):
+            _lines.append(_kv(
+                "Expand",
+                f"SKIPPED — {expand_outcome.removeprefix('skipped_')}",
+            ))
         else:
-            missing_str = ", ".join(missing) if missing else "(none missing)"
-            _lines.append(_kv("Expand", f"no-op ({missing_str})"))
+            _lines.append(_kv("Expand", expand_outcome.upper()))
+            if missing:
+                _lines.append(_kv("  Unfilled", ", ".join(missing)))
         _lines.append(_bar("-"))
         print("\n".join(_lines))
 
