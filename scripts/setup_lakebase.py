@@ -211,8 +211,9 @@ def _reconcile_schema_ownership(conn, *, new_sp: str, project_name: str) -> None
 
     print(f"  genie schema exists, owned by {current_owner[:12]}... — reconciling to new SP...")
 
-    # Strategy 1: single REASSIGN covers schema + all tables + all sequences
     reassign = f'REASSIGN OWNED BY "{current_owner}" TO "{new_sp}"'
+
+    # Strategy 1: REASSIGN as-is (works if deployer is already a member of both roles)
     try:
         conn.execute(reassign)
         print(f"  ✓ Reassigned all objects owned by previous SP to new SP")
@@ -220,7 +221,50 @@ def _reconcile_schema_ownership(conn, *, new_sp: str, project_name: str) -> None
     except Exception as e:
         reassign_err = str(e).strip().splitlines()[0]
 
-    # Strategy 2: per-object ALTER (may partially succeed)
+    # Strategy 2: GRANT deployer temporary membership in the old SP role,
+    # retry REASSIGN, then REVOKE. Works for any deployer with CREATEROLE
+    # (typically anyone with CAN MANAGE on the Lakebase project).
+    granted_membership = False
+    try:
+        conn.execute(f'GRANT "{current_owner}" TO CURRENT_USER')
+        granted_membership = True
+        try:
+            conn.execute(reassign)
+            print(f"  ✓ Reassigned objects to new SP (after granting deployer "
+                  f"temporary membership in previous SP role)")
+            return
+        except Exception as e:
+            reassign_err = str(e).strip().splitlines()[0]
+    except Exception:
+        # Deployer lacks CREATEROLE — can't escalate this way.
+        pass
+    finally:
+        if granted_membership:
+            try:
+                conn.execute(f'REVOKE "{current_owner}" FROM CURRENT_USER')
+            except Exception:
+                pass  # Best-effort cleanup; the temporary grant is low-risk
+
+    # Strategy 3: escalate to Databricks superuser (if the deployer is a
+    # workspace/metastore admin). Only SET ROLE to a role the deployer is
+    # already a member of — this just activates that role for the session.
+    for admin_role in ("databricks_superuser",):
+        try:
+            conn.execute(f'SET ROLE "{admin_role}"')
+            try:
+                conn.execute(reassign)
+                conn.execute("RESET ROLE")
+                print(f"  ✓ Reassigned objects to new SP (escalated via {admin_role})")
+                return
+            finally:
+                try:
+                    conn.execute("RESET ROLE")
+                except Exception:
+                    pass
+        except Exception:
+            continue
+
+    # Strategy 4: per-object ALTER (may partially succeed)
     statements: list[str] = [f'ALTER SCHEMA genie OWNER TO "{new_sp}"']
     try:
         tables = [r[0] for r in conn.execute(
