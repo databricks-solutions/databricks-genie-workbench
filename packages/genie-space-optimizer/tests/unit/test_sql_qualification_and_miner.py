@@ -1068,3 +1068,233 @@ class TestSeedRepairLoop:
         # Both attempts failed → empty string.
         assert result == ""
         assert attempts["n"] == 2  # one normal + one repair
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Commit 4 — Minimal miner routing for negative-join constraints
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestNegativeJoinRouting:
+    """Minimal D — 'Do not / Never join X to Y' routes to keep_in_prose
+    under ## CONSTRAINTS and survives the scanner v2 validator.
+
+    With Commit 1 (scanner v2), the prose-imperative short-circuit means
+    "Do not join" no longer triggers the SQL-in-text finding. Commit 4
+    just adds an explicit routing rule to the mining prompt so the LLM
+    doesn't misroute this to ``join_spec`` (which would be a positive
+    join the model CAN use — semantically wrong for a negative constraint).
+    """
+
+    def test_prompt_has_negative_join_routing_rule(self):
+        from genie_space_optimizer.common.config import PROSE_RULE_MINING_PROMPT
+
+        # Target-routing table row.
+        assert "Do not / Never join X to Y" in PROSE_RULE_MINING_PROMPT
+        # Per-target rule mention.
+        assert "NEGATIVE JOIN CONSTRAINTS" in PROSE_RULE_MINING_PROMPT
+        # Explicit section assignment.
+        assert "section=\"## CONSTRAINTS\"" in PROSE_RULE_MINING_PROMPT
+
+    def test_miner_accepts_negative_join_keep_in_prose(self, monkeypatch):
+        """When the LLM routes 'Do not join A to B' as keep_in_prose under
+        ## CONSTRAINTS, the validator accepts it (scanner v2 doesn't flag).
+        """
+        from genie_space_optimizer.optimization.optimizer import (
+            _convert_instructions_to_sql_expressions,
+        )
+
+        def _fake(_w, _system, _prompt, *, span_name="", **kwargs):
+            return (
+                '[{"target": "keep_in_prose", '
+                '"source_span": "- Do not join `mv_esr_fact_sales` directly '
+                'to `mv_7now_fact_sales`; they represent disjoint channels", '
+                '"confidence": 0.95, '
+                '"payload": {"section": "## CONSTRAINTS"}}]'
+            ), None
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+            _fake,
+        )
+
+        metadata = {
+            "data_sources": {
+                "tables": [{"identifier": "cat.sch.t", "columns": []}],
+                "metric_views": [],
+            },
+            "instructions": {
+                "text_instructions": [{
+                    "id": "i1",
+                    "content": [
+                        "- Do not join `mv_esr_fact_sales` directly "
+                        "to `mv_7now_fact_sales`; they represent "
+                        "disjoint channels\n"
+                    ],
+                }],
+            },
+        }
+
+        result = _convert_instructions_to_sql_expressions(metadata, w=MagicMock())
+
+        # Candidate accepted under ## CONSTRAINTS.
+        assert len(result["keep_in_prose"]) == 1
+        candidate = result["keep_in_prose"][0]
+        assert candidate["section"] == "## CONSTRAINTS"
+        assert "Do not join" in candidate["source_span"]
+
+        # Validator didn't reject it as SQL-in-prose (scanner v2 pass).
+        assert result["stats"]["rejected_by_reason"] == {}
+
+    def test_rewrite_preserves_negative_join_under_constraints(self):
+        """End-to-end rewrite: existing prose + negative-join keep_in_prose
+        produces ## CONSTRAINTS containing the rule and passes strict
+        validation.
+
+        Realistic scenario: the miner promotes a SQL snippet AWAY (spans
+        removed) and tags the negative-join bullet as keep_in_prose. Net
+        bytes DECREASE — rewrite returns WRITE.
+        """
+        from genie_space_optimizer.optimization.applier import (
+            RewriteResult, rewrite_instructions_from_miner_output,
+        )
+
+        # Net-smaller scenario: original has several bulky SQL snippets
+        # that get promoted away, a couple of free-floating bullets that
+        # get dropped, and the negative-join constraint that stays in
+        # prose under ## CONSTRAINTS.
+        original = (
+            "## PURPOSE\n"
+            "- Sales analytics space covering H1 revenue for executives.\n"
+            "- Net revenue formula: SUM(mv_7now_fact_sales.cy_sales) - "
+            "SUM(mv_7now_fact_sales.discounts) - promoted to sql_snippet\n"
+            "- Active filter: status = 'active' AND region <> 'BLOCKED' "
+            "-- promoted to sql_snippet (filter)\n"
+            "- Day-over-day growth: (cy - py) / NULLIF(py, 0) * 100 "
+            "-- promoted to sql_snippet (expression)\n"
+            "\n"
+            "- Do not join `mv_esr_fact_sales` directly "
+            "to `mv_7now_fact_sales`; they represent disjoint channels\n"
+        )
+        # Three SQL snippets get promoted (bulky; ~150 chars each).
+        applied_spans = [
+            "- Net revenue formula: SUM(mv_7now_fact_sales.cy_sales) - "
+            "SUM(mv_7now_fact_sales.discounts) - promoted to sql_snippet",
+            "- Active filter: status = 'active' AND region <> 'BLOCKED' "
+            "-- promoted to sql_snippet (filter)",
+            "- Day-over-day growth: (cy - py) / NULLIF(py, 0) * 100 "
+            "-- promoted to sql_snippet (expression)",
+        ]
+        # The 'Do not join' bullet stays in prose under ## CONSTRAINTS.
+        keep_spans = [{
+            "section": "## CONSTRAINTS",
+            "source_span": (
+                "- Do not join `mv_esr_fact_sales` directly "
+                "to `mv_7now_fact_sales`; they represent disjoint channels"
+            ),
+        }]
+
+        outcome, new_text, errors = rewrite_instructions_from_miner_output(
+            original, applied_spans=applied_spans, keep_in_prose_spans=keep_spans,
+        )
+
+        assert outcome == RewriteResult.WRITE, (
+            f"Expected WRITE, got {outcome}; errors={errors}"
+        )
+        # Constraint lives under ## CONSTRAINTS header.
+        assert "## CONSTRAINTS" in new_text
+        # Original negative-join text preserved.
+        assert "Do not join" in new_text
+        assert "mv_esr_fact_sales" in new_text
+        # The promoted SQL snippet is gone from the prose.
+        assert "SUM(" not in new_text
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Integration regression — replay the failing-run prose
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestFailingRunRegression:
+    """End-to-end replay of the prose from the failing optimization run.
+
+    Asserts the full pipeline (scanner v2 + expand budget + pre/post-trim
+    + decline-log UX) now produces a valid outcome on prose that previously
+    failed with:
+      - "length 2872 exceeds MAX_TEXT_INSTRUCTIONS_CHARS (2000)"
+      - "SQL detected in prose line: '- Do not join `mv_esr_fact_sales`...'"
+    """
+
+    def test_do_not_join_bullet_passes_strict_validation(self):
+        """Scanner v2 doesn't flag 'Do not join' as SQL-in-prose."""
+        from genie_space_optimizer.optimization.applier import validate_instruction_text
+
+        prose = (
+            "## PURPOSE\n"
+            "- Sales analytics for the executive team.\n"
+            "\n"
+            "## CONSTRAINTS\n"
+            "- Do not join `mv_esr_fact_sales` directly "
+            "to `mv_7now_fact_sales`; they represent disjoint channels\n"
+            "- Never expose customer PII.\n"
+        )
+        ok, errs = validate_instruction_text(prose, strict=True)
+        assert ok, f"Failing-run prose should pass strict validation now. errors={errs}"
+
+    def test_two_level_enforcement_keeps_output_under_cap(self):
+        """Pathological LLM output never exceeds MAX_TEXT_INSTRUCTIONS_CHARS
+        after the harness applies Layer 1 (pre-render trim) + Layer 2
+        (post-render priority trim).
+
+        Simulates the failing-run scenario: existing 1879-char seed +
+        expand LLM emits 500+ chars per missing section. Layer 1 clips
+        each section to per_section_budget BEFORE merge, then Layer 2
+        handles any remaining overflow from rendering overhead.
+        """
+        from genie_space_optimizer.common.config import (
+            CANONICAL_SECTION_HEADERS, MAX_TEXT_INSTRUCTIONS_CHARS,
+        )
+        from genie_space_optimizer.optimization.applier import (
+            _trim_bullets_to_budget, _trim_rendered_to_cap,
+            render_canonical_sections,
+        )
+
+        # Simulate seeded prose: 3 sections totalling ~1879 chars.
+        seeded_len = 1879
+        existing_sections = {
+            "## PURPOSE": [f"- {'p' * 600}"],
+            "## DISAMBIGUATION": [f"- {'d' * 600}"],
+            "## DATA QUALITY NOTES": [f"- {'q' * 580}"],
+        }
+
+        # Missing sections; expand LLM returns 500 chars each (pathological).
+        missing = [
+            "## CONSTRAINTS",
+            "## Instructions you must follow when providing summaries",
+        ]
+        expand_output = {
+            "## CONSTRAINTS": "- " + ("x" * 500),
+            "## Instructions you must follow when providing summaries":
+                "- " + ("y" * 500),
+        }
+
+        existing_length = seeded_len
+        remaining = max(MAX_TEXT_INSTRUCTIONS_CHARS - existing_length, 0)
+        per_section_budget = remaining // len(missing)
+
+        # Layer 1: pre-render clip each expand section to its budget.
+        merged = dict(existing_sections)
+        for header, body in expand_output.items():
+            clipped = _trim_bullets_to_budget(body, per_section_budget)
+            if clipped.strip():
+                merged[header] = [ln for ln in clipped.splitlines() if ln.strip()]
+
+        rendered = render_canonical_sections(merged)
+        # Layer 2: post-render clip for rendering overhead.
+        rendered = _trim_rendered_to_cap(rendered, MAX_TEXT_INSTRUCTIONS_CHARS)
+        new_text = "".join(rendered)
+
+        assert len(new_text) <= MAX_TEXT_INSTRUCTIONS_CHARS, (
+            f"Final text is {len(new_text)} chars, must be <= 2000 "
+            "after two-level enforcement."
+        )

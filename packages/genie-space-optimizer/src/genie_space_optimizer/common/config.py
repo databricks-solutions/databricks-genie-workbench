@@ -3658,6 +3658,7 @@ go in text_instructions"):
 | "For X questions use table T" / asset routing            | table_desc         |
 | "Term 'revenue' means column net_rev_amt"                | column_synonym     |
 | Disambiguation / data-quality / PII / summary rendering  | keep_in_prose      |
+| "Do not / Never join X to Y" — negative join constraint  | keep_in_prose (## CONSTRAINTS) |
 
 ## Per-target rules
 
@@ -3706,6 +3707,12 @@ NOT as ``keep_in_prose``.
 - ``source_span`` that contains SQL keywords (SELECT, WHERE, JOIN, \
 GROUP BY, ORDER BY, HAVING) MUST be returned as ``sql_snippet`` or \
 ``example_qsql`` — the scanner rejects SQL-in-prose.
+- NEGATIVE JOIN CONSTRAINTS ("Do not / Never join X to Y") are a \
+cross-cutting BEHAVIOURAL rule and belong in prose, NOT in \
+``join_spec`` (which represents joins the model MAY use). Return them \
+as ``target="keep_in_prose"`` with ``payload.section="## CONSTRAINTS"``. \
+The structure-aware scanner allows English imperatives like "Do not \
+join" to sit in prose without triggering the SQL-in-text finding.
 
 ## Confidence
 
