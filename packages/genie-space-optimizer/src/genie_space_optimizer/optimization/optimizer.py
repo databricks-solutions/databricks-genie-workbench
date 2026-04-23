@@ -7956,7 +7956,8 @@ def _validate_miner_candidate(candidate: Any, instructions_text: str) -> tuple[b
     observability summary on rejection.
     """
     from genie_space_optimizer.common.config import (
-        CANONICAL_SECTION_HEADERS, PROMOTE_MIN_CONFIDENCE, SQL_IN_TEXT_RE,
+        CANONICAL_SECTION_HEADERS, PROMOTE_MIN_CONFIDENCE,
+        sql_in_text_findings,
     )
 
     if not isinstance(candidate, dict):
@@ -7978,12 +7979,15 @@ def _validate_miner_candidate(candidate: Any, instructions_text: str) -> tuple[b
         return False, "missing_payload"
 
     # ``keep_in_prose`` must specify a canonical section, AND the span
-    # must not contain SQL (scanner check #4 would flag the rewrite).
+    # must not contain SQL structure (scanner v2 check). ``source_span``
+    # can be multi-line (compound bullet + sub-bullets); the single-line
+    # ``looks_like_sql_in_prose`` would under-detect, so we use the
+    # line-aware ``sql_in_text_findings`` which iterates ``splitlines()``.
     if target == "keep_in_prose":
         section = str(payload.get("section", "")).strip()
         if section not in CANONICAL_SECTION_HEADERS:
             return False, f"keep_in_prose_bad_section:{section[:40]!r}"
-        if SQL_IN_TEXT_RE.search(span):
+        if sql_in_text_findings(span):
             return False, "keep_in_prose_contains_sql"
     return True, "ok"
 

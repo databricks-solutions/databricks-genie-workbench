@@ -2560,8 +2560,13 @@ def _update_config(actions: list[dict], config: dict | None = None) -> dict:
 
 _ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _TABLE_ID_PATTERN = re.compile(r"^[^.]+\.[^.]+\.[^.]+$")
-_SQL_IN_TEXT_RE = re.compile(
-    r"\b(SELECT|WHERE|JOIN|GROUP\s+BY|ORDER\s+BY|HAVING)\b", re.IGNORECASE
+# Re-export from GSO so create-agent validation, the runtime scanner, and
+# the optimizer use ONE detector. ``_SQL_IN_TEXT_RE`` stays for any caller
+# that grabs the naïve keyword regex directly; ``sql_in_text_findings`` is
+# the structure-aware scanner v2 entry point and should be preferred.
+from genie_space_optimizer.iq_scan.scoring import (  # noqa: E402
+    _SQL_IN_TEXT_RE,
+    sql_in_text_findings,
 )
 
 
@@ -2826,10 +2831,19 @@ def _validate_config(config: dict | None = None) -> dict:
                 "instructions.text_instructions",
                 f"Text instructions are {ti_total_chars:,} chars — keep under 2,000 to avoid pushing out higher-value SQL context"
             )
-        if _SQL_IN_TEXT_RE.search(ti_all_text):
+        # Scanner v2 — structure-aware detection. Natural-language prose
+        # like "Do not join X to Y" or "Where applicable" is no longer
+        # flagged; only SQL fragments with clause structure (SELECT ...
+        # FROM, WHERE ident op, JOIN ident ON, etc.) are surfaced.
+        sql_offenders = sql_in_text_findings(ti_all_text)
+        if sql_offenders:
+            sample = sql_offenders[0].strip()
+            if len(sample) > 100:
+                sample = sample[:97] + "..."
             warning(
                 "instructions.text_instructions",
-                "SQL patterns (SELECT, WHERE, JOIN, etc.) found in text instructions — move to Example SQLs or SQL Expressions"
+                f"SQL patterns found in text instructions — move to Example SQLs or "
+                f"SQL Expressions. First offender: {sample!r}"
             )
 
     # 4. Join specs: warn if missing when >1 table

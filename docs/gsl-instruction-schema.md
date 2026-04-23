@@ -41,8 +41,13 @@ sections** — do not leave an empty header.
 - **Blank line between sections.**
 - **No SQL inside bullets.** SQL goes in `sql_snippets` (reusable
   expressions and measures) or `example_question_sqls` (full query
-  patterns). This is the scanner's rule — see `_SQL_IN_TEXT_RE` in
-  `backend/services/scanner.py`.
+  patterns). The detector is structure-aware (scanner v2) — natural-
+  language prose like "Do not join X to Y" or "Where applicable" is
+  NOT flagged; only SQL with clause structure (`SELECT … FROM`,
+  `WHERE ident op`, `JOIN ident ON`, `GROUP BY col`, etc.) triggers
+  the check. Source: `looks_like_sql_in_prose` / `sql_in_text_findings`
+  in
+  [`packages/genie-space-optimizer/src/genie_space_optimizer/iq_scan/scoring.py`](../packages/genie-space-optimizer/src/genie_space_optimizer/iq_scan/scoring.py).
 - **Keep total content ≤ 2,000 characters** — the IQ Scanner's soft
   threshold in check #4 (text-instructions length). Longer blocks push
   out higher-value SQL context in the Genie prompt window.

@@ -82,17 +82,17 @@ SECTION_TO_TARGET: dict[str, str] = {
     "ASSET ROUTING":        "metadata",  # table_desc + column_synonym
 }
 
-# Mirrors backend/services/scanner.py:65 (_SQL_IN_TEXT_RE). GSO cannot import
-# from backend/ (the optimizer is a standalone wheel), so we duplicate the
-# regex and keep them in sync manually. Tracked alongside the schema
-# consolidation in issue #174.
-#
-# The regex is the authoritative "this bullet contains SQL" trigger — used
-# both by the IQ scanner check #4 and by this optimizer's miner as a
-# pre-filter to reject `keep_in_prose` candidates that should have been
-# promoted to `sql_snippet` or `example_qsql`.
-SQL_IN_TEXT_RE = re.compile(
-    r"\b(SELECT|WHERE|JOIN|GROUP\s+BY|ORDER\s+BY|HAVING)\b", re.IGNORECASE,
+# Single source of truth: ``genie_space_optimizer.iq_scan.scoring``. The
+# legacy ``_SQL_IN_TEXT_RE`` (naïve keyword match) is re-exported as
+# ``SQL_IN_TEXT_RE`` for back-compat with existing imports, but callers
+# should prefer ``looks_like_sql_in_prose`` (single line) or
+# ``sql_in_text_findings`` (multi-line text) which apply the scanner-v2
+# structure-aware detector. Previous duplicate regex removed; consolidation
+# tracked alongside the schema module in issue #174.
+from genie_space_optimizer.iq_scan.scoring import (  # noqa: E402
+    _SQL_IN_TEXT_RE as SQL_IN_TEXT_RE,
+    looks_like_sql_in_prose,
+    sql_in_text_findings,
 )
 
 # ── 1. Quality Thresholds ───────────────────────────────────────────────

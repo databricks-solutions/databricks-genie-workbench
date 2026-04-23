@@ -31,9 +31,9 @@ from genie_space_optimizer.common.config import (
     MEDIUM_RISK_PATCHES,
     NUMERIC_DATA_TYPES,
     PATCH_TYPES,
-    SQL_IN_TEXT_RE,
     VERBATIM_REQUIRED_HEADERS,
     _LEVER_TO_PATCH_TYPE,
+    looks_like_sql_in_prose,
 )
 from genie_space_optimizer.optimization.structured_metadata import (
     LeverOwnershipError,
@@ -424,7 +424,8 @@ def validate_instruction_text(
     - Canonical headers must appear in ``CANONICAL_SECTION_ORDER``.
     - No ``###`` subheaders.
     - Total length ≤ ``MAX_TEXT_INSTRUCTIONS_CHARS``.
-    - No prose line matches :data:`SQL_IN_TEXT_RE` (scanner check #4).
+    - No prose line matches :func:`looks_like_sql_in_prose` (scanner v2 —
+      structure-aware SQL-in-prose detection; see iq_scan/scoring.py).
 
     Compat mode (``strict=False``, used by the lever-loop writeback until
     levers migrate under #175):
@@ -491,13 +492,15 @@ def validate_instruction_text(
                 f"headers out of canonical order: got {seen_unique!r} expected {ordered!r}"
             )
 
-    # SQL-in-text — strict mode only. We iterate non-header lines.
+    # SQL-in-text — strict mode only. Uses the structure-aware scanner v2
+    # detector, so natural-language prose ("Do not join X to Y", "Where
+    # applicable") no longer trips the check. We iterate non-header lines.
     if strict:
         for line in text.splitlines():
             stripped = line.lstrip()
             if stripped.startswith("#"):
                 continue
-            if SQL_IN_TEXT_RE.search(line):
+            if looks_like_sql_in_prose(line):
                 errors.append(
                     f"SQL detected in prose line (scanner check #4): {line.strip()[:80]!r}"
                 )

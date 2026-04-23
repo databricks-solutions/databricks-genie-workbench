@@ -52,6 +52,144 @@ _SQL_IN_TEXT_RE = re.compile(
     r"\b(SELECT|WHERE|JOIN|GROUP\s+BY|ORDER\s+BY|HAVING)\b", re.IGNORECASE
 )
 
+# ── Smart SQL-in-prose detector (scanner v2) ─────────────────────────
+#
+# The naïve ``_SQL_IN_TEXT_RE`` above flags any occurrence of a SQL keyword,
+# including everyday English uses like "do not join", "where applicable",
+# or "having determined". That was an unacceptably high false-positive rate
+# once the GSO optimizer started validating rewrites against the same rule.
+#
+# ``looks_like_sql_in_prose`` returns True only when a line carries SQL
+# *structure*, not just a lone keyword. Two gates:
+#
+#  1. **Anchor patterns** — keyword + structural neighbour (e.g. ``SELECT …
+#     FROM``, ``WHERE ident op``, ``JOIN ident ON``). If any anchor matches,
+#     the line is flagged regardless of other signals.
+#
+#  2. **Density fallback** — line with 2+ distinct SQL keywords AND 1+
+#     structural signal (dotted identifier, SQL comparator, aggregate call,
+#     ``IS NULL``), but NOT starting with a prose imperative.
+#
+# Natural-language prose like "Do not join X to Y" passes the detector:
+# the prose-imperative short-circuit blocks the density fallback, and no
+# anchor pattern matches because there is no ON-clause / FROM-clause / etc.
+
+# Tier 1 — clause-shape anchors. Any one of these is sufficient to flag.
+_SQL_ANCHOR_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # SELECT ... FROM — full statement shape.
+    re.compile(r"\bSELECT\b[^.]*?\bFROM\b", re.IGNORECASE),
+    # FROM ident + clause — table reference followed by a SQL clause keyword.
+    re.compile(
+        r"\bFROM\s+[`\"\w.]+\s+(?:AS\s+\w+|WHERE|JOIN|GROUP|ORDER|HAVING|LIMIT)\b",
+        re.IGNORECASE,
+    ),
+    # JOIN ident ON — join with explicit ON clause.
+    re.compile(r"\bJOIN\s+[`\"\w.]+\s+ON\b", re.IGNORECASE),
+    # WHERE <ident> <comparator> — filter with comparison.
+    re.compile(
+        r"\bWHERE\s+[`\"\w.]+\s*(?:=|<>|!=|<=|>=|<|>|\bLIKE\b|\bIN\s*\()",
+        re.IGNORECASE,
+    ),
+    # GROUP BY col (+ more cols) + a clause keyword afterwards. Bare
+    # "GROUP BY region" at end-of-line is NOT anchor-flagged — the trailing
+    # clause keyword is what disambiguates SQL from English "group by
+    # urgency". Density fallback can still catch bare forms if the rest
+    # of the line has another keyword + structural signal.
+    re.compile(
+        r"\bGROUP\s+BY\s+[`\"\w.]+(?:\s*,\s*[`\"\w.]+)*\s+"
+        r"(?:\bHAVING\b|\bORDER\s+BY\b|\bLIMIT\b)",
+        re.IGNORECASE,
+    ),
+    # ORDER BY col + explicit direction OR + LIMIT. "Order by priority,
+    # not date" doesn't match because "not" isn't a SQL direction keyword.
+    re.compile(
+        r"\bORDER\s+BY\s+[`\"\w.]+(?:\s*,\s*[`\"\w.]+)*\s+"
+        r"(?:\bASC\b|\bDESC\b|\bLIMIT\b)",
+        re.IGNORECASE,
+    ),
+    # HAVING <aggregate> — clause with aggregate function call.
+    re.compile(
+        r"\bHAVING\s+(?:SUM|COUNT|AVG|MAX|MIN|STDDEV|VARIANCE)\s*\(",
+        re.IGNORECASE,
+    ),
+)
+
+# Prose-imperative prefix — if a line starts with one of these (optionally
+# preceded by a bullet marker), the density fallback is skipped. Anchors
+# still fire, because a line like "- Use: SELECT col FROM t" IS SQL.
+_PROSE_IMPERATIVE_RE: re.Pattern[str] = re.compile(
+    r"^\s*[-*\u2022]?\s*(?:Do\s+not|Do\s+NOT|Don['\u2019]t|Never|Always|When|If|Prefer|Avoid|Combine|Link|Pair|Associate|Consider|Note)\b",
+    re.IGNORECASE,
+)
+
+# Tier 2 — structural signals. Density fallback requires at least one.
+_SQL_STRUCTURAL_SIGNALS: tuple[re.Pattern[str], ...] = (
+    # Dotted identifier (optionally backtick-quoted). Matches t.col, a.b.c,
+    # `schema`.`table`, etc. Note: "do not join" prose without dotted
+    # identifiers doesn't trigger; prose WITH dotted identifiers still
+    # requires 2+ keywords, which it won't have.
+    re.compile(r"[`\"]?\w+[`\"]?\.[`\"]?\w+[`\"]?", re.IGNORECASE),
+    # SQL comparators. Parenthesis required for IN to avoid catching English
+    # "in the morning". BETWEEN requires a word-boundary neighbour.
+    re.compile(
+        r"(?:=|<>|!=|<=|>=|\bLIKE\b|\bIN\s*\(|\bBETWEEN\s+\w+)",
+        re.IGNORECASE,
+    ),
+    # Aggregate function call at word boundary.
+    re.compile(
+        r"\b(?:SUM|COUNT|AVG|MAX|MIN|STDDEV|VARIANCE)\s*\(",
+        re.IGNORECASE,
+    ),
+    # NULL predicate.
+    re.compile(r"\bIS\s+(?:NOT\s+)?NULL\b", re.IGNORECASE),
+)
+
+
+def looks_like_sql_in_prose(line: str) -> bool:
+    """Return True iff ``line`` contains a SQL fragment (not just a keyword).
+
+    Single-line detector. For multi-line text use :func:`sql_in_text_findings`.
+
+    A line is flagged when either:
+
+    1. An anchor pattern matches (keyword + structural neighbour — e.g.
+       ``SELECT ... FROM``, ``WHERE ident op``, ``JOIN ident ON``), OR
+    2. The line does NOT start with a prose imperative (``Do not`` / ``Never`` /
+       ``Always`` / ``When`` / ``If`` / ``Prefer`` / ``Avoid`` / …) AND has
+       2+ distinct SQL keywords AND 1+ structural signal (dotted identifier,
+       comparator, aggregate call, ``IS NULL``).
+
+    Designed to eliminate the false positives the naïve regex produced on
+    natural-language prose like "Do not join X to Y".
+    """
+    if not line or not line.strip():
+        return False
+    for pat in _SQL_ANCHOR_PATTERNS:
+        if pat.search(line):
+            return True
+    if _PROSE_IMPERATIVE_RE.match(line):
+        return False
+    distinct_kws = {m.group(1).upper() for m in _SQL_IN_TEXT_RE.finditer(line)}
+    if len(distinct_kws) >= 2 and any(
+        sig.search(line) for sig in _SQL_STRUCTURAL_SIGNALS
+    ):
+        return True
+    return False
+
+
+def sql_in_text_findings(text: str) -> list[str]:
+    """Return the offending lines for multi-line text.
+
+    Thin line-by-line wrapper over :func:`looks_like_sql_in_prose`. Use this
+    when validating a ``source_span`` or a whole ``text_instructions`` blob —
+    the span may be multi-line (a compound bullet + its sub-bullets), and
+    the per-line function alone would under-detect SQL appearing on lines
+    past the first.
+    """
+    if not text:
+        return []
+    return [line for line in text.splitlines() if looks_like_sql_in_prose(line)]
+
 
 def calculate_score(space_data: dict, optimization_run: dict | None = None) -> dict:
     """Calculate IQ score for a Genie Space configuration.
@@ -170,8 +308,19 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     if passed:
         if total_chars > 2000:
             ti_warnings.append(f"Instructions total {total_chars:,} chars — keep under 2,000 to avoid pushing out higher-value SQL context")
-        if _SQL_IN_TEXT_RE.search(all_text):
-            ti_warnings.append("SQL patterns found in text instructions — move to Example SQLs or SQL Expressions")
+        # Smart SQL-in-prose detection (scanner v2). ``sql_in_text_findings``
+        # runs the structure-aware ``looks_like_sql_in_prose`` on each line
+        # rather than the naïve keyword regex — eliminates false positives
+        # on prose like "Do not join X to Y", "Where applicable", etc.
+        sql_offenders = sql_in_text_findings(all_text)
+        if sql_offenders:
+            sample = sql_offenders[0].strip()
+            if len(sample) > 100:
+                sample = sample[:97] + "..."
+            ti_warnings.append(
+                f"SQL patterns found in text instructions — move to Example SQLs or "
+                f"SQL Expressions. First offender: {sample!r}"
+            )
         if ti_warnings:
             severity = "warning"
             detail += f" — {len(ti_warnings)} warning(s)"
