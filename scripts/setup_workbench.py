@@ -364,7 +364,7 @@ def _resolve_app_sp(w, app_name: str) -> tuple[str, str]:
 
 # ── Step 2: UC schema, tables, volume, grants ──────────────────────────────
 
-def _ensure_uc(*, w, catalog: str, schema: str, warehouse_id: str, principal: str) -> None:
+def _ensure_uc(w, *, catalog: str, schema: str, warehouse_id: str, principal: str) -> None:
     schema_fqn = f"{catalog}.{schema}"
     volume_fqn = f"{schema_fqn}.app_artifacts"
 
@@ -503,7 +503,7 @@ def _resolve_lakebase_db(w, project_name: str) -> tuple[str, str]:
 # ── Step 5: Apps PATCH ─────────────────────────────────────────────────────
 
 def _patch_app(
-    *, w, app_name: str, warehouse_id: str,
+    w, *, app_name: str, warehouse_id: str,
     lakebase_db: str, lakebase_branch: str,
 ) -> None:
     """Set user_api_scopes and resources. Preserves user-managed resources."""
@@ -566,7 +566,7 @@ def _find_gso_job(w) -> str:
     return ""
 
 
-def _set_job_permissions(*, w, job_id: str, owner_user: str, sp: str) -> None:
+def _set_job_permissions(w, *, job_id: str, owner_user: str, sp: str) -> None:
     """Set owner + SP CAN_MANAGE + users group CAN_VIEW on the GSO job."""
     acl = [
         {"user_name": owner_user, "permission_level": "IS_OWNER"},
@@ -583,7 +583,7 @@ def _set_job_permissions(*, w, job_id: str, owner_user: str, sp: str) -> None:
         _warn(f"Could not set job permissions on {job_id}: {e}")
 
 
-def _grant_bundle_dir(*, w, deployer_email: str, sp: str) -> None:
+def _grant_bundle_dir(w, *, deployer_email: str, sp: str) -> None:
     """Grant SP CAN_MANAGE on the bundle workspace directory.
 
     Bundle deploys write notebooks under
