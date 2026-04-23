@@ -143,9 +143,11 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
         )
         conn.autocommit = True
 
-        # Only database-level grants. The app creates the genie schema and
-        # tables at startup via _ensure_schema() — since the SP executes
-        # those DDL statements, it owns everything it creates.
+        # Database-level grants. On a fresh Lakebase the app creates the
+        # genie schema and tables at startup via _ensure_schema() — since
+        # the SP executes those DDL statements, it owns everything it
+        # creates. On a re-used Lakebase (different SP than the previous
+        # install), we also reconcile ownership below.
         grants = [
             f'GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}"',
             f'GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}"',
@@ -158,6 +160,8 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
                     pass
                 else:
                     print(f"    ⚠ {grant}: {e}")
+
+        _reconcile_schema_ownership(conn, sp_client_id)
         conn.close()
         print(f"  ✓ Database permissions granted to SP")
         return True
@@ -167,6 +171,88 @@ def _grant_permissions(w, project_name: str, sp_client_id: str, endpoint_name: s
         print(f'    GRANT CONNECT ON DATABASE databricks_postgres TO "{sp_client_id}";')
         print(f'    GRANT CREATE ON DATABASE databricks_postgres TO "{sp_client_id}";')
         return False
+
+
+def _reconcile_schema_ownership(conn, new_sp: str) -> None:
+    """Transfer ownership of the `genie` schema + its tables/sequences to
+    the new SP, if the schema already exists and is owned by someone else.
+
+    This is the re-install scenario: the user is redeploying the app
+    (possibly under a new name, which gets a brand-new SP) against a
+    Lakebase project that already has a `genie` schema + data from a
+    previous install. Without ownership transfer, the new SP gets
+    "permission denied for schema genie" when it tries to write.
+
+    Requires the deployer's Postgres role to have pg_role_admin (i.e.
+    CAN MANAGE on the Lakebase project). If not, surfaces a clear
+    remediation message and continues — the app will fall back to
+    in-memory storage until the admin fixes it manually.
+    """
+    # Does the schema exist, and if so who owns it?
+    row = conn.execute(
+        "SELECT nspowner::regrole::text FROM pg_namespace WHERE nspname = 'genie'"
+    ).fetchone()
+    if not row:
+        # Fresh Lakebase — nothing to reconcile; the app SP will create
+        # and own `genie` at startup.
+        return
+
+    current_owner = (row[0] or "").strip('"')
+    if current_owner == new_sp:
+        print(f"  ✓ genie schema already owned by SP")
+        return
+
+    print(f"  genie schema exists, owned by {current_owner[:12]}... — reconciling to new SP...")
+    statements = [
+        f'ALTER SCHEMA genie OWNER TO "{new_sp}"',
+    ]
+    # Transfer every table + sequence so ALTER TABLE works going forward
+    try:
+        tables = [r[0] for r in conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'genie'"
+        ).fetchall()]
+        for t in tables:
+            statements.append(f'ALTER TABLE genie."{t}" OWNER TO "{new_sp}"')
+        seqs = [r[0] for r in conn.execute(
+            "SELECT sequencename FROM pg_sequences WHERE schemaname = 'genie'"
+        ).fetchall()]
+        for s in seqs:
+            statements.append(f'ALTER SEQUENCE genie."{s}" OWNER TO "{new_sp}"')
+    except Exception as e:
+        print(f"    ⚠ Could not enumerate tables/sequences for ownership transfer: {e}")
+
+    for stmt in statements:
+        try:
+            conn.execute(stmt)
+        except Exception as e:
+            msg = str(e).lower()
+            if "must be owner" in msg or "permission denied" in msg:
+                print(
+                    f"    ✗ Ownership transfer failed — you need CAN MANAGE on the "
+                    f"Lakebase project '{_project_name_from_conn(conn)}'."
+                )
+                print( "      Either ask the current owner to run it, or grant yourself "
+                       "CAN MANAGE via:")
+                print( "        Databricks → SQL → Lakebase → <project> → Permissions → "
+                       "add yourself with Can Manage")
+                print( "      Then run these SQL statements in the Lakebase SQL Editor:")
+                for s in statements:
+                    print(f"        {s};")
+                return
+            print(f"    ⚠ {stmt}: {e}")
+
+    print(f"  ✓ Transferred ownership of genie schema ({len(statements)} objects) to SP")
+
+
+def _project_name_from_conn(conn) -> str:
+    """Best-effort: extract the Lakebase project name from the connection host."""
+    try:
+        host = conn.info.host or ""
+        # Lakebase endpoint hosts look like <endpoint>.<proj>.<region>.postgres.databricks.com
+        parts = host.split(".")
+        return parts[1] if len(parts) > 2 else "<project>"
+    except Exception:
+        return "<project>"
 
 
 def main():
