@@ -660,3 +660,130 @@ class TestMinerMultiTargetDispatcher:
         assert attempts["n"] == 2
         assert len(result["keep_in_prose"]) == 1
         assert result["stats"]["retries"] == 1
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Pillar B extensions — expand budget math (A4 / reviewer finding #1)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestExpandBudgetMath:
+    """_expand_instructions uses floor-free budget math.
+
+    Previous formula had ``max(..., 200)`` / ``max(..., 100)`` floors that
+    could inflate the claimed remaining budget past the actual 2000-char
+    cap. Reviewer flagged this as High severity. New formula:
+
+        remaining = max(cap - existing, 0)  # strict
+        if remaining < MIN_EXPAND_BUDGET: skip
+        per_section = remaining // missing_count  # strict upper bound
+    """
+
+    def _fake_llm_zero_sections(self, monkeypatch):
+        def _fake(_w, _system, _prompt, *, span_name="", **kwargs):
+            return '{"sections": {}}', None
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+            _fake,
+        )
+
+    def _empty_metadata(self) -> dict:
+        return {"data_sources": {"tables": [], "metric_views": []}}
+
+    def test_skips_when_remaining_below_min_budget(self, monkeypatch):
+        """1950-char prose + 2 missing = 50 chars room = skip (< 100 floor)."""
+        from genie_space_optimizer.optimization.optimizer import _expand_instructions
+
+        llm_called = {"n": 0}
+
+        def _fake(*a, **k):
+            llm_called["n"] += 1
+            return '{"sections": {}}', None
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+            _fake,
+        )
+
+        existing = "x" * 1950
+        missing = ["## CONSTRAINTS", "## Instructions you must follow when providing summaries"]
+        out = _expand_instructions(self._empty_metadata(), existing, missing, w=MagicMock())
+        assert out == {"__skip_reason__": "no_budget"}
+        assert llm_called["n"] == 0, "LLM must not be called when budget is too small"
+
+    def test_skips_when_existing_equals_cap(self, monkeypatch):
+        """Existing prose already AT cap → remaining=0 → skip."""
+        from genie_space_optimizer.optimization.optimizer import _expand_instructions
+        from genie_space_optimizer.common.config import MAX_TEXT_INSTRUCTIONS_CHARS
+
+        llm_called = {"n": 0}
+
+        def _fake(*a, **k):
+            llm_called["n"] += 1
+            return '{"sections": {}}', None
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+            _fake,
+        )
+
+        existing = "x" * MAX_TEXT_INSTRUCTIONS_CHARS
+        out = _expand_instructions(self._empty_metadata(), existing, ["## PURPOSE"], w=MagicMock())
+        assert out == {"__skip_reason__": "no_budget"}
+        assert llm_called["n"] == 0
+
+    def test_calls_llm_when_budget_sufficient(self, monkeypatch):
+        from genie_space_optimizer.optimization.optimizer import _expand_instructions
+        self._fake_llm_zero_sections(monkeypatch)
+        # 500 chars used → 1500 remaining → plenty of room.
+        existing = "x" * 500
+        missing = ["## CONSTRAINTS"]
+        out = _expand_instructions(self._empty_metadata(), existing, missing, w=MagicMock())
+        # LLM returned no content → empty dict (not the skip sentinel).
+        assert out == {}
+
+    def test_budget_template_vars_render_correctly(self):
+        """Prompt must render the dynamic budget variables in the right place."""
+        from genie_space_optimizer.common.config import (
+            EXPAND_INSTRUCTION_PROMPT, format_mlflow_template,
+        )
+
+        rendered = format_mlflow_template(
+            EXPAND_INSTRUCTION_PROMPT,
+            existing_instructions="existing",
+            tables_context="tables",
+            metric_views_context="mvs",
+            join_specs_context="joins",
+            missing_sections="- ## PURPOSE",
+            existing_length="500",
+            remaining_budget="1500",
+            missing_count="1",
+            per_section_budget="1500",
+        )
+        assert "existing prose is 500 chars" in rendered
+        assert "1500 chars remaining" in rendered
+        assert "1 section(s)" in rendered
+        # The strictly-forbidden "invent rules" language is present.
+        assert "Do NOT invent business rules" in rendered
+        # The SQL-in-prose rule is present (A3 — added to expand).
+        assert "Do NOT emit any SQL keyword or clause" in rendered
+        # The softened Source: hints — no standalone "Source:" heading.
+        assert "Source: columns whose names" not in rendered
+        assert "If such content is evident" in rendered
+
+
+class TestProactiveInstructionPromptStrengthened:
+    """A3 — proactive prompt's existing SQL-in-prose rule is strengthened.
+
+    The rule now covers 'SQL keyword or clause' (not just 'SQL snippet')
+    and includes the English-verb-replacement hints.
+    """
+
+    def test_proactive_prompt_has_strengthened_sql_rule(self):
+        from genie_space_optimizer.common.config import PROACTIVE_INSTRUCTION_PROMPT
+        assert "SQL keyword or clause" in PROACTIVE_INSTRUCTION_PROMPT
+        # Verb replacement hints are present.
+        assert "combine" in PROACTIVE_INSTRUCTION_PROMPT.lower()
+        # Old weaker wording is gone.
+        # (Old rule used "SQL snippet" — ensure it's been upgraded.)
+        assert "any SQL keyword or clause" in PROACTIVE_INSTRUCTION_PROMPT

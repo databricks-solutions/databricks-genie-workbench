@@ -2122,6 +2122,7 @@ def _expand_instructions(
     """
     from genie_space_optimizer.common.config import (
         CANONICAL_SECTION_HEADERS, EXPAND_INSTRUCTION_PROMPT,
+        MAX_TEXT_INSTRUCTIONS_CHARS, MIN_EXPAND_BUDGET,
     )
     from genie_space_optimizer.optimization.evaluation import _extract_json
 
@@ -2130,6 +2131,30 @@ def _expand_instructions(
     missing = [s for s in missing_sections if s in CANONICAL_SECTION_HEADERS]
     if not missing:
         return {}
+
+    # ── Budget math (floor-free; strict upper bound on per-section budget) ──
+    # Invariant: per_section_budget * missing_count <= remaining_budget
+    # so the LLM can never legitimately return content that overflows. If
+    # remaining room is too small to be useful, skip the LLM call entirely
+    # rather than forcing a decline-after-generation round-trip.
+    existing_length = len(existing_instructions or "")
+    remaining_budget = max(MAX_TEXT_INSTRUCTIONS_CHARS - existing_length, 0)
+
+    if remaining_budget < MIN_EXPAND_BUDGET:
+        logger.info(
+            "Expand skipped: remaining_budget=%d < MIN_EXPAND_BUDGET=%d "
+            "(existing prose is near the 2000-char cap)",
+            remaining_budget, MIN_EXPAND_BUDGET,
+        )
+        # Sentinel key so callers can distinguish "nothing to do" from
+        # "wanted to do it but ran out of room" in their decline-log output.
+        return {"__skip_reason__": "no_budget"}
+
+    missing_count = len(missing)
+    # Integer division is the strict upper bound. Do NOT floor — floors
+    # inflate the claimed remaining room past the actual cap and defeat
+    # the whole point of the pre-render trim.
+    per_section_budget = remaining_budget // missing_count
 
     ctx = _build_space_schema_context(metadata_snapshot)
 
@@ -2149,6 +2174,10 @@ def _expand_instructions(
     )
     ctx["existing_instructions"] = existing_instructions or "(none)"
     ctx["missing_sections"] = "\n".join(f"- {h}" for h in missing)
+    ctx["existing_length"] = str(existing_length)
+    ctx["remaining_budget"] = str(remaining_budget)
+    ctx["missing_count"] = str(missing_count)
+    ctx["per_section_budget"] = str(per_section_budget)
 
     format_kwargs = _truncate_to_budget(
         ctx, EXPAND_INSTRUCTION_PROMPT,

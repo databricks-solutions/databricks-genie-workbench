@@ -1776,6 +1776,16 @@ def _run_proactive_instruction_seeding(
                 logger.warning("Expand instructions call failed", exc_info=True)
                 new_sections = {}
 
+            # _expand_instructions may return a ``__skip_reason__`` sentinel
+            # (e.g. when existing prose leaves < MIN_EXPAND_BUDGET of room).
+            # Pop it so we never try to render it as a canonical header; the
+            # value is informational for decline-log UX (see Commit 3 / C3).
+            _expand_skip_reason = new_sections.pop("__skip_reason__", None)
+            if _expand_skip_reason:
+                logger.info(
+                    "Expand no-op: skip_reason=%s", _expand_skip_reason,
+                )
+
             if new_sections:
                 merged = dict(canonical_secs)
                 for header, body in new_sections.items():
