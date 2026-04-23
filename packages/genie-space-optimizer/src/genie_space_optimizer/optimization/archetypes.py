@@ -42,6 +42,13 @@ class Archetype:
     prompt_template: str
     output_shape: dict[str, Any]
     patch_type: str = "add_example_sql"
+    # Pre-flight synthesis driver (``optimization/preflight_synthesis.py``)
+    # has no failure cluster — it works from schema alone. A few shapes
+    # (cohort retention, event sequences, self-joins, funnels) need a
+    # failure signal to produce grounded examples; we exclude them from
+    # pre-flight by flipping this flag. The reactive AFS path in
+    # ``optimization/synthesis.py`` is unaffected.
+    preflight_eligible: bool = True
 
     def matches(self, root_cause: str, schema_traits: set[str]) -> bool:
         if self.applicable_root_causes and root_cause not in self.applicable_root_causes:
@@ -137,6 +144,7 @@ ARCHETYPES: list[Archetype] = [
             "then measure their activity in subsequent months."
         ),
         output_shape={"requires_constructs": ["SELECT", "GROUP_BY", "JOIN"]},
+        preflight_eligible=False,  # needs failure context; too open-ended for schema-only synthesis
     ),
     Archetype(
         name="funnel_conversion",
@@ -147,6 +155,7 @@ ARCHETYPES: list[Archetype] = [
             "(viewed -> added -> purchased)."
         ),
         output_shape={"requires_constructs": ["SELECT", "GROUP_BY"]},
+        preflight_eligible=False,  # stage detection needs domain vocabulary not in schema alone
     ),
     Archetype(
         name="ratio_by_dimension",
@@ -226,6 +235,7 @@ ARCHETYPES: list[Archetype] = [
             "Use a CTE if the hierarchy can be multi-level."
         ),
         output_shape={"requires_constructs": ["SELECT", "JOIN"]},
+        preflight_eligible=False,  # hierarchy detection requires FK awareness beyond trait inference
     ),
     Archetype(
         name="event_sequence",
@@ -236,6 +246,7 @@ ARCHETYPES: list[Archetype] = [
             "time window. Join on the entity, compare event timestamps."
         ),
         output_shape={"requires_constructs": ["SELECT", "JOIN", "WHERE"]},
+        preflight_eligible=False,  # needs a concrete event vocabulary not derivable from schema alone
     ),
     Archetype(
         name="distinct_count_by_dim",

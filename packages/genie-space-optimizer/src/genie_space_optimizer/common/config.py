@@ -3894,3 +3894,110 @@ For each candidate, provide:
 Output strict JSON array matching the input order. Each element:
 {{"display_name": "...", "synonyms": [...], "instruction": "...", "alias": "..."}}
 """
+
+# ── 26. Pre-flight example_sql synthesis (Bug #4 follow-up; schema-driven) ──
+#
+# Proactive, leak-free "knowledge booster" that generates validated
+# question→SQL pairs and applies them as ``instructions.example_question_sqls``
+# until the target threshold is reached. Distinct from the reactive
+# AFS-driven path in ``optimization/synthesis.py`` — this fires in
+# pre-flight from *schema alone* with no failure cluster.
+#
+# Firewall invariants enforced by code:
+#   1. The generator prompt has no benchmark variables (structural).
+#   2. The orchestrator's context builder takes no ``benchmarks`` parameter
+#      (code review + unit test).
+#   3. Every candidate is fingerprint-checked against ``BenchmarkCorpus``
+#      before persist (runtime).
+#
+# Example_question_sqls do NOT count toward the Genie 200-snippet limit
+# (per docs/gsl-instruction-schema.md + public Databricks docs).
+
+ENABLE_PREFLIGHT_EXAMPLE_SQL_SYNTHESIS = os.getenv(
+    "GENIE_SPACE_OPTIMIZER_ENABLE_PREFLIGHT_EXAMPLE_SQL", "true",
+).lower() in ("true", "1", "yes")
+"""Feature kill switch. Default ON for all spaces; set to ``false`` to skip."""
+
+PREFLIGHT_EXAMPLE_SQL_TARGET = int(
+    os.getenv("GENIE_SPACE_OPTIMIZER_PREFLIGHT_EXAMPLE_SQL_TARGET", "20") or "20"
+)
+"""Target count of ``example_question_sqls`` after pre-flight synthesis.
+
+Stage gates on ``need = max(0, TARGET - existing)`` — never produces more
+than required, idempotent across re-runs. 20 is a conservative upper
+cap; does not affect Genie's 200-snippet limit (example SQLs don't count).
+"""
+
+PREFLIGHT_EXAMPLE_SQL_PER_ARCHETYPE = int(
+    os.getenv("GENIE_SPACE_OPTIMIZER_PREFLIGHT_PER_ARCHETYPE", "2") or "2"
+)
+"""Upper bound on candidates generated per archetype per run — prevents
+any one query shape from dominating the applied pool."""
+
+PREFLIGHT_EXAMPLE_SQL_OVERDRAW = float(
+    os.getenv("GENIE_SPACE_OPTIMIZER_PREFLIGHT_OVERDRAW", "1.5") or "1.5"
+)
+"""Multiplier over ``need`` to absorb gate rejections. With default 1.5 and
+target 20 on an empty space, the planner emits 30 candidate plans and we
+apply the first 20 that pass every gate."""
+
+PREFLIGHT_COLUMN_COVERAGE_K = int(
+    os.getenv("GENIE_SPACE_OPTIMIZER_PREFLIGHT_COLUMN_K", "5") or "5"
+)
+"""Top-K columns per asset included in the narrowed identifier allowlist
+for synthesis. Small K keeps the LLM focused and raises EXPLAIN pass rate."""
+
+PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT = """\
+<role>
+You are generating ONE high-quality question + SQL pair to teach a \
+Databricks Genie Space. Your output will be stored as an example so \
+Genie can learn the query shape for similar user questions.
+</role>
+
+<context>
+## Coverage focus (this example MUST reference these assets)
+Tables:
+{{ slice_tables }}
+
+Metric views:
+{{ slice_metric_views }}
+
+Join spec to exercise:
+{{ slice_join_spec }}
+
+Columns to prioritize:
+{{ slice_columns }}
+
+## Archetype
+Name: {{ archetype_name }}
+Shape guidance: {{ archetype_prompt_template }}
+Output contract: {{ archetype_output_shape }}
+
+## Schema (identifier allowlist — ONLY these identifiers may appear)
+{{ identifier_allowlist }}
+
+## Existing questions in this space (avoid duplicating intent)
+{{ existing_questions_list }}
+</context>
+
+<instructions>
+Produce ONE example. Rules:
+
+- ``example_question`` is a clean, customer-style business question.
+- ``example_sql`` is a valid Databricks SQL query using ONLY fully-\
+qualified identifiers from the allowlist (catalog.schema.table.column).
+- Match the archetype's shape contract.
+- The question MUST reference the coverage focus naturally — use the \
+listed assets and columns.
+- Do NOT duplicate the intent of any existing question.
+- NEVER quote benchmark questions, evaluation prompts, or test queries.
+- Do NOT invent columns, tables, or relationships that are not in the \
+allowlist — any unknown identifier is a hallucination.
+</instructions>
+
+<output_schema>
+Respond with a SINGLE JSON object, no prose, no code fences:
+{{"example_question": "...", "example_sql": "...", "rationale": "..."}}
+</output_schema>"""
+
+LEVER_PROMPTS["preflight_example_synthesis"] = PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT

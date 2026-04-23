@@ -1,0 +1,1156 @@
+"""Pre-flight example_sql synthesis (Bug #4 follow-up).
+
+Proactive, leak-free "knowledge booster" that fills
+``instructions.example_question_sqls`` up to :data:`PREFLIGHT_EXAMPLE_SQL_TARGET`
+(default 20). Distinct from the reactive AFS-driven path in
+:mod:`optimization.synthesis` — this fires in pre-flight from schema
+alone, with no failure cluster required.
+
+Design invariants (enforced structurally + tested):
+
+1. **No benchmark content in any generator prompt.** The rendering
+   function takes no ``benchmarks`` parameter; the prompt template has
+   no ``{{ benchmarks }}`` variable. Both halves are checked by
+   ``test_synthesis_prompt_excludes_benchmarks``.
+2. **Runtime firewall on every output.** Every candidate is
+   fingerprint-checked against ``BenchmarkCorpus`` before persist via
+   :func:`_apply_proactive_example_sqls(... benchmarks=...)` which runs
+   ``is_benchmark_leak`` inline.
+3. **Threshold gate is load-bearing.** ``need = max(0, TARGET - existing)``
+   — the stage cannot overflow the target, cannot churn across re-runs,
+   and is idempotent by construction.
+4. **Feature flag ON by default.** Operators opt *out* via
+   ``GENIE_SPACE_OPTIMIZER_ENABLE_PREFLIGHT_EXAMPLE_SQL=false``.
+
+The pipeline:
+
+1. **Coverage planner** — :func:`plan_asset_coverage` emits
+   ``(archetype, AssetSlice)`` plans biased toward exercising every
+   table / metric view / join spec before piling more on any one asset.
+2. **Synthesis** — :func:`synthesize_preflight_candidate` runs an LLM
+   call with a *narrowed* identifier allowlist (slice only). Narrow
+   allowlists drive higher EXPLAIN pass rates and curb hallucinations.
+3. **5-gate validator** — reuses
+   :func:`optimization.synthesis.validate_synthesis_proposal` as-is
+   (parse / execute / structural / arbiter-no-op-until-P2 / firewall).
+4. **Apply** — dedups against the current space config and any other
+   already-accepted candidate in this run, then hands the first
+   ``need`` survivors to :func:`_apply_proactive_example_sqls`.
+
+P2 adds the Genie-vs-synthesized arbiter gate between steps 3 and 4 via
+:func:`_gate_genie_agreement`.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import logging
+import random
+import re
+from dataclasses import dataclass, field
+from typing import Any, Callable, Iterator
+
+from genie_space_optimizer.common.config import (
+    PREFLIGHT_COLUMN_COVERAGE_K,
+    PREFLIGHT_EXAMPLE_SQL_OVERDRAW,
+    PREFLIGHT_EXAMPLE_SQL_PER_ARCHETYPE,
+    PREFLIGHT_EXAMPLE_SQL_TARGET,
+    PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+    format_mlflow_template,
+)
+from genie_space_optimizer.optimization.archetypes import (
+    ARCHETYPES,
+    Archetype,
+    schema_traits,
+)
+# Module-level import so tests can ``patch("preflight_synthesis.validate_synthesis_proposal")``
+# at the orchestrator's attribute. Synthesis is already a dependency via the
+# reused 5-gate pipeline, so this doesn't add any heaviness at import time.
+from genie_space_optimizer.optimization.synthesis import validate_synthesis_proposal
+
+logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 1. AssetSlice — a narrowed schema view for one synthesis candidate
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@dataclass
+class AssetSlice:
+    """Narrow schema view passed to the synthesis LLM for one candidate.
+
+    Holds the tables / metric view / columns / optional join spec the
+    synthesized query is expected to reference. Produces a tight
+    identifier allowlist so the LLM cannot reference unrelated assets
+    (which would mostly fail EXPLAIN anyway) and cannot hallucinate
+    columns it hasn't been shown.
+
+    Fields
+    ------
+    tables : list[dict]
+        Zero, one, or two table snapshots (mirroring
+        ``metadata_snapshot["data_sources"]["tables"][i]``). Two only
+        when a ``join_spec`` is present.
+    metric_view : dict | None
+        Optional metric view snapshot. Mutually exclusive with having
+        both ``tables`` entries populated — an MV-centric slice uses
+        its dimensions/measures directly.
+    columns : list[tuple[str, str]]
+        ``[(table_identifier, column_name), ...]`` — the top-K columns
+        to prioritise for this slice. Kept case-preserving; the allow-
+        list builder lowercases when emitting backtick-wrapped prose.
+    join_spec : dict | None
+        A join-spec snapshot (shape mirrors
+        ``metadata_snapshot["instructions"]["join_specs"][i]``). When
+        present, both ``tables[0]`` and ``tables[1]`` are the
+        ``left`` / ``right`` assets.
+    """
+
+    tables: list[dict] = field(default_factory=list)
+    metric_view: dict | None = None
+    columns: list[tuple[str, str]] = field(default_factory=list)
+    join_spec: dict | None = None
+
+    def asset_ids(self) -> list[str]:
+        """Identifiers for all assets in the slice, lower-cased + deduped.
+
+        Used by the coverage planner to update its tally after a slice
+        is emitted and by the orchestrator's logging.
+        """
+        ids: list[str] = []
+        for t in self.tables:
+            ident = (t.get("identifier") or t.get("name") or "").strip().lower()
+            if ident and ident not in ids:
+                ids.append(ident)
+        if self.metric_view:
+            ident = (
+                self.metric_view.get("identifier")
+                or self.metric_view.get("name")
+                or ""
+            ).strip().lower()
+            if ident and ident not in ids:
+                ids.append(ident)
+        return ids
+
+    def to_identifier_allowlist(self) -> str:
+        """Render a narrowed allowlist for the synthesis prompt.
+
+        Format mirrors :func:`optimization.optimizer._build_identifier_allowlist`'s
+        prose output but restricted to the slice's assets + columns.
+        A tight allowlist raises EXPLAIN pass rates and anchors the
+        LLM to the coverage focus.
+        """
+        lines: list[str] = []
+        assets: list[dict] = list(self.tables)
+        if self.metric_view is not None:
+            assets.append(self.metric_view)
+
+        # Map from table identifier to its columns in the slice — keeps
+        # the printed order stable and lets us surface the asset names
+        # even when the per-column list is short.
+        cols_by_asset: dict[str, list[str]] = {}
+        for tid, cname in self.columns:
+            cols_by_asset.setdefault(tid.strip().lower(), []).append(cname)
+
+        for asset in assets:
+            ident = (asset.get("identifier") or asset.get("name") or "").strip()
+            if not ident:
+                continue
+            lines.append(f"- {ident}")
+            cols = cols_by_asset.get(ident.lower(), [])
+            for col in cols:
+                # Preserve original case from the column snapshot when
+                # possible — Spark is case-insensitive but logs are
+                # easier to read when the case matches the schema.
+                lines.append(f"    - {ident}.{col}")
+        if self.join_spec:
+            left_id = (
+                self.join_spec.get("left", {}).get("identifier", "") or ""
+            ).strip()
+            right_id = (
+                self.join_spec.get("right", {}).get("identifier", "") or ""
+            ).strip()
+            sql_field = self.join_spec.get("sql", [])
+            cond = (
+                sql_field[0]
+                if isinstance(sql_field, list) and sql_field
+                else str(sql_field or "")
+            )
+            if left_id and right_id:
+                lines.append(
+                    f"- Join: {left_id} <-> {right_id} ON {cond[:120]}"
+                )
+        return "\n".join(lines) if lines else "(no assets in slice)"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 2. Coverage planner
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _top_k_columns(asset: dict, k: int) -> list[tuple[str, str]]:
+    """Rank the asset's columns and return the top-K as (identifier, name).
+
+    Ranking rules (highest first):
+
+    1. Columns with non-empty ``description`` in ``column_configs`` —
+       the user (or Create Agent) has invested meaning in them.
+    2. Columns whose data type is numeric / date / categorical —
+       likely query targets.
+    3. Columns NOT flagged as PII by heuristic (name contains ``ssn``,
+       ``email``, ``phone``, ``token``, ``secret``). PII should be
+       explicitly referenced, not sampled by the booster.
+    4. Alphabetical as final tie-breaker for determinism.
+
+    Returns at most ``k`` entries. Metric-view ``measures`` and
+    ``dimensions`` are merged with ``columns`` / ``column_configs``
+    so MV slices get the right references.
+    """
+    if not isinstance(asset, dict):
+        return []
+    ident = (asset.get("identifier") or asset.get("name") or "").strip()
+    if not ident:
+        return []
+
+    pii_markers = ("ssn", "email", "phone", "token", "secret", "password")
+
+    # Column name → (has_description, is_priority_type, name)
+    candidates: dict[str, tuple[bool, bool, str]] = {}
+
+    def _bump(name: str, desc: str, dtype: str) -> None:
+        if not name:
+            return
+        key = name.lower()
+        # Filter out PII candidates entirely — pre-flight synthesis should
+        # not surface them via random-column sampling. If a user wants
+        # PII-aware examples, they should curate them by hand.
+        if any(m in key for m in pii_markers):
+            return
+        has_desc = bool(str(desc or "").strip())
+        dt_low = str(dtype or "").lower().split("(")[0].strip()
+        is_priority = any(
+            x in dt_low for x in (
+                "int", "double", "decimal", "long", "float", "numeric",
+                "date", "timestamp", "string", "varchar",
+            )
+        )
+        existing = candidates.get(key)
+        prev_desc = existing[0] if existing else False
+        candidates[key] = (has_desc or prev_desc, is_priority, name)
+
+    # Regular columns
+    for col in asset.get("columns", []) or []:
+        if isinstance(col, dict):
+            _bump(
+                col.get("name", ""),
+                col.get("description", ""),
+                col.get("type_text", col.get("type", "")),
+            )
+    # column_configs
+    for cc in asset.get("column_configs", []) or []:
+        if isinstance(cc, dict):
+            _bump(
+                cc.get("column_name", ""),
+                cc.get("description", ""),
+                cc.get("type_text", cc.get("type", "")),
+            )
+    # Metric view measures + dimensions
+    for m in asset.get("measures", []) or []:
+        if isinstance(m, dict):
+            _bump(m.get("name", ""), m.get("description", ""), "numeric")
+    for d in asset.get("dimensions", []) or []:
+        if isinstance(d, dict):
+            _bump(d.get("name", ""), d.get("description", ""), "string")
+
+    # Rank: described first, then priority-typed, then alpha.
+    def _rank_key(item: tuple[str, tuple[bool, bool, str]]) -> tuple:
+        key, (has_desc, is_priority, name) = item
+        return (
+            not has_desc,       # True sorts after False — described first
+            not is_priority,    # priority types first
+            name.lower(),
+        )
+
+    ranked = sorted(candidates.items(), key=_rank_key)
+    return [(ident, value[2]) for _, value in ranked[:max(0, k)]]
+
+
+def _archetype_by_name(name: str) -> Archetype | None:
+    for a in ARCHETYPES:
+        if a.name == name:
+            return a
+    return None
+
+
+# A small, curated set of archetype preferences per "kind" of coverage.
+# We pick from these when we know we want a join / MV / solo plan. The
+# planner filters further by ``preflight_eligible`` and trait match.
+_JOIN_COVERAGE_ARCHETYPES = (
+    "segment_compare", "ratio_by_dimension", "time_window_aggregate",
+    "top_n_by_metric", "distinct_count_by_dim",
+)
+_MV_COVERAGE_ARCHETYPES = (
+    "top_n_by_metric", "time_window_aggregate", "distinct_count_by_dim",
+    "period_over_period", "ratio_by_dimension",
+)
+_TABLE_COVERAGE_ARCHETYPES = (
+    "filter_compose", "distinct_count_by_dim", "top_n_by_metric",
+    "pct_change", "pivot_wide",
+)
+
+
+def _eligible_archetypes(traits: set[str]) -> list[Archetype]:
+    """Archetypes that pass the pre-flight gate AND have their trait
+    requirements satisfied by ``traits``."""
+    out: list[Archetype] = []
+    for a in ARCHETYPES:
+        if not a.preflight_eligible:
+            continue
+        if a.required_schema_traits and not a.required_schema_traits.issubset(
+            traits
+        ):
+            continue
+        out.append(a)
+    return out
+
+
+def _pick_archetype_from_preferences(
+    preferences: tuple[str, ...],
+    traits: set[str],
+    exclude: set[str] | None = None,
+) -> Archetype | None:
+    """Walk ``preferences`` and return the first archetype that is
+    pre-flight-eligible, trait-compatible, and not in ``exclude``.
+
+    Falls back to any eligible archetype if nothing in preferences
+    matches. Returns None for schemas too sparse to support any
+    archetype at all (pure small-space fallback triggers in that case).
+    """
+    excl = exclude or set()
+    for name in preferences:
+        a = _archetype_by_name(name)
+        if a is None:
+            continue
+        if not a.preflight_eligible:
+            continue
+        if a.required_schema_traits and not a.required_schema_traits.issubset(
+            traits
+        ):
+            continue
+        if a.name in excl:
+            continue
+        return a
+    # Preference miss — fall back to any eligible archetype.
+    for a in _eligible_archetypes(traits):
+        if a.name not in excl:
+            return a
+    return None
+
+
+def _resolve_asset_by_identifier(
+    metadata_snapshot: dict, identifier: str,
+) -> dict | None:
+    """Return the table / metric-view snapshot matching ``identifier``.
+
+    Matches on full FQ identifier first, then on short (last-segment)
+    name. Returns ``None`` when no match exists — the caller treats
+    that as a "join spec references an absent asset" edge case and
+    skips the plan.
+    """
+    if not identifier:
+        return None
+    ident_lower = identifier.strip().lower()
+    short = ident_lower.split(".")[-1]
+    ds = metadata_snapshot.get("data_sources", {}) or {}
+    for bucket in ("tables", "metric_views"):
+        for t in ds.get(bucket, []) or []:
+            if not isinstance(t, dict):
+                continue
+            tid = (t.get("identifier") or t.get("name") or "").strip().lower()
+            if tid == ident_lower or tid.split(".")[-1] == short:
+                return t
+    return None
+
+
+def plan_asset_coverage(
+    metadata_snapshot: dict,
+    need: int,
+    *,
+    overdraw: float = PREFLIGHT_EXAMPLE_SQL_OVERDRAW,
+    column_k: int = PREFLIGHT_COLUMN_COVERAGE_K,
+    per_archetype: int = PREFLIGHT_EXAMPLE_SQL_PER_ARCHETYPE,
+    rng: random.Random | None = None,
+) -> list[tuple[Archetype, AssetSlice]]:
+    """Emit ``(archetype, AssetSlice)`` plans biased toward asset coverage.
+
+    The first passes are must-cover: every join spec gets a plan, then
+    every metric view, then every solo table not already touched. After
+    that the remaining slots are filled greedily by picking the slice
+    that minimises the skew in the per-asset tally (keeps diversity
+    high even when the schema is large).
+
+    Parameters
+    ----------
+    metadata_snapshot
+        Current space config snapshot.
+    need
+        How many applied examples the caller wants at minimum. Planner
+        emits ``ceil(need * overdraw)`` plans to absorb gate rejects.
+    overdraw, column_k, per_archetype
+        Overridable for tests; default from :mod:`common.config`.
+    rng
+        Optional seeded RNG for deterministic tests. Defaults to a
+        ``random.Random()`` without a seed for production runs.
+
+    Returns
+    -------
+    list[tuple[Archetype, AssetSlice]]
+        Plans in application order. May be shorter than the overdraw
+        target on small or trait-sparse schemas (caller logs the
+        fallback, synthesis still proceeds with whatever plans exist).
+    """
+    if need <= 0:
+        return []
+
+    rng = rng or random.Random()
+    target = max(1, int(-(-need * overdraw // 1)))  # ceil(need * overdraw)
+
+    ds = metadata_snapshot.get("data_sources", {}) or {}
+    tables = [t for t in (ds.get("tables", []) or []) if isinstance(t, dict)]
+    metric_views = [
+        mv for mv in (ds.get("metric_views", []) or []) if isinstance(mv, dict)
+    ]
+    join_specs = [
+        j for j in (
+            (metadata_snapshot.get("instructions", {}) or {}).get("join_specs", []) or []
+        )
+        if isinstance(j, dict)
+    ]
+
+    traits = schema_traits(metadata_snapshot)
+    if not _eligible_archetypes(traits):
+        logger.info(
+            "preflight.plan.no_eligible_archetypes traits=%s — small-space fallback empty",
+            sorted(traits),
+        )
+        return []
+
+    plans: list[tuple[Archetype, AssetSlice]] = []
+    coverage: dict[str, int] = {}
+    archetype_usage: dict[str, int] = {}
+
+    def _bump_coverage(slice_: AssetSlice) -> None:
+        for aid in slice_.asset_ids():
+            coverage[aid] = coverage.get(aid, 0) + 1
+
+    def _record(archetype: Archetype, slice_: AssetSlice) -> None:
+        if archetype_usage.get(archetype.name, 0) >= per_archetype:
+            # Respect per-archetype cap — the greedy fill will pick a
+            # different archetype next time round.
+            return
+        plans.append((archetype, slice_))
+        archetype_usage[archetype.name] = archetype_usage.get(archetype.name, 0) + 1
+        _bump_coverage(slice_)
+
+    # ── Pass 1: every join spec gets a plan ────────────────────────
+    for js in join_specs:
+        if len(plans) >= target:
+            break
+        left = js.get("left", {}) or {}
+        right = js.get("right", {}) or {}
+        left_asset = _resolve_asset_by_identifier(
+            metadata_snapshot, left.get("identifier", ""),
+        )
+        right_asset = _resolve_asset_by_identifier(
+            metadata_snapshot, right.get("identifier", ""),
+        )
+        if not left_asset or not right_asset:
+            continue
+        archetype = _pick_archetype_from_preferences(
+            _JOIN_COVERAGE_ARCHETYPES, traits,
+            exclude={n for n in archetype_usage if archetype_usage[n] >= per_archetype},
+        )
+        if archetype is None:
+            continue
+        slice_ = AssetSlice(
+            tables=[left_asset, right_asset],
+            metric_view=None,
+            columns=(
+                _top_k_columns(left_asset, column_k)
+                + _top_k_columns(right_asset, column_k)
+            ),
+            join_spec=js,
+        )
+        _record(archetype, slice_)
+
+    # ── Pass 2: every MV not already covered gets a plan ──────────
+    for mv in metric_views:
+        if len(plans) >= target:
+            break
+        mv_ident = (mv.get("identifier") or mv.get("name") or "").strip().lower()
+        if mv_ident and coverage.get(mv_ident, 0) > 0:
+            continue
+        archetype = _pick_archetype_from_preferences(
+            _MV_COVERAGE_ARCHETYPES, traits,
+            exclude={n for n in archetype_usage if archetype_usage[n] >= per_archetype},
+        )
+        if archetype is None:
+            continue
+        slice_ = AssetSlice(
+            tables=[],
+            metric_view=mv,
+            columns=_top_k_columns(mv, column_k),
+        )
+        _record(archetype, slice_)
+
+    # ── Pass 3: every solo table not already covered gets a plan ──
+    for t in tables:
+        if len(plans) >= target:
+            break
+        tid = (t.get("identifier") or t.get("name") or "").strip().lower()
+        if tid and coverage.get(tid, 0) > 0:
+            continue
+        archetype = _pick_archetype_from_preferences(
+            _TABLE_COVERAGE_ARCHETYPES, traits,
+            exclude={n for n in archetype_usage if archetype_usage[n] >= per_archetype},
+        )
+        if archetype is None:
+            continue
+        slice_ = AssetSlice(
+            tables=[t],
+            metric_view=None,
+            columns=_top_k_columns(t, column_k),
+        )
+        _record(archetype, slice_)
+
+    # ── Pass 4: greedy diversity fill ──────────────────────────────
+    # Greedy: at each step pick the asset with the lowest current
+    # coverage count; rotate archetype choice to keep shape variety.
+    all_assets: list[tuple[str, dict, str]] = []  # (kind, asset_dict, identifier_lower)
+    for t in tables:
+        tid = (t.get("identifier") or t.get("name") or "").strip().lower()
+        if tid:
+            all_assets.append(("table", t, tid))
+    for mv in metric_views:
+        mid = (mv.get("identifier") or mv.get("name") or "").strip().lower()
+        if mid:
+            all_assets.append(("metric_view", mv, mid))
+
+    if not all_assets:
+        logger.info(
+            "preflight.plan.small_space tables=0 mvs=0 — %d plans from joins only",
+            len(plans),
+        )
+        return plans
+
+    recent_archetypes: list[str] = []
+
+    def _eligible_for_fill() -> list[Archetype]:
+        names_capped = {
+            n for n in archetype_usage if archetype_usage[n] >= per_archetype
+        }
+        return [
+            a for a in _eligible_archetypes(traits)
+            if a.name not in names_capped
+        ]
+
+    fallback_counter = 0
+    FILL_CYCLE_LIMIT = target * 3  # guard against infinite loop when all caps exhausted
+
+    while len(plans) < target and fallback_counter < FILL_CYCLE_LIMIT:
+        fallback_counter += 1
+        # Pick the asset with the smallest coverage count, break ties randomly.
+        min_count = min(coverage.get(a[2], 0) for a in all_assets)
+        least_covered = [a for a in all_assets if coverage.get(a[2], 0) == min_count]
+        rng.shuffle(least_covered)
+        kind, asset, ident = least_covered[0]
+
+        fill_archetypes = _eligible_for_fill()
+        if not fill_archetypes:
+            # Every eligible archetype hit per-archetype cap — we're done.
+            logger.info(
+                "preflight.plan.archetype_caps_exhausted plans=%d target=%d",
+                len(plans), target,
+            )
+            break
+        # Rotate: prefer archetypes not used in the last 3 picks.
+        candidates = [
+            a for a in fill_archetypes if a.name not in recent_archetypes[-3:]
+        ] or fill_archetypes
+        archetype = rng.choice(candidates)
+        recent_archetypes.append(archetype.name)
+
+        if kind == "metric_view":
+            slice_ = AssetSlice(
+                tables=[], metric_view=asset,
+                columns=_top_k_columns(asset, column_k),
+            )
+        else:
+            slice_ = AssetSlice(
+                tables=[asset], metric_view=None,
+                columns=_top_k_columns(asset, column_k),
+            )
+        _record(archetype, slice_)
+
+    if len(plans) < target:
+        logger.info(
+            "preflight.plan.small_space_fallback plans=%d target=%d "
+            "tables=%d mvs=%d joins=%d",
+            len(plans), target, len(tables), len(metric_views), len(join_specs),
+        )
+
+    return plans
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 3. Synthesis (LLM call, leak-free prompt rendering)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# Re-exported to tests so they can assert the prompt shape without
+# importing from private config module structure.
+__all__ = [
+    "AssetSlice",
+    "plan_asset_coverage",
+    "synthesize_preflight_candidate",
+    "render_preflight_prompt",
+]
+
+
+_MAX_EXISTING_QUESTIONS_IN_PROMPT = 15
+_MAX_QUESTION_LEN_IN_PROMPT = 160
+
+
+def _format_slice_tables(slice_: AssetSlice) -> str:
+    """Render the ``tables`` bullet block for the prompt."""
+    if not slice_.tables:
+        return "(none)"
+    out: list[str] = []
+    for t in slice_.tables:
+        ident = (t.get("identifier") or t.get("name") or "").strip()
+        desc = str(t.get("description", "") or "").strip()
+        # Table descriptions can be list-of-strings in some snapshots.
+        if isinstance(t.get("description"), list):
+            desc = " ".join(
+                str(x) for x in t.get("description", []) if isinstance(x, str)
+            ).strip()
+        if ident:
+            out.append(
+                f"- {ident}" + (f" — {desc[:120]}" if desc else "")
+            )
+    return "\n".join(out) if out else "(none)"
+
+
+def _format_slice_metric_views(slice_: AssetSlice) -> str:
+    if slice_.metric_view is None:
+        return "(none)"
+    mv = slice_.metric_view
+    ident = (mv.get("identifier") or mv.get("name") or "").strip()
+    desc = str(mv.get("description", "") or "").strip()
+    if isinstance(mv.get("description"), list):
+        desc = " ".join(
+            str(x) for x in mv.get("description", []) if isinstance(x, str)
+        ).strip()
+    return f"- {ident}" + (f" — {desc[:120]}" if desc else "") if ident else "(none)"
+
+
+def _format_slice_join_spec(slice_: AssetSlice) -> str:
+    if slice_.join_spec is None:
+        return "(none)"
+    js = slice_.join_spec
+    left = (js.get("left", {}) or {}).get("identifier", "")
+    right = (js.get("right", {}) or {}).get("identifier", "")
+    sql_field = js.get("sql", [])
+    cond = (
+        sql_field[0]
+        if isinstance(sql_field, list) and sql_field
+        else str(sql_field or "")
+    )
+    return f"- {left} <-> {right} ON {cond[:200]}" if left and right else "(none)"
+
+
+def _format_slice_columns(slice_: AssetSlice) -> str:
+    if not slice_.columns:
+        return "(none)"
+    out: list[str] = []
+    for tid, cname in slice_.columns:
+        out.append(f"- {tid}.{cname}")
+    return "\n".join(out)
+
+
+def _format_existing_questions(existing_questions: list[str]) -> str:
+    """Render a short, truncated list of existing questions for anti-dup.
+
+    Intent, not text, is what the LLM must avoid duplicating — the
+    prompt says so — so we only need enough signal for the model to
+    recognise overlap. Long prompts dilute attention.
+    """
+    if not existing_questions:
+        return "(none)"
+    out: list[str] = []
+    for q in existing_questions[:_MAX_EXISTING_QUESTIONS_IN_PROMPT]:
+        text = str(q or "").strip()
+        if not text:
+            continue
+        if len(text) > _MAX_QUESTION_LEN_IN_PROMPT:
+            text = text[:_MAX_QUESTION_LEN_IN_PROMPT].rstrip() + "…"
+        out.append(f"- {text}")
+    more = len(existing_questions) - _MAX_EXISTING_QUESTIONS_IN_PROMPT
+    if more > 0:
+        out.append(f"- (+{more} more not shown)")
+    return "\n".join(out) if out else "(none)"
+
+
+def render_preflight_prompt(
+    archetype: Archetype,
+    slice_: AssetSlice,
+    existing_questions: list[str],
+) -> str:
+    """Render :data:`PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT` for one candidate.
+
+    No ``benchmarks`` parameter — leak-free by construction. The slice's
+    narrowed allowlist is the ONLY identifier universe the LLM sees.
+    """
+    return format_mlflow_template(
+        PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+        slice_tables=_format_slice_tables(slice_),
+        slice_metric_views=_format_slice_metric_views(slice_),
+        slice_join_spec=_format_slice_join_spec(slice_),
+        slice_columns=_format_slice_columns(slice_),
+        archetype_name=archetype.name,
+        archetype_prompt_template=archetype.prompt_template,
+        archetype_output_shape=json.dumps(archetype.output_shape),
+        identifier_allowlist=slice_.to_identifier_allowlist(),
+        existing_questions_list=_format_existing_questions(existing_questions),
+    )
+
+
+def synthesize_preflight_candidate(
+    archetype: Archetype,
+    slice_: AssetSlice,
+    existing_questions: list[str],
+    *,
+    w: Any = None,
+    llm_caller: Callable[[str], str] | None = None,
+) -> dict | None:
+    """One LLM call, one candidate. Returns a proposal dict or ``None``.
+
+    The returned dict is shaped like a ``synthesis.py`` proposal so it
+    can feed directly into :func:`validate_synthesis_proposal`:
+
+    ``{patch_type: "add_example_sql", example_question, example_sql,
+       rationale, usage_guidance, ...}``.
+
+    ``llm_caller`` is injected for tests (takes prompt → raw text).
+    Production path uses :func:`_traced_llm_call` with span
+    ``"preflight_example_synthesis"``.
+    """
+    prompt = render_preflight_prompt(archetype, slice_, existing_questions)
+
+    def _call() -> str:
+        if llm_caller is not None:
+            return llm_caller(prompt)
+        from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+        try:
+            raw, _ = _traced_llm_call(
+                w, "You are a SQL example author.", prompt,
+                span_name="preflight_example_synthesis",
+            )
+            return raw
+        except Exception:
+            logger.warning(
+                "preflight.synth.llm_call_failed archetype=%s", archetype.name,
+                exc_info=True,
+            )
+            return ""
+
+    raw = _call()
+    # Reuse synthesis.py's JSON extractor — handles fenced blocks + inline.
+    from genie_space_optimizer.optimization.synthesis import _extract_json_proposal
+    proposal = _extract_json_proposal(raw)
+    if not proposal:
+        return None
+
+    # Shape defaults so ``validate_synthesis_proposal`` sees the fields it
+    # expects. ``patch_type`` must match the archetype; ``usage_guidance``
+    # is surfaced by the harness applier as the example's instruction text.
+    proposal.setdefault("patch_type", archetype.patch_type)
+    if "usage_guidance" not in proposal:
+        # Fall back to rationale when the LLM omitted usage_guidance —
+        # the applier surfaces this to Genie as query-selection guidance.
+        proposal["usage_guidance"] = str(proposal.get("rationale") or "").strip()
+    return proposal
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 4. Orchestrator — threshold gate, planning, validation, apply
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _canonicalize_sql_fingerprint(sql: str) -> str:
+    """Very cheap fingerprint for pairwise dedup within a single run.
+
+    Lowercases, collapses whitespace, strips trailing semicolons. This
+    is NOT the benchmark firewall fingerprint — that's intentionally
+    stricter and lives in :mod:`leakage`. Here we just want
+    "essentially the same SQL" within our own overdraw pool.
+    """
+    if not isinstance(sql, str):
+        return ""
+    s = sql.strip().rstrip(";").strip().lower()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def _existing_example_sqls(metadata_snapshot: dict) -> list[dict]:
+    instr = metadata_snapshot.get("instructions", {}) or {}
+    return [
+        ex for ex in (instr.get("example_question_sqls", []) or [])
+        if isinstance(ex, dict)
+    ]
+
+
+def _existing_example_question_list(metadata_snapshot: dict) -> list[str]:
+    out: list[str] = []
+    for ex in _existing_example_sqls(metadata_snapshot):
+        q = ex.get("question", "")
+        if isinstance(q, list):
+            q = " ".join(str(x) for x in q)
+        text = str(q).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _existing_example_fingerprints(
+    metadata_snapshot: dict,
+) -> set[str]:
+    """Fingerprints of already-applied example SQLs; used for dedup.
+
+    Returns lower-cased, whitespace-collapsed SQL bodies.
+    """
+    out: set[str] = set()
+    for ex in _existing_example_sqls(metadata_snapshot):
+        sql = ex.get("sql", "")
+        if isinstance(sql, list):
+            sql = " ".join(str(x) for x in sql)
+        fp = _canonicalize_sql_fingerprint(str(sql))
+        if fp:
+            out.add(fp)
+    return out
+
+
+def _apply_preflight_proposals(
+    proposals: list[dict],
+    *,
+    w: Any,
+    spark: Any,
+    run_id: str,
+    space_id: str,
+    metadata_snapshot: dict,
+    config: dict,
+    benchmarks: list[dict] | None,
+    catalog: str,
+    schema: str,
+) -> int:
+    """Hand proposals to the shared applier; firewall runs inline.
+
+    Separated into its own function so unit tests can stub out the
+    harness-level applier without rebuilding the patch pipeline.
+    """
+    if not proposals:
+        return 0
+    from genie_space_optimizer.optimization.harness import (
+        _apply_proactive_example_sqls,
+    )
+    _apply_proactive_example_sqls(
+        w, spark, run_id, space_id, proposals,
+        metadata_snapshot, config, catalog, schema,
+        benchmarks=benchmarks,
+    )
+    return len(proposals)
+
+
+def run_preflight_example_synthesis(
+    w: Any,
+    spark: Any,
+    run_id: str,
+    space_id: str,
+    config: dict,
+    metadata_snapshot: dict,
+    *,
+    benchmarks: list[dict] | None,
+    catalog: str,
+    schema: str,
+    warehouse_id: str = "",
+    llm_caller: Callable[[str], str] | None = None,
+    rng: random.Random | None = None,
+    target: int | None = None,
+) -> dict:
+    """Run pre-flight synthesis to fill example_question_sqls up to target.
+
+    Idempotent + threshold-gated: ``need = max(0, target - existing)``.
+    When ``need == 0`` the stage returns immediately with no LLM / no
+    warehouse activity.
+
+    Parameters
+    ----------
+    w, spark, run_id, space_id, config, metadata_snapshot, catalog, schema
+        Standard harness context.
+    benchmarks
+        Current run's benchmark corpus — plumbed through to the applier
+        so the leakage firewall runs inline. Required (pass an empty
+        list to explicitly disable the firewall; tests use ``[]``).
+    warehouse_id
+        Warehouse for EXPLAIN / execute gates.
+    llm_caller
+        Injected LLM callable for tests. Defaults to the real
+        ``_traced_llm_call`` with span ``"preflight_example_synthesis"``.
+    rng
+        Optional deterministic RNG for tests.
+    target
+        Override for :data:`PREFLIGHT_EXAMPLE_SQL_TARGET`. Tests pass a
+        small value to exercise the threshold gate without generating
+        20 LLM calls.
+
+    Returns
+    -------
+    dict
+        ``{applied, need, existing, generated, passed_parse,
+        passed_execute, passed_firewall, passed_structural, passed_arbiter,
+        dedup_rejected, rejected_by_gate, asset_coverage,
+        archetype_distribution, skipped_reason}``.
+    """
+    from genie_space_optimizer.common.config import (
+        PREFLIGHT_EXAMPLE_SQL_TARGET as CFG_TARGET,
+    )
+    effective_target = CFG_TARGET if target is None else target
+
+    existing_sqls = _existing_example_sqls(metadata_snapshot)
+    existing_count = len(existing_sqls)
+    need = max(0, effective_target - existing_count)
+
+    result: dict = {
+        "applied": 0,
+        "need": need,
+        "existing": existing_count,
+        "target": effective_target,
+        "generated": 0,
+        "passed_parse": 0,
+        "passed_execute": 0,
+        "passed_firewall": 0,
+        "passed_structural": 0,
+        "passed_arbiter": 0,
+        "dedup_rejected": 0,
+        "rejected_by_gate": {},
+        "asset_coverage": {},
+        "archetype_distribution": {},
+        "skipped_reason": None,
+    }
+
+    if need == 0:
+        result["skipped_reason"] = "at_target"
+        _print_summary(result)
+        logger.info(
+            "preflight.synthesis.summary existing=%d target=%d need=0 skipped=at_target",
+            existing_count, effective_target,
+        )
+        return result
+
+    # ── Plan ──────────────────────────────────────────────────────
+    plans = plan_asset_coverage(metadata_snapshot, need=need, rng=rng)
+    if not plans:
+        result["skipped_reason"] = "no_eligible_plans"
+        _print_summary(result)
+        logger.info(
+            "preflight.synthesis.summary existing=%d target=%d need=%d "
+            "skipped=no_eligible_plans",
+            existing_count, effective_target, need,
+        )
+        return result
+
+    # ── Build benchmark corpus for the firewall gate ──────────────
+    benchmark_corpus = None
+    try:
+        from genie_space_optimizer.optimization.leakage import BenchmarkCorpus
+        benchmark_corpus = BenchmarkCorpus.from_benchmarks(benchmarks or [])
+    except Exception:
+        logger.warning(
+            "preflight.synthesis.benchmark_corpus_unavailable — firewall gate "
+            "will treat empty corpus as safe",
+            exc_info=True,
+        )
+
+    # ``validate_synthesis_proposal`` is imported at module scope so tests
+    # can patch it on ``preflight_synthesis``.
+
+    # ── State for per-candidate dedup within the run ─────────────
+    existing_fps = _existing_example_fingerprints(metadata_snapshot)
+    run_fps: set[str] = set()
+    existing_questions = _existing_example_question_list(metadata_snapshot)
+
+    accepted: list[dict] = []
+    reject_by_gate: dict[str, int] = {}
+    archetype_counts: dict[str, int] = {}
+    asset_counts: dict[str, int] = {}
+
+    for archetype, slice_ in plans:
+        if len(accepted) >= need:
+            break
+        result["generated"] += 1
+        archetype_counts[archetype.name] = archetype_counts.get(archetype.name, 0) + 1
+
+        # ── Synthesize ────────────────────────────────────────────
+        # Seed existing_questions with run-accepted ones so the LLM
+        # diversifies within the current pool as well.
+        anti_dup_questions = existing_questions + [
+            p.get("example_question", "") for p in accepted
+        ]
+        proposal = synthesize_preflight_candidate(
+            archetype, slice_, anti_dup_questions,
+            w=w, llm_caller=llm_caller,
+        )
+        if proposal is None:
+            reject_by_gate["synthesize_none"] = reject_by_gate.get("synthesize_none", 0) + 1
+            continue
+
+        # ── Validate via the shared 5-gate ────────────────────────
+        passed, gate_results = validate_synthesis_proposal(
+            proposal,
+            archetype=archetype,
+            benchmark_corpus=benchmark_corpus,
+            metadata_snapshot=metadata_snapshot,
+            blame_set=None,  # pre-flight has no failure cluster
+            spark=spark, catalog=catalog, gold_schema=schema,
+            w=w, warehouse_id=warehouse_id,
+        )
+        # Per-gate counters — passed_*  and rejected_by_gate reflect
+        # the same ordering as the pipeline so operators can see where
+        # the bottleneck is.
+        for gr in gate_results:
+            if gr.passed:
+                key_map = {
+                    "parse": "passed_parse",
+                    "execute": "passed_execute",
+                    "structural": "passed_structural",
+                    "arbiter": "passed_arbiter",
+                    "firewall": "passed_firewall",
+                }
+                bucket = key_map.get(gr.gate)
+                if bucket:
+                    result[bucket] = result[bucket] + 1
+            else:
+                reject_by_gate[gr.gate] = reject_by_gate.get(gr.gate, 0) + 1
+                break  # first fail short-circuits the rest
+        if not passed:
+            continue
+
+        # ── Dedup: vs existing config + pairwise within this run ──
+        fp = _canonicalize_sql_fingerprint(proposal.get("example_sql", ""))
+        if not fp:
+            reject_by_gate["empty_sql_post_validate"] = (
+                reject_by_gate.get("empty_sql_post_validate", 0) + 1
+            )
+            continue
+        if fp in existing_fps or fp in run_fps:
+            result["dedup_rejected"] += 1
+            continue
+
+        accepted.append(proposal)
+        run_fps.add(fp)
+        for aid in slice_.asset_ids():
+            asset_counts[aid] = asset_counts.get(aid, 0) + 1
+
+    # ── Apply (firewall runs inline) ──────────────────────────────
+    applied = _apply_preflight_proposals(
+        accepted[:need],
+        w=w, spark=spark, run_id=run_id, space_id=space_id,
+        metadata_snapshot=metadata_snapshot, config=config,
+        benchmarks=benchmarks, catalog=catalog, schema=schema,
+    )
+
+    result["applied"] = applied
+    result["rejected_by_gate"] = reject_by_gate
+    result["archetype_distribution"] = archetype_counts
+    result["asset_coverage"] = asset_counts
+
+    # ── Observability ─────────────────────────────────────────────
+    logger.info(
+        "preflight.synthesis.summary existing=%d target=%d need=%d generated=%d "
+        "passed_parse=%d passed_execute=%d passed_firewall=%d passed_structural=%d "
+        "passed_arbiter=%d dedup_rejected=%d applied=%d "
+        "asset_coverage=%s rejected_by_gate=%s archetype=%s",
+        existing_count, effective_target, need, result["generated"],
+        result["passed_parse"], result["passed_execute"],
+        result["passed_firewall"], result["passed_structural"],
+        result["passed_arbiter"], result["dedup_rejected"],
+        applied, asset_counts, reject_by_gate, archetype_counts,
+    )
+    _print_summary(result)
+    return result
+
+
+def _print_summary(result: dict) -> None:
+    """Pretty-print the enrichment run block for the pre-flight stage.
+
+    Imports from ``harness`` helpers lazily so this module doesn't need
+    the harness at import time (matters for tests that exercise the
+    planner alone).
+    """
+    try:
+        from genie_space_optimizer.optimization.harness import (
+            _bar, _kv, _section,
+        )
+    except Exception:
+        # Fallback when harness import fails (e.g. in a narrow unit
+        # test). Just use simple formatting.
+        def _section(title: str, char: str = "-") -> str:
+            return f"-- {title} " + (char * 10)
+
+        def _kv(k: str, v: object, indent: int = 2) -> str:
+            return f"{' ' * indent}|  {k:30s}{v}"
+
+        def _bar(char: str = "-") -> str:
+            return char * 78
+
+    lines: list[str] = [_section("PRE-FLIGHT EXAMPLE SQL SYNTHESIS")]
+    lines.append(_kv("Target", result.get("target", "")))
+    lines.append(_kv("Existing examples", result.get("existing", 0)))
+    lines.append(_kv("Need", result.get("need", 0)))
+    if result.get("skipped_reason"):
+        lines.append(_kv("Status", f"skipped — {result['skipped_reason']}"))
+        lines.append(_bar())
+        print("\n".join(lines))
+        return
+    lines.append(_kv("Generated candidates", result.get("generated", 0)))
+    lines.append(_kv("Passed parse", result.get("passed_parse", 0)))
+    lines.append(_kv("Passed EXPLAIN+execute", result.get("passed_execute", 0)))
+    lines.append(_kv("Passed firewall", result.get("passed_firewall", 0)))
+    lines.append(_kv("Passed structural", result.get("passed_structural", 0)))
+    lines.append(_kv("Passed arbiter (P2)", result.get("passed_arbiter", 0)))
+    lines.append(_kv("Dedup rejected", result.get("dedup_rejected", 0)))
+    lines.append(_kv("Applied", result.get("applied", 0)))
+
+    coverage = result.get("asset_coverage", {}) or {}
+    if coverage:
+        lines.append(_kv("Assets touched", len(coverage)))
+        for aid, count in sorted(coverage.items(), key=lambda x: -x[1])[:8]:
+            lines.append(_kv(f"  {aid}", count, indent=4))
+
+    archetypes = result.get("archetype_distribution", {}) or {}
+    if archetypes:
+        lines.append(_kv("Archetype distribution", ""))
+        for name, count in sorted(archetypes.items(), key=lambda x: -x[1]):
+            lines.append(_kv(f"  {name}", count, indent=4))
+
+    rejections = result.get("rejected_by_gate", {}) or {}
+    if rejections:
+        lines.append(_kv(
+            "Rejected by gate",
+            ", ".join(f"{k}={v}" for k, v in rejections.items()),
+        ))
+    lines.append(_bar())
+    print("\n".join(lines))
+

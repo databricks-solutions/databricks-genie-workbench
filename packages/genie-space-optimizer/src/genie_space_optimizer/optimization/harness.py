@@ -41,6 +41,7 @@ from genie_space_optimizer.common.config import (
     DEFAULT_THRESHOLDS,
     DIMINISHING_RETURNS_EPSILON,
     DIMINISHING_RETURNS_LOOKBACK,
+    ENABLE_PREFLIGHT_EXAMPLE_SQL_SYNTHESIS,
     ENABLE_PROMPT_MATCHING_AUTO_APPLY,
     ENABLE_SLICE_GATE,
     FINALIZE_REPEATABILITY_PASSES,
@@ -3405,7 +3406,37 @@ def _run_enrichment(
                 if uc_columns:
                     enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
-            # ── 5b. SQL Expression REPAIR + SEEDING ───────────────────────
+            # ── 5c. Pre-flight example_sql synthesis (fills to 20) ────────
+            # Schema-driven, leak-free booster. Threshold-gated
+            # (need = max(0, TARGET - existing)) so re-runs are idempotent.
+            # Firewall runs inline via _apply_proactive_example_sqls. See
+            # optimization/preflight_synthesis.py for invariants.
+            preflight_example_result: dict = {}
+            if ENABLE_PREFLIGHT_EXAMPLE_SQL_SYNTHESIS:
+                try:
+                    from genie_space_optimizer.optimization.preflight_synthesis import (
+                        run_preflight_example_synthesis,
+                    )
+                    preflight_example_result = run_preflight_example_synthesis(
+                        w, spark, run_id, space_id, config, metadata_snapshot,
+                        benchmarks=benchmarks,
+                        catalog=catalog, schema=schema,
+                        warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                    )
+                    if preflight_example_result.get("applied", 0) > 0:
+                        config = fetch_space_config(w, space_id)
+                        config["_uc_columns"] = uc_columns
+                        metadata_snapshot = config.get("_parsed_space", config)
+                        metadata_snapshot["_data_profile"] = data_profile
+                        if uc_columns:
+                            enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                except Exception:
+                    logger.warning(
+                        "preflight example synthesis raised; continuing without it",
+                        exc_info=True,
+                    )
+
+            # ── 5d. SQL Expression REPAIR + SEEDING ───────────────────────
             # Repair runs unconditionally; seeding is threshold-gated.
             sql_expr_result = _run_sql_expression_seeding(
                 w, spark, run_id, space_id, config=config,
@@ -5607,6 +5638,33 @@ def _run_lever_loop(
                 metadata_snapshot["_data_profile"] = data_profile
                 if uc_columns:
                     enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+
+            # ── Pre-flight example_sql synthesis (legacy path) ───────────
+            # Fills example_question_sqls to target. Idempotent on re-runs.
+            if ENABLE_PREFLIGHT_EXAMPLE_SQL_SYNTHESIS:
+                try:
+                    from genie_space_optimizer.optimization.preflight_synthesis import (
+                        run_preflight_example_synthesis,
+                    )
+                    legacy_preflight_result = run_preflight_example_synthesis(
+                        w, spark, run_id, space_id, config, metadata_snapshot,
+                        benchmarks=benchmarks,
+                        catalog=catalog, schema=schema,
+                        warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                    )
+                    if legacy_preflight_result.get("applied", 0) > 0:
+                        from genie_space_optimizer.common.genie_client import fetch_space_config
+                        config = fetch_space_config(w, space_id)
+                        config["_uc_columns"] = uc_columns
+                        metadata_snapshot = config.get("_parsed_space", config)
+                        metadata_snapshot["_data_profile"] = data_profile
+                        if uc_columns:
+                            enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                except Exception:
+                    logger.warning(
+                        "preflight example synthesis (legacy path) raised; continuing",
+                        exc_info=True,
+                    )
 
             # ── SQL Expression REPAIR + SEEDING (legacy path) ────────────
             # Repair runs unconditionally; seeding is threshold-gated.

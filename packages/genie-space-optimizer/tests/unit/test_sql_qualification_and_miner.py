@@ -1298,3 +1298,401 @@ class TestFailingRunRegression:
             f"Final text is {len(new_text)} chars, must be <= 2000 "
             "after two-level enforcement."
         )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# NameError regression — _run_enrichment summary block (Bug #5 in audit)
+# ─────────────────────────────────────────────────────────────────────
+#
+# A production run with this build fell back to baseline with:
+#
+#     NameError: name '_instr_sql_applied' is not defined
+#         at harness.py:3256 inside _run_enrichment's summary block.
+#
+# Cause: Task C.5 refactored the inline miner block into the helper
+# ``_run_instruction_prose_mining``, which returns a dict (``_miner_out``)
+# instead of the old single-target local ``_instr_sql_applied``. Two
+# downstream references in the summary block were missed in the refactor.
+#
+# The fix switched the summary block to ``_miner_out.get("sql_applied", 0)``
+# and added four more keys for the other miner targets. These tests guard
+# against the entire class of bug by:
+#
+#   - Pinning the return-dict contract of ``_run_instruction_prose_mining``
+#     so the summary block can read keys without KeyError.
+#   - Running ``_run_enrichment`` end-to-end with every downstream
+#     dependency mocked, asserting no NameError / KeyError / AttributeError
+#     in the summary block.
+#
+# These tests deliberately do NOT verify enrichment behaviour — that is
+# covered by the per-subsystem tests elsewhere in this file. The goal is
+# narrowly to catch a future refactor that either renames a summary-block
+# local or drops a key from the miner's return dict.
+
+
+class TestMinerReturnContract:
+    """The summary block in _run_enrichment reads five per-target keys
+    (``sql_applied``, ``join_applied``, ``example_applied``, ``desc_applied``,
+    ``synonym_applied``) plus two gate keys (``total_applied``,
+    ``keep_in_prose_count``) from the dict returned by
+    ``_run_instruction_prose_mining``. The helper MUST always return all
+    seven so downstream code — even with defensive ``.get(default=0)``
+    guards — never faces an undefined-field scenario.
+    """
+
+    # Keys the summary block in ``_run_enrichment`` reads.
+    # If this set changes, the summary block needs updating too — keep
+    # them in lock-step.
+    _REQUIRED_KEYS: frozenset[str] = frozenset({
+        "sql_applied", "join_applied", "example_applied",
+        "desc_applied", "synonym_applied",
+        "total_applied", "keep_in_prose_count",
+    })
+
+    def _metadata_with_orders(self) -> dict:
+        return {
+            "data_sources": {
+                "tables": [{
+                    "identifier": "cat.sch.orders",
+                    "columns": [{"name": "amount"}, {"name": "status"}],
+                }],
+                "metric_views": [],
+            },
+            "instructions": {
+                "text_instructions": [{
+                    "id": "i1",
+                    "content": ["## PURPOSE\n- sales analytics.\n"],
+                }],
+            },
+        }
+
+    def test_return_contains_all_summary_block_keys(self, monkeypatch):
+        """Miner returns a dict with every key the summary block reads.
+
+        Uses an LLM stub that produces a valid keep_in_prose candidate so
+        the helper takes the ``happy path`` and populates every key.
+        """
+        from genie_space_optimizer.optimization.harness import (
+            _run_instruction_prose_mining,
+        )
+
+        # LLM returns one keep_in_prose entry — confidence above the promote
+        # gate so the rewrite path is exercised.
+        def _fake_llm(_w, _system, _prompt, *, span_name: str = "", **kwargs):
+            return (
+                '[{"target": "keep_in_prose", '
+                '"source_span": "sales analytics.", '
+                '"confidence": 0.95, '
+                '"payload": {"section": "## PURPOSE"}}]'
+            ), None
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+            _fake_llm,
+        )
+        # patch_space_config is hit by the rewrite path when it emits a
+        # set_text_instructions op. Swallow without touching the network.
+        monkeypatch.setattr(
+            "genie_space_optimizer.common.genie_client.patch_space_config",
+            lambda *a, **k: None,
+        )
+        # write_stage writes to Delta — stub for unit-test isolation.
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.harness.write_stage",
+            lambda *a, **k: None,
+        )
+
+        metadata = self._metadata_with_orders()
+        result = _run_instruction_prose_mining(
+            w=MagicMock(),
+            spark=MagicMock(),
+            run_id="test-run-1",
+            space_id="space-test",
+            config={"_parsed_space": metadata},
+            metadata_snapshot=metadata,
+            catalog="cat", schema="sch",
+        )
+
+        missing = self._REQUIRED_KEYS - set(result.keys())
+        assert not missing, (
+            f"_run_instruction_prose_mining must return every key the "
+            f"_run_enrichment summary block reads. Missing: {sorted(missing)}"
+        )
+
+    def test_return_values_are_integer_sum_safe(self, monkeypatch):
+        """Every per-target count is an ``int`` (not None / not MagicMock).
+
+        The summary block does ``sum(_miner_out.get(k, 0) for k in ...)``
+        — any non-int value would raise TypeError during arithmetic, which
+        is exactly the failure mode we're guarding against (it's a sibling
+        of the original NameError).
+        """
+        from genie_space_optimizer.optimization.harness import (
+            _run_instruction_prose_mining,
+        )
+
+        def _fake_llm(*a, **k):
+            # No candidates — exercises the early-return path.
+            return "[]", None
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer._traced_llm_call",
+            _fake_llm,
+        )
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.harness.write_stage",
+            lambda *a, **k: None,
+        )
+
+        metadata = self._metadata_with_orders()
+        result = _run_instruction_prose_mining(
+            w=MagicMock(),
+            spark=MagicMock(),
+            run_id="test-run-2",
+            space_id="space-test",
+            config={"_parsed_space": metadata},
+            metadata_snapshot=metadata,
+            catalog="cat", schema="sch",
+        )
+
+        for key in self._REQUIRED_KEYS:
+            value = result.get(key, 0)
+            assert isinstance(value, int), (
+                f"Miner return key {key!r} must be int for summary arithmetic; "
+                f"got {type(value).__name__}={value!r}"
+            )
+
+
+class TestRunEnrichmentSummaryBlock:
+    """End-to-end regression test for the NameError crash in the
+    ``_run_enrichment`` summary block.
+
+    Every downstream dependency is stubbed; the test harness does NOT exercise
+    the real enrichment logic. The single assertion is:
+
+        ``_run_enrichment`` completes without raising NameError / KeyError /
+        AttributeError inside the summary block.
+
+    Any future refactor that drops a summary-block local, renames a
+    miner-return-dict key, or changes the summary-block arithmetic in a
+    way that breaks the contract will trip this test.
+    """
+
+    def _install_stubs(self, monkeypatch, miner_result: dict) -> list[str]:
+        """Monkeypatch every downstream function ``_run_enrichment`` calls.
+
+        Returns the list of stub names that were installed (for debugging
+        a future test failure — if the bug is "_run_enrichment now calls
+        a new function that isn't stubbed here", the stack trace plus this
+        list usually pinpoints it).
+        """
+        installed: list[str] = []
+
+        def _stub(target: str, fn):
+            monkeypatch.setattr(target, fn)
+            installed.append(target.rsplit(".", 1)[-1])
+
+        # ── Stage 1: prepare_lever_loop ──────────────────────────────
+        _stub(
+            "genie_space_optimizer.optimization.harness._prepare_lever_loop",
+            lambda *a, **k: {
+                "_parsed_space": {
+                    "data_sources": {"tables": [], "metric_views": []},
+                    "instructions": {"text_instructions": []},
+                },
+                "_uc_columns": [],
+                "description": "",
+            },
+        )
+
+        # ── enrich_metadata_with_uc_types is called unconditionally;
+        # it mutates in place.  Stub to no-op so the test snapshot shape
+        # stays simple.
+        _stub(
+            "genie_space_optimizer.optimization.harness.enrich_metadata_with_uc_types",
+            lambda *a, **k: None,
+        )
+
+        # ── Stage 2 sub-steps: every proactive enrichment returns a
+        # plausible empty result so the truthiness-gated refetches in
+        # _run_enrichment fall through without reaching the network.
+        _stub(
+            "genie_space_optimizer.optimization.harness._run_description_enrichment",
+            lambda *a, **k: {"total_enriched": 0, "tables_enriched": 0},
+        )
+        _stub(
+            "genie_space_optimizer.optimization.harness._run_proactive_join_discovery",
+            lambda *a, **k: {"total_applied": 0},
+        )
+        _stub(
+            "genie_space_optimizer.optimization.harness._run_space_metadata_enrichment",
+            lambda *a, **k: {
+                "description_generated": False,
+                "questions_generated": False,
+            },
+        )
+        _stub(
+            "genie_space_optimizer.optimization.harness._run_instruction_prose_mining",
+            lambda *a, **k: miner_result,
+        )
+        _stub(
+            "genie_space_optimizer.optimization.harness._run_proactive_instruction_seeding",
+            lambda *a, **k: {
+                "instructions_seeded": False,
+                "instructions_expanded": False,
+                "instruction_chars": 0,
+            },
+        )
+        _stub(
+            "genie_space_optimizer.optimization.harness._run_sql_expression_seeding",
+            lambda *a, **k: {
+                "total_candidates": 0, "total_seeded": 0,
+                "repair": {"rewritten": 0},
+            },
+        )
+
+        # ── Persistence: Delta writes and MLflow model versioning ────
+        _stub(
+            "genie_space_optimizer.optimization.harness.write_stage",
+            lambda *a, **k: None,
+        )
+        _stub(
+            "genie_space_optimizer.optimization.harness.create_genie_model_version",
+            lambda *a, **k: "stub-model-id",
+        )
+        # fetch_space_config is imported inside the function body; stub
+        # the source module so the ``from X import Y`` inside picks it up.
+        _stub(
+            "genie_space_optimizer.common.genie_client.fetch_space_config",
+            lambda *a, **k: {
+                "_parsed_space": {
+                    "data_sources": {"tables": [], "metric_views": []},
+                    "instructions": {"text_instructions": []},
+                },
+                "description": "",
+            },
+        )
+
+        # ── MLflow: start_run is a context manager; log_metrics a no-op.
+        # Replace the module the function imports at runtime.
+        import mlflow as _real_mlflow  # noqa: PLC0415 - shadow into test scope
+
+        class _NullRun:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(_real_mlflow, "start_run", lambda *a, **k: _NullRun())
+        monkeypatch.setattr(_real_mlflow, "set_tags", lambda *a, **k: None)
+        monkeypatch.setattr(_real_mlflow, "log_metrics", lambda *a, **k: None)
+        installed.extend(["mlflow.start_run", "mlflow.set_tags", "mlflow.log_metrics"])
+
+        return installed
+
+    def _run_enrichment_with_stubs(self, monkeypatch, miner_result: dict) -> dict:
+        self._install_stubs(monkeypatch, miner_result)
+
+        from genie_space_optimizer.optimization.harness import _run_enrichment
+
+        return _run_enrichment(
+            w=MagicMock(),
+            spark=MagicMock(),
+            run_id="test-run-enrichment",
+            space_id="space-test",
+            domain="sales",
+            benchmarks=[],
+            exp_name="/Shared/test/sales",
+            catalog="cat",
+            schema="sch",
+        )
+
+    def test_full_miner_result_completes_without_error(self, monkeypatch):
+        """Happy path: miner returns the full spec'd dict. Summary block
+        reads every key without issue.
+        """
+        full_miner = {
+            "sql_applied": 3,
+            "join_applied": 1,
+            "example_applied": 2,
+            "desc_applied": 1,
+            "synonym_applied": 4,
+            "total_applied": 11,
+            "keep_in_prose_count": 2,
+            "rewrite_outcome": "write",
+            "stats": {"candidates_total": 13, "promoted_by_target": {},
+                      "by_target": {}, "rejected_by_reason": {}, "retries": 0},
+        }
+        result = self._run_enrichment_with_stubs(monkeypatch, full_miner)
+
+        # Precisely this arithmetic was broken before the fix:
+        #   total_enrichments = ... + _miner_out.get("sql_applied", 0) + ...
+        # If it raises NameError inside _run_enrichment, we never reach here.
+        summary = result["summary"]
+        assert summary["total_enrichments"] >= (
+            full_miner["sql_applied"] + full_miner["join_applied"]
+            + full_miner["example_applied"] + full_miner["desc_applied"]
+            + full_miner["synonym_applied"]
+        ), (
+            "Summary total_enrichments must include every per-target miner count"
+        )
+
+    def test_miner_result_missing_optional_keys_completes_without_error(self, monkeypatch):
+        """Defensive guard regression: if a future refactor of the miner
+        helper drops an optional per-target key, the summary block's
+        ``.get(default=0)`` guards should absorb it — NOT raise.
+
+        This is a sibling of the original NameError: same class of bug
+        (a summary-block field going undefined at runtime), same blast
+        radius (enrichment falls back to baseline on every optimization
+        run). Catch it in CI instead.
+        """
+        # Only the two gate keys the rewrite/refetch block reads via raw
+        # subscript — all per-target keys intentionally omitted.
+        minimal_miner = {
+            "total_applied": 0,
+            "keep_in_prose_count": 0,
+        }
+        result = self._run_enrichment_with_stubs(monkeypatch, minimal_miner)
+
+        # If we got here, the summary block's ``.get(default=0)`` guards
+        # absorbed every missing per-target key. No NameError / KeyError.
+        assert result["summary"]["total_enrichments"] == 0, (
+            "With every per-target miner count absent, total_enrichments "
+            "must be 0 — the guards must default to 0 rather than explode"
+        )
+
+    def test_name_error_regression_exact_bug_site(self, monkeypatch):
+        """Reproduction of the exact failure mode from the production run.
+
+        Before the fix, this test would crash with::
+
+            NameError: name '_instr_sql_applied' is not defined
+
+        inside _run_enrichment's summary block. With the fix, it completes
+        cleanly. Future refactors that re-introduce an undefined local in
+        the summary block will fail here first.
+        """
+        miner_result = {
+            "sql_applied": 0,
+            "join_applied": 0,
+            "example_applied": 0,
+            "desc_applied": 0,
+            "synonym_applied": 0,
+            "total_applied": 0,
+            "keep_in_prose_count": 0,
+            "rewrite_outcome": "skip_no_change",
+            "stats": {"candidates_total": 0, "promoted_by_target": {},
+                      "by_target": {}, "rejected_by_reason": {}, "retries": 0},
+        }
+
+        # The fact that this call returns (rather than raising) is the
+        # regression test. Any future NameError/KeyError/AttributeError in
+        # the summary block will propagate out of _run_enrichment because
+        # its try/except re-raises.
+        result = self._run_enrichment_with_stubs(monkeypatch, miner_result)
+
+        assert isinstance(result, dict)
+        assert "summary" in result
+        assert "config" in result
