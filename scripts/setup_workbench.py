@@ -675,7 +675,7 @@ def _grant_genie_spaces(w, sp: str) -> int:
             continue
         try:
             w.api_client.do(
-                "PUT", f"/api/2.0/permissions/dashboards.genie/{space_id}",
+                "PUT", f"/api/2.0/permissions/genie/{space_id}",
                 body={
                     "access_control_list": [
                         {"service_principal_name": sp, "permission_level": "CAN_EDIT"}
