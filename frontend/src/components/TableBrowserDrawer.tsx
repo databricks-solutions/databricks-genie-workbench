@@ -57,6 +57,22 @@ export function TableBrowserDrawer({
   const [searchGrouped, setSearchGrouped] = useState<Record<string, TableNode[]>>({})
   const [searching, setSearching] = useState(false)
 
+  // Live tree filter (before Enter triggers server-side search)
+  const treeQuery = searchResults === null ? searchQuery.toLowerCase().trim() : ""
+  const filteredCatalogs = useMemo(() => {
+    if (!treeQuery) return catalogs
+    return catalogs.filter((c) => c.name.toLowerCase().includes(treeQuery))
+  }, [catalogs, treeQuery])
+
+  const filteredSchemas = useCallback(
+    (catalogName: string): SchemaNode[] => {
+      const all = schemas[catalogName] || []
+      if (!treeQuery) return all
+      return all.filter((s) => s.name.toLowerCase().includes(treeQuery))
+    },
+    [schemas, treeQuery]
+  )
+
   // Diff from committed selection
   const diff = useMemo(() => {
     const committed = new Set(selectedTables)
@@ -208,7 +224,11 @@ export function TableBrowserDrawer({
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-primary">Table Browser</span>
           {catalogs.length > 0 && (
-            <span className="text-[10px] text-muted">{catalogs.length} catalogs</span>
+            <span className="text-[10px] text-muted">
+              {treeQuery && filteredCatalogs.length !== catalogs.length
+                ? `${filteredCatalogs.length} of ${catalogs.length} catalogs`
+                : `${catalogs.length} catalogs`}
+            </span>
           )}
         </div>
         <button onClick={onClose} className="text-muted hover:text-primary transition-colors">
@@ -229,7 +249,7 @@ export function TableBrowserDrawer({
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted" />
           <input
             className="w-full text-xs bg-elevated border border-default rounded px-2 py-1.5 pl-7 text-primary placeholder:text-muted focus:outline-none focus:border-accent"
-            placeholder="Search tables, columns, comments..."
+            placeholder="Filter catalogs… (Enter to search tables)"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSearch()}
@@ -279,8 +299,12 @@ export function TableBrowserDrawer({
           <div className="flex items-center justify-center py-8 text-muted">
             <Loader2 className="w-4 h-4 animate-spin mr-2" /> Loading catalogs...
           </div>
+        ) : filteredCatalogs.length === 0 && treeQuery ? (
+          <div className="px-3 py-6 text-center text-muted">
+            No catalogs match &ldquo;{searchQuery.trim()}&rdquo;
+          </div>
         ) : (
-          catalogs.map((cat) => (
+          filteredCatalogs.map((cat) => (
             <div key={cat.name}>
               <button
                 onClick={() => toggleCatalog(cat.name)}
@@ -301,7 +325,7 @@ export function TableBrowserDrawer({
                       <Loader2 className="w-3 h-3 animate-spin" /> Loading...
                     </div>
                   ) : (
-                    (schemas[cat.name] || []).map((sch) => {
+                    filteredSchemas(cat.name).map((sch) => {
                       const schemaKey = `${cat.name}.${sch.name}`
                       const schemaTables = tables[schemaKey] || []
                       const allSelected = schemaTables.length > 0 && schemaTables.every((t) => pending.has(t.full_name))
