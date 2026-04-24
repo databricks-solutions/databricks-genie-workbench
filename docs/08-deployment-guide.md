@@ -47,8 +47,8 @@ The installer will:
 4. Ask for SQL warehouse (auto-discovered)
 5. Ask for LLM model endpoint
 6. Optionally configure MLflow tracing (creates or links an experiment)
-7. Select an existing Lakebase Autoscaling project, create a new one, or skip persistence
-8. Ask for app name
+7. Ask for app name
+8. Create a fresh Lakebase Autoscaling project, choose a different new name, skip persistence, or use advanced existing-project attachment
 9. Write `.env.deploy` with your configuration
 10. Run `scripts/deploy.sh` to build and deploy the app
 11. Resolve the app's service principal
@@ -58,12 +58,13 @@ The installer will:
 
 Lakebase provides persistent storage for scan history, starred spaces, and agent sessions. Without it, the app uses in-memory storage (data lost on restart).
 
-The guided installer discovers existing Lakebase Autoscaling projects in your
-workspace and also offers to create a new project during deploy. If you choose
-to skip Lakebase, the app still deploys but history and starred spaces are
-stored only in memory.
+The guided installer recommends creating a fresh Lakebase Autoscaling project
+for each new app instance. It defaults to `<app-name>-lakebase` and, if that
+name already exists, suggests a numbered fresh name instead. If you choose to
+skip Lakebase, the app still deploys but history and starred spaces are stored
+only in memory.
 
-**For a selected or newly named Lakebase project, setup is fully automated by `deploy.sh`:**
+**For a new or deliberately attached Lakebase project, setup is fully automated by `deploy.sh`:**
 - Creates the Lakebase Autoscaling project via the SDK (`scripts/setup_lakebase.py`) if it does not exist
 - Creates a Postgres role for the app's service principal
 - Grants database permissions (CONNECT, CREATE ON DATABASE)
@@ -74,6 +75,8 @@ The app creates the `genie` schema and tables on first startup. Since the SP exe
 The installer writes the project name as `GENIE_LAKEBASE_INSTANCE` in
 `.env.deploy`. If you skip Lakebase during install, set
 `GENIE_LAKEBASE_INSTANCE` later and run `./scripts/deploy.sh --update`.
+Attaching an existing Lakebase project is an advanced path that requires
+explicit confirmation because cross-app reuse can fail on object ownership.
 
 > **Note:** The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv sync`). If unavailable, the script prints the commands to run manually in the Lakebase SQL Editor.
 
@@ -154,7 +157,7 @@ Set these in `.env.deploy` or as environment variables:
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (unique in workspace) |
 | `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
 | `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint |
-| `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project to use or create; keep stable for the same app, use a fresh project for a new app instance |
+| `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project to use or create; installer defaults new installs to `<app-name>-lakebase`; keep stable for the same app, use a fresh project for a new app instance |
 
 ## Manual Setup (without installer)
 
@@ -169,7 +172,7 @@ GENIE_CATALOG=<your-catalog-name>
 GENIE_APP_NAME=genie-workbench
 GENIE_DEPLOY_PROFILE=genie-workbench
 GENIE_LLM_MODEL=databricks-claude-sonnet-4-6
-GENIE_LAKEBASE_INSTANCE=genie-workbench
+GENIE_LAKEBASE_INSTANCE=genie-workbench-lakebase
 EOF
 ```
 
