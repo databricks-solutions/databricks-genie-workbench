@@ -63,7 +63,7 @@ These variables are used by `deploy.sh` and `install.sh` at deploy time. They ar
 | `GENIE_WAREHOUSE_ID` | Yes | — | SQL Warehouse ID (hex string from warehouse URL or detail page) |
 | `GENIE_CATALOG` | Yes | — | Unity Catalog name (you need CREATE SCHEMA permission) |
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (must be unique in your workspace) |
-| `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name; set to empty string for Web Terminal current-user auth |
+| `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
 | `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint for analysis |
 | `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project to use or create; keep stable for the same app, use a fresh project for a new app instance |
 

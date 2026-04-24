@@ -75,18 +75,7 @@ Security is preserved because:
   * Permission to create or use a Lakebase Autoscaling project for persistent scan history and sessions
   * MLflow Prompt Registry enabled (required for Auto-Optimize judge prompt traceability)
 
-## Two install paths
-
-| Path | When to use | Details |
-|---|---|---|
-| **CLI** (`./scripts/install.sh`) | You have a laptop with the Databricks CLI, Node.js, and `uv` installed. Faster iteration. | [docs/08-deployment-guide.md](docs/08-deployment-guide.md) |
-| **Web Terminal** (`./scripts/install.sh`) | Local VM blocks Databricks CLI usage, but Databricks Web Terminal is available. | [docs/web-terminal-install.md](docs/web-terminal-install.md) |
-
-Both paths produce the same app, call the same shared provisioning
-module (`scripts/setup_workbench.py`), and are fully interoperable —
-you can switch between them at any time.
-
-## Quick Start (CLI path)
+## Quick Start
 
 ### 1. Clone the repo
 
@@ -118,11 +107,10 @@ The installer will:
 6. Optionally configure MLflow tracing (creates or links an experiment)
 7. Select an existing Lakebase Autoscaling project, create a new one, or skip persistence
 8. Ask for app name
-9. Ask whether to grant the SP access to your existing Genie Spaces
-10. Write `.env.deploy` with your configuration
-11. Run `scripts/deploy.sh`, which builds the app, bundle-deploys the
-    optimization job, and delegates all UC/Lakebase/Apps-PATCH/Genie
-    grants to `scripts/setup_workbench.py`
+9. Write `.env.deploy` with your configuration
+10. Run `scripts/deploy.sh` to build and deploy the app
+11. Resolve the app's service principal
+12. Optionally grant the SP access to your existing Genie Spaces
 
 ### 4. Lakebase (optional project)
 
@@ -183,7 +171,7 @@ cat > .env.deploy <<'EOF'
 GENIE_WAREHOUSE_ID=<your-sql-warehouse-id>
 GENIE_CATALOG=<your-catalog-name>
 GENIE_APP_NAME=genie-workbench
-GENIE_DEPLOY_PROFILE=genie-workbench  # use "" in Databricks Web Terminal
+GENIE_DEPLOY_PROFILE=genie-workbench
 GENIE_LLM_MODEL=databricks-claude-sonnet-4-6
 GENIE_LAKEBASE_INSTANCE=genie-workbench
 EOF
@@ -204,7 +192,7 @@ Set these in `.env.deploy` or as environment variables:
 | `GENIE_WAREHOUSE_ID` | Yes | — | SQL Warehouse ID (hex string from warehouse URL or detail page) |
 | `GENIE_CATALOG` | Yes | — | Unity Catalog name (you need CREATE SCHEMA permission) |
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (must be unique in your workspace) |
-| `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name; set to empty string for Web Terminal current-user auth |
+| `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
 | `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint for analysis |
 | `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project to use or create; keep stable for the same app, use a fresh project for a new app instance |
 
@@ -230,17 +218,16 @@ Clean these up manually if you want a full teardown.
 
 ### What `deploy.sh` does
 
-**Full deploy (9 steps):**
+**Full deploy (8 steps):**
 
-1. **Pre-flight checks** — validates tools, CLI auth, warehouse, catalog, app state
+1. **Pre-flight checks** — validates tools, CLI profile, warehouse, catalog, app state
 2. **Build frontend** — `npm ci` + `npm run build` (strict lockfile)
 3. **Create app** — `databricks apps create` (skipped if app already exists)
 4. **Sync files** — `databricks sync --full` + explicit `frontend/dist/` upload
-5. **Bundle deploy** — builds GSO wheel, uploads notebooks, creates the optimization job, syncs `_metadata.py`, and cleans up legacy jobs
-6. **Wait for app compute** — starts app compute and waits for `ACTIVE`
-7. **Provision resources** — calls `scripts/setup_workbench.py` for UC, Lakebase, Apps PATCH, `app.yaml`, job permissions, and Genie grants
-8. **Redeploy app** — `databricks apps deploy --source-code-path`
-9. **Verify** — checks critical files, waits for deployment to succeed
+5. **Grant UC permissions** — resolves app SP, creates GSO schema/tables, grants SP access, enables CDF
+6. **Set up optimization job** — builds GSO wheel, uploads notebooks, creates/finds the Databricks job, grants SP CAN_MANAGE
+7. **Redeploy app** — patches `app.yaml` with config values, configures scopes, deploys
+8. **Verify** — checks critical files, waits for deployment to succeed
 
 **Code update** (`--update`) skips step 3 (app creation) — use for iterating on code changes.
 
@@ -294,9 +281,6 @@ The app uses On-Behalf-Of (OBO) auth — users see only Genie Spaces they have p
 | Notebook upload fails (`RESOURCE_DOES_NOT_EXIST`) | `/Workspace/Shared/` not writable by deployer | Check workspace-level permissions on the upload path |
 
 > **Note on MLflow tracing:** The `MLFLOW_EXPERIMENT_ID` in `app.yaml` is workspace-specific. The app validates it at startup and silently disables tracing if the experiment doesn't exist in your workspace. To enable tracing, create an MLflow experiment and update the value in `app.yaml` before deploying.
-
-For Databricks Web Terminal, omit `--profile <profile>` from the debug
-commands below because the CLI uses current-user auth from the environment.
 
 **Debug commands:**
 

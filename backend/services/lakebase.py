@@ -31,36 +31,6 @@ _lakebase_project_name: str | None = None  # extracted once from endpoint path f
 _conn_params: dict | None = None  # stored at init for pool recreation on token refresh
 
 
-def _is_owner_only_ddl_error(exc: Exception) -> bool:
-    msg = str(exc).lower()
-    return any(
-        marker in msg
-        for marker in (
-            "must be owner",
-            "permission denied",
-            "must be member",
-            "insufficient privilege",
-            "not owner",
-        )
-    )
-
-
-async def _execute_optional_owner_ddl(conn, statement: str, *, label: str) -> None:
-    """Run owner-only maintenance DDL without disabling Lakebase on reused schemas.
-
-    Reinstalling an app against an existing Lakebase project can temporarily
-    rely on grants instead of ownership. Reads/writes should still work even if
-    index creation or additive migrations require table ownership.
-    """
-    try:
-        await conn.execute(statement)
-    except Exception as e:
-        if _is_owner_only_ddl_error(e):
-            logger.warning(f"Skipping Lakebase maintenance DDL for {label}: {e}")
-            return
-        raise
-
-
 def _generate_credential() -> tuple[str, str] | None:
     """Generate Lakebase credentials via the Databricks database credential API.
 
@@ -188,20 +158,14 @@ async def _ensure_schema():
                     UNIQUE (space_id, scanned_at)
                 )
             """)
-            await _execute_optional_owner_ddl(
-                conn,
-                "CREATE INDEX IF NOT EXISTS idx_scan_results_space_id ON genie.scan_results(space_id)",
-                label="idx_scan_results_space_id",
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scan_results_space_id ON genie.scan_results(space_id)"
             )
-            await _execute_optional_owner_ddl(
-                conn,
-                "CREATE INDEX IF NOT EXISTS idx_scan_results_scanned_at ON genie.scan_results(scanned_at DESC)",
-                label="idx_scan_results_scanned_at",
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scan_results_scanned_at ON genie.scan_results(scanned_at DESC)"
             )
-            await _execute_optional_owner_ddl(
-                conn,
-                "CREATE INDEX IF NOT EXISTS idx_scan_results_score ON genie.scan_results(score)",
-                label="idx_scan_results_score",
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_scan_results_score ON genie.scan_results(score)"
             )
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS genie.starred_spaces (
@@ -225,10 +189,8 @@ async def _ensure_schema():
                     created_at      TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
                 )
             """)
-            await _execute_optional_owner_ddl(
-                conn,
-                "CREATE INDEX IF NOT EXISTS idx_optimization_runs_space_id ON genie.optimization_runs(space_id)",
-                label="idx_optimization_runs_space_id",
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_optimization_runs_space_id ON genie.optimization_runs(space_id)"
             )
         _lakebase_available = True
         logger.info("Lakebase schema ready (4 tables)")

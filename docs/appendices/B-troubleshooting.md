@@ -15,7 +15,6 @@
 | Unresolved `__GSO_*__` placeholders | `deploy.sh` couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
 | GSO job creation fails during deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.297.2 and `pip install build` |
 | Notebook upload fails (`RESOURCE_DOES_NOT_EXIST`) | `/Workspace/Shared/` not writable by deployer | Check workspace-level permissions on the upload path |
-| `uv sync --frozen` fails copying files into `.venv` under `/Workspace/...` | Databricks `/Workspace` filesystem cannot reliably host Python virtualenv wheel expansion | Use `UV_PROJECT_ENVIRONMENT="$HOME/.venvs/databricks-genie-workbench"` or update the deploy scripts, which set this automatically for Web Terminal checkouts |
 
 ## Permission Errors
 
@@ -70,20 +69,6 @@ the existing `genie` schema, tables, and sequences.
 | `__GSO_*__` values in running app | `deploy.sh` didn't patch `app.yaml` before deploy | Check `GENIE_CATALOG` in `.env.deploy`; re-run deploy |
 
 ## Debug Commands
-
-In Databricks Web Terminal, omit `--profile <profile>` from these commands
-because the CLI uses current-user auth from the environment.
-
-If uv fails while creating `.venv` under `/Workspace/...`, keep the repo in
-`/Workspace` but place the virtualenv under the Web Terminal home filesystem:
-
-```bash
-mkdir -p "$HOME/.venvs"
-export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/databricks-genie-workbench"
-echo 'export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/databricks-genie-workbench"' >> ~/.bashrc
-rm -rf .venv
-uv sync --frozen
-```
 
 ```bash
 # View app logs

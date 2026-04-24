@@ -6,18 +6,18 @@ set -euo pipefail
 #
 # Interactive script that:
 #   1. Checks prerequisites (databricks CLI, node, python)
-#   2. Configures Databricks CLI auth (profile locally, current-user auth in Web Terminal)
+#   2. Asks for Databricks profile
 #   3. Asks for catalog (with auto-discovery)
 #   4. Asks for SQL Warehouse (with auto-discovery)
 #   5. Asks for LLM model
 #   6. MLflow tracing (optional — experiment ID for agent observability)
 #   7. Lakebase project (select existing, create new, or skip)
 #   8. Asks for app name
-#   9. Asks whether to grant SP access to Genie Spaces the user can edit
-#  10. Writes .env.deploy
-#  11. Runs deploy.sh (which invokes setup_workbench.py for UC/Lakebase/
-#      Apps PATCH/job perms/app.yaml patch/Genie Space grants)
-#  12. Prints summary
+#   9. Writes .env.deploy
+#  10. Runs deploy.sh
+#  11. Resolves app service principal
+#  12. Optionally grants SP access to Genie Spaces
+#  13. Prints summary with automated/manual sections
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -122,53 +122,6 @@ _select_from() {
     printf -v "$varname" '%s' "$result"
 }
 
-PROFILE=""
-PROFILE_LABEL=""
-DBX_PROFILE_ARGS=()
-
-_set_databricks_profile() {
-    PROFILE="$1"
-    if [ -n "$PROFILE" ]; then
-        PROFILE_LABEL="$PROFILE"
-        DBX_PROFILE_ARGS=(--profile "$PROFILE")
-    else
-        PROFILE_LABEL="current-user auth (no profile)"
-        DBX_PROFILE_ARGS=()
-    fi
-}
-
-_dbx() {
-    databricks "$@" "${DBX_PROFILE_ARGS[@]}"
-}
-
-_is_databricks_hosted_shell() {
-    [ -n "${DATABRICKS_RUNTIME_VERSION:-}" ] ||
-    [ -n "${DATABRICKS_CLUSTER_ID:-}" ] ||
-    [ -n "${DATABRICKS_SERVERLESS_ENVIRONMENT_VERSION:-}" ]
-}
-
-_print_node_remediation() {
-    cat <<'EOF'
-
-  Web Terminal remediation for Node.js/npm:
-    cd ~
-    mkdir -p ~/.local/node22
-    curl -fsSL https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz -o node-v22.12.0-linux-x64.tar.xz
-    tar -xJf node-v22.12.0-linux-x64.tar.xz -C ~/.local/node22 --strip-components=1
-    echo 'export PATH="$HOME/.local/node22/bin:$PATH"' >> ~/.bashrc
-    source ~/.bashrc
-    node -v
-    npm -v
-
-  If your Web Terminal is not x86_64, use the matching Node.js Linux archive
-  for your architecture.
-
-  Then re-run:
-    export GENIE_DEPLOY_PROFILE=""
-    ./scripts/install.sh
-EOF
-}
-
 # ══════════════════════════════════════════════════════════════════════════
 # Step 0: Banner
 # ══════════════════════════════════════════════════════════════════════════
@@ -238,114 +191,94 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     for dep in "${MISSING[@]}"; do
         echo "    - $dep"
     done
-    if printf '%s\n' "${MISSING[@]}" | grep -Eq 'Node.js|npm'; then
-        _print_node_remediation
-    fi
     exit 1
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 2: Databricks CLI auth
+# Step 2: Databricks profile
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 2: Databricks CLI auth"
+_header "Step 2: Databricks profile"
 
-if [ "${GENIE_DEPLOY_PROFILE+x}" = "x" ]; then
-    _set_databricks_profile "$GENIE_DEPLOY_PROFILE"
-    _info "Using GENIE_DEPLOY_PROFILE=${GENIE_DEPLOY_PROFILE:-<empty>} (${PROFILE_LABEL})."
-elif _is_databricks_hosted_shell && databricks current-user me -o json &>/dev/null; then
-    _set_databricks_profile ""
-    _info "Detected Databricks-hosted shell. Using current-user CLI auth."
-else
-    _info "Discovering configured Databricks profiles..."
+_info "Discovering configured Databricks profiles..."
 
-    # Parse name + auth status from databricks auth profiles
-    DEFAULT_VALID="NO"
-    LOGGEDIN_NAMES=()
-    NOTLOGGEDIN_NAMES=()
-    PROFILES_EXIT=0
-    PROFILES_OUTPUT=$(databricks auth profiles 2>/dev/null) || PROFILES_EXIT=1
-    while IFS= read -r line; do
-        [ -z "$line" ] && continue
-        name=$(echo "$line" | awk '{print $1}')
-        valid=$(echo "$line" | awk '{print $NF}')
-        [ -z "$name" ] && continue
-        if [ "$name" = "DEFAULT" ]; then
-            DEFAULT_VALID="$valid"
-        elif [ "$valid" = "YES" ]; then
-            LOGGEDIN_NAMES+=("$name")
-        else
-            NOTLOGGEDIN_NAMES+=("$name")
-        fi
-    done < <(echo "$PROFILES_OUTPUT" | tail -n +2 | grep -v '^$' || true)
-
-    # Build ordered selection array: DEFAULT first, then logged-in, then not-logged-in
-    ORDERED_PROFILES=("DEFAULT")
-    for n in ${LOGGEDIN_NAMES[@]+"${LOGGEDIN_NAMES[@]}"};       do ORDERED_PROFILES+=("$n"); done
-    for n in ${NOTLOGGEDIN_NAMES[@]+"${NOTLOGGEDIN_NAMES[@]}"}; do ORDERED_PROFILES+=("$n"); done
-
-    if [ "$PROFILES_EXIT" -ne 0 ] && databricks current-user me -o json &>/dev/null; then
-        _set_databricks_profile ""
-        _info "Profile listing is unavailable, but current-user CLI auth works."
+# Parse name + auth status from databricks auth profiles
+DEFAULT_VALID="NO"
+LOGGEDIN_NAMES=()
+NOTLOGGEDIN_NAMES=()
+PROFILES_EXIT=0
+PROFILES_OUTPUT=$(databricks auth profiles 2>/dev/null) || PROFILES_EXIT=1
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    name=$(echo "$line" | awk '{print $1}')
+    valid=$(echo "$line" | awk '{print $NF}')
+    [ -z "$name" ] && continue
+    if [ "$name" = "DEFAULT" ]; then
+        DEFAULT_VALID="$valid"
+    elif [ "$valid" = "YES" ]; then
+        LOGGEDIN_NAMES+=("$name")
     else
-        if [ "${#ORDERED_PROFILES[@]}" -eq 1 ] && [ "$PROFILES_EXIT" -ne 0 ]; then
-            _warn "Could not list profiles (databricks CLI error). Falling back to DEFAULT."
-        fi
-
-        # Display with sections
-        echo ""
-        if [ "$DEFAULT_VALID" = "YES" ]; then
-            echo "    1) DEFAULT  ✓"
-        else
-            echo "    1) DEFAULT  (not logged in)"
-        fi
-
-        DISPLAY_IDX=2
-        if [ ${#LOGGEDIN_NAMES[@]} -gt 0 ]; then
-            echo ""
-            echo -e "  ${BOLD}Logged in:${NC}"
-            for n in "${LOGGEDIN_NAMES[@]}"; do
-                echo "    $DISPLAY_IDX) $n  ✓"
-                DISPLAY_IDX=$((DISPLAY_IDX + 1))
-            done
-        fi
-
-        if [ ${#NOTLOGGEDIN_NAMES[@]} -gt 0 ]; then
-            echo ""
-            echo -e "  ${BOLD}Not logged in:${NC}"
-            for n in "${NOTLOGGEDIN_NAMES[@]}"; do
-                echo "    $DISPLAY_IDX) $n"
-                DISPLAY_IDX=$((DISPLAY_IDX + 1))
-            done
-        fi
-
-        echo ""
-        TOTAL_PROFILES=${#ORDERED_PROFILES[@]}
-        while true; do
-            echo -en "  Select a profile [1-$TOTAL_PROFILES]: "
-            read -r choice
-            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$TOTAL_PROFILES" ]; then
-                _set_databricks_profile "${ORDERED_PROFILES[$((choice-1))]}"
-                break
-            fi
-            echo "  Please enter a number between 1 and $TOTAL_PROFILES."
-        done
-        echo ""
+        NOTLOGGEDIN_NAMES+=("$name")
     fi
+done < <(echo "$PROFILES_OUTPUT" | tail -n +2 | grep -v '^$' || true)
+
+# Build ordered selection array: DEFAULT first, then logged-in, then not-logged-in
+ORDERED_PROFILES=("DEFAULT")
+for n in ${LOGGEDIN_NAMES[@]+"${LOGGEDIN_NAMES[@]}"};       do ORDERED_PROFILES+=("$n"); done
+for n in ${NOTLOGGEDIN_NAMES[@]+"${NOTLOGGEDIN_NAMES[@]}"}; do ORDERED_PROFILES+=("$n"); done
+
+if [ "${#ORDERED_PROFILES[@]}" -eq 1 ] && [ "$PROFILES_EXIT" -ne 0 ]; then
+    _warn "Could not list profiles (databricks CLI error). Falling back to DEFAULT."
 fi
 
-# Validate the profile
-if _dbx current-user me -o json &>/dev/null; then
-    DEPLOYER=$(_dbx current-user me -o json \
-        | python3 -c "import sys,json; print(json.load(sys.stdin)['userName'])")
-    _ok "Authenticated as $DEPLOYER (${PROFILE_LABEL})"
+# Display with sections
+echo ""
+if [ "$DEFAULT_VALID" = "YES" ]; then
+    echo "    1) DEFAULT  ✓"
 else
-    _error "Could not authenticate with Databricks CLI (${PROFILE_LABEL})."
-    if [ -n "$PROFILE" ]; then
-        _info "Run: databricks configure --profile $PROFILE"
-    else
-        _info "In Databricks Web Terminal, run: databricks current-user me"
-        _info "If running locally, set GENIE_DEPLOY_PROFILE to a configured profile."
+    echo "    1) DEFAULT  (not logged in)"
+fi
+
+DISPLAY_IDX=2
+if [ ${#LOGGEDIN_NAMES[@]} -gt 0 ]; then
+    echo ""
+    echo -e "  ${BOLD}Logged in:${NC}"
+    for n in "${LOGGEDIN_NAMES[@]}"; do
+        echo "    $DISPLAY_IDX) $n  ✓"
+        DISPLAY_IDX=$((DISPLAY_IDX + 1))
+    done
+fi
+
+if [ ${#NOTLOGGEDIN_NAMES[@]} -gt 0 ]; then
+    echo ""
+    echo -e "  ${BOLD}Not logged in:${NC}"
+    for n in "${NOTLOGGEDIN_NAMES[@]}"; do
+        echo "    $DISPLAY_IDX) $n"
+        DISPLAY_IDX=$((DISPLAY_IDX + 1))
+    done
+fi
+
+echo ""
+TOTAL_PROFILES=${#ORDERED_PROFILES[@]}
+PROFILE=""
+while true; do
+    echo -en "  Select a profile [1-$TOTAL_PROFILES]: "
+    read -r choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$TOTAL_PROFILES" ]; then
+        PROFILE="${ORDERED_PROFILES[$((choice-1))]}"
+        break
     fi
+    echo "  Please enter a number between 1 and $TOTAL_PROFILES."
+done
+echo ""
+
+# Validate the profile
+if databricks current-user me --profile "$PROFILE" -o json &>/dev/null; then
+    DEPLOYER=$(databricks current-user me --profile "$PROFILE" -o json \
+        | python3 -c "import sys,json; print(json.load(sys.stdin)['userName'])")
+    _ok "Authenticated as $DEPLOYER (profile: $PROFILE)"
+else
+    _error "Could not authenticate with profile '$PROFILE'."
+    _info "Run: databricks configure --profile $PROFILE"
     exit 1
 fi
 
@@ -366,7 +299,7 @@ CATALOG_NAMES=()
 while IFS= read -r name; do
     [ -n "$name" ] && CATALOG_NAMES+=("$name")
 done < <(
-    _dbx catalogs list -o json 2>/dev/null \
+    databricks catalogs list --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "
 import sys, json
 try:
@@ -411,7 +344,7 @@ WH_IDS=()
 while IFS='|' read -r wid wlabel; do
     [ -n "$wid" ] && WH_IDS+=("$wid") && WH_LABELS+=("$wlabel")
 done < <(
-    _dbx warehouses list -o json 2>/dev/null \
+    databricks warehouses list --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "
 import sys, json
 try:
@@ -494,7 +427,7 @@ case "$MODEL_CHOICE" in
             while IFS= read -r ep; do
                 [ -n "$ep" ] && ALL_ENDPOINTS+=("$ep")
             done < <(
-                _dbx serving-endpoints list -o json 2>/dev/null \
+                databricks serving-endpoints list --profile "$PROFILE" -o json 2>/dev/null \
                 | python3 -c "
 import sys, json
 try:
@@ -548,8 +481,8 @@ if [ "$ENABLE_MLFLOW" = "Y" ]; then
         while IFS='|' read -r eid elabel; do
             [ -n "$eid" ] && EXP_IDS+=("$eid") && EXP_LABELS+=("$elabel")
         done < <(
-            _dbx api post /api/2.0/mlflow/experiments/search \
-                --json '{"max_results": 50}' -o json 2>/dev/null \
+            databricks api post /api/2.0/mlflow/experiments/search \
+                --profile "$PROFILE" --json '{"max_results": 50}' -o json 2>/dev/null \
             | python3 -c "
 import sys, json
 try:
@@ -591,14 +524,16 @@ except: pass
         MLFLOW_CREATE_JSON=$(python3 -c "import json,sys; print(json.dumps({'name': sys.argv[1]}))" "$EXPERIMENT_PATH")
         # Try to create the experiment
         MLFLOW_EXPERIMENT_ID=$(
-            _dbx api post /api/2.0/mlflow/experiments/create \
+            databricks api post /api/2.0/mlflow/experiments/create \
+                --profile "$PROFILE" \
                 --json "$MLFLOW_CREATE_JSON" -o json 2>/dev/null \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('experiment_id',''))" 2>/dev/null || true
         )
         # If creation failed (e.g. already exists), look it up by name
         if [ -z "$MLFLOW_EXPERIMENT_ID" ]; then
             MLFLOW_EXPERIMENT_ID=$(
-                _dbx api post /api/2.0/mlflow/experiments/search \
+                databricks api post /api/2.0/mlflow/experiments/search \
+                    --profile "$PROFILE" \
                     --json '{"max_results": 100}' -o json 2>/dev/null \
                 | EXPERIMENT_PATH="$EXPERIMENT_PATH" python3 -c "
 import sys, json, os
@@ -644,7 +579,7 @@ LB_NAMES=()
 while IFS= read -r name; do
     [ -n "$name" ] && LB_NAMES+=("$name")
 done < <(
-    _dbx api get /api/2.0/postgres/projects -o json 2>/dev/null \
+    databricks api get /api/2.0/postgres/projects --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "
 import sys, json
 try:
@@ -750,26 +685,9 @@ done
 _ok "App name: $APP_NAME"
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 9: Genie Space access (optional)
+# Step 9: Write .env.deploy
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 9: Genie Space access"
-
-_info "The app uses On-Behalf-Of (OBO) auth, so users see their own spaces."
-_info "However, the service principal needs explicit grants for fallback access."
-echo ""
-
-_prompt_yn GRANT_SPACES "Grant the app access to all Genie Spaces you can edit?" "Y"
-
-if [ "$GRANT_SPACES" = "Y" ]; then
-    _ok "Will grant SP CAN_EDIT on every Genie Space you can edit."
-else
-    _info "Skipping Genie Space grants. You can grant them manually later."
-fi
-
-# ══════════════════════════════════════════════════════════════════════════
-# Step 10: Write .env.deploy
-# ══════════════════════════════════════════════════════════════════════════
-_header "Step 10: Writing configuration"
+_header "Step 9: Writing configuration"
 
 ENV_FILE="$PROJECT_DIR/.env.deploy"
 cat > "$ENV_FILE" <<EOF
@@ -783,13 +701,12 @@ GENIE_DEPLOY_PROFILE="$PROFILE"
 GENIE_LLM_MODEL="$LLM_MODEL"
 GENIE_LAKEBASE_INSTANCE="$LAKEBASE_INSTANCE"
 GENIE_MLFLOW_EXPERIMENT_ID="$MLFLOW_EXPERIMENT_ID"
-GENIE_GRANT_SPACES="$GRANT_SPACES"
 EOF
 
 _ok "Configuration written to .env.deploy"
 echo ""
 echo "  ┌─ Configuration Summary ───────────────────────────────────┐"
-echo "  │  Profile:      $PROFILE_LABEL"
+echo "  │  Profile:      $PROFILE"
 echo "  │  App name:     $APP_NAME"
 echo "  │  Catalog:      $CATALOG"
 echo "  │  GSO Schema:   ${CATALOG}.${GSO_SCHEMA} (default)"
@@ -800,13 +717,12 @@ echo "  │  MLflow:       ${MLFLOW_EXPERIMENT_ID:-<disabled>}"
 echo "  └───────────────────────────────────────────────────────────┘"
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 11: Deploy
+# Step 10: Deploy
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 11: Deploying"
+_header "Step 10: Deploying"
 
 _info "This will build the frontend, sync code to your workspace, deploy the"
-_info "optimization job, provision UC/Lakebase/app resources, and start the"
-_info "app (typically 3-5 minutes)."
+_info "optimization job, and start the app (typically 3-5 minutes)."
 echo ""
 _prompt_yn DO_DEPLOY "Deploy now?" "Y"
 
@@ -817,16 +733,26 @@ else
     exit 0
 fi
 
-# Resolve SP for the summary banner (deploy.sh already configured permissions)
+# Track what was automated for the summary
+AUTOMATED=()
+AUTOMATED_FAIL=()
+
+# ══════════════════════════════════════════════════════════════════════════
+# Step 11: Resolve app service principal
+# ══════════════════════════════════════════════════════════════════════════
+_header "Step 11: Resolving app service principal"
+
 SP_CLIENT_ID=$(
-    _dbx apps get "$APP_NAME" -o json 2>/dev/null \
+    databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('service_principal_client_id','') or d.get('service_principal_name',''))" \
     2>/dev/null || true
 )
+
+# Resolve human-readable SP name for the summary
 SP_DISPLAY_NAME=""
 if [ -n "$SP_CLIENT_ID" ]; then
     SP_DISPLAY_NAME=$(
-        _dbx service-principals list -o json 2>/dev/null \
+        databricks service-principals list --profile "$PROFILE" -o json 2>/dev/null \
         | python3 -c "
 import sys, json
 sp_id = '$SP_CLIENT_ID'
@@ -840,6 +766,90 @@ try:
 except: pass
 " 2>/dev/null || true
     )
+    _ok "SP: ${SP_DISPLAY_NAME:-$SP_CLIENT_ID} (${SP_CLIENT_ID})"
+else
+    _warn "Could not resolve app service principal. Skipping automated grants."
+    _warn "You can grant permissions manually after the app is fully deployed."
+fi
+
+# ══════════════════════════════════════════════════════════════════════════
+# Step 12: Genie Space permissions (optional)
+# ══════════════════════════════════════════════════════════════════════════
+_header "Step 12: Genie Space access"
+
+_info "The app uses On-Behalf-Of (OBO) auth, so users see their own spaces."
+_info "However, the service principal needs explicit grants for fallback access."
+echo ""
+
+GENIE_SPACES_GRANTED=0
+
+_prompt_yn GRANT_SPACES "Grant the app access to all Genie Spaces you can edit?" "Y"
+
+if [ "$GRANT_SPACES" = "Y" ] && [ -n "$SP_CLIENT_ID" ]; then
+    _info "Discovering your Genie Spaces..."
+
+    # List Genie Spaces and grant SP access
+    GENIE_SPACES_GRANTED=$(python3 -c "
+import json, subprocess, sys
+
+profile = '$PROFILE'
+sp_id = '$SP_CLIENT_ID'
+
+# List all Genie Spaces visible to the deploying user
+try:
+    result = subprocess.run(
+        ['databricks', 'api', 'get', '/api/2.0/genie/spaces', '--profile', profile, '-o', 'json'],
+        capture_output=True, text=True, check=True,
+    )
+    data = json.loads(result.stdout)
+    spaces = data if isinstance(data, list) else data.get('spaces', data.get('genie_spaces', []))
+except Exception as e:
+    print(f'Could not list Genie Spaces: {e}', file=sys.stderr)
+    spaces = []
+
+if not spaces:
+    print('0')
+    sys.exit(0)
+
+granted = 0
+for space in spaces:
+    space_id = space.get('id') or space.get('space_id', '')
+    space_name = space.get('title') or space.get('name', space_id)
+    if not space_id:
+        continue
+
+    try:
+        perm_payload = json.dumps({
+            'access_control_list': [
+                {
+                    'service_principal_name': sp_id,
+                    'permission_level': 'CAN_EDIT',
+                }
+            ]
+        })
+        subprocess.run(
+            ['databricks', 'api', 'put', f'/api/2.0/permissions/dashboards.genie/{space_id}',
+             '--profile', profile, '--json', perm_payload],
+            capture_output=True, text=True, check=True,
+        )
+        print(f'Granted CAN_EDIT on: {space_name} ({space_id})', file=sys.stderr)
+        granted += 1
+    except Exception as e:
+        print(f'Could not grant on {space_name}: {e}', file=sys.stderr)
+
+print(granted)
+" 2>/dev/null || echo "0")
+
+    if [ "$GENIE_SPACES_GRANTED" -gt 0 ] 2>/dev/null; then
+        _ok "Granted access to $GENIE_SPACES_GRANTED Genie Space(s)."
+        AUTOMATED+=("Genie Space SP access ($GENIE_SPACES_GRANTED spaces)")
+    else
+        _warn "No Genie Spaces were granted. You can grant them manually later."
+    fi
+elif [ -z "$SP_CLIENT_ID" ]; then
+    _warn "Skipped — no SP resolved."
+else
+    _info "Skipping Genie Space grants. You can grant them manually later."
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -851,7 +861,7 @@ echo -e "${GREEN}${BOLD}  Installation complete!${NC}"
 echo ""
 
 # Try to get the app URL
-APP_URL=$(_dbx apps get "$APP_NAME" -o json 2>/dev/null \
+APP_URL=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null \
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('url',''))" 2>/dev/null || true)
 
 echo "  App:       $APP_NAME"
@@ -868,16 +878,22 @@ fi
 # ── Automated (done) ─────────────────────────────────────────────────────
 echo ""
 echo -e "  ${GREEN}${BOLD}Automated (done):${NC}"
-echo -e "    ${GREEN}✓${NC} OAuth scopes + app resources (sql-warehouse, postgres)"
+echo -e "    ${GREEN}✓${NC} OAuth scopes (configured in app.yaml)"
 echo -e "    ${GREEN}✓${NC} GSO optimization job (bundle-managed)"
 echo -e "    ${GREEN}✓${NC} UC grants on ${CATALOG}.${GSO_SCHEMA}"
-if [ -n "$LAKEBASE_INSTANCE" ]; then
-    echo -e "    ${GREEN}✓${NC} Lakebase project + app resource + SP role + database grants"
-else
-    echo -e "    ${YELLOW}•${NC} Lakebase skipped (in-memory fallback)"
+
+if [ ${#AUTOMATED[@]} -gt 0 ]; then
+    for item in "${AUTOMATED[@]}"; do
+        echo -e "    ${GREEN}✓${NC} $item"
+    done
 fi
-if [ "$GRANT_SPACES" = "Y" ]; then
-    echo -e "    ${GREEN}✓${NC} Genie Space SP access (all user-editable spaces)"
+
+if [ ${#AUTOMATED_FAIL[@]} -gt 0 ]; then
+    echo ""
+    echo -e "  ${YELLOW}${BOLD}Attempted but failed (grant manually):${NC}"
+    for item in "${AUTOMATED_FAIL[@]}"; do
+        echo -e "    ${YELLOW}⚠${NC} $item"
+    done
 fi
 
 # ── Remaining manual steps ───────────────────────────────────────────────
@@ -886,13 +902,32 @@ SP_NAME_FOR_DISPLAY="${SP_DISPLAY_NAME:-${SP_CLIENT_ID:-<app-service-principal>}
 echo ""
 echo -e "  ${YELLOW}${BOLD}Remaining manual steps:${NC}"
 echo ""
-echo -e "    ${BOLD}1. Genie Space data access${NC}"
+echo -e "    ${BOLD}1. Create GSO synced tables (for Auto-Optimize history)${NC}"
+echo "       Synced tables replicate GSO Delta tables to Lakebase for"
+echo "       fast reads in the app. They must be created via Catalog Explorer UI."
+echo ""
+echo "       For each of these 8 tables in ${CATALOG}.${GSO_SCHEMA}:"
+echo "         genie_opt_runs, genie_opt_stages, genie_opt_iterations,"
+echo "         genie_opt_patches, genie_eval_asi_results, genie_opt_provenance,"
+echo "         genie_opt_suggestions, genie_opt_data_access_grants"
+echo ""
+echo "       a) Navigate to the source table in Catalog Explorer"
+echo "       b) Click 'Create' → 'Synced table'"
+echo "       c) Name: <table_name>_synced (same schema)"
+echo "       d) Database type: Lakebase Serverless (Autoscaling)"
+echo "       e) Project: ${APP_NAME}-db, Branch: production"
+echo "       f) Sync mode: Triggered"
+echo ""
+echo "       Then verify:"
+echo -e "       ${CYAN}python3 scripts/setup_synced_tables.py --source-catalog ${CATALOG} --warehouse-id \$WAREHOUSE_ID --profile \$PROFILE --verify-only${NC}"
+echo ""
+echo -e "    ${BOLD}2. Genie Space data access${NC}"
 echo "       The SP needs SELECT on schemas your Genie Spaces reference."
 echo "       Open the app → Auto-Optimize → Settings to see which schemas"
 echo "       need grants, then run:"
 echo -e "       ${CYAN}GRANT SELECT ON SCHEMA <catalog>.<schema> TO \`${SP_NAME_FOR_DISPLAY}\`${NC}"
 echo ""
-echo -e "    ${BOLD}2. Future Genie Spaces${NC}"
+echo -e "    ${BOLD}4. Future Genie Spaces${NC}"
 echo "       Spaces created after install need SP grants. Open the space"
 echo "       sharing dialog and add '${SP_NAME_FOR_DISPLAY}' with CAN_MANAGE."
 echo ""

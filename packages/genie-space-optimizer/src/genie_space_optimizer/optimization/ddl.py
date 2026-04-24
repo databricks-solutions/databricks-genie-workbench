@@ -1,7 +1,7 @@
 """DDL constants for GSO optimization Delta tables.
 
 Extracted into a standalone module so that deploy scripts (e.g.
-``scripts/setup_workbench.py``) can import ``_ALL_DDL`` without
+``scripts/grant_permissions.py``) can import ``_ALL_DDL`` without
 pulling in pandas or other heavy runtime dependencies.
 """
 

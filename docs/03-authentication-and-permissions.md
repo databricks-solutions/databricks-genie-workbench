@@ -188,7 +188,7 @@ The SP needs full access to the optimizer state schema (`<GSO_CATALOG>.genie_spa
 | `EXECUTE` | Execute functions |
 | `MANAGE` | Schema management |
 
-These are granted automatically by `scripts/setup_workbench.py` during deployment.
+These are granted automatically by `scripts/grant_permissions.py` during deployment.
 
 ## Complete Permission Boundary
 

@@ -6,27 +6,6 @@
 # with remediation steps and exits non-zero if the check fails.
 # ---------------------------------------------------------------------------
 
-_print_node_remediation() {
-    cat <<'EOF'
-
-  Web Terminal remediation for Node.js/npm:
-    cd ~
-    mkdir -p ~/.local/node22
-    curl -fsSL https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz -o node-v22.12.0-linux-x64.tar.xz
-    tar -xJf node-v22.12.0-linux-x64.tar.xz -C ~/.local/node22 --strip-components=1
-    echo 'export PATH="$HOME/.local/node22/bin:$PATH"' >> ~/.bashrc
-    source ~/.bashrc
-    node -v
-    npm -v
-
-  If your Web Terminal is not x86_64, use the matching Node.js Linux archive
-  for your architecture.
-
-  Then re-run:
-    ./scripts/deploy.sh
-EOF
-}
-
 _preflight_check_tools() {
     echo "  Checking required tools..."
     local missing=()
@@ -43,10 +22,6 @@ _preflight_check_tools() {
             echo "  Install uv:"
             echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"
             echo "    or: brew install uv"
-            echo ""
-        fi
-        if [[ " ${missing[*]} " == *" node "* ]] || [[ " ${missing[*]} " == *" npm "* ]]; then
-            _print_node_remediation
             echo ""
         fi
         echo "  Remediation: install the missing tools and re-run scripts/deploy.sh"
@@ -66,9 +41,7 @@ process.exit(supported ? 0 : 1);
         echo ""
         echo "  Vite requires Node.js ^20.19.0 or >=22.12.0."
         echo ""
-        echo "  Remediation:"
-        echo "    Install Node.js 22 LTS or newer, then re-run scripts/deploy.sh"
-        _print_node_remediation
+        echo "  Remediation: install Node.js 22 LTS or newer, then re-run scripts/deploy.sh"
         exit 1
     fi
     echo "  ✓ Node.js version $node_version"
@@ -93,9 +66,7 @@ process.exit(supported ? 0 : 1);
 }
 
 _preflight_check_venv() {
-    local venv_path="${UV_PROJECT_ENVIRONMENT:-$PROJECT_DIR/.venv}"
     echo "  Syncing Python venv (uv sync --frozen)..."
-    echo "  Using Python venv: $venv_path"
     if uv sync --frozen --quiet; then
         echo "  ✓ Python venv ready (pinned dependencies)"
     else
@@ -107,8 +78,6 @@ _preflight_check_venv() {
         echo "    - Internal PyPI mirror missing a package (unset UV_INDEX_URL or set to https://pypi.org/simple)"
         echo "    - Python 3.11+ not available (try: uv python install 3.11)"
         echo "    - Corrupt .venv (try: rm -rf .venv && uv sync --frozen)"
-        echo "    - Databricks /Workspace virtualenv issue in Web Terminal"
-        echo "      (try: export UV_PROJECT_ENVIRONMENT=\"\$HOME/.venvs/${APP_NAME:-genie-workbench}\" && rm -rf .venv && uv sync --frozen)"
         exit 1
     fi
 }
@@ -178,25 +147,18 @@ _preflight_check_npm_registry() {
 
 _preflight_check_profile() {
     local profile="$1"
-    echo "  Checking Databricks CLI auth (${PROFILE_LABEL:-$profile})..."
-    if ! _dbx current-user me -o json &>/dev/null; then
+    echo "  Checking CLI profile '$profile'..."
+    if ! databricks current-user me --profile "$profile" -o json &>/dev/null; then
         echo ""
-        echo "  ✗ Cannot authenticate with Databricks CLI (${PROFILE_LABEL:-$profile})."
+        echo "  ✗ Cannot authenticate with profile '$profile'."
         echo ""
         echo "  Remediation:"
-        if [ -n "$profile" ]; then
-            echo "    1. Run: databricks configure --profile $profile"
-            echo "    2. Or set GENIE_DEPLOY_PROFILE to a valid profile name"
-            echo "    3. In Databricks Web Terminal, set GENIE_DEPLOY_PROFILE=\"\" to use current-user auth"
-        else
-            echo "    1. Confirm you are running inside a Databricks Web Terminal"
-            echo "    2. Run: databricks current-user me"
-            echo "    3. If running locally, set GENIE_DEPLOY_PROFILE to a configured profile"
-        fi
+        echo "    1. Run: databricks configure --profile $profile"
+        echo "    2. Or set GENIE_DEPLOY_PROFILE to a valid profile name"
         echo ""
         exit 1
     fi
-    echo "  ✓ Databricks CLI auth is valid"
+    echo "  ✓ CLI profile is valid"
 }
 
 _preflight_check_warehouse() {
@@ -204,18 +166,14 @@ _preflight_check_warehouse() {
     local profile="$2"
     echo "  Checking SQL warehouse '$warehouse_id'..."
     local wh_output
-    if ! wh_output=$(_dbx warehouses get "$warehouse_id" -o json 2>&1); then
+    if ! wh_output=$(databricks warehouses get "$warehouse_id" --profile "$profile" -o json 2>&1); then
         echo ""
         echo "  ✗ SQL warehouse '$warehouse_id' is not accessible."
         echo ""
         echo "  Remediation:"
         echo "    1. Verify the warehouse ID is correct"
         echo "    2. Ensure your user/SP has CAN_USE permission on the warehouse"
-        if [ -n "$profile" ]; then
-            echo "    3. Check the warehouse exists: databricks warehouses list --profile $profile"
-        else
-            echo "    3. Check the warehouse exists: databricks warehouses list"
-        fi
+        echo "    3. Check the warehouse exists: databricks warehouses list --profile $profile"
         echo ""
         exit 1
     fi
@@ -228,18 +186,14 @@ _preflight_check_catalog() {
     local catalog="$1"
     local profile="$2"
     echo "  Checking catalog '$catalog'..."
-    if ! _dbx catalogs get "$catalog" -o json &>/dev/null; then
+    if ! databricks catalogs get "$catalog" --profile "$profile" -o json &>/dev/null; then
         echo ""
         echo "  ✗ Catalog '$catalog' is not accessible."
         echo ""
         echo "  Remediation:"
         echo "    1. Verify the catalog name is correct"
         echo "    2. Ensure you have USE CATALOG and CREATE SCHEMA permissions"
-        if [ -n "$profile" ]; then
-            echo "    3. List catalogs: databricks catalogs list --profile $profile"
-        else
-            echo "    3. List catalogs: databricks catalogs list"
-        fi
+        echo "    3. List catalogs: databricks catalogs list --profile $profile"
         echo ""
         exit 1
     fi
@@ -252,7 +206,7 @@ _preflight_check_app_state() {
     echo "  Checking app state for '$app_name'..."
 
     local app_output
-    if app_output=$(_dbx apps get "$app_name" -o json 2>/dev/null); then
+    if app_output=$(databricks apps get "$app_name" --profile "$profile" -o json 2>/dev/null); then
         # App exists — check if it's in a cleanup/deleted state
         local app_status
         app_status=$(echo "$app_output" | python3 -c "

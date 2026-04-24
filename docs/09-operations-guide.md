@@ -90,9 +90,6 @@ databricks apps get <app-name> --profile <profile>
 databricks workspace list /Workspace/Users/<email>/<app-name>/backend --profile <profile>
 ```
 
-In Databricks Web Terminal, omit `--profile <profile>` from these commands
-because the CLI uses current-user auth from the environment.
-
 ### Key Log Patterns
 
 | Log Pattern | Meaning |
@@ -129,8 +126,6 @@ The GSO job is managed by Databricks Asset Bundles (DABs):
 # Deploy/update the job (done automatically by deploy.sh)
 databricks bundle deploy -t app --profile <profile>
 ```
-
-In Databricks Web Terminal, omit `--profile <profile>`.
 
 **Important:** Do NOT run `databricks bundle deploy -t dev` for production deployments — it creates `[dev username]` prefixed orphan jobs with separate Terraform state.
 
