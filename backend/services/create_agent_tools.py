@@ -976,7 +976,10 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
 def _search_tables(keywords: list[str], catalogs: list[str] | None = None, max_results: int = 50) -> dict:
     """Search for tables across Unity Catalog using information_schema."""
     from backend.services.uc_client import search_tables
-    return search_tables(keywords, catalogs=catalogs, max_results=max_results)
+    result = search_tables(keywords, catalogs=catalogs, max_results=max_results)
+    if result.get("tables"):
+        result["ui_hint"] = {"type": "multi_select", "id": "table_selection", "label": "Select tables to include"}
+    return result
 
 
 def _discover_catalogs() -> dict:
