@@ -15,6 +15,7 @@ Genie Workbench is a unified developer tool for creating, scoring, and optimizin
 | 07 | [Auto-Optimize (GSO)](07-auto-optimize.md) | Benchmark-driven optimization: 6-stage DAG, levers, gates |
 | 08 | [Deployment Guide](08-deployment-guide.md) | install.sh, deploy.sh, Lakebase setup, configuration reference |
 | 09 | [Operations Guide](09-operations-guide.md) | Lakebase management, MLflow, monitoring, GSO job ops |
+| 10 | [Web Terminal Install](web-terminal-install.md) | Install from Databricks Web Terminal when local CLI usage is blocked |
 
 ### Appendices
 

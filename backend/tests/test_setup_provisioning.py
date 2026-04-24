@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from pathlib import Path
+import os
+import subprocess
 
 import pytest
 
@@ -145,27 +146,6 @@ def test_reconcile_genie_schema_falls_back_to_existing_data_grants():
     assert "REASSIGN OWNED" not in joined
 
 
-def test_gso_job_dag_points_to_existing_workspace_notebooks():
-    repo_root = Path(__file__).resolve().parents[2]
-    jobs_dir = repo_root / "packages/genie-space-optimizer/src/genie_space_optimizer/jobs"
-    dag = setup_workbench._gso_job_dag(
-        workspace_folder="/Workspace/Users/user/databricks-genie-workbench",
-        wheel_path="/Workspace/Users/user/databricks-genie-workbench/.build/gso.whl",
-    )
-
-    notebook_paths = [
-        task["notebook_task"]["notebook_path"]
-        for task in dag["tasks"]
-        if "notebook_task" in task
-    ]
-    assert any(path.endswith("/run_baseline") for path in notebook_paths)
-    assert not any(path.endswith("/run_baseline_eval") for path in notebook_paths)
-
-    for notebook_path in notebook_paths:
-        notebook_name = notebook_path.rsplit("/", 1)[-1]
-        assert (jobs_dir / f"{notebook_name}.py").exists()
-
-
 def test_patch_app_raises_when_resource_patch_fails():
     class ApiClient:
         def do(self, method, path, body=None):
@@ -186,3 +166,35 @@ def test_patch_app_raises_when_resource_patch_fails():
             lakebase_db="projects/p/branches/production/databases/db",
             lakebase_branch="projects/p/branches/production",
         )
+
+
+def test_deploy_config_supports_profileless_current_user_auth():
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    env = {
+        **os.environ,
+        "GENIE_WAREHOUSE_ID": "warehouse",
+        "GENIE_CATALOG": "catalog",
+        "GENIE_DEPLOY_PROFILE": "",
+        "GENIE_DEPLOY_ENV_FILE": "/dev/null",
+    }
+    result = subprocess.run(
+        [
+            "bash",
+            "-lc",
+            (
+                "set -euo pipefail; "
+                "source scripts/deploy-config.sh; "
+                "printf 'PROFILE=%s\\nPROFILE_LABEL=%s\\nARGS=%s\\n' "
+                "\"$PROFILE\" \"$PROFILE_LABEL\" \"${DBX_PROFILE_ARGS[*]-}\""
+            ),
+        ],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "PROFILE=\n" in result.stdout
+    assert "PROFILE_LABEL=current-user auth (no profile)\n" in result.stdout
+    assert "ARGS=\n" in result.stdout

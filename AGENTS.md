@@ -82,8 +82,6 @@ scripts/
   setup_workbench.py       # Shared provisioning module (UC/Lakebase/Apps PATCH/app.yaml/Genie grants)
   setup_lakebase.py        # Lakebase Autoscaling project, SP role, and database grants (reused by setup_workbench)
   setup_synced_tables.py   # [deprecated] GSO synced tables in Lakebase — broken feature, not used by install
-  notebooks/
-    setup_workbench.py     # Non-CLI install entry point (serverless notebook; same module, different caller)
 frontend/
   src/
     App.tsx                # Root: SpaceList | SpaceDetail | AdminDashboard | CreateAgentChat
@@ -112,7 +110,7 @@ Two endpoints use `StreamingResponse` with `text/event-stream`:
 Frontend consumes these via manual `fetch` + `ReadableStream` in `lib/api.ts` (not EventSource). Buffer splitting on `\n\n`.
 
 ### Lakebase Persistence
-`services/lakebase.py` uses asyncpg with graceful fallback to in-memory dicts when `LAKEBASE_HOST` is not set. Supports both provisioned Lakebase and Lakebase Autoscaling — for autoscaling, uses `client.postgres.get_endpoint()` to resolve DNS and `client.postgres.generate_database_credential()` for OAuth tokens. Schema and tables are created by the app at startup via `_ensure_schema()` (the SP owns everything it creates). Lakebase project, SP role, and database-level grants (CONNECT, CREATE) are automated by `scripts/setup_lakebase.py`, which is imported and driven by `scripts/setup_workbench.py` (called from `deploy.sh` and the setup notebook).
+`services/lakebase.py` uses asyncpg with graceful fallback to in-memory dicts when `LAKEBASE_HOST` is not set. Supports both provisioned Lakebase and Lakebase Autoscaling — for autoscaling, uses `client.postgres.get_endpoint()` to resolve DNS and `client.postgres.generate_database_credential()` for OAuth tokens. Schema and tables are created by the app at startup via `_ensure_schema()` (the SP owns everything it creates). Lakebase project, SP role, and database-level grants (CONNECT, CREATE) are automated by `scripts/setup_lakebase.py`, which is imported and driven by `scripts/setup_workbench.py` (called from `deploy.sh` in both local CLI and Web Terminal installs).
 
 ### LLM Calls
 All LLM calls go through Databricks model serving endpoints using OpenAI-compatible API. Model configured via `LLM_MODEL` env var (default: `databricks-claude-sonnet-4-6`). MLflow tracing is optional — controlled by `MLFLOW_EXPERIMENT_ID`.
@@ -147,13 +145,13 @@ There is no local dev server — all testing is done by syncing code to Databric
   1. Edit code locally
   2. Run `./scripts/deploy.sh --update` to build, bundle deploy, and app deploy
   3. Test in the deployed Databricks App
-- **Non-CLI path** (for users without local tooling):
-  1. Clone the repo into a Databricks Git folder
-  2. Run `scripts/notebooks/setup_workbench.py` on serverless compute
-  3. Deploy from Apps UI → "Deploy from a workspace folder"
-  4. See `docs/non-cli-install.md` for the full CUJ
+- **Web Terminal path** (for users whose local VM blocks Databricks CLI usage):
+  1. Open Databricks Web Terminal on supported compute
+  2. Clone or enter the repo under `/Workspace/Users/<user>/`
+  3. Run `GENIE_DEPLOY_PROFILE="" ./scripts/install.sh`
+  4. See `docs/web-terminal-install.md` for the full CUJ
 
-Both paths call `scripts/setup_workbench.py` (the shared provisioning module) for UC/Lakebase/Apps PATCH/app.yaml/Genie Space grants.
+Both paths call `scripts/setup_workbench.py` (the shared provisioning module) for UC/Lakebase/Apps PATCH/app.yaml/Genie Space grants and use `databricks bundle deploy -t app` as the only GSO job creation path.
 
 Do NOT suggest running `uvicorn` or `npm run dev` locally. The app depends on Databricks-managed resources (OBO auth, Lakebase, serving endpoints) that aren't available outside a Databricks App environment.
 
@@ -189,6 +187,7 @@ attacks like the litellm PyPI credential stealer (March 2026) and axios npm RAT
 - **`frontend/dist/` must be explicitly uploaded** with `databricks workspace import-dir` because `databricks sync --full` only uploads non-gitignored files.
 - **`requirements.txt` is databricksignored** — the platform uses `uv sync` instead of `pip install`. If you see pip dependency conflicts, verify `requirements.txt` is in `.databricksignore`.
 - **`MLFLOW_EXPERIMENT_ID` is workspace-specific** — the app validates it at startup and silently disables tracing if the experiment doesn't exist.
+- **Lakebase state is app-instance scoped** — keep `GENIE_APP_NAME` stable and use `./scripts/deploy.sh --update` for normal changes. If creating a new app instance, use a fresh `GENIE_LAKEBASE_INSTANCE`; reusing an older app's Lakebase project can leave `genie` tables/sequences owned by the old app SP.
 
 ## Platform Build Strategy
 

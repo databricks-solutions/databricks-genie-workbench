@@ -11,6 +11,8 @@
 #   GENIE_CATALOG            (required)  Unity Catalog name (must have CREATE SCHEMA permission)
 #   GENIE_APP_NAME           (optional)  Databricks App name          [default: genie-workbench]
 #   GENIE_DEPLOY_PROFILE     (optional)  Databricks CLI profile       [default: DEFAULT]
+#                                           Set to empty string to use current-user
+#                                           CLI auth (Databricks Web Terminal)
 #   GENIE_LLM_MODEL          (optional)  LLM serving endpoint         [default: databricks-claude-sonnet-4-6]
 #   GENIE_LAKEBASE_INSTANCE  (optional)  Lakebase instance name       [default: none]
 #   GENIE_MLFLOW_EXPERIMENT_ID (optional) MLflow experiment ID for agent tracing [default: disabled]
@@ -23,7 +25,7 @@
 
 # ── Load .env.deploy if present (in project root) ─────────────────────────
 _PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-_DEPLOY_ENV="$_PROJECT_DIR/.env.deploy"
+_DEPLOY_ENV="${GENIE_DEPLOY_ENV_FILE:-$_PROJECT_DIR/.env.deploy}"
 if [ -f "$_DEPLOY_ENV" ]; then
     set -a
     # shellcheck disable=SC1090
@@ -36,11 +38,31 @@ APP_NAME="${GENIE_APP_NAME:-genie-workbench}"
 CATALOG="${GENIE_CATALOG:-}"
 GSO_SCHEMA="genie_space_optimizer"  # Fixed default — matches GSO convention
 WAREHOUSE_ID="${GENIE_WAREHOUSE_ID:-}"
-PROFILE="${GENIE_DEPLOY_PROFILE:-DEFAULT}"
+if [ "${GENIE_DEPLOY_PROFILE+x}" = "x" ]; then
+    PROFILE="$GENIE_DEPLOY_PROFILE"
+else
+    PROFILE="DEFAULT"
+fi
 LLM_MODEL="${GENIE_LLM_MODEL:-databricks-claude-sonnet-4-6}"
 LAKEBASE_INSTANCE="${GENIE_LAKEBASE_INSTANCE:-}"
 MLFLOW_EXPERIMENT_ID="${GENIE_MLFLOW_EXPERIMENT_ID:-}"
 GRANT_SPACES="${GENIE_GRANT_SPACES:-Y}"
+
+# ── Databricks CLI auth mode ────────────────────────────────────────────
+# Local installs use a named profile by default. Databricks Web Terminal uses
+# environment-provided current-user auth, where profile commands are not
+# supported, so GENIE_DEPLOY_PROFILE="" intentionally omits --profile.
+if [ -n "$PROFILE" ]; then
+    PROFILE_LABEL="$PROFILE"
+    DBX_PROFILE_ARGS=(--profile "$PROFILE")
+else
+    PROFILE_LABEL="current-user auth (no profile)"
+    DBX_PROFILE_ARGS=()
+fi
+
+_dbx() {
+    databricks "$@" "${DBX_PROFILE_ARGS[@]}"
+}
 
 # ── Validate required values ─────────────────────────────────────────────
 if [ -z "$WAREHOUSE_ID" ]; then
@@ -65,7 +87,7 @@ fi
 # ── Print config summary ─────────────────────────────────────────────────
 _print_config() {
     echo "  ┌─ Configuration ─────────────────────────────────────────┐"
-    echo "  │  Profile:      $PROFILE"
+    echo "  │  Profile:      $PROFILE_LABEL"
     echo "  │  App name:     $APP_NAME"
     echo "  │  Catalog:      $CATALOG"
     echo "  │  GSO Schema:   ${CATALOG}.${GSO_SCHEMA}"

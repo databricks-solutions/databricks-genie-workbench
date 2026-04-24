@@ -148,18 +148,25 @@ _preflight_check_npm_registry() {
 
 _preflight_check_profile() {
     local profile="$1"
-    echo "  Checking CLI profile '$profile'..."
-    if ! databricks current-user me --profile "$profile" -o json &>/dev/null; then
+    echo "  Checking Databricks CLI auth (${PROFILE_LABEL:-$profile})..."
+    if ! _dbx current-user me -o json &>/dev/null; then
         echo ""
-        echo "  ✗ Cannot authenticate with profile '$profile'."
+        echo "  ✗ Cannot authenticate with Databricks CLI (${PROFILE_LABEL:-$profile})."
         echo ""
         echo "  Remediation:"
-        echo "    1. Run: databricks configure --profile $profile"
-        echo "    2. Or set GENIE_DEPLOY_PROFILE to a valid profile name"
+        if [ -n "$profile" ]; then
+            echo "    1. Run: databricks configure --profile $profile"
+            echo "    2. Or set GENIE_DEPLOY_PROFILE to a valid profile name"
+            echo "    3. In Databricks Web Terminal, set GENIE_DEPLOY_PROFILE=\"\" to use current-user auth"
+        else
+            echo "    1. Confirm you are running inside a Databricks Web Terminal"
+            echo "    2. Run: databricks current-user me"
+            echo "    3. If running locally, set GENIE_DEPLOY_PROFILE to a configured profile"
+        fi
         echo ""
         exit 1
     fi
-    echo "  ✓ CLI profile is valid"
+    echo "  ✓ Databricks CLI auth is valid"
 }
 
 _preflight_check_warehouse() {
@@ -167,14 +174,18 @@ _preflight_check_warehouse() {
     local profile="$2"
     echo "  Checking SQL warehouse '$warehouse_id'..."
     local wh_output
-    if ! wh_output=$(databricks warehouses get "$warehouse_id" --profile "$profile" -o json 2>&1); then
+    if ! wh_output=$(_dbx warehouses get "$warehouse_id" -o json 2>&1); then
         echo ""
         echo "  ✗ SQL warehouse '$warehouse_id' is not accessible."
         echo ""
         echo "  Remediation:"
         echo "    1. Verify the warehouse ID is correct"
         echo "    2. Ensure your user/SP has CAN_USE permission on the warehouse"
-        echo "    3. Check the warehouse exists: databricks warehouses list --profile $profile"
+        if [ -n "$profile" ]; then
+            echo "    3. Check the warehouse exists: databricks warehouses list --profile $profile"
+        else
+            echo "    3. Check the warehouse exists: databricks warehouses list"
+        fi
         echo ""
         exit 1
     fi
@@ -187,14 +198,18 @@ _preflight_check_catalog() {
     local catalog="$1"
     local profile="$2"
     echo "  Checking catalog '$catalog'..."
-    if ! databricks catalogs get "$catalog" --profile "$profile" -o json &>/dev/null; then
+    if ! _dbx catalogs get "$catalog" -o json &>/dev/null; then
         echo ""
         echo "  ✗ Catalog '$catalog' is not accessible."
         echo ""
         echo "  Remediation:"
         echo "    1. Verify the catalog name is correct"
         echo "    2. Ensure you have USE CATALOG and CREATE SCHEMA permissions"
-        echo "    3. List catalogs: databricks catalogs list --profile $profile"
+        if [ -n "$profile" ]; then
+            echo "    3. List catalogs: databricks catalogs list --profile $profile"
+        else
+            echo "    3. List catalogs: databricks catalogs list"
+        fi
         echo ""
         exit 1
     fi
@@ -207,7 +222,7 @@ _preflight_check_app_state() {
     echo "  Checking app state for '$app_name'..."
 
     local app_output
-    if app_output=$(databricks apps get "$app_name" --profile "$profile" -o json 2>/dev/null); then
+    if app_output=$(_dbx apps get "$app_name" -o json 2>/dev/null); then
         # App exists — check if it's in a cleanup/deleted state
         local app_status
         app_status=$(echo "$app_output" | python3 -c "

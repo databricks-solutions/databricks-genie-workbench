@@ -2,20 +2,16 @@
 """Shared provisioning module for Genie Workbench.
 
 Consolidates post-`apps create` / post-bundle-deploy provisioning into one
-callable: ``provision_workbench(**config) -> ProvisionResult``. Two callers:
+callable: ``provision_workbench(**config) -> ProvisionResult``.
 
-- CLI path — ``scripts/install.sh`` and ``scripts/deploy.sh`` invoke this via
-  ``uv run python -m scripts.setup_workbench`` after the app and optimization
-  job already exist (bundle creates the job first; the shell passes
-  ``--gso-job-id`` so this module's ``_ensure_gso_job`` step no-ops).
-- Non-CLI path — ``scripts/notebooks/setup_workbench.py`` imports
-  ``provision_workbench`` and calls it from a Databricks notebook on
-  serverless compute. The notebook creates the GSO job itself via
-  ``WorkspaceClient.jobs.create`` using ``GSO_JOB_DAG`` from this module
-  before calling ``provision_workbench``.
+``scripts/install.sh`` and ``scripts/deploy.sh`` invoke this via
+``uv run python -m scripts.setup_workbench`` after the app and optimization
+job already exist. The optimization job is always created by
+``databricks bundle deploy -t app`` so the DAB definition remains the single
+source of truth for the job DAG.
 
-Pure SDK (no ``databricks`` CLI subprocess) so the module works inside
-notebooks where the CLI is not installed.
+The module is pure SDK (no ``databricks`` CLI subprocess) so the same deploy
+flow works from a local terminal or Databricks Web Terminal.
 
 Responsibilities:
 1. Resolve the app's service principal
@@ -37,7 +33,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import io
 import json
 import os
 import sys
@@ -98,92 +93,6 @@ APP_YAML_PLACEHOLDERS = (
 )
 
 GSO_JOB_NAME = "gso-optimization-job"
-
-# Inline 6-task DAG — mirrors databricks.yml. The notebook path creates the
-# job via WorkspaceClient.jobs.create using this spec; the CLI path keeps
-# using the bundle and this literal stays unused there. Accepted drift —
-# see `docs/non-cli-install.md` for unification tracking.
-def _gso_job_dag(workspace_folder: str, wheel_path: str) -> dict[str, Any]:
-    """Build the 6-task optimization DAG rooted at a given workspace folder.
-
-    workspace_folder: absolute /Workspace/... path where the repo lives
-    wheel_path: absolute /Workspace/... or /Volumes/... path to the GSO wheel
-    """
-    notebook_base = (
-        f"{workspace_folder.rstrip('/')}"
-        f"/packages/genie-space-optimizer/src/genie_space_optimizer/jobs"
-    )
-    parameters = [
-        {"name": name, "default": default} for name, default in [
-            ("run_id", ""), ("space_id", ""), ("domain", "default"),
-            ("catalog", ""), ("schema", ""), ("apply_mode", "genie_config"),
-            ("levers", "[1,2,3,4,5,6]"), ("max_iterations", "5"),
-            ("triggered_by", ""), ("experiment_name", ""),
-            ("deploy_target", ""), ("warehouse_id", ""),
-        ]
-    ]
-    tasks = []
-    prior = None
-    stage_notebooks = [
-        ("preflight", "run_preflight"),
-        ("baseline_eval", "run_baseline"),
-        ("enrichment", "run_enrichment"),
-        ("lever_loop", "run_lever_loop"),
-        ("finalize", "run_finalize"),
-    ]
-    for stage, notebook_name in stage_notebooks:
-        task: dict[str, Any] = {
-            "task_key": stage,
-            "notebook_task": {"notebook_path": f"{notebook_base}/{notebook_name}"},
-            "environment_key": "default",
-            "timeout_seconds": 7200,
-            "max_retries": 0,
-        }
-        if prior:
-            task["depends_on"] = [{"task_key": prior}]
-        if stage == "preflight":
-            task["notebook_task"]["base_parameters"] = {
-                p["name"]: f"{{{{job.parameters.{p['name']}}}}}"
-                for p in parameters
-                if p["name"] != "triggered_by"
-            }
-        tasks.append(task)
-        prior = stage
-    # Final deploy gate (no-op condition task)
-    tasks.append({
-        "task_key": "deploy",
-        "depends_on": [{"task_key": "finalize"}],
-        "condition_task": {
-            "op": "EQUAL_TO",
-            "left": "deploy",
-            "right": "disabled",
-        },
-    })
-    return {
-        "name": GSO_JOB_NAME,
-        "description": (
-            "Persistent DAG optimization runner managed by Genie Workbench "
-            "(preflight -> baseline_eval -> enrichment -> lever_loop -> "
-            "finalize -> deploy). SP executes with granted privileges on "
-            "user schemas."
-        ),
-        "max_concurrent_runs": 20,
-        "queue": {"enabled": True},
-        "tags": {
-            "app": "genie-workbench",
-            "managed-by": "setup_workbench",
-            "pattern": "persistent-dag",
-        },
-        "parameters": parameters,
-        "tasks": tasks,
-        "environments": [{
-            "environment_key": "default",
-            "spec": {
-                "environment_version": "4",
-                "dependencies": [wheel_path],
-            },
-        }],
-    }
 
 
 # ── Result dataclass ───────────────────────────────────────────────────────
@@ -261,13 +170,12 @@ def provision_workbench(
                 "The postgres app resource cannot be configured."
             )
 
-    # 4. GSO job — find by name; non-CLI caller can pass gso_job_id from notebook-side create
+    # 4. GSO job — CLI/Web Terminal deploy passes the bundle-managed job ID.
     resolved_job_id = gso_job_id or _find_gso_job(w)
     if not resolved_job_id:
         _warn(
-            "GSO optimization job not found. CLI path: ensure bundle deploy ran. "
-            "Notebook path: create via WorkspaceClient.jobs.create(_gso_job_dag(...)) "
-            "and pass gso_job_id=."
+            "GSO optimization job not found. Ensure `databricks bundle deploy -t app` "
+            "ran before provisioning."
         )
 
     # 5. App PATCH: scopes + resources
@@ -630,13 +538,13 @@ def _grant_bundle_dir(w, *, deployer_email: str, sp: str) -> None:
     Bundle deploys write notebooks under
     ``/Workspace/Users/<deployer>/.bundle/genie-workbench/app`` which is
     private by default. The SP needs read access to execute those notebooks.
-    No-op on non-CLI path (bundle never ran, directory doesn't exist).
+    No-op when the bundle directory is absent.
     """
     bundle_root = f"/Workspace/Users/{deployer_email}/.bundle/genie-workbench/app"
     try:
         status = w.workspace.get_status(path=bundle_root)
     except Exception:
-        _log(f"Bundle directory {bundle_root} not present — skipping (non-CLI path)")
+        _log(f"Bundle directory {bundle_root} not present — skipping")
         return
     obj_id = getattr(status, "object_id", None)
     if not obj_id:
@@ -735,7 +643,7 @@ def _grant_genie_spaces(w, sp: str) -> int:
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="setup_workbench",
-        description="Shared Genie Workbench provisioning (CLI + notebook entry point).",
+        description="Shared Genie Workbench provisioning (local CLI + Databricks Web Terminal).",
     )
     p.add_argument("--app-name", required=True)
     p.add_argument("--catalog", required=True)

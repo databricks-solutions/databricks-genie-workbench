@@ -6,12 +6,12 @@ set -euo pipefail
 #
 # Interactive script that:
 #   1. Checks prerequisites (databricks CLI, node, python)
-#   2. Asks for Databricks profile
+#   2. Configures Databricks CLI auth (profile locally, current-user auth in Web Terminal)
 #   3. Asks for catalog (with auto-discovery)
 #   4. Asks for SQL Warehouse (with auto-discovery)
 #   5. Asks for LLM model
 #   6. MLflow tracing (optional — experiment ID for agent observability)
-#   7. Lakebase info (attach manually via Apps UI after deploy)
+#   7. Lakebase project (select existing, create new, or skip)
 #   8. Asks for app name
 #   9. Asks whether to grant SP access to Genie Spaces the user can edit
 #  10. Writes .env.deploy
@@ -122,6 +122,31 @@ _select_from() {
     printf -v "$varname" '%s' "$result"
 }
 
+PROFILE=""
+PROFILE_LABEL=""
+DBX_PROFILE_ARGS=()
+
+_set_databricks_profile() {
+    PROFILE="$1"
+    if [ -n "$PROFILE" ]; then
+        PROFILE_LABEL="$PROFILE"
+        DBX_PROFILE_ARGS=(--profile "$PROFILE")
+    else
+        PROFILE_LABEL="current-user auth (no profile)"
+        DBX_PROFILE_ARGS=()
+    fi
+}
+
+_dbx() {
+    databricks "$@" "${DBX_PROFILE_ARGS[@]}"
+}
+
+_is_databricks_hosted_shell() {
+    [ -n "${DATABRICKS_RUNTIME_VERSION:-}" ] ||
+    [ -n "${DATABRICKS_CLUSTER_ID:-}" ] ||
+    [ -n "${DATABRICKS_SERVERLESS_ENVIRONMENT_VERSION:-}" ]
+}
+
 # ══════════════════════════════════════════════════════════════════════════
 # Step 0: Banner
 # ══════════════════════════════════════════════════════════════════════════
@@ -195,90 +220,107 @@ if [ ${#MISSING[@]} -gt 0 ]; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════
-# Step 2: Databricks profile
+# Step 2: Databricks CLI auth
 # ══════════════════════════════════════════════════════════════════════════
-_header "Step 2: Databricks profile"
+_header "Step 2: Databricks CLI auth"
 
-_info "Discovering configured Databricks profiles..."
-
-# Parse name + auth status from databricks auth profiles
-DEFAULT_VALID="NO"
-LOGGEDIN_NAMES=()
-NOTLOGGEDIN_NAMES=()
-PROFILES_EXIT=0
-PROFILES_OUTPUT=$(databricks auth profiles 2>/dev/null) || PROFILES_EXIT=1
-while IFS= read -r line; do
-    [ -z "$line" ] && continue
-    name=$(echo "$line" | awk '{print $1}')
-    valid=$(echo "$line" | awk '{print $NF}')
-    [ -z "$name" ] && continue
-    if [ "$name" = "DEFAULT" ]; then
-        DEFAULT_VALID="$valid"
-    elif [ "$valid" = "YES" ]; then
-        LOGGEDIN_NAMES+=("$name")
-    else
-        NOTLOGGEDIN_NAMES+=("$name")
-    fi
-done < <(echo "$PROFILES_OUTPUT" | tail -n +2 | grep -v '^$' || true)
-
-# Build ordered selection array: DEFAULT first, then logged-in, then not-logged-in
-ORDERED_PROFILES=("DEFAULT")
-for n in ${LOGGEDIN_NAMES[@]+"${LOGGEDIN_NAMES[@]}"};       do ORDERED_PROFILES+=("$n"); done
-for n in ${NOTLOGGEDIN_NAMES[@]+"${NOTLOGGEDIN_NAMES[@]}"}; do ORDERED_PROFILES+=("$n"); done
-
-if [ "${#ORDERED_PROFILES[@]}" -eq 1 ] && [ "$PROFILES_EXIT" -ne 0 ]; then
-    _warn "Could not list profiles (databricks CLI error). Falling back to DEFAULT."
-fi
-
-# Display with sections
-echo ""
-if [ "$DEFAULT_VALID" = "YES" ]; then
-    echo "    1) DEFAULT  ✓"
+if [ "${GENIE_DEPLOY_PROFILE+x}" = "x" ]; then
+    _set_databricks_profile "$GENIE_DEPLOY_PROFILE"
+    _info "Using GENIE_DEPLOY_PROFILE=${GENIE_DEPLOY_PROFILE:-<empty>} (${PROFILE_LABEL})."
+elif _is_databricks_hosted_shell && databricks current-user me -o json &>/dev/null; then
+    _set_databricks_profile ""
+    _info "Detected Databricks-hosted shell. Using current-user CLI auth."
 else
-    echo "    1) DEFAULT  (not logged in)"
-fi
+    _info "Discovering configured Databricks profiles..."
 
-DISPLAY_IDX=2
-if [ ${#LOGGEDIN_NAMES[@]} -gt 0 ]; then
-    echo ""
-    echo -e "  ${BOLD}Logged in:${NC}"
-    for n in "${LOGGEDIN_NAMES[@]}"; do
-        echo "    $DISPLAY_IDX) $n  ✓"
-        DISPLAY_IDX=$((DISPLAY_IDX + 1))
-    done
-fi
+    # Parse name + auth status from databricks auth profiles
+    DEFAULT_VALID="NO"
+    LOGGEDIN_NAMES=()
+    NOTLOGGEDIN_NAMES=()
+    PROFILES_EXIT=0
+    PROFILES_OUTPUT=$(databricks auth profiles 2>/dev/null) || PROFILES_EXIT=1
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        name=$(echo "$line" | awk '{print $1}')
+        valid=$(echo "$line" | awk '{print $NF}')
+        [ -z "$name" ] && continue
+        if [ "$name" = "DEFAULT" ]; then
+            DEFAULT_VALID="$valid"
+        elif [ "$valid" = "YES" ]; then
+            LOGGEDIN_NAMES+=("$name")
+        else
+            NOTLOGGEDIN_NAMES+=("$name")
+        fi
+    done < <(echo "$PROFILES_OUTPUT" | tail -n +2 | grep -v '^$' || true)
 
-if [ ${#NOTLOGGEDIN_NAMES[@]} -gt 0 ]; then
-    echo ""
-    echo -e "  ${BOLD}Not logged in:${NC}"
-    for n in "${NOTLOGGEDIN_NAMES[@]}"; do
-        echo "    $DISPLAY_IDX) $n"
-        DISPLAY_IDX=$((DISPLAY_IDX + 1))
-    done
-fi
+    # Build ordered selection array: DEFAULT first, then logged-in, then not-logged-in
+    ORDERED_PROFILES=("DEFAULT")
+    for n in ${LOGGEDIN_NAMES[@]+"${LOGGEDIN_NAMES[@]}"};       do ORDERED_PROFILES+=("$n"); done
+    for n in ${NOTLOGGEDIN_NAMES[@]+"${NOTLOGGEDIN_NAMES[@]}"}; do ORDERED_PROFILES+=("$n"); done
 
-echo ""
-TOTAL_PROFILES=${#ORDERED_PROFILES[@]}
-PROFILE=""
-while true; do
-    echo -en "  Select a profile [1-$TOTAL_PROFILES]: "
-    read -r choice
-    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$TOTAL_PROFILES" ]; then
-        PROFILE="${ORDERED_PROFILES[$((choice-1))]}"
-        break
+    if [ "$PROFILES_EXIT" -ne 0 ] && databricks current-user me -o json &>/dev/null; then
+        _set_databricks_profile ""
+        _info "Profile listing is unavailable, but current-user CLI auth works."
+    else
+        if [ "${#ORDERED_PROFILES[@]}" -eq 1 ] && [ "$PROFILES_EXIT" -ne 0 ]; then
+            _warn "Could not list profiles (databricks CLI error). Falling back to DEFAULT."
+        fi
+
+        # Display with sections
+        echo ""
+        if [ "$DEFAULT_VALID" = "YES" ]; then
+            echo "    1) DEFAULT  ✓"
+        else
+            echo "    1) DEFAULT  (not logged in)"
+        fi
+
+        DISPLAY_IDX=2
+        if [ ${#LOGGEDIN_NAMES[@]} -gt 0 ]; then
+            echo ""
+            echo -e "  ${BOLD}Logged in:${NC}"
+            for n in "${LOGGEDIN_NAMES[@]}"; do
+                echo "    $DISPLAY_IDX) $n  ✓"
+                DISPLAY_IDX=$((DISPLAY_IDX + 1))
+            done
+        fi
+
+        if [ ${#NOTLOGGEDIN_NAMES[@]} -gt 0 ]; then
+            echo ""
+            echo -e "  ${BOLD}Not logged in:${NC}"
+            for n in "${NOTLOGGEDIN_NAMES[@]}"; do
+                echo "    $DISPLAY_IDX) $n"
+                DISPLAY_IDX=$((DISPLAY_IDX + 1))
+            done
+        fi
+
+        echo ""
+        TOTAL_PROFILES=${#ORDERED_PROFILES[@]}
+        while true; do
+            echo -en "  Select a profile [1-$TOTAL_PROFILES]: "
+            read -r choice
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$TOTAL_PROFILES" ]; then
+                _set_databricks_profile "${ORDERED_PROFILES[$((choice-1))]}"
+                break
+            fi
+            echo "  Please enter a number between 1 and $TOTAL_PROFILES."
+        done
+        echo ""
     fi
-    echo "  Please enter a number between 1 and $TOTAL_PROFILES."
-done
-echo ""
+fi
 
 # Validate the profile
-if databricks current-user me --profile "$PROFILE" -o json &>/dev/null; then
-    DEPLOYER=$(databricks current-user me --profile "$PROFILE" -o json \
+if _dbx current-user me -o json &>/dev/null; then
+    DEPLOYER=$(_dbx current-user me -o json \
         | python3 -c "import sys,json; print(json.load(sys.stdin)['userName'])")
-    _ok "Authenticated as $DEPLOYER (profile: $PROFILE)"
+    _ok "Authenticated as $DEPLOYER (${PROFILE_LABEL})"
 else
-    _error "Could not authenticate with profile '$PROFILE'."
-    _info "Run: databricks configure --profile $PROFILE"
+    _error "Could not authenticate with Databricks CLI (${PROFILE_LABEL})."
+    if [ -n "$PROFILE" ]; then
+        _info "Run: databricks configure --profile $PROFILE"
+    else
+        _info "In Databricks Web Terminal, run: databricks current-user me"
+        _info "If running locally, set GENIE_DEPLOY_PROFILE to a configured profile."
+    fi
     exit 1
 fi
 
@@ -299,7 +341,7 @@ CATALOG_NAMES=()
 while IFS= read -r name; do
     [ -n "$name" ] && CATALOG_NAMES+=("$name")
 done < <(
-    databricks catalogs list --profile "$PROFILE" -o json 2>/dev/null \
+    _dbx catalogs list -o json 2>/dev/null \
     | python3 -c "
 import sys, json
 try:
@@ -344,7 +386,7 @@ WH_IDS=()
 while IFS='|' read -r wid wlabel; do
     [ -n "$wid" ] && WH_IDS+=("$wid") && WH_LABELS+=("$wlabel")
 done < <(
-    databricks warehouses list --profile "$PROFILE" -o json 2>/dev/null \
+    _dbx warehouses list -o json 2>/dev/null \
     | python3 -c "
 import sys, json
 try:
@@ -427,7 +469,7 @@ case "$MODEL_CHOICE" in
             while IFS= read -r ep; do
                 [ -n "$ep" ] && ALL_ENDPOINTS+=("$ep")
             done < <(
-                databricks serving-endpoints list --profile "$PROFILE" -o json 2>/dev/null \
+                _dbx serving-endpoints list -o json 2>/dev/null \
                 | python3 -c "
 import sys, json
 try:
@@ -481,8 +523,8 @@ if [ "$ENABLE_MLFLOW" = "Y" ]; then
         while IFS='|' read -r eid elabel; do
             [ -n "$eid" ] && EXP_IDS+=("$eid") && EXP_LABELS+=("$elabel")
         done < <(
-            databricks api post /api/2.0/mlflow/experiments/search \
-                --profile "$PROFILE" --json '{"max_results": 50}' -o json 2>/dev/null \
+            _dbx api post /api/2.0/mlflow/experiments/search \
+                --json '{"max_results": 50}' -o json 2>/dev/null \
             | python3 -c "
 import sys, json
 try:
@@ -524,16 +566,14 @@ except: pass
         MLFLOW_CREATE_JSON=$(python3 -c "import json,sys; print(json.dumps({'name': sys.argv[1]}))" "$EXPERIMENT_PATH")
         # Try to create the experiment
         MLFLOW_EXPERIMENT_ID=$(
-            databricks api post /api/2.0/mlflow/experiments/create \
-                --profile "$PROFILE" \
+            _dbx api post /api/2.0/mlflow/experiments/create \
                 --json "$MLFLOW_CREATE_JSON" -o json 2>/dev/null \
             | python3 -c "import sys,json; print(json.load(sys.stdin).get('experiment_id',''))" 2>/dev/null || true
         )
         # If creation failed (e.g. already exists), look it up by name
         if [ -z "$MLFLOW_EXPERIMENT_ID" ]; then
             MLFLOW_EXPERIMENT_ID=$(
-                databricks api post /api/2.0/mlflow/experiments/search \
-                    --profile "$PROFILE" \
+                _dbx api post /api/2.0/mlflow/experiments/search \
                     --json '{"max_results": 100}' -o json 2>/dev/null \
                 | EXPERIMENT_PATH="$EXPERIMENT_PATH" python3 -c "
 import sys, json, os
@@ -570,8 +610,8 @@ echo ""
 _warn "Genie Workbench requires Lakebase Autoscaling (Serverless). Provisioned"
 _warn "Lakebase instances are not supported."
 echo ""
-_info "If you don't have a Lakebase Autoscaling project yet, you can skip this"
-_info "step and create one later via the Databricks UI (SQL → Lakebase)."
+_info "Choose an existing Lakebase project, create a new one during deploy,"
+_info "or skip this step and use in-memory fallback."
 echo ""
 
 _info "Discovering available Lakebase Autoscaling projects..."
@@ -579,7 +619,7 @@ LB_NAMES=()
 while IFS= read -r name; do
     [ -n "$name" ] && LB_NAMES+=("$name")
 done < <(
-    databricks api get /api/2.0/postgres/projects --profile "$PROFILE" -o json 2>/dev/null \
+    _dbx api get /api/2.0/postgres/projects -o json 2>/dev/null \
     | python3 -c "
 import sys, json
 try:
@@ -604,19 +644,42 @@ LB_OPTIONS=()
 if [ ${#LB_NAMES[@]} -gt 0 ]; then
     LB_OPTIONS+=("${LB_NAMES[@]}")
 fi
-LB_OPTIONS+=("Skip — use in-memory fallback (history lost on restart)")
+CREATE_LAKEBASE_OPTION="Create new Lakebase Autoscaling project during deploy"
+SKIP_LAKEBASE_OPTION="Skip — use in-memory fallback (history lost on restart)"
+LB_OPTIONS+=("$CREATE_LAKEBASE_OPTION")
+LB_OPTIONS+=("$SKIP_LAKEBASE_OPTION")
 
 if [ ${#LB_NAMES[@]} -gt 0 ]; then
     _info "Available Lakebase Autoscaling projects:"
 else
-    _info "No Lakebase Autoscaling projects found. You can skip for now and create"
-    _info "one in the Databricks UI (SQL → Lakebase), then re-run ./scripts/deploy.sh."
+    _info "No Lakebase Autoscaling projects found."
 fi
 _select_from LB_CHOICE "Select a Lakebase Autoscaling project" "${LB_OPTIONS[@]}"
 
-if [[ "$LB_CHOICE" == "Skip — use in-memory fallback (history lost on restart)" ]]; then
+if [[ "$LB_CHOICE" == "$SKIP_LAKEBASE_OPTION" ]]; then
     LAKEBASE_INSTANCE=""
     _warn "Skipping Lakebase. Scan history and stars will not persist across restarts."
+elif [[ "$LB_CHOICE" == "$CREATE_LAKEBASE_OPTION" ]]; then
+    echo ""
+    _info "The new Lakebase project will be created during deploy."
+    _info "Use lowercase letters, numbers, and hyphens."
+    while true; do
+        _prompt LAKEBASE_INSTANCE "New Lakebase project name" "genie-workbench-lakebase"
+        if [[ ! "$LAKEBASE_INSTANCE" =~ ^[a-z]([a-z0-9-]*[a-z0-9])?$ ]]; then
+            _error "Lakebase project name must start with a lowercase letter and contain only lowercase letters, numbers, and hyphens."
+            continue
+        fi
+        if [ "${#LAKEBASE_INSTANCE}" -gt 63 ]; then
+            _error "Lakebase project name must be 63 characters or fewer."
+            continue
+        fi
+        if [[ " ${LB_NAMES[*]} " == *" $LAKEBASE_INSTANCE "* ]]; then
+            _warn "A Lakebase project named '$LAKEBASE_INSTANCE' already exists; selecting it."
+        else
+            _ok "Lakebase Autoscaling project will be created: $LAKEBASE_INSTANCE"
+        fi
+        break
+    done
 else
     LAKEBASE_INSTANCE="$LB_CHOICE"
     _ok "Lakebase Autoscaling project: $LAKEBASE_INSTANCE"
@@ -701,7 +764,7 @@ EOF
 _ok "Configuration written to .env.deploy"
 echo ""
 echo "  ┌─ Configuration Summary ───────────────────────────────────┐"
-echo "  │  Profile:      $PROFILE"
+echo "  │  Profile:      $PROFILE_LABEL"
 echo "  │  App name:     $APP_NAME"
 echo "  │  Catalog:      $CATALOG"
 echo "  │  GSO Schema:   ${CATALOG}.${GSO_SCHEMA} (default)"
@@ -731,14 +794,14 @@ fi
 
 # Resolve SP for the summary banner (deploy.sh already configured permissions)
 SP_CLIENT_ID=$(
-    databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null \
+    _dbx apps get "$APP_NAME" -o json 2>/dev/null \
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('service_principal_client_id','') or d.get('service_principal_name',''))" \
     2>/dev/null || true
 )
 SP_DISPLAY_NAME=""
 if [ -n "$SP_CLIENT_ID" ]; then
     SP_DISPLAY_NAME=$(
-        databricks service-principals list --profile "$PROFILE" -o json 2>/dev/null \
+        _dbx service-principals list -o json 2>/dev/null \
         | python3 -c "
 import sys, json
 sp_id = '$SP_CLIENT_ID'
@@ -763,7 +826,7 @@ echo -e "${GREEN}${BOLD}  Installation complete!${NC}"
 echo ""
 
 # Try to get the app URL
-APP_URL=$(databricks apps get "$APP_NAME" --profile "$PROFILE" -o json 2>/dev/null \
+APP_URL=$(_dbx apps get "$APP_NAME" -o json 2>/dev/null \
     | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('url',''))" 2>/dev/null || true)
 
 echo "  App:       $APP_NAME"
@@ -783,7 +846,11 @@ echo -e "  ${GREEN}${BOLD}Automated (done):${NC}"
 echo -e "    ${GREEN}✓${NC} OAuth scopes + app resources (sql-warehouse, postgres)"
 echo -e "    ${GREEN}✓${NC} GSO optimization job (bundle-managed)"
 echo -e "    ${GREEN}✓${NC} UC grants on ${CATALOG}.${GSO_SCHEMA}"
-echo -e "    ${GREEN}✓${NC} Lakebase project + SP role + database grants"
+if [ -n "$LAKEBASE_INSTANCE" ]; then
+    echo -e "    ${GREEN}✓${NC} Lakebase project + app resource + SP role + database grants"
+else
+    echo -e "    ${YELLOW}•${NC} Lakebase skipped (in-memory fallback)"
+fi
 if [ "$GRANT_SPACES" = "Y" ]; then
     echo -e "    ${GREEN}✓${NC} Genie Space SP access (all user-editable spaces)"
 fi

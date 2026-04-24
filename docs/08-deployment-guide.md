@@ -6,9 +6,9 @@ optimization job, and same resources:
 
 - **CLI path** (this guide): laptop-driven. Requires the Databricks CLI,
   Node.js, `uv`, and shell access. Faster iteration once set up.
-- **Non-CLI path**: entirely inside the Databricks UI — clone into a Git
-  folder, run a setup notebook on serverless compute, then deploy from
-  the Apps UI. See [non-cli-install.md](non-cli-install.md).
+- **Web Terminal path**: runs the same scripts from Databricks Web
+  Terminal when local VM policy blocks Databricks CLI usage. See
+  [web-terminal-install.md](web-terminal-install.md).
 
 Both paths call the same shared provisioning module
 (`scripts/setup_workbench.py`) for UC grants, Lakebase, Apps PATCH, and
@@ -25,6 +25,7 @@ Genie Space permissions.
   - Apps enabled
   - A SQL Warehouse (Serverless recommended)
   - A Unity Catalog with CREATE SCHEMA permission
+  - Permission to create or use a Lakebase Autoscaling project for persistent scan history and sessions
   - MLflow Prompt Registry enabled (required for Auto-Optimize judge prompts)
 
 ## First-Time Setup
@@ -58,7 +59,7 @@ The installer will:
 4. Ask for SQL warehouse (auto-discovered)
 5. Ask for LLM model endpoint
 6. Optionally configure MLflow tracing (creates or links an experiment)
-7. Ask for Lakebase Autoscaling project name
+7. Select an existing Lakebase Autoscaling project, create a new one, or skip persistence
 8. Ask for app name
 9. Ask whether to grant the SP access to your existing Genie Spaces
 10. Write `.env.deploy` with your configuration
@@ -66,33 +67,65 @@ The installer will:
 
 Under the hood, `deploy.sh` delegates UC grants, Lakebase provisioning,
 Apps PATCH, `app.yaml` patching, job permissions, bundle-directory
-grants, and Genie Space grants to `scripts/setup_workbench.py` — the
-same module the non-CLI install notebook uses.
+grants, and Genie Space grants to `scripts/setup_workbench.py`. The same
+deploy flow runs locally and from Databricks Web Terminal.
 
-### 4. Lakebase (automated)
+### 4. Lakebase (optional project)
 
 Lakebase provides persistent storage for scan history, starred spaces, and agent sessions. Without it, the app uses in-memory storage (data lost on restart).
 
-**Lakebase setup is fully automated by `setup_workbench.py`** (driven by
-`deploy.sh` on the CLI path, or the setup notebook on the non-CLI path):
+The guided installer discovers existing Lakebase Autoscaling projects in your
+workspace and also offers to create a new project during deploy. If you choose
+to skip Lakebase, the app still deploys but history and starred spaces are
+stored only in memory.
 
-- Creates a Lakebase Autoscaling project via the SDK
-  (`scripts/setup_lakebase.py`, reused as a library)
+**For a selected or newly named Lakebase project, setup is automated by
+`setup_workbench.py`** (driven by `deploy.sh` on both the local CLI path and
+the Web Terminal path):
+
+- Creates the Lakebase Autoscaling project if it does not exist
 - Creates a Postgres role for the app's service principal
 - Grants database permissions (CONNECT, CREATE ON DATABASE)
 - Attaches the `postgres` resource to the app via the Apps API
 
-The app creates the `genie` schema and tables on first startup. Since the SP executes the DDL, it owns all objects — no manual grants needed.
+The app creates the `genie` schema and tables on first startup. Since the SP executes the DDL, it owns all objects — no manual grants are needed for a fresh Lakebase project.
 
-The installer asks for a Lakebase project name (defaults to the app name, stored as `GENIE_LAKEBASE_INSTANCE` in `.env.deploy`). No manual steps required.
+The installer writes the project name as `GENIE_LAKEBASE_INSTANCE` in
+`.env.deploy`. If you skip Lakebase during install, set
+`GENIE_LAKEBASE_INSTANCE` later and run `./scripts/deploy.sh --update`.
 
 > **Note:** The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv sync`). If unavailable, the script prints the commands to run manually in the Lakebase SQL Editor.
+
+### Lakebase reuse and app identity
+
+Lakebase app state is tied to the Databricks App service principal that first
+created the `genie` schema. For normal updates, keep `GENIE_APP_NAME`
+unchanged and run:
+
+```bash
+./scripts/deploy.sh --update
+```
+
+Do not point a new app instance at a Lakebase project that already contains a
+`genie` schema from an older app instance. A new Databricks App gets a new
+service principal, so existing tables and sequences can remain owned by the
+old app principal. In that state, app startup may log owner-only maintenance
+warnings and IQ scans can fail with:
+
+```text
+permission denied for sequence scan_results_id_seq
+```
+
+If you need a new app instance, set `GENIE_LAKEBASE_INSTANCE` to a fresh
+Lakebase project name. Cross-app Lakebase reuse is not a supported install
+path unless a Lakebase project owner or workspace admin deliberately migrates
+ownership of the existing `genie` schema, tables, and sequences.
 
 ## What `deploy.sh` Does
 
 ### Full Deploy (9 steps)
 
-1. **Pre-flight checks** — validates tools, CLI profile, warehouse, catalog, app state
+1. **Pre-flight checks** — validates tools, CLI auth, warehouse, catalog, app state
 2. **Build frontend** — `npm ci` + `npm run build` (strict lockfile)
 3. **Create app** — `databricks apps create` (skipped if app already exists)
 4. **Sync files** — `databricks sync --full` + explicit `frontend/dist/` upload
@@ -140,9 +173,9 @@ Set these in `.env.deploy` or as environment variables:
 | `GENIE_WAREHOUSE_ID` | Yes | — | SQL Warehouse ID |
 | `GENIE_CATALOG` | Yes | — | Unity Catalog name (needs CREATE SCHEMA) |
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (unique in workspace) |
-| `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
+| `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name; set to empty string for Web Terminal current-user auth |
 | `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint |
-| `GENIE_LAKEBASE_INSTANCE` | No | `<app-name>` | Lakebase Autoscaling project name (auto-provisioned by deploy) |
+| `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project to use or create; keep stable for the same app, use a fresh project for a new app instance |
 
 ## Manual Setup (without installer)
 
@@ -155,7 +188,7 @@ cat > .env.deploy <<'EOF'
 GENIE_WAREHOUSE_ID=<your-sql-warehouse-id>
 GENIE_CATALOG=<your-catalog-name>
 GENIE_APP_NAME=genie-workbench
-GENIE_DEPLOY_PROFILE=genie-workbench
+GENIE_DEPLOY_PROFILE=genie-workbench  # use "" in Databricks Web Terminal
 GENIE_LLM_MODEL=databricks-claude-sonnet-4-6
 GENIE_LAKEBASE_INSTANCE=genie-workbench
 EOF
