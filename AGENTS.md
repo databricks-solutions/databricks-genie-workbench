@@ -182,7 +182,7 @@ attacks like the litellm PyPI credential stealer (March 2026) and axios npm RAT
 - **Two separate optimization paths** — Quick Fix (`fix_agent.py`, from scan findings, auto-applies JSON patches) and Auto-Optimize (`auto_optimize.py` + GSO engine in `packages/genie-space-optimizer/`, full benchmark-driven optimization pipeline). They're independent.
 - **Vite proxy** — dev frontend at :5173 proxies `/api` to :8000. In production, FastAPI serves static files from `frontend/dist/` directly.
 - **Python 3.11+** required (`pyproject.toml`). Uses `uv` for dependency management (`uv.lock` present).
-- **Root `package.json`** exists solely as a build hook for Databricks Apps. `postinstall` is a no-op (frontend deps are installed by `deploy.sh` locally). `build` checks for pre-built `frontend/dist/index.html` — if present (uploaded by `deploy.sh`), skips the rebuild; falls back to a full build only if dist is missing. This prevents cross-platform Rollup failures on the Linux deploy container.
+- **Root `package.json`** exists solely as a build hook for Databricks Apps. `postinstall` is a no-op. `build` checks for pre-built `frontend/dist/index.html` — if present (uploaded by `deploy.sh`), skips the rebuild; if dist is missing, runs `cd frontend && npm ci && npm run build`. This keeps CLI deploy fast while allowing workspace-folder deploys from fresh clones.
 - **Two deployment mechanisms** — `deploy.sh` manages the app (create, sync, `databricks apps deploy`) while the optimization job is managed by DABs (`databricks bundle deploy -t app`). The `app` target uses `mode: development` for per-deployer Terraform state with `presets.name_prefix: ""` for clean job names (no `[dev]` prefix). Do NOT run `databricks bundle deploy -t dev` for production — it creates prefixed orphan jobs.
 - **Databricks CLI >= 0.297.2 required** — `preflight.sh` validates this automatically.
 - **`--destroy` does not remove all resources** — it deletes the app and jobs but leaves behind: Lakebase data (`genie` schema), UC schema/tables (`<catalog>.genie_space_optimizer`), Genie Space SP permissions, MLflow experiments, and synced tables. Clean these up manually if needed.
@@ -194,8 +194,8 @@ attacks like the litellm PyPI credential stealer (March 2026) and axios npm RAT
 
 The Databricks Apps platform detects `package.json` at the root and runs `npm install` then `npm run build`. To avoid cross-platform failures (macOS lockfile vs Linux container) and redundant rebuilds, the root `package.json` is configured as follows:
 
-- **`postinstall`**: No-op. Frontend deps are installed by `deploy.sh` locally.
-- **`build`**: Checks for pre-built `frontend/dist/index.html`. If present (uploaded by `deploy.sh`), skips the rebuild. Falls back to a full build only if dist is missing.
+- **`postinstall`**: No-op. It does not invoke nested npm commands during `npm install`.
+- **`build`**: Checks for pre-built `frontend/dist/index.html`. If present (uploaded by `deploy.sh`), skips the rebuild. If dist is missing, runs `cd frontend && npm ci && npm run build`.
 - **`start`**: Runs uvicorn (though `app.yaml` `command` takes precedence).
 
 Python dependencies use `uv sync` on the platform (because `requirements.txt` is excluded from `.databricksignore`). This gives a clean venv with SHA256-verified hashes, avoiding conflicts with pre-installed platform packages (dash, gradio, streamlit, etc.).

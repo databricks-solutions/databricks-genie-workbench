@@ -63,10 +63,10 @@ Security is preserved because:
 
 * [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.297.2+ required)
 * [uv](https://docs.astral.sh/uv/) — Python package manager (used for dependency management and hash-verified installs)
-* Node.js (18+ recommended) and npm
+* Node.js (^20.19.0 or >=22.12.0) and npm
 * Python 3.11+
 
-> **Databricks internal users:** before running `./scripts/install.sh`, make sure your `uv`/`pip` and `npm` clients are configured for public registry access.
+> **Registry access:** npm lockfiles are registry-neutral. Databricks internal users can keep `npm config set registry https://npm-proxy.dev.databricks.com/`; external users should use `npm config set registry https://registry.npmjs.org/`. Do not commit private registry hosts into lockfiles.
 
 * A Databricks workspace with:
   * Apps enabled
@@ -286,6 +286,7 @@ which targeted unpinned PyPI packages and GitHub Action tags).
 | `uv.lock` | All root Python transitive deps with SHA256 hashes | uv |
 | `packages/genie-space-optimizer/uv.lock` | GSO Python deps with SHA256 hashes | uv |
 | `frontend/package-lock.json` | All frontend npm deps with SHA-512 integrity hashes | npm |
+| `packages/genie-space-optimizer/package-lock.json` | GSO UI npm deps with SHA-512 integrity hashes | npm |
 | `packages/genie-space-optimizer/bun.lock` | GSO UI deps | bun |
 
 ### Updating Python dependencies
@@ -313,6 +314,8 @@ npm install <package>@<new-version>   # resolves and updates package-lock.json
 # Then update package.json to exact version (remove the ^ prefix)
 git add package.json package-lock.json  # always commit both together
 ```
+
+Keep `omit-lockfile-registry-resolved=true` in project `.npmrc` files so future lockfile updates do not commit private registry hosts. Public `registry.npmjs.org` lockfile URLs are safe because npm can rewrite them to the configured registry; internal and external users should still select their registry in user/global npm config, not by editing committed lockfiles.
 
 ### Why `npm ci` instead of `npm install` in deploys
 

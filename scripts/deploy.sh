@@ -174,6 +174,7 @@ echo ""
 echo "▸ Step 1/$TOTAL_STEPS: Pre-flight checks..."
 _preflight_check_tools
 _preflight_check_venv
+_preflight_check_npm_lockfiles
 _preflight_check_npm_registry
 _preflight_check_profile "$PROFILE"
 
@@ -196,11 +197,12 @@ if ! (cd "$PROJECT_DIR/frontend" && npm ci && npm run build); then
     echo ""
     echo "  See npm's error output above for the root cause."
     echo "  Common causes:"
-    echo "    - Internal npm mirror missing a package or hash-mismatching"
-    echo "      (npm config set registry https://registry.npmjs.org/)"
+    echo "    - npm registry unreachable from this network"
+    echo "      Databricks internal: npm config set registry https://npm-proxy.dev.databricks.com/"
+    echo "      External/customer:  npm config set registry https://registry.npmjs.org/"
     echo "    - Rollup platform binary missing after npm ci"
     echo "      (rm -rf frontend/node_modules && cd frontend && npm ci)"
-    echo "    - Node version too old (require >= 18)"
+    echo "    - Node version too old or unsupported (require ^20.19.0 or >=22.12.0)"
     exit 1
 fi
 if [ ! -f "$PROJECT_DIR/frontend/dist/index.html" ]; then

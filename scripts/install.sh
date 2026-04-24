@@ -153,9 +153,17 @@ fi
 
 if command -v node &>/dev/null; then
     NODE_VERSION=$(node --version 2>/dev/null || echo "unknown")
-    _ok "Node.js ($NODE_VERSION)"
+    if node -e '
+const [major, minor] = process.versions.node.split(".").map(Number);
+const supported = (major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major > 22;
+process.exit(supported ? 0 : 1);
+'; then
+        _ok "Node.js ($NODE_VERSION)"
+    else
+        MISSING+=("Node.js ^20.19.0 or >=22.12.0 — https://nodejs.org/ (found $NODE_VERSION)")
+    fi
 else
-    MISSING+=("Node.js — https://nodejs.org/")
+    MISSING+=("Node.js ^20.19.0 or >=22.12.0 — https://nodejs.org/")
 fi
 
 if command -v python3 &>/dev/null; then

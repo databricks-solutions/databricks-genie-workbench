@@ -75,6 +75,8 @@ update the app going forward.
    - `PATCH`es the app with OAuth scopes and resources (`sql-warehouse`,
      `postgres`).
    - Writes a placeholder-substituted `app.yaml` into the workspace folder.
+   - Moves `requirements.txt` aside in the workspace folder so Apps uses
+     `pyproject.toml` + `uv.lock` instead of pip.
    - Grants the SP `CAN_EDIT` on your Genie Spaces (if `grant_genie_spaces=Y`).
 4. Confirm the last cell prints **"Provisioning complete — finish the
    install in the Apps UI"**. Copy the listed **workspace folder** path;
@@ -89,8 +91,12 @@ update the app going forward.
    `/Workspace/Users/you@company.com/databricks-genie-workbench`).
 5. Click **Deploy**.
 
-The Apps platform runs `npm ci && npm run build` (frontend) and `uv sync`
-(Python deps) inside the app container. First deploy takes 3–5 minutes.
+The Apps platform runs root `npm install`, then root `npm run build`.
+When `frontend/dist` is absent, the root build script runs
+`cd frontend && npm ci && npm run build`. The setup notebook moves the
+pip-compatible `requirements.txt` reference file aside before this step so
+the workspace-folder path uses the same `uv` install path as CLI deploy.
+First deploy takes 3–5 minutes.
 Subsequent deploys are faster because `node_modules/` and the virtualenv
 are cached.
 

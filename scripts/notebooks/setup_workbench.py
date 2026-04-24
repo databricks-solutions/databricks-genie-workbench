@@ -105,7 +105,31 @@ print(f"Workspace folder: {workspace_folder}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 4. Import `setup_workbench` from the workspace folder
+# MAGIC ## 4. Prepare dependency files for Apps deploy
+# MAGIC
+# MAGIC Workspace Git folders include `requirements.txt`, but Databricks Apps
+# MAGIC treats that as a signal to use pip. Move the pip-compatible reference
+# MAGIC file aside so Apps uses `pyproject.toml` + `uv.lock`, matching the CLI
+# MAGIC deploy path.
+
+# COMMAND ----------
+import os
+
+requirements_path = f"{workspace_folder}/requirements.txt"
+disabled_requirements_path = f"{workspace_folder}/requirements.txt.reference"
+
+if os.path.exists(requirements_path):
+    os.replace(requirements_path, disabled_requirements_path)
+    print(
+        "Moved requirements.txt aside for Apps deploy: "
+        f"{disabled_requirements_path}"
+    )
+else:
+    print("requirements.txt is already absent; Apps deploy will use uv.")
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## 5. Import `setup_workbench` from the workspace folder
 
 # COMMAND ----------
 import sys
@@ -129,7 +153,7 @@ print(f"Authenticated as: {me.user_name}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 5. Ensure the app exists
+# MAGIC ## 6. Ensure the app exists
 # MAGIC
 # MAGIC Creates the app (and its service principal) if it doesn't already exist.
 # MAGIC Waits up to 2 minutes for the SP to be provisioned.
@@ -174,7 +198,7 @@ print(f"App SP: {sp_client_id}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 6. Grant SP read access on the workspace folder
+# MAGIC ## 7. Grant SP read access on the workspace folder
 # MAGIC
 # MAGIC The app needs `CAN_READ` on the repo workspace folder so the Apps
 # MAGIC platform can deploy from it, and the GSO job's SP can execute its
@@ -202,13 +226,12 @@ except Exception as e:
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 7. Build the GSO optimization wheel
+# MAGIC ## 8. Build the GSO optimization wheel
 # MAGIC
 # MAGIC The GSO package is source-controlled but deployed as a wheel for faster
 # MAGIC job startup. This cell builds it in-place under the workspace folder.
 
 # COMMAND ----------
-import os
 import subprocess
 
 pkg_dir = f"{workspace_folder}/packages/genie-space-optimizer"
@@ -235,7 +258,7 @@ print(f"Built: {wheel_path}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 8. Create or update the GSO optimization job
+# MAGIC ## 9. Create or update the GSO optimization job
 # MAGIC
 # MAGIC Uses the 6-task DAG defined in `scripts/setup_workbench.py` (single
 # MAGIC source of truth for the non-CLI path). If a job with the target name
@@ -270,7 +293,7 @@ print(f"GSO job id: {gso_job_id}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 9. Provision everything else
+# MAGIC ## 10. Provision everything else
 # MAGIC
 # MAGIC UC schema/tables/grants, Lakebase project/role/grants, Apps PATCH,
 # MAGIC `app.yaml` placeholder substitution, GSO job permissions, Genie
@@ -292,7 +315,7 @@ result = provision_workbench(
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## 10. Next steps — deploy from the Apps UI
+# MAGIC ## 11. Next steps — deploy from the Apps UI
 
 # COMMAND ----------
 import json as _json
@@ -306,8 +329,9 @@ print(f"  2. Click:     Deploy → Deploy from a workspace folder")
 print(f"  3. Folder:    {workspace_folder}")
 print(f"  4. Click:     Deploy")
 print()
-print("  The Apps platform will run `npm ci && npm run build` (frontend)")
-print("  and `uv sync` (backend) on first deploy — this takes ~3-5 minutes.")
+print("  The Apps platform will run root `npm install`, then root `npm run build`.")
+print("  If frontend/dist is missing, root build runs frontend `npm ci && npm run build`.")
+print("  Python dependencies use `uv sync` — first deploy takes ~3-5 minutes.")
 print()
 print("  After the app is RUNNING, open the URL printed in the Apps UI to")
 print("  verify IQ Scan, Create Agent, and Auto-Optimize all work.")

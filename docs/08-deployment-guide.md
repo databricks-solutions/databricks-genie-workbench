@@ -18,9 +18,9 @@ Genie Space permissions.
 
 - [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) **v0.297.2+** (validated by preflight)
 - [uv](https://docs.astral.sh/uv/) — Python package manager
-- Node.js 18+ and npm
+- Node.js ^20.19.0 or >=22.12.0 and npm
 - Python 3.11+
-- **Network access to `registry.npmjs.org`** — required to install frontend npm dependencies during the build step. If you are behind a corporate firewall or VPN that blocks this, you must either allowlist `registry.npmjs.org` or connect via a network that permits outbound HTTPS to it. The deploy script validates this connectivity during pre-flight checks.
+- **Network access to your configured npm registry** — required to install frontend npm dependencies during the build step. Databricks internal users can use `npm config set registry https://npm-proxy.dev.databricks.com/`; external users should use `npm config set registry https://registry.npmjs.org/`. The deploy script validates this connectivity during pre-flight checks.
 - A Databricks workspace with:
   - Apps enabled
   - A SQL Warehouse (Serverless recommended)
@@ -171,8 +171,8 @@ EOF
 
 The Databricks Apps platform detects `package.json` at the root and runs `npm install` then `npm run build`. To avoid cross-platform failures and redundant rebuilds:
 
-- **Root `postinstall`**: No-op. Frontend deps are installed by `deploy.sh` locally.
-- **Root `build`**: Checks for pre-built `frontend/dist/index.html`. If present (uploaded by `deploy.sh`), skips the rebuild. Falls back to a full build only if dist is missing.
+- **Root `postinstall`**: No-op. It does not invoke nested npm commands during `npm install`.
+- **Root `build`**: Checks for pre-built `frontend/dist/index.html`. If present (uploaded by `deploy.sh`), skips the rebuild. If dist is missing, runs `cd frontend && npm ci && npm run build`.
 - **Python deps**: Use `uv sync` on the platform (because `requirements.txt` is excluded via `.databricksignore`). This gives a clean venv with SHA256-verified hashes.
 
 ## Dependency Security
@@ -184,6 +184,7 @@ All dependencies are pinned to exact versions with integrity hashes. Lock files 
 | `uv.lock` | Root Python transitive deps | SHA256 hashes |
 | `packages/genie-space-optimizer/uv.lock` | GSO Python deps | SHA256 hashes |
 | `frontend/package-lock.json` | Frontend npm deps | SHA-512 integrity |
+| `packages/genie-space-optimizer/package-lock.json` | GSO UI npm deps | SHA-512 integrity |
 | `packages/genie-space-optimizer/bun.lock` | GSO UI deps | Integrity hashes |
 
 ### Updating Python dependencies
@@ -204,6 +205,8 @@ npm install <package>@<new-version>
 # Update package.json to exact version (remove ^ prefix)
 git add package.json package-lock.json
 ```
+
+Committed npm lockfiles must stay registry-neutral. Keep `omit-lockfile-registry-resolved=true` in project `.npmrc` files so future updates do not commit private registry hosts. Public `registry.npmjs.org` lockfile URLs are safe because npm can rewrite them to the configured registry; configure private/public npm registry hosts in user or global npm config only.
 
 ## Typical Workflow
 
