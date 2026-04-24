@@ -3100,7 +3100,7 @@ def _recover_trace_map_via_tags(
             f"tags.`genie.iteration` = '{iteration}'",
         ]
         traces_df = mlflow.search_traces(
-            experiment_ids=[experiment_id],
+            locations=[experiment_id],
             filter_string=" AND ".join(filter_parts),
             max_results=max(500, expected_count * 2),
         )
@@ -3125,7 +3125,7 @@ def _recover_trace_map_via_time_window(
         return {}
     try:
         traces_df = mlflow.search_traces(
-            experiment_ids=[experiment_id],
+            locations=[experiment_id],
             filter_string=f"attributes.timestamp_ms >= {int(start_time_ms)}",
             max_results=max(500, expected_count * 2),
         )
@@ -3674,6 +3674,19 @@ def _drop_benchmark_table(spark: SparkSession, uc_table_name: str) -> None:
         logger.warning("Could not drop benchmark table %s (may not exist)", uc_table_name, exc_info=True)
 
 
+# Judges that ``_compute_arbiter_adjusted_accuracy`` and per_judge aggregation
+# will flip from FAIL to PASS when the arbiter rules for Genie. Keep in sync
+# with ``_ARBITER_ADJUSTABLE_JUDGES`` below (duplicated at module scope so the
+# display helper doesn't reach into run_evaluation()'s inner locals).
+_ARBITER_ADJUSTABLE_DISPLAY_JUDGES = frozenset({
+    "result_correctness",
+    "schema_accuracy",
+    "logical_accuracy",
+    "semantic_equivalence",
+    "completeness",
+})
+
+
 _JUDGE_ORDER = [
     "syntax_validity", "schema_accuracy", "logical_accuracy",
     "semantic_equivalence", "completeness", "response_quality",
@@ -3961,8 +3974,15 @@ def _print_eval_summary(
             else:
                 verdict_label = val_str or "n/a"
 
+            override_suffix = ""
+            if (
+                verdict_label == "FAIL"
+                and judge in _ARBITER_ADJUSTABLE_DISPLAY_JUDGES
+                and arbiter_val in ("genie_correct", "both_correct")
+            ):
+                override_suffix = "  (arbiter override → counts as PASS)"
             rat_suffix = f"  -- {short_rat}" if short_rat and verdict_label not in ("PASS", "n/a") else ""
-            lines.append(f"|   {judge:<24s} {verdict_label}{rat_suffix}")
+            lines.append(f"|   {judge:<24s} {verdict_label}{override_suffix}{rat_suffix}")
 
         lines.append("-" * width)
 
@@ -4017,12 +4037,41 @@ def _print_eval_summary(
     adj_accuracy = _adj_result.accuracy_pct
     adj_failures = _adj_result.failure_ids
     adj_excluded = _adj_result.excluded_count
-    rc_raw = scores_100.get("result_correctness", 0.0)
+    rc_adjusted_pct = scores_100.get("result_correctness", 0.0)
+
+    # Compute a TRULY pre-arbiter result_correctness (the value users expect
+    # when they see "raw"): count the raw yes/no verdict without any arbiter
+    # rescue. Mirror the exclusion logic used by the arbiter-adjusted branch
+    # so both denominators are directly comparable.
+    _rc_pre_total = 0
+    _rc_pre_correct = 0
+    for _r in rows:
+        _val = str(_r.get("result_correctness/value", "")).lower()
+        if _val == "excluded":
+            continue
+        _err_type = str(
+            _r.get("outputs/comparison/error_type")
+            or _r.get("comparison/error_type")
+            or _r.get("comparison.error_type")
+            or ""
+        ).lower()
+        if _err_type in ("both_empty", "genie_result_unavailable"):
+            continue
+        _rc_pre_total += 1
+        if _val in ("yes", "true", "1", "1.0"):
+            _rc_pre_correct += 1
+    rc_pre_arbiter_pct = (
+        round(100 * _rc_pre_correct / _rc_pre_total, 1) if _rc_pre_total else 0.0
+    )
+
     lines.append(f"|")
     lines.append(
         f"|   Overall accuracy: {adj_accuracy:.1f}% "
-        f"({_adj_result.correct_count}/{_adj_result.evaluated_count})  "
-        f"(result_correctness raw: {rc_raw:.1f}%)"
+        f"({_adj_result.correct_count}/{_adj_result.evaluated_count})"
+    )
+    lines.append(
+        f"|   result_correctness (pre-arbiter): {rc_pre_arbiter_pct:.1f}%  "
+        f"(arbiter-adjusted: {rc_adjusted_pct:.1f}%)"
     )
     if adj_excluded:
         lines.append(f"|   Excluded (GT infra / both-empty / unavailable): {adj_excluded}")

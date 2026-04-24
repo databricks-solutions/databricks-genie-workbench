@@ -178,3 +178,65 @@ def test_qid_extraction_from_nested_inputs():
     fake = SimpleNamespace(tables={"eval_results": df})
     recovered = ev._recover_trace_map_via_eval_results(fake)
     assert recovered == {"nested-qid": "t-1"}
+
+
+def test_strategy_1_uses_locations_kwarg_not_experiment_ids():
+    """``mlflow.search_traces(experiment_ids=)`` is deprecated.
+
+    Strategy 1 (tags) must call ``search_traces`` with ``locations=``.
+    If anyone reintroduces ``experiment_ids=``, this test fails.
+    """
+    traces = _traces_df([{"trace_id": "t-1", "tags": {"question_id": "q1"}}])
+    with patch.object(
+        ev.mlflow, "search_traces", return_value=traces
+    ) as search, patch.object(ev.mlflow, "log_metric"):
+        ev._recover_trace_map(
+            experiment_id="exp-42",
+            optimization_run_id="opt-1",
+            iteration=1,
+            expected_count=1,
+        )
+
+    assert search.call_count == 1
+    kwargs = search.call_args.kwargs
+    assert kwargs.get("locations") == ["exp-42"]
+    assert "experiment_ids" not in kwargs
+
+
+def test_strategy_2_uses_locations_kwarg_not_experiment_ids():
+    """Strategy 2 (time_window) must also migrate to ``locations=``."""
+    empty = _traces_df([])
+    tw_traces = _traces_df(
+        [{"trace_id": "t-9", "tags": {"question_id": "q-recovered"}}]
+    )
+    with patch.object(
+        ev.mlflow, "search_traces", side_effect=[empty, tw_traces]
+    ) as search, patch.object(ev.mlflow, "log_metric"):
+        ev._recover_trace_map(
+            experiment_id="exp-42",
+            optimization_run_id="opt-1",
+            iteration=1,
+            expected_count=1,
+            start_time_ms=1_700_000_000_000,
+        )
+
+    assert search.call_count == 2
+    kwargs_s2 = search.call_args_list[1].kwargs
+    assert kwargs_s2.get("locations") == ["exp-42"]
+    assert "experiment_ids" not in kwargs_s2
+
+
+def test_evaluation_module_has_no_experiment_ids_kwarg():
+    """Source-level guard — no mlflow.search_traces call uses experiment_ids=.
+
+    Complements the two call-site assertions above by scanning the module
+    source: it catches any future regression where someone adds a third
+    ``search_traces`` call with the deprecated kwarg.
+    """
+    import pathlib
+
+    src = pathlib.Path(ev.__file__).read_text()
+    assert "experiment_ids=" not in src, (
+        "mlflow.search_traces now takes `locations=`; don't reintroduce "
+        "the deprecated `experiment_ids=` kwarg."
+    )

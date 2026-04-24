@@ -1102,8 +1102,17 @@ def preflight_collect_uc_metadata(
         for c in uc_columns_dicts if isinstance(c, dict) and c.get("table_name")
     }
 
+    _n_tables = len(config.get("_tables", []) or [])
+    _n_mvs = len(config.get("_metric_views", []) or [])
+    _n_funcs = len(config.get("_functions", []) or [])
+
     _lines = [_pf_section("PREFLIGHT — UC METADATA COLLECTION SUMMARY")]
     _lines.append(_pf_kv("UC Columns", f"{len(uc_columns_dicts):>5}  (covering {len(_uc_table_names)} tables, source: {_actual_source.get('uc_columns', 'unknown')})"))
+    _lines.append(_pf_kv(
+        "UC Refs split",
+        f"tables={_n_tables}, metric_views={_n_mvs}, functions={_n_funcs} "
+        f"(total {_n_tables + _n_mvs + _n_funcs})",
+    ))
     _lines.append(_pf_kv("Genie config", f"{configured_cols:>5}  column_configs entries (descriptions/FA/VD)"))
     _lines.append(_pf_kv("Tags", f"{len(uc_tags_dicts):>5}  (source: {_actual_source.get('uc_tags', 'unknown')})"))
     _lines.append(_pf_kv("Routines", f"{len(uc_routines_dicts):>5}  (source: {_actual_source.get('uc_routines', 'unknown')})"))
@@ -1215,14 +1224,28 @@ def preflight_collect_uc_metadata(
                 for c in t.get("columns", {}).values()
                 if c.get("distinct_values")
             )
+            _n_mvs_skipped = len(config.get("_metric_views", []) or [])
+            _n_funcs_excluded = len(config.get("_functions", []) or [])
+            _n_total_refs = len(table_names) + _n_funcs_excluded
+
             _dp_lines = [_pf_section("PREFLIGHT — DATA PROFILE")]
             _dp_lines.append(_pf_kv("Tables profiled", profiled_tables))
             _dp_lines.append(_pf_kv("Columns profiled", total_cols_profiled))
             _dp_lines.append(_pf_kv("Low-cardinality cols", low_card_count))
+            _dp_lines.append(_pf_kv(
+                "Coverage",
+                f"Profiled {profiled_tables} of {_n_total_refs} UC refs "
+                f"(metric_views skipped: {_n_mvs_skipped}, "
+                f"functions excluded: {_n_funcs_excluded})",
+            ))
             _dp_lines.append(_pf_bar())
             for _dp_table_fqn, _dp_tinfo in sorted(data_profile.items()):
-                _dp_row_count = _dp_tinfo.get("row_count", "?")
-                _dp_lines.append(f"  {_dp_table_fqn} (~{_dp_row_count} rows)")
+                _dp_row_count = _dp_tinfo.get("row_count")
+                if isinstance(_dp_row_count, int) and _dp_row_count >= 0:
+                    _dp_row_label = f"({_dp_row_count} rows)"
+                else:
+                    _dp_row_label = "(row count unavailable)"
+                _dp_lines.append(f"  {_dp_table_fqn} {_dp_row_label}")
                 for _dp_col, _dp_cinfo in sorted(_dp_tinfo.get("columns", {}).items()):
                     _dp_card = _dp_cinfo.get("cardinality", "?")
                     _dp_vals = _dp_cinfo.get("distinct_values")
