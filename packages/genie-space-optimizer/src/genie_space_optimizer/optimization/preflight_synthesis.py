@@ -2534,6 +2534,15 @@ def _print_summary(result: dict) -> None:
         print("\n".join(lines))
         return
     lines.append(_kv("Generated candidates", result.get("generated", 0)))
+    # F9 — Gate ordering mirrors ``validate_synthesis_proposal``'s
+    # runtime sequence so operators reading top-down can attribute
+    # yield-shortfall to the correct stage:
+    #   parse → identifier_qualification → execute → structural →
+    #   arbiter → firewall → genie_agreement → dedup → applied.
+    # Retry blocks are nested under the gate whose failure class
+    # triggered them (qualification retries under qualification;
+    # EMPTY_RESULT and MEASURE() retries under execute, since both
+    # surface as execute failures).
     lines.append(_kv("Passed parse", result.get("passed_parse", 0)))
     # Phase 2.R5: identifier-qualification gate, inserted between parse
     # and execute. Surfaced only when the gate has actually seen
@@ -2546,23 +2555,11 @@ def _print_summary(result: dict) -> None:
         lines.append(_kv(
             "Passed identifier_qualification", qual_passed,
         ))
-    lines.append(_kv("Passed EXPLAIN+execute", result.get("passed_execute", 0)))
-    # Phase 3.R6 retry visibility: surfaced right under the execute line
-    # so operators can see how often empty-result retries fired and
-    # whether they recovered.
-    retries_fired = result.get("retries_fired", 0)
-    if retries_fired:
-        lines.append(_kv(
-            "  retries on EMPTY_RESULT",
-            f"fired={retries_fired} "
-            f"succeeded={result.get('retries_succeeded', 0)} "
-            f"still_empty={result.get('retries_still_empty', 0)}",
-            indent=4,
-        ))
     # Phase 2.R6 + F4 retry visibility for the qualification path.
-    # ``fired`` counts candidates where at least one retry round fired.
-    # ``attempts`` counts the total LLM round-trips across all rounds
-    # (≤ _MAX_QUALIFICATION_RETRIES per fired). ``stem_repairs`` counts
+    # Nested under the qualification gate since qualification failures
+    # are what trigger these retries. ``fired`` counts candidates where
+    # at least one retry round fired. ``attempts`` counts total LLM
+    # round-trips across all rounds. ``stem_repairs`` counts
     # deterministic rewrites that avoided an LLM call entirely (F4a).
     qual_retries = result.get("retries_on_qualification_fired", 0)
     stem_repairs = result.get("repaired_stemmed_identifiers", 0)
@@ -2583,11 +2580,26 @@ def _print_summary(result: dict) -> None:
             " ".join(parts),
             indent=4,
         ))
-    # F5e — METRIC_VIEW_MISSING_MEASURE_FUNCTION visibility. Shape
-    # mirrors the qualification block: ``fired`` / ``attempts`` /
-    # ``succeeded`` track the LLM retry path; ``measure_wraps`` counts
-    # deterministic MEASURE() rewrites applied before / across
-    # validation that avoided an LLM round-trip.
+    lines.append(_kv("Passed EXPLAIN+execute", result.get("passed_execute", 0)))
+    # Phase 3.R6 retry visibility: surfaced right under the execute line
+    # so operators can see how often empty-result retries fired and
+    # whether they recovered.
+    retries_fired = result.get("retries_fired", 0)
+    if retries_fired:
+        lines.append(_kv(
+            "  retries on EMPTY_RESULT",
+            f"fired={retries_fired} "
+            f"succeeded={result.get('retries_succeeded', 0)} "
+            f"still_empty={result.get('retries_still_empty', 0)}",
+            indent=4,
+        ))
+    # F5e — METRIC_VIEW_MISSING_MEASURE_FUNCTION visibility. MEASURE()
+    # failures surface as execute-gate rejections, so this block nests
+    # under execute alongside EMPTY_RESULT retries. Shape mirrors the
+    # qualification block: ``fired`` / ``attempts`` / ``succeeded``
+    # track the LLM retry path; ``measure_wraps`` counts deterministic
+    # MEASURE() rewrites applied before / across validation that
+    # avoided an LLM round-trip.
     meas_retries = result.get("retries_on_measure_fired", 0)
     meas_repairs = result.get("repaired_measure_refs", 0)
     if meas_retries or meas_repairs:
@@ -2607,9 +2619,9 @@ def _print_summary(result: dict) -> None:
             " ".join(parts),
             indent=4,
         ))
-    lines.append(_kv("Passed firewall", result.get("passed_firewall", 0)))
     lines.append(_kv("Passed structural", result.get("passed_structural", 0)))
     lines.append(_kv("Passed arbiter gate", result.get("passed_arbiter", 0)))
+    lines.append(_kv("Passed firewall", result.get("passed_firewall", 0)))
     lines.append(_kv("Passed genie agreement", result.get("passed_genie_agreement", 0)))
     lines.append(_kv("Dedup rejected", result.get("dedup_rejected", 0)))
     lines.append(_kv("Applied", result.get("applied", 0)))
