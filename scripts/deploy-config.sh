@@ -17,6 +17,7 @@
 #   GENIE_LAKEBASE_INSTANCE  (optional)  Lakebase instance name       [default: none]
 #   GENIE_MLFLOW_EXPERIMENT_ID (optional) MLflow experiment ID for agent tracing [default: disabled]
 #   GENIE_GRANT_SPACES       (optional)  Grant app SP CAN_EDIT on user's Genie Spaces (Y/N) [default: Y]
+#   GENIE_UV_PROJECT_ENVIRONMENT (optional) Python venv path for uv
 #
 # After sourcing, the following variables are available:
 #   APP_NAME, CATALOG, GSO_SCHEMA, WAREHOUSE_ID, PROFILE, LLM_MODEL,
@@ -64,6 +65,20 @@ _dbx() {
     databricks "$@" "${DBX_PROFILE_ARGS[@]}"
 }
 
+# ── Python venv location ────────────────────────────────────────────────
+# Databricks /Workspace is not a normal POSIX filesystem and can fail while
+# uv expands wheels into .venv. Keep Web Terminal virtualenvs on the local
+# home filesystem while leaving local CLI installs on the default .venv.
+if [ -n "${GENIE_UV_PROJECT_ENVIRONMENT:-}" ]; then
+    export UV_PROJECT_ENVIRONMENT="$GENIE_UV_PROJECT_ENVIRONMENT"
+elif [ -z "${UV_PROJECT_ENVIRONMENT:-}" ] && [[ "$_PROJECT_DIR" == /Workspace/* ]]; then
+    _UV_ENV_NAME="${APP_NAME//[^A-Za-z0-9_.-]/-}"
+    export UV_PROJECT_ENVIRONMENT="${HOME:-/tmp}/.venvs/$_UV_ENV_NAME"
+fi
+if [ -n "${UV_PROJECT_ENVIRONMENT:-}" ]; then
+    mkdir -p "$(dirname "$UV_PROJECT_ENVIRONMENT")"
+fi
+
 # ── Validate required values ─────────────────────────────────────────────
 if [ -z "$WAREHOUSE_ID" ]; then
     echo "ERROR: GENIE_WAREHOUSE_ID is required but not set." >&2
@@ -95,5 +110,8 @@ _print_config() {
     echo "  │  LLM Model:    $LLM_MODEL"
     echo "  │  Lakebase:     $LAKEBASE_INSTANCE"
     echo "  │  MLflow:       ${MLFLOW_EXPERIMENT_ID:-<disabled>}"
+    if [ -n "${UV_PROJECT_ENVIRONMENT:-}" ]; then
+        echo "  │  Python venv:  $UV_PROJECT_ENVIRONMENT"
+    fi
     echo "  └─────────────────────────────────────────────────────────┘"
 }

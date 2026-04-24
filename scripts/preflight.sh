@@ -6,6 +6,27 @@
 # with remediation steps and exits non-zero if the check fails.
 # ---------------------------------------------------------------------------
 
+_print_node_remediation() {
+    cat <<'EOF'
+
+  Web Terminal remediation for Node.js/npm:
+    cd ~
+    mkdir -p ~/.local/node22
+    curl -fsSL https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz -o node-v22.12.0-linux-x64.tar.xz
+    tar -xJf node-v22.12.0-linux-x64.tar.xz -C ~/.local/node22 --strip-components=1
+    echo 'export PATH="$HOME/.local/node22/bin:$PATH"' >> ~/.bashrc
+    source ~/.bashrc
+    node -v
+    npm -v
+
+  If your Web Terminal is not x86_64, use the matching Node.js Linux archive
+  for your architecture.
+
+  Then re-run:
+    ./scripts/deploy.sh
+EOF
+}
+
 _preflight_check_tools() {
     echo "  Checking required tools..."
     local missing=()
@@ -22,6 +43,10 @@ _preflight_check_tools() {
             echo "  Install uv:"
             echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"
             echo "    or: brew install uv"
+            echo ""
+        fi
+        if [[ " ${missing[*]} " == *" node "* ]] || [[ " ${missing[*]} " == *" npm "* ]]; then
+            _print_node_remediation
             echo ""
         fi
         echo "  Remediation: install the missing tools and re-run scripts/deploy.sh"
@@ -43,6 +68,7 @@ process.exit(supported ? 0 : 1);
         echo ""
         echo "  Remediation:"
         echo "    Install Node.js 22 LTS or newer, then re-run scripts/deploy.sh"
+        _print_node_remediation
         exit 1
     fi
     echo "  ✓ Node.js version $node_version"
@@ -67,7 +93,9 @@ process.exit(supported ? 0 : 1);
 }
 
 _preflight_check_venv() {
+    local venv_path="${UV_PROJECT_ENVIRONMENT:-$PROJECT_DIR/.venv}"
     echo "  Syncing Python venv (uv sync --frozen)..."
+    echo "  Using Python venv: $venv_path"
     if uv sync --frozen --quiet; then
         echo "  ✓ Python venv ready (pinned dependencies)"
     else
@@ -79,6 +107,8 @@ _preflight_check_venv() {
         echo "    - Internal PyPI mirror missing a package (unset UV_INDEX_URL or set to https://pypi.org/simple)"
         echo "    - Python 3.11+ not available (try: uv python install 3.11)"
         echo "    - Corrupt .venv (try: rm -rf .venv && uv sync --frozen)"
+        echo "    - Databricks /Workspace virtualenv issue in Web Terminal"
+        echo "      (try: export UV_PROJECT_ENVIRONMENT=\"\$HOME/.venvs/${APP_NAME:-genie-workbench}\" && rm -rf .venv && uv sync --frozen)"
         exit 1
     fi
 }

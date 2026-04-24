@@ -147,6 +147,28 @@ _is_databricks_hosted_shell() {
     [ -n "${DATABRICKS_SERVERLESS_ENVIRONMENT_VERSION:-}" ]
 }
 
+_print_node_remediation() {
+    cat <<'EOF'
+
+  Web Terminal remediation for Node.js/npm:
+    cd ~
+    mkdir -p ~/.local/node22
+    curl -fsSL https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz -o node-v22.12.0-linux-x64.tar.xz
+    tar -xJf node-v22.12.0-linux-x64.tar.xz -C ~/.local/node22 --strip-components=1
+    echo 'export PATH="$HOME/.local/node22/bin:$PATH"' >> ~/.bashrc
+    source ~/.bashrc
+    node -v
+    npm -v
+
+  If your Web Terminal is not x86_64, use the matching Node.js Linux archive
+  for your architecture.
+
+  Then re-run:
+    export GENIE_DEPLOY_PROFILE=""
+    ./scripts/install.sh
+EOF
+}
+
 # ══════════════════════════════════════════════════════════════════════════
 # Step 0: Banner
 # ══════════════════════════════════════════════════════════════════════════
@@ -216,6 +238,9 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     for dep in "${MISSING[@]}"; do
         echo "    - $dep"
     done
+    if printf '%s\n' "${MISSING[@]}" | grep -Eq 'Node.js|npm'; then
+        _print_node_remediation
+    fi
     exit 1
 fi
 

@@ -129,6 +129,55 @@ Databricks CLI version. Then re-run:
 ./scripts/deploy.sh --update
 ```
 
+### `uv sync --frozen` fails under `/Workspace`
+
+If uv fails while copying wheel files into `.venv` under `/Workspace/...`,
+move the project virtualenv to the Web Terminal home filesystem and remove
+the broken workspace venv:
+
+```bash
+mkdir -p "$HOME/.venvs"
+export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/databricks-genie-workbench"
+echo 'export UV_PROJECT_ENVIRONMENT="$HOME/.venvs/databricks-genie-workbench"' >> ~/.bashrc
+rm -rf .venv
+
+uv sync --frozen
+./scripts/deploy.sh
+```
+
+The deploy scripts set this automatically for `/Workspace/...` checkouts, but
+these commands are useful if you hit the failure before updating the repo.
+
+### Node.js or npm is missing
+
+Some Web Terminal environments include an older Node.js build such as
+`v22.9.0` and no `npm`. The frontend build requires Node.js `^20.19.0` or
+`>=22.12.0` plus npm. Install a user-local Node.js before rerunning the
+installer:
+
+```bash
+cd ~
+mkdir -p ~/.local/node22
+curl -fsSL https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz -o node-v22.12.0-linux-x64.tar.xz
+tar -xJf node-v22.12.0-linux-x64.tar.xz -C ~/.local/node22 --strip-components=1
+
+echo 'export PATH="$HOME/.local/node22/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+node -v
+npm -v
+```
+
+If your Web Terminal is not x86_64, use the matching Node.js Linux archive
+for your architecture.
+
+Then rerun:
+
+```bash
+export GENIE_DEPLOY_PROFILE=""
+./scripts/install.sh
+```
+
 ### Web Terminal session disconnects
 
 Databricks Web Terminal sessions can time out. Reopen the terminal, return
