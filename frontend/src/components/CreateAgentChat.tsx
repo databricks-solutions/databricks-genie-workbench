@@ -2233,6 +2233,27 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         )
       }
 
+      if (el.type === "multi_select" && el.id === "table_selection" && !isUsed) {
+        return (
+          <div key={el.id} className="mt-3">
+            <div className="flex items-center gap-1.5 mb-2">
+              <Icon className="w-3.5 h-3.5 text-muted" />
+              <span className="text-xs font-medium text-muted uppercase tracking-wide">
+                {el.label || "Select tables"}
+              </span>
+            </div>
+            <button
+              onClick={() => setDrawerOpen(true)}
+              disabled={isStreaming}
+              className="flex items-center justify-center gap-1.5 w-full px-3 py-2.5 text-xs font-medium text-accent bg-accent/5 border border-accent/20 rounded-lg hover:bg-accent/10 transition-colors disabled:opacity-40"
+            >
+              <Database className="w-3.5 h-3.5" />
+              Browse &amp; Select Tables
+            </button>
+          </div>
+        )
+      }
+
       if (el.type === "multi_select" && el.options && el.options.length > 0) {
         const selected = multiSelections[key] || new Set<string>()
         const useLargeMulti = el.options.length > COMBOBOX_THRESHOLD
