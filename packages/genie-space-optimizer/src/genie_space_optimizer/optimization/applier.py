@@ -25,10 +25,13 @@ from genie_space_optimizer.common.config import (
     CATEGORICAL_COLUMN_PATTERNS,
     DESCRIPTION_HINTS_NEGATIVE,
     DESCRIPTION_HINTS_POSITIVE,
+    ENABLE_REWRITE_SECTION_SPLIT,
     ENABLE_SMARTER_SCORING,
     FREE_TEXT_COLUMN_PATTERNS,
     FREE_TEXT_DISTINCT_RATIO,
     HIGH_RISK_PATCHES,
+    INSTRUCTION_SECTION_ORDER,
+    LEVER_TO_SECTIONS,
     LOW_RISK_PATCHES,
     MAX_ENTITY_MATCHING_CARDINALITY,
     MAX_TEXT_INSTRUCTIONS_CHARS,
@@ -2151,6 +2154,202 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _parse_rewrite_into_sections(rewrite_body: str) -> tuple[dict[str, str], str]:
+    """Parse a ``rewrite_instruction`` body into ``{canonical_header: body}``.
+
+    Tolerates both ``HEADER:`` and ``HEADER\\n`` as delimiters. Any leading
+    text before the first recognized canonical header is returned as the
+    second element (the "preamble") — the caller decides whether to merge
+    it into CONSTRAINTS or drop it.
+
+    Canonical headers come from
+    ``common.config.INSTRUCTION_SECTION_ORDER``. Matching is case-insensitive
+    and tolerant of extra whitespace.
+    """
+    text = (rewrite_body or "").replace("\r\n", "\n").strip()
+    if not text:
+        return {}, ""
+
+    _canonicals = [h.upper() for h in INSTRUCTION_SECTION_ORDER]
+    _canon_set = set(_canonicals)
+    # Match at the start of a line: HEADER followed by ``:`` or newline.
+    # Allow internal spaces (e.g. ``ASSET ROUTING``) but no leading spaces.
+    _alt = "|".join(re.escape(h) for h in _canonicals)
+    _header_re = re.compile(
+        rf"(?m)^(?P<h>{_alt})\s*(?::|\n)",
+        flags=re.IGNORECASE,
+    )
+
+    matches = list(_header_re.finditer(text))
+    if not matches:
+        return {}, text
+
+    sections: dict[str, str] = {}
+    preamble = text[: matches[0].start()].strip()
+    for idx, m in enumerate(matches):
+        header = m.group("h").upper().strip()
+        if header not in _canon_set:
+            continue
+        body_start = m.end()
+        body_end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+        body = text[body_start:body_end].strip()
+        if not body:
+            continue
+        existing = sections.get(header, "").strip()
+        sections[header] = (existing + "\n\n" + body).strip() if existing else body
+    return sections, preamble
+
+
+def _split_rewrite_instruction_patch(patch: dict) -> list[dict] | None:
+    """Expand a ``rewrite_instruction`` patch into section-scoped children.
+
+    T1.11: when ``ENABLE_REWRITE_SECTION_SPLIT`` is True and the patch has
+    not explicitly escalated to ``full_rewrite``, parse ``proposed_value``
+    (or ``new_text``) by canonical section header and emit a list of
+    ``update_instruction_section`` children routed to the owning lever
+    (via ``LEVER_TO_SECTIONS``) when that lever is among the invoked
+    levers stamped on the source patch.
+
+    Returns ``None`` if no split should be performed (flag off, explicit
+    full-rewrite, empty body, or no canonical sections detected); the
+    caller must fall back to legacy behaviour.
+    Otherwise returns a (possibly empty) list of child patches.
+
+    Content routing:
+    - Sections owned by an invoked lever are emitted as a separate patch
+      for that (lever, section).
+    - Sections not owned by any invoked lever are merged into CONSTRAINTS
+      on Lever 5 (the legacy collapse target) — this preserves
+      backward-compatibility without dropping content.
+    - Sections explicitly named ``CONSTRAINTS`` in the rewrite plus any
+      preamble text with no canonical header are merged into CONSTRAINTS
+      on Lever 5.
+    """
+    if not ENABLE_REWRITE_SECTION_SPLIT:
+        return None
+    if str(patch.get("escalation", "")).strip().lower() == "full_rewrite":
+        return None
+    if os.getenv("GSO_ALLOW_UNSCOPED_REWRITE", "").strip().lower() in ("1", "true", "yes"):
+        return None
+
+    body = patch.get("proposed_value") or patch.get("new_text") or ""
+    if not isinstance(body, str) or not body.strip():
+        return None
+
+    parsed_sections, preamble = _parse_rewrite_into_sections(body)
+    if not parsed_sections and not preamble:
+        return None
+
+    _invoked_raw = patch.get("invoked_levers") or []
+    invoked_levers = {int(lv) for lv in _invoked_raw if str(lv).isdigit()}
+    if not invoked_levers:
+        invoked_levers = {int(patch.get("lever", 5) or 5)}
+
+    # Build a section -> owning_lever map restricted to invoked levers.
+    _owner_by_section: dict[str, int] = {}
+    for lv in sorted(invoked_levers):
+        for sec in LEVER_TO_SECTIONS.get(lv, []):
+            _owner_by_section.setdefault(sec, lv)
+
+    _base_fields = {
+        k: patch.get(k) for k in (
+            "proposal_id",
+            "cluster_id",
+            "rationale",
+            "dual_persistence",
+            "confidence",
+            "questions_fixed",
+            "questions_at_risk",
+            "net_impact",
+            "asi",
+            "provenance",
+            "invoked_levers",
+            "old_value",
+        ) if k in patch
+    }
+
+    children: list[dict] = []
+    constraints_residual: list[str] = []
+    routed_log: list[str] = []
+
+    for section_name in INSTRUCTION_SECTION_ORDER:
+        body_for_section = parsed_sections.get(section_name, "").strip()
+        if not body_for_section:
+            continue
+        owner_lever = _owner_by_section.get(section_name)
+        if section_name == "CONSTRAINTS" or owner_lever is None:
+            constraints_residual.append(body_for_section)
+            routed_log.append(
+                f"L5[{section_name} (merged, {len(body_for_section)} chars)]"
+            )
+            continue
+        child = dict(_base_fields)
+        child["type"] = "update_instruction_section"
+        child["lever"] = owner_lever
+        child["section_name"] = section_name
+        child["new_text"] = body_for_section
+        child["change_description"] = (
+            f"[{patch.get('cluster_id', '')}] Update instruction section "
+            f"{section_name} ({len(body_for_section)} chars) — split from "
+            f"rewrite_instruction"
+        )
+        child["_split_from"] = "rewrite_instruction"
+        child["_proposal_patch_type"] = "rewrite_instruction"
+        children.append(child)
+        routed_log.append(
+            f"L{owner_lever}[{section_name} ({len(body_for_section)} chars)]"
+        )
+
+    if preamble:
+        constraints_residual.append(preamble)
+        routed_log.append(f"L5[CONSTRAINTS (preamble, {len(preamble)} chars)]")
+
+    if constraints_residual:
+        merged_constraints = "\n\n".join(constraints_residual).strip()
+        child = dict(_base_fields)
+        child["type"] = "update_instruction_section"
+        child["lever"] = 5
+        child["section_name"] = "CONSTRAINTS"
+        child["new_text"] = merged_constraints
+        child["change_description"] = (
+            f"[{patch.get('cluster_id', '')}] Merge residual rewrite content "
+            f"into CONSTRAINTS ({len(merged_constraints)} chars)"
+        )
+        child["_split_from"] = "rewrite_instruction"
+        child["_proposal_patch_type"] = "rewrite_instruction"
+        children.append(child)
+
+    if children:
+        logger.info(
+            "Rewrite downgrade split [%s]: %s",
+            patch.get("cluster_id", "?"),
+            ", ".join(routed_log) if routed_log else "<none>",
+        )
+
+    return children
+
+
+def _expand_rewrite_splits(patches: list[dict]) -> list[dict]:
+    """Preprocess a patch list, expanding qualifying rewrite_instruction
+    patches into section-scoped children per T1.11."""
+    expanded: list[dict] = []
+    for p in patches:
+        if p.get("type") == "rewrite_instruction":
+            split = _split_rewrite_instruction_patch(p)
+            if split is not None:
+                if split:
+                    expanded.extend(split)
+                else:
+                    # Empty split — nothing to apply; log and drop.
+                    logger.info(
+                        "Rewrite downgrade split [%s]: <no content> — dropping",
+                        p.get("cluster_id", "?"),
+                    )
+                continue
+        expanded.append(p)
+    return expanded
+
+
 def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
     """Convert a patch dict into an executable action with command + rollback.
 
@@ -2192,6 +2391,24 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
             json.dumps({"op": "remove", "section": "instructions", "old_text": old_text}),
             json.dumps({"op": "add", "section": "instructions", "new_text": old_text}),
         )
+    if patch_type == "update_instruction_section":
+        section_name = str(patch.get("section_name", "CONSTRAINTS")).upper().strip()
+        return action(
+            json.dumps({
+                "op": "update_section",
+                "section": "instructions",
+                "section_name": section_name,
+                "new_text": new_text,
+                "lever": patch.get("lever", 5),
+            }),
+            json.dumps({
+                "op": "update_section",
+                "section": "instructions",
+                "section_name": section_name,
+                "new_text": old_text,
+                "lever": patch.get("lever", 5),
+            }),
+        )
     if patch_type == "rewrite_instruction":
         # Tier 2.10: full PURPOSE-through-everything rewrites are the
         # single biggest source of collateral damage (AG1 and AG2 both
@@ -2200,6 +2417,14 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
         # patch OR a config opt-in, otherwise default to the sectional
         # update path. ``update_instruction_section`` (patch_type below)
         # is the narrower default for normal Lever-5 flows.
+        #
+        # T1.11: when ENABLE_REWRITE_SECTION_SPLIT is True (default), the
+        # downgrade path is handled upstream by _expand_rewrite_splits in
+        # apply_patch_set, which emits one update_instruction_section patch
+        # per owned section. This branch is kept for (a) explicit
+        # full_rewrite escalations, (b) the GSO_ALLOW_UNSCOPED_REWRITE
+        # env opt-in, and (c) legacy / test callers that drive render_patch
+        # directly without going through apply_patch_set.
         _escalation = str(patch.get("escalation", "")).strip().lower()
         _opt_in = os.getenv("GSO_ALLOW_UNSCOPED_REWRITE", "").strip().lower() in ("1", "true", "yes")
         if _escalation != "full_rewrite" and not _opt_in:
@@ -2207,7 +2432,9 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
                 "Refusing rewrite_instruction without escalation=full_rewrite. "
                 "Tier 2.10: full instruction rewrites have high collateral "
                 "damage and must be explicitly escalated. Converting to a "
-                "section-scoped merge against CONSTRAINTS."
+                "section-scoped merge against CONSTRAINTS (legacy path — "
+                "expected to be pre-empted by T1.11 splitter when routed "
+                "through apply_patch_set)."
             )
             return action(
                 json.dumps({
@@ -2392,9 +2619,13 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
         # snippet still landed because a different code path bypassed
         # the gate.
         if op_prefix == "add" and not patch.get("validation_passed"):
-            raise ValueError(
+            # T2.14: upgraded from ValueError to RuntimeError per plan so
+            # apply_patch_set can distinguish the "validation missing"
+            # refusal from a plain validation error and audit-log the
+            # drop without aborting the rest of the patch set.
+            raise RuntimeError(
                 f"Refusing to apply {patch_type} without validation_passed=True. "
-                f"Tier 2.8: every add_sql_snippet_* patch must carry a clean "
+                f"Tier 2.14: every add_sql_snippet_* patch must carry a clean "
                 f"validate_sql_snippet result. target={patch.get('target_table', '?')}, "
                 f"snippet_id={snippet_id}"
             )
@@ -2613,6 +2844,50 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
             if old_text and old_text not in current:
                 return False
             _set_general_instructions(config, normalize_instructions(current.replace(old_text, "").strip()))
+            return True
+        if op == "update_section":
+            # T1.11: merge ``new_text`` into the named instruction section,
+            # preserving other sections verbatim. Used by
+            # ``update_instruction_section`` patches (incl. split
+            # rewrite_instruction children).
+            section_name = str(cmd.get("section_name", "CONSTRAINTS")).upper().strip()
+            text = cmd.get("new_text", "")
+            if not text:
+                return False
+            current = _get_general_instructions(config)
+            try:
+                from genie_space_optimizer.optimization.optimizer import (
+                    _ensure_structured,
+                )
+                structured = _ensure_structured(current, config)
+            except Exception:
+                logger.debug(
+                    "update_section fallback: _ensure_structured failed, "
+                    "appending section block verbatim",
+                    exc_info=True,
+                )
+                structured = None
+
+            if isinstance(structured, dict):
+                existing = structured.get(section_name, "")
+                merged = (existing.rstrip() + "\n\n" + text.strip()).strip() if existing else text.strip()
+                structured[section_name] = merged
+                rendered_parts: list[str] = []
+                for _header in INSTRUCTION_SECTION_ORDER:
+                    _body = structured.get(_header, "").strip()
+                    if _body:
+                        rendered_parts.append(f"{_header}:\n{_body}")
+                for _header, _body in structured.items():
+                    if _header in set(INSTRUCTION_SECTION_ORDER):
+                        continue
+                    _body_s = (_body or "").strip()
+                    if _body_s:
+                        rendered_parts.append(f"{_header}:\n{_body_s}")
+                new_full = "\n\n".join(rendered_parts)
+            else:
+                new_full = (current.rstrip() + f"\n\n{section_name}:\n{text.strip()}").strip()
+
+            _set_general_instructions(config, normalize_instructions(new_full))
             return True
         if op == "rewrite":
             text = cmd.get("new_text", "")
@@ -3126,14 +3401,90 @@ def apply_patch_set(
     pre_snapshot = copy.deepcopy(metadata_snapshot)
     config = copy.deepcopy(metadata_snapshot)
 
+    # T1.11: split downgraded rewrite_instruction patches into
+    # section-scoped update_instruction_section children so the downgrade
+    # no longer collapses ASSET ROUTING / AGGREGATION RULES etc. into
+    # CONSTRAINTS. Behind ENABLE_REWRITE_SECTION_SPLIT (default True).
+    patches = _expand_rewrite_splits(patches)
+
+    # T3.2: infer read/write asset sets per patch and log them so
+    # operators can audit ordering. The risk-order sort below is kept
+    # as the primary ordering (low-risk first); this annotation surfaces
+    # conflicts (e.g. an instruction rewrite that *reads* a measure
+    # being *written* by another patch in the same AG) without yet
+    # changing behaviour. When a cycle or a clear read-before-write
+    # violation is detected, the loop warns but continues — the gate
+    # catches any resulting regression downstream.
+    _READ_WRITE_RULES: dict[str, tuple[list[str], list[str]]] = {
+        # (reads, writes) — keys are asset-kind strings
+        "update_description":          ([], ["table"]),
+        "update_column_description":   ([], ["column"]),
+        "add_column_synonym":          ([], ["column"]),
+        "add_sql_snippet_measure":     ([], ["measure"]),
+        "add_sql_snippet_calculation": ([], ["measure"]),
+        "add_sql_snippet_tvf":         ([], ["tvf"]),
+        "rewrite_instruction":         (["instructions"], ["instructions"]),
+        "update_instruction_section":  (["instructions"], ["instructions"]),
+        "update_instruction":          (["instructions"], ["instructions"]),
+        "add_instruction":             (["instructions"], ["instructions"]),
+        "remove_instruction":          (["instructions"], ["instructions"]),
+        "update_join_spec":            (["column"], ["join_spec"]),
+        "add_join_spec":               (["column"], ["join_spec"]),
+    }
+
+    _dag_writes: dict[str, list[int]] = {}  # asset_key -> [patch_indices]
+    _dag_reads: dict[str, list[int]] = {}
+    for _i, _p in enumerate(patches):
+        _ptype = str(_p.get("type", ""))
+        _reads, _writes = _READ_WRITE_RULES.get(_ptype, ([], ["other"]))
+        _target = str(
+            _p.get("target") or _p.get("target_object")
+            or _p.get("target_table") or "default"
+        )
+        for _w in _writes:
+            _key = f"{_w}:{_target}" if _w != "instructions" else "instructions:*"
+            _dag_writes.setdefault(_key, []).append(_i)
+        for _r in _reads:
+            _key = f"{_r}:{_target}" if _r != "instructions" else "instructions:*"
+            _dag_reads.setdefault(_key, []).append(_i)
+        _p["_reads"] = list(_reads)
+        _p["_writes"] = list(_writes)
+
+    # Detect suspicious read/write orderings: any write that lands
+    # AFTER a read of the same asset in current risk-sort order.
     sorted_indices = sorted(
         range(len(patches)),
         key=lambda i: _RISK_ORDER.get(classify_risk(patches[i].get("type", "")), 1),
     )
+    _order_pos = {idx: pos for pos, idx in enumerate(sorted_indices)}
+    _dag_warnings: list[str] = []
+    for _asset, _readers in _dag_reads.items():
+        _writers = _dag_writes.get(_asset, [])
+        for _r in _readers:
+            for _w in _writers:
+                if _r == _w:
+                    continue
+                if _order_pos.get(_r, 0) < _order_pos.get(_w, 0):
+                    _dag_warnings.append(
+                        f"patch idx={_r} reads {_asset} but patch idx={_w} "
+                        f"writes it later in apply order"
+                    )
+    if _dag_warnings:
+        logger.info(
+            "T3.2: patch DAG inference surfaced %d read-before-write ordering "
+            "hint(s); continuing with risk-order (warnings are non-fatal):",
+            len(_dag_warnings),
+        )
+        for _w in _dag_warnings[:5]:
+            logger.info("  - %s", _w)
 
     applied: list[dict] = []
     queued_high: list[dict] = []
     rollback_commands: list[str] = []
+    # T2.14: collect patches dropped at render time (e.g. add_sql_snippet_*
+    # without validation_passed=True). These will be merged into the
+    # final dropped_patches list in the apply_log.
+    early_dropped_patches: list[dict] = []
     patched_objects: set[str] = set()
 
     for idx in sorted_indices:
@@ -3142,7 +3493,27 @@ def apply_patch_set(
         lever = patch.get("lever", 5)
         scope = _resolve_scope(lever, apply_mode)
 
-        rendered = render_patch(patch, space_id, config)
+        try:
+            rendered = render_patch(patch, space_id, config)
+        except RuntimeError as _render_err:
+            # T2.14: render_patch raises RuntimeError when the Lever 6
+            # gate refuses an add_sql_snippet_* patch without
+            # validation_passed=True. Audit-log, record as dropped, and
+            # continue applying the rest of the patch set rather than
+            # aborting the whole AG.
+            logger.warning(
+                "Refusing patch at idx=%d (type=%s, target=%s): %s",
+                idx, patch.get("type", "?"),
+                patch.get("target_table") or patch.get("target", "?"),
+                _render_err,
+            )
+            early_dropped_patches.append({
+                "index": idx,
+                **patch,
+                "drop_reason": "validation_missing",
+                "drop_detail": str(_render_err),
+            })
+            continue
 
         if risk == "high" and not force_apply:
             queued_high.append({"index": idx, "patch": patch, "action": rendered})
@@ -3156,9 +3527,41 @@ def apply_patch_set(
             ok = ok or uc_ok
 
         if ok:
-            applied.append({"index": idx, "patch": patch, "action": rendered})
-            rollback_commands.append(rendered.get("rollback_command", ""))
+            # T2.13: stamp applied provenance on the applied entry so the
+            # harness can persist ``applied_patch_type`` /
+            # ``applied_patch_detail`` on genie_opt_patches and the
+            # pretty-printer can enumerate records accurately. The
+            # proposal-side patch_type (pre-downgrade) is preserved as
+            # ``proposal_patch_type`` so readers can tell when a
+            # ``rewrite_instruction`` was downgraded into multiple
+            # ``update_instruction_section`` children.
+            _applied_type = str(patch.get("type", ""))
+            _proposal_type = (
+                patch.get("_proposal_patch_type") or _applied_type
+            )
+            _detail_parts: list[str] = []
+            if _applied_type == "update_instruction_section":
+                _sec = patch.get("section_name")
+                if _sec:
+                    _detail_parts.append(f"section={_sec}")
+                _lv = patch.get("lever")
+                if _lv is not None:
+                    _detail_parts.append(f"lever={_lv}")
+            if patch.get("_split_from"):
+                _detail_parts.append(f"split_from={patch['_split_from']}")
             target = rendered.get("target", "")
+            if target:
+                _detail_parts.append(f"target={target}")
+            _detail = "; ".join(_detail_parts) if _detail_parts else None
+            applied.append({
+                "index": idx,
+                "patch": patch,
+                "action": rendered,
+                "applied_patch_type": _applied_type,
+                "applied_patch_detail": _detail,
+                "proposal_patch_type": _proposal_type,
+            })
+            rollback_commands.append(rendered.get("rollback_command", ""))
             if target:
                 patched_objects.add(target)
 
@@ -3335,7 +3738,7 @@ def apply_patch_set(
         "validation_errors": [],
         "patch_deployed": patch_deployed,
         "patch_error": patch_error,
-        "dropped_patches": dropped_patches,
+        "dropped_patches": dropped_patches + early_dropped_patches,
     }
 
 

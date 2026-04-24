@@ -881,13 +881,191 @@ def _classify_generated_sql_quality(generated_sql: str, question: str = "") -> s
     return "unverifiable_no_expected_sql"
 
 
+# ──────────────────────────────────────────────────────────────────────
+# T1.2 — Pattern-aware root cause detectors
+#
+# The legacy heuristic taxonomy (wrong_table / missing_aggregation /
+# wrong_filter_condition / wrong_aggregation) fragments a single
+# underlying pattern into four clusters (e.g. time_window pivoting shows
+# up as wrong_filter_condition on one row, missing_aggregation on another,
+# wrong_table on a third). These pure-function matchers detect the actual
+# *pattern* from the (genie_sql, gt_sql) pair and return a specific
+# pattern_label. When a matcher fires with sufficient confidence, it
+# takes precedence over the legacy bucket; otherwise we fall through to
+# ``_classify_sql_diff``.
+# ──────────────────────────────────────────────────────────────────────
+
+
+_TIME_WINDOW_WHERE_RE = re.compile(
+    r"where[^;]*?\btime_window\s+in\s*\(",
+    re.IGNORECASE | re.DOTALL,
+)
+_TIME_WINDOW_GROUPBY_RE = re.compile(
+    r"group\s+by[^;]*?\btime_window\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_RANK_EQ_1_RE = re.compile(
+    r"\brank\s*\([^)]*\)\s*(?:over\s*\([^)]*\))?"
+    r"[^;]*?\s*=\s*1\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_LIMIT_1_RE = re.compile(r"\blimit\s+1\b(?!\d)", re.IGNORECASE)
+_LIMIT_N_RE = re.compile(r"\blimit\s+(\d+)\b", re.IGNORECASE)
+_PLURAL_TOP_N_QUESTION_RE = re.compile(
+    r"\b(which|what)\s+[a-z]+\s+(have|has)\s+(the\s+)?(highest|most|top|"
+    r"largest|smallest|lowest)\b",
+    re.IGNORECASE,
+)
+_STRING_LITERAL_RE = re.compile(r"'([^']{1,64})'")
+
+
+def _detect_failure_pattern(ctx: dict) -> tuple[str | None, float, str]:
+    """T1.2: Return (pattern_label, confidence, evidence) for a failure.
+
+    Runs a small library of structural pattern matchers on
+    ``(expected_sql, generated_sql, question)``. Returns ``(None, 0.0,
+    "")`` when no pattern fires — callers then fall back to the legacy
+    ``_classify_sql_diff`` heuristic.
+
+    Pattern labels (stable, used downstream for cluster keying):
+
+    - ``time_window_pivot``:  Genie pivots ``time_window`` as a row
+      dimension via ``WHERE time_window IN (...)`` + GROUP BY, while GT
+      uses measure-suffix-on-same-row. Drives Q1 / Q10 / Q11 / Q17 in
+      the retail corpus.
+    - ``plural_top_n_collapse``:  the question asks "which stores have
+      the highest ..." (plural) but Genie returns top-1 via ``RANK()=1``
+      or ``LIMIT 1`` while GT returns an ordered list (or LIMIT N > 1).
+      Drives Q2 / Q6.
+    - ``value_format_mismatch``:  Genie's WHERE-clause literal doesn't
+      match any literal format GT used on the same column (e.g.
+      ``state_name = 'Virginia'`` vs GT ``state_name = 'VA'``). Drives
+      Q19.
+    - ``column_disambiguation``:  the chosen column shares a prefix with
+      at least one other column that has the same data type — a
+      disambiguation pair. Drives Q3 (is_one_day_prior_year_same_day
+      vs is_month_to_date_prior_year_same_day).
+
+    Each detector is independent and cheap; they run in declared order
+    and the first with confidence >= 0.7 wins. Confidence is a coarse
+    indicator (0.7 for structural patterns, 0.9 when the question text
+    independently corroborates).
+    """
+    expected_sql = (ctx.get("expected_sql") or "").strip()
+    generated_sql = (ctx.get("generated_sql") or "").strip()
+    question = (ctx.get("question") or "").strip()
+
+    if not expected_sql and not generated_sql:
+        return None, 0.0, ""
+
+    exp_lower = expected_sql.lower()
+    gen_lower = generated_sql.lower()
+
+    # 1. time_window_pivot — Genie adds a pivot dimension GT did not.
+    if (
+        generated_sql
+        and _TIME_WINDOW_WHERE_RE.search(gen_lower)
+        and _TIME_WINDOW_GROUPBY_RE.search(gen_lower)
+        and not _TIME_WINDOW_GROUPBY_RE.search(exp_lower)
+    ):
+        return (
+            "time_window_pivot",
+            0.9,
+            "Genie has WHERE time_window IN (...) + GROUP BY time_window; "
+            "GT does not group by time_window.",
+        )
+
+    # 2. plural_top_n_collapse — Genie collapses plural question to top-1.
+    _question_is_plural = bool(_PLURAL_TOP_N_QUESTION_RE.search(question))
+    _gen_is_top1 = bool(
+        _RANK_EQ_1_RE.search(gen_lower) or _LIMIT_1_RE.search(gen_lower)
+    )
+    _exp_is_top1 = bool(
+        _RANK_EQ_1_RE.search(exp_lower) or _LIMIT_1_RE.search(exp_lower)
+    )
+    _exp_limit_match = _LIMIT_N_RE.search(exp_lower)
+    _exp_limit_n = int(_exp_limit_match.group(1)) if _exp_limit_match else None
+    _exp_is_ordered_list = (
+        not _exp_is_top1
+        and (
+            (_exp_limit_n is not None and _exp_limit_n > 1)
+            or "order by" in exp_lower
+        )
+    )
+    if _gen_is_top1 and _exp_is_ordered_list:
+        _conf = 0.9 if _question_is_plural else 0.7
+        return (
+            "plural_top_n_collapse",
+            _conf,
+            (
+                f"Genie returns top-1 via RANK=1/LIMIT 1; "
+                f"GT returns ordered list"
+                + (f" (LIMIT {_exp_limit_n})" if _exp_limit_n else "")
+                + (
+                    "; question phrased as plural ('which ... have the "
+                    "highest')"
+                    if _question_is_plural
+                    else ""
+                )
+            ),
+        )
+
+    # 3. value_format_mismatch — WHERE literal on same column differs in
+    #    format. We compare the set of single-quoted literals in each
+    #    SQL; a mismatch where GT literal is a SHORT form (<=5 chars)
+    #    and Genie literal is a LONG form (>=6 chars) starting with the
+    #    same letter is the canonical "full-name vs code" pattern.
+    _exp_lits = set(_STRING_LITERAL_RE.findall(expected_sql))
+    _gen_lits = set(_STRING_LITERAL_RE.findall(generated_sql))
+    if _exp_lits and _gen_lits and _exp_lits != _gen_lits:
+        for _gl in _gen_lits:
+            if _gl in _exp_lits:
+                continue
+            for _el in _exp_lits:
+                if _el in _gen_lits:
+                    continue
+                if (
+                    len(_el) <= 5 and len(_gl) >= 6
+                    and _el[:1].lower() == _gl[:1].lower()
+                ):
+                    return (
+                        "value_format_mismatch",
+                        0.85,
+                        (
+                            f"Genie literal {_gl!r} differs from GT "
+                            f"literal {_el!r}; GT uses short form "
+                            f"({len(_el)} chars), Genie uses long form "
+                            f"({len(_gl)} chars)."
+                        ),
+                    )
+
+    # No pattern matched with sufficient confidence.
+    return None, 0.0, ""
+
+
 def _classify_sql_diff(ctx: dict) -> str:
     """Classify a failure's root cause by comparing expected vs generated SQL.
 
     Accepts either a ``sql_context`` dict (with ``expected_sql`` / ``generated_sql``
     keys) or a full row dict (with ``request`` / ``response`` keys).
     Falls back to ``"other"`` when the SQL pair is missing or no pattern matches.
+
+    T1.2: delegates to ``_detect_failure_pattern`` first; when a pattern
+    matcher fires with confidence >= 0.7, its label is returned instead
+    of the legacy bucket. This keeps the existing callers unchanged
+    while opportunistically surfacing more specific pattern labels when
+    they're available.
     """
+    _pattern_label, _pattern_conf, _pattern_evidence = _detect_failure_pattern(ctx)
+    if _pattern_label and _pattern_conf >= 0.7:
+        # Stash the evidence on the ctx so downstream cluster keying /
+        # logs can reference it. The return value stays a bare string
+        # for back-compat with legacy callers.
+        if isinstance(ctx, dict):
+            ctx.setdefault("_pattern_label", _pattern_label)
+            ctx.setdefault("_pattern_confidence", _pattern_conf)
+            ctx.setdefault("_pattern_evidence", _pattern_evidence)
+        return _pattern_label
     expected_sql = (ctx.get("expected_sql") or "").strip()
     generated_sql = (ctx.get("generated_sql") or "").strip()
 
@@ -1223,18 +1401,45 @@ def cluster_failures(
                     or row.get(f"rationale/{judge}")
                     or row.get("rationale", "")
                 )
-                judge_meta = (
-                    row.get(f"feedback/{judge}/metadata")
-                    or row.get(f"{judge}/metadata")
-                    or {}
-                )
+                # T0.1: instrument ASI extraction paths so operators can
+                # see *why* ASI metadata is or is not found per judge.
+                # In iteration-3 of the retail corpus, 100% of failures
+                # logged ``ASI metadata found: NO`` even though the
+                # scorers emit metadata. Log which source produced
+                # ``judge_meta`` so we can tell "scorer didn't emit it"
+                # apart from "MLflow didn't propagate it" apart from
+                # "rationale parse fallback worked".
+                _asi_source = "none"
+                judge_meta = row.get(f"feedback/{judge}/metadata")
+                if judge_meta:
+                    _asi_source = "feedback_metadata"
+                else:
+                    judge_meta = row.get(f"{judge}/metadata")
+                    if judge_meta:
+                        _asi_source = "row_metadata"
+                    else:
+                        judge_meta = {}
                 if not isinstance(judge_meta, dict):
                     try:
                         judge_meta = json.loads(judge_meta) if isinstance(judge_meta, str) else {}
+                        if judge_meta:
+                            _asi_source = f"{_asi_source}_json_parsed"
                     except (json.JSONDecodeError, TypeError):
                         judge_meta = {}
+                        _asi_source = f"{_asi_source}_json_parse_failed"
                 if not judge_meta:
-                    judge_meta = _parse_asi_from_rationale(rationale)
+                    _parsed = _parse_asi_from_rationale(rationale)
+                    if _parsed:
+                        judge_meta = _parsed
+                        _asi_source = "rationale_parse"
+                # Stash source on the row so downstream cluster-
+                # formation debug logs can surface "n/m failures had
+                # asi via feedback_metadata" vs "... via rationale_parse".
+                row.setdefault("_asi_extraction_log", []).append({
+                    "judge": judge,
+                    "source": _asi_source,
+                    "found": bool(judge_meta),
+                })
                 asi_failure_type = (
                     judge_meta.get("failure_type")
                     or row.get(f"metadata/{judge}/failure_type")
@@ -1290,6 +1495,20 @@ def cluster_failures(
                     except Exception:
                         logger.debug("classify_genie_shape_patterns raised", exc_info=True)
 
+                # T1.3: signal-quality metadata. Each failure carries
+                # booleans describing *how* its attribution was derived
+                # so cluster impact and the strategist can discount
+                # low-quality signals. Ratio of trusted signals is used
+                # by ``cluster_impact`` to scale the dampen multiplier.
+                _asi_present = bool(
+                    asi_failure_type and asi_failure_type not in ("other", "")
+                )
+                _result_fetched = True
+                _cmp = (sql_ctx or {}).get("comparison") or {}
+                _err_type = str(_cmp.get("error_type") or "").lower()
+                if _err_type in ("genie_result_unavailable",):
+                    _result_fetched = False
+
                 failure_entry: dict = {
                     "question_id": question_id,
                     "base_question_id": _base_qid,
@@ -1301,6 +1520,11 @@ def cluster_failures(
                     "asi_counterfactual_fix": asi_counterfactual,
                     "asi_wrong_clause": asi_wrong_clause,
                     "sql_context": sql_ctx,
+                    # T1.3: signal-quality metadata.
+                    "_signal_quality": {
+                        "asi_present": _asi_present,
+                        "result_fetched": _result_fetched,
+                    },
                 }
                 if isinstance(asi_join_assessment, dict) and asi_join_assessment.get("left_table"):
                     failure_entry["asi_join_assessment"] = asi_join_assessment
@@ -1361,6 +1585,73 @@ def cluster_failures(
                 resolution_method = "sql_diff"
         f["_resolved_root_cause"] = root
         f["_resolution_method"] = resolution_method
+
+        # T1.1: build a structured FailureAttribution record alongside
+        # the legacy ``_resolved_root_cause`` string so downstream can
+        # reason about attribution source, confidence, and competing
+        # hypotheses without re-deriving them. This is the foundation
+        # for pattern-aware clustering (T1.2) and signal-quality
+        # weighting (T1.3) — both now have a single canonical place
+        # to read from and stamp into.
+        _attrib_confidence: float
+        if resolution_method == "asi_metadata":
+            _attribution_source = "trace_evidence"
+            _attrib_confidence = 0.9
+        elif resolution_method == "asi_blame_set":
+            _attribution_source = "trace_evidence"
+            _attrib_confidence = 0.8
+        elif resolution_method == "rationale_pattern":
+            _attribution_source = "judge_text"
+            _attrib_confidence = 0.65
+        elif resolution_method == "sql_diff":
+            _attribution_source = "sql_diff"
+            # When the T1.2 pattern detector fires, the ctx was stamped
+            # with ``_pattern_confidence`` — use it so richer patterns
+            # read as higher-confidence attribution than the legacy
+            # bucket labels.
+            _attrib_confidence = float(
+                sql_context.get("_pattern_confidence", 0.5)
+            )
+        elif resolution_method == "empty_sql_shortcut":
+            _attribution_source = "heuristic"
+            _attrib_confidence = 1.0
+        else:
+            _attribution_source = "heuristic"
+            _attrib_confidence = 0.4
+
+        # Pull target asset from ASI blame_set (preferred — it names the
+        # exact metadata object) or pattern evidence (fallback — names
+        # the general bucket). Target kind is inferred from the asset
+        # shape: ``table.column`` → column; ``db.schema.table`` →
+        # table; etc.
+        _target_asset_id: str | None = None
+        _target_asset_kind: str | None = None
+        _blame_for_target = f.get("asi_blame_set")
+        if _blame_for_target:
+            if isinstance(_blame_for_target, list) and _blame_for_target:
+                _target_asset_id = str(_blame_for_target[0]).strip()
+            elif isinstance(_blame_for_target, str):
+                _target_asset_id = _blame_for_target.strip()
+            if _target_asset_id:
+                _n_dots = _target_asset_id.count(".")
+                if _n_dots >= 3:
+                    _target_asset_kind = "column"
+                elif _n_dots == 2:
+                    _target_asset_kind = "table"
+                else:
+                    _target_asset_kind = "pattern"
+
+        f["_attribution"] = {
+            "target_asset_kind": _target_asset_kind,
+            "target_asset_id": _target_asset_id,
+            "pattern_label": sql_context.get("_pattern_label") or None,
+            "attribution_source": _attribution_source,
+            "confidence": round(_attrib_confidence, 3),
+            "evidence_snippet": str(
+                sql_context.get("_pattern_evidence") or f.get("rationale", "")
+            )[:300],
+        }
+
         profile["root_causes"].append(root)
 
         if f.get("asi_blame_set"):
@@ -1427,8 +1718,48 @@ def cluster_failures(
 
     # ── 8a. Per-Question ASI Extraction Trace ───────────────────────────
     _cluster_debug = os.environ.get("CLUSTER_DEBUG", "1").lower() not in ("0", "false", "no")
+    # T3.15: disambiguate duplicate headers — the hard and soft passes
+    # both call cluster_failures with identical banner text, making log
+    # navigation ambiguous. Tag each banner with the signal_type.
+    _pass_tag = "HARD FAILURES" if signal_type == "hard" else "SOFT SIGNALS"
     if _cluster_debug and question_profiles:
-        lines = ["\n== ASI EXTRACTION TRACE ======================================================"]
+        # T0.1: aggregate source histogram so operators immediately see
+        # why ASI metadata is or isn't being found.
+        _asi_source_counts: dict[str, int] = {}
+        _total_judge_failures = 0
+        for _p in question_profiles.values():
+            for _f in _p.get("failures", []) or []:
+                _sctx = _f.get("sql_context") or {}
+                # _asi_extraction_log was stamped on the ROW not the
+                # failure; best-effort lookup via the failure payload.
+                # When absent (older paths), we still categorise as
+                # "unknown" so the histogram denominator is consistent
+                # with the judge-failure count.
+                _total_judge_failures += 1
+        # The log lives on the source row. Walk rows_df again if we
+        # still have them — otherwise aggregate is skipped (pattern is
+        # still visible per-row in verbose mode).
+        lines = [f"\n== ASI EXTRACTION TRACE ({_pass_tag}) =========================================="]
+        # Emit the aggregate source histogram — collected from
+        # ``_asi_extraction_log`` stamps on each source row (if the
+        # row dicts survived to here). When callers provide ``rows``
+        # in the eval_results we re-walk them.
+        _src_hist: dict[str, int] = {}
+        for _row in (eval_results.get("rows") or []):
+            for _log in _row.get("_asi_extraction_log") or []:
+                _src = str(_log.get("source", "unknown"))
+                _src_hist[_src] = _src_hist.get(_src, 0) + 1
+        if _src_hist:
+            _total = sum(_src_hist.values())
+            _hist_parts = [
+                f"{k}={v} ({100*v/_total:.0f}%)"
+                for k, v in sorted(_src_hist.items(), key=lambda kv: -kv[1])
+            ]
+            lines.append(
+                "|  ASI source histogram:     "
+                + ", ".join(_hist_parts)
+                + f"  (total judge failures: {_total})"
+            )
         if verbose:
             for qid, profile in question_profiles.items():
                 lines.append(f"\n--- Q: {qid} " + "-" * max(1, 60 - len(qid)))
@@ -1635,8 +1966,97 @@ def cluster_failures(
         })
 
         _ns = namespace if namespace else ("H" if signal_type == "hard" else "S")
+        # T1.12: precompute judge_failure_ratio per question, where the
+        # denominator is the count of NON-info judges (CAUSAL_WEIGHT keys
+        # minus INFO_ONLY_JUDGES) and the numerator is the number of
+        # non-info judges that failed for that question. The cluster-level
+        # mean drives the ``rank_clusters`` soft re-elevation decision.
+        from genie_space_optimizer.common.config import (
+            CAUSAL_WEIGHT as _CAUSAL_W,
+            INFO_ONLY_JUDGES as _INFO_ONLY,
+        )
+        _non_info_judges = {j for j in _CAUSAL_W.keys() if j not in _INFO_ONLY}
+        _non_info_total = max(len(_non_info_judges), 1)
+        _ratios: list[float] = []
+        for _qid in unique_qids:
+            _pj = question_profiles.get(_qid, {}).get("judges", set()) or set()
+            _failing_non_info = {j for j in _pj if j in _non_info_judges}
+            _ratios.append(len(_failing_non_info) / _non_info_total)
+        _mean_jfr = sum(_ratios) / len(_ratios) if _ratios else 0.0
+
+        # T1.3: compute cluster-level signal quality from the per-failure
+        # ``_signal_quality`` fields stamped in the failures list.
+        # ``asi_ratio`` is the fraction of failures backed by real ASI
+        # metadata (vs heuristic sql_diff); ``result_fetched_ratio``
+        # tracks whether Genie actually returned results. A cluster with
+        # low signal quality is less trusted by the strategist and
+        # cluster_impact.
+        _asi_flags: list[bool] = []
+        _result_flags: list[bool] = []
+        _attrib_sources: list[str] = []
+        _attrib_confidences: list[float] = []
+        _pattern_labels: list[str] = []
+        for _qid in unique_qids:
+            _prof_failures = question_profiles.get(_qid, {}).get("failures", []) or []
+            for _f in _prof_failures:
+                _sq = _f.get("_signal_quality") or {}
+                _asi_flags.append(bool(_sq.get("asi_present")))
+                _result_flags.append(bool(_sq.get("result_fetched", True)))
+                _attr = _f.get("_attribution") or {}
+                _src = _attr.get("attribution_source")
+                if _src:
+                    _attrib_sources.append(str(_src))
+                _attrib_confidences.append(float(_attr.get("confidence", 0.0)))
+                _pl = _attr.get("pattern_label")
+                if _pl:
+                    _pattern_labels.append(str(_pl))
+        _asi_ratio = (
+            sum(_asi_flags) / len(_asi_flags) if _asi_flags else 0.0
+        )
+        _result_fetched_ratio = (
+            sum(_result_flags) / len(_result_flags) if _result_flags else 1.0
+        )
+        # T1.1: aggregate attribution summary for the cluster — which
+        # sources did the failures come from, what's the mean
+        # confidence, which pattern labels fired? Exposed on
+        # cluster["attribution"] so the strategist prompt can show
+        # "this cluster is backed by 3 trace-evidence, 2 sql_diff"
+        # instead of a generic root_cause label.
+        _source_counts: dict[str, int] = {}
+        for _s in _attrib_sources:
+            _source_counts[_s] = _source_counts.get(_s, 0) + 1
+        _dominant_pattern: str | None = None
+        if _pattern_labels:
+            _pat_counts: dict[str, int] = {}
+            for _pl in _pattern_labels:
+                _pat_counts[_pl] = _pat_counts.get(_pl, 0) + 1
+            _dominant_pattern = max(
+                _pat_counts.items(), key=lambda kv: kv[1]
+            )[0]
+
+        # T2.1: cluster_signature is an iteration-independent identity
+        # hash that joins the cluster to its own history across runs.
+        # It's keyed on the base_question_ids + root_cause + asi blame
+        # so "the same cluster" (same failing questions, same blame)
+        # keeps the same signature even as cluster_id churns by
+        # iteration. Downstream readers (strategist, persistence
+        # summary) can use this to load prior-attempt outcomes for
+        # this same cluster without pattern-matching on the pretty ID.
+        import hashlib as _hashlib
+        _blame_sig = "|".join(
+            sorted(b.strip() for b in blame_str.split("|") if b.strip())
+        ) if blame_str else ""
+        _sig_parts = (
+            "|".join(sorted(_base_qids)),
+            root_cause or "",
+            _blame_sig,
+        )
+        _sig_bytes = "||".join(_sig_parts).encode("utf-8")
+        _cluster_signature = _hashlib.sha1(_sig_bytes).hexdigest()[:16]
+
         entry = {
             "cluster_id": f"{_ns}{len(clusters) + 1:03d}",
+            "cluster_signature": _cluster_signature,
             "root_cause": root_cause,
             "question_ids": unique_qids,
             "base_question_ids": sorted(_base_qids),
@@ -1652,6 +2072,35 @@ def cluster_failures(
             "asi_counterfactual_sources": _cf_sources,
             "sql_contexts": sql_contexts[:5],
             "question_traces": question_traces,
+            "mean_judge_failure_ratio": round(_mean_jfr, 4),
+            # T1.3: cluster signal-quality summary. Low values mean the
+            # cluster was assembled mostly from heuristic sql_diff
+            # attribution rather than real trace ASI, and/or from
+            # questions whose Genie results couldn't be fetched. Used
+            # by ``cluster_impact`` to dampen low-confidence clusters
+            # and surfaced in the strategist prompt so the LLM can
+            # prefer evidence-backed clusters.
+            "signal_quality": {
+                "asi_ratio": round(_asi_ratio, 3),
+                "result_fetched_ratio": round(_result_fetched_ratio, 3),
+                "combined": round(
+                    0.6 * _asi_ratio + 0.4 * _result_fetched_ratio, 3,
+                ),
+            },
+            # T1.1: aggregate attribution provenance for the cluster.
+            # ``source_counts`` tells the strategist what flavour of
+            # evidence backs this cluster ("mostly trace_evidence" vs
+            # "mostly heuristic"); ``mean_confidence`` summarises how
+            # sure we are; ``dominant_pattern_label`` names the
+            # specific pattern (e.g. ``time_window_pivot``) when one
+            # has a clear plurality.
+            "attribution": {
+                "source_counts": dict(_source_counts),
+                "mean_confidence": round(
+                    sum(_attrib_confidences) / len(_attrib_confidences), 3,
+                ) if _attrib_confidences else 0.0,
+                "dominant_pattern_label": _dominant_pattern,
+            },
         }
         if join_assessments:
             entry["join_assessments"] = join_assessments
@@ -1663,7 +2112,7 @@ def cluster_failures(
     if _cluster_debug and clusters:
         total_failures = sum(len(p["failures"]) for p in question_profiles.values())
         total_judges = len({f["judge"] for p in question_profiles.values() for f in p["failures"]})
-        lines = ["\n== CLUSTER FORMATION ========================================================="]
+        lines = [f"\n== CLUSTER FORMATION ({_pass_tag}) ============================================="]
         lines.append(f"|  Total failure entries:     {total_failures} (across {len(question_profiles)} questions, {total_judges} judges)")
         lines.append(f"|  Question profiles:         {len(question_profiles)}")
         lines.append(f"|  Cluster groups formed:     {len(clusters)}")
@@ -1720,6 +2169,15 @@ def cluster_impact(cluster: dict) -> float:
     soft cluster can still out-rank a tiny hard one. Without this, a 12-Q
     soft cluster with ``response_quality = 63%`` systematically lost to a
     2-Q hard cluster with a clean ``result_correctness`` pass.
+
+    T1.12: when a soft cluster's ``mean_judge_failure_ratio`` (failing
+    non-info judges / total non-info judges, averaged across its
+    questions) is at or above
+    ``SOFT_CLUSTER_REELEVATION_THRESHOLD`` — AND the cluster has already
+    been marked ``reelevated=True`` (see :func:`rank_clusters`) — the
+    0.5 dampening multiplier is skipped. This prevents multi-judge soft
+    clusters (e.g. 6-of-7 judges failing with arbiter verdict
+    ``genie_correct``) from being ranked below a small hard cluster.
     """
     from genie_space_optimizer.common.config import (
         CAUSAL_WEIGHT,
@@ -1738,9 +2196,27 @@ def cluster_impact(cluster: dict) -> float:
     has_cf = bool(cluster.get("asi_counterfactual_fixes"))
     fixability = FIXABILITY_WITH_COUNTERFACTUAL if has_cf else FIXABILITY_WITHOUT_COUNTERFACTUAL
 
-    soft_dampen = 0.5 if cluster.get("signal_type") == "soft" else 1.0
+    is_soft = cluster.get("signal_type") == "soft"
+    reelevated = bool(cluster.get("reelevated"))
+    soft_dampen = 0.5 if (is_soft and not reelevated) else 1.0
 
-    return q_count * causal * severity * fixability * soft_dampen
+    # T1.3: signal-quality dampen. Clusters built mostly from heuristic
+    # sql_diff attribution (no trace ASI, no fetched results) are less
+    # trusted — their "root cause" is a label, not evidence. Linearly
+    # interpolate between 0.6× (no trusted signals) and 1.0× (all
+    # trusted) so a low-confidence cluster still contributes but
+    # doesn't dominate a trusted cluster with a smaller question count.
+    # The floor is 0.6 so a cluster with no ASI and no results still
+    # participates in ranking (it's the only signal we have) but a
+    # trusted same-size cluster wins the tiebreak.
+    _sq = cluster.get("signal_quality") or {}
+    _combined = float(_sq.get("combined", 1.0))
+    signal_quality_dampen = 0.6 + 0.4 * max(0.0, min(1.0, _combined))
+
+    return (
+        q_count * causal * severity * fixability
+        * soft_dampen * signal_quality_dampen
+    )
 
 
 _RANK_TIEBREAK_THRESHOLD = 1.0
@@ -1754,6 +2230,7 @@ Anything larger is a clear winner and the scan may not override."""
 def rank_clusters(
     clusters: list[dict],
     recommended_levers: set[int] | frozenset[int] | None = None,
+    reflection_buffer: list[dict] | None = None,
 ) -> list[dict]:
     """Return *clusters* sorted by :func:`cluster_impact` (descending).
 
@@ -1767,11 +2244,68 @@ def rank_clusters(
     wins. Clusters separated by more than the threshold are never reordered,
     so the scan strictly breaks ties and never overrides a clear impact
     winner.
+
+    T2.1: when ``reflection_buffer`` is supplied, each cluster gains a
+    ``history`` dict with ``{first_seen_iter, last_seen_iter, attempts,
+    prior_outcomes}`` derived from reflection entries whose
+    ``source_cluster_signatures`` contains this cluster's
+    ``cluster_signature``. Strategist prompt builders downstream include
+    this so the LLM can reason about "this cluster has been tried N
+    times, rolled back N times with lever set X".
     """
+    from genie_space_optimizer.common.config import (
+        SOFT_CLUSTER_REELEVATION_THRESHOLD,
+    )
+
+    # T2.1: index reflection buffer by cluster signature up-front so we
+    # don't re-scan it per cluster.
+    _history_by_signature: dict[str, list[dict]] = {}
+    if reflection_buffer:
+        for _entry in reflection_buffer:
+            for _sig in _entry.get("source_cluster_signatures") or []:
+                _history_by_signature.setdefault(_sig, []).append(_entry)
+
     scored: list[dict] = []
     for c in clusters:
         enriched = dict(c)
-        enriched["impact_score"] = cluster_impact(c)
+        # T2.1: attach history derived from prior reflection entries.
+        _sig = enriched.get("cluster_signature")
+        if _sig and _sig in _history_by_signature:
+            _attempts = _history_by_signature[_sig]
+            _iters = sorted({a.get("iteration", -1) for a in _attempts if a.get("iteration") is not None})
+            enriched["history"] = {
+                "first_seen_iter": _iters[0] if _iters else None,
+                "last_seen_iter": _iters[-1] if _iters else None,
+                "attempts": len(_attempts),
+                "rolled_back_count": sum(1 for a in _attempts if not a.get("accepted")),
+                "prior_outcomes": [
+                    {
+                        "iteration": a.get("iteration"),
+                        "accepted": bool(a.get("accepted")),
+                        "lever_set": a.get("lever_set") or [],
+                        "accuracy_delta": a.get("accuracy_delta", 0.0),
+                        "rollback_reason": a.get("rollback_reason"),
+                    }
+                    for a in _attempts[-5:]  # cap the prompt footprint
+                ],
+            }
+        # T1.12: re-elevate soft clusters whose mean judge-failure ratio
+        # crosses the threshold BEFORE scoring so ``cluster_impact``
+        # skips the 0.5 dampen. Hard clusters are unaffected.
+        if enriched.get("signal_type") == "soft":
+            _jfr = float(enriched.get("mean_judge_failure_ratio", 0.0) or 0.0)
+            if _jfr >= SOFT_CLUSTER_REELEVATION_THRESHOLD:
+                enriched["reelevated"] = True
+                logger.info(
+                    "Soft cluster re-elevated [%s] root_cause=%s "
+                    "mean_judge_failure_ratio=%.3f >= threshold=%.3f "
+                    "(soft dampening skipped)",
+                    enriched.get("cluster_id", "?"),
+                    enriched.get("root_cause", "?"),
+                    _jfr,
+                    SOFT_CLUSTER_REELEVATION_THRESHOLD,
+                )
+        enriched["impact_score"] = cluster_impact(enriched)
         if recommended_levers:
             implied_lever = _map_to_lever(
                 enriched.get("root_cause", "other"),
@@ -6276,7 +6810,7 @@ def _call_llm_for_join_discovery(
                 "│ Join specs returned: %d\n"
                 "│ Rationale: %s\n"
                 "└─────────────────────────────────────────────────────────────────────────",
-                len(out), str(rationale)[:300],
+                len(out), _truncate_on_boundary(str(rationale), 300),
             )
             return out
         except json.JSONDecodeError:
@@ -6789,7 +7323,7 @@ def _call_llm_for_holistic_instructions(
                 "│ Example SQL proposals: %d\n"
                 "│ Rationale: %s\n"
                 "└─────────────────────────────────────────────────────────────────────────",
-                len(instruction_text), len(example_proposals), str(rationale)[:300],
+                len(instruction_text), len(example_proposals), _truncate_on_boundary(str(rationale), 300),
             )
             return {
                 "instruction_text": instruction_text,
@@ -7012,16 +7546,53 @@ def _try_parse_string_as_section_dict(text: str) -> dict[str, str] | None:
     return None
 
 
+def _truncate_on_boundary(text: str, max_len: int, ellipsis: str = "...") -> str:
+    """T3.16: Truncate ``text`` to at most ``max_len`` characters, preferring
+    a word boundary (whitespace or punctuation) over a mid-word cut.
+
+    If ``len(text) <= max_len`` the original string is returned unchanged
+    and no ellipsis is appended. Otherwise the function looks backwards
+    from ``max_len`` for the last run of whitespace or common sentence
+    punctuation (``.,;:!?)]}``) and cuts there — falling back to a hard
+    slice if no reasonable boundary exists within the last ~20% of the
+    window.
+    """
+    if text is None:
+        return ""
+    s = str(text)
+    if max_len <= 0:
+        return ""
+    if len(s) <= max_len:
+        return s
+    candidate = s[: max_len]
+    _lookback = max(1, max_len // 5)
+    _min_boundary = max_len - _lookback
+    boundary_idx = -1
+    for i in range(max_len - 1, _min_boundary - 1, -1):
+        ch = candidate[i]
+        if ch.isspace() or ch in ".,;:!?)]}":
+            boundary_idx = i + 1
+            break
+    if boundary_idx <= 0:
+        boundary_idx = max_len
+    return candidate[:boundary_idx].rstrip() + ellipsis
+
+
 def _preview_instruction_rewrite(rewrite: dict | str, max_chars: int = 200) -> str:
-    """Human-readable preview of an instruction rewrite for logging."""
+    """Human-readable preview of an instruction rewrite for logging.
+
+    T3.16: uses ``_truncate_on_boundary`` so previews no longer slice
+    through mid-word — prevents log lines like
+    ``ASSET ROUTING: use fact_sales whenev...``.
+    """
     if isinstance(rewrite, dict):
         parts = [
-            f"{k}: {v[:60]}..." if len(str(v)) > 60 else f"{k}: {v}"
+            f"{k}: {_truncate_on_boundary(str(v), 60)}" if len(str(v)) > 60 else f"{k}: {v}"
             for k, v in rewrite.items() if v
         ]
         preview = "; ".join(parts)
-        return preview[:max_chars] + ("..." if len(preview) > max_chars else "")
-    return str(rewrite)[:max_chars]
+        return _truncate_on_boundary(preview, max_chars, ellipsis="...")
+    return _truncate_on_boundary(str(rewrite), max_chars, ellipsis="...")
 
 
 def _call_llm_for_strategy(
@@ -7140,7 +7711,7 @@ def _call_llm_for_strategy(
         "│ Global instruction rewrite: %s\n"
         "│ Rationale: %s\n"
         "└─────────────────────────────────────────────────────────────────────────",
-        len(action_groups), _rewrite_desc, str(rationale)[:300],
+        len(action_groups), _rewrite_desc, _truncate_on_boundary(str(rationale), 300),
     )
     print(
         f"\n  Strategy produced {len(action_groups)} action group(s), "
@@ -7364,10 +7935,20 @@ def _call_llm_for_adaptive_strategy(
         # Tier 2.5: scope bound — one source cluster per AG.
         "The action group MUST target exactly ONE source cluster. Multiple "
         "failure signatures require multiple iterations, not one giant AG. "
-        "Set 'source_cluster_ids' to a list of length 1. If the same root cause "
-        "spans multiple clusters with the same blame set, pick the highest "
-        "impact one; the remaining clusters will be addressed in subsequent "
-        "iterations."
+        # T2.16: require an explicit primary_cluster_id plus optional
+        # secondary_cluster_ids. source_cluster_ids is still accepted for
+        # backward-compatible replay; validator promotes the first entry
+        # to primary_cluster_id and rejects cross-namespace spans
+        # (mixing H### with S###) unless secondary_cluster_ids was set.
+        "Set 'primary_cluster_id' to the single cluster this AG addresses "
+        "(H### for hard, S### for soft). If the AG legitimately spans "
+        "both hard and soft clusters that share a blame set, add the "
+        "cross-namespace IDs to 'secondary_cluster_ids'. For backward "
+        "compatibility you may instead populate 'source_cluster_ids' "
+        "with a list of length 1; the validator will migrate it to "
+        "primary_cluster_id. If the same root cause spans multiple "
+        "clusters with the same blame set, pick the highest impact one; "
+        "the remaining clusters will be addressed in subsequent iterations."
     )
 
     try:
@@ -7400,10 +7981,64 @@ def _call_llm_for_adaptive_strategy(
     _all_clusters_map: dict[str, dict] = {
         c.get("cluster_id", ""): c for c in list(clusters) + list(soft_signal_clusters) if c.get("cluster_id")
     }
+
+    def _cluster_namespace(_cid: str) -> str:
+        """T2.16: H vs S namespace for a cluster id (backward-compatible with bare C###)."""
+        if not _cid:
+            return ""
+        _ch = _cid[:1].upper()
+        return _ch if _ch in ("H", "S") else ""
+
     _validated_ags: list[dict] = []
     for _ag in action_groups:
         if not isinstance(_ag, dict):
             continue
+        # T2.16: normalise primary/secondary cluster IDs. LLMs that still
+        # emit ``source_cluster_ids`` (legacy) are auto-migrated: the
+        # first entry becomes primary, the rest secondaries. We also
+        # refuse implicit cross-namespace spans — if primary is H### but
+        # a secondary is S### (or vice versa) and the LLM did not
+        # explicitly declare secondary_cluster_ids, drop the cross-ns
+        # entries and log it.
+        _primary_id = str(_ag.get("primary_cluster_id") or "").strip()
+        _secondary_ids_raw = _ag.get("secondary_cluster_ids") or []
+        if not _primary_id:
+            _legacy_ids = [str(x) for x in (_ag.get("source_cluster_ids") or []) if x]
+            if _legacy_ids:
+                _primary_id = _legacy_ids[0]
+                if len(_legacy_ids) > 1 and not _secondary_ids_raw:
+                    _secondary_ids_raw = _legacy_ids[1:]
+                    logger.info(
+                        "T2.16: migrated legacy source_cluster_ids=%s -> "
+                        "primary=%s, secondary=%s",
+                        _legacy_ids, _primary_id, _secondary_ids_raw,
+                    )
+        if _primary_id:
+            _ag["primary_cluster_id"] = _primary_id
+            _primary_ns = _cluster_namespace(_primary_id)
+            _kept_secondaries: list[str] = []
+            _explicit_secondary = bool(_ag.get("secondary_cluster_ids"))
+            for _sid in _secondary_ids_raw:
+                _sid_str = str(_sid).strip()
+                if not _sid_str or _sid_str == _primary_id:
+                    continue
+                _sid_ns = _cluster_namespace(_sid_str)
+                if _sid_ns and _primary_ns and _sid_ns != _primary_ns and not _explicit_secondary:
+                    logger.warning(
+                        "T2.16: dropped implicit cross-namespace secondary %s "
+                        "(primary=%s, namespaces differ). Declare secondary_cluster_ids "
+                        "explicitly to span hard+soft.",
+                        _sid_str, _primary_id,
+                    )
+                    continue
+                _kept_secondaries.append(_sid_str)
+            if _kept_secondaries:
+                _ag["secondary_cluster_ids"] = _kept_secondaries
+            elif "secondary_cluster_ids" in _ag:
+                _ag["secondary_cluster_ids"] = []
+            # Mirror into source_cluster_ids so all downstream back-fill
+            # and printer code paths keep working without duplication.
+            _ag["source_cluster_ids"] = [_primary_id] + _kept_secondaries
         _src_ids = list(_ag.get("source_cluster_ids") or [])
         if len(_src_ids) <= 1:
             _validated_ags.append(_ag)
@@ -7456,7 +8091,7 @@ def _call_llm_for_adaptive_strategy(
         "└─────────────────────────────────────────────────────────────────────────",
         len(action_groups),
         _rewrite_desc,
-        str(rationale)[:300],
+        _truncate_on_boundary(str(rationale), 300),
     )
 
     # Tier 2.1 + 2.12: back-fill ``affected_questions`` from
@@ -7464,6 +8099,13 @@ def _call_llm_for_adaptive_strategy(
     # ``base_question_ids`` (real benchmark ids) over the internal
     # ``question_ids`` (which may carry :vN suffixes) so outward-facing
     # AG fields never leak synthetic tokens.
+    #
+    # T1.10: also populate ``affected_base_question_ids`` on every AG —
+    # downstream code that gates pass/fail accounting (slice sampler,
+    # persistence counter) uses base qids, while row-targeting uses the
+    # suffixed ``affected_questions``. Keeping both lists on the AG is
+    # cheap and eliminates the last source of ``_003`` vs ``_003:v2``
+    # confusion across hard/soft passes.
     _all_clusters = list(clusters) + list(soft_signal_clusters)
     _clusters_by_id = {
         c.get("cluster_id", ""): c for c in _all_clusters if c.get("cluster_id")
@@ -7471,18 +8113,41 @@ def _call_llm_for_adaptive_strategy(
     for _ag in action_groups:
         if not isinstance(_ag, dict):
             continue
-        if _ag.get("affected_questions"):
-            continue
         _source_cids = _ag.get("source_cluster_ids") or []
-        if not _source_cids:
-            continue
-        _qids: set[str] = set()
+        _base_qids_union: set[str] = set()
+        _suffixed_qids_union: set[str] = set()
         for _cid in _source_cids:
             _src = _clusters_by_id.get(str(_cid))
             if _src:
-                _qids.update(
-                    _src.get("base_question_ids") or _src.get("question_ids", []) or []
-                )
+                _base_qids_union.update(_src.get("base_question_ids") or [])
+                _suffixed_qids_union.update(_src.get("question_ids") or [])
+        if _base_qids_union and not _ag.get("affected_base_question_ids"):
+            _ag["affected_base_question_ids"] = sorted(_base_qids_union)
+
+        # T2.16: primary-cluster coverage assertion. After backfill, the
+        # AG's affected_base_question_ids MUST be a superset of the
+        # primary cluster's base_question_ids. If the LLM returned a
+        # shrunk list (e.g. AG1 with primary=H001 but only [_001, _006]
+        # while H001 covers {_001, _003, _007, _009}), back-fill the
+        # missing entries and log a warning so it's visible in runs.
+        _primary_id_check = str(_ag.get("primary_cluster_id") or "").strip()
+        if _primary_id_check:
+            _primary_cluster = _clusters_by_id.get(_primary_id_check)
+            if _primary_cluster:
+                _primary_base = set(_primary_cluster.get("base_question_ids") or [])
+                _current_base = set(_ag.get("affected_base_question_ids") or [])
+                _missing = _primary_base - _current_base
+                if _missing:
+                    _ag["affected_base_question_ids"] = sorted(_current_base | _primary_base)
+                    logger.warning(
+                        "T2.16: AG affected_base_question_ids did not cover primary "
+                        "cluster %s — added %d missing base qid(s) %s",
+                        _primary_id_check, len(_missing), sorted(_missing),
+                    )
+
+        if _ag.get("affected_questions"):
+            continue
+        _qids: set[str] = set(_base_qids_union) or set(_suffixed_qids_union)
         if _qids:
             _ag["affected_questions"] = sorted(_qids)
             logger.info(
@@ -7504,13 +8169,13 @@ def _call_llm_for_adaptive_strategy(
         _out_lines.append(f"|  {'Levers:':<28s} {', '.join(levers)}")
         _out_lines.append(f"|  {'Affected Questions:':<28s} {len(qs)} — {', '.join(qs[:5])}")
         _out_lines.append(f"|  {'Escalation:':<28s} {ag.get('escalation', 'none') or 'none'}")
-        _out_lines.append(f"|  {'Rationale:':<28s} {str(rationale)[:200]}")
+        _out_lines.append(f"|  {'Rationale:':<28s} {_truncate_on_boundary(str(rationale), 200)}")
         if global_rewrite:
-            _out_lines.append(f"|  {'Instruction Rewrite:':<28s} {_rewrite_preview}...")
+            _out_lines.append(f"|  {'Instruction Rewrite:':<28s} {_rewrite_preview}")
     else:
         _out_lines.append("|  No action group produced")
         if rationale:
-            _out_lines.append(f"|  {'Rationale:':<28s} {str(rationale)[:200]}")
+            _out_lines.append(f"|  {'Rationale:':<28s} {_truncate_on_boundary(str(rationale), 200)}")
     _out_lines.append(f"{'=' * _W}")
     print("\n".join(_out_lines))
 
@@ -8709,6 +9374,8 @@ def _generate_lever6_proposal(
             logger.warning("Lever 6: SQL snippet has invalid identifiers: %s", violations)
             return None
 
+        _target_table_hint = str(llm_result.get("target_table", "") or "").strip()
+        _cluster_id_hint = cluster.get("cluster_id", "?")
         if spark is not None or (w is not None and warehouse_id):
             from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
 
@@ -8718,11 +9385,32 @@ def _generate_lever6_proposal(
                 w=w, warehouse_id=warehouse_id,
             )
             if not _valid_result[0]:
-                logger.warning("Lever 6: SQL snippet failed execution validation: %s", _valid_result[1])
+                # T2.14: every call to validate_sql_snippet now has an
+                # outcome log line so runs can grep FAILED vs PASSED.
+                logger.info(
+                    "Lever 6 [%s]: snippet validation (kind=%s, target=%s): FAILED — %s",
+                    _cluster_id_hint, snippet_type,
+                    _target_table_hint or "n/a",
+                    _valid_result[1],
+                )
                 return None
             sql_raw = _valid_result[2] if len(_valid_result) > 2 else sql_raw
             _validation_passed = True
+            logger.info(
+                "Lever 6 [%s]: snippet validation (kind=%s, target=%s): PASSED",
+                _cluster_id_hint, snippet_type,
+                _target_table_hint or "n/a",
+            )
         else:
+            # T2.14: explicit log line for the "no backend" branch so the
+            # absence of a PASSED line no longer looks like a silent skip.
+            logger.info(
+                "Lever 6 [%s]: snippet validation (kind=%s, target=%s): SKIPPED "
+                "(no spark/warehouse backend; applier gate will reject unless "
+                "validation_passed=True is stamped upstream)",
+                _cluster_id_hint, snippet_type,
+                _target_table_hint or "n/a",
+            )
             # No execution backend: propose without execute-validation.
             # The applier-side gate (Tier 2.8) will reject this unless
             # ``validation_passed=True`` is explicitly set by the caller.
@@ -9276,8 +9964,19 @@ def _convert_instructions_to_sql_expressions(
             )
             if not valid[0]:
                 rejected_by_reason["sql_invalid"] = rejected_by_reason.get("sql_invalid", 0) + 1
+                # T2.14: surface miner-path validation failures at INFO as
+                # well, so the loop log isn't silent about dropped
+                # snippets. The debug line is retained for full detail.
+                logger.info(
+                    "Lever 6 [miner]: snippet validation (kind=%s): FAILED — %s",
+                    snippet_type, valid[1],
+                )
                 logger.debug("miner: sql_snippet rejected: %s — %s", sql[:80], valid[1])
                 continue
+            logger.info(
+                "Lever 6 [miner]: snippet validation (kind=%s): PASSED",
+                snippet_type,
+            )
             prefixed_sql = valid[2] if len(valid) > 2 else sql
             buckets["sql_snippet"].append({
                 "snippet_type": snippet_type,
@@ -10649,6 +11348,7 @@ def generate_proposals_from_strategy(
                         "ambiguity_detected": False,
                     },
                     "provenance": {**provenance_base, "patch_type": "rewrite_instruction"},
+                    "invoked_levers": sorted(invoked_levers),
                 })
 
             elif instruction_guidance:
@@ -10709,6 +11409,7 @@ def generate_proposals_from_strategy(
                         "ambiguity_detected": False,
                     },
                     "provenance": {**provenance_base, "patch_type": "rewrite_instruction"},
+                    "invoked_levers": sorted(invoked_levers),
                 })
 
             # ── Lever 5 example_sql — cluster-driven synthesis intercept ──

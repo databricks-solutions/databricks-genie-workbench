@@ -166,10 +166,86 @@ CONNECTION_POOL_SIZE = 20
 
 MAX_ITERATIONS = 5
 SLICE_GATE_TOLERANCE = 15.0
-ENABLE_SLICE_GATE: bool = False
+ENABLE_SLICE_GATE: bool = True
+"""T2.15: re-enabled after iteration-1 log showed a 3-patch / 3-lever AG
+applied with zero intermediate regression checks. Combined with
+``SLICE_GATE_TOLERANCE_SMALL_CORPUS`` below, small-corpus noise is
+absorbed without suppressing the gate."""
 SLICE_GATE_MIN_REDUCTION = 0.5
 REGRESSION_THRESHOLD = 5.0
 MAX_NOISE_FLOOR = 5.0
+SLICE_GATE_TOLERANCE_SMALL_CORPUS = max(REGRESSION_THRESHOLD * 2, MAX_NOISE_FLOOR)
+"""T2.15: effective slice-gate tolerance when the full-scope corpus is
+smaller than ``SLICE_GATE_SMALL_CORPUS_ROWS``. Wider than the normal
+tolerance so a single-row swing doesn't spuriously fail the gate on
+22-row corpora."""
+SLICE_GATE_SMALL_CORPUS_ROWS = 30
+
+ENABLE_REWRITE_SECTION_SPLIT: bool = True
+"""T1.11: when True, a ``rewrite_instruction`` patch without explicit
+``escalation=full_rewrite`` is parsed into its canonical section headers
+(using ``INSTRUCTION_SECTION_ORDER``) and emitted as per-section
+``update_instruction_section`` patches, routed to the owning lever via
+``LEVER_TO_SECTIONS``. Only content with no canonical header or sections
+explicitly named CONSTRAINTS in the rewrite are merged into CONSTRAINTS.
+Set False to revert to the legacy ``collapse into CONSTRAINTS`` behaviour
+without a code revert."""
+
+SOFT_CLUSTER_REELEVATION_THRESHOLD = 0.6
+"""T1.12: when a soft cluster's mean ``judge_failure_ratio`` (failing
+non-info judges / total non-info judges) is at or above this threshold,
+the 0.5 soft-dampening multiplier is bypassed during ``rank_clusters``
+and the cluster is marked ``reelevated=True``. Prevents multi-judge
+soft clusters (e.g. 6-of-7 judges failing with arbiter verdict
+`genie_correct`) from being ranked below a small hard cluster."""
+
+OPTIMIZATION_OBJECTIVE: str = "pre_arbiter"
+"""T0.3: which accuracy metric the gate optimizes.
+
+Values:
+  - ``"pre_arbiter"`` (default): the gate's primary signal is the
+    pre-arbiter ``result_correctness`` rate (raw ``yes/no`` without any
+    arbiter rescue). Post-arbiter accuracy is still checked as a
+    *guardrail* (no catastrophic regression), but a patch that improves
+    the underlying SQL without changing the arbiter verdict is ACCEPTED.
+  - ``"post_arbiter"``: legacy — the gate compares arbiter-adjusted
+    ``result_correctness`` and per-judge scores. This is what caused
+    iter-1..iter-3 of the retail_store_sales_analytics run to flap: the
+    pre-arbiter rate was stuck at 40–43% while the post-arbiter rate
+    swung 62–73% on noise, and the loop optimised against the noisy
+    signal.
+  - ``"blended"``: accept iff the pre-arbiter paired test passes AND
+    post-arbiter does not regress by more than the regression threshold.
+    Strictest; useful once both signals are trustworthy.
+
+The gate implementation lives in ``harness.py:_run_gate_checks`` /
+``_run_full_eval``; it reads this flag to choose which numerator to
+compare against ``best_accuracy``. Unknown values fall back to
+``post_arbiter`` with a warning."""
+
+OPTIMIZATION_OBJECTIVE_POST_ARBITER_GUARDRAIL_PP: float = 5.0
+"""T0.3: when ``OPTIMIZATION_OBJECTIVE='pre_arbiter'`` the post-arbiter
+accuracy is still allowed to move downward, but no more than this many
+percentage points below the previous best. Protects against pathological
+patches that improve pre-arbiter by one question while silently
+regressing two others that the arbiter used to rescue.
+
+Set to ``math.inf`` to disable the guardrail entirely (accept any
+pre-arbiter improvement regardless of post-arbiter impact)."""
+
+SHADOW_APPLY: bool = False
+"""T3.3: when True, clone the Genie space to a shadow, apply patches
+there, evaluate the shadow, and promote on pass. When False (default),
+patches apply in-place with rollback on regression.
+
+Off by default because it doubles Genie API calls per iteration and
+the existing rollback path is cheap. Recommended ON for high-stakes
+spaces (live production) where even a brief "bad state" between apply
+and rollback is unacceptable.
+
+The promotion mechanism is not yet wired to the Genie SDK's space-clone
+API. When enabled but unwired, the harness logs a warning and falls
+back to in-place apply."""
 PLATEAU_ITERATIONS = 2
 CONSECUTIVE_ROLLBACK_LIMIT = 3
 """Stop the lever loop after this many consecutive rollbacks, indicating
@@ -2167,7 +2243,7 @@ STRATEGIST_PROMPT = (
     '    {\n'
     '      "id": "AG<N>",\n'
     '      "root_cause_summary": "<one sentence>",\n'
-    '      "source_cluster_ids": ["C001"],\n'
+    '      "source_cluster_ids": ["H001"],\n'
     '      "affected_questions": ["<question_id>"],\n'
     '      "priority": 1,\n'
     '      "lever_directives": {\n'
@@ -2211,6 +2287,9 @@ STRATEGIST_PROMPT = (
     '  Only include sections you want to ADD or REPLACE. Omitted sections are PRESERVED unchanged.\n'
     '  Values are plain-text bullet lists (no Markdown). Empty string means delete the section.\n'
     '- priority 1 = most impactful. Order by affected question count.\n'
+    '- Cluster IDs use H### for hard-failure clusters and S### for soft-signal clusters. '
+    'Populate "source_cluster_ids" using the exact IDs from the provided cluster list. '
+    'Legacy C### ids (from old runs) will also be accepted.\n'
     '- If no actionable improvements:\n'
     '  {"action_groups": [], "global_instruction_rewrite": {}, "rationale": "No actionable failures"}\n'
     '</output_schema>'
@@ -2299,8 +2378,8 @@ STRATEGIST_TRIAGE_PROMPT = (
     '<examples>\n'
     '<example>\n'
     'Input: Two failure clusters:\n'
-    '  C001: wrong_column on dim_product.product_name vs product_title (3 questions)\n'
-    '  C002: missing_join between fact_sales and dim_product (2 questions, overlapping with C001)\n'
+    '  H001: wrong_column on dim_product.product_name vs product_title (3 questions)\n'
+    '  H002: missing_join between fact_sales and dim_product (2 questions, overlapping with H001)\n'
     '\n'
     'Output:\n'
     '{\n'
@@ -2309,7 +2388,7 @@ STRATEGIST_TRIAGE_PROMPT = (
     '      "id": "AG1",\n'
     '      "root_cause_summary": "Genie selects product_title instead of product_name and '
     'misses the fact_sales→dim_product join because column synonyms and join spec are absent",\n'
-    '      "source_cluster_ids": ["C001", "C002"],\n'
+    '      "source_cluster_ids": ["H001", "H002"],\n'
     '      "affected_questions": ["Q3", "Q7", "Q12"],\n'
     '      "priority": 1,\n'
     '      "levers_needed": [1, 4, 5],\n'
@@ -2318,7 +2397,7 @@ STRATEGIST_TRIAGE_PROMPT = (
     '    }\n'
     '  ],\n'
     '  "global_instruction_guidance": "BUSINESS DEFINITIONS: product name disambiguation; JOIN GUIDANCE: fact_sales to dim_product join path",\n'
-    '  "rationale": "C001 and C002 both blame dim_product — merged into one AG. '
+    '  "rationale": "H001 and H002 both blame dim_product — merged into one AG. '
     'Lever 1 fixes the synonym, Lever 4 adds the join spec, Lever 5 adds an example SQL."\n'
     '}\n'
     '</example>\n'
@@ -2331,7 +2410,7 @@ STRATEGIST_TRIAGE_PROMPT = (
     '    {\n'
     '      "id": "AG<N>",\n'
     '      "root_cause_summary": "<one sentence>",\n'
-    '      "source_cluster_ids": ["C001", "C003"],\n'
+    '      "source_cluster_ids": ["H001", "H003"],\n'
     '      "affected_questions": ["<question_id>"],\n'
     '      "priority": 1,\n'
     '      "levers_needed": [1, 4, 5],\n'
@@ -2751,7 +2830,7 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     '    {\n'
     '      "id": "AG<iteration_number>",\n'
     '      "root_cause_summary": "<one sentence>",\n'
-    '      "source_cluster_ids": ["C001"],\n'
+    '      "source_cluster_ids": ["H001"],\n'
     '      "affected_questions": ["<question_id>"],\n'
     '      "priority": 1,\n'
     '      "lever_directives": {\n'
@@ -2792,6 +2871,9 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     '\n'
     'Rules:\n'
     '- EXACTLY one action group. Pick the single highest-impact fix.\n'
+    '- Cluster IDs use H### for hard-failure clusters and S### for soft-signal clusters. '
+    'Populate "source_cluster_ids" using the exact IDs from the provided cluster list. '
+    'Legacy C### ids are accepted during replay of old iterations.\n'
     '- "lever_directives" keys "1"-"6". Only include levers with work to do.\n'
     '- "sections" keys from structured metadata schema.\n'
     '- Lever 2 uses same column format as Lever 1. Lever 3: {"functions": [...]}.\n'
@@ -2924,6 +3006,7 @@ LOW_RISK_PATCHES = {
 
 MEDIUM_RISK_PATCHES = {
     "update_instruction",
+    "update_instruction_section",
     "rewrite_instruction",
     "remove_instruction",
     "rename_column_alias",
@@ -3439,6 +3522,12 @@ PATCH_TYPES = {
     },
     "rewrite_instruction": {
         "type": "rewrite_instruction",
+        "scope": "genie_config",
+        "risk_level": "medium",
+        "affects": ["instructions"],
+    },
+    "update_instruction_section": {
+        "type": "update_instruction_section",
         "scope": "genie_config",
         "risk_level": "medium",
         "affects": ["instructions"],

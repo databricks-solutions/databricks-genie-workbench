@@ -45,6 +45,8 @@ from genie_space_optimizer.common.config import (
     ENABLE_PREFLIGHT_EXAMPLE_SQL_SYNTHESIS,
     ENABLE_PROMPT_MATCHING_AUTO_APPLY,
     ENABLE_SLICE_GATE,
+    SLICE_GATE_SMALL_CORPUS_ROWS,
+    SLICE_GATE_TOLERANCE_SMALL_CORPUS,
     FINALIZE_REPEATABILITY_PASSES,
     GENIE_CORRECT_CONFIRMATION_THRESHOLD,
     GT_REPAIR_PROMPT,
@@ -57,9 +59,12 @@ from genie_space_optimizer.common.config import (
     MAX_NOISE_FLOOR,
     NEITHER_CORRECT_QUARANTINE_THRESHOLD,
     NEITHER_CORRECT_REPAIR_THRESHOLD,
+    OPTIMIZATION_OBJECTIVE,
+    OPTIMIZATION_OBJECTIVE_POST_ARBITER_GUARDRAIL_PP,
     PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS,
     PROPAGATION_WAIT_SECONDS,
     REGRESSION_THRESHOLD,
+    SHADOW_APPLY,
     SLICE_GATE_MIN_REDUCTION,
     SLICE_GATE_TOLERANCE,
     format_mlflow_template,
@@ -222,18 +227,239 @@ _PATCH_TYPE_LABELS: dict[str, str] = {
 }
 
 
-def _fmt_patch(idx: int, patch: dict, action: dict) -> str:
-    """Format a single applied patch into a readable multi-line string."""
+def _compute_lever_efficacy_prior(
+    reflection_buffer: list[dict],
+) -> dict:
+    """T2.3: Summarise lever efficacy from the current run's history.
+
+    Returns a dict keyed on ``"lever_N"`` with stats:
+      - ``attempts``:        number of times this lever was tried
+      - ``accepted``:        number of attempts that passed the gate
+      - ``acceptance_rate``: accepted / attempts
+      - ``mean_delta``:      mean accuracy_delta across all attempts
+      - ``examples``:        up to 3 recent (iteration, accepted, delta,
+                             root_cause) tuples for the strategist prompt
+
+    The summary is computed in-memory from the reflection buffer; a
+    future iteration can persist this across runs as
+    ``genie_opt_lever_efficacy`` (Delta table) and seed the strategist
+    with cross-run priors. For now it makes the current-run evidence
+    visible which is already more signal than the strategist has today.
+    """
+    stats: dict[str, dict] = {}
+    for entry in reflection_buffer:
+        _levers = entry.get("lever_set") or entry.get("levers") or []
+        if not _levers:
+            continue
+        _accepted = bool(entry.get("accepted"))
+        _delta = float(entry.get("accuracy_delta", 0.0) or 0.0)
+        _rc = str(entry.get("root_cause", ""))[:40]
+        _iter = entry.get("iteration")
+        for _l in _levers:
+            try:
+                _key = f"lever_{int(_l)}"
+            except (TypeError, ValueError):
+                continue
+            bucket = stats.setdefault(
+                _key,
+                {"attempts": 0, "accepted": 0, "delta_sum": 0.0, "examples": []},
+            )
+            bucket["attempts"] += 1
+            if _accepted:
+                bucket["accepted"] += 1
+            bucket["delta_sum"] += _delta
+            bucket["examples"].append({
+                "iteration": _iter,
+                "accepted": _accepted,
+                "accuracy_delta": round(_delta, 1),
+                "root_cause": _rc,
+            })
+    # Post-process: compute rates + trim examples.
+    out: dict[str, dict] = {}
+    for _key, b in stats.items():
+        _att = max(b["attempts"], 1)
+        out[_key] = {
+            "attempts": b["attempts"],
+            "accepted": b["accepted"],
+            "acceptance_rate": round(b["accepted"] / _att, 3),
+            "mean_delta": round(b["delta_sum"] / _att, 2),
+            "examples": b["examples"][-3:],
+        }
+    return out
+
+
+def _compute_eval_variance(
+    full_result_1: dict,
+    full_result_2: dict | None,
+) -> dict:
+    """T0.2: Estimate run-to-run variance of two confirmation evals.
+
+    Compares the per-question pre-arbiter verdicts from two evaluation
+    runs against the same Genie space. Returns a dict with:
+
+    - ``disagreed_qids``: list[str] — questions that flipped pass<->fail.
+    - ``disagreement_ratio``: float in [0,1] — |disagreed| / total_scored.
+    - ``total_scored``: int — questions scored in both runs.
+    - ``mean_pre_arbiter_acc``: float — average pre-arbiter rc accuracy.
+
+    When ``full_result_2`` is ``None`` (confirmation skipped because the
+    first run already improved) the helper returns zeros — variance
+    cannot be estimated from a single run and the gate falls back to the
+    legacy single-run comparison.
+    """
+    if not full_result_2:
+        return {
+            "disagreed_qids": [],
+            "disagreement_ratio": 0.0,
+            "total_scored": 0,
+            "mean_pre_arbiter_acc": float(
+                full_result_1.get("pre_arbiter_accuracy",
+                                  full_result_1.get("overall_accuracy", 0.0))
+            ),
+        }
+
+    def _pre_arbiter_verdicts(fr: dict) -> dict[str, bool]:
+        """Build ``qid -> pass`` map using raw result_correctness only."""
+        out: dict[str, bool] = {}
+        for row in fr.get("rows", []) or []:
+            rq = row.get("request") or {}
+            if isinstance(rq, str):
+                try:
+                    rq = json.loads(rq)
+                except (json.JSONDecodeError, TypeError):
+                    rq = {}
+            rqk = rq.get("kwargs", {}) if isinstance(rq, dict) else {}
+            qid = str(
+                row.get("inputs/question_id")
+                or (row.get("inputs") or {}).get("question_id", "")
+                or row.get("question_id")
+                or rqk.get("question_id")
+                or (rq.get("question_id") if isinstance(rq, dict) else None)
+                or ""
+            )
+            if not qid:
+                continue
+            rc = str(
+                row.get("result_correctness/value", row.get("result_correctness", ""))
+            ).lower()
+            if rc == "excluded":
+                continue
+            err_type = str(
+                row.get("outputs/comparison/error_type")
+                or row.get("comparison/error_type")
+                or row.get("comparison.error_type")
+                or ""
+            ).lower()
+            if err_type in ("both_empty", "genie_result_unavailable"):
+                continue
+            out[qid] = rc in ("yes", "true", "1", "1.0")
+        return out
+
+    v1 = _pre_arbiter_verdicts(full_result_1)
+    v2 = _pre_arbiter_verdicts(full_result_2)
+    shared = set(v1) & set(v2)
+    disagreed = sorted(qid for qid in shared if v1[qid] != v2[qid])
+    total_scored = len(shared)
+    ratio = len(disagreed) / total_scored if total_scored else 0.0
+    mean_pre = (
+        float(full_result_1.get("pre_arbiter_accuracy", 0.0))
+        + float(full_result_2.get("pre_arbiter_accuracy", 0.0))
+    ) / 2.0
+    return {
+        "disagreed_qids": disagreed,
+        "disagreement_ratio": ratio,
+        "total_scored": total_scored,
+        "mean_pre_arbiter_acc": mean_pre,
+    }
+
+
+def _paired_question_test(
+    prev_failures: set[str],
+    new_failures: set[str],
+) -> dict:
+    """T0.2: Paired per-question sign test on pre-arbiter verdicts.
+
+    Given the set of failing question ids before and after a patch
+    application, compute:
+      - ``flipped_to_pass``:  questions failing before but passing after
+      - ``flipped_to_fail``:  questions passing before but failing after
+      - ``stable_fail``:      failing in both
+      - ``net_improvement``:  flipped_to_pass - flipped_to_fail
+      - ``significant``:      True iff the sign of the difference is
+        unambiguous given the minimum-effect threshold. For our typical
+        20–30 row corpus we accept ``net_improvement >= 2`` as
+        significant, and ``net_improvement >= max(3, K * 0.15)`` for
+        larger corpora. This is a cheap stand-in for a real binomial
+        test; once we're off the tiny-corpus regime we can tighten it
+        to a proper McNemar computation.
+    """
+    _flipped_to_pass = prev_failures - new_failures
+    _flipped_to_fail = new_failures - prev_failures
+    _stable_fail = prev_failures & new_failures
+    net = len(_flipped_to_pass) - len(_flipped_to_fail)
+    _total_touched = len(_flipped_to_pass) + len(_flipped_to_fail)
+    # Minimum-effect threshold — on a 22-row corpus even a 2-question
+    # swing (~9%) is outside the run-to-run variance we've observed, so
+    # require net >= 2 or net <= -2. On larger corpora demand a larger
+    # effect.
+    _min_effect = max(2, int(round(_total_touched * 0.15)))
+    significant = abs(net) >= _min_effect
+    return {
+        "flipped_to_pass": sorted(_flipped_to_pass),
+        "flipped_to_fail": sorted(_flipped_to_fail),
+        "stable_fail": sorted(_stable_fail),
+        "net_improvement": net,
+        "significant": significant,
+        "min_effect": _min_effect,
+    }
+
+
+def _iteration_label(counter: int) -> str:
+    """T3.17: Unified label for iteration_counter in log banners.
+
+    The lever-loop's ``iteration_counter`` is 0-indexed (0 is the first
+    loop body iteration, attempt #1). Historically some banners printed
+    the raw counter ("Iteration 0", "Iteration 1") while others printed
+    ``counter + 1`` ("Iteration 1", "Iteration 2"), and operators had
+    no reliable way to tell which one they were reading. This helper
+    renders a single canonical form: ``index 0 / attempt 1``.
+    """
+    try:
+        idx = int(counter)
+    except (TypeError, ValueError):
+        idx = 0
+    attempt = idx + 1
+    return f"index {idx} / attempt {attempt}"
+
+
+def _fmt_patch(idx: int, patch: dict, action: dict, entry: dict | None = None) -> str:
+    """Format a single applied patch into a readable multi-line string.
+
+    T2.13: when ``entry`` is provided and carries a distinct
+    ``applied_patch_type`` (i.e. the applier transformed the proposal,
+    as with the rewrite_instruction downgrade splitter), the header
+    prints both types so the log is honest about what actually ran.
+    """
     ptype = patch.get("type", action.get("action_type", "?"))
+    applied_ptype = None
+    applied_detail = None
+    if entry:
+        applied_ptype = entry.get("applied_patch_type")
+        applied_detail = entry.get("applied_patch_detail")
     label = _PATCH_TYPE_LABELS.get(ptype, ptype)
     table = patch.get("table") or patch.get("target") or ""
     column = patch.get("column", "")
     target = f"{table}.{column}" if column else table
-    short_target = target.rsplit(".", 1)[-1] if "." in target else target
 
-    lines = [f"|  [{idx}] {label}"]
+    if applied_ptype and applied_ptype != ptype:
+        applied_label = _PATCH_TYPE_LABELS.get(applied_ptype, applied_ptype)
+        lines = [f"|  [{idx}] {label} -> {applied_label} (T2.13 applier-side transform)"]
+    else:
+        lines = [f"|  [{idx}] {label}"]
     if target:
         lines.append(f"|      Target: {target}")
+    if applied_detail:
+        lines.append(f"|      Applied: {applied_detail}")
 
     struct = patch.get("structured_sections") or {}
     if struct and isinstance(struct, dict):
@@ -4281,6 +4507,7 @@ def _build_reflection_entry(
     root_cause: str = "",
     blame_set: Any = None,
     source_cluster_ids: list[str] | None = None,
+    source_cluster_signatures: list[str] | None = None,
 ) -> dict:
     """Build a structured reflection dict for the adaptive loop memory.
 
@@ -4311,11 +4538,30 @@ def _build_reflection_entry(
 
     patch_summary_parts: list[str] = []
     do_not_retry: list[str] = []
+    # T3.1: minimum-viable leave-one-out attribution. Without running
+    # actual re-evals (expensive, would need full harness wiring), we
+    # heuristically rank patch suspicion by the T2.4 collateral-risk
+    # flag. Patches that touched assets depended on by many passing
+    # questions are the prime suspects when a rollback is needed;
+    # low-risk patches are kept out of the DO-NOT-RETRY set so the
+    # strategist can re-propose them in a different combination.
+    #
+    # When every patch is low-risk, fall back to blanket DO-NOT-RETRY
+    # (the historical behaviour) — at least one of them regressed.
+    _high_risk = [p for p in patches if p.get("high_collateral_risk")]
+    _suspicious = _high_risk if _high_risk else patches
+    _suspicious_keys = {
+        (
+            p.get("type", p.get("patch_type", "?")),
+            p.get("target", p.get("target_object", "?")),
+        )
+        for p in _suspicious
+    }
     for p in patches:
         ptype = p.get("type", p.get("patch_type", "?"))
         target = p.get("target", p.get("target_object", "?"))
         patch_summary_parts.append(f"{ptype} on {target}")
-        if not accepted:
+        if not accepted and (ptype, target) in _suspicious_keys:
             do_not_retry.append(f"{ptype} on {target}")
 
     action = ", ".join(patch_summary_parts[:8])
@@ -4363,6 +4609,12 @@ def _build_reflection_entry(
         "blame_set": _blame_norm,
         "source_cluster_ids": list(source_cluster_ids or []),
         "lever_set": _lever_set,
+        # T2.1: iteration-independent cluster identity. Unlike the
+        # pretty ``source_cluster_ids`` (which churn as H001→H001
+        # between iterations for unrelated clusters), each signature
+        # is a sha1 of ``base_question_ids + root_cause + blame`` so
+        # "the same cluster" joins across iterations.
+        "source_cluster_signatures": list(source_cluster_signatures or []),
     }
 
 
@@ -4433,6 +4685,64 @@ def _diminishing_returns(
         if r.get("accepted") and r.get("accuracy_delta", 0.0) >= epsilon:
             return False
     return True
+
+
+def _detect_divergence(
+    reflection_buffer: list[dict],
+    lookback: int = 4,
+    min_sign_flips: int = 2,
+) -> tuple[bool, str]:
+    """T4.2: Detect accuracy *divergence* (thrashing).
+
+    A loop that alternates accept → rollback → accept → rollback is
+    making negative progress per unit cost — every accepted iteration
+    is followed by another that takes it back. Stop the loop rather
+    than burn more budget.
+
+    Returns ``(diverging, rationale)``. ``diverging=True`` when the
+    sign of ``accuracy_delta`` flips at least ``min_sign_flips`` times
+    in the last ``lookback`` content-signal iterations. Rationale is a
+    human-readable explanation for logs.
+    """
+    from genie_space_optimizer.optimization.rollback_class import (
+        RollbackClass,
+    )
+
+    def _is_content_signal(r: dict) -> bool:
+        if r.get("escalation_handled"):
+            return False
+        if r.get("accepted"):
+            return True
+        return r.get("rollback_class") == RollbackClass.CONTENT_REGRESSION.value
+
+    content_signal = [r for r in reflection_buffer if _is_content_signal(r)]
+    recent = content_signal[-lookback:]
+    if len(recent) < lookback:
+        return False, ""
+
+    # Compute sign series on accuracy_delta. Rolled-back iterations
+    # don't carry a real accuracy_delta (they revert the space), but
+    # the recorded delta is what the eval produced and is the right
+    # signal here — we're measuring "did the space keep trying both
+    # directions?" not "what did we end up at?".
+    deltas = [r.get("accuracy_delta", 0.0) for r in recent]
+    signs = [1 if d > 0.5 else (-1 if d < -0.5 else 0) for d in deltas]
+    # Count sign flips (ignore zeros as non-signal).
+    prev_sign = 0
+    flips = 0
+    for s in signs:
+        if s == 0:
+            continue
+        if prev_sign != 0 and s != prev_sign:
+            flips += 1
+        prev_sign = s
+    if flips >= min_sign_flips:
+        return (
+            True,
+            f"{flips} accuracy-sign flips across last {lookback} "
+            f"content-signal iterations (deltas={[round(d, 1) for d in deltas]})",
+        )
+    return False, ""
 
 
 # Phase D1: which lever sets is the router allowed to try for a given
@@ -4805,7 +5115,17 @@ def _build_verdict_history(
     """Build per-question verdict history across all full-scope evaluations.
 
     Returns ``{question_id: [VerdictEntry, ...]}``, ordered by iteration.
+
+    T1.10: duplicate benchmark rows (same question_id appearing multiple
+    times in the corpus) previously inflated the per-iteration entry count
+    — e.g. `_003` appearing 3× produced 3 VerdictEntry rows with
+    ``iteration=1`` and the persistence counter then reported
+    "Failed 3/3 evals (3 consecutive)" after a single iteration. Group by
+    ``(base_qid, iteration)`` and roll up the verdict: passing iff ALL
+    trials in that iteration passed, otherwise the most common
+    non-passing verdict wins. This ensures per-iteration count caps at 1.
     """
+    _PASSING = {"both_correct"}
     all_iters = load_all_full_iterations(spark, run_id, catalog, schema)
     history: dict[str, list[VerdictEntry]] = {}
 
@@ -4820,21 +5140,109 @@ def _build_verdict_history(
         if not isinstance(rows_json, list):
             continue
 
+        trials_by_qid: dict[str, list[VerdictEntry]] = {}
         for row in rows_json:
             qid = _get_question_id(row)
             if qid == "?":
                 continue
-            entry = VerdictEntry(
-                iteration=iteration_num,
-                verdict=_get_arbiter_verdict(row),
-                genie_sql=_get_genie_sql(row),
-                expected_sql=_get_expected_sql(row),
-                question_text=_get_question_text(row),
-                rationale=_get_arbiter_rationale(row),
+            base_qid = str(qid).split(":v")[0]
+            trials_by_qid.setdefault(base_qid, []).append(
+                VerdictEntry(
+                    iteration=iteration_num,
+                    verdict=_get_arbiter_verdict(row),
+                    genie_sql=_get_genie_sql(row),
+                    expected_sql=_get_expected_sql(row),
+                    question_text=_get_question_text(row),
+                    rationale=_get_arbiter_rationale(row),
+                )
             )
-            history.setdefault(qid, []).append(entry)
+
+        for base_qid, trial_entries in trials_by_qid.items():
+            if all(t.verdict in _PASSING for t in trial_entries):
+                rolled = trial_entries[0]
+            else:
+                from collections import Counter as _Counter
+                _non_pass = [t for t in trial_entries if t.verdict not in _PASSING]
+                _dominant_verdict = _Counter(t.verdict for t in _non_pass).most_common(1)[0][0]
+                rolled = next(t for t in _non_pass if t.verdict == _dominant_verdict)
+            history.setdefault(base_qid, []).append(rolled)
 
     return history
+
+
+def _compute_convergence_state(
+    entries: list,
+    *,
+    lookback: int = 4,
+) -> tuple[str, str]:
+    """T4.1: Return ``(state, rationale)`` for a question's recent history.
+
+    States (in priority order):
+      - ``fixed``:       currently passing and passed in the last 2+ iters
+      - ``worsening``:   was passing in early window, failing in recent
+      - ``improving``:   was failing in early window, passing in recent
+      - ``oscillating``: alternating pass/fail in the lookback window
+      - ``stuck``:       failing in all ``lookback`` most recent iterations
+      - ``intermittent``: some failures but not stuck/oscillating/trending
+      - ``new``:         too few evals to classify
+
+    *entries* must be the list of ``VerdictEntry`` for the question in
+    chronological order. Only the last ``lookback`` entries are
+    considered. A verdict is treated as passing when its arbiter value
+    is ``both_correct``; anything else (including ``genie_correct``,
+    ``ground_truth_correct``, ``neither_correct``) counts as failing —
+    same rule the existing persistence summary applies.
+    """
+    _PASSING = {"both_correct"}
+    if not entries:
+        return "new", "no evaluations"
+    window = entries[-lookback:]
+    if len(window) < 2:
+        return "new", f"only {len(window)} eval(s) in history"
+
+    passes = [e.verdict in _PASSING for e in window]
+    last = passes[-1]
+    n = len(passes)
+    n_pass = sum(passes)
+    n_fail = n - n_pass
+
+    if last and n_pass >= 2 and all(passes[-2:]):
+        return (
+            "fixed",
+            f"passed last 2+ iters ({n_pass}/{n} in window)",
+        )
+    if n_fail == n:
+        return (
+            "stuck",
+            f"failed all {n} iterations in window",
+        )
+    flips = sum(1 for i in range(1, n) if passes[i] != passes[i - 1])
+    # Require *more than half* of adjacent-pair transitions to be flips
+    # so that [P,P,F,P] (2 flips in 4 items, half) reads as
+    # ``intermittent``, while [P,F,P,F] (3 flips in 4 items) reads as
+    # ``oscillating``. Minimum of 2 flips keeps short windows honest.
+    if flips >= max(2, n // 2 + 1):
+        return (
+            "oscillating",
+            f"{flips} pass/fail flips across {n} iters",
+        )
+    half = max(1, n // 2)
+    early_pass = sum(passes[:half])
+    recent_pass = sum(passes[half:])
+    if recent_pass > early_pass:
+        return (
+            "improving",
+            f"{early_pass}/{half} -> {recent_pass}/{n - half} passes",
+        )
+    if early_pass > recent_pass:
+        return (
+            "worsening",
+            f"{early_pass}/{half} -> {recent_pass}/{n - half} passes",
+        )
+    return (
+        "intermittent",
+        f"{n_pass}/{n} passes, no clear trend",
+    )
 
 
 def _build_question_persistence_summary(
@@ -4917,6 +5325,14 @@ def _build_question_persistence_summary(
         else:
             classification = "PERSISTENT"
 
+        # T4.1: compute a second-axis trajectory label — convergence
+        # state. Unlike ``classification`` (which is about exhaustion),
+        # this describes the *direction*: fixed / improving /
+        # oscillating / stuck / worsening / intermittent. The strategist
+        # sees both so "oscillating" signals different action than
+        # "worsening" even if classification is the same.
+        _conv_state, _conv_rationale = _compute_convergence_state(entries)
+
         persistent.append({
             "qid": qid,
             "question_text": q_text,
@@ -4927,6 +5343,8 @@ def _build_question_persistence_summary(
             "fail_iterations": fail_iters,
             "patches_tried": tried,
             "classification": classification,
+            "convergence_state": _conv_state,
+            "convergence_rationale": _conv_rationale,
         })
 
     structured: dict[str, dict] = {}
@@ -4940,6 +5358,11 @@ def _build_question_persistence_summary(
             "patches_tried": p["patches_tried"],
             "fail_iterations": p["fail_iterations"],
             "verdict_counts": p["verdict_counts"],
+            # T4.1: carry trajectory state so the strategist and any
+            # temporary-quarantine logic (T4.3) can differentiate
+            # "oscillating" from "worsening" from plain "stuck".
+            "convergence_state": p["convergence_state"],
+            "convergence_rationale": p["convergence_rationale"],
         }
 
     if not persistent:
@@ -4966,6 +5389,10 @@ def _build_question_persistence_summary(
                 patch_lines.append(f"iter{it}: {pt}")
             lines.append(f"  Patches tried: {'; '.join(patch_lines)}")
         lines.append(f"  ASSESSMENT: {p['classification']}")
+        lines.append(
+            f"  CONVERGENCE: {p['convergence_state']} "
+            f"({p['convergence_rationale']})"
+        )
         lines.append("")
 
     return "\n".join(lines), structured
@@ -5763,7 +6190,27 @@ def _analyze_and_distribute(
         ))
         # Tier 3.4: show "+N more" suffix when truncated so operators know
         # the list is incomplete.
-        _preview_qids = soft_signal_qids[:10]
+        # T3.15: when soft_signal_qids contains duplicates (two rows with
+        # the same base qid), the display was printing ``_004, _004`` —
+        # visually identical tokens that readers can't tell apart.
+        # Annotate duplicates inline: the first occurrence carries a
+        # ``(base)`` tag, subsequent occurrences get ``:v2``, ``:v3`` so
+        # the display mirrors the suffix the dedup stage will apply in
+        # cluster_failures.
+        def _annotate_dups(qids: list[str]) -> list[str]:
+            seen: dict[str, int] = {}
+            _has_dups = len(set(qids)) != len(qids)
+            out: list[str] = []
+            for q in qids:
+                n = seen.get(q, 0) + 1
+                seen[q] = n
+                if n == 1:
+                    out.append(f"{q} (base)" if _has_dups and qids.count(q) > 1 else q)
+                else:
+                    out.append(f"{q}:v{n}")
+            return out
+
+        _preview_qids = _annotate_dups(soft_signal_qids[:10])
         _suffix = (
             "" if len(soft_signal_qids) <= 10
             else f" (+{len(soft_signal_qids) - 10} more)"
@@ -5772,9 +6219,12 @@ def _analyze_and_distribute(
             "  Soft signal question IDs",
             ", ".join(_preview_qids) + _suffix,
         ))
-        for _ss_row, _ss_qid in zip(soft_signal_rows[:10], soft_signal_qids[:10]):
+        for _ss_row, (_ss_qid, _ss_label) in zip(
+            soft_signal_rows[:10],
+            zip(soft_signal_qids[:10], _preview_qids),
+        ):
             _failed_judges = _get_failed_judges(_ss_row)
-            _fa_lines.append(f"  |    {_ss_qid}: failed judges = {', '.join(_failed_judges) if _failed_judges else '(none detected)'}")
+            _fa_lines.append(f"  |    {_ss_label}: failed judges = {', '.join(_failed_judges) if _failed_judges else '(none detected)'}")
     _hf_unique = len({
         _get_question_id(row) for row in filtered_failure_rows if _get_question_id(row)
     })
@@ -5794,15 +6244,20 @@ def _analyze_and_distribute(
     _shared_qid_state: dict = {}
 
     # ── Cluster hard failures ──────────────────────────────────────
+    # T1.9: explicit ``namespace="H"`` so hard clusters mint H001, H002 …
+    # and cannot collide with soft cluster IDs in the shared priority
+    # ranking / ``source_cluster_ids`` namespace.
     eval_result_for_clustering = {"rows": filtered_failure_rows}
     clusters = cluster_failures(
         eval_result_for_clustering, metadata_snapshot,
         spark=spark, run_id=run_id, catalog=catalog, schema=schema,
         qid_state=_shared_qid_state,
         signal_type="hard",
+        namespace="H",
     )
 
     # ── Cluster soft signals ───────────────────────────────────────
+    # T1.9: explicit ``namespace="S"`` so soft clusters mint S001, S002 …
     soft_clusters: list[dict] = []
     if soft_signal_rows:
         soft_eval = {"rows": soft_signal_rows}
@@ -5812,6 +6267,7 @@ def _analyze_and_distribute(
             verbose=False,
             qid_state=_shared_qid_state,
             signal_type="soft",
+            namespace="S",
         )
         for sc in soft_clusters:
             sc.setdefault("signal_type", "soft")
@@ -6176,7 +6632,27 @@ def _run_gate_checks(
         slice_scores = slice_result.get("scores", {})
         slice_accuracy = slice_result.get("overall_accuracy", 0.0)
         _slice_qw = 100.0 / max(len(benchmarks), 1)
-        effective_slice_tol = max(SLICE_GATE_TOLERANCE, noise_floor + 2.0, _slice_qw + 0.5)
+        # T2.15: use wider small-corpus tolerance when the full-scope
+        # corpus is below ``SLICE_GATE_SMALL_CORPUS_ROWS`` so a single-row
+        # swing doesn't spuriously fail the gate (e.g. 22-row retail
+        # corpus where one flip is ~4.5%). Emit an INFO line with the
+        # effective tolerance and corpus size so operators can see which
+        # branch ran.
+        _full_corpus = len(benchmarks)
+        _is_small_corpus = _full_corpus < SLICE_GATE_SMALL_CORPUS_ROWS
+        if _is_small_corpus:
+            _base_tol = SLICE_GATE_TOLERANCE_SMALL_CORPUS
+            _tol_source = "small_corpus"
+        else:
+            _base_tol = SLICE_GATE_TOLERANCE
+            _tol_source = "standard"
+        effective_slice_tol = max(_base_tol, noise_floor + 2.0, _slice_qw + 0.5)
+        logger.info(
+            "SLICE GATE [%s]: tolerance=%.1f%% (source=%s, base=%.1f, "
+            "noise_floor+2=%.1f, qw+0.5=%.1f, corpus=%d)",
+            ag_id, effective_slice_tol, _tol_source, _base_tol,
+            noise_floor + 2.0, _slice_qw + 0.5, _full_corpus,
+        )
         _informational_judges = {j for j, t in DEFAULT_THRESHOLDS.items() if t == 0.0}
         if slice_accuracy >= best_accuracy - 2 * noise_floor:
             _informational_judges.add("asset_routing")
@@ -6201,7 +6677,11 @@ def _run_gate_checks(
                 for d in slice_drops
             )
             print(
-                _section(f"SLICE GATE [{ag_id}]: FAIL", "-") + "\n"
+                _section(
+                    f"SLICE GATE [{ag_id}]: FAILED "
+                    f"(tolerance={effective_slice_tol:.1f}%, corpus={_full_corpus})",
+                    "-",
+                ) + "\n"
                 + _kv("Regressions", _score_changes) + "\n"
                 + _kv("Action", "ROLLBACK") + "\n"
                 + _bar("-")
@@ -6229,7 +6709,11 @@ def _run_gate_checks(
                 for j in sorted(slice_scores)
             )
             print(
-                _section(f"SLICE GATE [{ag_id}]: PASS", "-") + "\n"
+                _section(
+                    f"SLICE GATE [{ag_id}]: PASSED "
+                    f"(tolerance={effective_slice_tol:.1f}%, corpus={_full_corpus})",
+                    "-",
+                ) + "\n"
                 + _kv("Score changes", _sc) + "\n"
                 + _bar("-")
             )
@@ -6328,6 +6812,9 @@ def _run_gate_checks(
 
     scores_1 = dict(full_result_1.get("scores", {}))
     accuracy_1 = full_result_1.get("overall_accuracy", 0.0)
+    pre_arbiter_accuracy_1 = float(
+        full_result_1.get("pre_arbiter_accuracy", accuracy_1)
+    )
     # Tier 1.8: thread both_correct_rate into the full_scores dict so
     # detect_regressions + the arbiter-override suppression at the top of
     # this block can reference it via ``full_scores['_both_correct_rate']``
@@ -6336,12 +6823,43 @@ def _run_gate_checks(
     if _bcr_1 is not None:
         scores_1["_both_correct_rate"] = float(_bcr_1)
 
+    # T0.3: pick the gate's primary and guardrail signals based on the
+    # configured objective. ``primary_*`` is what the paired test / delta
+    # compares; ``guardrail_*`` is a separate check that prevents a
+    # pathological pre-arbiter win from regressing post-arbiter
+    # accuracy by more than OPTIMIZATION_OBJECTIVE_POST_ARBITER_GUARDRAIL_PP.
+    _objective = str(OPTIMIZATION_OBJECTIVE or "post_arbiter").lower()
+    if _objective not in ("pre_arbiter", "post_arbiter", "blended"):
+        logger.warning(
+            "OPTIMIZATION_OBJECTIVE=%r is not recognised; falling back to "
+            "'post_arbiter'.",
+            OPTIMIZATION_OBJECTIVE,
+        )
+        _objective = "post_arbiter"
+
     # ── Confirmation eval (2nd run) to smooth Genie non-determinism ──
-    if accuracy_1 > best_accuracy:
-        print(_kv("Confirmation eval", f"SKIPPED (accuracy improved {best_accuracy:.1f}% -> {accuracy_1:.1f}%)"))
+    # T0.3: decide whether to skip the confirm pass based on the chosen
+    # objective (pre-arbiter vs post-arbiter accuracy). Under the default
+    # ``pre_arbiter`` objective we compare ``pre_arbiter_accuracy_1`` to
+    # baseline; a clean pre-arbiter improvement is strong enough signal
+    # to skip the confirmation pass.
+    if _objective == "pre_arbiter":
+        _accuracy_for_skip = pre_arbiter_accuracy_1
+    else:
+        _accuracy_for_skip = accuracy_1
+
+    if _accuracy_for_skip > best_accuracy:
+        print(
+            _kv(
+                "Confirmation eval",
+                f"SKIPPED ({_objective} accuracy improved "
+                f"{best_accuracy:.1f}% -> {_accuracy_for_skip:.1f}%)",
+            )
+        )
         full_scores = scores_1
         full_accuracy = accuracy_1
         full_result = full_result_1
+        full_pre_arbiter_accuracy = pre_arbiter_accuracy_1
     else:
         try:
             mlflow.end_run()
@@ -6365,6 +6883,9 @@ def _run_gate_checks(
         )
         scores_2 = dict(full_result_2.get("scores", {}))
         accuracy_2 = full_result_2.get("overall_accuracy", 0.0)
+        pre_arbiter_accuracy_2 = float(
+            full_result_2.get("pre_arbiter_accuracy", accuracy_2)
+        )
         _bcr_2 = full_result_2.get("both_correct_rate")
         if _bcr_2 is not None:
             scores_2["_both_correct_rate"] = float(_bcr_2)
@@ -6375,15 +6896,56 @@ def _run_gate_checks(
             for j in all_judge_keys
         }
         full_accuracy = (accuracy_1 + accuracy_2) / 2.0
+        full_pre_arbiter_accuracy = (
+            pre_arbiter_accuracy_1 + pre_arbiter_accuracy_2
+        ) / 2.0
         full_result = full_result_1
 
         print(
             _kv("Eval run 1 accuracy", f"{accuracy_1:.1f}%") + "\n"
             + _kv("Eval run 2 accuracy", f"{accuracy_2:.1f}%") + "\n"
-            + _kv("Averaged accuracy", f"{full_accuracy:.1f}%")
+            + _kv("Averaged accuracy", f"{full_accuracy:.1f}%") + "\n"
+            + _kv(
+                "Pre-arbiter accuracy",
+                f"run1={pre_arbiter_accuracy_1:.1f}%  "
+                f"run2={pre_arbiter_accuracy_2:.1f}%  "
+                f"avg={full_pre_arbiter_accuracy:.1f}%",
+            )
         )
 
     full_result = _merge_bug4_counters(full_result)
+    # T0.3: stamp the pre-arbiter accuracy on full_scores so gate code
+    # below can reference it through the standard ``full_scores`` dict
+    # without an extra parameter plumbing pass.
+    full_scores["_pre_arbiter/overall_accuracy"] = float(full_pre_arbiter_accuracy)
+
+    # T0.2: compute run-to-run variance on the two confirmation passes.
+    # When variance exceeds the baseline regression threshold, the
+    # gate's effective tolerance is widened so noise-only flips don't
+    # spuriously trigger rollback. The variance number is also logged
+    # and stamped on full_scores so downstream readers can tell apart
+    # "Genie is deterministic here" from "Genie oscillates; demand a
+    # larger effect before accepting or rejecting".
+    _variance_full_result_2 = locals().get("full_result_2", None)
+    _variance_info = _compute_eval_variance(full_result_1, _variance_full_result_2)
+    full_scores["_eval_variance_ratio"] = float(_variance_info["disagreement_ratio"])
+    if _variance_info["total_scored"] > 0:
+        print(
+            _section(f"EVAL VARIANCE [{ag_id}]", "-") + "\n"
+            + _kv(
+                "Disagreed between runs",
+                f"{len(_variance_info['disagreed_qids'])}/"
+                f"{_variance_info['total_scored']} "
+                f"({_variance_info['disagreement_ratio'] * 100:.1f}%)",
+            ) + "\n"
+            + _kv(
+                "Disagreed qids (sample)",
+                ", ".join(_variance_info["disagreed_qids"][:6])
+                or "(none)",
+            ) + "\n"
+            + _bar("-")
+        )
+
     write_iteration(
         spark, run_id, iteration_counter, full_result,
         catalog=catalog, schema=schema,
@@ -6391,7 +6953,55 @@ def _run_gate_checks(
         eval_scope="full", model_id=new_model_id,
     )
 
-    effective_regression_tol = max(REGRESSION_THRESHOLD, noise_floor)
+    # T0.2: widen the regression tolerance when run-to-run variance
+    # exceeds the baseline threshold. Formula: effective_tol =
+    # max(REGRESSION_THRESHOLD, noise_floor, 100 * variance_ratio).
+    # For a 22-row corpus with 3 questions disagreeing between runs
+    # (13.6% variance), tolerance becomes max(5, noise_floor, 13.6) =
+    # 13.6pp, preventing noise-only rollbacks.
+    _variance_tol_bump = float(_variance_info["disagreement_ratio"]) * 100.0
+    effective_regression_tol = max(
+        REGRESSION_THRESHOLD, noise_floor, _variance_tol_bump,
+    )
+    if _variance_tol_bump > REGRESSION_THRESHOLD:
+        logger.info(
+            "GATE [%s]: regression threshold widened from %.1fpp -> %.1fpp "
+            "due to run-to-run variance (%.1f%% disagreement).",
+            ag_id, REGRESSION_THRESHOLD, effective_regression_tol,
+            _variance_info["disagreement_ratio"] * 100.0,
+        )
+    # T0.3: pick the primary accuracy for gate comparison. Under
+    # ``pre_arbiter`` we compare ``full_pre_arbiter_accuracy`` against
+    # ``best_pre_arbiter_accuracy`` (pulled from ``best_scores`` if
+    # present, falling back to ``best_accuracy`` for back-compat when
+    # best_scores was produced by a pre-T0.3 run). Post-arbiter accuracy
+    # is still checked as a catastrophic-regression guardrail.
+    _best_pre_arbiter = float(
+        best_scores.get("_pre_arbiter/overall_accuracy", best_accuracy)
+    )
+    if _objective == "pre_arbiter":
+        _primary_prev = _best_pre_arbiter
+        _primary_cur = full_pre_arbiter_accuracy
+        _primary_label = "pre-arbiter result_correctness"
+        _secondary_prev = best_accuracy
+        _secondary_cur = full_accuracy
+        _secondary_label = "post-arbiter overall accuracy"
+    else:
+        _primary_prev = best_accuracy
+        _primary_cur = full_accuracy
+        _primary_label = "post-arbiter overall accuracy"
+        _secondary_prev = _best_pre_arbiter
+        _secondary_cur = full_pre_arbiter_accuracy
+        _secondary_label = "pre-arbiter result_correctness"
+
+    logger.info(
+        "GATE OBJECTIVE [%s]: mode=%s  primary=%s %.1f%% -> %.1f%% (Δ=%+.1fpp)  "
+        "secondary=%s %.1f%% -> %.1f%% (Δ=%+.1fpp)",
+        ag_id, _objective, _primary_label, _primary_prev, _primary_cur,
+        _primary_cur - _primary_prev,
+        _secondary_label, _secondary_prev, _secondary_cur,
+        _secondary_cur - _secondary_prev,
+    )
     _informational_judges = {j for j, t in DEFAULT_THRESHOLDS.items() if t == 0.0}
     if full_accuracy >= best_accuracy - 2 * noise_floor:
         _informational_judges.add("asset_routing")
@@ -6422,16 +7032,40 @@ def _run_gate_checks(
                 )
                 regressions = _filtered_regressions
 
-    accuracy_drop = best_accuracy - full_accuracy
+    # T0.3: run the overall-accuracy regression check against the
+    # *primary* signal (pre-arbiter under the default objective). The
+    # post-arbiter accuracy is checked separately below as a guardrail.
+    accuracy_drop = _primary_prev - _primary_cur
     question_weight = 100.0 / max(len(benchmarks), 1)
     accuracy_threshold = max(effective_regression_tol / 2, noise_floor, question_weight + 0.5)
     if accuracy_drop >= accuracy_threshold:
         regressions.append({
-            "judge": "overall_accuracy",
-            "previous": best_accuracy,
-            "current": full_accuracy,
+            "judge": f"overall_accuracy ({_primary_label})",
+            "previous": _primary_prev,
+            "current": _primary_cur,
             "drop": accuracy_drop,
         })
+
+    # T0.3 guardrail: when optimising for pre_arbiter, a patch that
+    # improves pre-arbiter by 1 question can still silently regress
+    # post-arbiter by multiple questions (arbiter used to rescue them,
+    # now it doesn't). Cap post-arbiter downside to the configured
+    # guardrail value. For ``post_arbiter`` objective this is a no-op.
+    if _objective == "pre_arbiter":
+        _guardrail_cap = float(OPTIMIZATION_OBJECTIVE_POST_ARBITER_GUARDRAIL_PP)
+        _secondary_drop = _secondary_prev - _secondary_cur
+        if _secondary_drop >= _guardrail_cap:
+            regressions.append({
+                "judge": f"post_arbiter_guardrail ({_secondary_label})",
+                "previous": _secondary_prev,
+                "current": _secondary_cur,
+                "drop": _secondary_drop,
+            })
+            logger.info(
+                "Post-arbiter guardrail TRIPPED: %s dropped %.1fpp (cap=%.1fpp). "
+                "Rolling back despite pre-arbiter improvement.",
+                _secondary_label, _secondary_drop, _guardrail_cap,
+            )
 
     # ── Per-question noise filtering ──────────────────────────────
     # If all detected regressions are within a single question's weight,
@@ -6467,23 +7101,26 @@ def _run_gate_checks(
     # tolerance-aware version mirrors the per-judge threshold arithmetic so
     # small drops are classed as noise not regressions.
     _guard_tolerance = noise_floor
-    if not regressions and full_accuracy < best_accuracy - _guard_tolerance:
+    # T0.3: run the hard-guard on the *primary* signal (pre-arbiter under
+    # the default objective). Post-arbiter noise shouldn't block a real
+    # pre-arbiter improvement.
+    if not regressions and _primary_cur < _primary_prev - _guard_tolerance:
         regressions.append({
-            "judge": "overall_accuracy_guard",
-            "previous": best_accuracy,
-            "current": full_accuracy,
-            "drop": best_accuracy - full_accuracy,
+            "judge": f"overall_accuracy_guard ({_primary_label})",
+            "previous": _primary_prev,
+            "current": _primary_cur,
+            "drop": _primary_prev - _primary_cur,
         })
         logger.info(
             "Accuracy guard: noise filter cleared per-judge regressions but "
-            "overall accuracy dropped %.1f%% -> %.1f%% (tolerance %.1fpp) — "
+            "%s dropped %.1f%% -> %.1f%% (tolerance %.1fpp) — "
             "rejecting iteration",
-            best_accuracy, full_accuracy, _guard_tolerance,
+            _primary_label, _primary_prev, _primary_cur, _guard_tolerance,
         )
         print(
             _kv(
                 "Accuracy guard",
-                f"TRIGGERED — accuracy dropped {best_accuracy:.1f}% -> {full_accuracy:.1f}% "
+                f"TRIGGERED — {_primary_label} dropped {_primary_prev:.1f}% -> {_primary_cur:.1f}% "
                 f"(drop > tolerance {_guard_tolerance:.1f}pp, despite noise filter pass)",
             )
         )
@@ -6511,7 +7148,20 @@ def _run_gate_checks(
         _reg_details = ", ".join(_fmt_reg(r) for r in regressions)
         print(
             _section(f"FULL EVAL [{ag_id}]: FAIL (REGRESSION)", "-") + "\n"
-            + _kv("Accuracy", f"{best_accuracy:.1f}% -> {full_accuracy:.1f}%") + "\n"
+            + _kv(
+                "Objective",
+                f"{_objective}  (primary={_primary_label})",
+            ) + "\n"
+            + _kv(
+                "Primary accuracy",
+                f"{_primary_prev:.1f}% -> {_primary_cur:.1f}% "
+                f"({_primary_cur - _primary_prev:+.1f}pp)",
+            ) + "\n"
+            + _kv(
+                "Secondary accuracy",
+                f"{_secondary_prev:.1f}% -> {_secondary_cur:.1f}% "
+                f"({_secondary_cur - _secondary_prev:+.1f}pp)",
+            ) + "\n"
             + _kv("Regressions", _reg_details) + "\n"
             + _kv("Action", "ROLLBACK") + "\n"
             + _bar("-")
@@ -6541,7 +7191,20 @@ def _run_gate_checks(
     )
     print(
         _section(f"FULL EVAL [{ag_id}]: PASS -- ACCEPTED", "=") + "\n"
-        + _kv("Accuracy", f"{best_accuracy:.1f}% -> {full_accuracy:.1f}% ({full_accuracy - best_accuracy:+.1f}%)") + "\n"
+        + _kv(
+            "Objective",
+            f"{_objective}  (primary={_primary_label})",
+        ) + "\n"
+        + _kv(
+            "Primary accuracy",
+            f"{_primary_prev:.1f}% -> {_primary_cur:.1f}% "
+            f"({_primary_cur - _primary_prev:+.1f}pp)",
+        ) + "\n"
+        + _kv(
+            "Secondary accuracy",
+            f"{_secondary_prev:.1f}% -> {_secondary_cur:.1f}% "
+            f"({_secondary_cur - _secondary_prev:+.1f}pp)",
+        ) + "\n"
         + _kv("Score changes", _score_delta) + "\n"
         + _bar("=")
     )
@@ -7154,7 +7817,7 @@ def _run_lever_loop(
         f"Resuming after lever {start_lever}" if start_lever else "Starting fresh"
     )
     _setup_lines.append(_kv("Resume state", _resume_display))
-    _setup_lines.append(_kv("Iteration counter", iteration_counter))
+    _setup_lines.append(_kv("Iteration counter", _iteration_label(iteration_counter)))
     _setup_lines.append(_kv("Baseline accuracy", f"{baseline_accuracy:.1f}%"))
     _setup_lines.append(_bar("-"))
     print("\n".join(_setup_lines))
@@ -7192,6 +7855,25 @@ def _run_lever_loop(
             break
         if _diminishing_returns(reflection_buffer):
             logger.info("Diminishing returns detected — stopping at iteration %d", _iter_num)
+            print(
+                _section("LEVER LOOP — TERMINATION: plateau", "!") + "\n"
+                + _kv("Reason", "diminishing returns (no improvement >= epsilon)") + "\n"
+                + _kv("Iteration", _iteration_label(_iter_num)) + "\n"
+                + _bar("!")
+            )
+            break
+        _diverging, _div_rationale = _detect_divergence(reflection_buffer)
+        if _diverging:
+            logger.info(
+                "Divergence detected at iteration %d: %s",
+                _iter_num, _div_rationale,
+            )
+            print(
+                _section("LEVER LOOP — TERMINATION: divergence", "!") + "\n"
+                + _kv("Reason", _div_rationale) + "\n"
+                + _kv("Iteration", _iteration_label(_iter_num)) + "\n"
+                + _bar("!")
+            )
             break
         # Phase C3: only CONTENT_REGRESSION rollbacks count toward the
         # consecutive-rollback limit. INFRA / SCHEMA / escalation / OTHER
@@ -7313,10 +7995,17 @@ def _run_lever_loop(
         ranked = rank_clusters(
             list(clusters) + list(soft_signal_clusters or []),
             recommended_levers=_scan_levers,
+            # T2.1: pass reflection buffer so each cluster gains a
+            # ``history`` block with prior attempts against its
+            # iteration-independent ``cluster_signature``. The
+            # strategist can then reason about "we've tried this
+            # cluster twice and rolled back both times; consider
+            # escalating or picking a different lever".
+            reflection_buffer=reflection_buffer,
         )
 
         # ── 3B.4: Adaptive strategist (1 LLM call → 1 AG) ───────────
-        print(_section(f"ADAPTIVE STRATEGIST — Iteration {iteration_counter}", "="))
+        print(_section(f"ADAPTIVE STRATEGIST — Iteration ({_iteration_label(iteration_counter)})", "="))
 
         _verdict_history = _build_verdict_history(spark, run_id, catalog, schema)
 
@@ -7326,13 +8015,52 @@ def _run_lever_loop(
                 _verdict_history, reflection_buffer,
             )
             _quarantine_qids: set[str] = set()
+            # T4.3: temporary quarantine for stuck/worsening questions
+            # that haven't hit the hard-quarantine threshold yet. These
+            # are excluded from cluster formation for the *current*
+            # iteration only — they re-enter next iteration automatically.
+            # Prevents a couple of stuck questions from dominating every
+            # cluster and blinding the loop to patchable failures.
+            _soft_skip_qids: set[str] = set()
             for _pq_id, _pq_info in _persist_data.items():
                 _pq_class = _pq_info.get("classification", "")
                 _pq_consec = _pq_info.get("max_consecutive", 0)
+                _pq_conv = _pq_info.get("convergence_state", "")
                 if _pq_class == "ADDITIVE_LEVERS_EXHAUSTED" or (
                     _pq_class == "PERSISTENT" and _pq_consec >= 3
                 ):
                     _quarantine_qids.add(_pq_id)
+                elif _pq_conv in ("stuck", "worsening") and _pq_consec >= 2:
+                    # Not bad enough for hard-quarantine, but bad enough
+                    # to not dominate cluster-formation this pass.
+                    _soft_skip_qids.add(_pq_id)
+
+            if _soft_skip_qids:
+                logger.info(
+                    "T4.3: soft-skipping %d stuck/worsening question(s) "
+                    "from this iteration's cluster formation: %s",
+                    len(_soft_skip_qids), sorted(_soft_skip_qids),
+                )
+                print(
+                    _section(
+                        f"T4.3 CONVERGENCE QUARANTINE — "
+                        f"{len(_soft_skip_qids)} qid(s) soft-skipped",
+                        "-",
+                    ) + "\n"
+                    + _kv(
+                        "Questions",
+                        ", ".join(sorted(_soft_skip_qids))[:200],
+                    ) + "\n"
+                    + _kv(
+                        "Rationale",
+                        "stuck/worsening convergence state; re-entered next iter",
+                    ) + "\n"
+                    + _bar("-")
+                )
+                # Merge into quarantine_qids only for this iteration's
+                # cluster-formation call — the _correction_state store
+                # below is for hard quarantine, which persists.
+                _quarantine_qids = _quarantine_qids | _soft_skip_qids
             if _quarantine_qids:
                 _newly_quarantined = _quarantine_qids - _correction_state["quarantined_qids"]
                 if _newly_quarantined:
@@ -7534,7 +8262,7 @@ def _run_lever_loop(
         # the same reality (current space state), but the label clarifies
         # intent for operators reading stale runs.
         print(
-            _section(f"ACTION GROUP {ag_id} — Iteration {iteration_counter}") + "\n"
+            _section(f"ACTION GROUP {ag_id} — Iteration ({_iteration_label(iteration_counter)})") + "\n"
             + _kv("Root cause", ag.get("root_cause_summary", "?")[:120]) + "\n"
             + _kv("Levers", ", ".join(lever_keys)) + "\n"
             + _kv("Affected questions", len(ag.get("affected_questions", []))) + "\n"
@@ -7557,25 +8285,34 @@ def _run_lever_loop(
         # for collision detection.
         _ag_root_cause: str = ""
         _ag_blame_set: Any = None
+        # T2.1: collect iteration-independent cluster signatures for
+        # every source cluster this AG targets. Reflection buffer stamps
+        # them so the next iteration can detect "this signature has
+        # been tried before" even if the pretty cluster_id changed.
+        _ag_source_signatures: list[str] = []
         for _rc_idx, _rc in enumerate(ranked):
             _rc_cid = _rc.get("cluster_id", "")
             if _ag_source_cids and _rc_cid not in set(_ag_source_cids):
                 continue
-            _ag_cluster_info = {
-                "cluster_id": _rc_cid,
-                "impact_score": _rc.get("impact_score"),
-                "rank": _rc_idx + 1,
-                "question_count": len(_rc.get("question_ids", [])),
-                "root_cause": _rc.get("root_cause") or _rc.get("asi_failure_type"),
-                "affected_questions": _rc.get("question_ids", [])[:20],
-            }
-            _ag_root_cause = (
-                _rc.get("asi_failure_type")
-                or _rc.get("root_cause")
-                or ""
-            )
-            _ag_blame_set = _rc.get("asi_blame_set")
-            break
+            _rc_sig = _rc.get("cluster_signature")
+            if _rc_sig and _rc_sig not in _ag_source_signatures:
+                _ag_source_signatures.append(_rc_sig)
+            if not _ag_cluster_info:
+                _ag_cluster_info = {
+                    "cluster_id": _rc_cid,
+                    "impact_score": _rc.get("impact_score"),
+                    "rank": _rc_idx + 1,
+                    "question_count": len(_rc.get("question_ids", [])),
+                    "root_cause": _rc.get("root_cause") or _rc.get("asi_failure_type"),
+                    "affected_questions": _rc.get("question_ids", [])[:20],
+                    "cluster_signature": _rc_sig,
+                }
+                _ag_root_cause = (
+                    _rc.get("asi_failure_type")
+                    or _rc.get("root_cause")
+                    or ""
+                )
+                _ag_blame_set = _rc.get("asi_blame_set")
 
         # Phase C2: reusable identity kwargs for every _build_reflection_entry
         # call in this AG iteration. Keeps call sites DRY while guaranteeing
@@ -7585,6 +8322,7 @@ def _run_lever_loop(
             "root_cause": _ag_root_cause,
             "blame_set": _ag_blame_set,
             "source_cluster_ids": list(_ag_source_cids),
+            "source_cluster_signatures": list(_ag_source_signatures),
         }
 
         # Phase D2: collision guard. The strategist occasionally re-proposes
@@ -7834,6 +8572,150 @@ def _run_lever_loop(
             )
             all_proposals.extend(lever_proposals)
 
+        # ── T2.2: Reflection-as-validator ────────────────────────────
+        # Build a per-patch forbidden set from prior rolled-back iterations
+        # and drop any proposal whose (patch_type, target) signature was
+        # already rolled back. Without this the strategist routinely
+        # re-proposes the same patch type against the same table after a
+        # content regression (iter-1 + iter-3 of the retail corpus both
+        # patched mv_7now_fact_sales.description → rolled back → iter-3
+        # re-proposed update_description on mv_7now_fact_sales).
+        #
+        # Escape hatch: a proposal carrying
+        # ``escalation_justification: <non-empty>`` bypasses the filter,
+        # and every rejection is logged so operators can see what was
+        # dropped and why. The existing cluster-level DO-NOT-RETRY
+        # (_compute_forbidden_ag_set) covers lever/root-cause combos;
+        # this new per-patch guard covers patch-type/target combos.
+        _patch_forbidden: set[tuple[str, str]] = set()
+        for _rb in reflection_buffer:
+            if _rb.get("accepted"):
+                continue
+            # CONTENT_REGRESSION rollbacks are the ones that signal "the
+            # patch made things worse". Other classes (infra, schema)
+            # don't indicate the patch was wrong, only that applying it
+            # blew up.
+            from genie_space_optimizer.optimization.rollback_class import (
+                RollbackClass as _RC,
+            )
+            if _rb.get("rollback_class") != _RC.CONTENT_REGRESSION.value:
+                continue
+            for _dnr in _rb.get("do_not_retry", []):
+                _s = str(_dnr).strip()
+                if " on " not in _s:
+                    continue
+                _ptype, _target = _s.split(" on ", 1)
+                _patch_forbidden.add((_ptype.strip(), _target.strip()))
+
+        if _patch_forbidden:
+            _kept: list[dict] = []
+            _dropped: list[tuple[str, str, str]] = []  # (ptype, target, reason)
+            for _p in all_proposals:
+                _ptype = str(_p.get("type") or _p.get("patch_type") or "")
+                _target = str(
+                    _p.get("target") or _p.get("target_object")
+                    or _p.get("target_table") or "?"
+                )
+                _key = (_ptype, _target)
+                _justification = str(_p.get("escalation_justification") or "").strip()
+                if _key in _patch_forbidden and not _justification:
+                    _dropped.append((_ptype, _target,
+                                     "rolled back previously (no escalation_justification)"))
+                else:
+                    _kept.append(_p)
+            if _dropped:
+                logger.warning(
+                    "[%s] T2.2 reflection-as-validator dropped %d proposal(s) "
+                    "that were rolled back in prior iterations without an "
+                    "escalation_justification:",
+                    ag_id, len(_dropped),
+                )
+                for _ptype, _target, _reason in _dropped:
+                    logger.warning("  - %s on %s (%s)", _ptype, _target, _reason)
+                print(
+                    _section(
+                        f"[{ag_id}] T2.2 Reflection validator: dropped "
+                        f"{len(_dropped)} re-proposal(s)",
+                        "-",
+                    )
+                )
+                for _ptype, _target, _reason in _dropped:
+                    print(f"|  - {_ptype} on {_target} ({_reason})")
+                print(_bar("-"))
+            all_proposals = _kept
+
+        # ── T2.4: Counterfactual asset-impact scan ───────────────────
+        # Before applying, identify passing benchmarks that reference
+        # each patch's target asset. If a patch touches an asset that
+        # many passing questions depend on, we're rolling the dice on
+        # those questions — stamp ``high_collateral_risk`` on the
+        # proposal and warn prominently. Downstream the slice-gate
+        # (once T3.1 lands) should prioritise the at-risk set.
+        _passing_qids = set(b.get("id") for b in benchmarks if b.get("id")) - (prev_failure_qids or set())
+        _affected_qids = set(ag.get("affected_questions", []) or [])
+        _affected_n = max(len(_affected_qids), 1)
+        _collateral_details: list[tuple[str, str, list[str]]] = []
+        for _p in all_proposals:
+            _ptype = str(_p.get("type") or _p.get("patch_type") or "")
+            _target = str(
+                _p.get("target") or _p.get("target_object")
+                or _p.get("target_table") or ""
+            ).lower()
+            _target_column = str(_p.get("column") or "").lower()
+            if not _target:
+                continue
+            _dependents: list[str] = []
+            for _b in benchmarks:
+                _bid = _b.get("id", "")
+                if not _bid or _bid not in _passing_qids:
+                    continue
+                # Cheap containment check — benchmarks store
+                # ``required_tables`` and ``required_columns`` as lists
+                # of fully-qualified names. Patch targets can be table
+                # names, fully-qualified names, or column FQNs.
+                _bench_assets = [
+                    str(t).lower() for t in
+                    (_b.get("required_tables") or []) + (_b.get("required_columns") or [])
+                ]
+                if any(
+                    _target in _ba or _ba in _target
+                    for _ba in _bench_assets
+                ):
+                    _dependents.append(_bid)
+                    continue
+                if _target_column and any(
+                    _target_column in _ba for _ba in _bench_assets
+                ):
+                    _dependents.append(_bid)
+            if _dependents:
+                _p["passing_dependents"] = _dependents[:50]
+                if len(_dependents) >= 2 * _affected_n:
+                    _p["high_collateral_risk"] = True
+                    _collateral_details.append(
+                        (_ptype, _target, _dependents[:10])
+                    )
+        if _collateral_details:
+            logger.warning(
+                "[%s] T2.4: %d proposal(s) carry high collateral risk "
+                "(>= 2x the affected-question count in passing dependents):",
+                ag_id, len(_collateral_details),
+            )
+            print(
+                _section(
+                    f"[{ag_id}] T2.4 Counterfactual scan: "
+                    f"{len(_collateral_details)} high-risk proposal(s)",
+                    "-",
+                )
+            )
+            for _ptype, _target, _deps in _collateral_details:
+                print(
+                    f"|  - {_ptype} on {_target}  "
+                    f"(passing dependents: {len(_deps)}+, "
+                    f"affected: {_affected_n})"
+                )
+                print(f"|    sample deps: {', '.join(_deps[:5])}")
+            print(_bar("-"))
+
         # ── Log proposals ────────────────────────────────────────────
         _n_valid = 0
         _n_failed = 0
@@ -7956,6 +8838,30 @@ def _run_lever_loop(
                 + _bar("-")
             )
             patches = patches[:MAX_AG_PATCHES]
+
+        # T3.3: shadow apply. When enabled, the intent is to clone the
+        # space, apply patches to the clone, eval, and promote only on
+        # pass. The Genie SDK fork/promote primitives aren't wired yet,
+        # so for now we log the intent and fall back to in-place apply;
+        # the rollback path below still covers us. Leaving this here so
+        # operators can see the flag is respected by code and we have a
+        # single commit to wire the actual fork when available.
+        if SHADOW_APPLY:
+            logger.warning(
+                "[%s] T3.3 SHADOW_APPLY=True but the Genie fork/promote "
+                "API is not yet integrated in this harness; falling back "
+                "to in-place apply with rollback-on-regression.",
+                ag_id,
+            )
+            print(
+                _section(f"[{ag_id}] SHADOW_APPLY: fallback", "-") + "\n"
+                + _kv(
+                    "Reason",
+                    "Genie space-clone API not yet wired — rollback path "
+                    "still covers content regressions.",
+                ) + "\n"
+                + _bar("-")
+            )
 
         apply_log = apply_patch_set(
             w, space_id, patches, metadata_snapshot, apply_mode=apply_mode,
@@ -8096,7 +9002,7 @@ def _run_lever_loop(
             for ai, aentry in enumerate(_applied, 1):
                 _ap = aentry.get("patch", {})
                 _aa = aentry.get("action", {})
-                _ap_lines.append(_fmt_patch(ai, _ap, _aa))
+                _ap_lines.append(_fmt_patch(ai, _ap, _aa, aentry))
             _ap_lines.append(_bar("="))
             print("\n".join(_ap_lines))
 
@@ -9355,7 +10261,7 @@ def deploy_check(
     _lines = [_section("DEPLOY — GATE CHECK", "-")]
     _lines.append(_kv("Deploy target", deploy_target or "(none — will skip)"))
     _lines.append(_kv("Model ID", prev_model_id))
-    _lines.append(_kv("Iteration", iteration_counter))
+    _lines.append(_kv("Iteration", _iteration_label(iteration_counter)))
     _lines.append(_kv("Decision", "PROCEED" if deploy_target else "SKIP"))
     _lines.append(_bar("-"))
     print("\n".join(_lines))
@@ -9889,18 +10795,33 @@ def optimize_genie_space(
 
 
 def _build_patch_record(entry: dict, lever: int, apply_mode: str) -> dict:
-    """Build a patch record dict for Delta from an apply_log entry."""
+    """Build a patch record dict for Delta from an apply_log entry.
+
+    T2.13: preserves the original proposal-side patch_type in
+    ``patch_type`` (so downstream readers that track proposal stats keep
+    working) while adding ``applied_patch_type`` / ``applied_patch_detail``
+    columns that reflect what the applier actually executed. For a
+    downgraded ``rewrite_instruction`` that was split into per-section
+    ``update_instruction_section`` children, the original proposal row
+    loses its applied record but each child gets its own row with
+    ``patch_type=rewrite_instruction, applied_patch_type=update_instruction_section``
+    and ``applied_patch_detail="section=ASSET ROUTING; lever=5; split_from=rewrite_instruction"``.
+    """
     patch = entry.get("patch", {})
     action = entry.get("action", {})
+    applied_type = entry.get("applied_patch_type") or patch.get("type", action.get("action_type", "unknown"))
+    proposal_type = entry.get("proposal_patch_type") or patch.get("_proposal_patch_type") or patch.get("type", applied_type)
     return {
-        "patch_type": patch.get("type", action.get("action_type", "unknown")),
+        "patch_type": proposal_type,
         "scope": apply_mode if lever <= 3 else "genie_config",
         "risk_level": action.get("risk_level", "medium"),
         "target_object": action.get("target", patch.get("target", "")),
         "patch": patch,
         "command": action.get("command"),
         "rollback": action.get("rollback_command"),
-        "proposal_id": patch.get("source_proposal_id", ""),
+        "proposal_id": patch.get("source_proposal_id", patch.get("proposal_id", "")),
+        "applied_patch_type": applied_type,
+        "applied_patch_detail": entry.get("applied_patch_detail"),
     }
 
 

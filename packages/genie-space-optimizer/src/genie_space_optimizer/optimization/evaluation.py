@@ -4236,11 +4236,21 @@ def _print_eval_summary(
         if score is None:
             continue
         threshold = DEFAULT_THRESHOLDS.get(judge, 0.0)
+        # T0.4: when threshold is effectively 0 the judge is info-only —
+        # a "PASS" tag misleads operators into reading it as a green check.
+        # Render an explicit ``info-only`` marker instead so the scoreboard
+        # can be eyeballed without reading every threshold value.
+        _is_info_only = threshold <= 0.0
         passed = score >= threshold
-        marker = "" if passed else "  <<<"
+        if _is_info_only:
+            _status = "info-only"
+            marker = ""
+        else:
+            _status = "PASS" if passed else "FAIL"
+            marker = "" if passed else "  <<<"
         lines.append(
             f"|   {judge:<24s} {score:6.1f}  (threshold: {threshold:.1f})  "
-            f"{'PASS' if passed else 'FAIL'}{marker}"
+            f"{_status}{marker}"
         )
     arbiter_counts: dict[str, int] = {
         "both_correct": 0, "genie_correct": 0,
@@ -4254,7 +4264,21 @@ def _print_eval_summary(
             arbiter_counts["skipped"] += 1
     arbiter_total = sum(arbiter_counts.values())
     lines.append(f"|")
-    lines.append(f"|   Arbiter verdicts ({arbiter_total} questions):")
+    # T0.4: Previously this block printed ``Arbiter verdicts (22 questions)``
+    # while the accuracy block below reported ``Overall accuracy: 66.7%
+    # (14/21)`` — the two denominators (22 vs 21) come from different views
+    # of the same rows (all rows vs scored rows) and the mismatch reads as
+    # an off-by-one bug. Annotate both denominators explicitly so the
+    # reader can reconcile them at a glance.
+    _adj_excluded_preview = _compute_arbiter_adjusted_accuracy(rows).excluded_count
+    _scored = arbiter_total - _adj_excluded_preview
+    if _adj_excluded_preview:
+        lines.append(
+            f"|   Arbiter verdicts ({arbiter_total} questions, "
+            f"{_adj_excluded_preview} excluded → {_scored} scored):"
+        )
+    else:
+        lines.append(f"|   Arbiter verdicts ({arbiter_total} questions):")
     for verdict in ("both_correct", "genie_correct", "ground_truth_correct", "neither_correct", "skipped"):
         cnt = arbiter_counts[verdict]
         pct = (cnt / arbiter_total * 100) if arbiter_total else 0
@@ -4292,10 +4316,20 @@ def _print_eval_summary(
     )
 
     lines.append(f"|")
-    lines.append(
-        f"|   Overall accuracy: {adj_accuracy:.1f}% "
-        f"({_adj_result.correct_count}/{_adj_result.evaluated_count})"
-    )
+    # T0.4: When there are excluded rows, print the total-corpus count
+    # in parentheses so this line and the ``Arbiter verdicts (N questions,
+    # X excluded → Y scored)`` header use visibly-the-same denominators.
+    if adj_excluded:
+        lines.append(
+            f"|   Overall accuracy: {adj_accuracy:.1f}% "
+            f"({_adj_result.correct_count}/{_adj_result.evaluated_count} scored, "
+            f"{adj_excluded} excluded of {arbiter_total})"
+        )
+    else:
+        lines.append(
+            f"|   Overall accuracy: {adj_accuracy:.1f}% "
+            f"({_adj_result.correct_count}/{_adj_result.evaluated_count})"
+        )
     # Strict metric: fraction of rows where *every* judge passed, without
     # arbiter rescue. This is the number that the lever loop moves when
     # metadata patches land, and the header-only count hid it from readers.
@@ -4315,7 +4349,31 @@ def _print_eval_summary(
         lines.append(f"|   Excluded (GT infra / both-empty / unavailable): {adj_excluded}")
     lines.append(f"|   Thresholds met: {'YES' if thresholds_passed else 'NO'}")
     if adj_failures:
-        lines.append(f"|   Failed questions: {adj_failures}")
+        # T0.4: defense-in-depth against any duplicate qid that escapes the
+        # dedup in _compute_arbiter_adjusted_accuracy (e.g. benchmarks with
+        # identical inputs/question_id but different payloads). Annotate
+        # the first occurrence of any repeated qid with ``(base)`` and
+        # subsequent occurrences with ``:vN`` so operators can tell apart
+        # "one question failed twice" from "two questions failed".
+        _counts: dict[str, int] = {}
+        for _q in adj_failures:
+            _counts[_q] = _counts.get(_q, 0) + 1
+        _has_dups = any(v > 1 for v in _counts.values())
+        if _has_dups:
+            _seen: dict[str, int] = {}
+            _annotated: list[str] = []
+            for _q in adj_failures:
+                _n = _seen.get(_q, 0) + 1
+                _seen[_q] = _n
+                if _n == 1 and _counts[_q] > 1:
+                    _annotated.append(f"{_q} (base)")
+                elif _n > 1:
+                    _annotated.append(f"{_q}:v{_n}")
+                else:
+                    _annotated.append(_q)
+            lines.append(f"|   Failed questions: {_annotated}")
+        else:
+            lines.append(f"|   Failed questions: {adj_failures}")
     lines.append("-" * width)
 
     print("\n".join(lines))
@@ -4932,21 +4990,63 @@ def run_evaluation(
                 "logical_accuracy", "semantic_equivalence",
                 "completeness", "schema_accuracy",
             ]
+            # T0.3: Before applying arbiter rescue, capture the *raw* pre-
+            # arbiter rate for each rescuable judge (and for
+            # result_correctness above). Threaded into ``scores_100`` as
+            # ``_pre_arbiter/<judge>`` so the gate can optimise against
+            # the underlying SQL signal instead of the arbiter-adjusted
+            # verdicts that bounce on noise.
+            _pre_arbiter_per_judge: dict[str, float] = {}
+            _rc_pre_total = _rc_pre_correct = 0
+            for _row in rows_for_output:
+                _rc_val = str(_row.get("result_correctness/value", "")).lower()
+                if _rc_val == "excluded":
+                    continue
+                _err_type = str(
+                    _row.get("outputs/comparison/error_type")
+                    or _row.get("comparison/error_type")
+                    or _row.get("comparison.error_type")
+                    or ""
+                ).lower()
+                if _err_type in ("both_empty", "genie_result_unavailable"):
+                    continue
+                _rc_pre_total += 1
+                if _rc_val in ("yes", "true", "1", "1.0"):
+                    _rc_pre_correct += 1
+            if _rc_pre_total > 0:
+                _pre_arbiter_per_judge["result_correctness"] = (
+                    _rc_pre_correct / _rc_pre_total
+                )
+
             for _judge_name in _ARBITER_ADJUSTABLE_JUDGES:
                 _j_total = _j_correct = 0
+                _pre_total = _pre_correct = 0
                 for _row in rows_for_output:
                     _j_val = str(_row.get(f"{_judge_name}/value", "")).lower()
                     if _j_val == "excluded":
                         continue
                     _j_total += 1
-                    if _j_val in ("yes", "true", "1", "1.0", "pass"):
+                    _pre_total += 1
+                    _passed = _j_val in ("yes", "true", "1", "1.0", "pass")
+                    if _passed:
                         _j_correct += 1
+                        _pre_correct += 1
                     elif str(_row.get("arbiter/value", "")).lower() in _ARBITER_CORRECT_VERDICTS:
                         _j_correct += 1
                 if _j_total > 0:
                     per_judge[_judge_name] = _j_correct / _j_total
+                if _pre_total > 0:
+                    _pre_arbiter_per_judge[_judge_name] = (
+                        _pre_correct / _pre_total
+                    )
 
             scores_100 = normalize_scores(per_judge)
+            # T0.3: stamp pre-arbiter counterparts as ``_pre_arbiter/<judge>``
+            # so downstream readers can distinguish them from the
+            # arbiter-adjusted top-line numbers (which keep their plain
+            # judge-name keys for backward compatibility).
+            for _jn, _frac in _pre_arbiter_per_judge.items():
+                scores_100[f"_pre_arbiter/{_jn}"] = round(_frac * 100, 1)
             thresholds_passed = all_thresholds_met(scores_100)
 
         row_unresolved_column_count = sum(
@@ -5077,6 +5177,15 @@ def run_evaluation(
             "experiment_id": exp.experiment_id if exp else "",
             "iteration": iteration,
             "overall_accuracy": arbiter_adjusted_accuracy,
+            # T0.3: pre_arbiter_accuracy is the RAW result_correctness rate
+            # (no arbiter rescue). This is the signal the gate should
+            # optimise against when ``OPTIMIZATION_OBJECTIVE='pre_arbiter'``
+            # because the arbiter adjustment masks failures that the
+            # underlying SQL hasn't actually fixed. Per-judge counterparts
+            # are stamped on ``scores`` under ``_pre_arbiter/<judge>``.
+            "pre_arbiter_accuracy": scores_100.get(
+                "_pre_arbiter/result_correctness", arbiter_adjusted_accuracy,
+            ),
             # NOTE on denominator contract (Bug #2):
             #   - total_questions:   pre-exclusion — retained for back-compat.
             #   - evaluated_count:   denominator of overall_accuracy (use this).

@@ -142,6 +142,8 @@ def _migrate_add_columns(spark: SparkSession, catalog: str, schema: str) -> None
         (TABLE_ITERATIONS, "rollback_reason", "STRING COMMENT 'Tier 1.1: human-readable rollback reason (mirrors genie_opt_patches.rollback_reason)'"),
         (TABLE_ITERATIONS, "both_correct_count", "INT COMMENT 'Tier 1.7: count of rows with arbiter verdict == both_correct. Used to anchor best_accuracy to both_correct_rate when rc=yes overrides inflate overall_accuracy.'"),
         (TABLE_ITERATIONS, "both_correct_rate", "DOUBLE COMMENT 'Tier 1.7: both_correct_count / evaluated_count * 100. Stricter than overall_accuracy (which counts arbiter override rows as correct). Lever loop anchors acceptance to this to avoid ghost-ceiling rejections.'"),
+        (TABLE_PATCHES, "applied_patch_type", "STRING COMMENT 'T2.13: actual patch_type that was applied after any applier-side transformations (e.g. update_instruction_section emitted by the rewrite_instruction downgrade splitter). May differ from patch_type (the proposal type).'"),
+        (TABLE_PATCHES, "applied_patch_detail", "STRING COMMENT 'T2.13: human-readable detail describing the applied transformation (e.g. section_name for update_instruction_section, or a note when a rewrite_instruction was split into children).'"),
     ]
     for table, col, col_def in migrations:
         fqn = _fqn(catalog, schema, table)
@@ -699,6 +701,14 @@ def write_patch(
     provenance = patch_record.get("provenance")
     if provenance is not None:
         row["provenance_json"] = json.dumps(provenance, default=str)
+
+    applied_patch_type = patch_record.get("applied_patch_type")
+    if applied_patch_type is not None:
+        row["applied_patch_type"] = applied_patch_type
+
+    applied_patch_detail = patch_record.get("applied_patch_detail")
+    if applied_patch_detail is not None:
+        row["applied_patch_detail"] = applied_patch_detail
 
     insert_row(spark, catalog, schema, TABLE_PATCHES, row)
     logger.info(
