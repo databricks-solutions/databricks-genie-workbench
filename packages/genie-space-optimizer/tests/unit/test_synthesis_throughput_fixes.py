@@ -827,3 +827,363 @@ class TestEmptyResultFeedbackHelper:
         proposal = {"example_sql": ""}
         slice_ = AssetSlice(tables=[], columns=[])
         assert _build_empty_result_feedback(proposal, None, slice_) == ""
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F2 — Description-enrichment batch-failure logging (structured, no traceback)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestEnrichmentBatchFailureLogging:
+    """When an enrichment batch fails JSON parsing even after PR 1's
+    validator retries exhaust, the warning must be a single-line
+    structured message with a response preview — NOT an ``exc_info``
+    traceback that buries the operator's signal-to-noise ratio.
+    """
+
+    _SNAPSHOT = {
+        "data_sources": {
+            "tables": [
+                {
+                    "identifier": "cat.sch.t",
+                    "name": "t",
+                    "column_configs": [
+                        {"column_name": "amount", "type_text": "DECIMAL"},
+                    ],
+                },
+            ],
+            "metric_views": [],
+        },
+        "instructions": {"join_specs": []},
+        "tables": [
+            {
+                "identifier": "cat.sch.t",
+                "name": "t",
+                "column_configs": [
+                    {"column_name": "amount", "type_text": "DECIMAL"},
+                ],
+            },
+        ],
+        "metric_views": [],
+    }
+
+    def _mock_blank_columns(self, monkeypatch, opt_mod):
+        monkeypatch.setattr(
+            opt_mod, "_collect_blank_columns",
+            lambda _snap: [
+                {
+                    "table": "cat.sch.t",
+                    "column": "amount",
+                    "data_type": "DECIMAL",
+                    "entity_type": "measure",
+                    "table_description": "",
+                    "sibling_columns": [],
+                },
+            ],
+        )
+
+    def test_column_batch_failure_logs_preview_no_traceback(self, monkeypatch, caplog):
+        import logging
+
+        from genie_space_optimizer.optimization import optimizer as opt_mod
+
+        self._mock_blank_columns(monkeypatch, opt_mod)
+
+        def _fail(*_a, **_k):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+        monkeypatch.setattr(opt_mod, "_traced_llm_call", _fail)
+
+        with caplog.at_level(logging.WARNING, logger="genie_space_optimizer"):
+            patches = opt_mod._enrich_blank_descriptions(self._SNAPSHOT, w=None)
+
+        assert patches == []
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings, "expected at least one warning"
+        # Preview key is present; traceback (exc_info) is not.
+        assert any("preview=" in r.getMessage() for r in warnings)
+        assert all(r.exc_info is None for r in warnings)
+
+    def test_column_batch_preview_truncated_to_300_chars(self, monkeypatch, caplog):
+        import logging
+
+        from genie_space_optimizer.optimization import optimizer as opt_mod
+
+        self._mock_blank_columns(monkeypatch, opt_mod)
+
+        long_text = "x" * 500
+
+        def _llm(*_a, **_k):
+            return long_text, object()
+
+        monkeypatch.setattr(opt_mod, "_traced_llm_call", _llm)
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.evaluation._extract_json",
+            lambda _t: (_ for _ in ()).throw(ValueError("junk")),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="genie_space_optimizer"):
+            opt_mod._enrich_blank_descriptions(self._SNAPSHOT, w=None)
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings
+        # Preview surfaces the text but is bounded — the long response must
+        # not dump the entire response into the log line.
+        msg = warnings[0].getMessage()
+        assert "preview=" in msg
+        # At most 300 x-chars in the preview plus framing.
+        preview_len = msg.count("x")
+        assert preview_len <= 300
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F3 — Honest total_eligible accounting in _run_description_enrichment
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestDescriptionEnrichmentAccounting:
+    """When some batches silently drop (LLM returned unparseable JSON
+    even after validator retries), ``total_eligible`` must reflect the
+    ORIGINAL number of blank columns — not the number of patches that
+    survived. Otherwise the stage banner misreports "30/30 enriched"
+    when 20 columns were actually dropped.
+    """
+
+    def test_total_eligible_counts_blanks_not_patches(self, monkeypatch):
+        """Classic prod scenario: 50 blanks, LLM parses 30 of them."""
+        from genie_space_optimizer.optimization import harness as harness_mod
+
+        blanks = [
+            {
+                "table": f"cat.sch.t_{i // 10}",
+                "column": f"c_{i}",
+                "data_type": "STRING",
+                "entity_type": "column_dim",
+                "table_description": "",
+                "sibling_columns": [],
+            }
+            for i in range(50)
+        ]
+        patches = [
+            {
+                "type": "update_column_description",
+                "table": b["table"],
+                "column": b["column"],
+                "structured_sections": {"definition": "d"},
+                "column_entity_type": b["entity_type"],
+                "lever": 0,
+                "risk_level": "low",
+                "source": "proactive_enrichment",
+            }
+            for b in blanks[:30]
+        ]
+
+        monkeypatch.setattr(
+            harness_mod, "_collect_blank_columns", lambda _snap: blanks,
+        )
+        monkeypatch.setattr(
+            harness_mod, "_enrich_blank_descriptions",
+            lambda *_a, **_k: patches,
+        )
+        monkeypatch.setattr(
+            harness_mod, "_collect_insufficient_tables", lambda _snap: [],
+        )
+        monkeypatch.setattr(
+            harness_mod, "_enrich_table_descriptions",
+            lambda *_a, **_k: [],
+        )
+        # No-op SDK side effects: write_stage / write_patch /
+        # patch_space_config are all wired to swallow calls.
+        monkeypatch.setattr(
+            harness_mod, "write_stage", lambda *a, **k: None,
+        )
+        monkeypatch.setattr(
+            harness_mod, "write_patch", lambda *a, **k: None,
+        )
+
+        class _FakePatchClient:
+            def __call__(self, *a, **k):
+                return None
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.common.genie_client.patch_space_config",
+            _FakePatchClient(),
+        )
+        monkeypatch.setattr(
+            "genie_space_optimizer.common.genie_client.fetch_space_config",
+            lambda *a, **k: {},
+        )
+
+        # Minimal snapshot with distinct tables so patches can be applied.
+        snapshot = {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": f"cat.sch.t_{i}",
+                        "name": f"t_{i}",
+                        "column_configs": [
+                            {"column_name": f"c_{i*10 + j}", "type_text": "STRING"}
+                            for j in range(10)
+                        ],
+                    }
+                    for i in range(5)
+                ],
+                "metric_views": [],
+            },
+            "instructions": {"join_specs": []},
+        }
+
+        result = harness_mod._run_description_enrichment(
+            w=None, spark=None, run_id="r1", space_id="s1",
+            config={"_parsed_space": snapshot}, metadata_snapshot=snapshot,
+            catalog="c", schema="s",
+        )
+
+        assert result["total_eligible"] == 50
+        assert result["total_patches_generated"] == 30
+        assert result["total_failed_llm"] == 20
+
+    def test_total_failed_llm_is_zero_when_all_batches_parse(self, monkeypatch):
+        """Happy path: 3 blanks, LLM returns 3 patches → failed_llm=0."""
+        from genie_space_optimizer.optimization import harness as harness_mod
+
+        blanks = [
+            {
+                "table": "cat.sch.t",
+                "column": f"c_{i}",
+                "data_type": "STRING",
+                "entity_type": "column_dim",
+                "table_description": "",
+                "sibling_columns": [],
+            }
+            for i in range(3)
+        ]
+        patches = [
+            {
+                "type": "update_column_description",
+                "table": "cat.sch.t",
+                "column": b["column"],
+                "structured_sections": {"definition": "d"},
+                "column_entity_type": "column_dim",
+                "lever": 0,
+                "risk_level": "low",
+                "source": "proactive_enrichment",
+            }
+            for b in blanks
+        ]
+
+        monkeypatch.setattr(
+            harness_mod, "_collect_blank_columns", lambda _snap: blanks,
+        )
+        monkeypatch.setattr(
+            harness_mod, "_enrich_blank_descriptions",
+            lambda *_a, **_k: patches,
+        )
+        monkeypatch.setattr(
+            harness_mod, "_collect_insufficient_tables", lambda _snap: [],
+        )
+        monkeypatch.setattr(
+            harness_mod, "_enrich_table_descriptions",
+            lambda *_a, **_k: [],
+        )
+        monkeypatch.setattr(harness_mod, "write_stage", lambda *a, **k: None)
+        monkeypatch.setattr(harness_mod, "write_patch", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "genie_space_optimizer.common.genie_client.patch_space_config",
+            lambda *a, **k: None,
+        )
+
+        snapshot = {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": "cat.sch.t",
+                        "name": "t",
+                        "column_configs": [
+                            {"column_name": f"c_{i}", "type_text": "STRING"}
+                            for i in range(3)
+                        ],
+                    },
+                ],
+                "metric_views": [],
+            },
+            "instructions": {"join_specs": []},
+        }
+
+        result = harness_mod._run_description_enrichment(
+            w=None, spark=None, run_id="r1", space_id="s1",
+            config={"_parsed_space": snapshot}, metadata_snapshot=snapshot,
+            catalog="c", schema="s",
+        )
+
+        assert result["total_eligible"] == 3
+        assert result["total_patches_generated"] == 3
+        assert result["total_failed_llm"] == 0
+        assert result["total_enriched"] == 3
+
+    def test_tables_accounting_mirrors_column_accounting(self, monkeypatch):
+        """Table eligibility accounting works the same way: 5 eligible,
+        2 patches generated → tables_failed_llm=3."""
+        from genie_space_optimizer.optimization import harness as harness_mod
+
+        insufficient = [
+            {"table": f"cat.sch.t_{i}", "is_metric_view": False}
+            for i in range(5)
+        ]
+        tbl_patches = [
+            {
+                "type": "update_description",
+                "table": t["table"],
+                "structured_sections": {"purpose": "x"},
+                "table_entity_type": "table",
+                "lever": 0,
+                "risk_level": "low",
+                "source": "proactive_enrichment",
+            }
+            for t in insufficient[:2]
+        ]
+
+        monkeypatch.setattr(
+            harness_mod, "_collect_blank_columns", lambda _snap: [],
+        )
+        monkeypatch.setattr(
+            harness_mod, "_enrich_blank_descriptions",
+            lambda *_a, **_k: [],
+        )
+        monkeypatch.setattr(
+            harness_mod, "_collect_insufficient_tables",
+            lambda _snap: insufficient,
+        )
+        monkeypatch.setattr(
+            harness_mod, "_enrich_table_descriptions",
+            lambda *_a, **_k: tbl_patches,
+        )
+        monkeypatch.setattr(harness_mod, "write_stage", lambda *a, **k: None)
+        monkeypatch.setattr(harness_mod, "write_patch", lambda *a, **k: None)
+        monkeypatch.setattr(
+            "genie_space_optimizer.common.genie_client.patch_space_config",
+            lambda *a, **k: None,
+        )
+
+        snapshot = {
+            "data_sources": {
+                "tables": [
+                    {"identifier": f"cat.sch.t_{i}", "name": f"t_{i}",
+                     "column_configs": []}
+                    for i in range(5)
+                ],
+                "metric_views": [],
+            },
+            "instructions": {"join_specs": []},
+        }
+
+        result = harness_mod._run_description_enrichment(
+            w=None, spark=None, run_id="r1", space_id="s1",
+            config={"_parsed_space": snapshot}, metadata_snapshot=snapshot,
+            catalog="c", schema="s",
+        )
+
+        assert result["tables_eligible"] == 5
+        assert result["tables_patches_generated"] == 2
+        assert result["tables_failed_llm"] == 3
+        assert result["tables_enriched"] == 2

@@ -219,9 +219,17 @@ for high-confidence auto-removal."""
 #   ``off``     — legacy kill-switch. Byte-identical to pre-PR behavior.
 #
 # ``GSO_APPLY_QUALITY_INSTRUCTIONS`` gates the Group-D applier changes
-# (MV-preference, column-ordering, calendar-grounding instruction blocks).
-# Accepted values: ``on`` (default, writes blocks), ``off`` (skips writes
-# and strips any existing ``-- GSO_QUALITY_V1`` sentinels on the next apply).
+# (MV-preference, column-ordering, calendar-grounding instruction
+# bullets). Each policy is rendered as a plain bullet under its target
+# canonical ``##`` section — no markers or wrappers are written into
+# customer-visible prose. Accepted values: ``on`` (default, inserts the
+# current policy bullets), ``off`` (skips insertion). In either mode,
+# bullets whose text exactly matches a known policy body (current or
+# deprecated, tracked in ``applier._GSO_QUALITY_V1_POLICIES`` and
+# ``_GSO_QUALITY_V1_DEPRECATED_BULLETS``) are stripped so a flip to
+# ``off`` fully reverts our content. Customer-authored bullets with any
+# different wording are preserved verbatim. Pre-Option-C sentinel blocks
+# (``-- BEGIN/END GSO_QUALITY_V1:<key>``) are swept out on any apply.
 #
 # ``GSO_ASSERT_ROW_CANONICAL`` is a dev-only assertion; defaults to off.
 
@@ -613,6 +621,218 @@ BENCHMARK_CORRECTION_PROMPT = (
     '"unfixable_reason" (null if fixed).\n'
     '</output_schema>'
 )
+
+
+# ── 6b. Example-SQL prompts (Phase 2.R2 of unify-example-sql plan) ──────
+#
+# Copy-and-diverge from BENCHMARK_GENERATION_PROMPT / BENCHMARK_CORRECTION_PROMPT
+# with three specific changes:
+#   - <role> reframed from "evaluation expert" to "example author"
+#     ("TEACH Genie", not "TEST Genie")
+#   - Instructions de-emphasize evaluation-style edge cases and asset
+#     coverage; emphasize common, naturally-phrased business questions
+#   - Output schema drops category / expected_facts / required_tables /
+#     required_columns; example_question_sqls just need question + SQL
+#     (+ optional usage_guidance that helps Genie use the example)
+#
+# Every Metric-View rule, Column Allowlist rule, Data Profile grounding
+# block, and Instruction-Mandated Default Filter block is kept verbatim —
+# those are the features we adopted the benchmark engine for.
+#
+# Isolation: these prompts must NOT reference any benchmark-derived
+# template variable. See the module-load-time assertion at the bottom of
+# this file + docs/example-sql-isolation.md.
+
+EXAMPLE_SQL_GENERATION_PROMPT = (
+    '<role>\n'
+    'You are a Databricks Genie Space example-SQL author. Your output '
+    'will be stored in instructions.example_question_sqls as reference '
+    'material that TEACHES Genie the shape of common questions on this '
+    'space — it is NOT used to evaluate Genie. Write examples a real '
+    'business user would naturally ask; clarity beats cleverness.\n'
+    '</role>\n'
+    '\n'
+    '<context>\n'
+    '## Domain: {{ domain }}\n'
+    '\n'
+    '## VALID Data Assets (ONLY use these in SQL)\n'
+    '{{ valid_assets_context }}\n'
+    '\n'
+    '## Tables and Columns\n'
+    '{{ tables_context }}\n'
+    '\n'
+    '## Column Allowlist (Extract-Over-Generate — use ONLY these column names)\n'
+    '{{ column_allowlist }}\n'
+    '\n'
+    '## Metric Views\n'
+    '{{ metric_views_context }}\n'
+    '\n'
+    '## Table-Valued Functions\n'
+    '{{ tvfs_context }}\n'
+    '\n'
+    '## Join Specifications (how tables relate)\n'
+    '{{ join_specs_context }}\n'
+    '\n'
+    '## Genie Space Instructions\n'
+    '{{ instructions_context }}\n'
+    '\n'
+    '## Sample Questions (from Genie Space config)\n'
+    '{{ sample_questions_context }}\n'
+    '\n'
+    '## Data Profile (actual values from database)\n'
+    '{{ data_profile_context }}\n'
+    '</context>\n'
+    '\n'
+    '<instructions>\n'
+    'Generate exactly {{ target_count }} example question + SQL pairs that '
+    'a typical business user would ask on this space. Prioritize common, '
+    'directly-useful business questions over edge cases.\n'
+    '\n'
+    '## Data-Grounded Values\n'
+    'Use the Data Profile to pick realistic filter values — reference '
+    'actual column values rather than inventing them. For numeric columns, '
+    'use values within the profiled min/max range. If a filter cannot be '
+    'grounded, omit it rather than guess.\n'
+    '\n'
+    '## Asset Constraint (Extract-Over-Generate)\n'
+    'expected_sql MUST ONLY reference tables, metric views, and functions '
+    'from VALID Data Assets. Every column MUST come from the Column '
+    'Allowlist. Invented table, view, or column names are a hallucination '
+    'and will be rejected.\n'
+    '\n'
+    '## Metric View Query Rules\n'
+    'When writing SQL for metric views:\n'
+    '- NEVER use SELECT * — metric views require explicit column references.\n'
+    '- ALL measure columns MUST be wrapped in MEASURE() in both SELECT and ORDER BY.\n'
+    '  Example: SELECT region, MEASURE(total_revenue) FROM mv_sales GROUP BY region\n'
+    '- NEVER use MEASURE() in WHERE, HAVING, ON, or CASE WHEN clauses — MEASURE() is '
+    'only valid in SELECT and ORDER BY. To filter on a measure, materialize it in a '
+    'CTE first, then filter on the alias.\n'
+    '- NEVER use direct JOINs on metric views — they cause METRIC_VIEW_JOIN_NOT_SUPPORTED errors.\n'
+    '- If an example requires metric view data PLUS dimension columns from another table, '
+    'use the CTE-first pattern: materialize the metric view query in a WITH clause, then JOIN '
+    'the CTE result to the dimension table.\n'
+    '- Dimensions (non-measure columns) are used for GROUP BY and filtering only.\n'
+    '- The Metric Views section above lists which columns are measures vs dimensions.\n'
+    '\n'
+    '## Common Metric View SQL Mistakes (AVOID THESE)\n'
+    'BAD:  SELECT zone, MEASURE(sales) FROM mv WHERE MEASURE(pct_chg) < -2\n'
+    'GOOD: WITH t AS (SELECT zone, MEASURE(sales) AS s, MEASURE(pct_chg) AS p '
+    'FROM mv GROUP BY zone) SELECT * FROM t WHERE p < -2\n'
+    '\n'
+    'BAD:  SELECT * FROM mv_store_sales\n'
+    'GOOD: SELECT zone, MEASURE(total_sales) FROM mv_store_sales GROUP BY zone\n'
+    '\n'
+    'BAD (METRIC_VIEW_JOIN_NOT_SUPPORTED):\n'
+    '  SELECT s.location_number, l.zone_name, MEASURE(s.cy_sales) '
+    'FROM mv_sales s JOIN dim_location l ON s.location_number = l.location_number GROUP BY ALL\n'
+    'GOOD (CTE-first pattern — materialize metric view, then JOIN):\n'
+    '  WITH sales AS (\n'
+    '    SELECT location_number, MEASURE(cy_sales) AS cy_sales FROM mv_sales GROUP BY ALL\n'
+    '  )\n'
+    '  SELECT s.location_number, l.zone_name, s.cy_sales '
+    'FROM sales s JOIN dim_location l ON s.location_number = l.location_number\n'
+    '\n'
+    '## Question-SQL Alignment\n'
+    '- expected_sql MUST answer EXACTLY what the question asks — no more, no less.\n'
+    '- Do NOT add extra columns beyond what the question asks for.\n'
+    '- If the question is ambiguous about a filter, do NOT assume one UNLESS the Genie '
+    'Space Instructions mandate it as a default.\n'
+    '\n'
+    '## CRITICAL: Instruction-Mandated Default Filters\n'
+    'The Genie Space Instructions section above may define default filters. These are MANDATORY:\n'
+    '- EVERY example SQL in the scope of a default filter MUST include that filter. '
+    'Omitting it teaches Genie the wrong query shape.\n'
+    '- The question text MUST reflect the default filter so question and SQL stay aligned.\n'
+    '\n'
+    '## Minimal SQL Principle\n'
+    'Write the simplest correct SQL. Prefer fewer columns and filters. '
+    'For multi-table questions JOINs are expected and encouraged, but only when '
+    'the question really spans two assets.\n'
+    '\n'
+    '## Diversity\n'
+    'Cover different query shapes (aggregations, filters, temporal comparisons, '
+    'ranking). Do NOT duplicate the intent of any "Already Covered Questions" '
+    'block appended below this prompt.\n'
+    '</instructions>\n'
+    '\n'
+    '<output_schema>\n'
+    'Return a JSON array of example objects. No markdown, just JSON.\n'
+    '\n'
+    'Each object:\n'
+    '- "question": clean business question, customer-style phrasing\n'
+    '- "expected_sql": valid Databricks SQL using fully-qualified names from VALID Data Assets '
+    '(metric views: MEASURE() syntax; TVFs: function call; tables: standard SQL)\n'
+    '- "usage_guidance": one short sentence telling Genie when to surface this example '
+    '(e.g. "Use when the user asks about monthly revenue by region.")\n'
+    '</output_schema>'
+)
+
+EXAMPLE_SQL_CORRECTION_PROMPT = (
+    '<role>\n'
+    'You are a Databricks SQL expert fixing invalid Genie Space example '
+    'SQLs. These examples TEACH Genie common query shapes, so the '
+    'corrected SQL must be realistic and clear for a business user.\n'
+    '</role>\n'
+    '\n'
+    '<context>\n'
+    '## VALID Data Assets (ONLY these exist)\n'
+    '{{ valid_assets_context }}\n'
+    '\n'
+    '## Tables and Columns\n'
+    '{{ tables_context }}\n'
+    '\n'
+    '## Column Allowlist (Extract-Over-Generate — use ONLY these column names)\n'
+    '{{ column_allowlist }}\n'
+    '\n'
+    '## Metric Views\n'
+    '{{ metric_views_context }}\n'
+    '\n'
+    '## Table-Valued Functions\n'
+    '{{ tvfs_context }}\n'
+    '\n'
+    '## Data Profile (actual values from database)\n'
+    '{{ data_profile_context }}\n'
+    '\n'
+    '## Examples to Fix\n'
+    '{{ benchmarks_to_fix }}\n'
+    '</context>\n'
+    '\n'
+    '<instructions>\n'
+    'Fix each example so expected_sql is valid using ONLY the assets and columns above.\n'
+    '\n'
+    '- Wrong table/view name: find closest matching valid asset, rewrite SQL.\n'
+    '- Field drift (e.g., property_name vs property): map to closest valid column.\n'
+    '- Metric views: use MEASURE() syntax for aggregates in SELECT/ORDER BY.\n'
+    '- Metric view alias collision: NEVER use ORDER BY alias when alias == source column\n'
+    '  for MEASURE() expressions. Use ORDER BY MEASURE(column) directly.\n'
+    '- Metric views: NEVER use SELECT * or direct JOINs on metric views. '
+    'All measures MUST use MEASURE().\n'
+    '- Metric views: NEVER use MEASURE() in WHERE, HAVING, ON, or CASE WHEN clauses — '
+    'MEASURE() is only valid in SELECT and ORDER BY. To filter on a measure, materialize '
+    'it in a CTE first, then filter on the alias.\n'
+    '- Metric view + JOIN: If the error is METRIC_VIEW_JOIN_NOT_SUPPORTED, rewrite using '
+    'the CTE-first pattern — materialize the metric view in a WITH clause, then JOIN the '
+    'CTE to the dimension table:\n'
+    '  BAD:  SELECT s.id, l.name, MEASURE(s.sales) FROM mv_sales s JOIN dim l ON s.id = l.id\n'
+    '  GOOD: WITH sales AS (SELECT id, MEASURE(sales) AS sales FROM mv_sales GROUP BY ALL) '
+    'SELECT s.id, l.name, s.sales FROM sales s JOIN dim l ON s.id = l.id\n'
+    '- TVFs: use correct function call signature.\n'
+    '- If error says "Query returns 0 rows", the SQL is syntactically valid but\n'
+    '  references impossible filter values. Use the Data Profile to pick realistic values.\n'
+    '- If no valid asset can answer the question, set expected_sql to null with unfixable_reason.\n'
+    '- Preserve original question text when possible.\n'
+    '- Apply MINIMAL SQL PRINCIPLE: corrected SQL answers exactly what the question asks.\n'
+    '</instructions>\n'
+    '\n'
+    '<output_schema>\n'
+    'Return a JSON array of objects. No markdown, just JSON.\n'
+    '\n'
+    'Each object: "question", "expected_sql" (corrected or null), '
+    '"usage_guidance", "unfixable_reason" (null if fixed).\n'
+    '</output_schema>'
+)
+
 
 CURATED_SQL_GENERATION_PROMPT = (
     '<role>\n'
@@ -3697,7 +3917,46 @@ BENCHMARK_PROMPTS: dict[str, str] = {
     "benchmark_alignment_check": BENCHMARK_ALIGNMENT_CHECK_PROMPT,
     "benchmark_coverage_gap": BENCHMARK_COVERAGE_GAP_PROMPT,
     "curated_sql_generation": CURATED_SQL_GENERATION_PROMPT,
+    # Phase 4.R4b — example-SQL variants. Registered alongside
+    # benchmark prompts so MLflow tracing + the registry-key lookup in
+    # ``get_registered_prompt_name`` find them by the same pathway.
+    "example_sql_generation": EXAMPLE_SQL_GENERATION_PROMPT,
+    "example_sql_correction": EXAMPLE_SQL_CORRECTION_PROMPT,
 }
+
+
+# ── 20d. Phase 2.R2b — Prompt isolation assertion ──────────────────────
+#
+# Isolation invariant #2 of the unified example-SQL generator: the
+# example prompts must NOT reference any benchmark-derived template
+# variable. A mis-edit to either template that accidentally pipes
+# benchmark text into the generator's prompt is caught at import time
+# rather than at runtime. See docs/example-sql-isolation.md.
+
+_BENCHMARK_DERIVED_VARS: frozenset[str] = frozenset({
+    "benchmarks",
+    "benchmark_list",
+    "existing_benchmarks",
+    "benchmark_questions",
+    "benchmark_sqls",
+    "expected_sqls",
+    "eval_questions",
+    "benchmark_corpus",
+})
+
+for _fwd_var in _BENCHMARK_DERIVED_VARS:
+    _forbidden_token = "{{ " + _fwd_var + " }}"
+    assert _forbidden_token not in EXAMPLE_SQL_GENERATION_PROMPT, (
+        f"Isolation invariant violated: EXAMPLE_SQL_GENERATION_PROMPT "
+        f"references benchmark-derived template variable '{_fwd_var}'. "
+        "See docs/example-sql-isolation.md."
+    )
+    assert _forbidden_token not in EXAMPLE_SQL_CORRECTION_PROMPT, (
+        f"Isolation invariant violated: EXAMPLE_SQL_CORRECTION_PROMPT "
+        f"references benchmark-derived template variable '{_fwd_var}'."
+    )
+
+del _fwd_var, _forbidden_token
 
 # ── 21. ASI Schema (12 fields) ─────────────────────────────────────────
 
@@ -4197,6 +4456,7 @@ profile above. Do not invent values. For numeric columns, use values \
 within the stated range. When filter values are not in the profile \
 (high-cardinality columns), omit the filter instead of guessing.
 
+{{ metric_view_contract }}
 ## Archetype
 Name: {{ archetype_name }}
 Shape guidance: {{ archetype_prompt_template }}

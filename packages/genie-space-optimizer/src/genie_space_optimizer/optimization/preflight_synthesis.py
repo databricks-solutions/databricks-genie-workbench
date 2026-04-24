@@ -740,17 +740,117 @@ def _first_asset_identifier(slice_: AssetSlice) -> str:
     return "catalog.schema.table"
 
 
+# Caps on how many measure/dimension rows we render in the slice block.
+# 8 mirrors the anti-dup question cap and keeps the prompt bounded on
+# wide metric views (some production MVs have 30+ columns).
+_MAX_MV_MEASURES_IN_PROMPT = 8
+_MAX_MV_DIMENSIONS_IN_PROMPT = 8
+
+
+def _mv_column_entries(mv: dict) -> tuple[list[str], list[str]]:
+    """Return ``(measures, dimensions)`` for a metric-view snapshot.
+
+    Reads ``column_configs`` (production shape) first, then falls back
+    to top-level ``measures`` / ``dimensions`` lists (test-fixture
+    shape). A column is a measure when ``column_type == "measure"``
+    OR ``is_measure`` is truthy — matches the rule
+    :func:`optimization.evaluation.build_metric_view_measures` uses,
+    so the preflight prompt and the runtime MEASURE-wrapping rewriter
+    agree on which columns are measures. Everything else that's a
+    declared column is treated as a dimension for prompt purposes.
+
+    Returns lists in column_configs declaration order (stable across
+    runs — deterministic prompts are easier to diff).
+    """
+    measures: list[str] = []
+    dimensions: list[str] = []
+    seen_measures: set[str] = set()
+    seen_dimensions: set[str] = set()
+
+    for cc in mv.get("column_configs", []) or []:
+        if not isinstance(cc, dict):
+            continue
+        name = str(cc.get("column_name") or "").strip()
+        if not name:
+            continue
+        col_type = str(cc.get("column_type") or "").lower()
+        is_measure = bool(cc.get("is_measure")) or col_type == "measure"
+        if is_measure:
+            if name.lower() not in seen_measures:
+                seen_measures.add(name.lower())
+                measures.append(name)
+        else:
+            if name.lower() not in seen_dimensions:
+                seen_dimensions.add(name.lower())
+                dimensions.append(name)
+
+    # Fallback: some snapshots / test fixtures store measures and
+    # dimensions as top-level lists instead of column_configs. Merge
+    # them in without overwriting anything already registered from
+    # column_configs.
+    for m in mv.get("measures", []) or []:
+        if isinstance(m, dict):
+            name = str(m.get("name") or m.get("column_name") or "").strip()
+        else:
+            name = str(m or "").strip()
+        if name and name.lower() not in seen_measures:
+            seen_measures.add(name.lower())
+            measures.append(name)
+    for d in mv.get("dimensions", []) or []:
+        if isinstance(d, dict):
+            name = str(d.get("name") or d.get("column_name") or "").strip()
+        else:
+            name = str(d or "").strip()
+        if name and name.lower() not in seen_dimensions:
+            seen_dimensions.add(name.lower())
+            dimensions.append(name)
+
+    return measures, dimensions
+
+
 def _format_slice_metric_views(slice_: AssetSlice) -> str:
+    """Render the metric-view block with measure / dimension type labels.
+
+    Prior to F5b this returned a single-line description. The LLM had
+    no way to tell measures from dimensions and frequently emitted
+    bare measure references that failed the execute gate with
+    ``METRIC_VIEW_MISSING_MEASURE_FUNCTION``. Breaking columns out by
+    type makes the MEASURE()-wrapping contract visually obvious —
+    every ``[measure]`` line is a column that MUST be wrapped; every
+    ``[dimension]`` line is used as-is.
+    """
     if slice_.metric_view is None:
         return "(none)"
     mv = slice_.metric_view
     ident = (mv.get("identifier") or mv.get("name") or "").strip()
-    desc = str(mv.get("description", "") or "").strip()
-    if isinstance(mv.get("description"), list):
-        desc = " ".join(
-            str(x) for x in mv.get("description", []) if isinstance(x, str)
-        ).strip()
-    return f"- {ident}" + (f" — {desc[:120]}" if desc else "") if ident else "(none)"
+    if not ident:
+        return "(none)"
+
+    desc = mv.get("description", "")
+    if isinstance(desc, list):
+        desc = " ".join(str(x) for x in desc if isinstance(x, str)).strip()
+    else:
+        desc = str(desc or "").strip()
+
+    lines: list[str] = [f"- {ident}" + (f" — {desc[:120]}" if desc else "")]
+
+    measures, dimensions = _mv_column_entries(mv)
+    for m in measures[:_MAX_MV_MEASURES_IN_PROMPT]:
+        lines.append(f"    [measure]   {m}")
+    if len(measures) > _MAX_MV_MEASURES_IN_PROMPT:
+        lines.append(
+            f"    [measure]   (+{len(measures) - _MAX_MV_MEASURES_IN_PROMPT} "
+            "more not shown)"
+        )
+    for d in dimensions[:_MAX_MV_DIMENSIONS_IN_PROMPT]:
+        lines.append(f"    [dimension] {d}")
+    if len(dimensions) > _MAX_MV_DIMENSIONS_IN_PROMPT:
+        lines.append(
+            f"    [dimension] (+{len(dimensions) - _MAX_MV_DIMENSIONS_IN_PROMPT} "
+            "more not shown)"
+        )
+
+    return "\n".join(lines)
 
 
 def _format_slice_join_spec(slice_: AssetSlice) -> str:
@@ -812,6 +912,25 @@ def _column_description_lookup(slice_: AssetSlice) -> dict[tuple[str, str], str]
     return lookup
 
 
+def _slice_measure_lookup(slice_: AssetSlice) -> set[tuple[str, str]]:
+    """Return a ``{(mv_identifier_lower, measure_name_lower), ...}`` set
+    for the slice's metric view (if any). Used by
+    :func:`_format_slice_columns` to type-tag measure columns so the
+    LLM sees which columns require ``MEASURE()`` wrapping.
+
+    Empty set when the slice has no metric view — tables have no
+    measure/dimension distinction.
+    """
+    if slice_.metric_view is None:
+        return set()
+    mv = slice_.metric_view
+    ident = (mv.get("identifier") or mv.get("name") or "").strip().lower()
+    if not ident:
+        return set()
+    measures, _ = _mv_column_entries(mv)
+    return {(ident, m.lower()) for m in measures}
+
+
 def _format_slice_columns(slice_: AssetSlice) -> str:
     """Render the ``Columns to prioritize`` bullet block.
 
@@ -821,20 +940,96 @@ def _format_slice_columns(slice_: AssetSlice) -> str:
     means (store count? branch code? category id?) which regularly
     produces filters on non-existent values. When descriptions are
     missing the line falls back to bare form (no crash).
+
+    F5b: measure columns on a metric view are tagged ``[measure]`` so
+    the LLM knows which require MEASURE() wrapping. Dimension columns
+    on an MV are tagged ``[dimension]`` for symmetry. Table columns
+    are un-tagged (no measure/dimension distinction applies).
     """
     if not slice_.columns:
         return "(none)"
     descs = _column_description_lookup(slice_)
+    measure_keys = _slice_measure_lookup(slice_)
+    mv_ident = ""
+    if slice_.metric_view is not None:
+        mv_ident = (
+            slice_.metric_view.get("identifier")
+            or slice_.metric_view.get("name")
+            or ""
+        ).strip().lower()
+
     out: list[str] = []
     for tid, cname in slice_.columns:
-        desc = descs.get((tid.strip().lower(), cname.strip().lower()), "")
+        key = (tid.strip().lower(), cname.strip().lower())
+        tag = ""
+        if mv_ident and key[0] == mv_ident:
+            if key in measure_keys:
+                tag = " [measure]"
+            else:
+                tag = " [dimension]"
+        desc = descs.get(key, "")
         if desc:
             if len(desc) > 140:
                 desc = desc[:140].rstrip() + "…"
-            out.append(f"- {tid}.{cname}: {desc}")
+            out.append(f"- {tid}.{cname}{tag}: {desc}")
         else:
-            out.append(f"- {tid}.{cname}")
+            out.append(f"- {tid}.{cname}{tag}")
     return "\n".join(out)
+
+
+def _format_metric_view_contract(slice_: AssetSlice) -> str:
+    """Render the conditional ``## Constraint: metric-view query contract``
+    section of the preflight synthesis prompt.
+
+    Returns an empty string when the slice has no metric view — the
+    prompt template inlines the variable verbatim so an empty value
+    collapses the section to a blank line rather than an empty
+    heading. When the slice has an MV, render a HARD constraint
+    explaining MEASURE() with BAD/GOOD worked examples that use THIS
+    slice's MV identifier and (when available) the first declared
+    measure as the column name, so the examples are grounded in the
+    real schema rather than placeholders.
+
+    The BAD/GOOD format matches PR 4's identifier-qualification
+    constraint so the prompt stays stylistically consistent.
+    """
+    if slice_.metric_view is None:
+        return ""
+
+    mv = slice_.metric_view
+    mv_id = (mv.get("identifier") or mv.get("name") or "").strip()
+    if not mv_id:
+        return ""
+
+    measures, _dimensions = _mv_column_entries(mv)
+    # Prefer a real measure from this MV so the worked example is
+    # grounded; fall back to a generic name only when the MV declares
+    # no measures at all (rare — such MVs are dimension-only views).
+    example_measure = measures[0] if measures else "total_sales"
+
+    return (
+        "## Constraint: metric-view query contract (HARD)\n"
+        "Every ``[measure]`` column from the metric view MUST be "
+        "wrapped in ``MEASURE()`` in SELECT and ORDER BY. "
+        "``[dimension]`` columns are used as-is.\n"
+        "\n"
+        f"Worked example (metric view = ``{mv_id}``, "
+        f"measure = ``{example_measure}``):\n"
+        f"- BAD   SELECT {example_measure} FROM {mv_id}\n"
+        f"- BAD   SELECT {example_measure} FROM {mv_id} "
+        f"ORDER BY {example_measure} DESC\n"
+        f"- GOOD  SELECT MEASURE({example_measure}) FROM {mv_id} "
+        "GROUP BY ALL\n"
+        f"- GOOD  SELECT MEASURE({example_measure}) AS m FROM {mv_id} "
+        "GROUP BY ALL ORDER BY m DESC\n"
+        "\n"
+        "``MEASURE()`` is ONLY legal in SELECT and ORDER BY. NEVER "
+        "use it in WHERE, HAVING, ON, or CASE WHEN. To filter on a "
+        "measure, materialize it in a CTE first:\n"
+        f"  WITH t AS (SELECT MEASURE({example_measure}) AS m "
+        f"FROM {mv_id} GROUP BY ALL)\n"
+        "  SELECT * FROM t WHERE m > 100\n"
+    )
 
 
 def _format_slice_data_profile(
@@ -959,6 +1154,7 @@ def _build_qualification_feedback(
     proposal: dict,
     slice_: AssetSlice,
     failure_reason: str,
+    offending_identifiers: list[str] | None = None,
 ) -> str:
     """Render the retry-feedback payload used by Phase 2.R6.
 
@@ -969,6 +1165,15 @@ def _build_qualification_feedback(
     values — so the LLM can self-correct. Structurally mirrors
     :func:`_build_empty_result_feedback` so the prompt shape stays
     predictable across retry classes.
+
+    ``offending_identifiers`` (optional, F4b): a list of the exact
+    identifier tokens the LLM wrote that failed resolution. Extracted
+    from the Spark EXPLAIN error reason via
+    :func:`_extract_offending_identifiers`. When provided, the feedback
+    calls them out verbatim ("You wrote `dim_date` — this is NOT in the
+    allowlist"), which gives the model a concrete anchor instead of the
+    abstract "use the allowlist". Empty list / None preserves the
+    pre-F4b message body so existing tests stay green.
     """
     prior_sql = str(proposal.get("example_sql") or "").strip()
     if not prior_sql and not slice_.asset_ids():
@@ -978,11 +1183,24 @@ def _build_qualification_feedback(
         prior_sql[:300].rstrip() + "…"
     )
     reason = (failure_reason or "unresolved identifier").strip()
+
+    offenders_block = ""
+    if offending_identifiers:
+        joined = ", ".join(
+            f"`{i}`" for i in sorted(set(offending_identifiers))
+        )
+        offenders_block = (
+            f"\nYou wrote {joined} — these identifiers are NOT in the "
+            "allowlist. Use the closest legal identifier from the list "
+            "below instead.\n"
+        )
+
     return (
         "Your previous query failed validation:\n"
         f"  {reason}\n\n"
         "Your SQL was:\n"
         f"  {truncated or '(no SQL captured)'}\n\n"
+        f"{offenders_block}"
         "The ONLY legal table identifiers for this example are:\n"
         f"{allowlist_block}\n\n"
         "Regenerate the example_sql using EXACTLY these identifiers — "
@@ -1015,6 +1233,392 @@ def _is_qualification_failure(gate_result: Any) -> bool:
         return True
     reason = (gate_result.reason or "").upper()
     return any(marker in reason for marker in _QUALIFICATION_FAILURE_MARKERS)
+
+
+# Regex matches backticked identifiers in UNRESOLVED_COLUMN /
+# UNRESOLVED_TABLE / TABLE_OR_VIEW_NOT_FOUND error messages emitted by
+# Spark/DBSQL. Spark wraps the offending identifier in backticks, so
+# this is a cheap structural pattern — no need to parse the full SQL.
+_IDENTIFIER_IN_REASON = re.compile(
+    r"(?:UNRESOLVED_(?:COLUMN|TABLE)|TABLE_OR_VIEW_NOT_FOUND|"
+    r"UNQUALIFIED_TABLE)[^`]*?`([^`]+)`",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_offending_identifiers(reason: str) -> list[str]:
+    """Pull offending identifier names out of a Spark EXPLAIN /
+    ``UNRESOLVED_*`` error reason.
+
+    Returned in document order with duplicates removed so the retry
+    feedback can list each exactly once. Non-matching reasons return
+    ``[]`` so callers can treat "no hint" as a normal case.
+    """
+    out: list[str] = []
+    for m in _IDENTIFIER_IN_REASON.finditer(reason or ""):
+        ident = m.group(1)
+        if ident and ident not in out:
+            out.append(ident)
+    return out
+
+
+# Leaf-prefix patterns we strip when building "soft stems" for a
+# canonical identifier. Covers the medallion + Databricks-convention
+# shapes we see in practice:
+#   mv_, vw_, dim_, fact_, agg_, tbl_  (single prefix)
+#   mv_esr_, mv_7now_, vw_sales_, ...  (two-segment prefix)
+# Matching is case-insensitive; we only register soft stems that still
+# resolve UNIQUELY to one canonical identifier so ambiguous rewrites
+# are impossible.
+_LEAF_SOFT_PREFIXES = ("mv_", "vw_", "dim_", "fact_", "agg_", "tbl_")
+_LEAF_TWO_SEG_PREFIX = re.compile(
+    r"^(?:mv|vw)_[a-z0-9]+_(?P<tail>.+)$", re.IGNORECASE,
+)
+
+
+def _build_stem_map(canonical: list[str]) -> dict[str, str]:
+    """Build a ``stem_lower → canonical`` map containing only stems that
+    resolve UNIQUELY to a single canonical identifier.
+
+    Ambiguous stems (e.g. two tables with the same trailing
+    underscore-delimited suffix across different schemas) are dropped
+    so a false-positive rewrite is impossible — the LLM retry handles
+    those via the feedback path.
+
+    Three stem classes, each registered into the same map. The
+    uniqueness check on the way out is what guarantees correctness:
+
+    * **Hard stems** — every suffix of the dotted identifier path
+      (``mv_esr_dim_date``, ``sales_reports.mv_esr_dim_date``, full
+      FQ). These are always safe rewrites when unique because they
+      differ only in qualifier scope.
+    * **Prefix-strip soft stems** — leaf with a medallion or
+      two-segment leaf prefix stripped (``dim_date`` from
+      ``mv_esr_dim_date``). This is the shape observed most often in
+      the production log.
+    * **Underscore-suffix soft stems** — every suffix of the leaf
+      after an underscore boundary (``other_dim_date`` registers
+      ``dim_date`` and ``date``). This makes the uniqueness check
+      aware of conceptual overlap: two canonicals that share a
+      trailing underscore-delimited component will both register the
+      same suffix, so neither gets rewritten deterministically — the
+      LLM retry must decide.
+    """
+    stems: dict[str, list[str]] = {}
+
+    def _register(stem: str, full: str) -> None:
+        key = stem.lower()
+        if not key:
+            return
+        bucket = stems.setdefault(key, [])
+        if full not in bucket:
+            bucket.append(full)
+
+    for full in canonical:
+        parts = full.split(".")
+        # Hard stems: every suffix of the dotted path.
+        for i in range(1, len(parts) + 1):
+            _register(".".join(parts[-i:]), full)
+        leaf = parts[-1]
+        # Single-segment soft stems (strip one known prefix).
+        for prefix in _LEAF_SOFT_PREFIXES:
+            if leaf.lower().startswith(prefix):
+                _register(leaf[len(prefix):], full)
+        # Two-segment soft stem (mv_esr_, mv_7now_, vw_foo_, ...).
+        m = _LEAF_TWO_SEG_PREFIX.match(leaf)
+        if m:
+            _register(m.group("tail"), full)
+        # Underscore-suffix soft stems: every trailing substring of
+        # the leaf that starts at an underscore boundary. This is
+        # what makes ``other_dim_date`` contribute ``dim_date`` and
+        # ``date`` to the map — so the ``dim_date`` stem becomes
+        # ambiguous with ``mv_esr_dim_date`` (which also registers
+        # ``dim_date`` via the two-segment prefix strip) and no
+        # rewrite fires.
+        underscore_positions = [i for i, ch in enumerate(leaf) if ch == "_"]
+        for pos in underscore_positions:
+            tail = leaf[pos + 1:]
+            if tail:
+                _register(tail, full)
+
+    return {s: v[0] for s, v in stems.items() if len(v) == 1}
+
+
+def _repair_stemmed_identifiers(
+    proposal: dict, slice_: AssetSlice,
+) -> tuple[dict, list[tuple[str, str]]]:
+    """Rewrite unqualified / stemmed table references in
+    ``proposal['example_sql']`` to their canonical allowlist counterpart.
+
+    A substitution fires only when the stemmed token appears as a
+    unique stem of EXACTLY ONE allowlist identifier. Ambiguous stems
+    are left untouched so the LLM retry can disambiguate with business
+    context — no deterministic wrong answer.
+
+    Matching rules:
+
+    * Token boundary: ``[\\w.]`` on both sides. This prevents column
+      qualifiers like ``t.dim_date`` (where ``.dim_date`` is a column,
+      not a table) from being mis-matched, and prevents the rewrite
+      from gluing onto an adjacent identifier.
+    * Case-insensitive find, case-preserving replace (canonical name
+      is used verbatim).
+    * FROM, JOIN, CTE references all covered because the rule is purely
+      lexical — Spark SQL is case-insensitive and whitespace-bounded
+      for identifiers outside of backticks.
+
+    Returns ``(new_proposal, [(before, after), ...])``. When nothing
+    was repaired, the original proposal is returned unchanged and the
+    substitution list is empty.
+
+    The engine runs this BEFORE the validator so the common "LLM
+    stemmed the prefix" case (e.g. ``FROM dim_date`` when the allowlist
+    has ``cat.sch.mv_esr_dim_date``) never burns a retry LLM call.
+    """
+    sql = str(proposal.get("example_sql") or "")
+    if not sql:
+        return proposal, []
+
+    canonical: list[str] = []
+    assets: list[dict] = list(slice_.tables)
+    if slice_.metric_view is not None:
+        assets.append(slice_.metric_view)
+    for asset in assets:
+        ident = (asset.get("identifier") or asset.get("name") or "").strip()
+        if ident and ident not in canonical:
+            canonical.append(ident)
+    if not canonical:
+        return proposal, []
+
+    unique_stems = _build_stem_map(canonical)
+    if not unique_stems:
+        return proposal, []
+
+    # Longest-first so ``schema.mv_esr_dim_date`` wins over ``dim_date``
+    # when both are present in the SQL. This keeps the final SQL as
+    # close to the LLM's intent as possible.
+    subs: list[tuple[str, str]] = []
+    new_sql = sql
+    for stem in sorted(unique_stems, key=len, reverse=True):
+        canonical_name = unique_stems[stem]
+        if stem == canonical_name.lower():
+            # Already the canonical form — nothing to do.
+            continue
+        # Whole-word match, not preceded or followed by ``.`` or word
+        # chars. Guards against:
+        #   - column qualifier "t.dim_date" (prev char '.') — skipped
+        #   - substring inside longer identifier "dim_date_extra" — skipped
+        pattern = rf"(?<![\w.]){re.escape(stem)}(?![\w.])"
+        replaced_this_round: list[str] = []
+
+        def _repl(
+            match: re.Match,
+            _canon: str = canonical_name,
+            _stem: str = stem,
+            _log: list[str] = replaced_this_round,
+        ) -> str:
+            _log.append(match.group(0))
+            return _canon
+
+        new_sql, n = re.subn(pattern, _repl, new_sql, flags=re.IGNORECASE)
+        for orig in replaced_this_round:
+            subs.append((orig, canonical_name))
+
+    if not subs:
+        return proposal, []
+
+    new_proposal = dict(proposal)
+    new_proposal["example_sql"] = new_sql
+    trace = list(new_proposal.get("_repair_trace") or [])
+    trace.extend(subs)
+    new_proposal["_repair_trace"] = trace
+    return new_proposal, subs
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F5 — METRIC_VIEW_MISSING_MEASURE_FUNCTION detection + repair + feedback
+# ═══════════════════════════════════════════════════════════════════════
+
+_MEASURE_FAILURE_MARKER = "METRIC_VIEW_MISSING_MEASURE_FUNCTION"
+
+# Spark emits the offending measure names as a comma-separated list
+# inside square brackets. Example:
+#   [METRIC_VIEW_MISSING_MEASURE_FUNCTION] The usage of measure column
+#   [7now_avg_txn_cy_day, 7now_avg_txn_prior] must be wrapped in MEASURE()
+_MEASURE_OFFENDERS_RE = re.compile(
+    r"METRIC_VIEW_MISSING_MEASURE_FUNCTION.*?\[(?P<list>[^\]]+)\]",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _is_measure_function_failure(gate_result: Any) -> bool:
+    """True when the execute gate failed because the LLM referenced a
+    metric-view measure as a bare column (missing ``MEASURE()`` wrapper).
+
+    Distinct from :func:`_is_qualification_failure` — the fix is
+    wrapping an existing identifier, not rewriting to a different
+    identifier. The retry loop dispatches on this classifier to pick
+    the right feedback builder.
+    """
+    if gate_result is None or gate_result.passed:
+        return False
+    return _MEASURE_FAILURE_MARKER in (gate_result.reason or "").upper()
+
+
+def _extract_offending_measures(reason: str) -> list[str]:
+    """Pull comma-separated measure names out of a Spark
+    ``METRIC_VIEW_MISSING_MEASURE_FUNCTION`` reason.
+
+    Returns ``[]`` when the reason doesn't match the expected shape
+    (no marker, no bracketed list). Duplicates are removed; order of
+    first appearance is preserved so the retry feedback shows the
+    names in the same order Spark reported them.
+    """
+    m = _MEASURE_OFFENDERS_RE.search(reason or "")
+    if not m:
+        return []
+    raw = m.group("list")
+    out: list[str] = []
+    for tok in raw.split(","):
+        name = tok.strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _build_measure_function_feedback(
+    proposal: dict,
+    slice_: AssetSlice,
+    failure_reason: str,
+    offending_measures: list[str] | None = None,
+) -> str:
+    """Render the retry-feedback payload for a measure-function failure.
+
+    Symmetric with :func:`_build_qualification_feedback` so both retry
+    classes present a consistent shape to the LLM: the failure
+    reason, the prior SQL (truncated), specific offenders (when
+    extracted), and BAD/GOOD worked examples grounded in THIS slice's
+    MV identifier.
+
+    When ``offending_measures`` is omitted the feedback still lists
+    the generic MEASURE() rule — useful when the reason text was
+    truncated before the bracketed list.
+    """
+    prior_sql = str(proposal.get("example_sql") or "").strip()
+    if not prior_sql:
+        return ""
+    truncated = prior_sql if len(prior_sql) <= 300 else (
+        prior_sql[:300].rstrip() + "…"
+    )
+
+    mv_id = ""
+    if slice_.metric_view is not None:
+        mv_id = (
+            slice_.metric_view.get("identifier")
+            or slice_.metric_view.get("name")
+            or ""
+        ).strip()
+    mv_id_display = mv_id or "<mv>"
+
+    offenders_block = ""
+    if offending_measures:
+        joined = ", ".join(
+            f"`{m}`" for m in sorted(set(offending_measures))
+        )
+        offenders_block = (
+            f"\nYou referenced {joined} as bare columns — these are "
+            "MEASURE-typed columns on the metric view and MUST be "
+            "wrapped in ``MEASURE()`` in SELECT and ORDER BY.\n"
+        )
+
+    reason = (failure_reason or "").strip()
+    if len(reason) > 300:
+        reason = reason[:300].rstrip() + "…"
+
+    # Use the first offender as the worked-example column when
+    # available; fall back to a generic name otherwise. This keeps
+    # the examples concrete and grounded in the real failure.
+    example_col = (offending_measures or ["<measure_col>"])[0]
+
+    return (
+        "Your previous query failed validation:\n"
+        f"  {reason}\n\n"
+        "Your SQL was:\n"
+        f"  {truncated}\n\n"
+        f"{offenders_block}"
+        "Wrap each MEASURE-typed column in ``MEASURE()``:\n"
+        f"  BAD:  SELECT location, {example_col} FROM {mv_id_display}\n"
+        f"  GOOD: SELECT location, MEASURE({example_col}) "
+        f"FROM {mv_id_display} GROUP BY ALL\n"
+        "\n"
+        "``MEASURE()`` is ONLY legal in SELECT and ORDER BY — never "
+        "in WHERE, HAVING, ON, or CASE WHEN. To filter on a measure, "
+        "materialize it in a CTE first. Regenerate the example_sql "
+        "preserving the question's intent."
+    )
+
+
+def _repair_measure_refs_on_proposal(
+    proposal: dict,
+    slice_: AssetSlice,
+) -> tuple[dict, list[str]]:
+    """Wrap bare measure references in ``proposal['example_sql']`` with
+    ``MEASURE()`` when they match the slice MV's declared measures.
+
+    Thin wrapper around :func:`optimization.evaluation._rewrite_measure_refs`
+    so the MEASURE-wrapping logic (SELECT/ORDER BY only, skip
+    double-wrap, skip WHERE/HAVING/ON) lives in one place. The eval
+    path and the preflight path therefore wrap identically — an
+    important correctness invariant for Bug #4-adjacent pipelines.
+
+    Fires only when the slice has a metric view AND the MV declares
+    at least one measure-typed column in its ``column_configs``. For
+    dimension-only MVs or table-only slices this is a clean no-op.
+
+    Returns ``(new_proposal, [wrapped_measure_names, ...])``. When no
+    rewrite was applied the original proposal is returned verbatim
+    and the list is empty.
+    """
+    from genie_space_optimizer.optimization.evaluation import (
+        _rewrite_measure_refs,
+    )
+
+    sql = str(proposal.get("example_sql") or "")
+    if not sql or slice_.metric_view is None:
+        return proposal, []
+
+    mv = slice_.metric_view
+    mv_identifier = (mv.get("identifier") or mv.get("name") or "").strip()
+    if not mv_identifier:
+        return proposal, []
+    short = mv_identifier.split(".")[-1].lower()
+    if not short:
+        return proposal, []
+
+    measures_list, _dimensions = _mv_column_entries(mv)
+    measures: set[str] = {m.lower() for m in measures_list}
+    if not measures:
+        return proposal, []
+
+    new_sql = _rewrite_measure_refs(sql, {short: measures})
+    if new_sql == sql:
+        return proposal, []
+
+    # Re-scan the rewritten SQL to enumerate which measures actually
+    # received a MEASURE() wrap. The eval helper doesn't return the
+    # list, so we grep for the canonical form — cheap, bounded by
+    # measure count (at most a few dozen per MV).
+    wrapped = [
+        m for m in sorted(measures)
+        if re.search(rf"MEASURE\(\s*{re.escape(m)}\s*\)", new_sql, re.IGNORECASE)
+    ]
+
+    new_proposal = dict(proposal)
+    new_proposal["example_sql"] = new_sql
+    trace = list(new_proposal.get("_repair_trace") or [])
+    trace.extend(("measure", w) for w in wrapped)
+    new_proposal["_repair_trace"] = trace
+    return new_proposal, wrapped
 
 
 def _format_existing_questions(existing_questions: list[str]) -> str:
@@ -1083,6 +1687,7 @@ def render_preflight_prompt(
         "slice_columns": _format_slice_columns(context),
         "slice_data_profile": _format_slice_data_profile(context, data_profile),
         "schema_example_identifier": _first_asset_identifier(context),
+        "metric_view_contract": _format_metric_view_contract(context),
         "archetype_name": archetype.name,
         "archetype_prompt_template": archetype.prompt_template,
         "archetype_output_shape": json.dumps(archetype.output_shape),
@@ -1093,8 +1698,11 @@ def render_preflight_prompt(
     # Budget safeguard: if the rendered prompt exceeds the configured
     # token budget we drop the data profile first (it's the newest /
     # largest addition and the LLM can still produce a shape-correct
-    # query without it). ``slice_columns`` and ``identifier_allowlist``
-    # are structurally load-bearing so they stay.
+    # query without it). ``slice_columns``, ``identifier_allowlist``,
+    # and ``metric_view_contract`` are structurally load-bearing so
+    # they stay — the MV contract is what prevents MEASURE() failures
+    # on MV-centric slices, so dropping it would regress the very
+    # thing F5 is trying to fix.
     from genie_space_optimizer.optimization.optimizer import _truncate_to_budget
     format_kwargs = _truncate_to_budget(
         format_kwargs,
@@ -1457,6 +2065,23 @@ def run_preflight_example_synthesis(
     # the summary block can attribute retry volume to the right class.
     retries_on_qualification_fired = 0
     retries_on_qualification_succeeded = 0
+    # F4 — second-chance counters for the qualification path (up to 2
+    # retry rounds with regenerated feedback) and deterministic-repair
+    # counter (stemmed-identifier rewrites that saved an LLM call).
+    retries_on_qualification_attempts = 0
+    repaired_stemmed_identifiers = 0
+    # F5 — counters for the METRIC_VIEW_MISSING_MEASURE_FUNCTION retry
+    # class (LLM referenced MV measures as bare columns). Mirrors the
+    # qualification counters for symmetry: ``fired`` = number of
+    # candidates that entered this retry branch; ``attempts`` = total
+    # LLM round-trips across all rounds; ``succeeded`` = candidates
+    # that eventually passed validation via this path;
+    # ``repaired_measure_refs`` = deterministic MEASURE() wraps applied
+    # before / across validation that avoided an LLM round-trip.
+    retries_on_measure_fired = 0
+    retries_on_measure_attempts = 0
+    retries_on_measure_succeeded = 0
+    repaired_measure_refs = 0
 
     for archetype, slice_ in plans:
         if len(accepted) >= need:
@@ -1484,6 +2109,40 @@ def run_preflight_example_synthesis(
             )
             continue
 
+        # ── F4a: deterministic repair BEFORE the validator ──────────
+        # The most common qualification failure in prod is the LLM
+        # emitting a stemmed identifier ("FROM dim_date") when the
+        # allowlist has exactly one canonical match
+        # ("cat.sch.mv_esr_dim_date"). Rewrite unique stems in place so
+        # the first validation pass succeeds without burning a retry.
+        # Ambiguous stems are left alone; the retry path handles those.
+        proposal, _pre_subs = _repair_stemmed_identifiers(proposal, slice_)
+        if _pre_subs:
+            repaired_stemmed_identifiers += len(_pre_subs)
+            logger.debug(
+                "preflight.synthesis.repaired_stem archetype=%s count=%d "
+                "subs=%s",
+                archetype.name, len(_pre_subs), _pre_subs[:3],
+            )
+
+        # ── F5d: deterministic MEASURE() wrap BEFORE the validator ──
+        # When the slice targets a metric view, wrap any bare measure
+        # reference in MEASURE() so the execute gate doesn't fail
+        # with METRIC_VIEW_MISSING_MEASURE_FUNCTION. MUST run AFTER
+        # the stem-repair above — the rewriter matches on the short
+        # table name in FROM clauses, and stem-repair has just
+        # normalised those to fully-qualified identifiers.
+        proposal, _pre_meas = _repair_measure_refs_on_proposal(
+            proposal, slice_,
+        )
+        if _pre_meas:
+            repaired_measure_refs += len(_pre_meas)
+            logger.debug(
+                "preflight.synthesis.repaired_measure archetype=%s count=%d "
+                "wraps=%s",
+                archetype.name, len(_pre_meas), _pre_meas[:3],
+            )
+
         # ── Validate via the shared 5-gate ────────────────────────
         slice_allowlist = set(slice_.asset_ids())
         passed, gate_results = validate_synthesis_proposal(
@@ -1497,39 +2156,38 @@ def run_preflight_example_synthesis(
             identifier_allowlist=slice_allowlist,
         )
 
-        # ── Phase 3.R6 + Phase 2.R6: one retry round-trip ─────────
-        # Two retry classes share the same one-retry budget:
-        #   - EMPTY_RESULT → feedback carries profile values.
-        #   - Unqualified / unresolved identifier → feedback carries
-        #     the slice's identifier allowlist so the LLM can self-
-        #     correct the FROM/JOIN target.
+        # ── Phase 3.R6 + Phase 2.R6: retry round-trips ────────────
+        # Two retry classes, different budgets:
+        #   - EMPTY_RESULT → ONE retry with profile-value feedback.
+        #   - Unqualified / unresolved identifier → UP TO TWO retries
+        #     (F4c). Each retry re-applies the deterministic repair
+        #     (F4a) before validation, and each retry's feedback carries
+        #     the exact offending identifiers extracted from the prior
+        #     gate error (F4b). Two attempts gives the model a second
+        #     chance to correct a different stem that landed outside
+        #     the unique-stem map.
         # R5's soft-accept classifier applies to the retry's SQL, so
         # the retry may land on an empty-result SQL that still
         # soft-accepts when it carries a WHERE/JOIN.
+        _MAX_QUALIFICATION_RETRIES = 2
+        # F5c — measure-function class shares the same 2-attempt budget.
+        # Fix mode is different (wrap an existing name rather than
+        # rewrite to a new name) but the retry cadence is the same.
+        _MAX_MEASURE_RETRIES = 2
         if not passed:
             first_fail = next(
                 (g for g in gate_results if not g.passed), None,
             )
-            feedback: str | None = None
-            retry_class: str | None = None
+
             if (
                 first_fail is not None
                 and first_fail.gate == "execute"
                 and "EMPTY_RESULT" in (first_fail.reason or "")
             ):
-                retry_class = "empty_result"
                 retries_fired += 1
                 feedback = _build_empty_result_feedback(
                     proposal, data_profile, slice_,
                 ) or None
-            elif _is_qualification_failure(first_fail):
-                retry_class = "qualification"
-                retries_on_qualification_fired += 1
-                feedback = _build_qualification_feedback(
-                    proposal, slice_, first_fail.reason or "",
-                ) or None
-
-            if retry_class is not None:
                 retry_proposal = synthesize_preflight_candidate(
                     archetype, slice_, anti_dup_questions,
                     w=w, llm_caller=llm_caller,
@@ -1549,21 +2207,134 @@ def run_preflight_example_synthesis(
                         identifier_allowlist=slice_allowlist,
                     )
                     if passed:
-                        if retry_class == "empty_result":
-                            retries_succeeded += 1
-                        else:
-                            retries_on_qualification_succeeded += 1
+                        retries_succeeded += 1
                     else:
                         retry_fail = next(
                             (g for g in gate_results if not g.passed), None,
                         )
                         if (
-                            retry_class == "empty_result"
-                            and retry_fail is not None
+                            retry_fail is not None
                             and retry_fail.gate == "execute"
                             and "EMPTY_RESULT" in (retry_fail.reason or "")
                         ):
                             retries_still_empty += 1
+
+            elif _is_qualification_failure(first_fail):
+                retries_on_qualification_fired += 1
+                current_fail = first_fail
+                for _qual_attempt in range(_MAX_QUALIFICATION_RETRIES):
+                    retries_on_qualification_attempts += 1
+                    offenders = _extract_offending_identifiers(
+                        current_fail.reason or "" if current_fail else "",
+                    )
+                    feedback = _build_qualification_feedback(
+                        proposal, slice_,
+                        (current_fail.reason or "") if current_fail else "",
+                        offending_identifiers=offenders,
+                    ) or None
+                    retry_proposal = synthesize_preflight_candidate(
+                        archetype, slice_, anti_dup_questions,
+                        w=w, llm_caller=llm_caller,
+                        data_profile=data_profile,
+                        retry_feedback=feedback,
+                    )
+                    if retry_proposal is None:
+                        break
+                    # Apply deterministic repair on the retry too — the
+                    # model may have stemmed DIFFERENTLY this time.
+                    retry_proposal, _subs = _repair_stemmed_identifiers(
+                        retry_proposal, slice_,
+                    )
+                    if _subs:
+                        repaired_stemmed_identifiers += len(_subs)
+                    proposal = retry_proposal
+                    passed, gate_results = validate_synthesis_proposal(
+                        retry_proposal,
+                        archetype=archetype,
+                        benchmark_corpus=benchmark_corpus,
+                        metadata_snapshot=metadata_snapshot,
+                        blame_set=None,
+                        spark=spark, catalog=catalog, gold_schema=schema,
+                        w=w, warehouse_id=warehouse_id,
+                        identifier_allowlist=slice_allowlist,
+                    )
+                    if passed:
+                        retries_on_qualification_succeeded += 1
+                        break
+                    next_fail = next(
+                        (g for g in gate_results if not g.passed), None,
+                    )
+                    if not _is_qualification_failure(next_fail):
+                        # Different failure class — abandon qualification
+                        # retries and let the normal gate-rejection path
+                        # count this candidate.
+                        break
+                    current_fail = next_fail
+
+            elif _is_measure_function_failure(first_fail):
+                # F5c: the LLM referenced an MV measure as a bare
+                # column. The deterministic MEASURE-wrap repair above
+                # already fired on this proposal's pre-validation pass;
+                # if it failed to fix everything (e.g. the MV didn't
+                # declare the measure in column_configs, or it's a
+                # shape the rewriter doesn't handle like a CTE), fall
+                # back to the LLM retry with offender-specific feedback.
+                retries_on_measure_fired += 1
+                current_fail = first_fail
+                for _m_attempt in range(_MAX_MEASURE_RETRIES):
+                    retries_on_measure_attempts += 1
+                    offenders = _extract_offending_measures(
+                        current_fail.reason or "" if current_fail else "",
+                    )
+                    feedback = _build_measure_function_feedback(
+                        proposal, slice_,
+                        (current_fail.reason or "") if current_fail else "",
+                        offending_measures=offenders,
+                    ) or None
+                    retry_proposal = synthesize_preflight_candidate(
+                        archetype, slice_, anti_dup_questions,
+                        w=w, llm_caller=llm_caller,
+                        data_profile=data_profile,
+                        retry_feedback=feedback,
+                    )
+                    if retry_proposal is None:
+                        break
+                    # Re-apply both deterministic repairs on each
+                    # retry — stem repair first (normalises FROM
+                    # identifier) so MEASURE wrap's short-name lookup
+                    # matches.
+                    retry_proposal, _r_stem = _repair_stemmed_identifiers(
+                        retry_proposal, slice_,
+                    )
+                    if _r_stem:
+                        repaired_stemmed_identifiers += len(_r_stem)
+                    retry_proposal, _r_meas = _repair_measure_refs_on_proposal(
+                        retry_proposal, slice_,
+                    )
+                    if _r_meas:
+                        repaired_measure_refs += len(_r_meas)
+                    proposal = retry_proposal
+                    passed, gate_results = validate_synthesis_proposal(
+                        retry_proposal,
+                        archetype=archetype,
+                        benchmark_corpus=benchmark_corpus,
+                        metadata_snapshot=metadata_snapshot,
+                        blame_set=None,
+                        spark=spark, catalog=catalog, gold_schema=schema,
+                        w=w, warehouse_id=warehouse_id,
+                        identifier_allowlist=slice_allowlist,
+                    )
+                    if passed:
+                        retries_on_measure_succeeded += 1
+                        break
+                    next_fail = next(
+                        (g for g in gate_results if not g.passed), None,
+                    )
+                    if not _is_measure_function_failure(next_fail):
+                        # Different failure class — abandon and let
+                        # the normal gate-rejection path count it.
+                        break
+                    current_fail = next_fail
 
         # Per-gate counters — passed_*  and rejected_by_gate reflect
         # the same ordering as the pipeline so operators can see where
@@ -1649,9 +2420,17 @@ def run_preflight_example_synthesis(
     result["retries_succeeded"] = retries_succeeded
     result["retries_still_empty"] = retries_still_empty
     result["retries_on_qualification_fired"] = retries_on_qualification_fired
+    result["retries_on_qualification_attempts"] = (
+        retries_on_qualification_attempts
+    )
     result["retries_on_qualification_succeeded"] = (
         retries_on_qualification_succeeded
     )
+    result["repaired_stemmed_identifiers"] = repaired_stemmed_identifiers
+    result["retries_on_measure_fired"] = retries_on_measure_fired
+    result["retries_on_measure_attempts"] = retries_on_measure_attempts
+    result["retries_on_measure_succeeded"] = retries_on_measure_succeeded
+    result["repaired_measure_refs"] = repaired_measure_refs
 
     # ── Observability ─────────────────────────────────────────────
     logger.info(
@@ -1660,7 +2439,10 @@ def run_preflight_example_synthesis(
         "passed_firewall=%d passed_structural=%d "
         "passed_arbiter=%d passed_genie_agreement=%d dedup_rejected=%d applied=%d "
         "retries_fired=%d retries_succeeded=%d retries_still_empty=%d "
-        "retries_on_qualification_fired=%d retries_on_qualification_succeeded=%d "
+        "retries_on_qualification_fired=%d retries_on_qualification_attempts=%d "
+        "retries_on_qualification_succeeded=%d repaired_stemmed_identifiers=%d "
+        "retries_on_measure_fired=%d retries_on_measure_attempts=%d "
+        "retries_on_measure_succeeded=%d repaired_measure_refs=%d "
         "asset_coverage=%s rejected_by_gate=%s archetype=%s",
         existing_count, effective_target, need, result["generated"],
         result["passed_parse"],
@@ -1671,7 +2453,14 @@ def run_preflight_example_synthesis(
         result["dedup_rejected"],
         applied,
         retries_fired, retries_succeeded, retries_still_empty,
-        retries_on_qualification_fired, retries_on_qualification_succeeded,
+        retries_on_qualification_fired,
+        retries_on_qualification_attempts,
+        retries_on_qualification_succeeded,
+        repaired_stemmed_identifiers,
+        retries_on_measure_fired,
+        retries_on_measure_attempts,
+        retries_on_measure_succeeded,
+        repaired_measure_refs,
         asset_counts, reject_by_gate, archetype_counts,
     )
 
@@ -1770,13 +2559,52 @@ def _print_summary(result: dict) -> None:
             f"still_empty={result.get('retries_still_empty', 0)}",
             indent=4,
         ))
-    # Phase 2.R6 retry visibility for the qualification path.
+    # Phase 2.R6 + F4 retry visibility for the qualification path.
+    # ``fired`` counts candidates where at least one retry round fired.
+    # ``attempts`` counts the total LLM round-trips across all rounds
+    # (≤ _MAX_QUALIFICATION_RETRIES per fired). ``stem_repairs`` counts
+    # deterministic rewrites that avoided an LLM call entirely (F4a).
     qual_retries = result.get("retries_on_qualification_fired", 0)
-    if qual_retries:
+    stem_repairs = result.get("repaired_stemmed_identifiers", 0)
+    if qual_retries or stem_repairs:
+        qual_attempts = result.get(
+            "retries_on_qualification_attempts", qual_retries,
+        )
+        parts = [f"fired={qual_retries}"]
+        if qual_attempts != qual_retries:
+            parts.append(f"attempts={qual_attempts}")
+        parts.append(
+            f"succeeded={result.get('retries_on_qualification_succeeded', 0)}",
+        )
+        if stem_repairs:
+            parts.append(f"stem_repairs={stem_repairs}")
         lines.append(_kv(
             "  retries on qualification",
-            f"fired={qual_retries} "
-            f"succeeded={result.get('retries_on_qualification_succeeded', 0)}",
+            " ".join(parts),
+            indent=4,
+        ))
+    # F5e — METRIC_VIEW_MISSING_MEASURE_FUNCTION visibility. Shape
+    # mirrors the qualification block: ``fired`` / ``attempts`` /
+    # ``succeeded`` track the LLM retry path; ``measure_wraps`` counts
+    # deterministic MEASURE() rewrites applied before / across
+    # validation that avoided an LLM round-trip.
+    meas_retries = result.get("retries_on_measure_fired", 0)
+    meas_repairs = result.get("repaired_measure_refs", 0)
+    if meas_retries or meas_repairs:
+        meas_attempts = result.get(
+            "retries_on_measure_attempts", meas_retries,
+        )
+        parts = [f"fired={meas_retries}"]
+        if meas_attempts != meas_retries:
+            parts.append(f"attempts={meas_attempts}")
+        parts.append(
+            f"succeeded={result.get('retries_on_measure_succeeded', 0)}",
+        )
+        if meas_repairs:
+            parts.append(f"measure_wraps={meas_repairs}")
+        lines.append(_kv(
+            "  retries on MEASURE()",
+            " ".join(parts),
             indent=4,
         ))
     lines.append(_kv("Passed firewall", result.get("passed_firewall", 0)))

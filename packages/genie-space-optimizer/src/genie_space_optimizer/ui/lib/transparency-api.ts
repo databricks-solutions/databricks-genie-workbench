@@ -195,6 +195,15 @@ export interface IterationDetail {
 export interface ProactiveChanges {
   descriptionsEnriched?: number;
   tablesEnriched?: number;
+  // Eligibility + silent-drop counts for description enrichment. When
+  // ``descriptionsEligible > descriptionsEnriched + descriptionsFailedLlm``
+  // the UI can explain the gap (e.g. "2 batches dropped — LLM returned
+  // unparseable JSON after retries"). All optional for backward-compat
+  // with older servers that don't emit these keys.
+  descriptionsEligible?: number;
+  descriptionsFailedLlm?: number;
+  tablesEligibleForDescription?: number;
+  tablesFailedLlm?: number;
   joinSpecsDiscovered?: number;
   spaceDescriptionGenerated?: boolean;
   sampleQuestionsGenerated?: number;

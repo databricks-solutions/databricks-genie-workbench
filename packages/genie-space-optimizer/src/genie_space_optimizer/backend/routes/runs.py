@@ -424,6 +424,14 @@ def _extract_proactive_changes(matching: list[dict]) -> dict:
         if "DESCRIPTION_ENRICHMENT" in stage_name:
             proactive["descriptionsEnriched"] = d.get("total_enriched", 0)
             proactive["tablesEnriched"] = d.get("tables_enriched", 0)
+            # Surface eligibility + silent-drop counts so the UI can
+            # distinguish "nothing needed enrichment" from "some batches
+            # failed LLM parsing after retries". Backward-compat: all new
+            # fields default to 0 on older servers.
+            proactive["descriptionsEligible"] = d.get("total_eligible", 0)
+            proactive["descriptionsFailedLlm"] = d.get("total_failed_llm", 0)
+            proactive["tablesEligibleForDescription"] = d.get("tables_eligible", 0)
+            proactive["tablesFailedLlm"] = d.get("tables_failed_llm", 0)
         elif "JOIN_DISCOVERY" in stage_name:
             proactive["joinSpecsDiscovered"] = d.get("total_applied", 0)
         elif "SPACE_METADATA" in stage_name:

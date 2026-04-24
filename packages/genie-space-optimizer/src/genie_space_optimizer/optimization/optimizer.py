@@ -14,7 +14,7 @@ import logging
 import os
 import re
 from collections import Counter, defaultdict
-from typing import Any
+from typing import Any, Callable
 
 from databricks.sdk import WorkspaceClient
 from genie_space_optimizer._workspace_client import make_workspace_client
@@ -165,6 +165,7 @@ def _traced_llm_call(
     max_retries: int = LLM_MAX_RETRIES,
     temperature: float = LLM_TEMPERATURE,
     max_tokens: int | None = None,
+    response_validator: Callable[[str], Any] | None = None,
 ) -> tuple[str, Any]:
     """Execute an LLM call via the OpenAI SDK with automatic MLflow tracing.
 
@@ -175,6 +176,18 @@ def _traced_llm_call(
 
     Returns ``(raw_text, response_object)`` for the caller to parse.
     Raises the last exception if all retries are exhausted.
+
+    ``response_validator`` (optional): a callable invoked with the
+    trimmed completion text after each successful HTTP round-trip. If
+    it raises, the exception is treated as a retryable failure (same
+    exponential backoff as RPC failures). This closes the gap where a
+    provider returns HTTP 200 with non-JSON / refusal content that
+    callers downstream cannot parse — most notably
+    ``_extract_json`` — and that previously surfaced as two identical
+    tracebacks with no retry attempt. Callers that expect JSON can
+    pass ``response_validator=_extract_json``. When ``None`` the
+    legacy behaviour (return first HTTP 200, no post-success
+    validation) is preserved for every existing call site.
     """
     import time
 
@@ -214,6 +227,24 @@ def _traced_llm_call(
                 if not content:
                     raise ValueError("LLM response content is empty")
                 text = str(content).strip()
+
+                if response_validator is not None:
+                    try:
+                        response_validator(text)
+                    except Exception as exc:
+                        last_err = exc
+                        span.add_event(SpanEvent(
+                            name=f"validator_reject_attempt_{attempt + 1}",
+                            attributes={
+                                "error": str(exc)[:500],
+                                "response_preview": text[:200],
+                                "response_chars": len(text),
+                            },
+                        ))
+                        if attempt < max_retries - 1:
+                            time.sleep(2**attempt)
+                            continue
+                        raise
 
                 _log_token_usage(span, response)
 
@@ -1944,17 +1975,29 @@ def _enrich_blank_descriptions(
         )
         prompt = format_mlflow_template(DESCRIPTION_ENRICHMENT_PROMPT, **format_kwargs)
 
+        text = ""
         try:
             text, _response = _traced_llm_call(
                 w, system_msg, prompt,
                 span_name=f"enrich_column_descriptions_batch_{batch_idx}",
                 max_tokens=4096,
+                response_validator=_extract_json,
             )
             result = _extract_json(text)
             if isinstance(result, list):
                 result = {"changes": result}
-        except Exception:
-            logger.warning("Description enrichment: LLM call failed for batch", exc_info=True)
+        except Exception as exc:
+            preview = (text or "")[:300].replace("\n", "\\n")
+            logger.warning(
+                "Description enrichment: batch %d (table=%s, %d cols) — "
+                "LLM response not parseable as JSON after retries: %s | "
+                "preview=%r",
+                batch_idx,
+                batch[0]["table"] if batch else "?",
+                len(batch),
+                exc,
+                preview,
+            )
             continue
 
         batch_lookup = {(b["table"], b["column"]): b for b in batch}
@@ -2145,17 +2188,28 @@ def _enrich_table_descriptions(
         )
         prompt = format_mlflow_template(TABLE_DESCRIPTION_ENRICHMENT_PROMPT, **format_kwargs)
 
+        text = ""
         try:
             text, _response = _traced_llm_call(
                 w, system_msg, prompt,
                 span_name=f"enrich_table_descriptions_batch_{batch_idx}",
                 max_tokens=4096,
+                response_validator=_extract_json,
             )
             result = _extract_json(text)
             if isinstance(result, list):
                 result = {"changes": result}
-        except Exception:
-            logger.warning("Table description enrichment: LLM call failed for batch", exc_info=True)
+        except Exception as exc:
+            preview = (text or "")[:300].replace("\n", "\\n")
+            logger.warning(
+                "Table description enrichment: batch %d (%d tables) — "
+                "LLM response not parseable as JSON after retries: %s | "
+                "preview=%r",
+                batch_idx,
+                len(batch),
+                exc,
+                preview,
+            )
             continue
 
         batch_lookup = {t["table"]: t for t in batch}

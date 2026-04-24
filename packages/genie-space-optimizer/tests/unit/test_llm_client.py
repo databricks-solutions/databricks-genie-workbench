@@ -7,6 +7,7 @@ no longer use ``serving_endpoints.query``.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
@@ -367,3 +368,136 @@ class TestBackwardCompatReexports:
     def test_openai_client_cache_accessible(self):
         from genie_space_optimizer.optimization.optimizer import _openai_client_cache
         assert isinstance(_openai_client_cache, dict)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _traced_llm_call — post-success response validator retry (F1)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTracedLlmCallValidator:
+    """The validator closes the gap where a provider returns HTTP 200 with
+    non-JSON content. Before this change the caller raised JSONDecodeError
+    with no retry attempted; now the call-loop treats a validator rejection
+    exactly like an RPC failure and retries with the same exponential
+    backoff.
+    """
+
+    @patch("genie_space_optimizer.optimization.optimizer._get_openai_client")
+    @patch("time.sleep", return_value=None)
+    def test_retries_on_validator_failure_then_succeeds(
+        self, _mock_sleep, mock_get_client,
+    ):
+        """First two attempts return non-JSON; third returns parseable JSON."""
+        from genie_space_optimizer.optimization.evaluation import _extract_json
+        from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            _make_openai_response("I cannot help with that."),
+            _make_openai_response("<thinking>..."),
+            _make_openai_response('{"changes": []}'),
+        ]
+        mock_get_client.return_value = mock_client
+
+        text, _ = _traced_llm_call(
+            None, "system", "user",
+            span_name="test_validator_retry",
+            max_retries=3,
+            response_validator=_extract_json,
+        )
+
+        assert text.startswith("{")
+        assert mock_client.chat.completions.create.call_count == 3
+
+    @patch("genie_space_optimizer.optimization.optimizer._get_openai_client")
+    @patch("time.sleep", return_value=None)
+    def test_raises_validator_error_after_exhausted_retries(
+        self, _mock_sleep, mock_get_client,
+    ):
+        """All attempts fail validation → raises the validator's exception."""
+        from genie_space_optimizer.optimization.evaluation import _extract_json
+        from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_openai_response(
+            "not json at all"
+        )
+        mock_get_client.return_value = mock_client
+
+        with pytest.raises(json.JSONDecodeError):
+            _traced_llm_call(
+                None, "system", "user",
+                span_name="test_validator_exhausted",
+                max_retries=2,
+                response_validator=_extract_json,
+            )
+
+        assert mock_client.chat.completions.create.call_count == 2
+
+    @patch("genie_space_optimizer.optimization.optimizer._get_openai_client")
+    def test_validator_none_preserves_legacy_behavior(self, mock_get_client):
+        """Without a validator, non-JSON text is returned verbatim; no retry."""
+        from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_openai_response(
+            "not json at all"
+        )
+        mock_get_client.return_value = mock_client
+
+        text, _ = _traced_llm_call(
+            None, "system", "user",
+            span_name="test_no_validator",
+            max_retries=3,
+        )
+
+        assert text == "not json at all"
+        assert mock_client.chat.completions.create.call_count == 1
+
+    @patch("genie_space_optimizer.optimization.optimizer._get_openai_client")
+    def test_validator_accepts_empty_response_via_extract_json(self, mock_get_client):
+        """``_extract_json`` returns ``{}`` on whitespace-only input so the
+        validator passes without retry — the existing "empty batch = no
+        changes" contract must be preserved."""
+        from genie_space_optimizer.optimization.evaluation import _extract_json
+        from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_openai_response("   ")
+        mock_get_client.return_value = mock_client
+
+        text, _ = _traced_llm_call(
+            None, "system", "user",
+            span_name="test_validator_empty",
+            max_retries=3,
+            response_validator=_extract_json,
+        )
+
+        assert text == ""
+        assert mock_client.chat.completions.create.call_count == 1
+
+    @patch("genie_space_optimizer.optimization.optimizer._get_openai_client")
+    @patch("time.sleep", return_value=None)
+    def test_validator_passes_on_first_attempt_no_retry(
+        self, _mock_sleep, mock_get_client,
+    ):
+        """Happy path: valid JSON on first attempt → no retry."""
+        from genie_space_optimizer.optimization.evaluation import _extract_json
+        from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _make_openai_response(
+            '{"changes": [{"table": "t", "column": "c"}]}'
+        )
+        mock_get_client.return_value = mock_client
+
+        text, _ = _traced_llm_call(
+            None, "system", "user",
+            span_name="test_validator_happy",
+            max_retries=3,
+            response_validator=_extract_json,
+        )
+
+        assert '"changes"' in text
+        assert mock_client.chat.completions.create.call_count == 1

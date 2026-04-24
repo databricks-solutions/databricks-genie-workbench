@@ -92,6 +92,8 @@ from genie_space_optimizer.optimization.models import (
 )
 from genie_space_optimizer.optimization.optimizer import (
     _call_llm_for_adaptive_strategy,
+    _collect_blank_columns,
+    _collect_insufficient_tables,
     _enrich_blank_descriptions,
     _enrich_table_descriptions,
     _generate_holistic_strategy,
@@ -817,15 +819,31 @@ def _run_description_enrichment(
     )
 
     result = {
-        "total_eligible": 0, "total_enriched": 0, "total_skipped": 0,
-        "tables_eligible": 0, "tables_enriched": 0, "tables_skipped": 0,
+        "total_eligible": 0,
+        "total_patches_generated": 0,
+        "total_failed_llm": 0,
+        "total_enriched": 0,
+        "total_skipped": 0,
+        "tables_eligible": 0,
+        "tables_patches_generated": 0,
+        "tables_failed_llm": 0,
+        "tables_enriched": 0,
+        "tables_skipped": 0,
     }
 
     try:
         # ── Column description enrichment ────────────────────────────
         _data_profile = metadata_snapshot.get("_data_profile", {})
+        # Compute ORIGINAL eligibility before calling the LLM so silent
+        # batch drops (e.g. unparseable JSON after validator retries)
+        # become visible in the stage summary.
+        _blank_columns = _collect_blank_columns(metadata_snapshot)
         col_patches = _enrich_blank_descriptions(metadata_snapshot, w, data_profile=_data_profile)
-        result["total_eligible"] = len(col_patches)
+        result["total_eligible"] = len(_blank_columns)
+        result["total_patches_generated"] = len(col_patches)
+        result["total_failed_llm"] = max(
+            0, len(_blank_columns) - len(col_patches),
+        )
 
         ds = metadata_snapshot.get("data_sources", {})
         if not isinstance(ds, dict):
@@ -905,8 +923,13 @@ def _run_description_enrichment(
         result["total_skipped"] = col_skipped
 
         # ── Table description enrichment ─────────────────────────────
+        _insufficient_tables = _collect_insufficient_tables(metadata_snapshot)
         tbl_patches = _enrich_table_descriptions(metadata_snapshot, w, data_profile=_data_profile)
-        result["tables_eligible"] = len(tbl_patches)
+        result["tables_eligible"] = len(_insufficient_tables)
+        result["tables_patches_generated"] = len(tbl_patches)
+        result["tables_failed_llm"] = max(
+            0, len(_insufficient_tables) - len(tbl_patches),
+        )
 
         tbl_enriched = 0
         tbl_skipped = 0
@@ -985,7 +1008,13 @@ def _run_description_enrichment(
 
         # ── Logging ──────────────────────────────────────────────────
         _de_lines = [_section("DESCRIPTION ENRICHMENT", "-")]
-        _de_lines.append(_kv("Eligible columns", len(col_patches)))
+        _de_lines.append(_kv("Eligible columns", len(_blank_columns)))
+        _de_lines.append(_kv("LLM patches generated", len(col_patches)))
+        if result["total_failed_llm"]:
+            _de_lines.append(_kv(
+                "LLM batch failures",
+                result["total_failed_llm"],
+            ))
         _de_lines.append(_kv("Columns enriched", col_enriched))
         _de_lines.append(_kv("Columns skipped", col_skipped))
         if col_enriched_items:
@@ -998,7 +1027,13 @@ def _run_description_enrichment(
                 _de_lines.append(f"|  [{ei}] {_tbl_short}.{_col}")
                 if _defn:
                     _de_lines.append(f"|      definition: {_defn}")
-        _de_lines.append(_kv("Eligible tables", len(tbl_patches)))
+        _de_lines.append(_kv("Eligible tables", len(_insufficient_tables)))
+        _de_lines.append(_kv("Table patches generated", len(tbl_patches)))
+        if result["tables_failed_llm"]:
+            _de_lines.append(_kv(
+                "Table LLM batch failures",
+                result["tables_failed_llm"],
+            ))
         _de_lines.append(_kv("Tables enriched", tbl_enriched))
         _de_lines.append(_kv("Tables skipped", tbl_skipped))
         if tbl_enriched_items:
@@ -1633,6 +1668,188 @@ def _run_space_metadata_enrichment(
             catalog=catalog, schema=schema,
         )
         return result
+
+
+# ── Unified example-SQL generation (Phase 4.R4) ─────────────────────
+
+
+def _run_unified_example_sql_generation(
+    *,
+    w: WorkspaceClient,
+    spark: Any,
+    run_id: str,
+    space_id: str,
+    config: dict,
+    metadata_snapshot: dict,
+    uc_columns: list[dict],
+    domain: str,
+    catalog: str,
+    schema: str,
+    full_firewall_corpus: list[dict],
+    data_profile: dict | None = None,
+) -> dict:
+    """Run the unified (benchmark-engine-based) example-SQL generator.
+
+    Builds the leakage oracle from the benchmark corpus + the space's
+    already-installed ``example_question_sqls``, calls
+    ``generate_example_sqls``, and applies survivors via the shared
+    ``_apply_proactive_example_sqls`` (which runs the last-mile
+    firewall one more time, by design).
+
+    Returns a dict with ``applied``, ``rejection_counters``, and a
+    short list of applied examples for the pretty summary.
+    """
+    from genie_space_optimizer.common.config import (
+        PREFLIGHT_EXAMPLE_SQL_TARGET,
+    )
+    from genie_space_optimizer.optimization.evaluation import (
+        generate_example_sqls,
+    )
+    from genie_space_optimizer.optimization.leakage import (
+        BenchmarkCorpus,
+        LeakageOracle,
+    )
+
+    out: dict = {
+        "applied": 0,
+        "rejection_counters": {},
+        "unified_generated": 0,
+        "archetype_fallback": False,
+    }
+
+    try:
+        # ── Firewall: benchmark corpus ∪ existing example_sqls ──────
+        bench_corpus = BenchmarkCorpus.from_benchmarks(full_firewall_corpus)
+
+        existing_sqls = (
+            (metadata_snapshot.get("instructions") or {})
+            .get("example_question_sqls") or []
+        )
+        existing_corpus_rows = [
+            {
+                "id": f"existing_{i}",
+                "question": (e or {}).get("question", "") or "",
+                "expected_sql": (e or {}).get("sql", "") or "",
+            }
+            for i, e in enumerate(existing_sqls)
+            if isinstance(e, dict)
+        ]
+        existing_corpus = BenchmarkCorpus.from_benchmarks(existing_corpus_rows)
+        oracle = LeakageOracle(bench_corpus, existing_corpus)
+
+        candidates, rejection_counters = generate_example_sqls(
+            w=w, spark=spark,
+            config=config, uc_columns=uc_columns,
+            uc_tags=[], uc_routines=[],
+            domain=domain, catalog=catalog, schema=schema,
+            warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+            target_count=PREFLIGHT_EXAMPLE_SQL_TARGET,
+            existing_example_sqls=existing_sqls,
+            leakage_oracle=oracle,
+        )
+    except Exception:
+        logger.warning(
+            "unified example-sql generation raised; "
+            "archetype fallback will run",
+            exc_info=True,
+        )
+        out["rejection_counters"] = {"pipeline_exception": 1}
+        return out
+
+    out["unified_generated"] = len(candidates)
+    out["rejection_counters"] = rejection_counters or {}
+
+    if not candidates:
+        _print_unified_example_summary(
+            run_id=run_id,
+            target=PREFLIGHT_EXAMPLE_SQL_TARGET,
+            existing=len(existing_sqls),
+            applied_examples=[],
+            rejection_counters=rejection_counters or {},
+        )
+        return out
+
+    # ── Apply via the shared pipeline (runs last-mile firewall) ─────
+    proposals = [
+        {
+            "patch_type": "add_example_sql",
+            "example_question": c.get("question", ""),
+            "example_sql": c.get("expected_sql", ""),
+            "usage_guidance": c.get("usage_guidance", ""),
+            "risk_level": "low",
+            "provenance": c.get("provenance", "synthetic_example_sql"),
+        }
+        for c in candidates
+    ]
+
+    try:
+        _apply_proactive_example_sqls(
+            w, spark, run_id, space_id, proposals,
+            metadata_snapshot, config, catalog, schema,
+            benchmarks=full_firewall_corpus,
+        )
+        out["applied"] = len(proposals)
+    except Exception:
+        logger.warning(
+            "unified applier raised; proposals not deployed",
+            exc_info=True,
+        )
+
+    _print_unified_example_summary(
+        run_id=run_id,
+        target=PREFLIGHT_EXAMPLE_SQL_TARGET,
+        existing=len(existing_sqls),
+        applied_examples=candidates,
+        rejection_counters=rejection_counters or {},
+    )
+
+    return out
+
+
+def _print_unified_example_summary(
+    *,
+    run_id: str,
+    target: int,
+    existing: int,
+    applied_examples: list[dict],
+    rejection_counters: dict[str, int],
+) -> None:
+    """Pretty-print the unified example-SQL generator outcome.
+
+    Seven distinct rejection classes are surfaced so operators can
+    attribute yield shortfall to a specific stage (metadata vs MV vs
+    execute vs arbiter vs firewall vs dedup) rather than one bucket.
+    """
+    _lines = [_section("EXAMPLE SQL GENERATION (unified)", "=")]
+    _lines.append(_kv("Target", target))
+    _lines.append(_kv("Existing examples", existing))
+    _lines.append(_kv("Applied (new)", len(applied_examples)))
+    _lines.append("|")
+    rc = rejection_counters or {}
+    _lines.append(_kv("Metadata rejected", rc.get("metadata", 0)))
+    _lines.append(_kv("MV guard rejected", rc.get("mv_select_star", 0)))
+    _lines.append(_kv(
+        "EXPLAIN/execute rejected", rc.get("explain_or_execute", 0),
+    ))
+    _lines.append(_kv(
+        "Arbiter verdict=no", rc.get("arbiter_no", 0),
+    ))
+    _lines.append(_kv(
+        "Firewall: SQL fingerprint match", rc.get("firewall_fingerprint", 0),
+    ))
+    _lines.append(_kv(
+        "Firewall: question echo", rc.get("firewall_question_echo", 0),
+    ))
+    _lines.append(_kv("Dedup (in-corpus)", rc.get("dedup_in_corpus", 0)))
+    if applied_examples:
+        _lines.append("|")
+        for idx, c in enumerate(applied_examples[:10], 1):
+            q = str(c.get("question", ""))[:80]
+            _lines.append(f"|  [{idx}] {q}")
+        if len(applied_examples) > 10:
+            _lines.append(f"|  … and {len(applied_examples) - 10} more")
+    _lines.append(_bar("="))
+    print("\n".join(_lines))
 
 
 # ── Proactive Benchmark Example SQL Application ─────────────────────
@@ -3669,37 +3886,87 @@ def _run_enrichment(
                     enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
             # ── 5c. Pre-flight example_sql synthesis (fills to 20) ────────
-            # Schema-driven, leak-free booster. Threshold-gated
-            # (need = max(0, TARGET - existing)) so re-runs are idempotent.
-            # Firewall runs inline via _apply_proactive_example_sqls; it
-            # MUST see the full benchmark corpus (train + held_out) so the
-            # example-SQL fingerprint check catches held-out leakage.
-            # See optimization/preflight_synthesis.py for invariants.
+            # Two paths behind GSO_UNIFIED_EXAMPLE_SQL_GENERATION (default ON):
+            #
+            #   UNIFIED (Phase 4.R4): calls ``generate_example_sqls``, which
+            #   uses the mature benchmark engine with all its quality
+            #   features (MEASURE auto-wrap, field-drift correction,
+            #   correction LLM retry, arbiter approval, leakage firewall).
+            #   Option A fallback: if unified yields < GSO_UNIFIED_MIN_SURVIVORS,
+            #   the archetype-templated preflight path runs to fill the gap.
+            #
+            #   LEGACY: archetype-templated per-candidate synthesis. Retained
+            #   as a rollback lever; flip GSO_UNIFIED_EXAMPLE_SQL_GENERATION
+            #   to false to restore the pre-unification behaviour.
+            #
+            # Both paths share the same last-mile firewall at
+            # ``_apply_proactive_example_sqls``, which MUST see the full
+            # benchmark corpus (train + held_out) so the SQL fingerprint
+            # check catches held-out leakage. See
+            # ``docs/example-sql-isolation.md``.
             _full_firewall_corpus = list(benchmarks) + list(held_out_benchmarks or [])
             preflight_example_result: dict = {}
+            unified_example_result: dict = {}
             if ENABLE_PREFLIGHT_EXAMPLE_SQL_SYNTHESIS:
-                try:
-                    from genie_space_optimizer.optimization.preflight_synthesis import (
-                        run_preflight_example_synthesis,
-                    )
-                    preflight_example_result = run_preflight_example_synthesis(
-                        w, spark, run_id, space_id, config, metadata_snapshot,
-                        benchmarks=_full_firewall_corpus,
+                _unified_enabled = os.environ.get(
+                    "GSO_UNIFIED_EXAMPLE_SQL_GENERATION", "true",
+                ).lower() in {"1", "true", "yes", "on"}
+                _unified_min_survivors = int(
+                    os.environ.get("GSO_UNIFIED_MIN_SURVIVORS", "5") or "5",
+                )
+                if _unified_enabled:
+                    unified_example_result = _run_unified_example_sql_generation(
+                        w=w, spark=spark, run_id=run_id, space_id=space_id,
+                        config=config, metadata_snapshot=metadata_snapshot,
+                        uc_columns=uc_columns, domain=domain,
                         catalog=catalog, schema=schema,
-                        warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                        full_firewall_corpus=_full_firewall_corpus,
+                        data_profile=data_profile,
                     )
-                    if preflight_example_result.get("applied", 0) > 0:
+                    if unified_example_result.get("applied", 0) > 0:
                         config = fetch_space_config(w, space_id)
                         config["_uc_columns"] = uc_columns
                         metadata_snapshot = config.get("_parsed_space", config)
                         metadata_snapshot["_data_profile"] = data_profile
                         if uc_columns:
                             enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
-                except Exception:
-                    logger.warning(
-                        "preflight example synthesis raised; continuing without it",
-                        exc_info=True,
-                    )
+
+                # Archetype fallback (Option A) OR legacy path.
+                _need_fallback = (
+                    not _unified_enabled
+                    or unified_example_result.get("applied", 0) < _unified_min_survivors
+                )
+                if _need_fallback:
+                    try:
+                        from genie_space_optimizer.optimization.preflight_synthesis import (
+                            run_preflight_example_synthesis,
+                        )
+                        if _unified_enabled and unified_example_result.get("applied", 0) > 0:
+                            logger.info(
+                                "unified generator yielded %d < %d — running "
+                                "archetype fallback to fill the gap",
+                                unified_example_result.get("applied", 0),
+                                _unified_min_survivors,
+                            )
+                        preflight_example_result = run_preflight_example_synthesis(
+                            w, spark, run_id, space_id, config, metadata_snapshot,
+                            benchmarks=_full_firewall_corpus,
+                            catalog=catalog, schema=schema,
+                            warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                        )
+                        if preflight_example_result.get("applied", 0) > 0:
+                            config = fetch_space_config(w, space_id)
+                            config["_uc_columns"] = uc_columns
+                            metadata_snapshot = config.get("_parsed_space", config)
+                            metadata_snapshot["_data_profile"] = data_profile
+                            if uc_columns:
+                                enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                    except Exception:
+                        logger.warning(
+                            "preflight example synthesis (fallback) raised; "
+                            "continuing without it",
+                            exc_info=True,
+                        )
 
             # ── 5d. SQL Expression REPAIR + SEEDING ───────────────────────
             # Repair runs unconditionally; seeding is headroom-gated.
