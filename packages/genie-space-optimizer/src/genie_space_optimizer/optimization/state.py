@@ -117,9 +117,6 @@ def _migrate_add_columns(spark: SparkSession, catalog: str, schema: str) -> None
         (TABLE_ITERATIONS, "both_correct_count", "INT COMMENT 'Tier 1.7: count of rows with arbiter verdict == both_correct. Used to anchor best_accuracy to both_correct_rate when rc=yes overrides inflate overall_accuracy.'"),
         (TABLE_ITERATIONS, "both_correct_rate", "DOUBLE COMMENT 'Tier 1.7: both_correct_count / evaluated_count * 100. Stricter than overall_accuracy (which counts arbiter override rows as correct). Lever loop anchors acceptance to this to avoid ghost-ceiling rejections.'"),
     ]
-    import re as _re
-    _default_re = _re.compile(r"\bDEFAULT\s+'[^']*'", _re.IGNORECASE)
-
     for table, col, col_def in migrations:
         fqn = _fqn(catalog, schema, table)
         try:
@@ -134,18 +131,124 @@ def _migrate_add_columns(spark: SparkSession, catalog: str, schema: str) -> None
             print(f"  [SKIP] {fqn}.{col} already exists")
             continue
 
+        _apply_one_migration(spark, fqn=fqn, col=col, col_def=col_def)
+
+    _verify_required_columns(spark, catalog, schema)
+
+
+# Match ``DEFAULT '<string>'`` (single-quoted literal) OR
+# ``DEFAULT <bare-literal>`` (e.g. ``false``, ``0``, ``NULL``, ``1.5``,
+# ``CURRENT_TIMESTAMP``). The DEFAULT must be stripped from the
+# ``ADD COLUMN`` statement so ADD succeeds even on Delta tables that
+# do not advertise the ``allowColumnDefaults`` table feature — once the
+# column is created, we apply the DEFAULT in a separate
+# ``ALTER COLUMN … SET DEFAULT`` that is allowed to fail without
+# leaving the schema in a broken state (writers pass the value
+# explicitly anyway; see ``write_iteration``).
+_DEFAULT_RE_PATTERN = r"\bDEFAULT\s+(?:'[^']*'|[A-Za-z0-9_\-.+]+)"
+
+import re as _re
+
+_default_re = _re.compile(_DEFAULT_RE_PATTERN, _re.IGNORECASE)
+
+
+def _apply_one_migration(spark, *, fqn: str, col: str, col_def: str) -> None:
+    """Add a single column to an existing table, handling DEFAULTs safely.
+
+    Splits the migration into two steps so that ``ADD COLUMN`` does not
+    fail on Delta tables that reject inline DEFAULT values. The DEFAULT
+    (if any) is applied in a separate ``ALTER COLUMN … SET DEFAULT``;
+    failures there are warnings, not errors — the column still exists
+    and writers that provide a value explicitly (e.g. ``write_iteration``)
+    continue to work.
+    """
+    default_match = _default_re.search(col_def)
+    add_def = _default_re.sub("", col_def).strip() if default_match else col_def
+
+    try:
+        spark.sql(f"ALTER TABLE {fqn} ADD COLUMN {col} {add_def}")
+        print(f"  [MIGRATED] Added {fqn}.{col}")
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "already exists" in msg:
+            print(f"  [SKIP] {fqn}.{col} already exists")
+            return
+        logger.error(
+            "  [MIGRATION FAILED] Could not ADD COLUMN %s.%s: %s",
+            fqn, col, exc,
+        )
+        return
+
+    if default_match:
         try:
-            default_match = _default_re.search(col_def)
-            add_def = _default_re.sub("", col_def).strip() if default_match else col_def
-            spark.sql(f"ALTER TABLE {fqn} ADD COLUMN {col} {add_def}")
-            if default_match:
-                spark.sql(f"ALTER TABLE {fqn} ALTER COLUMN {col} SET {default_match.group()}")
-            print(f"  [MIGRATED] Added {fqn}.{col}")
+            spark.sql(
+                f"ALTER TABLE {fqn} ALTER COLUMN {col} SET {default_match.group()}"
+            )
         except Exception as exc:
-            if "already exists" in str(exc).lower():
-                print(f"  [SKIP] {fqn}.{col} already exists")
-            else:
-                logger.warning("  [WARN] Could not add %s.%s: %s", fqn, col, exc)
+            logger.warning(
+                "  [WARN] Column %s.%s added, but SET DEFAULT was rejected "
+                "(continuing — writers set the value explicitly): %s",
+                fqn, col, exc,
+            )
+
+
+# Columns that writers reference by name in their ``INSERT`` statements.
+# If any of these are missing after the migration loop, subsequent writes
+# will fail deep in the call stack with ``UNRESOLVED_COLUMN`` — which is
+# hard to diagnose. Validate up front and log a clear, loud error.
+_REQUIRED_ITERATION_COLUMNS = (
+    "rolled_back",
+    "rolled_back_at",
+    "rollback_reason",
+    "both_correct_count",
+    "both_correct_rate",
+    "evaluated_count",
+    "excluded_count",
+    "quarantined_benchmarks_json",
+    "leakage_count_by_type",
+    "firewall_rejection_count_by_type",
+    "secondary_mining_blocked",
+    "synthesis_slots_persisted",
+    "arbiter_rejection_count",
+    "cluster_fallback_to_instruction_count",
+    "synthesis_archetype_distribution",
+    "reflection_json",
+)
+
+
+def _verify_required_columns(spark, catalog: str, schema: str) -> None:
+    """Verify columns that writers rely on are actually present.
+
+    Called at the end of ``_migrate_add_columns`` so schema drift is
+    surfaced immediately instead of causing ``UNRESOLVED_COLUMN`` later
+    during ``write_iteration``. Logs a loud ERROR (not WARNING) listing
+    the missing columns so the operator sees a concrete remediation
+    target.
+    """
+    fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+    try:
+        present = {
+            row["col_name"].lower()
+            for row in spark.sql(f"DESCRIBE TABLE {fqn}").collect()
+        }
+    except Exception as exc:
+        logger.warning(
+            "  [VERIFY] Could not DESCRIBE %s to verify migration: %s",
+            fqn, exc,
+        )
+        return
+
+    missing = [c for c in _REQUIRED_ITERATION_COLUMNS if c.lower() not in present]
+    if missing:
+        logger.error(
+            "  [MIGRATION INCOMPLETE] %s is missing columns required by "
+            "write_iteration: %s. Subsequent INSERTs will fail with "
+            "UNRESOLVED_COLUMN. Remediation: run "
+            "`ALTER TABLE %s ADD COLUMNS (<col> <type>, …)` for each "
+            "missing column (see genie_space_optimizer.optimization.state."
+            "_migrate_add_columns for the intended types/comments).",
+            fqn, missing, fqn,
+        )
 
 
 # ── Write Functions ──────────────────────────────────────────────────────
