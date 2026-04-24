@@ -125,6 +125,134 @@ def test_migration_add_column_succeeds_when_set_default_rejected():
     assert len(add_stmts) == 1, "ADD COLUMN must have been issued once"
 
 
+def test_iterations_ddl_includes_tier_one_columns():
+    """Fresh installs must not rely on the migration loop to add the
+    write-critical Tier 1.1 / Tier 1.7 columns. They should be declared
+    in ``_GENIE_OPT_ITERATIONS_DDL`` so ``CREATE TABLE`` creates them
+    up-front, and the migration loop only runs for existing tables.
+
+    This regression test pins the DDL to the contract that writers rely
+    on — if a new write-critical column is introduced it should be added
+    both here AND in the DDL so new deployments pick it up without
+    round-tripping through ALTER TABLE.
+    """
+    from genie_space_optimizer.optimization.ddl import _GENIE_OPT_ITERATIONS_DDL
+
+    ddl = _GENIE_OPT_ITERATIONS_DDL.lower()
+    for col in (
+        "rolled_back",
+        "rolled_back_at",
+        "rollback_reason",
+        "both_correct_count",
+        "both_correct_rate",
+    ):
+        assert f" {col} " in ddl or f" {col}\n" in ddl, (
+            f"Expected {col} to be declared in _GENIE_OPT_ITERATIONS_DDL "
+            f"so fresh installs get it directly via CREATE TABLE."
+        )
+
+
+def test_iterations_ddl_enables_allow_column_defaults():
+    """The iterations DDL must opt into the ``allowColumnDefaults`` Delta
+    table feature so future migrations that declare ``DEFAULT`` literals
+    succeed on fresh tables without an extra ALTER TABLE round-trip.
+    """
+    from genie_space_optimizer.optimization.ddl import _GENIE_OPT_ITERATIONS_DDL
+
+    ddl = _GENIE_OPT_ITERATIONS_DDL
+    assert "delta.feature.allowColumnDefaults" in ddl, (
+        "Expected 'delta.feature.allowColumnDefaults' = 'supported' in the "
+        "iterations DDL TBLPROPERTIES so DEFAULTs are honored on fresh tables."
+    )
+
+
+def test_migration_enables_allow_column_defaults_on_iterations_first():
+    """Before applying any ``ADD COLUMN … DEFAULT`` migrations to the
+    iterations table, ``_migrate_add_columns`` must opt the table into
+    the ``allowColumnDefaults`` feature so the ``SET DEFAULT`` step
+    actually sticks on upgraded tables.
+
+    The enable must be best-effort (try/except) so a permission denial
+    does not block the rest of the migration — the column-add path still
+    works via the DEFAULT-stripping fallback in ``_apply_one_migration``.
+    """
+    spark = _FakeSpark(
+        existing_cols=[
+            "run_id", "iteration", "lever", "eval_scope", "timestamp",
+            "mlflow_run_id", "model_id", "overall_accuracy",
+            "total_questions", "correct_count", "scores_json",
+            "failures_json", "remaining_failures", "arbiter_actions_json",
+            "repeatability_pct", "repeatability_json", "thresholds_met",
+            "rows_json", "reflection_json", "evaluated_count",
+            "excluded_count", "quarantined_benchmarks_json",
+            "leakage_count_by_type", "firewall_rejection_count_by_type",
+            "secondary_mining_blocked", "synthesis_slots_persisted",
+            "arbiter_rejection_count",
+            "cluster_fallback_to_instruction_count",
+            "synthesis_archetype_distribution",
+            "rolled_back", "rolled_back_at", "rollback_reason",
+            "both_correct_count", "both_correct_rate",
+        ],
+    )
+
+    state_mod._migrate_add_columns(spark, "cat", "sch")
+
+    enable_stmts = [
+        s for s in spark.sql_calls
+        if "set tblproperties" in s.lower()
+        and "allowcolumndefaults" in s.lower()
+        and "genie_opt_iterations" in s.lower()
+    ]
+    assert enable_stmts, (
+        "Expected _migrate_add_columns to issue SET TBLPROPERTIES to enable "
+        "delta.feature.allowColumnDefaults on genie_opt_iterations; "
+        f"observed SQL calls: {spark.sql_calls}"
+    )
+
+
+def test_migration_continues_when_allow_column_defaults_enable_fails():
+    """If enabling ``allowColumnDefaults`` fails (e.g. permission denied),
+    the rest of the migration loop must still run. The existing
+    DEFAULT-stripping path in ``_apply_one_migration`` already handles
+    tables without the feature, so this is strictly defense-in-depth.
+    """
+
+    class _SparkEnableFails(_FakeSpark):
+        def sql(self, stmt: str):
+            self.sql_calls.append(stmt)
+            lower = stmt.lower()
+            if "set tblproperties" in lower and "allowcolumndefaults" in lower:
+                raise RuntimeError("PERMISSION_DENIED: cannot alter tblproperties")
+            upper = stmt.upper().lstrip()
+            if upper.startswith("DESCRIBE TABLE"):
+                rows = [{"col_name": c} for c in self._existing]
+                result = MagicMock()
+                result.collect.return_value = rows
+                return result
+            return MagicMock()
+
+    spark = _SparkEnableFails(
+        existing_cols=[
+            "run_id", "iteration", "lever", "eval_scope", "timestamp",
+            "mlflow_run_id", "model_id", "overall_accuracy",
+            "total_questions", "correct_count", "scores_json",
+            "failures_json", "remaining_failures", "arbiter_actions_json",
+            "repeatability_pct", "repeatability_json", "thresholds_met",
+            "rows_json", "reflection_json", "evaluated_count",
+            "excluded_count", "quarantined_benchmarks_json",
+            "leakage_count_by_type", "firewall_rejection_count_by_type",
+            "secondary_mining_blocked", "synthesis_slots_persisted",
+            "arbiter_rejection_count",
+            "cluster_fallback_to_instruction_count",
+            "synthesis_archetype_distribution",
+            "rolled_back", "rolled_back_at", "rollback_reason",
+            "both_correct_count", "both_correct_rate",
+        ],
+    )
+
+    state_mod._migrate_add_columns(spark, "cat", "sch")
+
+
 def test_migration_verifies_target_columns_present_after_loop(caplog):
     """After the migration loop runs, the function must verify that the
     columns the writer relies on (notably ``rolled_back``) are actually

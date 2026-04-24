@@ -115,7 +115,12 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     synthesis_slots_persisted BIGINT           COMMENT 'Bug #4 (Phase 3) — structurally-synthesized example_sqls persisted this iteration',
     arbiter_rejection_count BIGINT             COMMENT 'Bug #4 (Phase 3) — synthesis proposals rejected by the arbiter gate this iteration',
     cluster_fallback_to_instruction_count BIGINT COMMENT 'Bug #4 (Phase 3) — clusters that fell back to instruction-only after synthesis failed repeatedly',
-    synthesis_archetype_distribution STRING    COMMENT 'JSON MAP<STRING,BIGINT>: Bug #4 (Phase 3) — count of persisted synthesized example_sqls per archetype this iteration'
+    synthesis_archetype_distribution STRING    COMMENT 'JSON MAP<STRING,BIGINT>: Bug #4 (Phase 3) — count of persisted synthesized example_sqls per archetype this iteration',
+    rolled_back         BOOLEAN       DEFAULT false COMMENT 'Tier 1.1: true if this iteration was rolled back by the accept/rollback gate. Readers that represent current state must filter this out (see _get_baseline_and_best_accuracy, promote_best_model, load_latest_full_iteration).',
+    rolled_back_at      TIMESTAMP              COMMENT 'Tier 1.1: timestamp of rollback',
+    rollback_reason     STRING                 COMMENT 'Tier 1.1: human-readable rollback reason (mirrors genie_opt_patches.rollback_reason)',
+    both_correct_count  INT                    COMMENT 'Tier 1.7: count of rows with arbiter verdict == both_correct. Used to anchor best_accuracy to both_correct_rate when rc=yes overrides inflate overall_accuracy.',
+    both_correct_rate   DOUBLE                 COMMENT 'Tier 1.7: both_correct_count / evaluated_count * 100. Stricter than overall_accuracy (which counts arbiter override rows as correct). Lever loop anchors acceptance to this to avoid ghost-ceiling rejections.'
 )
 USING DELTA
 PARTITIONED BY (run_id)
@@ -123,7 +128,8 @@ COMMENT 'Evaluation iteration results - scores and failures per eval pass'
 TBLPROPERTIES (
     'delta.autoOptimize.optimizeWrite' = 'true',
     'delta.autoOptimize.autoCompact' = 'true',
-    'delta.enableChangeDataFeed' = 'true'
+    'delta.enableChangeDataFeed' = 'true',
+    'delta.feature.allowColumnDefaults' = 'supported'
 )"""
 
 _GENIE_OPT_PATCHES_DDL = """\

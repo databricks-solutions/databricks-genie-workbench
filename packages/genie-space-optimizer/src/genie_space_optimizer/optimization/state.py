@@ -90,8 +90,34 @@ def ensure_optimization_tables(spark: SparkSession, catalog: str, schema: str) -
     _migrate_add_columns(spark, catalog, schema)
 
 
+def _try_enable_column_defaults(spark: SparkSession, fqn: str) -> None:
+    """Best-effort upgrade of the table to support inline ``DEFAULT`` values.
+
+    Required so subsequent ``ALTER TABLE … ALTER COLUMN … SET DEFAULT``
+    statements (issued by ``_apply_one_migration``) actually stick on
+    existing tables created before the DDL opted into the feature.
+    Failures are non-fatal: the DEFAULT-stripping fallback in
+    ``_apply_one_migration`` already handles tables without the feature,
+    and writers pass values explicitly.
+    """
+    try:
+        spark.sql(
+            f"ALTER TABLE {fqn} SET TBLPROPERTIES "
+            "('delta.feature.allowColumnDefaults' = 'supported')"
+        )
+        logger.debug("Enabled allowColumnDefaults on %s", fqn)
+    except Exception as exc:
+        logger.debug(
+            "Could not enable allowColumnDefaults on %s "
+            "(continuing — DEFAULT-stripping fallback will be used): %s",
+            fqn, exc,
+        )
+
+
 def _migrate_add_columns(spark: SparkSession, catalog: str, schema: str) -> None:
     """Add columns introduced after initial DDL (safe to run repeatedly)."""
+    _try_enable_column_defaults(spark, _fqn(catalog, schema, TABLE_ITERATIONS))
+
     migrations = [
         (TABLE_RUNS, "job_id", "STRING COMMENT 'Databricks Job definition ID'"),
         (TABLE_PATCHES, "provenance_json", "STRING COMMENT 'JSON: full provenance chain from judge verdicts to this patch'"),
