@@ -23,8 +23,11 @@ and app resources.
 ## Prerequisites
 
 - A Databricks workspace with Databricks Apps enabled.
-- Web Terminal enabled on supported compute. See the Databricks Web
-  Terminal docs for compute requirements and limitations.
+- Web Terminal enabled on compute where it is available. You can launch it
+  from a notebook attached to supported compute, including serverless compute
+  when your workspace/serverless environment exposes Web Terminal. Databricks
+  documents that Web Terminal is not available on serverless environment
+  version 1.
 - Permission to create Databricks Apps.
 - A SQL Warehouse ID.
 - A Unity Catalog where you have `CREATE SCHEMA`.
@@ -37,8 +40,10 @@ and app resources.
 
 ## Step 1 - Open Web Terminal
 
-1. Open or create supported Databricks compute.
-2. Launch Web Terminal from the compute page or an attached notebook.
+1. Open a notebook attached to compute where Web Terminal is available, or
+   open a supported compute page directly.
+2. Launch Web Terminal from the notebook sidebar/compute picker or from the
+   compute page.
 3. Confirm current-user CLI auth works:
 
 ```bash
@@ -111,8 +116,9 @@ databricks current-user me
 ```
 
 If that fails, confirm you are in Databricks Web Terminal on supported
-compute. If you are running locally instead, set `GENIE_DEPLOY_PROFILE` to
-a configured local profile.
+compute. Serverless environment version 1 does not support Web Terminal. If
+you are running locally instead, set `GENIE_DEPLOY_PROFILE` to a configured
+local profile.
 
 ### `databricks bundle deploy` fails
 

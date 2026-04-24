@@ -146,7 +146,7 @@ There is no local dev server — all testing is done by syncing code to Databric
   2. Run `./scripts/deploy.sh --update` to build, bundle deploy, and app deploy
   3. Test in the deployed Databricks App
 - **Web Terminal path** (for users whose local VM blocks Databricks CLI usage):
-  1. Open Databricks Web Terminal on supported compute
+  1. Open Databricks Web Terminal on compute where it is available, including serverless compute when the workspace/serverless environment supports it
   2. Clone or enter the repo under `/Workspace/Users/<user>/`
   3. Run `GENIE_DEPLOY_PROFILE="" ./scripts/install.sh`
   4. See `docs/web-terminal-install.md` for the full CUJ
