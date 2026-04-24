@@ -211,79 +211,142 @@ _HEX_32 = re.compile(r"^[0-9a-f]{32}$")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# D1–D3: GSO quality-instruction blocks (baseline-eval-fix plan).
+# D1–D3: GSO quality-instruction policies (baseline-eval-fix plan).
 #
-# Each block is delimited by ``-- BEGIN/END GSO_QUALITY_V1:<key>`` sentinels so
-# the applier can rewrite and remove them idempotently. Customer-authored
-# instructions outside the sentinels are preserved verbatim.
+# Each policy is rendered as a normal bullet under its target canonical
+# ``##`` section — indistinguishable from customer-authored bullets. The
+# applier identifies its own content across runs by exact-text match
+# against this allowlist (current + deprecated bodies), scoped to each
+# policy's target header. Customer-authored bullets with any different
+# wording are never touched.
+#
+# Rewording a policy? Move the previous text into
+# ``_GSO_QUALITY_V1_DEPRECATED_BULLETS`` in the same commit so existing
+# customer spaces are cleaned up on their next apply. Add a unit test
+# that seeds the old string and asserts it's stripped.
 # ─────────────────────────────────────────────────────────────────────────────
-_GSO_QUALITY_V1_BLOCKS: tuple[tuple[str, str], ...] = (
+_GSO_QUALITY_V1_POLICIES: tuple[tuple[str, str, str], ...] = (
     (
         "mv_preference",
+        "## CONSTRAINTS",
         "For aggregate questions over dates or periods, prefer the metric "
         "view `mv_*` when one exists that covers the requested dimensions; "
         "otherwise use a regular `TABLE`.",
     ),
     (
         "column_ordering",
+        "## CONSTRAINTS",
         "When a question asks for results 'by X, then Y', return columns in "
         "that order and sort the result set by X, then Y ascending unless "
         "the question specifies otherwise.",
     ),
     (
         "calendar_grounding",
+        "## DATA QUALITY NOTES",
         "Interpret 'this year', 'last quarter', and 'YTD' relative to the "
         "current system date from `NOW()`. Do not rely on static flags in "
         "`DIM_DATE` for current-period filtering.",
     ),
 )
 
+# Previously-shipped policy bodies. Kept here for at least one release
+# after any policy text change so existing customer spaces have their
+# stale bullets stripped on the next apply. Safe to empty once all
+# customer spaces have run against the newer code.
+_GSO_QUALITY_V1_DEPRECATED_BULLETS: frozenset[str] = frozenset()
 
-def _gso_block_regex(key: str) -> re.Pattern[str]:
-    """Regex matching a single sentinel-wrapped quality block.
+# Legacy sentinel format (pre-Option-C). One-release migration: the strip
+# pass scrubs these wrappers out of customer spaces that ran against the
+# sentinel-era code. Safe to delete after a full rollout cycle.
+_GSO_QUALITY_V1_LEGACY_SENTINEL_RE = re.compile(
+    r"\n?-- BEGIN GSO_QUALITY_V1:[a-z_]+\n.*?\n-- END GSO_QUALITY_V1:[a-z_]+\n?",
+    re.DOTALL,
+)
 
-    Uses ``DOTALL`` so the body can span multiple lines, and tolerates
-    surrounding whitespace so repeated apply passes stay idempotent.
+
+def _known_policy_bullets_by_header() -> dict[str, set[str]]:
+    """Return current + deprecated policy bodies keyed by target header.
+
+    Deprecated bullets are applied to every canonical header we own so a
+    reworded policy still gets cleaned up regardless of whether a prior
+    version targeted a different section. (Today all policies target
+    ``## CONSTRAINTS`` or ``## DATA QUALITY NOTES``; the union-over-owned-
+    headers semantics keeps the contract forward-compatible.)
     """
-    return re.compile(
-        rf"\n?-- BEGIN GSO_QUALITY_V1:{re.escape(key)}\n.*?\n-- END GSO_QUALITY_V1:{re.escape(key)}\n?",
-        re.DOTALL,
-    )
+    by_header: dict[str, set[str]] = {}
+    for _key, header, text in _GSO_QUALITY_V1_POLICIES:
+        by_header.setdefault(header, set()).add(text.strip())
+    owned_headers = set(by_header.keys())
+    for text in _GSO_QUALITY_V1_DEPRECATED_BULLETS:
+        for header in owned_headers:
+            by_header.setdefault(header, set()).add(text.strip())
+    return by_header
 
 
-def _render_gso_quality_block(key: str, body: str) -> str:
-    return (
-        f"-- BEGIN GSO_QUALITY_V1:{key}\n"
-        f"{body.strip()}\n"
-        f"-- END GSO_QUALITY_V1:{key}"
-    )
+def _bullet_text(line: str) -> str:
+    """Strip leading bullet marker + whitespace so ``- foo`` and ``foo`` match."""
+    return re.sub(r"^\s*[-*]\s*", "", line).strip()
 
 
-def _strip_gso_quality_blocks(text: str) -> str:
-    """Remove every sentinel-wrapped GSO_QUALITY_V1 block from ``text``.
+def _render_instruction_text(
+    preamble: list[str],
+    canonical: dict[str, list[str]],
+    legacy: dict[str, list[str]],
+) -> str:
+    """Round-trip-safe render of parse_canonical_sections output.
 
-    Called on every apply pass so that:
+    Unlike :func:`render_canonical_sections` (which drops preamble and
+    legacy by design — the miner path never wants them re-emitted), this
+    helper preserves every piece of the parsed structure so customer
+    content outside the canonical schema survives an apply pass.
 
-    * Re-apply under ``on`` never duplicates blocks (we always strip then
-      re-append).
-    * Apply under ``off`` cleans up stale blocks left by a prior ``on``
-      apply, making revert a one-line env-var change.
+    Emit order:
+      1. preamble (free-floating lines before any header)
+      2. canonical sections in ``CANONICAL_SECTION_ORDER``
+      3. legacy ALL-CAPS sections in insertion order
     """
-    if not text:
-        return text
-    result = text
-    for key, _ in _GSO_QUALITY_V1_BLOCKS:
-        result = _gso_block_regex(key).sub("\n", result)
-    return result.rstrip() + ("\n" if text.endswith("\n") else "")
+    parts: list[str] = []
+
+    trimmed_preamble = list(preamble)
+    while trimmed_preamble and not trimmed_preamble[0].strip():
+        trimmed_preamble.pop(0)
+    while trimmed_preamble and not trimmed_preamble[-1].strip():
+        trimmed_preamble.pop()
+    if trimmed_preamble:
+        parts.append("\n".join(trimmed_preamble))
+
+    canonical_ordered = sorted(
+        (h for h in canonical if h in CANONICAL_SECTION_HEADERS),
+        key=lambda h: CANONICAL_SECTION_ORDER[h],
+    )
+    for header in canonical_ordered:
+        lines = [ln for ln in canonical.get(header, []) if ln.strip()]
+        if not lines:
+            continue
+        parts.append(header + "\n" + "\n".join(lines))
+
+    for header, lines in legacy.items():
+        body_lines = [ln for ln in lines if ln.strip()]
+        if not body_lines:
+            continue
+        parts.append(f"{header}:\n" + "\n".join(body_lines))
+
+    return "\n\n".join(parts)
 
 
 def apply_gso_quality_instructions(config: dict) -> bool:
-    """Insert or refresh the D1–D3 quality blocks in general instructions.
+    """Insert or refresh the D1–D3 quality bullets in general instructions.
 
-    Idempotent: any existing blocks are stripped and re-rendered so the
-    order is canonical and there are never duplicates. When
-    ``GSO_APPLY_QUALITY_INSTRUCTIONS=off`` the blocks are stripped and
-    nothing is re-appended, giving a fully-automatic revert.
+    Each policy is rendered as a plain bullet under its target canonical
+    ``##`` section so the customer never sees our machinery. Idempotent:
+    any existing bullet whose text matches a known policy body (current
+    or deprecated) is stripped, then — when
+    ``GSO_APPLY_QUALITY_INSTRUCTIONS=on`` — the current bullet is
+    re-inserted. Legacy ``-- BEGIN/END GSO_QUALITY_V1:<key>`` sentinel
+    blocks from pre-Option-C runs are also swept out.
+
+    Customer-authored bullets with any wording different from the known
+    allowlist are preserved verbatim.
 
     Returns ``True`` if the instruction text changed.
     """
@@ -292,19 +355,25 @@ def apply_gso_quality_instructions(config: dict) -> bool:
     )
 
     current = _get_general_instructions(config)
-    stripped = _strip_gso_quality_blocks(current)
+
+    legacy_swept = _GSO_QUALITY_V1_LEGACY_SENTINEL_RE.sub("\n", current).strip()
+
+    canonical, legacy, preamble = parse_canonical_sections(legacy_swept)
+
+    known = _known_policy_bullets_by_header()
+    for header in list(canonical.keys()):
+        targets = known.get(header)
+        if not targets:
+            continue
+        canonical[header] = [
+            ln for ln in canonical[header] if _bullet_text(ln) not in targets
+        ]
 
     if apply_quality_instructions_is_on():
-        blocks = "\n\n".join(
-            _render_gso_quality_block(key, body)
-            for key, body in _GSO_QUALITY_V1_BLOCKS
-        )
-        if stripped.strip():
-            new_text = f"{stripped.rstrip()}\n\n{blocks}"
-        else:
-            new_text = blocks
-    else:
-        new_text = stripped.rstrip()
+        for _key, header, text in _GSO_QUALITY_V1_POLICIES:
+            canonical.setdefault(header, []).append(f"- {text}")
+
+    new_text = _render_instruction_text(preamble, canonical, legacy)
 
     if new_text == current:
         return False

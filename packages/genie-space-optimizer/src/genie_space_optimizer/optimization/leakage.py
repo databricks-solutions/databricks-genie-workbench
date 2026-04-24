@@ -565,3 +565,156 @@ def count_example_sql_leaks(
             )
 
     return counts
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 1.R1b + R1c — LeakageOracle (opaque match API)
+# ═══════════════════════════════════════════════════════════════════════
+#
+# The oracle is the ONLY firewall surface exposed to non-benchmark
+# generators (example-SQL synthesis, instruction mining). It wraps one
+# or more BenchmarkCorpus instances but never reveals their text
+# content — callers can ask "does this leak?" but cannot read
+# benchmark questions or SQLs. This is the machine-checkable form of
+# isolation invariant #4 documented in ``docs/example-sql-isolation.md``.
+#
+# Deliberately absent: __iter__, __repr__, direct sqls/questions
+# getters, __len__ of individual corpora. Adding any of these would
+# re-open the side channel the wrapper exists to close.
+
+
+# Stopwords dropped from question token-set comparisons. Intentionally
+# conservative — we want the set-Jaccard to be meaningful on short
+# business questions, not dominated by filler words.
+_QUESTION_ECHO_STOPWORDS: frozenset[str] = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "by", "can", "did",
+    "do", "does", "for", "from", "give", "has", "have", "how",
+    "i", "in", "is", "it", "me", "my", "of", "on", "or", "our",
+    "over", "per", "please", "show", "tell", "that", "the", "their",
+    "there", "these", "this", "those", "to", "us", "was", "we",
+    "were", "what", "whats", "when", "where", "which", "who",
+    "will", "with", "would", "you", "your",
+})
+
+
+_QUESTION_PUNCT_RE = re.compile(r"[^\w\s]+")
+
+
+def _normalize_question_text(q: str) -> set[str]:
+    """Return the canonical token set for a question.
+
+    Normalization: lower + strip + collapse whitespace + drop
+    punctuation + drop stopwords. The resulting set is what the
+    Jaccard match operates on. Empty input returns an empty set.
+    """
+    if not q or not isinstance(q, str):
+        return set()
+    text = _QUESTION_PUNCT_RE.sub(" ", q.lower())
+    tokens = [t for t in text.split() if t]
+    return {t for t in tokens if t not in _QUESTION_ECHO_STOPWORDS}
+
+
+def _question_token_set_jaccard(a: str, b: str) -> float:
+    """Jaccard similarity over normalized token sets."""
+    sa = _normalize_question_text(a)
+    sb = _normalize_question_text(b)
+    if not sa or not sb:
+        return 0.0
+    inter = len(sa & sb)
+    union = len(sa | sb)
+    return inter / union if union else 0.0
+
+
+EXAMPLE_SQL_QUESTION_ECHO_THRESHOLD = float(
+    os.environ.get("GSO_EXAMPLE_SQL_QUESTION_ECHO_THRESHOLD", "0.85")
+)
+"""Jaccard threshold above which the example-SQL question firewall
+flags a benchmark-question echo. 0.85 catches "show me total revenue"
+≈ "what is total revenue"; independent of the SQL-side firewall
+(fingerprint + n-gram). Tune via
+``GSO_EXAMPLE_SQL_QUESTION_ECHO_THRESHOLD`` env var."""
+
+
+class LeakageOracle:
+    """Read-only match oracle over one or more benchmark corpora.
+
+    Exposes ONLY boolean match methods. No ``__iter__``, no text
+    getters, no ``__repr__`` that leaks content. Non-benchmark
+    generators (example-SQL synthesis, instruction mining) receive an
+    ``LeakageOracle`` instead of a raw :class:`BenchmarkCorpus` so the
+    generator's code and prompts cannot see benchmark questions or
+    SQLs even transitively.
+
+    Union semantics: pass multiple corpora and the oracle returns
+    ``True`` when ANY of them matches. This is how the example-SQL
+    generator firewalls against both the current run's benchmarks
+    AND the space's already-installed example_question_sqls without
+    exposing either list to the caller.
+
+    See ``docs/example-sql-isolation.md`` for the full contract.
+    """
+
+    __slots__ = ("_corpora", "_question_threshold")
+
+    def __init__(
+        self,
+        *corpora: BenchmarkCorpus,
+        question_threshold: float | None = None,
+    ) -> None:
+        self._corpora: tuple[BenchmarkCorpus, ...] = tuple(
+            c for c in corpora if isinstance(c, BenchmarkCorpus) and (
+                c.questions or c.expected_sqls
+            )
+        )
+        self._question_threshold = (
+            question_threshold
+            if question_threshold is not None
+            else EXAMPLE_SQL_QUESTION_ECHO_THRESHOLD
+        )
+
+    def contains_sql(self, sql: str, *, w: Any = None) -> bool:
+        """Return True when ``sql`` matches any corpus via fingerprint
+        or n-gram Jaccard (or embedding, when available). Delegates to
+        the existing ``_check_string_against_corpus`` so the detection
+        logic stays in one place."""
+        if not sql or not isinstance(sql, str) or not sql.strip():
+            return False
+        for corpus in self._corpora:
+            is_leak, _reason, _score = _check_string_against_corpus(
+                sql, corpus, is_sql=True, w=w,
+            )
+            if is_leak:
+                return True
+        return False
+
+    def contains_question(
+        self,
+        question: str,
+        *,
+        threshold: float | None = None,
+    ) -> bool:
+        """Return True when ``question`` echoes any benchmark question
+        above ``threshold`` (default
+        ``EXAMPLE_SQL_QUESTION_ECHO_THRESHOLD``). Uses token-set
+        Jaccard on the canonical form — independent of the SQL-side
+        firewall so paraphrase-with-different-SQL is still caught.
+        """
+        if not question or not isinstance(question, str) or not question.strip():
+            return False
+        thresh = threshold if threshold is not None else self._question_threshold
+        for corpus in self._corpora:
+            for benchmark_q in corpus.questions:
+                score = _question_token_set_jaccard(question, benchmark_q)
+                if score >= thresh:
+                    return True
+        return False
+
+    # Deliberately absent — see class docstring for rationale. Any of
+    # the following would re-open the side channel the wrapper exists
+    # to close. Do not add them.
+    # def __iter__(self): ...
+    # def __repr__(self): ...
+    # @property
+    # def questions(self): ...
+    # @property
+    # def expected_sqls(self): ...

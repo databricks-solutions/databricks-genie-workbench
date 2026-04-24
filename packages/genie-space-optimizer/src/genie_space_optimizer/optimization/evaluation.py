@@ -5687,24 +5687,37 @@ def _validate_benchmark_sql(
     )
 
 
-def _attempt_benchmark_correction(
+def _attempt_sql_correction(
     w: WorkspaceClient,
     config: dict,
     uc_columns: list[dict],
     uc_routines: list[dict],
-    invalid_benchmarks: list[dict],
+    invalid_candidates: list[dict],
     catalog: str,
     schema: str,
     spark: SparkSession,
     allowlist: dict[str, Any],
     *,
+    correction_prompt_template: str,
+    correction_prompt_registry_key: str,
     warehouse_id: str = "",
 ) -> list[dict]:
-    """Send invalid benchmarks back to the LLM for correction.
+    """Send invalid SQL candidates back to the LLM for correction.
 
-    Returns corrected benchmarks that pass validation.
+    Shared between benchmark and example-SQL generation paths. Callers
+    differ only in the prompt template + MLflow registry key — the
+    per-candidate error payload (``benchmarks_to_fix`` JSON), the
+    schema context, the metadata + SQL revalidation, and the returned
+    provenance are all identical. Returns corrected candidates that
+    pass both ``_enforce_metadata_constraints`` and
+    ``_validate_benchmark_sql`` (the latter named historically; it is
+    generic EXPLAIN+execute validation).
+
+    Note: the LLM output field is still ``expected_sql`` regardless of
+    caller, because the correction-prompt contracts (both benchmark and
+    example variants) share that schema.
     """
-    if not invalid_benchmarks:
+    if not invalid_candidates:
         return []
 
     ctx = _build_schema_contexts(config, uc_columns, uc_routines)
@@ -5728,13 +5741,13 @@ def _attempt_benchmark_correction(
                     else ""
                 ),
             }
-            for b in invalid_benchmarks
+            for b in invalid_candidates
         ],
         indent=2,
     )
 
     prompt = format_mlflow_template(
-        BENCHMARK_CORRECTION_PROMPT,
+        correction_prompt_template,
         valid_assets_context=ctx["valid_assets_context"],
         tables_context=ctx["tables_context"],
         column_allowlist=ctx.get("column_allowlist", "(no columns)"),
@@ -5747,18 +5760,22 @@ def _attempt_benchmark_correction(
     try:
         response = _call_llm_for_scoring(
             w, prompt,
-            prompt_name=get_registered_prompt_name("benchmark_correction"),
+            prompt_name=get_registered_prompt_name(correction_prompt_registry_key),
         )
         corrections: list[dict] = response if isinstance(response, list) else response.get("benchmarks", [])
     except Exception:
-        logger.warning("Benchmark correction LLM call failed", exc_info=True)
+        logger.warning(
+            "SQL correction LLM call failed (registry=%s)",
+            correction_prompt_registry_key,
+            exc_info=True,
+        )
         return []
 
     corrected: list[dict] = []
     for c in corrections:
         sql = c.get("expected_sql")
         if not sql or c.get("unfixable_reason"):
-            logger.info("Benchmark unfixable: %s — %s", c.get("question", "")[:60], c.get("unfixable_reason", ""))
+            logger.info("Candidate unfixable: %s — %s", c.get("question", "")[:60], c.get("unfixable_reason", ""))
             continue
         metadata_ok, _reason_code, reason_message = _enforce_metadata_constraints(
             benchmark=c,
@@ -5769,7 +5786,7 @@ def _attempt_benchmark_correction(
         )
         if not metadata_ok:
             logger.warning(
-                "Corrected benchmark violates metadata constraints: %s — %s",
+                "Corrected candidate violates metadata constraints: %s — %s",
                 c.get("question", "")[:60],
                 reason_message,
             )
@@ -5787,12 +5804,526 @@ def _attempt_benchmark_correction(
             corrected.append(c)
         else:
             logger.warning(
-                "Corrected benchmark still invalid: %s — %s", c.get("question", "")[:60], err,
+                "Corrected candidate still invalid: %s — %s", c.get("question", "")[:60], err,
             )
     return corrected
 
 
+def _attempt_benchmark_correction(
+    w: WorkspaceClient,
+    config: dict,
+    uc_columns: list[dict],
+    uc_routines: list[dict],
+    invalid_benchmarks: list[dict],
+    catalog: str,
+    schema: str,
+    spark: SparkSession,
+    allowlist: dict[str, Any],
+    *,
+    warehouse_id: str = "",
+) -> list[dict]:
+    """Benchmark-variant adapter for :func:`_attempt_sql_correction`.
+
+    Preserves the historical signature + behaviour so existing call
+    sites inside :func:`generate_benchmarks` (including the alignment
+    correction loop) stay byte-identical post-refactor.
+    """
+    return _attempt_sql_correction(
+        w=w, config=config, uc_columns=uc_columns, uc_routines=uc_routines,
+        invalid_candidates=invalid_benchmarks,
+        catalog=catalog, schema=schema, spark=spark, allowlist=allowlist,
+        correction_prompt_template=BENCHMARK_CORRECTION_PROMPT,
+        correction_prompt_registry_key="benchmark_correction",
+        warehouse_id=warehouse_id,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Phase 1.R1 — Unified SQL-examples engine
+# ═══════════════════════════════════════════════════════════════════════
+#
+# Shared core powering both ``generate_benchmarks`` (via its existing
+# orchestrator) and ``generate_example_sqls`` (the new producer). The
+# core wraps the same validation primitives — ``_enforce_metadata_
+# constraints``, ``_apply_metadata_field_drift_corrections``,
+# ``_rewrite_measure_refs``, ``_guard_mv_select_star``,
+# ``_validate_benchmark_sql``, ``_attempt_sql_correction`` — plus two
+# new steps: arbiter approval (opt-in via ``run_arbiter=True``) and a
+# leakage firewall (opt-in via a non-None ``leakage_oracle``).
+#
+# Isolation invariant: this function never iterates a BenchmarkCorpus
+# and never inspects benchmark text. See
+# ``docs/example-sql-isolation.md``.
+
+
+def _capture_result_rows(
+    sql: str,
+    spark: SparkSession,
+    catalog: str,
+    schema: str,
+    *,
+    w: Any = None,
+    warehouse_id: str = "",
+    limit: int = 20,
+) -> list[dict] | None:
+    """Run ``sql`` once and return the first ``limit`` rows as dicts.
+
+    Used by the unified engine to give the arbiter judge actual result
+    rows to evaluate. Uses the shared ``_exec_sql`` helper so the
+    warehouse-vs-Spark routing is consistent with every other
+    execution path in this module. Returns ``None`` on any failure —
+    the caller fails open (keeps the candidate) because
+    ``_validate_benchmark_sql`` has already asserted the SQL executes;
+    this helper's failure is pure arbiter-side observability.
+    """
+    try:
+        from genie_space_optimizer.optimization.benchmarks import resolve_sql
+        resolved = resolve_sql(sql, catalog, schema)
+        sampling_sql = f"SELECT * FROM ({resolved}) _gvse_sample LIMIT {int(limit)}"
+        df = _exec_sql(
+            sampling_sql, spark,
+            w=w, warehouse_id=warehouse_id,
+            catalog=catalog, schema=schema,
+        )
+        if df is None or df.empty:
+            return []
+        return df.head(limit).to_dict(orient="records")
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.debug(
+            "arbiter result-row capture failed: %s",
+            str(exc)[:200],
+        )
+    return None
+
+
+def generate_validated_sql_examples(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    *,
+    config: dict,
+    uc_columns: list[dict],
+    uc_tags: list[dict],
+    uc_routines: list[dict],
+    domain: str,
+    catalog: str,
+    schema: str,
+    warehouse_id: str = "",
+    target_count: int,
+    generation_prompt_template: str,
+    correction_prompt_template: str,
+    generation_prompt_registry_key: str,
+    correction_prompt_registry_key: str,
+    existing_questions: list[str] | None = None,
+    leakage_oracle: "Any" = None,  # LeakageOracle — forward reference, wired in R1b
+    run_arbiter: bool = False,
+    provenance: str = "synthetic",
+    output_fields: tuple[str, ...] = ("question", "expected_sql"),
+) -> tuple[list[dict], dict[str, int]]:
+    """Unified SQL-examples generation engine.
+
+    Produces validated (question, SQL) pairs by:
+      1. Building schema context + metadata allowlist from ``config``
+         and UC metadata.
+      2. One batched LLM call via ``generation_prompt_template``.
+      3. Per-candidate: metadata enforcement + field-drift correction
+         + MV ``SELECT *`` guard + MEASURE auto-wrap + EXPLAIN/execute.
+      4. Bounded correction loop (``MAX_CORRECTION_ROUNDS``) via
+         ``_attempt_sql_correction`` with ``correction_prompt_template``.
+      5. Optional arbiter approval (``run_arbiter=True``): executes the
+         SQL once to capture result rows, then calls
+         ``score_example_sql_correctness``. Verdict ``"yes"`` keeps
+         the candidate; ``"no"``/``"uncertain"`` drops it.
+      6. Optional leakage firewall: ``leakage_oracle.contains_sql``
+         then ``contains_question`` on each survivor. Matches dropped.
+
+    Returns ``(survivors, rejection_counters)``. The counters dict
+    always contains the same set of keys so callers can log distinct
+    rejection classes without conditional branches.
+
+    Isolation: when ``leakage_oracle`` is a :class:`LeakageOracle`, the
+    function never reads benchmark text. The oracle is a boolean match
+    API — see ``docs/example-sql-isolation.md`` for the firewall spec.
+    """
+    existing_questions = existing_questions or []
+    existing_q_lower: set[str] = {
+        (q or "").strip().lower() for q in existing_questions if q
+    }
+
+    rejection_counters: dict[str, int] = {
+        "metadata": 0,
+        "mv_select_star": 0,
+        "explain_or_execute": 0,
+        "arbiter_no": 0,
+        "firewall_fingerprint": 0,
+        "firewall_question_echo": 0,
+        "dedup_in_corpus": 0,
+        "unfixable_after_correction": 0,
+    }
+
+    allowlist = _build_metadata_allowlist(
+        config=config,
+        uc_columns=uc_columns,
+        uc_routines=uc_routines,
+    )
+    ctx = _build_schema_contexts(config, uc_columns, uc_routines)
+
+    existing_questions_context = ""
+    if existing_questions:
+        existing_questions_context = (
+            "\n\n## Already Covered Questions (do NOT duplicate these)\n"
+            + "\n".join(f"- {q}" for q in existing_questions)
+        )
+
+    # ── 1. One-shot batched LLM call ─────────────────────────────
+    prompt = format_mlflow_template(
+        generation_prompt_template,
+        domain=domain,
+        target_count=target_count,
+        categories=json.dumps(BENCHMARK_CATEGORIES),
+        **ctx,
+    )
+    if existing_questions_context:
+        prompt += existing_questions_context
+
+    try:
+        response = _call_llm_for_scoring(
+            w, prompt,
+            prompt_name=get_registered_prompt_name(generation_prompt_registry_key),
+        )
+    except Exception:
+        logger.warning(
+            "generate_validated_sql_examples: LLM call failed (registry=%s)",
+            generation_prompt_registry_key,
+            exc_info=True,
+        )
+        return [], rejection_counters
+
+    raw_candidates: list[dict] = (
+        response if isinstance(response, list)
+        else response.get("benchmarks", [])
+    )
+
+    # ── 2. Per-candidate validation + MEASURE auto-wrap ──────────
+    valid: list[dict] = []
+    invalid: list[dict] = []
+    accepted_q_lower: set[str] = set()
+    mv_measures = build_metric_view_measures(config)
+    mv_names = set(config.get("_metric_views", []))
+
+    def _register_valid(cand: dict) -> None:
+        q = str(cand.get("question") or "").strip().lower()
+        if not q or q in accepted_q_lower or q in existing_q_lower:
+            rejection_counters["dedup_in_corpus"] += 1
+            return
+        accepted_q_lower.add(q)
+        valid.append(cand)
+
+    for b in raw_candidates:
+        if not isinstance(b, dict):
+            continue
+        sql_str = str(b.get("expected_sql") or "").strip()
+        question = str(b.get("question") or "").strip()
+        if not sql_str or not question:
+            continue
+
+        # Skip duplicates of the in-corpus questions.
+        if question.lower() in existing_q_lower:
+            rejection_counters["dedup_in_corpus"] += 1
+            continue
+
+        candidate: dict[str, Any] = {
+            "question": question,
+            "expected_sql": sql_str,
+            "expected_asset": _normalize_expected_asset(
+                b.get("expected_asset", "TABLE"), sql_str,
+                hint=b.get("expected_asset_hint"),
+            ),
+            "category": b.get("category", ""),
+            "required_tables": [str(t) for t in b.get("required_tables", []) or []],
+            "required_columns": [str(c) for c in b.get("required_columns", []) or []],
+            "expected_facts": [str(f) for f in b.get("expected_facts", []) or []],
+            "usage_guidance": b.get("usage_guidance", ""),
+            "source": "llm_generated",
+            "provenance": provenance,
+            "validation_status": "valid",
+            "validation_reason_code": "ok",
+            "validation_error": None,
+            "correction_source": "",
+        }
+
+        metadata_ok, reason_code, reason_message = _enforce_metadata_constraints(
+            benchmark=candidate, sql=sql_str, allowlist=allowlist,
+            catalog=catalog, schema=schema,
+        )
+        if not metadata_ok:
+            if reason_code == "unknown_column":
+                corrected_sql, replacements = _apply_metadata_field_drift_corrections(
+                    sql=sql_str,
+                    required_columns=candidate["required_columns"],
+                    allowed_index=allowlist["column_index"],
+                )
+                if replacements and corrected_sql != sql_str:
+                    candidate["expected_sql"] = corrected_sql
+                    candidate["provenance"] = "auto_corrected"
+                    candidate["correction_source"] = "metadata_suggestion"
+                    candidate["field_drift_fixes"] = replacements
+                    metadata_ok, reason_code, reason_message = (
+                        _enforce_metadata_constraints(
+                            benchmark=candidate, sql=corrected_sql,
+                            allowlist=allowlist,
+                            catalog=catalog, schema=schema,
+                        )
+                    )
+                    sql_str = corrected_sql
+            if not metadata_ok:
+                candidate["validation_status"] = "invalid"
+                candidate["validation_reason_code"] = reason_code
+                candidate["validation_error"] = reason_message
+                invalid.append(candidate)
+                rejection_counters["metadata"] += 1
+                continue
+
+        is_star_ok, star_reason = _guard_mv_select_star(sql_str, mv_names)
+        if not is_star_ok:
+            candidate["validation_status"] = "invalid"
+            candidate["validation_reason_code"] = "mv_select_star"
+            candidate["validation_error"] = star_reason
+            invalid.append(candidate)
+            rejection_counters["mv_select_star"] += 1
+            continue
+
+        if mv_measures:
+            sql_str = _rewrite_measure_refs(sql_str, mv_measures)
+            candidate["expected_sql"] = sql_str
+
+        is_valid, err = _validate_benchmark_sql(
+            sql_str, spark, catalog, schema, execute=True,
+            w=w, warehouse_id=warehouse_id,
+        )
+        if is_valid:
+            candidate["validation_status"] = "valid"
+            candidate["validation_reason_code"] = "ok"
+            candidate["validation_error"] = None
+            _register_valid(candidate)
+        else:
+            candidate["validation_status"] = "invalid"
+            candidate["validation_reason_code"] = _classify_sql_validation_error(err)
+            candidate["validation_error"] = err
+            invalid.append(candidate)
+            # Counter incremented at correction-loop exit if still invalid.
+
+    # ── 3. Bounded correction loop ───────────────────────────────
+    for correction_round in range(MAX_CORRECTION_ROUNDS):
+        if not invalid:
+            break
+        logger.info(
+            "gvse correction round %d/%d: attempting to fix %d invalid candidates",
+            correction_round + 1, MAX_CORRECTION_ROUNDS, len(invalid),
+        )
+        corrected = _attempt_sql_correction(
+            w=w, config=config, uc_columns=uc_columns, uc_routines=uc_routines,
+            invalid_candidates=invalid,
+            catalog=catalog, schema=schema, spark=spark, allowlist=allowlist,
+            correction_prompt_template=correction_prompt_template,
+            correction_prompt_registry_key=correction_prompt_registry_key,
+            warehouse_id=warehouse_id,
+        )
+        if not corrected:
+            break
+        for c in corrected:
+            _register_valid(c)
+        corrected_q = {
+            str(c.get("question") or "").strip().lower()
+            for c in corrected
+        }
+        invalid = [
+            b for b in invalid
+            if str(b.get("question") or "").strip().lower() not in corrected_q
+        ]
+
+    rejection_counters["explain_or_execute"] += len(invalid)
+    rejection_counters["unfixable_after_correction"] = len(invalid)
+
+    # ── 4. Arbiter approval (opt-in) ─────────────────────────────
+    if run_arbiter and valid:
+        try:
+            from genie_space_optimizer.optimization.scorers.arbiter import (
+                score_example_sql_correctness,
+            )
+        except Exception:
+            logger.warning(
+                "gvse: arbiter import failed; skipping arbiter approval",
+                exc_info=True,
+            )
+            score_example_sql_correctness = None  # type: ignore
+        arbitrated: list[dict] = []
+        for cand in valid:
+            if score_example_sql_correctness is None:
+                arbitrated.append(cand)
+                continue
+            rows = _capture_result_rows(
+                cand["expected_sql"], spark, catalog, schema,
+                w=w, warehouse_id=warehouse_id,
+            )
+            try:
+                verdict = score_example_sql_correctness(
+                    question=cand["question"],
+                    sql=cand["expected_sql"],
+                    result_rows=rows,
+                    w=w,
+                    metadata_snapshot=config,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "gvse: arbiter call failed for candidate (skipping): %s",
+                    str(exc)[:200],
+                )
+                arbitrated.append(cand)  # fail-open — do not reject on infra error
+                continue
+            value = str((verdict or {}).get("value", "")).lower()
+            if value == "yes":
+                cand["arbiter_verdict"] = verdict
+                arbitrated.append(cand)
+            else:
+                rejection_counters["arbiter_no"] += 1
+                logger.info(
+                    "gvse: arbiter verdict=%s dropped candidate: %s",
+                    value or "uncertain",
+                    cand.get("question", "")[:80],
+                )
+        valid = arbitrated
+
+    # ── 5. Leakage firewall (opt-in) ─────────────────────────────
+    if leakage_oracle is not None and valid:
+        shielded: list[dict] = []
+        for cand in valid:
+            try:
+                if leakage_oracle.contains_sql(
+                    cand["expected_sql"], w=w,
+                ):
+                    rejection_counters["firewall_fingerprint"] += 1
+                    continue
+                if leakage_oracle.contains_question(cand["question"]):
+                    rejection_counters["firewall_question_echo"] += 1
+                    continue
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "gvse: firewall oracle raised (fail-open): %s",
+                    str(exc)[:200],
+                )
+            shielded.append(cand)
+        valid = shielded
+
+    # ── 6. Project to requested output fields ────────────────────
+    if output_fields:
+        fieldset = set(output_fields) | {
+            "provenance", "validation_status", "validation_reason_code",
+            "validation_error", "correction_source", "source",
+            "arbiter_verdict",
+        }
+        valid = [
+            {k: v for k, v in cand.items() if k in fieldset}
+            for cand in valid
+        ]
+
+    return valid, rejection_counters
+
+
 MAX_CORRECTION_ROUNDS = 2
+
+
+def generate_example_sqls(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    *,
+    config: dict,
+    uc_columns: list[dict],
+    uc_tags: list[dict],
+    uc_routines: list[dict],
+    domain: str,
+    catalog: str,
+    schema: str,
+    warehouse_id: str = "",
+    target_count: int | None = None,
+    existing_example_sqls: list[dict] | None = None,
+    leakage_oracle: "Any",  # LeakageOracle — REQUIRED kwarg (isolation invariant #1)
+) -> tuple[list[dict], dict[str, int]]:
+    """Generate validated example SQLs for ``instructions.example_question_sqls``.
+
+    Thin adapter over :func:`generate_validated_sql_examples` that wires
+    in the example-SQL prompts, stamps ``synthetic_example_sql``
+    provenance, and enforces the Bug #4 isolation contract.
+
+    Isolation invariants (see ``docs/example-sql-isolation.md``):
+
+    1. No ``benchmarks`` parameter. This function CANNOT receive
+       benchmark text — the lint rule at
+       ``scripts/lint_example_sql_isolation.py`` fails CI if one is
+       ever added. The only firewall input is ``leakage_oracle``
+       which is an opaque match API, not raw text.
+    2. The example prompts (loaded from ``common/config.py``) have
+       zero benchmark-derived template variables. Enforced at import
+       time by the assertion block at the bottom of ``config.py``.
+    3. Every survivor passes the SQL fingerprint firewall via
+       ``leakage_oracle.contains_sql``. Matches are dropped.
+    4. Every survivor passes the question-echo firewall via
+       ``leakage_oracle.contains_question``. Matches are dropped.
+
+    Parameters
+    ----------
+    target_count
+        Number of example_sqls to generate. Defaults to
+        :data:`PREFLIGHT_EXAMPLE_SQL_TARGET`.
+    existing_example_sqls
+        Existing ``instructions.example_question_sqls`` on this
+        space. Their questions are added to the ``## Already Covered
+        Questions`` block so the LLM doesn't duplicate them, AND the
+        caller typically wraps them into the ``leakage_oracle`` to
+        firewall against near-duplicates.
+    leakage_oracle
+        **Required**. A :class:`~genie_space_optimizer.optimization.leakage.LeakageOracle`
+        wrapping the benchmark corpus (and typically the existing-examples
+        corpus too). Omitting this kwarg raises ``TypeError`` at call
+        time — the machine-checkable form of isolation invariant #1.
+
+    Returns
+    -------
+    (survivors, rejection_counters)
+        ``survivors`` is the list of validated + firewalled example
+        dicts (shape: ``question``, ``expected_sql``,
+        ``usage_guidance``, provenance metadata). ``rejection_counters``
+        is the full counter dict from the shared core — distinguishes
+        metadata/MV/execute/arbiter/fingerprint/question-echo/dedup
+        rejection classes for the pretty-summary block.
+    """
+    from genie_space_optimizer.common.config import (
+        EXAMPLE_SQL_CORRECTION_PROMPT,
+        EXAMPLE_SQL_GENERATION_PROMPT,
+        PREFLIGHT_EXAMPLE_SQL_TARGET,
+    )
+    effective_target = (
+        target_count if target_count is not None else PREFLIGHT_EXAMPLE_SQL_TARGET
+    )
+    existing_questions = [
+        str((e or {}).get("question", "") or "")
+        for e in (existing_example_sqls or [])
+    ]
+    return generate_validated_sql_examples(
+        w=w, spark=spark,
+        config=config, uc_columns=uc_columns, uc_tags=uc_tags,
+        uc_routines=uc_routines, domain=domain,
+        catalog=catalog, schema=schema, warehouse_id=warehouse_id,
+        target_count=effective_target,
+        generation_prompt_template=EXAMPLE_SQL_GENERATION_PROMPT,
+        correction_prompt_template=EXAMPLE_SQL_CORRECTION_PROMPT,
+        generation_prompt_registry_key="example_sql_generation",
+        correction_prompt_registry_key="example_sql_correction",
+        existing_questions=existing_questions,
+        leakage_oracle=leakage_oracle,
+        run_arbiter=True,
+        provenance="synthetic_example_sql",
+        output_fields=("question", "expected_sql", "usage_guidance"),
+    )
 
 _SQL_REFERENCE_PATTERN = re.compile(
     r"(?:FROM|JOIN|INTO|UPDATE|TABLE)\s+"

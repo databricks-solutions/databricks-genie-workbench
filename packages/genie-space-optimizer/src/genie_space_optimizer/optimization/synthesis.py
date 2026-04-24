@@ -470,29 +470,96 @@ def _gate_structural(
 
 
 def _gate_arbiter(
-    proposal: dict, *, w: Any = None, metadata_snapshot: dict | None = None,
+    proposal: dict,
+    *,
+    w: Any = None,
+    metadata_snapshot: dict | None = None,
+    result_rows: list[dict] | None = None,
+    spark: Any = None,
+    catalog: str = "",
+    gold_schema: str = "",
+    warehouse_id: str = "",
 ) -> GateResult:
-    """Gate 4 — invoke the arbiter judge on the synthesized proposal.
+    """Gate 4 — invoke the arbiter judge with actual result rows.
 
-    Lightweight integration: if the optional arbiter hook isn't wired we
-    pass with ``skipped_no_arbiter``. The caller can then decide whether
-    to enforce.
+    Historical note: this gate used to call
+    ``score_synthesized_example_sql`` without the required
+    ``result_rows`` positional argument, which raised ``TypeError``
+    inside a bare ``except Exception`` and returned
+    ``passed=True, reason='arbiter error, skipped'`` — meaning every
+    candidate silently passed. Bug #R3b of the unify-example-sql plan
+    fixes that by:
+
+    1. Accepting ``result_rows`` from the caller, OR capturing them
+       here via :func:`evaluation._capture_result_rows` when ``spark``
+       or ``w`` + ``warehouse_id`` is available.
+    2. Passing ``result_rows`` to the arbiter so it can actually judge.
+    3. Failing CLOSED on every infrastructure error (import failure,
+       missing result rows, arbiter exception) with a distinct reason
+       code. Operators see exactly why the gate rejected rather than
+       a silent pass-through.
+
+    Contract: ``passed=True`` is returned ONLY when the arbiter
+    verdict is affirmative. Every other outcome fails with an explicit
+    ``arbiter_*`` reason.
     """
+    # Graceful-skip case: no backend configured AND caller didn't
+    # supply rows AND the arbiter module can't be imported in this
+    # environment. Judging-by-vibes is not a firewall, so we skip
+    # rather than rubber-stamp or hard-reject. This matches the
+    # behavior tests and the cluster-driven legacy path rely on.
+    has_backend = (spark is not None) or (w is not None and warehouse_id)
+    if result_rows is None and not has_backend:
+        return GateResult(True, "arbiter", "skipped_no_backend")
+
     try:
         from genie_space_optimizer.optimization.scorers.arbiter import (
-            score_synthesized_example_sql,
+            score_example_sql_correctness,
         )
     except Exception:
-        return GateResult(True, "arbiter", "skipped_no_arbiter")
+        return GateResult(False, "arbiter", "arbiter_module_unavailable")
+
+    sql = str(proposal.get("example_sql") or "")
+    if not sql.strip():
+        return GateResult(False, "arbiter", "arbiter_empty_sql")
+
+    rows: list[dict] | None = result_rows
+    if rows is None and has_backend:
+        try:
+            from genie_space_optimizer.optimization.evaluation import (
+                _capture_result_rows,
+            )
+            rows = _capture_result_rows(
+                sql, spark, catalog, gold_schema,
+                w=w, warehouse_id=warehouse_id,
+            )
+        except Exception as exc:
+            return GateResult(
+                False, "arbiter",
+                f"arbiter_row_capture_failed: {str(exc)[:100]}",
+            )
+
+    if rows is None:
+        # Backend was available but row capture returned None (e.g.
+        # the underlying _capture_result_rows swallowed an error).
+        # This IS an arbiter-side failure — fail closed so an audit
+        # catches it instead of silently passing.
+        return GateResult(False, "arbiter", "arbiter_no_result_rows")
+
     try:
-        verdict = score_synthesized_example_sql(
+        verdict = score_example_sql_correctness(
             question=proposal.get("example_question", ""),
-            sql=proposal.get("example_sql", ""),
+            sql=sql,
+            result_rows=rows,
             w=w,
             metadata_snapshot=metadata_snapshot or {},
         )
     except Exception as exc:
-        return GateResult(True, "arbiter", f"arbiter error, skipped: {exc}")
+        return GateResult(
+            False, "arbiter",
+            f"arbiter_call_failed: {str(exc)[:100]}",
+        )
+
     if isinstance(verdict, dict):
         verdict_value = str(verdict.get("value") or "").lower()
         if verdict_value in ("yes", "pass", "correct"):
@@ -501,7 +568,7 @@ def _gate_arbiter(
         return GateResult(
             False, "arbiter", f"verdict={verdict_value}",
         )
-    return GateResult(True, "arbiter")
+    return GateResult(False, "arbiter", "arbiter_verdict_malformed")
 
 
 def _gate_firewall(
@@ -557,7 +624,15 @@ def validate_synthesis_proposal(
             w=w, warehouse_id=warehouse_id,
         ),
         lambda: _gate_structural(proposal, archetype, blame_set),
-        lambda: _gate_arbiter(proposal, w=w, metadata_snapshot=metadata_snapshot),
+        # Phase R3b: arbiter now receives execute-side context so it can
+        # capture result rows and judge correctness; silent pass-through
+        # on errors is gone — every failure mode has a distinct reason
+        # code (``arbiter_*``).
+        lambda: _gate_arbiter(
+            proposal, w=w, metadata_snapshot=metadata_snapshot,
+            spark=spark, catalog=catalog, gold_schema=gold_schema,
+            warehouse_id=warehouse_id,
+        ),
         lambda: _gate_firewall(proposal, benchmark_corpus, w=w),
     ):
         result = gate_fn()
