@@ -12,15 +12,17 @@ from typing import TYPE_CHECKING
 from mlflow.entities import Feedback
 from mlflow.genai.scorers import scorer
 
-from genie_space_optimizer.common.config import LLM_ENDPOINT
+from genie_space_optimizer.common.config import LLM_ENDPOINT, scoring_v2_is_legacy
 from genie_space_optimizer.common.genie_client import resolve_sql, sanitize_sql
 from genie_space_optimizer.optimization.evaluation import (
+    CODE_SOURCE,
     LLM_SOURCE,
     _call_llm_for_scoring,
     _extract_response_text,
     build_asi_metadata,
     format_asi_markdown,
     get_registered_prompt_name,
+    slim_comparison,
 )
 from genie_space_optimizer.optimization.scorers import build_scorer_context
 
@@ -41,6 +43,30 @@ def _make_completeness_judge(w: WorkspaceClient, catalog: str, schema: str):
         question = inputs.get("question", "")
         question_id = inputs.get("question_id", "")
         cmp = outputs.get("comparison", {}) if isinstance(outputs, dict) else {}
+
+        if (
+            cmp.get("error_type") == "genie_result_unavailable"
+            and not scoring_v2_is_legacy()
+            and genie_sql
+        ):
+            return Feedback(
+                name="completeness",
+                value="excluded",
+                rationale=format_asi_markdown(
+                    judge_name="completeness",
+                    value="excluded",
+                    rationale=(
+                        "Genie returned valid SQL but the result set could not "
+                        "be retrieved (no-result defense under GSO_SCORING_V2). "
+                        "Completeness requires comparing result shape; this "
+                        "judge is blocked. SQL-shape judges still evaluate "
+                        "the SQL."
+                    ),
+                    extra={"comparison": slim_comparison(cmp)},
+                    question_id=question_id,
+                ),
+                source=CODE_SOURCE,
+            )
 
         context = build_scorer_context(
             question=question, genie_sql=genie_sql, gt_sql=gt_sql, cmp=cmp,

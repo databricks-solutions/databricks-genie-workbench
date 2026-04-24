@@ -207,6 +207,88 @@ TVF_REMOVAL_BLAME_THRESHOLD = 2
 """Minimum distinct iterations where the TVF was blamed in ASI provenance
 for high-confidence auto-removal."""
 
+# ── 3a. Scoring-V2 feature flags ────────────────────────────────────────
+#
+# ``GSO_SCORING_V2`` gates every Group-B scoring-policy change from the
+# ``baseline-eval-fix`` plan. Accepted values (case-insensitive):
+#
+#   ``on``      — new corrected scoring (default).
+#   ``shadow``  — run both old and new paths; headline is the new value
+#                 but the legacy value is logged as ``shadow.<judge>.<metric>``
+#                 for side-by-side comparison in MLflow.
+#   ``off``     — legacy kill-switch. Byte-identical to pre-PR behavior.
+#
+# ``GSO_APPLY_QUALITY_INSTRUCTIONS`` gates the Group-D applier changes
+# (MV-preference, column-ordering, calendar-grounding instruction blocks).
+# Accepted values: ``on`` (default, writes blocks), ``off`` (skips writes
+# and strips any existing ``-- GSO_QUALITY_V1`` sentinels on the next apply).
+#
+# ``GSO_ASSERT_ROW_CANONICAL`` is a dev-only assertion; defaults to off.
+
+_SCORING_V2_ALLOWED = ("on", "shadow", "off")
+
+
+def _normalize_scoring_v2(raw: str | None) -> str:
+    value = (raw or "on").strip().lower()
+    if value in _SCORING_V2_ALLOWED:
+        return value
+    # Back-compat: accept the common booleans people wire into env files.
+    if value in ("1", "true", "yes"):
+        return "on"
+    if value in ("0", "false", "no"):
+        return "off"
+    return "on"
+
+
+def get_scoring_v2_mode() -> str:
+    """Return the active scoring-v2 mode (``on``/``shadow``/``off``).
+
+    Evaluated on every call so tests can ``monkeypatch.setenv`` without
+    reloading the module.
+    """
+    return _normalize_scoring_v2(os.environ.get("GSO_SCORING_V2"))
+
+
+def scoring_v2_is_legacy() -> bool:
+    """True when ``GSO_SCORING_V2=off`` — restores legacy scoring exactly."""
+    return get_scoring_v2_mode() == "off"
+
+
+def scoring_v2_is_shadow() -> bool:
+    """True when ``GSO_SCORING_V2=shadow`` — new headline + legacy shadow metrics."""
+    return get_scoring_v2_mode() == "shadow"
+
+
+def scoring_v2_is_on() -> bool:
+    """True when the new scoring path is the active headline (default)."""
+    return get_scoring_v2_mode() in ("on", "shadow")
+
+
+_APPLY_QUALITY_INSTRUCTIONS_ALLOWED = ("on", "off")
+
+
+def _normalize_quality_instructions(raw: str | None) -> str:
+    value = (raw or "on").strip().lower()
+    if value in _APPLY_QUALITY_INSTRUCTIONS_ALLOWED:
+        return value
+    if value in ("1", "true", "yes"):
+        return "on"
+    if value in ("0", "false", "no"):
+        return "off"
+    return "on"
+
+
+def get_apply_quality_instructions_mode() -> str:
+    """Return the active applier-quality mode (``on`` or ``off``)."""
+    return _normalize_quality_instructions(
+        os.environ.get("GSO_APPLY_QUALITY_INSTRUCTIONS")
+    )
+
+
+def apply_quality_instructions_is_on() -> bool:
+    return get_apply_quality_instructions_mode() == "on"
+
+
 # ── 4. LLM Configuration ──────────────────────────────────────────────
 
 LLM_ENDPOINT = "databricks-claude-opus-4-6"
@@ -2527,6 +2609,45 @@ NON_EXPORTABLE_FIELDS = {
     "space_status",
 }
 
+# ── 6a. Internal runtime annotations on the config/metadata_snapshot dict ──
+#
+# The pipeline stores runtime-only state (data profiles, failure clusters,
+# cluster synthesis budgets, RLS audit, etc.) on the config dict with a
+# leading underscore. These must be stripped before PATCH and must NOT be
+# rejected by strict validation — they never leave the process.
+#
+# Known annotation keys are documented here for discoverability; the
+# underscore-prefix convention is the hard contract and `is_runtime_key`
+# is the single authority both the validator (`genie_schema.py`) and the
+# stripper (`genie_client.py`) must defer to.
+
+INTERNAL_RUNTIME_KEYS_PREFIX = "_"
+
+KNOWN_INTERNAL_RUNTIME_KEYS = frozenset({
+    "_data_profile",
+    "_failure_clusters",
+    "_cluster_synthesis_count",
+    "_rls_audit",
+    "_space_id",
+    "_join_overlaps",
+    "_join_attempts",
+    "_original_instruction_sections",
+})
+
+
+def is_runtime_key(k: object) -> bool:
+    """Return True when ``k`` is a runtime-only top-level annotation.
+
+    Runtime-only keys live on the in-memory config/metadata_snapshot but
+    must never reach the Genie API. The single contract: a leading
+    ``INTERNAL_RUNTIME_KEYS_PREFIX``. Used by both
+    ``common.genie_client.strip_non_exportable_fields`` and
+    ``common.genie_schema._strict_validate`` so the two paths cannot
+    drift (which is exactly what caused ``_data_profile`` to land
+    correctly through the stripper but error out at the validator).
+    """
+    return isinstance(k, str) and k.startswith(INTERNAL_RUNTIME_KEYS_PREFIX)
+
 # ── 7. Feature Flags ──────────────────────────────────────────────────
 
 USE_PATCH_DSL = True
@@ -2758,6 +2879,19 @@ allocator surfaces any regressions on your corpus."""
 
 DRY_RUN_ENTITY_MATCHING = (
     os.getenv("GSO_DRY_RUN_ENTITY_MATCHING", "false").lower() in ("1", "true", "yes")
+)
+
+# S8 — Vacuous-filter rejection in ``validate_sql_snippet``.
+# Lever 6 occasionally proposes filter snippets whose semantics are
+# ``1 = 1`` / ``TRUE`` / ``col = col`` (tautological — select all rows).
+# The validator used to accept them (EXPLAIN passes, LIMIT 1 returns a
+# row), so they deployed and silently did nothing, wasting a lever
+# iteration. The gate runs a cheap syntactic pre-check plus a
+# selectivity post-check (``COUNT(*) total`` vs
+# ``COUNT(*) WHERE <filter>``). Default: on. Flip the env var off if a
+# true-positive filter is ever miscategorised.
+REJECT_VACUOUS_FILTERS = (
+    os.getenv("GSO_REJECT_VACUOUS_FILTERS", "true").lower() in ("1", "true", "yes", "on")
 )
 """When True, log the proposed enable/disable diff without PATCHing the
 space. Used for initial rollout / audit. Covers the full enable+disable
@@ -3602,6 +3736,17 @@ _LEVER_TO_PATCH_TYPE: dict[tuple[str, int], str] = {
     ("tvf_parameter_error", 3): "add_tvf_parameter",
     ("repeatability_issue", 3): "add_tvf_parameter",
     ("asset_routing_error", 3): "add_example_sql",
+    # S3 hardening: ASI blame-set rescue surfaces a missing asset (table,
+    # MV, or TVF). Lever 3 owns routing / example SQL so the patch is an
+    # ``add_example_sql`` that demonstrates the missing asset. Level 1 can
+    # also refresh descriptions if the asset does exist but is undersold.
+    ("missing_data_asset", 3): "add_example_sql",
+    ("missing_data_asset", 1): "update_description",
+    # S3 hardening: empty generated SQL is most plausibly a prompt /
+    # instruction gap (the model refused to emit any SQL). Route the
+    # default patch type to Lever 5 (instructions / example SQLs).
+    ("missing_sql_generation", 5): "add_example_sql",
+    ("missing_sql_generation", 1): "update_description",
     # Lever 4: Join Specifications
     ("wrong_join", 4): "update_join_spec",
     ("missing_join_spec", 4): "add_join_spec",
@@ -4030,7 +4175,23 @@ Columns to prioritize:
 ## Column value profile (use ONLY these values when building filters)
 {{ slice_data_profile }}
 
-## Constraint
+## Constraint: identifier qualification (HARD)
+Every table reference in FROM, JOIN, and column-qualifier position MUST \
+be the EXACT identifier shown in the ``## Schema`` allowlist below. \
+Never a short name, never an inferred name, never a benchmark-style \
+alias you haven't declared for THIS query.
+
+Worked example (identifier = ``{{ schema_example_identifier }}``):
+- BAD   SELECT d.day_of_week FROM dim_date d
+- BAD   SELECT mv_esr_dim_date.day_of_week FROM mv_esr_dim_date
+- GOOD  SELECT t.day_of_week
+        FROM {{ schema_example_identifier }} t
+
+SQL aliases (``t``, ``f``, etc.) are allowed ONLY when declared in \
+THIS query's FROM clause. Never carry an alias over from another \
+query, a benchmark example, or an archetype snippet.
+
+## Constraint: filter values
 When writing filter predicates, quote values EXACTLY from the value \
 profile above. Do not invent values. For numeric columns, use values \
 within the stated range. When filter values are not in the profile \
@@ -4054,8 +4215,9 @@ Output contract: {{ archetype_output_shape }}
 Produce ONE example. Rules:
 
 - ``example_question`` is a clean, customer-style business question.
-- ``example_sql`` is a valid Databricks SQL query using ONLY fully-\
-qualified identifiers from the allowlist (catalog.schema.table.column).
+- ``example_sql`` is a valid Databricks SQL query. Identifier \
+qualification is enforced in ``## Constraint: identifier qualification`` \
+above — obey that section exactly.
 - Match the archetype's shape contract.
 - The question MUST reference the coverage focus naturally — use the \
 listed assets and columns.

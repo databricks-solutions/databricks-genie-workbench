@@ -12,6 +12,8 @@ The central module for the quality measurement system. Provides:
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 import logging
@@ -23,7 +25,7 @@ from difflib import get_close_matches
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Union
+from typing import TYPE_CHECKING, Any, Iterator, Union
 
 import mlflow
 import pandas as pd
@@ -60,6 +62,9 @@ from genie_space_optimizer.common.config import (
     TARGET_BENCHMARK_COUNT,
     TEMPLATE_VARIABLES,
     format_mlflow_template,
+    scoring_v2_is_legacy,
+    scoring_v2_is_on,
+    scoring_v2_is_shadow,
 )
 from genie_space_optimizer.common.genie_client import (
     detect_asset_type,
@@ -81,7 +86,101 @@ LLM_SOURCE = AssessmentSource(
     source_id=format_mlflow_template(LLM_SOURCE_ID_TEMPLATE, endpoint=LLM_ENDPOINT),
 )
 
-_SCORER_FEEDBACK_CACHE: dict[tuple[str, str], dict] = {}
+class _ScorerFeedbackCache:
+    """Run-scoped cache for scorer rationale/metadata.
+
+    Scorers call :func:`_cache_scorer_feedback` (via
+    :func:`format_asi_markdown`) to tuck away their rationale + metadata so
+    that ``run_evaluation`` can re-attach them to rows even when MLflow's
+    ``eval_results`` table drops the ``<judge>/rationale`` columns.
+
+    This cache is intentionally *run-scoped* (managed through a
+    :class:`~contextvars.ContextVar` via :func:`_scorer_feedback_scope`) so
+    that:
+
+    * Two sequential ``run_evaluation`` calls with overlapping ``question_id``
+      values cannot cross-contaminate each other.
+    * A crash mid-evaluate does not leave poisoned state for the next call.
+    * Duplicate ``question_id`` collisions inside a single run are counted
+      and surfaced as a warning (each collision overwrites the previous
+      entry, matching legacy behavior, but the counter lets us observe it).
+
+    The module-global fallback (:data:`_LEGACY_SCORER_FEEDBACK_CACHE`) is
+    retained for one release so any code path that invokes a scorer outside
+    an explicit run scope still works exactly as before.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple[str, str], dict] = {}
+        self._collision_count: int = 0
+
+    def write(
+        self,
+        question_id: str,
+        judge_name: str,
+        rationale: str,
+        metadata: dict | None = None,
+    ) -> None:
+        key = (question_id, judge_name)
+        if key in self._entries:
+            self._collision_count += 1
+        self._entries[key] = {
+            "rationale": rationale,
+            "metadata": metadata or {},
+        }
+
+    def drain(self) -> dict[str, dict[str, dict]]:
+        """Return ``{question_id: {judge: {rationale, metadata}}}`` and clear."""
+        by_question: dict[str, dict[str, dict]] = {}
+        for (qid, judge), data in self._entries.items():
+            by_question.setdefault(qid, {})[judge] = data
+        collisions = self._collision_count
+        self._entries.clear()
+        self._collision_count = 0
+        if collisions:
+            logger.warning(
+                "Scorer feedback cache observed %d question_id collision(s); "
+                "duplicate qids within a single benchmark should be deduped "
+                "(see scripts/dedupe_benchmark_qids.py).",
+                collisions,
+            )
+        return by_question
+
+    @property
+    def collision_count(self) -> int:
+        return self._collision_count
+
+
+_LEGACY_SCORER_FEEDBACK_CACHE: _ScorerFeedbackCache = _ScorerFeedbackCache()
+
+_current_scorer_feedback_cache: contextvars.ContextVar[_ScorerFeedbackCache | None] = (
+    contextvars.ContextVar("gso_scorer_feedback_cache", default=None)
+)
+
+
+@contextlib.contextmanager
+def _scorer_feedback_scope() -> Iterator[_ScorerFeedbackCache]:
+    """Bind a fresh :class:`_ScorerFeedbackCache` for the current run.
+
+    Use in ``run_evaluation`` (and any other eval orchestration entrypoint)
+    inside a ``with`` block. The cache is guaranteed to be reset on exit
+    even if the body raises, so a failed evaluate never poisons the next.
+    """
+    cache = _ScorerFeedbackCache()
+    token = _current_scorer_feedback_cache.set(cache)
+    try:
+        yield cache
+    finally:
+        cache.drain()
+        _current_scorer_feedback_cache.reset(token)
+
+
+def _get_active_scorer_cache() -> _ScorerFeedbackCache:
+    cache = _current_scorer_feedback_cache.get()
+    if cache is not None:
+        return cache
+    return _LEGACY_SCORER_FEEDBACK_CACHE
+
 
 _REGISTERED_PROMPT_NAMES: dict[str, str] = {}
 
@@ -188,20 +287,21 @@ def _cache_scorer_feedback(
 
     Called by scorers via ``format_asi_markdown`` so that rationale and
     metadata survive even when MLflow's eval_results table drops them.
+
+    Writes to the active :class:`_ScorerFeedbackCache` bound by
+    :func:`_scorer_feedback_scope`; falls back to a module-global cache
+    for back-compat when no scope is active.
     """
-    _SCORER_FEEDBACK_CACHE[(question_id, judge_name)] = {
-        "rationale": rationale,
-        "metadata": metadata or {},
-    }
+    _get_active_scorer_cache().write(question_id, judge_name, rationale, metadata)
 
 
 def _drain_scorer_feedback_cache() -> dict[str, dict[str, dict]]:
-    """Return and clear all cached feedback, keyed by question_id then judge."""
-    by_question: dict[str, dict[str, dict]] = {}
-    for (qid, judge), data in _SCORER_FEEDBACK_CACHE.items():
-        by_question.setdefault(qid, {})[judge] = data
-    _SCORER_FEEDBACK_CACHE.clear()
-    return by_question
+    """Return and clear all cached feedback, keyed by question_id then judge.
+
+    Reads from the active :class:`_ScorerFeedbackCache` when a scope is
+    bound; otherwise drains the module-global fallback cache.
+    """
+    return _get_active_scorer_cache().drain()
 
 
 EVAL_SCOPES = {"full", "slice", "p0", "held_out"}
@@ -285,14 +385,25 @@ def _extract_json(content: str) -> dict | list:
       conversion to silently return ``[]`` when the LLM added any prose around
       the array.
 
+    Empty / whitespace-only input returns ``{}`` rather than raising a
+    ``JSONDecodeError`` (Phase 3.R8). The pipeline's LLM wrappers
+    occasionally return an empty response when the provider throttles or
+    returns a blank completion; the caller's ``try/except`` would have
+    caught the exception but the traceback was noise. Returning a clean
+    empty dict lets the existing ``result.get("changes", [])`` pattern
+    degrade gracefully to "no changes in this batch".
+
     Return type is a union ``dict | list`` so callers that expect an array
     (the prose-rule miner) aren't forced to re-parse. Existing object-only
     callers continue to work; the return type is dict for their prompts.
 
-    Raises the saved ``JSONDecodeError`` when every strategy fails — callers
-    that want lenient behaviour can try-except and fall back to ``[]`` / ``{}``.
+    Raises the saved ``JSONDecodeError`` when every strategy fails on
+    non-empty input — callers that want lenient behaviour can try-except
+    and fall back to ``[]`` / ``{}``.
     """
     content = content.strip()
+    if not content:
+        return {}
 
     # Fenced block anywhere in the string — prefer it over the surrounding
     # prose so a preamble like "Here is the JSON:\n```json\n{...}\n```" works.
@@ -960,6 +1071,58 @@ def _extract_assessments_from_traces(results_df) -> dict[int, dict[str, dict]]:
     return out
 
 
+def _merge_row_sources(
+    row_dict: dict[str, Any],
+    assessment_map_row: dict[str, dict] | None,
+    cached_feedback_qid: dict[str, dict] | None,
+) -> dict[str, Any]:
+    """Reconcile judge rationale/metadata from three sources.
+
+    Precedence (authoritative first):
+    1. Trace assessments (``assessment_map_row``) — what MLflow stored in
+       the trace. This is the ground truth displayed in the MLflow UI.
+    2. The run-scoped scorer feedback cache (``cached_feedback_qid``) —
+       captured directly from the scorer at return time; only consulted
+       when the trace layer is silent for that judge.
+    3. Any ``<judge>/rationale`` / ``<judge>/metadata`` column already
+       present in ``row_dict`` (copied from ``results_df``) — the weakest
+       source, since the ``eval_results`` table is known to misalign
+       rationales to the wrong row in some MLflow versions.
+
+    Mutates and returns ``row_dict``. Only overwrites keys for judges that
+    actually have data in the higher-priority source; untouched judges
+    keep whatever the flat columns contain.
+    """
+    assessment_map_row = assessment_map_row or {}
+    cached_feedback_qid = cached_feedback_qid or {}
+
+    judge_names: set[str] = set(assessment_map_row) | set(cached_feedback_qid)
+
+    for judge_name in judge_names:
+        rat_key = f"{judge_name}/rationale"
+        meta_key = f"{judge_name}/metadata"
+
+        trace_data = assessment_map_row.get(judge_name) or {}
+        trace_rationale = trace_data.get("rationale")
+        trace_metadata = trace_data.get("metadata")
+
+        cache_data = cached_feedback_qid.get(judge_name) or {}
+        cache_rationale = cache_data.get("rationale")
+        cache_metadata = cache_data.get("metadata")
+
+        if trace_rationale:
+            row_dict[rat_key] = trace_rationale
+        elif cache_rationale:
+            row_dict[rat_key] = cache_rationale
+
+        if trace_metadata:
+            row_dict[meta_key] = trace_metadata
+        elif cache_metadata:
+            row_dict[meta_key] = cache_metadata
+
+    return row_dict
+
+
 def normalize_scores(scores: dict[str, float]) -> dict[str, float]:
     """Convert 0-1 scale → 0-100 scale; leave 0-100 unchanged."""
     normalized: dict[str, float] = {}
@@ -995,16 +1158,36 @@ def all_thresholds_met(
 _VALID_ASSET_TYPES = frozenset({"MV", "TVF", "TABLE"})
 
 
-def _normalize_expected_asset(raw: Any, expected_sql: str) -> str:
+def _normalize_expected_asset(
+    raw: Any,
+    expected_sql: str,
+    hint: Any = None,
+) -> str:
     """Normalize ``expected_asset`` to a valid type category.
 
-    Benchmarks may store table *names* (``BOOKING_ANALYTICS_METRICS``) instead
-    of type categories (``MV``/``TVF``/``TABLE``).  When the stored value is
-    not a recognized type, fall back to ``detect_asset_type(expected_sql)``.
+    Resolution precedence (default scoring-v2 mode):
+
+    1. ``raw`` — if it is already one of ``MV``/``TVF``/``TABLE`` use it.
+       Benchmarks authored post-fix will populate this explicitly.
+    2. ``hint`` (``expected_asset_hint`` on the benchmark) — explicit
+       author override used when the stored ``expected_asset`` is a
+       table *name* rather than a type category. This beats detection
+       and prevents ``detect_asset_type`` from mis-labeling tables that
+       happen to start with ``mv_`` (B1 companion fix).
+    3. Fallback to ``detect_asset_type(expected_sql)``.
+
+    Under ``GSO_SCORING_V2=off`` the hint is ignored to preserve
+    byte-identical legacy behavior.
     """
     upper = raw.strip().upper() if isinstance(raw, str) and raw else ""
     if upper in _VALID_ASSET_TYPES:
         return upper
+    if not scoring_v2_is_legacy():
+        hint_upper = (
+            hint.strip().upper() if isinstance(hint, str) and hint else ""
+        )
+        if hint_upper in _VALID_ASSET_TYPES:
+            return hint_upper
     return detect_asset_type(expected_sql)
 
 
@@ -1600,7 +1783,9 @@ def _precheck_benchmarks_for_eval(
             continue
 
         expected_asset = _normalize_expected_asset(
-            str(benchmark.get("expected_asset", "")), resolved_sql,
+            str(benchmark.get("expected_asset", "")),
+            resolved_sql,
+            hint=benchmark.get("expected_asset_hint"),
         )
         uses_measure = "MEASURE(" in resolved_sql.upper()
         refs_metric_view = any(
@@ -1883,7 +2068,53 @@ def make_predict_fn(
                                         genie_df.to_csv(index=False, float_format=_FLOAT_FMT).encode()
                                     ).hexdigest()[:8]
                                     exact_match = gt_df.shape == genie_df.shape and gt_df.equals(genie_df)
-                                    hash_match = gt_hash == genie_hash
+                                    hash_match_ordered = gt_hash == genie_hash
+
+                                    hash_match_sorted = False
+                                    gt_hash_sorted = ""
+                                    genie_hash_sorted = ""
+                                    if (
+                                        not hash_match_ordered
+                                        and not scoring_v2_is_legacy()
+                                        and list(gt_df.columns) == list(genie_df.columns)
+                                    ):
+                                        try:
+                                            _gt_sorted_full = (
+                                                gt_df.sort_values(list(gt_df.columns))
+                                                .reset_index(drop=True)
+                                            )
+                                            _ge_sorted_full = (
+                                                genie_df.sort_values(list(genie_df.columns))
+                                                .reset_index(drop=True)
+                                            )
+                                            gt_hash_sorted = hashlib.md5(
+                                                _gt_sorted_full.to_csv(
+                                                    index=False, float_format=_FLOAT_FMT,
+                                                ).encode()
+                                            ).hexdigest()[:8]
+                                            genie_hash_sorted = hashlib.md5(
+                                                _ge_sorted_full.to_csv(
+                                                    index=False, float_format=_FLOAT_FMT,
+                                                ).encode()
+                                            ).hexdigest()[:8]
+                                            hash_match_sorted = (
+                                                gt_hash_sorted == genie_hash_sorted
+                                            )
+                                        except Exception:
+                                            hash_match_sorted = False
+
+                                    _order_sensitive = bool(
+                                        kwargs.get("order_sensitive", False)
+                                    )
+                                    if (
+                                        _order_sensitive
+                                        or scoring_v2_is_legacy()
+                                    ):
+                                        hash_match = hash_match_ordered
+                                    else:
+                                        hash_match = (
+                                            hash_match_ordered or hash_match_sorted
+                                        )
 
                                     subset_match = False
                                     subset_type = None
@@ -2067,8 +2298,10 @@ def make_predict_fn(
 
                                     if exact_match:
                                         match_type = "exact"
-                                    elif hash_match:
+                                    elif hash_match_ordered:
                                         match_type = "hash"
+                                    elif hash_match_sorted:
+                                        match_type = "hash_sorted"
                                     elif subset_match:
                                         match_type = subset_type
                                     elif approx_match:
@@ -2102,6 +2335,11 @@ def make_predict_fn(
                                         "genie_columns": genie_col_list,
                                         "gt_hash": gt_hash,
                                         "genie_hash": genie_hash,
+                                        "gt_hash_sorted": gt_hash_sorted,
+                                        "genie_hash_sorted": genie_hash_sorted,
+                                        "hash_match_ordered": bool(hash_match_ordered),
+                                        "hash_match_sorted": bool(hash_match_sorted),
+                                        "order_sensitive": bool(_order_sensitive),
                                         "gt_signature": gt_sig,
                                         "genie_signature": genie_sig,
                                         "gt_sample": _truncated_sample(gt_df),
@@ -2831,21 +3069,31 @@ def _is_retryable_eval_exception(exc: Exception) -> bool:
     return False
 
 
-def _recover_trace_map(
+def _qid_trace_map_from_search_traces_df(traces_df: Any) -> dict[str, str]:
+    """Extract ``{question_id: trace_id}`` from a ``mlflow.search_traces`` DataFrame."""
+    recovered: dict[str, str] = {}
+    if traces_df is None or len(traces_df) == 0:
+        return recovered
+    for _, row in traces_df.iterrows():
+        tid = row.get("trace_id")
+        tags = row.get("tags")
+        qid = ""
+        if isinstance(tags, dict):
+            qid = tags.get("question_id", "") or ""
+        if tid and qid:
+            recovered[qid] = str(tid)
+    return recovered
+
+
+def _recover_trace_map_via_tags(
     experiment_id: str,
     optimization_run_id: str,
     iteration: int,
-    expected_count: int = 0,
+    expected_count: int,
 ) -> dict[str, str]:
-    """Recover question_id -> trace_id mapping by searching experiment traces.
-
-    When mlflow.genai.evaluate() loses trace context (e.g. due to Spark
-    Connect gRPC calls), traces still exist in the tracking store with
-    tags set by genie_predict_fn.  This function finds them via tag search.
-    """
+    """Strategy 1: tag-based search using ``optimization_run_id`` + ``iteration``."""
     if not experiment_id or not optimization_run_id:
         return {}
-
     try:
         filter_parts = [
             f"tags.`genie.optimization_run_id` = '{optimization_run_id}'",
@@ -2856,30 +3104,145 @@ def _recover_trace_map(
             filter_string=" AND ".join(filter_parts),
             max_results=max(500, expected_count * 2),
         )
-        if traces_df is None or len(traces_df) == 0:
-            logger.info("Trace recovery found 0 traces for iteration %d", iteration)
+        return _qid_trace_map_from_search_traces_df(traces_df)
+    except Exception:
+        logger.debug("Trace recovery strategy 1 (tags) failed", exc_info=True)
+        return {}
+
+
+def _recover_trace_map_via_time_window(
+    experiment_id: str,
+    start_time_ms: int | None,
+    expected_count: int,
+) -> dict[str, str]:
+    """Strategy 2: match ``tags.question_id`` within the predict_fn time window.
+
+    Useful when Spark Connect swallows the ``optimization_run_id`` /
+    ``iteration`` tag updates but the ``question_id`` tag (set earlier in
+    the same span) still propagates.
+    """
+    if not experiment_id or not start_time_ms:
+        return {}
+    try:
+        traces_df = mlflow.search_traces(
+            experiment_ids=[experiment_id],
+            filter_string=f"attributes.timestamp_ms >= {int(start_time_ms)}",
+            max_results=max(500, expected_count * 2),
+        )
+        return _qid_trace_map_from_search_traces_df(traces_df)
+    except Exception:
+        logger.debug("Trace recovery strategy 2 (time window) failed", exc_info=True)
+        return {}
+
+
+def _recover_trace_map_via_eval_results(eval_result: Any) -> dict[str, str]:
+    """Strategy 3: read ``eval_results`` table's ``trace_id`` column (MLflow ≥ 2.18)."""
+    if eval_result is None or not hasattr(eval_result, "tables"):
+        return {}
+    try:
+        tables = eval_result.tables
+        if "eval_results" not in tables:
+            return {}
+        df = tables["eval_results"]
+        if df is None or len(df) == 0 or "trace_id" not in df.columns:
             return {}
 
         recovered: dict[str, str] = {}
-        for _, row in traces_df.iterrows():
+        for _, row in df.iterrows():
             tid = row.get("trace_id")
-            tags = row.get("tags")
-            if isinstance(tags, dict):
-                qid = tags.get("question_id", "")
-            else:
-                qid = ""
-            if tid and qid:
-                recovered[qid] = str(tid)
-
-        if recovered:
-            logger.info(
-                "Recovered %d trace IDs from experiment via tag search (iteration=%d)",
-                len(recovered), iteration,
+            if not tid:
+                continue
+            qid = (
+                row.get("inputs/question_id")
+                or (row.get("inputs") or {}).get("question_id", "")
+                if isinstance(row.get("inputs"), dict)
+                else row.get("inputs/question_id")
             )
+            qid = qid or row.get("question_id") or ""
+            if qid:
+                recovered[str(qid)] = str(tid)
         return recovered
     except Exception:
-        logger.debug("Trace recovery via tag search failed", exc_info=True)
+        logger.debug("Trace recovery strategy 3 (eval_results) failed", exc_info=True)
         return {}
+
+
+def _log_trace_map_recovery_metric(strategy: str, hit_count: int) -> None:
+    """Log per-strategy recovery hit counts as MLflow metrics (best-effort)."""
+    try:
+        mlflow.log_metric(f"trace_map.recovery.{strategy}.hit_count", float(hit_count))
+    except Exception:
+        logger.debug(
+            "Could not log trace_map.recovery.%s.hit_count", strategy, exc_info=True
+        )
+
+
+def _recover_trace_map(
+    experiment_id: str,
+    optimization_run_id: str,
+    iteration: int,
+    expected_count: int = 0,
+    *,
+    start_time_ms: int | None = None,
+    eval_result: Any = None,
+) -> dict[str, str]:
+    """Recover ``question_id -> trace_id`` when ``mlflow.genai.evaluate()`` loses it.
+
+    Tries three independent strategies in order. Each strategy's hit count
+    is logged as ``trace_map.recovery.<strategy>.hit_count`` so monitoring
+    can tell which one is carrying the load in production:
+
+    1. ``tags`` — filter experiment traces by
+       ``genie.optimization_run_id`` + ``genie.iteration`` (original path).
+    2. ``time_window`` — filter by ``start_time_ms`` and match
+       ``tags.question_id`` (survives when tag updates are swallowed but
+       the earlier ``question_id`` tag made it in).
+    3. ``eval_results`` — read ``eval_result.tables['eval_results']
+       ['trace_id']`` directly (available on MLflow ≥ 2.18).
+
+    Strategies are short-circuited: if strategy N returns a non-empty map,
+    later strategies are skipped.
+    """
+    strategies: list[tuple[str, Any]] = [
+        (
+            "tags",
+            lambda: _recover_trace_map_via_tags(
+                experiment_id, optimization_run_id, iteration, expected_count
+            ),
+        ),
+        (
+            "time_window",
+            lambda: _recover_trace_map_via_time_window(
+                experiment_id, start_time_ms, expected_count
+            ),
+        ),
+        (
+            "eval_results",
+            lambda: _recover_trace_map_via_eval_results(eval_result),
+        ),
+    ]
+
+    winning_map: dict[str, str] = {}
+    for name, fn in strategies:
+        if winning_map:
+            _log_trace_map_recovery_metric(name, 0)
+            continue
+        result = fn() or {}
+        _log_trace_map_recovery_metric(name, len(result))
+        if result:
+            logger.info(
+                "Trace map recovery strategy '%s' hit %d/%d traces",
+                name, len(result), expected_count,
+            )
+            winning_map = result
+
+    if not winning_map:
+        logger.info(
+            "All trace map recovery strategies returned 0 traces "
+            "(iteration=%d, expected=%d)",
+            iteration, expected_count,
+        )
+    return winning_map
 
 
 _HARNESS_PATCHED = False
@@ -3248,7 +3611,9 @@ def create_evaluation_dataset(
             expectations = {
                 "expected_response": _expected_sql,
                 "expected_asset": _normalize_expected_asset(
-                    b.get("expected_asset", "TABLE"), _expected_sql,
+                    b.get("expected_asset", "TABLE"),
+                    _expected_sql,
+                    hint=b.get("expected_asset_hint"),
                 ),
                 "category": b.get("category", ""),
                 "source": b.get("source", ""),
@@ -3273,6 +3638,7 @@ def create_evaluation_dataset(
                         "expected_sql": b.get("expected_sql", ""),
                         "catalog": catalog,
                         "gold_schema": gold_schema,
+                        "order_sensitive": bool(b.get("order_sensitive", False)),
                     },
                     "expectations": expectations,
                 }
@@ -3315,6 +3681,99 @@ _JUDGE_ORDER = [
 ]
 
 
+def _build_summary_row(row_dict: dict) -> list[dict]:
+    """Return a canonical per-judge view used by :func:`_print_eval_summary`.
+
+    Each element has shape::
+
+        {
+            "judge": <judge name>,
+            "value": <verdict string, possibly empty>,
+            "rationale": <str or "">,
+        }
+
+    Rationale is resolved in the precedence order installed by
+    :func:`_merge_row_sources` (trace > cache > flat col), and is expected
+    to be non-empty whenever a non-empty verdict is present. When the
+    ``GSO_ASSERT_ROW_CANONICAL=1`` env var is set, this function asserts
+    that invariant loudly so regressions show up in CI rather than as
+    silent display bugs in the terminal summary. In production the
+    assertion is a no-op.
+
+    This helper must only be called with rows that have already been
+    merged via :func:`_merge_row_sources`; passing a raw ``results_df``
+    row (without the merge step) may produce misaligned rationales.
+    """
+    out: list[dict] = []
+    assert_canonical = os.environ.get("GSO_ASSERT_ROW_CANONICAL") == "1"
+    for judge in _JUDGE_ORDER:
+        val = row_dict.get(f"{judge}/value", row_dict.get(judge, ""))
+        val_str = "" if val is None else str(val)
+        rationale = row_dict.get(f"{judge}/rationale", "")
+        if not isinstance(rationale, str):
+            rationale = str(rationale) if rationale is not None else ""
+        if assert_canonical and val_str and not rationale:
+            raise AssertionError(
+                f"Non-canonical summary row: judge={judge!r} value={val_str!r} "
+                f"but rationale is empty; _merge_row_sources likely not called."
+            )
+        out.append({"judge": judge, "value": val_str, "rationale": rationale})
+    return out
+
+
+_LOGICAL_JUDGES = frozenset({"result_correctness", "semantic_equivalence"})
+_ARBITER_LOGICAL_PASS = frozenset({"genie_correct", "both_correct"})
+
+
+def _compute_pass_buckets(row: dict) -> tuple[bool, bool]:
+    """Classify a row into ``(logical_pass, all_judge_pass)``.
+
+    - ``all_judge_pass`` (legacy) fails if *any* judge is ``no`` /
+      ``false`` / numeric-zero, or the arbiter is
+      ``ground_truth_correct`` / ``neither_correct``.
+    - ``logical_pass`` (new, B3 headline) fails only when
+      ``result_correctness`` or ``semantic_equivalence`` explicitly
+      says ``no`` or the arbiter settled on a non-logical-correct
+      verdict. Cosmetic or routing-only failures (e.g. ``asset_routing``,
+      ``completeness`` warnings) do **not** flip ``logical_pass``.
+
+    Under ``GSO_SCORING_V2=off`` the caller selects ``all_judge_pass``
+    as the headline. Under ``on``/``shadow`` the caller selects
+    ``logical_pass``. Both values are always computed so the legacy
+    count can be logged as a shadow metric.
+    """
+    any_judge_fail = False
+    for judge in _JUDGE_ORDER:
+        val = str(row.get(f"{judge}/value", row.get(judge, ""))).lower()
+        if val in ("no", "false", "0", "0.0"):
+            if judge == "arbiter":
+                if val not in ("genie_correct", "both_correct"):
+                    any_judge_fail = True
+            else:
+                any_judge_fail = True
+    arbiter_val = str(
+        row.get("arbiter/value", row.get("arbiter", ""))
+    ).lower()
+    if arbiter_val in ("ground_truth_correct", "neither_correct"):
+        any_judge_fail = True
+    all_judge_pass = not any_judge_fail
+
+    logical_fail = False
+    for judge in _LOGICAL_JUDGES:
+        val = str(row.get(f"{judge}/value", row.get(judge, ""))).lower()
+        if val in ("no", "false", "0", "0.0"):
+            logical_fail = True
+    if arbiter_val and arbiter_val not in _ARBITER_LOGICAL_PASS | {
+        "",
+        "skipped",
+        "n/a",
+    }:
+        logical_fail = True
+    logical_pass = not logical_fail
+
+    return logical_pass, all_judge_pass
+
+
 def _get_nested(row: dict, *paths: str, default: Any = "") -> Any:
     """Try multiple key paths (both flattened and nested dict forms)."""
     for path in paths:
@@ -3355,8 +3814,10 @@ def _print_eval_summary(
     lines.append(header)
     lines.append("=" * width)
 
-    _pass_count = 0
+    _logical_pass_count = 0
+    _all_judge_pass_count = 0
     _fail_count = 0
+    use_legacy_headline = scoring_v2_is_legacy()
 
     for qi, row in enumerate(rows, 1):
         _request = row.get("request", {})
@@ -3388,25 +3849,22 @@ def _print_eval_summary(
             or ""
         )
 
-        _any_judge_fail = False
-        for judge in _JUDGE_ORDER:
-            val = str(row.get(f"{judge}/value", row.get(judge, ""))).lower()
-            if val in ("no", "false", "0", "0.0"):
-                if judge == "arbiter":
-                    if val not in ("genie_correct", "both_correct"):
-                        _any_judge_fail = True
-                else:
-                    _any_judge_fail = True
-
+        logical_pass, all_judge_pass = _compute_pass_buckets(row)
+        if logical_pass:
+            _logical_pass_count += 1
+        if all_judge_pass:
+            _all_judge_pass_count += 1
         arbiter_val = str(
             row.get("arbiter/value", row.get("arbiter", ""))
         ).lower()
-        if arbiter_val in ("ground_truth_correct", "neither_correct"):
-            _any_judge_fail = True
 
-        if not _any_judge_fail:
-            _pass_count += 1
-            lines.append(f"  Q{qi}: [{qid}] \"{question[:80]}\" — ALL PASS ({arbiter_val})")
+        headline_pass = all_judge_pass if use_legacy_headline else logical_pass
+
+        if headline_pass:
+            tag = "ALL PASS" if all_judge_pass else "LOGICAL PASS"
+            lines.append(
+                f"  Q{qi}: [{qid}] \"{question[:80]}\" — {tag} ({arbiter_val})"
+            )
             continue
 
         _fail_count += 1
@@ -3486,14 +3944,11 @@ def _print_eval_summary(
         lines.append(f"|")
         lines.append(f"| Judge Verdicts:")
 
-        for judge in _JUDGE_ORDER:
-            val = row.get(f"{judge}/value", row.get(judge, ""))
-            val_str = str(val) if val else "n/a"
-            rationale = row.get(f"{judge}/rationale", "")
-            if isinstance(rationale, str) and rationale:
-                short_rat = rationale.split("\n")[0][:120]
-            else:
-                short_rat = ""
+        for entry in _build_summary_row(row):
+            judge = entry["judge"]
+            val_str = entry["value"] or "n/a"
+            rationale = entry["rationale"]
+            short_rat = rationale.split("\n")[0][:120] if rationale else ""
 
             if val_str.lower() in ("yes", "true", "1", "1.0", "skipped"):
                 verdict_label = "PASS" if val_str.lower() != "skipped" else val_str
@@ -3511,7 +3966,21 @@ def _print_eval_summary(
 
         lines.append("-" * width)
 
-    lines.insert(3, f"  {total_questions} questions: {_pass_count} all-pass, {_fail_count} with failures (details below)")
+    if use_legacy_headline:
+        _headline_pass = _all_judge_pass_count
+        _headline_label = "all-pass"
+    else:
+        _headline_pass = _logical_pass_count
+        _headline_label = "logical-pass"
+    _summary_line = (
+        f"  {total_questions} questions: {_headline_pass} {_headline_label}, "
+        f"{_fail_count} with failures (details below)"
+    )
+    if not use_legacy_headline:
+        _summary_line += (
+            f"  [all-judge-pass: {_all_judge_pass_count}]"
+        )
+    lines.insert(3, _summary_line)
 
     lines.append("")
     lines.append("--- SCORE SUMMARY " + "-" * max(0, width - 19))
@@ -3627,7 +4096,7 @@ def run_evaluation(
     _tpl = BASELINE_RUN_NAME_TEMPLATE if iteration == 0 else RUN_NAME_TEMPLATE
     run_name = format_mlflow_template(_tpl, iteration=iteration, timestamp=ts)
 
-    with mlflow.start_run(run_name=run_name) as run:
+    with _scorer_feedback_scope(), mlflow.start_run(run_name=run_name) as run:
         _version_tags: dict[str, str] = {
             "genie.space_id": space_id,
             "genie.domain": domain,
@@ -3693,7 +4162,9 @@ def run_evaluation(
             expectations = {
                 "expected_response": _esql,
                 "expected_asset": _normalize_expected_asset(
-                    b.get("expected_asset", "TABLE"), _esql,
+                    b.get("expected_asset", "TABLE"),
+                    _esql,
+                    hint=b.get("expected_asset_hint"),
                 ),
             }
             if has_reference_sqls:
@@ -3707,6 +4178,7 @@ def run_evaluation(
                         "expected_sql": b.get("expected_sql", ""),
                         "catalog": catalog,
                         "gold_schema": gold_schema,
+                        "order_sensitive": bool(b.get("order_sensitive", False)),
                     },
                     "expectations": expectations,
                 }
@@ -3793,6 +4265,7 @@ def run_evaluation(
         if mlflow_model_id:
             evaluate_kwargs["model_id"] = mlflow_model_id
 
+        _predict_fn_start_ms = int(time.time() * 1000)
         eval_attempts: list[dict[str, Any]] = []
         try:
             eval_result, eval_attempts = _run_evaluate_with_retries(
@@ -3894,14 +4367,6 @@ def run_evaluation(
                         val = str(val)
                     row_dict[col] = val
 
-                for judge_name, adata in assessment_map.get(row_idx, {}).items():
-                    rat_key = f"{judge_name}/rationale"
-                    meta_key = f"{judge_name}/metadata"
-                    if rat_key not in row_dict and adata.get("rationale"):
-                        row_dict[rat_key] = adata["rationale"]
-                    if meta_key not in row_dict and adata.get("metadata"):
-                        row_dict[meta_key] = adata["metadata"]
-
                 _req_raw = row_dict.get("request") or {}
                 if isinstance(_req_raw, str):
                     try:
@@ -3917,14 +4382,11 @@ def run_evaluation(
                     or (_req_raw.get("question_id") if isinstance(_req_raw, dict) else None)
                     or ""
                 )
-                if qid and qid in cached_feedback:
-                    for judge_name, fb_data in cached_feedback[qid].items():
-                        rat_key = f"{judge_name}/rationale"
-                        meta_key = f"{judge_name}/metadata"
-                        if rat_key not in row_dict and fb_data.get("rationale"):
-                            row_dict[rat_key] = fb_data["rationale"]
-                        if meta_key not in row_dict and fb_data.get("metadata"):
-                            row_dict[meta_key] = fb_data["metadata"]
+                _merge_row_sources(
+                    row_dict,
+                    assessment_map.get(row_idx),
+                    cached_feedback.get(qid) if qid else None,
+                )
 
                 for col_name in list(row_dict.keys()):
                     if col_name.endswith("/rationale"):
@@ -4231,11 +4693,13 @@ def run_evaluation(
                     optimization_run_id=optimization_run_id,
                     iteration=iteration,
                     expected_count=len(rows_for_output),
+                    start_time_ms=_predict_fn_start_ms,
+                    eval_result=eval_result,
                 )
                 if trace_map:
                     print(
                         f"[Eval] Recovered {len(trace_map)}/{len(rows_for_output)} "
-                        f"trace IDs via tag search"
+                        f"trace IDs via fallback strategies"
                     )
         elif _rows_without_tid:
             logger.info(
@@ -4341,6 +4805,8 @@ def run_evaluation(
         "PASS" if thresholds_passed else "FAIL",
     )
 
+    _log_pass_bucket_metrics(rows_for_output)
+
     if EVAL_DEBUG:
         _print_eval_summary(
             rows_for_output, scores_100, thresholds_passed,
@@ -4348,6 +4814,32 @@ def run_evaluation(
         )
 
     return output
+
+
+def _log_pass_bucket_metrics(rows_for_output: list[dict]) -> None:
+    """Log ``logical_pass_count`` + ``all_judge_pass_count`` to MLflow.
+
+    Under ``GSO_SCORING_V2=shadow`` the legacy count is also mirrored to
+    ``shadow.all_judge_pass_count`` so reviewers can diff the two in the
+    MLflow UI without touching the headline metric. Never raises — a
+    metric log failure must not take down the evaluation.
+    """
+    try:
+        logical = 0
+        all_judge = 0
+        for row in rows_for_output:
+            lp, ap = _compute_pass_buckets(row)
+            if lp:
+                logical += 1
+            if ap:
+                all_judge += 1
+        mlflow.log_metric("logical_pass_count", float(logical))
+        mlflow.log_metric("all_judge_pass_count", float(all_judge))
+        if scoring_v2_is_shadow():
+            mlflow.log_metric("shadow.all_judge_pass_count", float(all_judge))
+            mlflow.log_metric("shadow.logical_pass_count", float(logical))
+    except Exception:
+        logger.debug("Failed to log pass-bucket metrics", exc_info=True)
 
 
 # ── Repeatability Evaluation ──────────────────────────────────────────
@@ -4428,12 +4920,14 @@ def run_repeatability_evaluation(
                     "expected_sql": b.get("expected_sql", ""),
                     "catalog": catalog,
                     "gold_schema": gold_schema,
+                    "order_sensitive": bool(b.get("order_sensitive", False)),
                 },
                 "expectations": {
                     "expected_response": b.get("expected_sql", ""),
                     "expected_asset": _normalize_expected_asset(
                         b.get("expected_asset", "TABLE"),
                         b.get("expected_sql", ""),
+                        hint=b.get("expected_asset_hint"),
                     ),
                     "previous_sql": prev_sql,
                     "previous_result_hash": prev_result_hash,
@@ -4442,7 +4936,7 @@ def run_repeatability_evaluation(
         )
     eval_data = pd.DataFrame(eval_records)
 
-    with mlflow.start_run(run_name=run_name) as run:
+    with _scorer_feedback_scope(), mlflow.start_run(run_name=run_name) as run:
         mlflow.log_params(
             {
                 "space_id": space_id,
@@ -4508,13 +5002,7 @@ def run_repeatability_evaluation(
                     if not isinstance(val, (str, int, float, bool, type(None), list, dict)):
                         val = str(val)
                     row_dict[col] = val
-                for judge_name, adata in rep_assessment_map.get(row_idx, {}).items():
-                    rat_key = f"{judge_name}/rationale"
-                    meta_key = f"{judge_name}/metadata"
-                    if rat_key not in row_dict and adata.get("rationale"):
-                        row_dict[rat_key] = adata["rationale"]
-                    if meta_key not in row_dict and adata.get("metadata"):
-                        row_dict[meta_key] = adata["metadata"]
+                _merge_row_sources(row_dict, rep_assessment_map.get(row_idx), None)
 
                 for col_name in list(row_dict.keys()):
                     if col_name.endswith("/rationale"):
@@ -5578,7 +6066,9 @@ def _fill_coverage_gaps(
             "question": b.get("question", ""),
             "expected_sql": expected_sql,
             "expected_asset": _normalize_expected_asset(
-                b.get("expected_asset", "TABLE"), expected_sql,
+                b.get("expected_asset", "TABLE"),
+                expected_sql,
+                hint=b.get("expected_asset_hint"),
             ),
             "category": b.get("category", ""),
             "required_tables": [str(t) for t in required_tables],
@@ -6097,7 +6587,9 @@ def generate_benchmarks(
             "question": b.get("question", ""),
             "expected_sql": expected_sql,
             "expected_asset": _normalize_expected_asset(
-                b.get("expected_asset", "TABLE"), expected_sql,
+                b.get("expected_asset", "TABLE"),
+                expected_sql,
+                hint=b.get("expected_asset_hint"),
             ),
             "category": b.get("category", ""),
             "required_tables": [str(t) for t in required_tables],
@@ -6378,8 +6870,11 @@ def generate_benchmarks(
                 "question": b.get("question", ""),
                 "expected_sql": expected_sql,
                 "expected_asset": _normalize_expected_asset(
-                    b.get("expected_asset", "TABLE"), expected_sql,
+                    b.get("expected_asset", "TABLE"),
+                    expected_sql,
+                    hint=b.get("expected_asset_hint"),
                 ),
+                "expected_asset_hint": b.get("expected_asset_hint", ""),
                 "category": b.get("category", "curated"),
                 "required_tables": b.get("required_tables", []),
                 "required_columns": b.get("required_columns", []),
@@ -6406,8 +6901,11 @@ def generate_benchmarks(
                 "question": b.get("question", ""),
                 "expected_sql": _b_esql,
                 "expected_asset": _normalize_expected_asset(
-                    b.get("expected_asset", "TABLE"), _b_esql,
+                    b.get("expected_asset", "TABLE"),
+                    _b_esql,
+                    hint=b.get("expected_asset_hint"),
                 ),
+                "expected_asset_hint": b.get("expected_asset_hint", ""),
                 "category": b.get("category", ""),
                 "required_tables": b.get("required_tables", []),
                 "required_columns": b.get("required_columns", []),
@@ -6455,7 +6953,9 @@ def generate_benchmarks(
                 "question": b.get("question", ""),
                 "expected_sql": _gf_esql,
                 "expected_asset": _normalize_expected_asset(
-                    b.get("expected_asset", "TABLE"), _gf_esql,
+                    b.get("expected_asset", "TABLE"),
+                    _gf_esql,
+                    hint=b.get("expected_asset_hint"),
                 ),
                 "category": b.get("category", ""),
                 "required_tables": b.get("required_tables", []),

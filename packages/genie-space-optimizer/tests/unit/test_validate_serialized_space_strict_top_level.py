@@ -49,19 +49,23 @@ def test_strict_rejects_multiple_unknown_top_level_keys():
     assert "mystery_field" in joined
 
 
-def test_strict_rejects_underscore_prefixed_runtime_key():
-    """Underscore keys are a source convention — they MUST NOT reach PATCH.
-
-    This test ensures strict validation doesn't quietly accept them even
-    though ``strip_non_exportable_fields`` would normally remove them.
-    Both layers should fail closed.
+def test_strict_accepts_underscore_prefixed_runtime_key():
+    """Phase 1.R1: underscore-prefixed top-level keys are the codebase's
+    runtime-only convention (see ``common.config.is_runtime_key``). They
+    are stripped by ``strip_non_exportable_fields`` before PATCH, so the
+    strict validator must agree with that contract and NOT treat them as
+    unknown-top-level-key errors. The applier now validates the stripped
+    payload as belt-and-suspenders, but aligning the two layers on the
+    same convention is the primary root-cause fix: a pre-existing
+    runtime ``_data_profile`` on ``config`` used to crash the whole
+    PATCH at this exact validator.
     """
     config = _valid_config()
     config["_space_id"] = "abc123"
+    config["_data_profile"] = {"cat.sch.t": {}}
+    config["_failure_clusters"] = []
     ok, errors = validate_serialized_space(config, strict=True)
-    assert not ok
-    joined = "\n".join(errors)
-    assert "_space_id" in joined
+    assert ok, f"runtime keys must not error strict validation; got: {errors}"
 
 
 def test_lenient_mode_is_permissive_about_top_level_keys():

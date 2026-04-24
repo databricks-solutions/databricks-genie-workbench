@@ -9,8 +9,11 @@ from __future__ import annotations
 from mlflow.entities import Feedback
 from mlflow.genai.scorers import scorer
 
+from genie_space_optimizer.common.config import scoring_v2_is_legacy
+from genie_space_optimizer.common.genie_client import sanitize_sql
 from genie_space_optimizer.optimization.evaluation import (
     CODE_SOURCE,
+    _extract_response_text,
     build_asi_metadata,
     format_asi_markdown,
     slim_comparison,
@@ -61,6 +64,30 @@ def result_correctness_scorer(inputs: dict, outputs: dict, expectations: dict) -
                         f"to {cmp['temporal_rewrite'].get('rewritten_dates')} but may use a "
                         f"different date column than Genie. Cannot reliably compare results "
                         f"— excluded from accuracy denominator."
+                    ),
+                    extra={"comparison": slim_comparison(cmp)},
+                    question_id=question_id,
+                ),
+                source=CODE_SOURCE,
+            )
+
+        if (
+            error_type == "genie_result_unavailable"
+            and not scoring_v2_is_legacy()
+            and sanitize_sql(_extract_response_text(outputs))
+        ):
+            return Feedback(
+                name="result_correctness",
+                value="excluded",
+                rationale=format_asi_markdown(
+                    judge_name="result_correctness",
+                    value="excluded",
+                    rationale=(
+                        "Genie returned valid SQL but the result set could not "
+                        "be retrieved (no-result defense under GSO_SCORING_V2). "
+                        "SQL-shape judges still score this row; this judge is "
+                        "blocked because result comparison requires Genie's "
+                        "result set. Excluded from the accuracy denominator."
                     ),
                     extra={"comparison": slim_comparison(cmp)},
                     question_id=question_id,

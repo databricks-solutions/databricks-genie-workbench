@@ -3047,6 +3047,15 @@ def _seed_new_sql_snippets(
 
     try:
         benchmark_candidates = _mine_sql_expression_candidates(benchmarks, metadata_snapshot)
+        # Phase 3.R7: expose the alias-rebind drop counts on ``result``
+        # so the pretty summary can attribute why candidate N dropped to
+        # N-k (undeclared alias in the source benchmark query).
+        result["rebind_dropped"] = getattr(
+            _mine_sql_expression_candidates, "last_rebind_dropped", 0,
+        )
+        result["rebind_dropped_examples"] = getattr(
+            _mine_sql_expression_candidates, "last_rebind_dropped_examples", [],
+        )
         schema_candidates = _discover_schema_sql_expressions(metadata_snapshot)
 
         all_candidates = benchmark_candidates + schema_candidates
@@ -3205,6 +3214,17 @@ def _seed_new_sql_snippets(
 
         _lines = [_section("SQL EXPRESSION SEEDING", "-")]
         _lines.append(_kv("Candidates evaluated", result["total_candidates"]))
+        # Phase 3.R7: alias-rebind diagnostics. Shown only when something
+        # was dropped so clean runs stay compact.
+        rebind_dropped = result.get("rebind_dropped", 0) or 0
+        if rebind_dropped:
+            _lines.append(_kv(
+                "  Alias-rebind dropped",
+                rebind_dropped,
+                indent=4,
+            ))
+            for ex in (result.get("rebind_dropped_examples") or [])[:3]:
+                _lines.append(_kv(f"    e.g. {ex}", "", indent=6))
         _lines.append(_kv("Seeded", result["total_seeded"]))
         _lines.append(_kv("  Measures", result["measures_seeded"]))
         _lines.append(_kv("  Filters", result["filters_seeded"]))
@@ -5985,7 +6005,13 @@ def _run_lever_loop(
     _ensure_sql_context(spark, catalog, schema)
 
     resume_state = _resume_lever_loop(spark, run_id, catalog, schema)
-    start_lever = resume_state.get("resume_from_lever", 0)
+    # S10 — ``start_lever`` is informational only: the loop below always
+    # begins at Lever 1 and iterates the full ``levers`` sequence per
+    # iteration. ``None`` means "no completed lever in Delta", i.e. a
+    # fresh run; an int means "the last COMPLETE lever_stage from a
+    # prior task attempt" and is surfaced in the setup block so on-call
+    # can distinguish a retried task from a cold start.
+    start_lever = resume_state.get("resume_from_lever")
     iteration_counter = resume_state.get("iteration_counter", 0)
     if resume_state.get("prev_scores"):
         prev_scores = resume_state["prev_scores"]
@@ -6487,7 +6513,13 @@ def _run_lever_loop(
     _setup_lines.append(_kv("Reference hashes", len(reference_result_hashes)))
     _setup_lines.append(_kv("Arbiter corrections", len(_pre_loop_corr.get("corrected_qids", set()))))
     _setup_lines.append(_kv("Mined examples", len(mined_example_proposals)))
-    _setup_lines.append(_kv("Starting lever", start_lever))
+    # S10 — the old ``Starting lever: 0`` label implied the loop would
+    # skip to some lever, which is false (see comment at start_lever
+    # initialisation). Replace with a human resume state.
+    _resume_display = (
+        f"Resuming after lever {start_lever}" if start_lever else "Starting fresh"
+    )
+    _setup_lines.append(_kv("Resume state", _resume_display))
     _setup_lines.append(_kv("Iteration counter", iteration_counter))
     _setup_lines.append(_kv("Baseline accuracy", f"{baseline_accuracy:.1f}%"))
     _setup_lines.append(_bar("-"))
@@ -8693,10 +8725,14 @@ def _resume_lever_loop(
     """
     latest_iter = load_latest_full_iteration(spark, run_id, catalog, schema)
     if not latest_iter:
-        return {"resume_from_lever": 0, "iteration_counter": 0}
+        # S10 — ``None`` signals "no prior lever". Previously we returned
+        # ``0`` which collides with a legitimate "loop starts at index 0"
+        # reading. The display label ``Starting fresh`` makes the intent
+        # explicit; see the _resume_display block in ``run_lever_loop``.
+        return {"resume_from_lever": None, "iteration_counter": 0}
 
     stages_df = load_stages(spark, run_id, catalog, schema)
-    last_lever = 0
+    last_lever: int | None = None
     if not stages_df.empty:
         lever_stages = stages_df[
             stages_df["stage"].str.startswith("LEVER_")

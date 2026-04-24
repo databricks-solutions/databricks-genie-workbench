@@ -683,8 +683,11 @@ def _strict_validate(config: dict) -> list[str]:
     # The Genie API rejects any ``serialized_space`` with unknown top-level
     # keys. Catching this locally turns an otherwise-opaque API rejection
     # into a clear error that names the offending key.
+    from genie_space_optimizer.common.config import is_runtime_key
+
     unknown_top_level = sorted(
-        k for k in config.keys() if k not in SERIALIZED_SPACE_TOP_LEVEL_KEYS
+        k for k in config.keys()
+        if k not in SERIALIZED_SPACE_TOP_LEVEL_KEYS and not is_runtime_key(k)
     )
     if unknown_top_level:
         errors.append(

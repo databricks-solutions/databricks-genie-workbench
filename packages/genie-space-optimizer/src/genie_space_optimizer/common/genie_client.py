@@ -24,7 +24,10 @@ from .config import (
     GENIE_POLL_MAX,
     GENIE_RATE_LIMIT_BASE_DELAY,
     GENIE_RATE_LIMIT_RETRIES,
+    KNOWN_INTERNAL_RUNTIME_KEYS,
     NON_EXPORTABLE_FIELDS,
+    is_runtime_key,
+    scoring_v2_is_legacy,
 )
 
 logger = logging.getLogger(__name__)
@@ -518,6 +521,20 @@ def detect_asset_type(
         Optional metric-view table names.  When a known MV name appears
         in the SQL, the query is classified as ``MV`` even without a
         ``MEASURE()`` call.
+
+    Notes
+    -----
+    Under the default scoring policy (``GSO_SCORING_V2`` != ``off``), the
+    bare ``"mv_"`` substring rule is **dropped**. Customer tables named
+    ``mv_something`` are legitimately regular ``TABLE``s; the old rule
+    caused systematic ``Expected TABLE, got MV`` false negatives in
+    ``asset_routing`` scoring. The authoritative MV signals are
+    ``MEASURE(...)`` and an explicit ``mv_names`` list from the Genie
+    space config.
+
+    When ``GSO_SCORING_V2=off`` we fall back to the legacy behavior
+    (any SQL containing ``"mv_"`` is classified as MV) so the kill-switch
+    reproduces the pre-fix output byte-for-byte.
     """
     if not sql:
         return "NONE"
@@ -526,7 +543,7 @@ def detect_asset_type(
         return "MV"
     if mv_names and any(name.lower() in sql_lower for name in mv_names):
         return "MV"
-    if "mv_" in sql_lower:
+    if scoring_v2_is_legacy() and "mv_" in sql_lower:
         return "MV"
     if re.search(r"\bget_\w+\s*\(", sql_lower):
         return "TVF"
@@ -632,7 +649,11 @@ def strip_non_exportable_fields(config: dict) -> dict:
         _known_meta = [k for k in dropped if k in NON_EXPORTABLE_FIELDS]
         _unknown = [
             k for k in dropped
-            if k not in NON_EXPORTABLE_FIELDS and not k.startswith("_")
+            if k not in NON_EXPORTABLE_FIELDS and not is_runtime_key(k)
+        ]
+        _unknown_runtime = [
+            k for k in dropped
+            if is_runtime_key(k) and k not in KNOWN_INTERNAL_RUNTIME_KEYS
         ]
         if _unknown:
             logger.warning(
@@ -641,6 +662,13 @@ def strip_non_exportable_fields(config: dict) -> dict:
                 "of the unknown keys are intentional runtime state, prefix "
                 "them with '_' so they stay local to the snapshot.",
                 _unknown, _known_meta,
+            )
+        if _unknown_runtime:
+            logger.info(
+                "strip_non_exportable_fields dropped undocumented runtime "
+                "keys: %s. Add them to KNOWN_INTERNAL_RUNTIME_KEYS in "
+                "common/config.py if they are intentional.",
+                _unknown_runtime,
             )
 
     ds = cleaned.get("data_sources")

@@ -1557,6 +1557,33 @@ def normalize_sql_snippet(
     return prefixed_sql, warnings
 
 
+# S8 — tautology detectors for ``snippet_type == "filter"``.
+# Cheap syntactic pre-check before we spend a warehouse round-trip. Each
+# pattern targets a canonical form the model regularly emits as a "safe
+# no-op": ``1=1``, ``TRUE``, ``col = col``, ``x IS NOT NULL OR x IS NULL``.
+_VACUOUS_FILTER_PATTERNS: tuple[_re.Pattern[str], ...] = (
+    _re.compile(r"^\s*1\s*=\s*1\s*$"),
+    _re.compile(r"^\s*(true|TRUE)\s*$"),
+    _re.compile(r"^\s*(\w+)\s*=\s*\1\s*$"),
+    _re.compile(
+        r"^\s*(\w+)\s+IS\s+NOT\s+NULL\s+OR\s+\1\s+IS\s+NULL\s*$",
+        _re.IGNORECASE,
+    ),
+    _re.compile(
+        r"^\s*(\w+)\s+IS\s+NULL\s+OR\s+\1\s+IS\s+NOT\s+NULL\s*$",
+        _re.IGNORECASE,
+    ),
+)
+
+
+def _is_vacuous_filter_syntactic(sql: str) -> bool:
+    """Return True when ``sql`` textually matches a tautology template."""
+    candidate = (sql or "").strip().strip(";").strip()
+    if candidate.startswith("(") and candidate.endswith(")"):
+        candidate = candidate[1:-1].strip()
+    return any(p.match(candidate) for p in _VACUOUS_FILTER_PATTERNS)
+
+
 def validate_sql_snippet(
     sql: str,
     snippet_type: str,
@@ -1582,10 +1609,24 @@ def validate_sql_snippet(
     - filter:     ``SELECT 1 FROM <table> WHERE <sql> LIMIT 1``
     - expression: ``SELECT <sql> FROM <table> LIMIT 1``
 
+    S8 — when ``snippet_type == "filter"`` and ``GSO_REJECT_VACUOUS_FILTERS``
+    is on (default), two additional guards run:
+
+    - A syntactic pre-check that rejects ``1=1``, ``TRUE``, ``col = col``,
+      and the ``x IS NULL OR x IS NOT NULL`` tautology without touching
+      the warehouse.
+    - A selectivity post-check (after the LIMIT-1 probe succeeds) that
+      runs ``SELECT COUNT(*) total, COUNT(*) FILTER (WHERE <filter>)``
+      on the resolved table and rejects the snippet when ``filtered >=
+      total`` (the filter restricts nothing). If the table is empty
+      (``total == 0``) we skip the check — emptiness cannot prove vacuity.
+
     Returns ``(is_valid, error_message, prefixed_sql)`` — callers should
     use ``prefixed_sql`` (the 3rd element) when storing the snippet so
     the FQ form is persisted.
     """
+    from genie_space_optimizer.common.config import REJECT_VACUOUS_FILTERS
+
     table = _extract_primary_table(sql, metadata_snapshot)
     if not table:
         return False, "Cannot determine primary table for SQL snippet", sql
@@ -1599,6 +1640,15 @@ def validate_sql_snippet(
     for warning in warnings:
         if warning.startswith("EXPLAIN failed:"):
             return False, warning, prefixed_sql
+
+    # S8 — syntactic tautology pre-check. Rejects the most common
+    # no-op shapes before we spend a warehouse round-trip.
+    if (
+        REJECT_VACUOUS_FILTERS
+        and snippet_type == "filter"
+        and _is_vacuous_filter_syntactic(prefixed_sql)
+    ):
+        return False, f"filter is tautological: {prefixed_sql}", prefixed_sql
 
     resolved_table = _resolve_primary_table_fqn(
         table, catalog=catalog, gold_schema=gold_schema,
@@ -1622,9 +1672,71 @@ def validate_sql_snippet(
             return spark.sql(statement)
         raise RuntimeError("No SQL execution backend available")
 
+    def _first_row_values(result: Any) -> list[Any]:
+        """Return the first row as a list regardless of backend shape."""
+        if result is None:
+            return []
+        if hasattr(result, "collect"):
+            rows = result.collect()
+            if not rows:
+                return []
+            first = rows[0]
+            if hasattr(first, "asDict"):
+                return list(first.asDict().values())
+            try:
+                return list(first)
+            except TypeError:
+                return [first]
+        if hasattr(result, "result") and hasattr(result.result, "data_array"):
+            data = result.result.data_array or []
+            return list(data[0]) if data else []
+        if isinstance(result, list) and result:
+            row = result[0]
+            if isinstance(row, dict):
+                return list(row.values())
+            if isinstance(row, (list, tuple)):
+                return list(row)
+            return [row]
+        return []
+
     try:
         _run_sql(wrapped)
     except Exception as exc:
         return False, f"Execution failed: {exc}", prefixed_sql
+
+    # S8 — post-execution selectivity probe. EXPLAIN + LIMIT 1 passed;
+    # now verify the filter actually restricts the result set. Silently
+    # skipped for empty tables (``total == 0``) because vacuity cannot
+    # be proven on zero rows.
+    if REJECT_VACUOUS_FILTERS and snippet_type == "filter":
+        selectivity_stmt = (
+            f"SELECT COUNT(*) AS total, "
+            f"COUNT(*) FILTER (WHERE {prefixed_sql}) AS filtered "
+            f"FROM {resolved_table}"
+        )
+        try:
+            result = _run_sql(selectivity_stmt)
+            values = _first_row_values(result)
+        except Exception as exc:
+            # Selectivity probe is a guard, not a requirement. If it
+            # fails we fall back to the lenient pre-S8 behaviour.
+            logger.debug(
+                "Selectivity probe failed for %s: %s; accepting filter.",
+                prefixed_sql, exc,
+            )
+            return True, "", prefixed_sql
+        if len(values) >= 2:
+            try:
+                total_count = int(values[0])
+                filtered_count = int(values[1])
+            except (TypeError, ValueError):
+                return True, "", prefixed_sql
+            if total_count > 0 and filtered_count >= total_count:
+                return (
+                    False,
+                    f"filter is vacuous: selects all rows "
+                    f"({filtered_count}/{total_count})",
+                    prefixed_sql,
+                )
 
     return True, "", prefixed_sql

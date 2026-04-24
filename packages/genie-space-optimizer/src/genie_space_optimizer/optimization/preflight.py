@@ -79,6 +79,99 @@ def _pf_bar() -> str:
     return "-" * _PF_W
 
 
+_DIM_DATE_STALENESS_DAYS = 30
+
+
+def check_dim_date_staleness(
+    spark: SparkSession,
+    catalog: str,
+    schema: str,
+    table: str = "DIM_DATE",
+    staleness_days: int = _DIM_DATE_STALENESS_DAYS,
+) -> dict[str, Any]:
+    """Warn if calendar flags on ``DIM_DATE`` look stale (C3, plan).
+
+    ``is_current_year`` / ``is_last_12_months`` are static flags that
+    must be refreshed relative to ``CURRENT_DATE()``. When benchmarks
+    assume these flags, stale values silently break accuracy.
+
+    The check is **advisory only** — it logs a warning and returns a
+    status dict. It never raises, so missing tables, permission issues,
+    or non-Databricks unit-test environments gracefully no-op.
+
+    Returns
+    -------
+    dict with keys ``status`` (``ok``/``stale``/``missing``/``error``),
+    ``max_current_year_date``, ``days_behind``, and ``message``.
+    """
+    fqn = f"{catalog}.{schema}.{table}"
+    try:
+        row = spark.sql(
+            f"""
+            SELECT
+                CURRENT_DATE() AS today,
+                MAX(CASE WHEN is_current_year THEN date_key END) AS max_cy_date
+            FROM {fqn}
+            """
+        ).collect()
+    except Exception as exc:
+        msg = str(exc)
+        logger.debug("DIM_DATE staleness probe failed for %s: %s", fqn, msg)
+        if "TABLE_OR_VIEW_NOT_FOUND" in msg or "Path does not exist" in msg:
+            return {"status": "missing", "message": f"{fqn} not found"}
+        return {"status": "error", "message": msg}
+
+    if not row:
+        return {"status": "missing", "message": f"{fqn} returned no rows"}
+
+    today = row[0]["today"]
+    max_cy = row[0]["max_cy_date"]
+    if max_cy is None:
+        logger.warning(
+            "DIM_DATE staleness: no rows flagged is_current_year in %s "
+            "— run scripts/refresh_dim_date_flags.sql before evaluation.",
+            fqn,
+        )
+        return {
+            "status": "stale",
+            "max_current_year_date": None,
+            "days_behind": None,
+            "message": "No rows flagged is_current_year — DIM_DATE flags "
+                       "need a refresh.",
+        }
+
+    try:
+        days_behind = (today - max_cy).days
+    except Exception:
+        days_behind = None
+
+    if days_behind is not None and days_behind > staleness_days:
+        logger.warning(
+            "DIM_DATE staleness: latest is_current_year row in %s is %s "
+            "(%d days behind today). Run scripts/refresh_dim_date_flags.sql "
+            "to refresh calendar flags before evaluation.",
+            fqn, max_cy, days_behind,
+        )
+        return {
+            "status": "stale",
+            "max_current_year_date": str(max_cy),
+            "days_behind": days_behind,
+            "message": f"DIM_DATE is {days_behind} days behind CURRENT_DATE().",
+        }
+
+    logger.info(
+        "DIM_DATE staleness check OK: latest is_current_year row in %s "
+        "is %s (%d days behind today).",
+        fqn, max_cy, days_behind if days_behind is not None else -1,
+    )
+    return {
+        "status": "ok",
+        "max_current_year_date": str(max_cy),
+        "days_behind": days_behind,
+        "message": "DIM_DATE flags look fresh.",
+    }
+
+
 def compute_asset_fingerprint(config: dict) -> str:
     """Compute a short hash over the sorted table/view/function refs in the Genie Space config.
 
@@ -1999,6 +2092,13 @@ def run_preflight(
         genie_table_refs, apply_mode=apply_mode,
         configured_cols=ctx1.get("configured_cols", 0),
     )
+
+    # C3: advisory calendar-drift check. Never blocks preflight; log-only.
+    try:
+        dim_date_status = check_dim_date_staleness(spark, catalog, schema)
+        config["_gso_dim_date_status"] = dim_date_status
+    except Exception:  # pragma: no cover - defensive; check_* is already safe
+        logger.debug("DIM_DATE staleness check raised unexpectedly", exc_info=True)
 
     ctx3 = preflight_generate_benchmarks(
         w, spark, run_id, catalog, schema, config,

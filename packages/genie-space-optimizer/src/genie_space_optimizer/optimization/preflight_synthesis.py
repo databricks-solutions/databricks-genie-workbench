@@ -725,6 +725,21 @@ def _format_slice_tables(slice_: AssetSlice) -> str:
     return "\n".join(out) if out else "(none)"
 
 
+def _first_asset_identifier(slice_: AssetSlice) -> str:
+    """Return one concrete, fully-qualified identifier for the slice so
+    the prompt's qualification worked-example uses a real name from this
+    schema. Falls back to a literal placeholder when the slice has no
+    assets (defensive — planner always emits at least one table today).
+    """
+    for asset in list(slice_.tables) + (
+        [slice_.metric_view] if slice_.metric_view is not None else []
+    ):
+        ident = (asset.get("identifier") or asset.get("name") or "").strip()
+        if ident:
+            return ident
+    return "catalog.schema.table"
+
+
 def _format_slice_metric_views(slice_: AssetSlice) -> str:
     if slice_.metric_view is None:
         return "(none)"
@@ -940,6 +955,68 @@ def _build_empty_result_feedback(
     )
 
 
+def _build_qualification_feedback(
+    proposal: dict,
+    slice_: AssetSlice,
+    failure_reason: str,
+) -> str:
+    """Render the retry-feedback payload used by Phase 2.R6.
+
+    Engages when the validator reports an unqualified-identifier or
+    unresolved-column / unresolved-table failure. The feedback block
+    names the exact failure, echoes the prior SQL (truncated), and
+    lists the slice's fully-qualified identifiers — the only legal
+    values — so the LLM can self-correct. Structurally mirrors
+    :func:`_build_empty_result_feedback` so the prompt shape stays
+    predictable across retry classes.
+    """
+    prior_sql = str(proposal.get("example_sql") or "").strip()
+    if not prior_sql and not slice_.asset_ids():
+        return ""
+    allowlist_block = slice_.to_identifier_allowlist()
+    truncated = prior_sql if len(prior_sql) <= 300 else (
+        prior_sql[:300].rstrip() + "…"
+    )
+    reason = (failure_reason or "unresolved identifier").strip()
+    return (
+        "Your previous query failed validation:\n"
+        f"  {reason}\n\n"
+        "Your SQL was:\n"
+        f"  {truncated or '(no SQL captured)'}\n\n"
+        "The ONLY legal table identifiers for this example are:\n"
+        f"{allowlist_block}\n\n"
+        "Regenerate the example_sql using EXACTLY these identifiers — "
+        "never short names, never aliases you haven't declared in this "
+        "query's FROM clause. Preserve the question's intent."
+    )
+
+
+# Substrings that classify an execute-gate failure as an identifier /
+# schema-resolution error rather than a data-value error. Used by R6
+# to decide whether to fire the qualification-feedback retry.
+_QUALIFICATION_FAILURE_MARKERS = (
+    "UNRESOLVED_COLUMN",
+    "UNRESOLVED_TABLE",
+    "TABLE_OR_VIEW_NOT_FOUND",
+    "UNQUALIFIED_TABLE",
+)
+
+
+def _is_qualification_failure(gate_result: Any) -> bool:
+    """Return True when a ``GateResult`` indicates an unqualified or
+    unresolved identifier. Matches both the new
+    ``identifier_qualification`` gate (Phase 2.R5) and the execute
+    gate's Spark-side errors (``UNRESOLVED_COLUMN`` etc.) so we can
+    retry with the exact same feedback shape for both sources.
+    """
+    if gate_result is None or gate_result.passed:
+        return False
+    if gate_result.gate == "identifier_qualification":
+        return True
+    reason = (gate_result.reason or "").upper()
+    return any(marker in reason for marker in _QUALIFICATION_FAILURE_MARKERS)
+
+
 def _format_existing_questions(existing_questions: list[str]) -> str:
     """Render a short, truncated list of existing questions for anti-dup.
 
@@ -1005,6 +1082,7 @@ def render_preflight_prompt(
         "slice_join_spec": _format_slice_join_spec(context),
         "slice_columns": _format_slice_columns(context),
         "slice_data_profile": _format_slice_data_profile(context, data_profile),
+        "schema_example_identifier": _first_asset_identifier(context),
         "archetype_name": archetype.name,
         "archetype_prompt_template": archetype.prompt_template,
         "archetype_output_shape": json.dumps(archetype.output_shape),
@@ -1271,6 +1349,7 @@ def run_preflight_example_synthesis(
         "target": effective_target,
         "generated": 0,
         "passed_parse": 0,
+        "passed_identifier_qualification": 0,
         "passed_execute": 0,
         "passed_firewall": 0,
         "passed_structural": 0,
@@ -1374,6 +1453,10 @@ def run_preflight_example_synthesis(
     retries_fired = 0
     retries_succeeded = 0
     retries_still_empty = 0
+    # Phase 2.R6: separate counters for the qualification retry path so
+    # the summary block can attribute retry volume to the right class.
+    retries_on_qualification_fired = 0
+    retries_on_qualification_succeeded = 0
 
     for archetype, slice_ in plans:
         if len(accepted) >= need:
@@ -1402,6 +1485,7 @@ def run_preflight_example_synthesis(
             continue
 
         # ── Validate via the shared 5-gate ────────────────────────
+        slice_allowlist = set(slice_.asset_ids())
         passed, gate_results = validate_synthesis_proposal(
             proposal,
             archetype=archetype,
@@ -1410,33 +1494,47 @@ def run_preflight_example_synthesis(
             blame_set=None,  # pre-flight has no failure cluster
             spark=spark, catalog=catalog, gold_schema=schema,
             w=w, warehouse_id=warehouse_id,
+            identifier_allowlist=slice_allowlist,
         )
 
-        # ── Phase 3.R6: one retry on EMPTY_RESULT ─────────────────
-        # If the only failure was the execute gate with an EMPTY_RESULT
-        # reason, synthesize one retry prompted with the actual column
-        # values from ``_data_profile`` before giving up. R5's soft-
-        # accept classifier applies to the retry's SQL — so the retry
-        # may still land on an empty-result SQL but soft-accept when
-        # it has a WHERE/JOIN.
+        # ── Phase 3.R6 + Phase 2.R6: one retry round-trip ─────────
+        # Two retry classes share the same one-retry budget:
+        #   - EMPTY_RESULT → feedback carries profile values.
+        #   - Unqualified / unresolved identifier → feedback carries
+        #     the slice's identifier allowlist so the LLM can self-
+        #     correct the FROM/JOIN target.
+        # R5's soft-accept classifier applies to the retry's SQL, so
+        # the retry may land on an empty-result SQL that still
+        # soft-accepts when it carries a WHERE/JOIN.
         if not passed:
             first_fail = next(
                 (g for g in gate_results if not g.passed), None,
             )
+            feedback: str | None = None
+            retry_class: str | None = None
             if (
                 first_fail is not None
                 and first_fail.gate == "execute"
                 and "EMPTY_RESULT" in (first_fail.reason or "")
             ):
+                retry_class = "empty_result"
                 retries_fired += 1
                 feedback = _build_empty_result_feedback(
                     proposal, data_profile, slice_,
-                )
+                ) or None
+            elif _is_qualification_failure(first_fail):
+                retry_class = "qualification"
+                retries_on_qualification_fired += 1
+                feedback = _build_qualification_feedback(
+                    proposal, slice_, first_fail.reason or "",
+                ) or None
+
+            if retry_class is not None:
                 retry_proposal = synthesize_preflight_candidate(
                     archetype, slice_, anti_dup_questions,
                     w=w, llm_caller=llm_caller,
                     data_profile=data_profile,
-                    retry_feedback=feedback or None,
+                    retry_feedback=feedback,
                 )
                 if retry_proposal is not None:
                     proposal = retry_proposal
@@ -1448,15 +1546,20 @@ def run_preflight_example_synthesis(
                         blame_set=None,
                         spark=spark, catalog=catalog, gold_schema=schema,
                         w=w, warehouse_id=warehouse_id,
+                        identifier_allowlist=slice_allowlist,
                     )
                     if passed:
-                        retries_succeeded += 1
+                        if retry_class == "empty_result":
+                            retries_succeeded += 1
+                        else:
+                            retries_on_qualification_succeeded += 1
                     else:
                         retry_fail = next(
                             (g for g in gate_results if not g.passed), None,
                         )
                         if (
-                            retry_fail is not None
+                            retry_class == "empty_result"
+                            and retry_fail is not None
                             and retry_fail.gate == "execute"
                             and "EMPTY_RESULT" in (retry_fail.reason or "")
                         ):
@@ -1469,6 +1572,7 @@ def run_preflight_example_synthesis(
             if gr.passed:
                 key_map = {
                     "parse": "passed_parse",
+                    "identifier_qualification": "passed_identifier_qualification",
                     "execute": "passed_execute",
                     "structural": "passed_structural",
                     "arbiter": "passed_arbiter",
@@ -1544,21 +1648,30 @@ def run_preflight_example_synthesis(
     result["retries_fired"] = retries_fired
     result["retries_succeeded"] = retries_succeeded
     result["retries_still_empty"] = retries_still_empty
+    result["retries_on_qualification_fired"] = retries_on_qualification_fired
+    result["retries_on_qualification_succeeded"] = (
+        retries_on_qualification_succeeded
+    )
 
     # ── Observability ─────────────────────────────────────────────
     logger.info(
         "preflight.synthesis.summary existing=%d target=%d need=%d generated=%d "
-        "passed_parse=%d passed_execute=%d passed_firewall=%d passed_structural=%d "
+        "passed_parse=%d passed_identifier_qualification=%d passed_execute=%d "
+        "passed_firewall=%d passed_structural=%d "
         "passed_arbiter=%d passed_genie_agreement=%d dedup_rejected=%d applied=%d "
         "retries_fired=%d retries_succeeded=%d retries_still_empty=%d "
+        "retries_on_qualification_fired=%d retries_on_qualification_succeeded=%d "
         "asset_coverage=%s rejected_by_gate=%s archetype=%s",
         existing_count, effective_target, need, result["generated"],
-        result["passed_parse"], result["passed_execute"],
+        result["passed_parse"],
+        result.get("passed_identifier_qualification", 0),
+        result["passed_execute"],
         result["passed_firewall"], result["passed_structural"],
         result["passed_arbiter"], result["passed_genie_agreement"],
         result["dedup_rejected"],
         applied,
         retries_fired, retries_succeeded, retries_still_empty,
+        retries_on_qualification_fired, retries_on_qualification_succeeded,
         asset_counts, reject_by_gate, archetype_counts,
     )
 
@@ -1633,6 +1746,17 @@ def _print_summary(result: dict) -> None:
         return
     lines.append(_kv("Generated candidates", result.get("generated", 0)))
     lines.append(_kv("Passed parse", result.get("passed_parse", 0)))
+    # Phase 2.R5: identifier-qualification gate, inserted between parse
+    # and execute. Surfaced only when the gate has actually seen
+    # candidates (so legacy runs that pre-date the gate don't print a
+    # zero-line).
+    qual_passed = result.get("passed_identifier_qualification", 0)
+    if qual_passed or "identifier_qualification" in (
+        result.get("rejected_by_gate") or {}
+    ):
+        lines.append(_kv(
+            "Passed identifier_qualification", qual_passed,
+        ))
     lines.append(_kv("Passed EXPLAIN+execute", result.get("passed_execute", 0)))
     # Phase 3.R6 retry visibility: surfaced right under the execute line
     # so operators can see how often empty-result retries fired and
@@ -1644,6 +1768,15 @@ def _print_summary(result: dict) -> None:
             f"fired={retries_fired} "
             f"succeeded={result.get('retries_succeeded', 0)} "
             f"still_empty={result.get('retries_still_empty', 0)}",
+            indent=4,
+        ))
+    # Phase 2.R6 retry visibility for the qualification path.
+    qual_retries = result.get("retries_on_qualification_fired", 0)
+    if qual_retries:
+        lines.append(_kv(
+            "  retries on qualification",
+            f"fired={qual_retries} "
+            f"succeeded={result.get('retries_on_qualification_succeeded', 0)}",
             indent=4,
         ))
     lines.append(_kv("Passed firewall", result.get("passed_firewall", 0)))

@@ -639,6 +639,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
         return None
 
     # ── 5-gate validation ──────────────────────────────────────────
+    slice_allowlist = set(context.asset_slice.asset_ids())
     passed, gate_results = validate_synthesis_proposal(
         proposal,
         archetype=archetype,
@@ -647,6 +648,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
         blame_set=afs.get("blame_set"),
         spark=spark, catalog=catalog, gold_schema=gold_schema,
         w=w, warehouse_id=warehouse_id,
+        identifier_allowlist=slice_allowlist,
     )
 
     # ── Phase 3.R6: one retry on EMPTY_RESULT ──────────────────────
@@ -655,6 +657,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
     # (which passes through to the pre-flight renderer).
     if not passed:
         first_fail = next((g for g in gate_results if not g.passed), None)
+        feedback: str | None = None
         if (
             first_fail is not None
             and first_fail.gate == "execute"
@@ -665,10 +668,24 @@ def run_cluster_driven_synthesis_for_single_cluster(
             )
             feedback = _build_empty_result_feedback(
                 proposal, context.data_profile, context.asset_slice,
+            ) or None
+        else:
+            # Phase 2.R6: also retry on unqualified / unresolved identifier
+            # failures with the slice's identifier allowlist as feedback.
+            from genie_space_optimizer.optimization.preflight_synthesis import (
+                _build_qualification_feedback,
+                _is_qualification_failure,
             )
+            if _is_qualification_failure(first_fail):
+                feedback = _build_qualification_feedback(
+                    proposal, context.asset_slice,
+                    first_fail.reason or "",
+                ) or None
+
+        if feedback is not None:
             retry_prompt = render_cluster_driven_prompt(
                 archetype, context, _existing_questions(metadata_snapshot),
-                retry_feedback=feedback or None,
+                retry_feedback=feedback,
             )
             if llm_caller is None:
                 from genie_space_optimizer.optimization.optimizer import _traced_llm_call
@@ -703,6 +720,7 @@ def run_cluster_driven_synthesis_for_single_cluster(
                     blame_set=afs.get("blame_set"),
                     spark=spark, catalog=catalog, gold_schema=gold_schema,
                     w=w, warehouse_id=warehouse_id,
+                    identifier_allowlist=slice_allowlist,
                 )
 
     if not passed:

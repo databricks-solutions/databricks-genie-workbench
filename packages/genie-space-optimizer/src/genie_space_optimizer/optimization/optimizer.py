@@ -424,32 +424,182 @@ def _resolve_scope(lever: int, apply_mode: str = APPLY_MODE) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+_PATTERN_FILTER_MISSING = re.compile(
+    r"\b(missing|no|without|lack(?:ing|s)?|absent|should\s+(?:be|have)\s+(?:had\s+)?a?)\s+"
+    r"(?:\w+\s+){0,3}(filter|where|restriction|predicate|where\s+clause)\b",
+    re.I,
+)
+_PATTERN_FILTER_WRONG = re.compile(
+    r"\b(wrong|incorrect|bad|mistaken|flawed)\s+(?:\w+\s+){0,3}(filter|where|predicate)\b",
+    re.I,
+)
+_PATTERN_JOIN_WRONG = re.compile(
+    r"\b(wrong|incorrect|missing|bad|without)\s+(?:\w+\s+){0,3}join\b",
+    re.I,
+)
+_PATTERN_JOIN_APPEARS_WRONG = re.compile(
+    r"\bjoin\b[^.]{0,80}\b(is|are|appears|seem(?:s)?|looks?)\s+(?:to\s+be\s+)?"
+    r"(wrong|incorrect|bad|mistaken)\b",
+    re.I,
+)
+_PATTERN_JOIN_TYPE = re.compile(
+    r"\b(left|right|inner|cross|full)\s+(?:outer\s+)?join\b.*?"
+    r"(join\s+type|instead\s+of|wrong\s+join)",
+    re.I | re.S,
+)
+_PATTERN_TABLE = re.compile(
+    r"\b(wrong|missing|incorrect|bad)\s+(?:\w+\s+){0,3}table\b",
+    re.I,
+)
+_PATTERN_COLUMN = re.compile(
+    r"\b(wrong|missing|incorrect|bad)\s+(?:\w+\s+){0,3}column\b",
+    re.I,
+)
+_PATTERN_AGG = re.compile(
+    r"\b(wrong|missing|incorrect|bad)\s+(?:\w+\s+){0,3}(aggregation|measure|metric)\b",
+    re.I,
+)
+_PATTERN_ROUTING = re.compile(
+    r"\b(wrong|missing|incorrect)\s+(?:\w+\s+){0,3}(asset|routing|example)\b",
+    re.I,
+)
+_PATTERN_INSTRUCTION = re.compile(
+    r"\b(missing|unclear|incomplete|ambiguous)\s+(?:\w+\s+){0,3}(instruction|guidance)\b",
+    re.I,
+)
+
+
 def _extract_pattern(rationale: str) -> str:
-    """Extract a generalizable pattern from a judge rationale string."""
-    r = (rationale or "").lower()
+    """Extract a generalizable pattern from a judge rationale string.
+
+    S3 hardening: judge rationales routinely contain words like
+    ``"filter"`` or ``"where"`` in affirmative contexts
+    (e.g. ``"filter is applied correctly"``), which the old substring
+    matcher misclassified as ``missing_filter``. Each branch now
+    requires both a noun (``filter``, ``where``, ``join``, ...) AND a
+    failure adjective/verb (``missing``, ``wrong``, ``incorrect``, ...)
+    within a short window. Bare mentions fall through to ``"other"`` so
+    downstream SQL-diff classification runs instead of emitting noise.
+    """
+    r = (rationale or "").strip()
     if not r:
         return "other"
-    if "is_current" in r or ("scd" in r and ("filter" in r or "dimension" in r)):
+    rl = r.lower()
+
+    if "correctly" in rl or "correct" in rl and "incorrect" not in rl:
+        affirmative_only = re.search(
+            r"\b(filter|where|join|column|table|aggregation|measure)\b[^.]{0,40}\b"
+            r"(is|are|was|were)\s+(applied\s+)?(correct(ly)?|right)\b",
+            rl,
+        )
+        if affirmative_only and not re.search(
+            r"\b(missing|wrong|incorrect|no\s+where|no\s+filter|absent)\b", rl
+        ):
+            return "other"
+
+    if "is_current" in rl and re.search(
+        r"\b(missing|wrong|without|absent|no)\b", rl
+    ):
         return "missing_scd_filter"
-    if ("left join" in r or "inner join" in r) and ("join type" in r or "instead of" in r or "wrong join" in r):
+    if "scd" in rl and re.search(r"\b(filter|dimension)\b", rl) and re.search(
+        r"\b(missing|wrong|without|absent|no)\b", rl
+    ):
+        return "missing_scd_filter"
+
+    if _PATTERN_JOIN_TYPE.search(rl):
         return "wrong_join_type"
-    if "table" in r and ("wrong" in r or "missing" in r or "incorrect" in r):
+    if _PATTERN_TABLE.search(rl):
         return "wrong_table"
-    if "column" in r and ("wrong" in r or "missing" in r):
+    if _PATTERN_COLUMN.search(rl):
         return "wrong_column"
-    if "aggregation" in r or "measure" in r:
+    if _PATTERN_AGG.search(rl):
         return "wrong_aggregation"
-    if "join" in r:
+    if _PATTERN_JOIN_WRONG.search(rl) or _PATTERN_JOIN_APPEARS_WRONG.search(rl):
         return "wrong_join"
-    if "filter" in r or "where" in r:
+    if _PATTERN_FILTER_MISSING.search(rl):
         return "missing_filter"
-    if "limit" in r and ("missing" in r or "without" in r):
+    if _PATTERN_FILTER_WRONG.search(rl):
         return "wrong_filter_condition"
-    if "asset" in r or "routing" in r:
+    if re.search(r"\b(missing|without)\s+limit\b", rl):
+        return "wrong_filter_condition"
+    if _PATTERN_ROUTING.search(rl):
         return "asset_routing_error"
-    if "instruction" in r or "ambiguous" in r or "unclear" in r:
+    if _PATTERN_INSTRUCTION.search(rl) or "ambiguous" in rl or "unclear" in rl:
         return "missing_instruction"
     return "other"
+
+
+def _metadata_asset_tokens(metadata_snapshot: dict) -> set[str]:
+    """Return a lowercased token set of every known asset in the snapshot.
+
+    The set is used by the S3 blame-set rescue: when ASI reports
+    ``failure_type == "other"`` but produces a ``blame_set`` containing
+    a token that matches a known table, metric view, TVF/UC function, or
+    example-SQL identifier, the cascade re-labels the root cause as
+    ``missing_data_asset`` (routed to Lever 3) instead of leaving the
+    failure at ``other`` (which falls through to generic descriptions).
+
+    Each identifier is also split on ``.`` so bare table names (``orders``
+    extracted from ``cat.sch.orders``) can match a blame token.
+    """
+    tokens: set[str] = set()
+    if not isinstance(metadata_snapshot, dict):
+        return tokens
+    ds = metadata_snapshot.get("data_sources") or {}
+    if not isinstance(ds, dict):
+        ds = {}
+    for bucket_key in ("tables", "metric_views"):
+        for asset in metadata_snapshot.get(bucket_key) or ds.get(bucket_key) or []:
+            if not isinstance(asset, dict):
+                continue
+            ident = asset.get("identifier") or asset.get("name") or ""
+            if isinstance(ident, str) and ident:
+                tokens.add(ident.lower())
+                for part in ident.split("."):
+                    if part:
+                        tokens.add(part.lower())
+    instr = metadata_snapshot.get("instructions") or {}
+    if not isinstance(instr, dict):
+        instr = {}
+    for fn in instr.get("sql_functions") or []:
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name") or fn.get("identifier") or fn.get("id")
+        if isinstance(name, str) and name:
+            tokens.add(name.lower())
+    for eqs in instr.get("example_question_sqls") or []:
+        if not isinstance(eqs, dict):
+            continue
+        ident = eqs.get("id") or eqs.get("identifier")
+        if isinstance(ident, str) and ident:
+            tokens.add(ident.lower())
+    return tokens
+
+
+def _blame_set_matches_metadata(
+    blame_set: object, metadata_snapshot: dict
+) -> bool:
+    r"""True when at least one blame token resolves to a known asset.
+
+    Tokens are lowercased and stripped of backticks and trailing
+    punctuation so ``\`cat.sch.orders\`,`` matches ``cat.sch.orders``.
+    """
+    if not blame_set:
+        return False
+    tokens = _metadata_asset_tokens(metadata_snapshot)
+    if not tokens:
+        return False
+    items = blame_set if isinstance(blame_set, list) else [str(blame_set)]
+    for item in items:
+        raw = str(item).strip().lower().strip("`").strip(",;")
+        if not raw:
+            continue
+        if raw in tokens:
+            return True
+        for part in raw.split("."):
+            if part and part in tokens:
+                return True
+    return False
 
 
 _SQL_KW = re.compile(r"\b(FROM|JOIN|LEFT\s+JOIN|RIGHT\s+JOIN|INNER\s+JOIN|CROSS\s+JOIN|FULL\s+JOIN)\s+", re.I)
@@ -880,6 +1030,20 @@ def cluster_failures(
 
     _held_out: set[str] = set(held_out_qids or set())
 
+    # S2 (duplicate-qid dedup) — a benchmark table can legally contain two
+    # rows with the same ``id`` (the C1 dedupe script is a one-shot cleanup,
+    # not a runtime constraint). Before S2, ``question_profiles[qid]``
+    # silently merged their failures, so the blame/counterfactual/root-cause
+    # aggregation double-counted and the weighted dominant cause was biased
+    # toward whichever row ran second. We now auto-suffix reappearing qids
+    # with ``:v2`` / ``:v3`` when the request signature differs, and drop
+    # pure duplicates (same qid, same question/expected_sql) with a log
+    # entry. The rewrite log is surfaced in the CLUSTER FORMATION block.
+    _qid_seen: dict[str, tuple[str, str]] = {}
+    _qid_version: dict[str, int] = {}
+    _qid_rewrites: list[str] = []
+    _qid_pure_duplicates: list[str] = []
+
     for row in rows_iter:
         if not isinstance(row, dict):
             continue
@@ -905,6 +1069,26 @@ def cluster_failures(
                 _resp = {}
 
         question_id = _row_qid(row)
+
+        # S2: disambiguate duplicate qids by request signature. Signature is
+        # (question_text, expected_sql) — stable across the benchmark row
+        # identity but unique across distinct rows that share an id.
+        _row_question = _req.get("question", "") if isinstance(_req, dict) else ""
+        _row_expected = _req.get("expected_sql", "") if isinstance(_req, dict) else ""
+        _row_signature = (str(_row_question).strip(), str(_row_expected).strip())
+        if question_id in _qid_seen:
+            if _qid_seen[question_id] == _row_signature:
+                _qid_pure_duplicates.append(question_id)
+                continue
+            version = _qid_version.get(question_id, 1) + 1
+            _qid_version[question_id] = version
+            _rewritten = f"{question_id}:v{version}"
+            _qid_rewrites.append(f"{question_id} -> {_rewritten}")
+            question_id = _rewritten
+            _qid_seen[question_id] = _row_signature
+        else:
+            _qid_seen[question_id] = _row_signature
+            _qid_version[question_id] = 1
 
         sql_ctx = {
             "question": _req.get("question", "") if isinstance(_req, dict) else "",
@@ -1009,17 +1193,36 @@ def cluster_failures(
         profile["judges"].add(f["judge"])
         profile["failures"].append(f)
 
+        # S3 — Root-cause cascade, ordered so each level overrides later
+        # ones. The historical bug was that empty ``generated_sql`` fell
+        # through to ``_classify_sql_diff`` which then emitted nonsense
+        # ``missing_filter`` / ``wrong_join`` labels based on the absence
+        # of a WHERE clause, and that ASI ``failure_type="other"`` with
+        # a non-empty ``blame_set`` was discarded instead of rescued into
+        # ``missing_data_asset`` (Lever 3).
+        sql_context = f.get("sql_context", {}) or {}
+        generated_sql = str(sql_context.get("generated_sql", "") or "").strip()
         asi_ft = f.get("asi_failure_type")
-        if asi_ft and asi_ft != "other":
+
+        if not generated_sql:
+            root = "missing_sql_generation"
+            resolution_method = "empty_sql_shortcut"
+        elif asi_ft and asi_ft != "other":
             root = asi_ft
             resolution_method = "asi_metadata"
+        elif (
+            (asi_ft == "other" or not asi_ft)
+            and _blame_set_matches_metadata(f.get("asi_blame_set"), metadata_snapshot)
+        ):
+            root = "missing_data_asset"
+            resolution_method = "asi_blame_set"
         else:
             pattern = _extract_pattern(f["rationale"])
             if pattern != "other":
                 root = pattern
                 resolution_method = "rationale_pattern"
             else:
-                root = _classify_sql_diff(f.get("sql_context", {}))
+                root = _classify_sql_diff(sql_context)
                 resolution_method = "sql_diff"
         f["_resolved_root_cause"] = root
         f["_resolution_method"] = resolution_method
@@ -1250,6 +1453,28 @@ def cluster_failures(
         lines.append(f"|  Total failure entries:     {total_failures} (across {len(question_profiles)} questions, {total_judges} judges)")
         lines.append(f"|  Question profiles:         {len(question_profiles)}")
         lines.append(f"|  Cluster groups formed:     {len(clusters)}")
+        if _qid_rewrites or _qid_pure_duplicates:
+            lines.append(
+                f"|  Duplicate qids detected:   "
+                f"rewrote {len(_qid_rewrites)}, dropped {len(_qid_pure_duplicates)}"
+            )
+            if _qid_rewrites:
+                _preview = ", ".join(_qid_rewrites[:5])
+                _suffix = "" if len(_qid_rewrites) <= 5 else f" (+{len(_qid_rewrites) - 5} more)"
+                lines.append(f"|    rewrites: {_preview}{_suffix}")
+            if _qid_pure_duplicates:
+                _dup_counts: dict[str, int] = {}
+                for _q in _qid_pure_duplicates:
+                    _dup_counts[_q] = _dup_counts.get(_q, 0) + 1
+                _preview = ", ".join(
+                    f"{q} (x{c})" for q, c in list(_dup_counts.items())[:5]
+                )
+                _suffix = (
+                    ""
+                    if len(_dup_counts) <= 5
+                    else f" (+{len(_dup_counts) - 5} more)"
+                )
+                lines.append(f"|    pure duplicates: {_preview}{_suffix}")
         for c in clusters:
             cid = c["cluster_id"]
             rc = c["root_cause"]
@@ -8189,6 +8414,117 @@ _DERIVED_PATTERN = re.compile(
 )
 
 
+# ── Phase 3.R7: alias rewriting for mined SQL expressions ─────────────
+#
+# Benchmark queries routinely use local aliases:
+#   SELECT SUM(F.SALES_AMOUNT_USD) FROM cat.sch.fact_sales F
+# When ``_mine_sql_expression_candidates`` extracts ``SUM(F.SALES_AMOUNT_USD)``
+# the alias ``F`` is lost, so the stand-alone EXPLAIN fails with
+# ``UNRESOLVED_COLUMN: F.SALES_AMOUNT_USD``. These helpers parse the
+# source FROM/JOIN clauses, build ``{alias_lower: full_identifier}``,
+# and rewrite the extracted expression in place.
+
+_FROM_JOIN_WITH_ALIAS_RE = re.compile(
+    # ``FROM``/``JOIN`` + dotted identifier + optional AS / bare alias.
+    # Swallows backticks on either side; stops at whitespace or SQL
+    # punctuation. Deliberately does not capture subqueries
+    # (``FROM (SELECT ...)``) or table-valued expressions (LATERAL,
+    # UNNEST, VALUES) — those have no alias to rebind against.
+    r"\b(?:FROM|JOIN)\s+"
+    r"(?!\(|SELECT\b|LATERAL\b|UNNEST\b|VALUES\b)"
+    r"((?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s*\.\s*(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*))*)"
+    r"(?:\s+(?:AS\s+)?([A-Za-z_][A-Za-z0-9_]*))?",
+    re.IGNORECASE,
+)
+
+# Reserved words that are not aliases even if they sit in alias position.
+_NOT_AN_ALIAS = frozenset({
+    "where", "group", "order", "having", "limit", "join", "inner",
+    "left", "right", "full", "cross", "outer", "on", "using",
+    "natural", "union", "intersect", "except", "qualify", "window",
+    "cluster", "distribute", "sort", "lateral", "pivot", "unpivot",
+    "with", "as",
+})
+
+
+def _extract_alias_bindings(sql: str) -> dict[str, str]:
+    """Parse FROM/JOIN clauses in ``sql`` and return ``{alias_lower:
+    full_identifier}``. The full identifier preserves its original case
+    (not stripped) so rebinding emits the exact form the schema has on
+    disk. When no alias is declared the table name itself is used as
+    the key (identity binding), so expressions that qualify by table
+    name also validate without rewriting.
+    """
+    if not sql:
+        return {}
+    bindings: dict[str, str] = {}
+    for m in _FROM_JOIN_WITH_ALIAS_RE.finditer(sql):
+        full_ident_raw = m.group(1)
+        alias_raw = m.group(2)
+        full_ident = ".".join(
+            seg.strip().strip("`") for seg in full_ident_raw.split(".")
+        )
+        if alias_raw and alias_raw.lower() not in _NOT_AN_ALIAS:
+            bindings.setdefault(alias_raw.lower(), full_ident)
+        # Identity binding: ``FROM cat.sch.t`` → ``t`` also maps to
+        # ``cat.sch.t`` so expressions qualifying by bare table name
+        # still rebind cleanly.
+        short = full_ident.split(".")[-1]
+        if short:
+            bindings.setdefault(short.lower(), full_ident)
+    return bindings
+
+
+_ALIAS_COL_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b"
+)
+
+
+def _rebind_expression_aliases(
+    expr: str, alias_map: dict[str, str],
+) -> str | None:
+    """Rewrite ``alias.col`` references in ``expr`` using ``alias_map``.
+
+    Returns the rewritten expression on success, or ``None`` when any
+    referenced alias is missing from the map (the caller drops the
+    candidate so EXPLAIN never sees unresolvable references).
+    Already-qualified ``cat.sch.t.col`` forms pass through unchanged.
+    """
+    if not expr:
+        return expr
+    missing: list[str] = []
+
+    def _replace(m: re.Match[str]) -> str:
+        alias = m.group(1)
+        col = m.group(2)
+        # Already the start of a multi-dotted identifier → skip (the
+        # regex is greedy but pattern matching occurs left-to-right; a
+        # preceding ``.`` means we're mid-identifier).
+        before = m.string[: m.start()]
+        if before.endswith("."):
+            return m.group(0)
+        binding = alias_map.get(alias.lower())
+        if binding is None:
+            # Uppercase SQL keywords and aggregate function names are
+            # not aliases — don't demand them in the map.
+            if alias.upper() in {
+                "SUM", "COUNT", "AVG", "MIN", "MAX", "CASE",
+                "WHEN", "THEN", "ELSE", "END", "AS", "AND", "OR",
+                "NOT", "NULL", "TRUE", "FALSE", "DISTINCT", "ALL",
+                "BETWEEN", "IN", "IS", "LIKE", "ILIKE",
+            }:
+                return m.group(0)
+            missing.append(alias)
+            return m.group(0)
+        return f"{binding}.{col}"
+
+    rewritten = _ALIAS_COL_RE.sub(_replace, expr)
+    if missing:
+        return None
+    return rewritten
+
+
 _MINER_TARGETS: tuple[str, ...] = (
     "sql_snippet", "join_spec", "example_qsql",
     "table_desc", "column_synonym", "keep_in_prose",
@@ -8689,14 +9025,35 @@ def _mine_sql_expression_candidates(
     where_counter: Counter[str] = Counter()
     derived_counter: Counter[str] = Counter()
 
+    # Phase 3.R7: drops counter lives on the function-local attribute so
+    # the caller can surface it in the SQL expression seeding summary
+    # without changing the return contract. Reset per call.
+    rebind_dropped = 0
+    rebind_dropped_examples: list[str] = []
+
+    def _rebind_or_none(
+        expr: str, alias_map: dict[str, str], upper: bool,
+    ) -> str | None:
+        rewritten = _rebind_expression_aliases(expr, alias_map)
+        if rewritten is None:
+            return None
+        normalized = " ".join(rewritten.split())
+        return normalized.upper() if upper else normalized
+
     for b in benchmarks:
         sql = b.get("expected_sql", "") or ""
         if not sql.strip():
             continue
+        alias_map = _extract_alias_bindings(sql)
 
         for m in _AGG_PATTERN.findall(sql):
-            normalized = " ".join(m.split()).upper()
-            agg_counter[normalized] += 1
+            rebound = _rebind_or_none(m, alias_map, upper=True)
+            if rebound is None:
+                rebind_dropped += 1
+                if len(rebind_dropped_examples) < 3:
+                    rebind_dropped_examples.append(m[:80])
+                continue
+            agg_counter[rebound] += 1
 
         where_match = _WHERE_PATTERN.search(sql)
         if where_match:
@@ -8704,12 +9061,30 @@ def _mine_sql_expression_candidates(
             for condition in re.split(r"\s+AND\s+", clause, flags=re.IGNORECASE):
                 condition = condition.strip()
                 if condition and len(condition) < 200:
-                    normalized = " ".join(condition.split())
-                    where_counter[normalized] += 1
+                    rebound = _rebind_or_none(condition, alias_map, upper=False)
+                    if rebound is None:
+                        rebind_dropped += 1
+                        if len(rebind_dropped_examples) < 3:
+                            rebind_dropped_examples.append(condition[:80])
+                        continue
+                    where_counter[rebound] += 1
 
         for m in _DERIVED_PATTERN.findall(sql):
-            normalized = " ".join(m.split())
-            derived_counter[normalized] += 1
+            rebound = _rebind_or_none(m, alias_map, upper=False)
+            if rebound is None:
+                rebind_dropped += 1
+                if len(rebind_dropped_examples) < 3:
+                    rebind_dropped_examples.append(m[:80])
+                continue
+            derived_counter[rebound] += 1
+
+    # Stash on function attributes so the harness caller can surface the
+    # counts in the seeding summary block without changing the return
+    # shape (the callers that don't read these get zeros by default).
+    _mine_sql_expression_candidates.last_rebind_dropped = rebind_dropped
+    _mine_sql_expression_candidates.last_rebind_dropped_examples = (
+        rebind_dropped_examples
+    )
 
     candidates: list[dict] = []
 

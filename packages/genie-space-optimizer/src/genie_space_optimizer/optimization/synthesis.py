@@ -230,8 +230,102 @@ def _gate_parse(proposal: dict) -> GateResult:
 
 
 _SQL_STRING_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
+_SQL_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+_SQL_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
 _SQL_WHERE_TOKEN_RE = re.compile(r"\bWHERE\b", re.IGNORECASE)
 _SQL_JOIN_TOKEN_RE = re.compile(r"\bJOIN\b", re.IGNORECASE)
+
+# ── Phase 2.R5: identifier-qualification gate ────────────────────────
+#
+# Captures the token immediately after FROM / JOIN / CROSS JOIN (unless
+# followed by a SELECT which would be a subquery and a LATERAL / UNNEST
+# which are table-valued expressions). Accepts backticked or bare
+# identifiers with dot-segments. We do NOT try to be a full parser —
+# the goal is to cheaply reject the "SELECT ... FROM dim_date" style
+# hallucination before EXPLAIN burns a warehouse call on it.
+_SQL_FROM_JOIN_TARGET_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+"
+    r"(?!\(|SELECT\b|LATERAL\b|UNNEST\b|VALUES\b)"
+    r"((?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:\s*\.\s*(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_]*))*)",
+    re.IGNORECASE,
+)
+
+
+def _strip_sql_noise(sql: str) -> str:
+    """Remove string literals and comments so token regexes operate on
+    structural SQL only. Deliberately minimal — misses edge cases like
+    dollar-quoted strings which Databricks SQL doesn't use."""
+    if not sql:
+        return ""
+    no_block = _SQL_BLOCK_COMMENT_RE.sub(" ", sql)
+    no_line = _SQL_LINE_COMMENT_RE.sub(" ", no_block)
+    no_strings = _SQL_STRING_LITERAL_RE.sub(" ", no_line)
+    return no_strings
+
+
+def _extract_from_join_targets(sql: str) -> list[str]:
+    """Return the canonical-cased table references that appear after
+    ``FROM`` / ``JOIN`` in ``sql``. Backticks are stripped; case is
+    lowercased so comparison against the allowlist is symmetric.
+    Subqueries (``FROM (SELECT ...)``) and table-valued expressions
+    (``LATERAL``, ``UNNEST``, ``VALUES``) are skipped — they have no
+    identifier to qualify.
+    """
+    cleaned = _strip_sql_noise(sql)
+    targets: list[str] = []
+    for m in _SQL_FROM_JOIN_TARGET_RE.finditer(cleaned):
+        raw = m.group(1)
+        # Normalise `a` . `b` . `c` or A . B . C → "a.b.c".
+        parts = [
+            p.strip().strip("`").lower()
+            for p in raw.split(".")
+        ]
+        targets.append(".".join(p for p in parts if p))
+    return targets
+
+
+def _gate_identifier_qualification(
+    proposal: dict,
+    allowlist: set[str] | None,
+) -> GateResult:
+    """Gate 1.5 — reject SQL whose FROM/JOIN targets aren't in the
+    slice's identifier allowlist. Runs after parse (so ``sql`` is
+    syntactically valid) and before execute (so we don't pay for an
+    EXPLAIN on a SQL we can already tell is unqualified).
+
+    ``allowlist`` is a set of lowercased fully-qualified identifiers
+    (``cat.sch.tbl``). ``None`` / empty allowlist ⇒ skip (e.g.
+    cluster-driven path without a slice context); no regression vs.
+    today.
+
+    Parse failures on malformed SQL are handled by the real ``_gate_parse``
+    — here we soft-accept when the regex extracts nothing from the
+    cleaned SQL (structural anomaly; downstream gates catch it).
+    """
+    if not allowlist:
+        return GateResult(True, "identifier_qualification", "skipped_no_allowlist")
+    sql = str(proposal.get("example_sql") or "")
+    if not sql.strip():
+        return GateResult(True, "identifier_qualification", "skipped_empty_sql")
+    try:
+        targets = _extract_from_join_targets(sql)
+    except Exception as exc:
+        return GateResult(
+            True, "identifier_qualification",
+            f"skipped_parse_failed: {exc}",
+        )
+    if not targets:
+        return GateResult(True, "identifier_qualification", "skipped_no_targets")
+    allowlist_lower = {a.strip().lower() for a in allowlist}
+    bad = [t for t in targets if t not in allowlist_lower]
+    if bad:
+        preview = sorted(allowlist_lower)[:5]
+        return GateResult(
+            False, "identifier_qualification",
+            f"UNQUALIFIED_TABLE: {bad[0]} — expected one of {preview}…",
+        )
+    return GateResult(True, "identifier_qualification")
 
 
 def _sql_has_where_or_join(sql: str) -> bool:
@@ -436,21 +530,27 @@ def validate_synthesis_proposal(
     gold_schema: str = "",
     w: Any = None,
     warehouse_id: str = "",
+    identifier_allowlist: set[str] | None = None,
 ) -> tuple[bool, list[GateResult]]:
     """Run gates cheap-to-expensive. Returns ``(all_passed, gate_results)``.
 
     Gate order is load-bearing:
     1. Parse (instant) — catches malformed LLM output.
-    2. Execute (ms-to-seconds) — catches invalid/hallucinated SQL.
-    3. Structural (instant) — enforces archetype contract.
-    4. Arbiter (seconds; LLM) — final quality judge.
-    5. Firewall (ms) — last-mile leak check.
+    2. Identifier qualification (instant) — rejects SQL whose FROM/JOIN
+       targets are unqualified or not in the slice's allowlist. Added
+       in Phase 2.R5; cheap to run so it short-circuits the expensive
+       execute gate. No-op when ``identifier_allowlist`` is ``None``.
+    3. Execute (ms-to-seconds) — catches remaining hallucinated SQL.
+    4. Structural (instant) — enforces archetype contract.
+    5. Arbiter (seconds; LLM) — final quality judge.
+    6. Firewall (ms) — last-mile leak check.
 
     Any gate failure short-circuits the rest.
     """
     results: list[GateResult] = []
     for gate_fn in (
         lambda: _gate_parse(proposal),
+        lambda: _gate_identifier_qualification(proposal, identifier_allowlist),
         lambda: _gate_execute(
             proposal,
             spark=spark, catalog=catalog, gold_schema=gold_schema,
