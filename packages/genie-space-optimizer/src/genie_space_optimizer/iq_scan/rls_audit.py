@@ -149,14 +149,20 @@ def _query_row_filters(
     *,
     exec_sql,
 ) -> set[tuple[str, str]]:
-    """Return ``{(schema, table)}`` with a direct row_filter in catalog."""
+    """Return ``{(schema, table)}`` with a direct row_filter in catalog.
+
+    Queries ``information_schema.row_filters`` using the real column
+    names (``table_schema`` / ``table_name``) — this view does NOT
+    expose a ``schema_name`` column, so selecting or filtering on it
+    raises ``UNRESOLVED_COLUMN``.
+    """
     if not pairs:
         return set()
     in_clause = _build_in_clause(pairs)
     sql = (
-        f"SELECT schema_name, table_name "
+        f"SELECT table_schema, table_name "
         f"FROM `{catalog}`.information_schema.row_filters "
-        f"WHERE (schema_name, table_name) IN ({in_clause})"
+        f"WHERE (table_schema, table_name) IN ({in_clause})"
     )
     try:
         df = exec_sql(sql)
@@ -167,7 +173,7 @@ def _query_row_filters(
         )
         return set()
     return {
-        (str(r["schema_name"]).lower(), str(r["table_name"]).lower())
+        (str(r["table_schema"]).lower(), str(r["table_name"]).lower())
         for _, r in df.iterrows()
     } if not df.empty else set()
 
@@ -178,14 +184,20 @@ def _query_column_masks(
     *,
     exec_sql,
 ) -> set[tuple[str, str]]:
-    """Return ``{(schema, table)}`` with a direct column_mask in catalog."""
+    """Return ``{(schema, table)}`` with a direct column_mask in catalog.
+
+    Queries ``information_schema.column_masks`` using the real column
+    names (``table_schema`` / ``table_name``) — this view does NOT
+    expose a ``schema_name`` column, so selecting or filtering on it
+    raises ``UNRESOLVED_COLUMN``.
+    """
     if not pairs:
         return set()
     in_clause = _build_in_clause(pairs)
     sql = (
-        f"SELECT schema_name, table_name "
+        f"SELECT table_schema, table_name "
         f"FROM `{catalog}`.information_schema.column_masks "
-        f"WHERE (schema_name, table_name) IN ({in_clause})"
+        f"WHERE (table_schema, table_name) IN ({in_clause})"
     )
     try:
         df = exec_sql(sql)
@@ -196,7 +208,7 @@ def _query_column_masks(
         )
         return set()
     return {
-        (str(r["schema_name"]).lower(), str(r["table_name"]).lower())
+        (str(r["table_schema"]).lower(), str(r["table_name"]).lower())
         for _, r in df.iterrows()
     } if not df.empty else set()
 

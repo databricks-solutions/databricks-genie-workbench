@@ -145,7 +145,32 @@ def test_canonicalize_sql_diff_for_different_queries() -> None:
                 ),
             },
         ),
-        # add_sql_snippet_measure — lifted expected_sql
+        # Note: add_sql_snippet_* and add_join_spec / update_join_spec
+        # entries were removed from this parametrized list. The firewall
+        # is intentionally NOT wired for structural SQL (see the scoping
+        # comment above ``_PATCH_TEXT_FIELDS`` in leakage.py). Those
+        # paths are gated by the arbiter-approved source filter (proactive
+        # seeding), the post-iteration arbiter rollback (Lever 6), and
+        # exec-validation everywhere — all stronger than fingerprint
+        # matching for structural primitives. Dedicated allow-through
+        # tests below cover this intentional behaviour change.
+    ],
+)
+def test_leaky_proposals_are_rejected(
+    patch_type: str, proposal: dict, corpus: BenchmarkCorpus,
+) -> None:
+    is_leak, reason = is_benchmark_leak(proposal, patch_type, corpus)
+    assert is_leak, f"Expected leak for {patch_type}, got clean ({reason})"
+    assert reason, "Reason must be non-empty on a leak"
+
+
+@pytest.mark.parametrize(
+    "patch_type, proposal",
+    [
+        # Structural SQL primitives whose fingerprint matches a benchmark
+        # ARE allowed through — they are building blocks, not answers.
+        # Proof: even a verbatim lift of an expected_sql fragment into a
+        # measure / filter / expression / join_spec passes.
         (
             "add_sql_snippet_measure",
             {
@@ -156,7 +181,6 @@ def test_canonicalize_sql_diff_for_different_queries() -> None:
                 "display_name": "lifetime_value",
             },
         ),
-        # add_sql_snippet_filter — derived WHERE clause still leaks question
         (
             "add_sql_snippet_filter",
             {
@@ -165,14 +189,42 @@ def test_canonicalize_sql_diff_for_different_queries() -> None:
                 "synonyms": ["list all orders placed in the last 30 days"],
             },
         ),
+        (
+            "add_sql_snippet_expression",
+            {
+                "sql": "DATE_TRUNC('quarter', order_date)",
+                "display_name": "order_quarter",
+            },
+        ),
+        (
+            "add_join_spec",
+            {
+                "description": "Join orders to customers on customer_id",
+                "comment": "Captures benchmark pattern but is STRUCTURE, not an ANSWER",
+            },
+        ),
+        (
+            "update_join_spec",
+            {
+                "description": "Refine join on customer_id to include soft-deleted customers",
+                "comment": "",
+            },
+        ),
     ],
 )
-def test_leaky_proposals_are_rejected(
+def test_structural_sql_allowed_even_when_matches_benchmark(
     patch_type: str, proposal: dict, corpus: BenchmarkCorpus,
 ) -> None:
+    """Structural SQL (sql_snippet / join_spec) is intentionally exempt
+    from the firewall. Exec-validation + source-gating (arbiter-approved
+    source filter for proactive, post-iteration rollback for Lever 6)
+    supersede fingerprint matching for these patch types.
+    """
     is_leak, reason = is_benchmark_leak(proposal, patch_type, corpus)
-    assert is_leak, f"Expected leak for {patch_type}, got clean ({reason})"
-    assert reason, "Reason must be non-empty on a leak"
+    assert not is_leak, (
+        f"Structural SQL firewall must be OFF for {patch_type}; "
+        f"got leak={is_leak} reason={reason!r}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -311,10 +363,22 @@ def test_no_import_path_references_old_name() -> None:
 
 
 def test_resolve_lever5_does_not_copy_sql_for_sql_pattern() -> None:
-    # Importing inside the test — module imports above already covered it,
-    # but we re-import here for clarity.
+    """Bug #4 contract, updated by Phase A3b of the router-and-resilience plan.
+
+    Before A3b: a ``text_instruction`` response for a ``wrong_join`` cluster
+    would fall through to ``add_instruction`` (weak text fallback) while the
+    secondary-mining counter was bumped to prove verbatim copy was blocked.
+
+    After A3b: for any root cause in ``_SQL_SHAPE_ROOT_CAUSES`` (which is a
+    superset of ``_SQL_PATTERN_ROOT_CAUSES``), the resolver returns the
+    sentinel ``("skipped_no_example_sql", {...})`` instead of a weak text
+    instruction. The ``secondary_mining_blocked`` counter is still bumped
+    for observability parity so Bug #4 dashboards continue to show the
+    original benchmark-leakage prevention.
+    """
     from genie_space_optimizer.optimization.optimizer import (
         _BUG4_COUNTERS,
+        _SQL_SHAPE_ROOT_CAUSES,
         _resolve_lever5_llm_result,
         reset_bug4_counters,
     )
@@ -346,11 +410,12 @@ def test_resolve_lever5_does_not_copy_sql_for_sql_pattern() -> None:
         llm_result, original_patch_type="add_example_sql", cluster=cluster,
     )
 
-    # Must NOT have been forced to add_example_sql with the benchmark SQL.
-    assert patch_type == "add_instruction"
+    # A3b contract: structural causes must not emit weak text instructions.
+    assert patch_type == "skipped_no_example_sql"
+    assert extra.get("root_cause") in _SQL_SHAPE_ROOT_CAUSES
     assert "example_sql" not in extra
     assert "forced_from_sql_pattern" not in extra
-    # Counter bumped — secondary mining path was blocked.
+    # Bug #4 parity preserved — secondary mining path still counted as blocked.
     assert _BUG4_COUNTERS["secondary_mining_blocked"] >= 1
 
 

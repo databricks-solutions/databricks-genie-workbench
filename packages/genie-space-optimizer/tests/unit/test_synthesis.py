@@ -90,6 +90,26 @@ def test_schema_traits_extracts_all_kinds() -> None:
     assert "has_joinable" in traits
 
 
+def test_schema_traits_reads_production_data_sources_shape() -> None:
+    """Regression guard: the Genie ``serialized_space`` shape nests tables
+    under ``data_sources.tables``. ``schema_traits`` must read that path,
+    not only the top-level ``tables`` key. Historically it didn't, and
+    the preflight planner collapsed to a single ``filter_compose``
+    archetype in production."""
+    production_shape = {
+        "data_sources": {
+            "tables": _SCHEMA_SNAPSHOT["tables"],
+            "metric_views": [{"identifier": "cat.sch.mv_sales"}],
+        },
+    }
+    traits = schema_traits(production_shape)
+    assert "has_numeric" in traits
+    assert "has_date" in traits
+    assert "has_categorical" in traits
+    assert "has_joinable" in traits
+    assert "has_metric_view" in traits
+
+
 def test_pick_archetype_deterministic() -> None:
     afs = {"failure_type": "wrong_aggregation", "blame_set": ["sales.revenue"]}
     first = pick_archetype(afs, _SCHEMA_SNAPSHOT)
@@ -108,9 +128,16 @@ def test_pick_archetype_respects_schema_traits() -> None:
         assert "has_numeric" not in chosen.required_schema_traits
 
 
-def test_pick_archetype_none_for_unknown_root_cause() -> None:
+def test_pick_archetype_falls_back_to_simple_enumerate_for_unknown() -> None:
+    """Phase 1.R4: unknown root causes are caught by the
+    ``simple_enumerate`` safety net rather than leaving the caller
+    without an archetype. The previous contract (return None) no
+    longer holds — the planner always has a fallback to stop empty
+    synthesis batches."""
     afs = {"failure_type": "totally_unknown_root_cause_xyz"}
-    assert pick_archetype(afs, _SCHEMA_SNAPSHOT) is None
+    picked = pick_archetype(afs, _SCHEMA_SNAPSHOT)
+    assert picked is not None
+    assert picked.name == "simple_enumerate"
 
 
 def test_archetype_catalog_covers_common_root_causes() -> None:

@@ -302,9 +302,9 @@ class TestRLSAudit:
     def test_direct_row_filter_marks_tainted(self):
         tables = [{"identifier": "cat.sch.orders"}]
         rf_df = pd.DataFrame([{
-            "schema_name": "sch", "table_name": "orders",
-            "filter_catalog": "cat", "filter_schema": "secure",
-            "filter_name": "pii_filter",
+            "table_schema": "sch", "table_name": "orders",
+            "table_catalog": "cat", "filter_name": "pii_filter",
+            "target_columns": "",
         }])
         exec_sql = _make_exec_sql_mock({
             "ROW_FILTERS": rf_df,
@@ -320,10 +320,9 @@ class TestRLSAudit:
     def test_direct_column_mask_marks_tainted(self):
         tables = [{"identifier": "cat.sch.customers"}]
         cm_df = pd.DataFrame([{
-            "schema_name": "sch", "table_name": "customers",
-            "column_name": "email",
-            "mask_catalog": "cat", "mask_schema": "secure",
-            "mask_name": "email_redact",
+            "table_schema": "sch", "table_name": "customers",
+            "table_catalog": "cat",
+            "column_name": "email", "mask_name": "email_redact",
         }])
         exec_sql = _make_exec_sql_mock({
             "ROW_FILTERS": pd.DataFrame(),
@@ -340,9 +339,9 @@ class TestRLSAudit:
             {"identifier": "cat.sch.orders"},
         ]
         rf_df = pd.DataFrame([{
-            "schema_name": "sch", "table_name": "orders",
-            "filter_catalog": "cat", "filter_schema": "secure",
-            "filter_name": "pii_filter",
+            "table_schema": "sch", "table_name": "orders",
+            "table_catalog": "cat", "filter_name": "pii_filter",
+            "target_columns": "",
         }])
         vtu_df = pd.DataFrame([{
             "view_schema": "sch", "view_name": "mv_sales",
@@ -391,6 +390,103 @@ class TestRLSAudit:
         exec_sql = _make_exec_sql_mock({})  # every query returns empty
         result = collect_rls_audit(tables, exec_sql=exec_sql)
         assert result["cat.sch.t1"]["verdict"] == "clean"
+
+    def test_row_filters_sql_uses_real_infoschema_columns(self):
+        """Regression: ``information_schema.row_filters`` exposes
+        ``table_schema``/``table_name`` — NOT ``schema_name``. Selecting
+        or filtering on ``schema_name`` raises ``UNRESOLVED_COLUMN`` at
+        runtime, and the caller falls back to an empty set (clean), which
+        silently disables the direct row-filter check. This test pins
+        the SQL shape to the real info_schema field names.
+        """
+        captured_sql: list[str] = []
+
+        def capturing_exec(sql: str):
+            captured_sql.append(sql)
+            # Probe SELECT 1: return empty df. The real executors return
+            # a pandas DataFrame; `not df.empty` guards the caller.
+            return pd.DataFrame()
+
+        tables = [{"identifier": "cat.sch.orders"}]
+        collect_rls_audit(tables, exec_sql=capturing_exec)
+
+        rf_sql = next(
+            (
+                s for s in captured_sql
+                if "row_filters" in s.lower()
+                and "select 1" not in s.lower()  # skip probe
+            ),
+            None,
+        )
+        assert rf_sql is not None, (
+            f"row_filters query not issued; captured: {captured_sql}"
+        )
+        # The view's real column is ``table_schema``. Any appearance of
+        # ``schema_name`` as a projected/filtered identifier means we've
+        # reintroduced the unresolved-column regression.
+        assert "table_schema" in rf_sql
+        # Guard against naive ``schema_name`` usage (allow the word only
+        # inside string literals, but our SQL has no literal text here).
+        assert "schema_name" not in rf_sql, (
+            "row_filters SQL must NOT reference `schema_name`; "
+            f"got: {rf_sql}"
+        )
+
+    def test_column_masks_sql_uses_real_infoschema_columns(self):
+        """Regression twin for ``information_schema.column_masks``.
+
+        Same contract as ``row_filters``: the view exposes
+        ``table_schema`` / ``table_name`` and the query must not
+        reference ``schema_name``.
+        """
+        captured_sql: list[str] = []
+
+        def capturing_exec(sql: str):
+            captured_sql.append(sql)
+            return pd.DataFrame()
+
+        tables = [{"identifier": "cat.sch.customers"}]
+        collect_rls_audit(tables, exec_sql=capturing_exec)
+
+        cm_sql = next(
+            (s for s in captured_sql if "column_masks" in s.lower()),
+            None,
+        )
+        assert cm_sql is not None, (
+            f"column_masks query not issued; captured: {captured_sql}"
+        )
+        assert "table_schema" in cm_sql
+        assert "schema_name" not in cm_sql, (
+            "column_masks SQL must NOT reference `schema_name`; "
+            f"got: {cm_sql}"
+        )
+
+    def test_row_filters_unresolved_column_is_fail_open(self):
+        """If ``information_schema.row_filters`` raises at query time
+        (simulating the ``UNRESOLVED_COLUMN`` regression we just fixed),
+        the audit must stay fail-open: probe succeeds, the downstream
+        query returns an empty set via logged warning, and the table
+        stays ``clean`` rather than exploding. This pins the contract
+        in the module docstring.
+        """
+
+        def exec_sql(sql: str):
+            upper = sql.upper()
+            if "SELECT 1" in upper and "ROW_FILTERS" in upper:
+                # Probe succeeds.
+                return pd.DataFrame()
+            if "ROW_FILTERS" in upper:
+                raise RuntimeError(
+                    "[UNRESOLVED_COLUMN.WITH_SUGGESTION] A column, "
+                    "variable, or function parameter with name "
+                    "`schema_name` cannot be resolved."
+                )
+            return pd.DataFrame()
+
+        tables = [{"identifier": "cat.sch.orders"}]
+        result = collect_rls_audit(tables, exec_sql=exec_sql)
+        assert result["cat.sch.orders"]["verdict"] == "clean"
+        assert result["cat.sch.orders"]["has_direct_row_filter"] is False
 
 
 # ───────────────────────────────────────────────────────────────────────

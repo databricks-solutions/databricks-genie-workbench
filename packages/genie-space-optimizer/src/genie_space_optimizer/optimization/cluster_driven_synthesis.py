@@ -159,6 +159,11 @@ class ClusterContext:
     afs: dict
     asset_slice: AssetSlice
     cluster_id: str = "?"
+    # Phase 2.R2c: warehouse-sampled ``_data_profile`` threaded through so
+    # cluster-driven synthesis inherits the same value-grounded prompt
+    # section the pre-flight path now enjoys. Optional so legacy call
+    # sites without a profile continue to render ``(no profile available)``.
+    data_profile: dict | None = None
 
     def to_identifier_allowlist(self) -> str:
         return self.asset_slice.to_identifier_allowlist()
@@ -176,6 +181,8 @@ def render_cluster_driven_prompt(
     archetype: Archetype,
     context: ClusterContext,
     existing_questions: list[str],
+    *,
+    retry_feedback: str | None = None,
 ) -> str:
     """Render the cluster-driven prompt: AFS block + pre-flight prompt.
 
@@ -187,6 +194,9 @@ def render_cluster_driven_prompt(
     the AFS concern at this wrapper keeps the pre-flight template and
     its formatter helpers completely untouched.
 
+    ``retry_feedback`` passes through to the pre-flight renderer for the
+    R6 retry path on cluster-driven synthesis.
+
     Byte-equivalence contract: when ``render_afs_block`` returns empty
     (no AFS fields beyond cluster_id), this function returns the pre-
     flight prompt verbatim, preserving the invariant that pre-flight's
@@ -195,6 +205,8 @@ def render_cluster_driven_prompt(
     """
     base = render_preflight_prompt(
         archetype, context.asset_slice, existing_questions,
+        data_profile=context.data_profile,
+        retry_feedback=retry_feedback,
     )
     afs_block = render_afs_block(context.afs)
     if not afs_block:
@@ -572,7 +584,10 @@ def run_cluster_driven_synthesis_for_single_cluster(
         return None
     slice_, archetype = derived
     context = ClusterContext(
-        afs=afs, asset_slice=slice_, cluster_id=cluster_id,
+        afs=afs,
+        asset_slice=slice_,
+        cluster_id=cluster_id,
+        data_profile=metadata_snapshot.get("_data_profile") or None,
     )
 
     # Bump budget counter — we're about to issue an LLM call.
@@ -633,6 +648,63 @@ def run_cluster_driven_synthesis_for_single_cluster(
         spark=spark, catalog=catalog, gold_schema=gold_schema,
         w=w, warehouse_id=warehouse_id,
     )
+
+    # ── Phase 3.R6: one retry on EMPTY_RESULT ──────────────────────
+    # Mirrors the pre-flight retry in :mod:`preflight_synthesis`. We
+    # rebuild the cluster-driven prompt with the retry-feedback block
+    # (which passes through to the pre-flight renderer).
+    if not passed:
+        first_fail = next((g for g in gate_results if not g.passed), None)
+        if (
+            first_fail is not None
+            and first_fail.gate == "execute"
+            and "EMPTY_RESULT" in (first_fail.reason or "")
+        ):
+            from genie_space_optimizer.optimization.preflight_synthesis import (
+                _build_empty_result_feedback,
+            )
+            feedback = _build_empty_result_feedback(
+                proposal, context.data_profile, context.asset_slice,
+            )
+            retry_prompt = render_cluster_driven_prompt(
+                archetype, context, _existing_questions(metadata_snapshot),
+                retry_feedback=feedback or None,
+            )
+            if llm_caller is None:
+                from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+                try:
+                    retry_raw, _ = _traced_llm_call(
+                        w, "You are a SQL example author.", retry_prompt,
+                        span_name="cluster_driven_example_synthesis_retry",
+                    )
+                except Exception:
+                    logger.warning(
+                        "cluster-driven: retry LLM call failed for cluster=%s archetype=%s",
+                        cluster_id, archetype.name, exc_info=True,
+                    )
+                    retry_raw = ""
+            else:
+                retry_raw = llm_caller(retry_prompt)
+            retry_proposal = (
+                _extract_json_proposal(retry_raw) if retry_raw else None
+            )
+            if retry_proposal is not None:
+                retry_proposal.setdefault("patch_type", archetype.patch_type)
+                if "usage_guidance" not in retry_proposal:
+                    retry_proposal["usage_guidance"] = str(
+                        retry_proposal.get("rationale") or "",
+                    ).strip()
+                proposal = retry_proposal
+                passed, gate_results = validate_synthesis_proposal(
+                    retry_proposal,
+                    archetype=archetype,
+                    benchmark_corpus=benchmark_corpus,
+                    metadata_snapshot=metadata_snapshot,
+                    blame_set=afs.get("blame_set"),
+                    spark=spark, catalog=catalog, gold_schema=gold_schema,
+                    w=w, warehouse_id=warehouse_id,
+                )
+
     if not passed:
         first_fail = next((g for g in gate_results if not g.passed), None)
         _log_summary(

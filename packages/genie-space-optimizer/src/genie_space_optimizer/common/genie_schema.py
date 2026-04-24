@@ -656,12 +656,42 @@ def count_sql_snippets(config: dict) -> int:
     )
 
 
+SERIALIZED_SPACE_TOP_LEVEL_KEYS = frozenset({
+    "version",
+    "config",
+    "data_sources",
+    "instructions",
+    "benchmarks",
+})
+"""Allowed top-level keys on a ``serialized_space`` payload.
+
+Kept in sync with the same constant in
+``genie_space_optimizer.common.genie_client``. Any unknown top-level
+key causes the Genie API to reject the PATCH with
+``Invalid serialized_space: Cannot find field``, so strict validation
+rejects it locally too."""
+
+
 def _strict_validate(config: dict) -> list[str]:
     """Run all strict validation rules against a parsed config dict.
 
     Returns a list of error messages (empty = valid).
     """
     errors: list[str] = []
+
+    # ── Top-level key allowlist ─────────────────────────────────
+    # The Genie API rejects any ``serialized_space`` with unknown top-level
+    # keys. Catching this locally turns an otherwise-opaque API rejection
+    # into a clear error that names the offending key.
+    unknown_top_level = sorted(
+        k for k in config.keys() if k not in SERIALIZED_SPACE_TOP_LEVEL_KEYS
+    )
+    if unknown_top_level:
+        errors.append(
+            "root: unknown top-level keys "
+            f"{unknown_top_level}; allowed: "
+            f"{sorted(SERIALIZED_SPACE_TOP_LEVEL_KEYS)}"
+        )
 
     # ── Version ──────────────────────────────────────────────────
     version = config.get("version")

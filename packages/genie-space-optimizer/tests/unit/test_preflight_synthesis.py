@@ -106,9 +106,6 @@ def _rich_snapshot() -> dict:
     return {
         "data_sources": {"tables": tables, "metric_views": mvs},
         "instructions": {"join_specs": joins, "example_question_sqls": []},
-        # schema_traits() looks at metadata_snapshot["tables"] too
-        "tables": tables,
-        "metric_views": mvs,
     }
 
 
@@ -244,6 +241,233 @@ class TestThresholdAndFeatureFlag:
             )
         assert result["need"] == 3
         assert result["applied"] == 3  # never exceeds need
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Per-candidate rejection observability
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestRejectionExamplesCaptured:
+    """Regression guard for the Preflight Example SQL Synthesis
+    observability gap: ``Rejected by gate: execute=N`` used to surface
+    a counter with no reasons, so diagnosing a run required grepping
+    INFO logs. After the fix, ``result["gate_rejected_examples"]``
+    carries a bounded list of ``{gate, reason, question_prefix,
+    sql_prefix}`` entries that the pretty summary also renders.
+    """
+
+    def test_execute_gate_failure_is_captured(self, monkeypatch):
+        snap = _rich_snapshot()
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.preflight_synthesis."
+            "_apply_preflight_proposals",
+            lambda proposals, **kw: len(proposals),
+        )
+        with patch(
+            "genie_space_optimizer.optimization.preflight_synthesis."
+            "validate_synthesis_proposal",
+            side_effect=_gate_fails_at(
+                "execute",
+                "UNRESOLVED_COLUMN `cat.sch.t.mystery` cannot be resolved",
+            ),
+        ):
+            result = run_preflight_example_synthesis(
+                w=None, spark=None, run_id="r", space_id="s", config={},
+                metadata_snapshot=snap,
+                benchmarks=[], catalog="c", schema="sch",
+                llm_caller=_fake_llm_valid_response,
+                rng=random.Random(42),
+            )
+
+        # No plans should apply — every candidate hit the execute gate.
+        assert result["applied"] == 0
+        assert result["rejected_by_gate"].get("execute", 0) > 0
+
+        # The bounded list on the result dict must carry the reason so
+        # the next diagnosis doesn't need log-grepping.
+        examples = result.get("gate_rejected_examples") or []
+        assert len(examples) > 0, (
+            "gate_rejected_examples should have at least one entry — "
+            "this is the observability contract"
+        )
+        first = examples[0]
+        assert first["gate"] == "execute"
+        assert "UNRESOLVED_COLUMN" in first["reason"]
+        # The failing proposal's question is captured for human context.
+        assert first["question_prefix"], (
+            "question_prefix should reflect the rejected proposal"
+        )
+
+    def test_bounded_at_max_examples(self, monkeypatch):
+        """Even when many candidates fail, the capture list stays bounded
+        so we don't balloon the result dict or the write_stage payload."""
+        snap = _rich_snapshot()
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.preflight_synthesis."
+            "_apply_preflight_proposals",
+            lambda proposals, **kw: len(proposals),
+        )
+        with patch(
+            "genie_space_optimizer.optimization.preflight_synthesis."
+            "validate_synthesis_proposal",
+            side_effect=_gate_fails_at("execute", "x"),
+        ):
+            result = run_preflight_example_synthesis(
+                w=None, spark=None, run_id="r", space_id="s", config={},
+                metadata_snapshot=snap,
+                benchmarks=[], catalog="c", schema="sch",
+                llm_caller=_fake_llm_valid_response,
+                rng=random.Random(11),
+            )
+
+        examples = result.get("gate_rejected_examples") or []
+        assert len(examples) <= 10, (
+            f"rejection examples must be bounded; got {len(examples)}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Schema trait detection (production-shaped snapshot regression guard)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _production_shape_snapshot() -> dict:
+    """Snapshot mirroring the real Genie ``serialized_space`` layout.
+
+    Tables and metric views live ONLY under ``data_sources`` — no legacy
+    top-level ``tables`` / ``metric_views`` keys. This is what the harness
+    passes at runtime (``config["_parsed_space"]``), and ``schema_traits``
+    + the planner must handle it without the test-only duplication.
+    """
+    tables = [
+        _mk_table("cat.sch.fact_sales", description="sales fact"),
+        _mk_table(
+            "cat.sch.dim_region",
+            columns=[
+                {"column_name": "region_id", "type_text": "STRING"},
+                {"column_name": "region_name", "type_text": "STRING"},
+            ],
+        ),
+        _mk_table("cat.sch.dim_product"),
+    ]
+    mvs = [_mk_mv("cat.sch.mv_sales"), _mk_mv("cat.sch.mv_margin")]
+    joins = [
+        _mk_join("cat.sch.fact_sales", "cat.sch.dim_region"),
+        _mk_join(
+            "cat.sch.fact_sales", "cat.sch.dim_product",
+            left_col="product_id", right_col="id",
+        ),
+    ]
+    return {
+        "data_sources": {"tables": tables, "metric_views": mvs},
+        "instructions": {"join_specs": joins, "example_question_sqls": []},
+    }
+
+
+class TestSchemaTraitsProductionShape:
+    """Regression guard for the empty-traits bug that collapsed the
+    preflight planner to 2 ``filter_compose`` candidates in production.
+
+    ``schema_traits`` must read tables from ``data_sources.tables`` (the
+    serialized_space shape), not just from a top-level ``tables`` key.
+    Historically it only looked at the top-level key, so production
+    runs with a Genie-shaped snapshot silently returned an empty trait
+    set.
+    """
+
+    def test_schema_traits_detects_production_shape(self):
+        snap = _production_shape_snapshot()
+        # Sanity: the fixture does NOT carry the test-only duplicates.
+        assert "tables" not in snap
+        assert "metric_views" not in snap
+
+        traits = schema_traits(snap)
+
+        assert "has_numeric" in traits, (
+            "DECIMAL/BIGINT columns on data_sources.tables should trigger has_numeric"
+        )
+        assert "has_date" in traits, (
+            "DATE columns on data_sources.tables should trigger has_date"
+        )
+        assert "has_categorical" in traits, (
+            "STRING columns on data_sources.tables should trigger has_categorical"
+        )
+        assert "has_joinable" in traits, (
+            "2+ tables under data_sources should trigger has_joinable"
+        )
+        assert "has_metric_view" in traits, (
+            "Non-empty data_sources.metric_views should trigger has_metric_view"
+        )
+
+    def test_schema_traits_backcompat_top_level_shape(self):
+        """Legacy tests call schema_traits with top-level ``tables`` —
+        the fix must keep that working so we don't break existing fixtures."""
+        legacy = {
+            "tables": [
+                {
+                    "column_configs": [
+                        {"type_text": "DOUBLE"},
+                        {"type_text": "STRING"},
+                    ],
+                },
+                {"column_configs": [{"type_text": "DATE"}]},
+            ],
+        }
+        traits = schema_traits(legacy)
+        assert "has_numeric" in traits
+        assert "has_categorical" in traits
+        assert "has_date" in traits
+        assert "has_joinable" in traits
+
+    def test_plan_asset_coverage_uses_multiple_archetypes(self):
+        """With real traits detected, the planner must emit more than
+        one archetype — the old behaviour was exactly 2 ``filter_compose``
+        plans because every trait-gated archetype was filtered out."""
+        snap = _production_shape_snapshot()
+        plans = plan_asset_coverage(snap, need=20, rng=random.Random(3))
+        assert len(plans) > 2, (
+            f"planner collapsed to {len(plans)} plans — the "
+            "schema_traits regression is back"
+        )
+        archetype_names = {a.name for a, _ in plans}
+        assert len(archetype_names) >= 2, (
+            f"only archetypes seen: {archetype_names} — the planner is "
+            "still starving of eligible archetypes"
+        )
+        # Specifically: filter_compose must NOT be the sole archetype.
+        assert archetype_names != {"filter_compose"}
+
+    def test_run_surfaces_traits_and_eligible_archetypes(self, monkeypatch):
+        """The pre-flight summary result carries detected traits and the
+        eligible-archetype list so operators can diagnose a narrow planner
+        without grepping debug logs."""
+        snap = _production_shape_snapshot()
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.preflight_synthesis."
+            "_apply_preflight_proposals",
+            lambda proposals, **kw: len(proposals),
+        )
+        with patch(
+            "genie_space_optimizer.optimization.preflight_synthesis."
+            "validate_synthesis_proposal",
+            side_effect=_all_gates_pass,
+        ):
+            result = run_preflight_example_synthesis(
+                w=None, spark=None, run_id="r", space_id="s", config={},
+                metadata_snapshot=snap,
+                benchmarks=[], catalog="c", schema="sch",
+                llm_caller=_fake_llm_valid_response,
+                rng=random.Random(13),
+            )
+        assert set(result.get("traits") or []) >= {
+            "has_numeric", "has_date", "has_categorical", "has_joinable",
+        }
+        eligible = set(result.get("eligible_archetypes") or [])
+        assert len(eligible) > 1, (
+            f"only {eligible} archetypes eligible — result dict is still "
+            "reporting an empty-traits fingerprint"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════

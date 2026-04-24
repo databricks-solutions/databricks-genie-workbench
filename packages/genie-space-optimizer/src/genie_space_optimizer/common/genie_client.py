@@ -594,18 +594,54 @@ def _migrate_column_configs_v1_to_v2(config: dict) -> dict:
 _NON_API_COLUMN_CONFIG_KEYS = {"uc_comment", "data_type_source"}
 
 
-def strip_non_exportable_fields(config: dict) -> dict:
-    """Remove read-only server-managed fields before PATCH requests.
+SERIALIZED_SPACE_TOP_LEVEL_KEYS = frozenset({
+    "version",
+    "config",
+    "data_sources",
+    "instructions",
+    "benchmarks",
+})
+"""Allowed top-level keys on the ``serialized_space`` PATCH payload.
 
-    The GET ``/api/2.0/genie/spaces/{id}`` response includes top-level
-    metadata fields that are NOT part of the ``GenieSpaceExport`` protobuf.
-    Including them in the PATCH payload causes ``InvalidParameterValue``.
-    Also strips internal-only keys from nested ``column_configs``.
+Anything else (including runtime annotations written onto
+``metadata_snapshot`` by the lever loop, e.g. ``_failure_clusters``,
+``_space_id``, or legacy non-exportable metadata such as ``title`` /
+``creator``) is stripped before PATCH. The Genie API rejects unknown
+top-level fields with ``Invalid serialized_space: Cannot find field``,
+so this allowlist is the last line of defense before hitting the API."""
+
+
+def strip_non_exportable_fields(config: dict) -> dict:
+    """Remove non-exportable top-level keys before PATCH requests.
+
+    Uses an allowlist of the five top-level ``serialized_space`` fields
+    documented by the Genie API (see :data:`SERIALIZED_SPACE_TOP_LEVEL_KEYS`).
+    Any other top-level key is dropped with a warning so we notice future
+    pollution (e.g. runtime annotations on ``metadata_snapshot``) without
+    breaking the run. Also strips internal-only keys from nested
+    ``column_configs``.
     """
-    cleaned = {
-        k: v for k, v in config.items()
-        if k not in NON_EXPORTABLE_FIELDS and not k.startswith("_")
-    }
+    cleaned: dict = {}
+    dropped: list[str] = []
+    for k, v in config.items():
+        if k in SERIALIZED_SPACE_TOP_LEVEL_KEYS:
+            cleaned[k] = v
+        else:
+            dropped.append(k)
+    if dropped:
+        _known_meta = [k for k in dropped if k in NON_EXPORTABLE_FIELDS]
+        _unknown = [
+            k for k in dropped
+            if k not in NON_EXPORTABLE_FIELDS and not k.startswith("_")
+        ]
+        if _unknown:
+            logger.warning(
+                "strip_non_exportable_fields dropped unknown top-level keys "
+                "from PATCH payload: %s. Known metadata dropped: %s. If any "
+                "of the unknown keys are intentional runtime state, prefix "
+                "them with '_' so they stay local to the snapshot.",
+                _unknown, _known_meta,
+            )
 
     ds = cleaned.get("data_sources")
     if isinstance(ds, dict):

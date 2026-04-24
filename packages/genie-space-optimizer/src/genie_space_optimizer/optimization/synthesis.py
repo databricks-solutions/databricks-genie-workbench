@@ -229,6 +229,30 @@ def _gate_parse(proposal: dict) -> GateResult:
     return GateResult(True, "parse")
 
 
+_SQL_STRING_LITERAL_RE = re.compile(r"'(?:[^']|'')*'")
+_SQL_WHERE_TOKEN_RE = re.compile(r"\bWHERE\b", re.IGNORECASE)
+_SQL_JOIN_TOKEN_RE = re.compile(r"\bJOIN\b", re.IGNORECASE)
+
+
+def _sql_has_where_or_join(sql: str) -> bool:
+    """Return True when ``sql`` contains a WHERE or JOIN token outside of
+    string literals. Used by Phase 3.R5 to classify EMPTY_RESULT.
+
+    Detection is intentionally lightweight — we strip single-quoted string
+    literals (handling doubled quotes) and then regex-match the tokens.
+    sqlglot would be more precise but this path must run per-candidate so
+    we keep it cheap; false positives here only bias toward soft-accept,
+    which the arbiter/structural gates still filter.
+    """
+    if not sql:
+        return False
+    stripped = _SQL_STRING_LITERAL_RE.sub("", sql)
+    return bool(
+        _SQL_WHERE_TOKEN_RE.search(stripped)
+        or _SQL_JOIN_TOKEN_RE.search(stripped)
+    )
+
+
 def _gate_execute(
     proposal: dict,
     *,
@@ -239,7 +263,21 @@ def _gate_execute(
     warehouse_id: str = "",
 ) -> GateResult:
     """Gate 2 — SQL executes successfully against the warehouse. Reuses
-    the existing ``validate_ground_truth_sql`` contract."""
+    the existing ``validate_ground_truth_sql`` contract.
+
+    Phase 3.R5: EMPTY_RESULT is classified by WHERE/JOIN presence:
+
+    - SQL with no WHERE/JOIN that returns 0 rows → likely empty table.
+      Hard-fail, reject.
+    - SQL with WHERE or JOIN that returns 0 rows → likely value mismatch
+      against sample warehouse data. Soft-fail: mark the proposal with
+      ``_execute_empty=True`` and return ``passed=True`` so downstream
+      gates (structural, arbiter) still run. The shape may still be
+      valid even when the values don't match today's data.
+
+    Every other error (EXECUTION_ERROR, UNRESOLVED_COLUMN, cast/syntax/
+    permission) stays on the hard-fail path unchanged.
+    """
     if spark is None and not (w and warehouse_id):
         return GateResult(True, "execute", "skipped_no_backend")
     try:
@@ -261,7 +299,16 @@ def _gate_execute(
     except Exception as exc:
         return GateResult(False, "execute", f"execution error: {exc}")
     if not ok:
-        return GateResult(False, "execute", str(err)[:200])
+        err_str = str(err or "")
+        if err_str.startswith("EMPTY_RESULT"):
+            sql = proposal.get("example_sql", "") or ""
+            if _sql_has_where_or_join(sql):
+                proposal["_execute_empty"] = True
+                return GateResult(
+                    True, "execute", "empty_result_soft_accept",
+                )
+            return GateResult(False, "execute", err_str[:200])
+        return GateResult(False, "execute", err_str[:200])
     return GateResult(True, "execute")
 
 

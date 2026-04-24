@@ -1696,3 +1696,260 @@ class TestRunEnrichmentSummaryBlock:
         assert isinstance(result, dict)
         assert "summary" in result
         assert "config" in result
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Pillar E.5 — SQL expression seeding rejection capture
+# ─────────────────────────────────────────────────────────────────────
+#
+# Regression guard for the Seeding-stage observability gap:
+# ``Rejected: Validation (EXPLAIN): N`` used to surface a counter with
+# no reasons. After the fix, ``result["rejected_examples"]`` carries a
+# bounded list of ``{sql_prefix, snippet_type, gate, reason}`` entries.
+
+
+class TestSqlSeedingRejectionCapture:
+    def _build_stub_candidate(self) -> dict:
+        return {
+            "snippet_type": "measure",
+            "sql": "SUM(cat.sch.fact_sales.amount)",
+            "display_name": "Total Amount",
+            "alias": "total_amount",
+            "source_count": 0,
+        }
+
+    def test_validation_rejection_reason_is_captured(self, monkeypatch):
+        """Happy path for the observability contract: a candidate that
+        fails ``validate_sql_snippet`` lands in
+        ``result["rejected_examples"]`` with the EXPLAIN error."""
+        from genie_space_optimizer.optimization import harness as _harness_mod
+
+        stub_candidate = self._build_stub_candidate()
+
+        # Mine returns nothing; schema-discovery returns our stub so we
+        # have exactly one candidate to exercise the validator path.
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer."
+            "_mine_sql_expression_candidates",
+            lambda *_a, **_kw: [],
+        )
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer."
+            "_discover_schema_sql_expressions",
+            lambda *_a, **_kw: [stub_candidate],
+        )
+        # Bypass the LLM enrichment step — return candidates as-is.
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.optimizer."
+            "_enrich_candidates_with_llm",
+            lambda candidates, *_a, **_kw: candidates,
+        )
+        # Drive the validation-rejection branch.
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+            lambda *_a, **_kw: (
+                False,
+                "UNRESOLVED_COLUMN `cat.sch.fact_sales.amount`",
+                stub_candidate["sql"],
+            ),
+        )
+        # No-op for persistence side effects.
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.harness.write_stage",
+            lambda *_a, **_kw: None,
+        )
+        monkeypatch.setattr(
+            "genie_space_optimizer.common.genie_client.patch_space_config",
+            lambda *_a, **_kw: None,
+        )
+
+        config = {"_parsed_space": {"instructions": {"sql_snippets": {}}}}
+        metadata_snapshot = {"data_sources": {"tables": [], "metric_views": []}}
+
+        result = _harness_mod._seed_new_sql_snippets(
+            w=MagicMock(), spark=MagicMock(),
+            run_id="r", space_id="s",
+            config=config, metadata_snapshot=metadata_snapshot,
+            benchmarks=[], catalog="c", schema="sch",
+        )
+
+        assert result["validation_rejected"] == 1, (
+            f"expected one validation reject; got result={result}"
+        )
+        examples = result.get("rejected_examples") or []
+        assert len(examples) == 1, (
+            f"expected one rejection example; got {examples}"
+        )
+        rejected = examples[0]
+        assert rejected["gate"] == "validation"
+        assert rejected["snippet_type"] == "measure"
+        assert "UNRESOLVED_COLUMN" in rejected["reason"]
+        assert stub_candidate["sql"].split("(")[0] in rejected["sql_prefix"]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Pillar F — Schema-discovery SQL expression mining
+# ─────────────────────────────────────────────────────────────────────
+#
+# Regression guard for the silent data-path bug in
+# ``_discover_schema_sql_expressions``: it used to read
+# ``table.get("columns", [])`` but the Genie ``serialized_space`` shape
+# stores columns under ``column_configs``. In production every table
+# iterated zero columns, so schema discovery silently returned zero
+# SQL-expression candidates regardless of how rich the schema was. The
+# seeding pool collapsed to benchmark-mined candidates only.
+#
+# The fix reads ``column_configs`` first with a legacy fallback to
+# ``columns``, and visits metric_views as well as tables.
+
+
+class TestDiscoverSchemaSqlExpressions:
+    def _production_snapshot(self) -> dict:
+        """Serialized_space shape that the harness actually passes."""
+        return {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": "cat.sales.fact_orders",
+                        "column_configs": [
+                            {"column_name": "order_id", "data_type": "BIGINT"},
+                            {"column_name": "revenue_amount", "data_type": "DECIMAL"},
+                            {"column_name": "order_date", "data_type": "DATE"},
+                            {"column_name": "region_code", "data_type": "STRING"},
+                        ],
+                    },
+                ],
+                "metric_views": [
+                    {
+                        "identifier": "cat.sales.mv_sales",
+                        "column_configs": [
+                            {"column_name": "total_cost", "data_type": "DOUBLE"},
+                            {"column_name": "created_at", "data_type": "TIMESTAMP"},
+                        ],
+                    },
+                ],
+            },
+        }
+
+    def test_discovers_numeric_measures_from_column_configs(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _discover_schema_sql_expressions,
+        )
+
+        candidates = _discover_schema_sql_expressions(self._production_snapshot())
+
+        sqls = {c["sql"] for c in candidates}
+        # Numeric "revenue_amount" on fact_orders → SUM measure.
+        assert "SUM(cat.sales.fact_orders.revenue_amount)" in sqls, (
+            f"expected SUM(...) measure; got {sqls}"
+        )
+
+    def test_discovers_date_expressions_from_column_configs(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _discover_schema_sql_expressions,
+        )
+
+        candidates = _discover_schema_sql_expressions(self._production_snapshot())
+        sqls = {c["sql"] for c in candidates}
+
+        # DATE "order_date" → MONTH + QUARTER expressions.
+        assert "MONTH(cat.sales.fact_orders.order_date)" in sqls
+        assert "QUARTER(cat.sales.fact_orders.order_date)" in sqls
+
+    def test_visits_metric_views(self):
+        """Bug fingerprint: before the fix, MVs were skipped entirely.
+        After: MV numeric + timestamp columns contribute candidates."""
+        from genie_space_optimizer.optimization.optimizer import (
+            _discover_schema_sql_expressions,
+        )
+
+        candidates = _discover_schema_sql_expressions(self._production_snapshot())
+        sqls = {c["sql"] for c in candidates}
+
+        # Numeric "total_cost" on the MV.
+        assert "SUM(cat.sales.mv_sales.total_cost)" in sqls, (
+            f"expected MV-sourced measure; got {sqls}"
+        )
+        # Timestamp "created_at" → MONTH/QUARTER.
+        assert "MONTH(cat.sales.mv_sales.created_at)" in sqls
+
+    def test_legacy_columns_shape_still_works(self):
+        """Backcompat: tables with ``columns`` (older / test shape)
+        must continue to produce candidates via the fallback branch."""
+        from genie_space_optimizer.optimization.optimizer import (
+            _discover_schema_sql_expressions,
+        )
+
+        snapshot = {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": "cat.sch.t",
+                        "columns": [
+                            {"name": "revenue", "type_text": "double"},
+                            {"name": "sale_date", "type_text": "date"},
+                        ],
+                    },
+                ],
+            },
+        }
+        candidates = _discover_schema_sql_expressions(snapshot)
+        sqls = {c["sql"] for c in candidates}
+        assert "SUM(cat.sch.t.revenue)" in sqls
+        assert "MONTH(cat.sch.t.sale_date)" in sqls
+
+    def test_empty_data_sources_returns_empty(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _discover_schema_sql_expressions,
+        )
+
+        assert _discover_schema_sql_expressions({}) == []
+        assert _discover_schema_sql_expressions({"data_sources": {}}) == []
+
+    def test_skips_non_matching_columns(self):
+        """Bland STRING identifiers and non-matching numeric columns do
+        not produce candidates — the heuristic is intentionally
+        conservative."""
+        from genie_space_optimizer.optimization.optimizer import (
+            _discover_schema_sql_expressions,
+        )
+
+        snapshot = {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": "cat.sch.t",
+                        "column_configs": [
+                            # No MEASURE_PATTERNS hit.
+                            {"column_name": "customer_id", "data_type": "BIGINT"},
+                            # No DATE_PATTERNS hit.
+                            {"column_name": "notes", "data_type": "STRING"},
+                        ],
+                    },
+                ],
+            },
+        }
+        assert _discover_schema_sql_expressions(snapshot) == []
+
+    def test_hidden_columns_are_skipped(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _discover_schema_sql_expressions,
+        )
+
+        snapshot = {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": "cat.sch.t",
+                        "column_configs": [
+                            {
+                                "column_name": "revenue",
+                                "data_type": "double",
+                                "is_hidden": True,
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+        assert _discover_schema_sql_expressions(snapshot) == []

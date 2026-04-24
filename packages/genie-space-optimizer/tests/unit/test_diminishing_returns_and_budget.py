@@ -1,0 +1,98 @@
+"""Regression tests for Phase C3 gating semantics.
+
+``_diminishing_returns`` now only counts CONTENT_REGRESSION entries,
+so two INFRA_FAILURE rollbacks in a row can't artificially terminate
+the loop. CONTENT_REGRESSION rollbacks behave as before — two of them
+trip the gate.
+"""
+
+from __future__ import annotations
+
+from genie_space_optimizer.optimization.harness import (
+    _build_reflection_entry,
+    _diminishing_returns,
+)
+
+
+def _rb(rollback_reason: str, **overrides) -> dict:
+    return _build_reflection_entry(
+        iteration=overrides.pop("iteration", 1),
+        ag_id="AG",
+        accepted=False,
+        levers=[5],
+        target_objects=[],
+        prev_scores={"result_correctness": 95.0},
+        new_scores={"result_correctness": 95.0},
+        rollback_reason=rollback_reason,
+        patches=[],
+        root_cause="missing_filter",
+        blame_set=[],
+        source_cluster_ids=["C001"],
+        **overrides,
+    )
+
+
+def test_diminishing_returns_ignores_infra_rollbacks() -> None:
+    buf = [
+        _rb("patch_deploy_failed: 500 Internal Server Error", iteration=1),
+        _rb("patch_deploy_failed: Connection timed out", iteration=2),
+    ]
+    assert _diminishing_returns(buf, epsilon=2.0, lookback=2) is False
+
+
+def test_diminishing_returns_ignores_schema_rollbacks() -> None:
+    buf = [
+        _rb(
+            "patch_deploy_failed: Invalid serialized_space: "
+            "Cannot find field: foo",
+            iteration=1,
+        ),
+        _rb(
+            "patch_deploy_failed: Invalid serialized_space: "
+            "Cannot find field: bar",
+            iteration=2,
+        ),
+    ]
+    assert _diminishing_returns(buf, epsilon=2.0, lookback=2) is False
+
+
+def test_diminishing_returns_triggers_on_two_content_regressions() -> None:
+    buf = [
+        _rb("slice_gate: result_correctness", iteration=1),
+        _rb("full_eval: schema_accuracy", iteration=2),
+    ]
+    assert _diminishing_returns(buf, epsilon=2.0, lookback=2) is True
+
+
+def test_diminishing_returns_resets_on_accepted_content() -> None:
+    """An accepted iteration with a positive accuracy delta should stop the
+    gate from firing on subsequent rollbacks."""
+    accepted = _build_reflection_entry(
+        iteration=1,
+        ag_id="AG",
+        accepted=True,
+        levers=[5],
+        target_objects=[],
+        prev_scores={"result_correctness": 90.0},
+        new_scores={"result_correctness": 95.0},
+        rollback_reason=None,
+        patches=[],
+        root_cause="missing_filter",
+        blame_set=[],
+        source_cluster_ids=["C001"],
+    )
+    buf = [accepted, _rb("slice_gate: result_correctness", iteration=2)]
+    # Only one content signal in the window — not enough to trip the
+    # two-iteration lookback.
+    assert _diminishing_returns(buf, epsilon=2.0, lookback=2) is False
+
+
+def test_diminishing_returns_skips_mixed_class_entries() -> None:
+    """Mixed buffer: infra, then content. ``_diminishing_returns`` with
+    lookback=2 and content-only filter should see only the single
+    content entry and return False (not enough evidence yet)."""
+    buf = [
+        _rb("patch_deploy_failed: Network error", iteration=1),
+        _rb("full_eval: schema_accuracy", iteration=2),
+    ]
+    assert _diminishing_returns(buf, epsilon=2.0, lookback=2) is False

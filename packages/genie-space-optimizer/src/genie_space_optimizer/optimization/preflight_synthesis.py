@@ -57,11 +57,14 @@ from genie_space_optimizer.common.config import (
     PREFLIGHT_EXAMPLE_SQL_PER_ARCHETYPE,
     PREFLIGHT_EXAMPLE_SQL_TARGET,
     PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+    PREFLIGHT_PROFILE_VALUES_CAP,
+    PREFLIGHT_PROFILE_VALUE_LEN_CAP,
     format_mlflow_template,
 )
 from genie_space_optimizer.optimization.archetypes import (
     ARCHETYPES,
     Archetype,
+    _col_type,
     schema_traits,
 )
 # Module-level imports so tests can ``patch("preflight_synthesis.X")`` at the
@@ -285,7 +288,7 @@ def _top_k_columns(asset: dict, k: int) -> list[tuple[str, str]]:
             _bump(
                 col.get("name", ""),
                 col.get("description", ""),
-                col.get("type_text", col.get("type", "")),
+                _col_type(col),
             )
     # column_configs
     for cc in asset.get("column_configs", []) or []:
@@ -293,7 +296,7 @@ def _top_k_columns(asset: dict, k: int) -> list[tuple[str, str]]:
             _bump(
                 cc.get("column_name", ""),
                 cc.get("description", ""),
-                cc.get("type_text", cc.get("type", "")),
+                _col_type(cc),
             )
     # Metric view measures + dimensions
     for m in asset.get("measures", []) or []:
@@ -469,7 +472,46 @@ def plan_asset_coverage(
     ]
 
     traits = schema_traits(metadata_snapshot)
-    if not _eligible_archetypes(traits):
+    eligible = _eligible_archetypes(traits)
+    # Phase 1.R7: when archetype diversity is narrow (≤ 3 eligible), raise
+    # the per-archetype cap so the planner can still reach ``target`` plans.
+    # With broader eligibility (4+) we keep the cap tight to prevent any
+    # single archetype from dominating the example-SQL output.
+    if 0 < len(eligible) <= 3:
+        effective_per_archetype = max(
+            per_archetype, (target // max(len(eligible), 1)) + 1,
+        )
+        if effective_per_archetype != per_archetype:
+            logger.info(
+                "preflight.plan.per_archetype_adaptive eligible=%d "
+                "per_archetype=%d -> %d (target=%d)",
+                len(eligible), per_archetype,
+                effective_per_archetype, target,
+            )
+            per_archetype = effective_per_archetype
+    logger.info(
+        "preflight.plan.traits traits=%s eligible_archetypes=%s "
+        "tables=%d mvs=%d joins=%d per_archetype=%d",
+        sorted(traits),
+        [a.name for a in eligible],
+        len(tables), len(metric_views), len(join_specs),
+        per_archetype,
+    )
+    # Empty-trait fingerprint — the schema_traits detector silently
+    # returned no traits, so only the trait-free ``filter_compose``
+    # archetype survived. Historically this was caused by
+    # ``schema_traits`` reading from the wrong snapshot path; surface
+    # a clear warning in case a future regression re-introduces the
+    # bug or a caller passes a snapshot shape we don't recognise.
+    if len(eligible) == 1 and eligible[0].name == "filter_compose" and not traits:
+        logger.warning(
+            "preflight.plan.empty_traits_only_filter_compose "
+            "tables=%d mvs=%d — schema_traits() returned no traits; "
+            "planner will cap at per_archetype=%d candidates. Likely "
+            "cause: metadata_snapshot shape unrecognised by schema_traits.",
+            len(tables), len(metric_views), per_archetype,
+        )
+    if not eligible:
         logger.info(
             "preflight.plan.no_eligible_archetypes traits=%s — small-space fallback empty",
             sorted(traits),
@@ -711,13 +753,191 @@ def _format_slice_join_spec(slice_: AssetSlice) -> str:
     return f"- {left} <-> {right} ON {cond[:200]}" if left and right else "(none)"
 
 
+def _column_description_lookup(slice_: AssetSlice) -> dict[tuple[str, str], str]:
+    """Build a ``(table_identifier_lower, column_name_lower) -> description``
+    map from the slice's assets. Descriptions come from any of
+    ``columns[i]["description"]``, ``column_configs[i]["description"]``,
+    measure/dimension descriptions on a metric view. First non-empty
+    description wins to match existing ``_bump`` / enrichment semantics.
+    """
+    lookup: dict[tuple[str, str], str] = {}
+
+    def _record(tid: str, cname: str, desc: Any) -> None:
+        if not tid or not cname:
+            return
+        if isinstance(desc, list):
+            desc = " ".join(str(x) for x in desc if isinstance(x, str))
+        text = str(desc or "").strip()
+        if not text:
+            return
+        key = (tid.strip().lower(), cname.strip().lower())
+        lookup.setdefault(key, text)
+
+    assets: list[dict] = list(slice_.tables)
+    if slice_.metric_view is not None:
+        assets.append(slice_.metric_view)
+    for asset in assets:
+        tid = (asset.get("identifier") or asset.get("name") or "").strip()
+        for col in asset.get("columns", []) or []:
+            if isinstance(col, dict):
+                _record(tid, col.get("name", ""), col.get("description", ""))
+        for cc in asset.get("column_configs", []) or []:
+            if isinstance(cc, dict):
+                _record(
+                    tid,
+                    cc.get("column_name", ""),
+                    cc.get("description", ""),
+                )
+        for m in asset.get("measures", []) or []:
+            if isinstance(m, dict):
+                _record(tid, m.get("name", ""), m.get("description", ""))
+        for d in asset.get("dimensions", []) or []:
+            if isinstance(d, dict):
+                _record(tid, d.get("name", ""), d.get("description", ""))
+    return lookup
+
+
 def _format_slice_columns(slice_: AssetSlice) -> str:
+    """Render the ``Columns to prioritize`` bullet block.
+
+    Extends the earlier bare ``- table.column`` lines with the column's
+    description when description enrichment has populated one. Without
+    this semantic channel the LLM has to guess what ``location_number``
+    means (store count? branch code? category id?) which regularly
+    produces filters on non-existent values. When descriptions are
+    missing the line falls back to bare form (no crash).
+    """
     if not slice_.columns:
         return "(none)"
+    descs = _column_description_lookup(slice_)
     out: list[str] = []
     for tid, cname in slice_.columns:
-        out.append(f"- {tid}.{cname}")
+        desc = descs.get((tid.strip().lower(), cname.strip().lower()), "")
+        if desc:
+            if len(desc) > 140:
+                desc = desc[:140].rstrip() + "…"
+            out.append(f"- {tid}.{cname}: {desc}")
+        else:
+            out.append(f"- {tid}.{cname}")
     return "\n".join(out)
+
+
+def _format_slice_data_profile(
+    slice_: AssetSlice, data_profile: dict | None,
+) -> str:
+    """Render the ``## Column value profile`` bullet block for the prompt.
+
+    For each column in ``slice_.columns`` we look up the actual values
+    observed on the warehouse (populated by ``preflight.py``) and print
+    cardinality + a bounded sample of distinct values (string / low-
+    cardinality categoricals) or a ``[min, max]`` range (numeric / date
+    columns). High-cardinality columns render only the cardinality so
+    the LLM sees they exist but knows not to filter them.
+
+    Formatting mirrors :func:`optimizer._format_data_profile_for_prompt`
+    so the LLM sees a consistent shape across description enrichment
+    and synthesis. Caps enforced here:
+
+    * at most :data:`PREFLIGHT_PROFILE_VALUES_CAP` distinct values per
+      column, with ``+N more`` suffix when truncated;
+    * each individual value string truncated to
+      :data:`PREFLIGHT_PROFILE_VALUE_LEN_CAP` characters;
+    * only columns actually in ``slice_.columns`` are rendered — the
+      planner's ``_top_k_columns`` already bounds this to O(K) per
+      asset so the total is naturally small.
+
+    Graceful degradation: when ``data_profile`` is empty or the column
+    is not present in the profile, return a ``(no profile available)``
+    placeholder so the LLM still sees the section exists.
+    """
+    if not slice_.columns:
+        return "(no columns to profile)"
+    if not data_profile:
+        return "(no profile available)"
+
+    values_cap = max(1, int(PREFLIGHT_PROFILE_VALUES_CAP))
+    val_len_cap = max(8, int(PREFLIGHT_PROFILE_VALUE_LEN_CAP))
+
+    # Index the profile by (table_identifier_lower, column_name_lower) so we
+    # can tolerate whatever case / nesting the warehouse sampler emitted.
+    indexed: dict[tuple[str, str], dict] = {}
+    for tbl, tinfo in (data_profile or {}).items():
+        if not isinstance(tinfo, dict):
+            continue
+        tkey = str(tbl or "").strip().lower()
+        for col, cinfo in (tinfo.get("columns") or {}).items():
+            if isinstance(cinfo, dict):
+                indexed[(tkey, str(col or "").strip().lower())] = cinfo
+
+    def _trunc(val: Any) -> str:
+        s = str(val)
+        if len(s) > val_len_cap:
+            return s[: val_len_cap - 1] + "…"
+        return s
+
+    out: list[str] = []
+    for tid, cname in slice_.columns:
+        key = (tid.strip().lower(), cname.strip().lower())
+        cinfo = indexed.get(key)
+        if not isinstance(cinfo, dict):
+            out.append(f"- {tid}.{cname}: (no profile available)")
+            continue
+
+        parts: list[str] = []
+        card = cinfo.get("cardinality")
+        if card is not None:
+            parts.append(f"cardinality={card}")
+
+        vals = cinfo.get("distinct_values")
+        if isinstance(vals, (list, tuple)) and vals:
+            truncated = [_trunc(v) for v in list(vals)[:values_cap]]
+            overflow = max(0, len(vals) - values_cap)
+            rendered = "[" + ", ".join(repr(v) for v in truncated) + "]"
+            if overflow:
+                rendered += f" +{overflow} more"
+            parts.append(f"values={rendered}")
+
+        minv = cinfo.get("min")
+        maxv = cinfo.get("max")
+        if minv is not None or maxv is not None:
+            parts.append(f"range=[{_trunc(minv)}, {_trunc(maxv)}]")
+
+        suffix = ", ".join(parts) if parts else "(no profile available)"
+        out.append(f"- {tid}.{cname} ({suffix})")
+
+    return "\n".join(out)
+
+
+def _build_empty_result_feedback(
+    proposal: dict,
+    data_profile: dict | None,
+    slice_: AssetSlice,
+) -> str:
+    """Render the retry-feedback payload used by Phase 3.R6.
+
+    The message tells the LLM that its last SQL returned zero rows and
+    offers actual distinct values / ranges for the columns in the slice
+    so it can regenerate with values that exist on this warehouse.
+
+    Returns an empty string if there's nothing useful to say (no slice
+    columns and no prior SQL) — the caller treats an empty string as
+    "no retry feedback" and falls through to the normal prompt.
+    """
+    prior_sql = str(proposal.get("example_sql") or "").strip()
+    profile_block = _format_slice_data_profile(slice_, data_profile or None)
+    if not prior_sql and (not profile_block or profile_block.startswith("(")):
+        return ""
+
+    return (
+        "Your previous query returned 0 rows on this warehouse:\n"
+        f"  {prior_sql or '(no SQL captured)'}\n\n"
+        "The filters likely picked values that do not exist in the data. "
+        "Actual values / ranges for the profiled columns are:\n"
+        f"{profile_block}\n\n"
+        "Generate a new version of the query using ONLY values that "
+        "exist above. If no suitable values exist for a filter, omit "
+        "that filter instead of guessing."
+    )
 
 
 def _format_existing_questions(existing_questions: list[str]) -> str:
@@ -747,30 +967,69 @@ def render_preflight_prompt(
     archetype: Archetype,
     context: AssetSlice,
     existing_questions: list[str],
+    *,
+    data_profile: dict | None = None,
+    retry_feedback: str | None = None,
 ) -> str:
     """Render :data:`PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT` for one candidate.
 
     No ``benchmarks`` parameter — leak-free by construction. The context's
     narrowed allowlist is the ONLY identifier universe the LLM sees.
 
+    ``data_profile`` (optional): the metadata-snapshot ``_data_profile``
+    map produced during pre-flight warehouse sampling. When present, the
+    profile is rendered under ``## Column value profile`` and the LLM
+    is instructed to quote values EXACTLY — this is what stops the
+    ``SELECT ... WHERE country='XX'`` class of EMPTY_RESULT failures.
+    When the profile would bloat the prompt past the token budget it is
+    the first section dropped (see ``_truncate_to_budget`` priority list).
+
+    ``retry_feedback`` (optional): rendered into the prompt as a
+    ``## Retry feedback`` section. Used by the :ref:`R6 retry` path when
+    the first attempt returned 0 rows — carries the previous SQL plus
+    the actual column values from the profile so the LLM can self-correct.
+
     Historical note: ``context`` was previously named ``slice_`` when the
     only supported context was :class:`AssetSlice`. The signature is now
     context-typed; the slice-specific helpers below accept any object
     with the slice's attributes (``AssetSlice`` is the only shipped
-    implementor today). Byte-equivalent with the prior AssetSlice-only
-    render path.
+    implementor today).
     """
+    retry_block = ""
+    if retry_feedback:
+        retry_block = "## Retry feedback\n" + str(retry_feedback).strip()
+
+    format_kwargs: dict[str, Any] = {
+        "slice_tables": _format_slice_tables(context),
+        "slice_metric_views": _format_slice_metric_views(context),
+        "slice_join_spec": _format_slice_join_spec(context),
+        "slice_columns": _format_slice_columns(context),
+        "slice_data_profile": _format_slice_data_profile(context, data_profile),
+        "archetype_name": archetype.name,
+        "archetype_prompt_template": archetype.prompt_template,
+        "archetype_output_shape": json.dumps(archetype.output_shape),
+        "identifier_allowlist": context.to_identifier_allowlist(),
+        "existing_questions_list": _format_existing_questions(existing_questions),
+        "retry_feedback": retry_block,
+    }
+    # Budget safeguard: if the rendered prompt exceeds the configured
+    # token budget we drop the data profile first (it's the newest /
+    # largest addition and the LLM can still produce a shape-correct
+    # query without it). ``slice_columns`` and ``identifier_allowlist``
+    # are structurally load-bearing so they stay.
+    from genie_space_optimizer.optimization.optimizer import _truncate_to_budget
+    format_kwargs = _truncate_to_budget(
+        format_kwargs,
+        PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+        priority_keys=[
+            "slice_data_profile",
+            "existing_questions_list",
+            "retry_feedback",
+        ],
+    )
     return format_mlflow_template(
         PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
-        slice_tables=_format_slice_tables(context),
-        slice_metric_views=_format_slice_metric_views(context),
-        slice_join_spec=_format_slice_join_spec(context),
-        slice_columns=_format_slice_columns(context),
-        archetype_name=archetype.name,
-        archetype_prompt_template=archetype.prompt_template,
-        archetype_output_shape=json.dumps(archetype.output_shape),
-        identifier_allowlist=context.to_identifier_allowlist(),
-        existing_questions_list=_format_existing_questions(existing_questions),
+        **format_kwargs,
     )
 
 
@@ -781,6 +1040,8 @@ def synthesize_preflight_candidate(
     *,
     w: Any = None,
     llm_caller: Callable[[str], str] | None = None,
+    data_profile: dict | None = None,
+    retry_feedback: str | None = None,
 ) -> dict | None:
     """One LLM call, one candidate. Returns a proposal dict or ``None``.
 
@@ -793,8 +1054,28 @@ def synthesize_preflight_candidate(
     ``llm_caller`` is injected for tests (takes prompt → raw text).
     Production path uses :func:`_traced_llm_call` with span
     ``"preflight_example_synthesis"``.
+
+    ``data_profile`` and ``retry_feedback`` are passed through to
+    :func:`render_preflight_prompt`; the retry path (R6) uses
+    ``retry_feedback`` to ask the LLM to regenerate after an
+    EMPTY_RESULT on the first attempt.
     """
-    prompt = render_preflight_prompt(archetype, context, existing_questions)
+    prompt = render_preflight_prompt(
+        archetype,
+        context,
+        existing_questions,
+        data_profile=data_profile,
+        retry_feedback=retry_feedback,
+    )
+    logger.debug(
+        "preflight.synth.prompt archetype=%s slice_assets=%s prompt_len=%d retry=%s\n"
+        "---PROMPT---\n%s\n---END---",
+        archetype.name,
+        context.asset_ids(),
+        len(prompt),
+        "yes" if retry_feedback else "no",
+        prompt,
+    )
 
     def _call() -> str:
         if llm_caller is not None:
@@ -1000,7 +1281,43 @@ def run_preflight_example_synthesis(
         "asset_coverage": {},
         "archetype_distribution": {},
         "skipped_reason": None,
+        # Operator diagnostics — populated after we run the planner so
+        # ``_print_summary`` can explain WHY the generated count is low
+        # without the operator having to grep debug logs.
+        "traits": [],
+        "eligible_archetypes": [],
+        # Per-candidate gate-rejection reasons — bounded list so the
+        # summary can surface WHY candidates died (same observability
+        # pattern as SQL Expression Seeding's ``rejected_examples``).
+        "gate_rejected_examples": [],
     }
+
+    # Cap the rejection list so a pathological run doesn't balloon the
+    # result dict or the write_stage detail payload.
+    _MAX_GATE_REJECTED_EXAMPLES = 10
+
+    def _record_gate_rejection(gate: str, reason: str, proposal: dict | None) -> None:
+        if len(result["gate_rejected_examples"]) >= _MAX_GATE_REJECTED_EXAMPLES:
+            return
+        _question = ""
+        _sql = ""
+        if isinstance(proposal, dict):
+            _question = str(proposal.get("example_question") or "")
+            _sql = str(proposal.get("example_sql") or "")
+        result["gate_rejected_examples"].append({
+            "gate": gate,
+            "reason": (reason or "")[:200],
+            "question_prefix": _question[:120],
+            "sql_prefix": _sql[:120],
+        })
+
+    # Pre-compute traits so both the empty-traits fingerprint warning
+    # and the summary block have them. Also useful when the planner
+    # returns zero plans (see no_eligible_plans branch below).
+    result["traits"] = sorted(schema_traits(metadata_snapshot))
+    result["eligible_archetypes"] = [
+        a.name for a in _eligible_archetypes(set(result["traits"]))
+    ]
 
     if need == 0:
         result["skipped_reason"] = "at_target"
@@ -1043,10 +1360,20 @@ def run_preflight_example_synthesis(
     run_fps: set[str] = set()
     existing_questions = _existing_example_question_list(metadata_snapshot)
 
+    # Phase 2.R2b: the warehouse sampler populates ``_data_profile`` on
+    # the metadata snapshot during pre-flight. Thread it through to the
+    # synthesis prompt so the LLM filters on values that actually exist.
+    data_profile = metadata_snapshot.get("_data_profile") or {}
+
     accepted: list[dict] = []
     reject_by_gate: dict[str, int] = {}
     archetype_counts: dict[str, int] = {}
     asset_counts: dict[str, int] = {}
+    # Phase 3.R6 retry counters — exposed in the summary so operators
+    # can see how often retries fired and how often they succeeded.
+    retries_fired = 0
+    retries_succeeded = 0
+    retries_still_empty = 0
 
     for archetype, slice_ in plans:
         if len(accepted) >= need:
@@ -1063,9 +1390,15 @@ def run_preflight_example_synthesis(
         proposal = synthesize_preflight_candidate(
             archetype, slice_, anti_dup_questions,
             w=w, llm_caller=llm_caller,
+            data_profile=data_profile,
         )
         if proposal is None:
             reject_by_gate["synthesize_none"] = reject_by_gate.get("synthesize_none", 0) + 1
+            _record_gate_rejection(
+                "synthesize_none",
+                f"archetype={archetype.name}: LLM returned no usable proposal",
+                None,
+            )
             continue
 
         # ── Validate via the shared 5-gate ────────────────────────
@@ -1078,6 +1411,57 @@ def run_preflight_example_synthesis(
             spark=spark, catalog=catalog, gold_schema=schema,
             w=w, warehouse_id=warehouse_id,
         )
+
+        # ── Phase 3.R6: one retry on EMPTY_RESULT ─────────────────
+        # If the only failure was the execute gate with an EMPTY_RESULT
+        # reason, synthesize one retry prompted with the actual column
+        # values from ``_data_profile`` before giving up. R5's soft-
+        # accept classifier applies to the retry's SQL — so the retry
+        # may still land on an empty-result SQL but soft-accept when
+        # it has a WHERE/JOIN.
+        if not passed:
+            first_fail = next(
+                (g for g in gate_results if not g.passed), None,
+            )
+            if (
+                first_fail is not None
+                and first_fail.gate == "execute"
+                and "EMPTY_RESULT" in (first_fail.reason or "")
+            ):
+                retries_fired += 1
+                feedback = _build_empty_result_feedback(
+                    proposal, data_profile, slice_,
+                )
+                retry_proposal = synthesize_preflight_candidate(
+                    archetype, slice_, anti_dup_questions,
+                    w=w, llm_caller=llm_caller,
+                    data_profile=data_profile,
+                    retry_feedback=feedback or None,
+                )
+                if retry_proposal is not None:
+                    proposal = retry_proposal
+                    passed, gate_results = validate_synthesis_proposal(
+                        retry_proposal,
+                        archetype=archetype,
+                        benchmark_corpus=benchmark_corpus,
+                        metadata_snapshot=metadata_snapshot,
+                        blame_set=None,
+                        spark=spark, catalog=catalog, gold_schema=schema,
+                        w=w, warehouse_id=warehouse_id,
+                    )
+                    if passed:
+                        retries_succeeded += 1
+                    else:
+                        retry_fail = next(
+                            (g for g in gate_results if not g.passed), None,
+                        )
+                        if (
+                            retry_fail is not None
+                            and retry_fail.gate == "execute"
+                            and "EMPTY_RESULT" in (retry_fail.reason or "")
+                        ):
+                            retries_still_empty += 1
+
         # Per-gate counters — passed_*  and rejected_by_gate reflect
         # the same ordering as the pipeline so operators can see where
         # the bottleneck is.
@@ -1095,6 +1479,7 @@ def run_preflight_example_synthesis(
                     result[bucket] = result[bucket] + 1
             else:
                 reject_by_gate[gr.gate] = reject_by_gate.get(gr.gate, 0) + 1
+                _record_gate_rejection(gr.gate, gr.reason, proposal)
                 break  # first fail short-circuits the rest
         if not passed:
             continue
@@ -1119,6 +1504,7 @@ def run_preflight_example_synthesis(
                     "preflight.arbiter.rejected reason=%s question=%r",
                     agreement.reason, (proposal.get("example_question") or "")[:80],
                 )
+                _record_gate_rejection("genie_agreement", agreement.reason, proposal)
                 continue
             result["passed_genie_agreement"] += 1
 
@@ -1127,6 +1513,11 @@ def run_preflight_example_synthesis(
         if not fp:
             reject_by_gate["empty_sql_post_validate"] = (
                 reject_by_gate.get("empty_sql_post_validate", 0) + 1
+            )
+            _record_gate_rejection(
+                "empty_sql_post_validate",
+                "proposal passed gates but canonical fingerprint was empty",
+                proposal,
             )
             continue
         if fp in existing_fps or fp in run_fps:
@@ -1150,20 +1541,49 @@ def run_preflight_example_synthesis(
     result["rejected_by_gate"] = reject_by_gate
     result["archetype_distribution"] = archetype_counts
     result["asset_coverage"] = asset_counts
+    result["retries_fired"] = retries_fired
+    result["retries_succeeded"] = retries_succeeded
+    result["retries_still_empty"] = retries_still_empty
 
     # ── Observability ─────────────────────────────────────────────
     logger.info(
         "preflight.synthesis.summary existing=%d target=%d need=%d generated=%d "
         "passed_parse=%d passed_execute=%d passed_firewall=%d passed_structural=%d "
         "passed_arbiter=%d passed_genie_agreement=%d dedup_rejected=%d applied=%d "
+        "retries_fired=%d retries_succeeded=%d retries_still_empty=%d "
         "asset_coverage=%s rejected_by_gate=%s archetype=%s",
         existing_count, effective_target, need, result["generated"],
         result["passed_parse"], result["passed_execute"],
         result["passed_firewall"], result["passed_structural"],
         result["passed_arbiter"], result["passed_genie_agreement"],
         result["dedup_rejected"],
-        applied, asset_counts, reject_by_gate, archetype_counts,
+        applied,
+        retries_fired, retries_succeeded, retries_still_empty,
+        asset_counts, reject_by_gate, archetype_counts,
     )
+
+    # Phase 4.R8: raise the severity on under-target runs so operators
+    # get a grep-able signal when applied < need and candidates were
+    # rejected at the gates. The per-candidate rejection list (same
+    # content that ``_print_summary`` shows) goes into the warning so
+    # we don't need two passes through the log.
+    gate_rejected_examples = result.get("gate_rejected_examples") or []
+    if applied < need and gate_rejected_examples:
+        rejection_brief = "; ".join(
+            f"[{ex.get('gate', '?')}] "
+            f"{(ex.get('question_prefix') or ex.get('sql_prefix') or '')[:60]}"
+            f" — {(ex.get('reason') or '')[:120]}"
+            for ex in gate_rejected_examples[:3]
+        )
+        logger.warning(
+            "preflight.synthesis.under_target applied=%d need=%d "
+            "rejected_by_gate=%s retries_fired=%d retries_still_empty=%d "
+            "top_rejections=%s",
+            applied, need, reject_by_gate,
+            retries_fired, retries_still_empty,
+            rejection_brief,
+        )
+
     _print_summary(result)
     return result
 
@@ -1195,6 +1615,17 @@ def _print_summary(result: dict) -> None:
     lines.append(_kv("Target", result.get("target", "")))
     lines.append(_kv("Existing examples", result.get("existing", 0)))
     lines.append(_kv("Need", result.get("need", 0)))
+    traits = result.get("traits") or []
+    eligible = result.get("eligible_archetypes") or []
+    if traits or eligible:
+        lines.append(_kv(
+            "Traits detected",
+            ", ".join(traits) if traits else "(none)",
+        ))
+        lines.append(_kv(
+            "Eligible archetypes",
+            f"{len(eligible)} — {', '.join(eligible) if eligible else '(none)'}",
+        ))
     if result.get("skipped_reason"):
         lines.append(_kv("Status", f"skipped — {result['skipped_reason']}"))
         lines.append(_bar())
@@ -1203,6 +1634,18 @@ def _print_summary(result: dict) -> None:
     lines.append(_kv("Generated candidates", result.get("generated", 0)))
     lines.append(_kv("Passed parse", result.get("passed_parse", 0)))
     lines.append(_kv("Passed EXPLAIN+execute", result.get("passed_execute", 0)))
+    # Phase 3.R6 retry visibility: surfaced right under the execute line
+    # so operators can see how often empty-result retries fired and
+    # whether they recovered.
+    retries_fired = result.get("retries_fired", 0)
+    if retries_fired:
+        lines.append(_kv(
+            "  retries on EMPTY_RESULT",
+            f"fired={retries_fired} "
+            f"succeeded={result.get('retries_succeeded', 0)} "
+            f"still_empty={result.get('retries_still_empty', 0)}",
+            indent=4,
+        ))
     lines.append(_kv("Passed firewall", result.get("passed_firewall", 0)))
     lines.append(_kv("Passed structural", result.get("passed_structural", 0)))
     lines.append(_kv("Passed arbiter gate", result.get("passed_arbiter", 0)))
@@ -1228,6 +1671,24 @@ def _print_summary(result: dict) -> None:
             "Rejected by gate",
             ", ".join(f"{k}={v}" for k, v in rejections.items()),
         ))
+
+    # Per-candidate rejection reasons — surfaced so operators can see
+    # WHY candidates died without having to grep the job log. Bounded
+    # list lives on ``result["gate_rejected_examples"]``; we print the
+    # first 3.
+    rejection_examples = result.get("gate_rejected_examples") or []
+    if rejection_examples:
+        lines.append(_kv("Rejection examples (up to 3)", ""))
+        for _ex in rejection_examples[:3]:
+            _gate = _ex.get("gate") or ""
+            _question = (_ex.get("question_prefix") or "").strip()
+            _reason = (_ex.get("reason") or "").strip()
+            _label = _question[:60] if _question else (_ex.get("sql_prefix") or "")[:60]
+            lines.append(_kv(
+                f"  [{_gate}] {_label}",
+                _reason[:140],
+                indent=4,
+            ))
     lines.append(_bar())
     print("\n".join(lines))
 

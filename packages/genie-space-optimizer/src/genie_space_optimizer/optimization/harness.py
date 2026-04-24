@@ -37,6 +37,7 @@ from genie_space_optimizer.common.config import (
     ARBITER_CORRECTION_TRIGGER,
     CONSECUTIVE_ESCALATION_LIMIT,
     CONSECUTIVE_ROLLBACK_LIMIT,
+    INFRA_RETRY_BUDGET,
     DEFAULT_LEVER_ORDER,
     DEFAULT_THRESHOLDS,
     DIMINISHING_RETURNS_EPSILON,
@@ -1385,6 +1386,39 @@ def _mine_and_apply_proven_joins(
     inst_block = parsed.setdefault("instructions", {})
     spec_list = inst_block.setdefault("join_specs", [])
 
+    # Defence-in-depth EXPLAIN: these specs come from eval rows that
+    # already executed successfully on the warehouse, so EXPLAIN rarely
+    # fires. Keeping it here for symmetry with
+    # :func:`_apply_instruction_join_specs` and to catch corner cases
+    # (FQ-resolution drift, column renames between eval and PATCH).
+    warehouse_id = os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "")
+    validated_specs: list[dict] = []
+    explain_rejected = 0
+    for spec in new_specs:
+        left_id = (spec.get("left") or {}).get("identifier", "")
+        right_id = (spec.get("right") or {}).get("identifier", "")
+        sql_field = spec.get("sql", [])
+        join_cond = (
+            sql_field[0] if isinstance(sql_field, list) and sql_field
+            else str(sql_field or "")
+        )
+        is_valid, err = _explain_join_candidate(
+            w, spark, left_id, right_id, join_cond,
+            catalog=catalog, gold_schema=schema,
+            warehouse_id=warehouse_id,
+        )
+        if not is_valid:
+            logger.info(
+                "Proven-join EXPLAIN rejected: %s <-> %s ON %s — %s",
+                left_id, right_id, (join_cond or "")[:80], err,
+            )
+            explain_rejected += 1
+            continue
+        validated_specs.append(spec)
+    new_specs = validated_specs
+    if explain_rejected:
+        result["explain_rejected"] = explain_rejected
+
     applied_lines: list[str] = []
     for spec in new_specs:
         meta = spec.pop("_proactive_metadata", {})
@@ -2107,6 +2141,73 @@ def _apply_instruction_sql_expressions(
 # ── Stage 2.96b: INSTRUCTION-DERIVED JOIN SPECS / TABLE DESC / SYNONYMS ─
 
 
+def _explain_join_candidate(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    left_identifier: str,
+    right_identifier: str,
+    join_sql_cond: str,
+    *,
+    catalog: str,
+    gold_schema: str,
+    warehouse_id: str = "",
+) -> tuple[bool, str]:
+    """Run ``EXPLAIN SELECT 1 FROM <l> JOIN <r> ON <cond> LIMIT 1``.
+
+    Returns ``(is_valid, error_message)``. When no execution backend is
+    available (both ``spark`` and ``warehouse_id`` are absent/empty), this
+    short-circuits to ``(True, "")`` so unit-test runs without a Spark
+    session still succeed — production runs always have one.
+
+    The EXPLAIN guard catches re-wrap failures the arbiter-approval pre-
+    filter cannot: wrong FQ prefix, type-incompatible join columns, and
+    references to columns that don't exist on the named table.
+    """
+    from genie_space_optimizer.optimization.benchmarks import (
+        _resolve_primary_table_fqn,
+    )
+
+    if not (left_identifier and right_identifier and join_sql_cond):
+        return False, "missing identifier or join condition"
+
+    left_fq = _resolve_primary_table_fqn(
+        left_identifier, catalog=catalog, gold_schema=gold_schema,
+    )
+    right_fq = _resolve_primary_table_fqn(
+        right_identifier, catalog=catalog, gold_schema=gold_schema,
+    )
+    if not (left_fq and right_fq):
+        return False, "could not resolve FQ identifiers"
+
+    explain_sql = (
+        f"EXPLAIN SELECT 1 FROM {left_fq} JOIN {right_fq} "
+        f"ON {join_sql_cond} LIMIT 1"
+    )
+    try:
+        if w is not None and warehouse_id:
+            from genie_space_optimizer.optimization.evaluation import (
+                _execute_sql_via_warehouse,
+            )
+            _execute_sql_via_warehouse(
+                w, warehouse_id, explain_sql,
+                catalog=catalog, schema=gold_schema,
+            )
+            return True, ""
+        if spark is not None:
+            try:
+                spark.sql(f"USE CATALOG `{catalog}`") if catalog else None
+                spark.sql(f"USE SCHEMA `{gold_schema}`") if gold_schema else None
+            except Exception:
+                pass  # best-effort context setup; EXPLAIN error surfaces below
+            spark.sql(explain_sql)
+            return True, ""
+        # No backend — cannot validate. Accept optimistically; the Genie
+        # API PATCH will reject malformed join specs at persist time.
+        return True, ""
+    except Exception as exc:
+        return False, f"EXPLAIN failed: {str(exc)[:200]}"
+
+
 def _apply_instruction_join_specs(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -2116,6 +2217,8 @@ def _apply_instruction_join_specs(
     metadata_snapshot: dict,
     catalog: str,
     schema: str,
+    *,
+    warehouse_id: str = "",
 ) -> int:
     """Append instruction-derived join_spec candidates to the Genie Space.
 
@@ -2123,6 +2226,13 @@ def _apply_instruction_join_specs(
     mutate ``metadata_snapshot["instructions"]["join_specs"]`` in place and
     PATCH the whole config. Dedups against existing pairs by sorted
     (left_identifier, right_identifier).
+
+    Runs ``EXPLAIN`` validation (via :func:`_explain_join_candidate`) on
+    each candidate before persisting. The prose miner's source is user-
+    asserted text (not arbiter-backed), so EXPLAIN is the critical
+    persistence gate — it catches re-wrap failures such as FQ mismatch,
+    type-incompatible join columns, and references to columns that don't
+    exist. Candidates that fail EXPLAIN are dropped with an INFO log.
     """
     from genie_space_optimizer.common.genie_client import patch_space_config
 
@@ -2148,12 +2258,36 @@ def _apply_instruction_join_specs(
             existing_pairs.add(tuple(sorted((lt, rt))))
 
     applied = 0
+    explain_rejected = 0
     for c in candidates:
         left = c.get("left", {})
         right = c.get("right", {})
         pair = tuple(sorted((left.get("identifier", ""), right.get("identifier", ""))))
         if not all(pair) or pair in existing_pairs:
             continue
+
+        # EXPLAIN-based exec validation — see _explain_join_candidate.
+        sql_field = c.get("sql", [])
+        join_cond = (
+            sql_field[0] if isinstance(sql_field, list) and sql_field
+            else str(sql_field or "")
+        )
+        is_valid, err = _explain_join_candidate(
+            w, spark,
+            left.get("identifier", ""), right.get("identifier", ""),
+            join_cond,
+            catalog=catalog, gold_schema=schema,
+            warehouse_id=warehouse_id,
+        )
+        if not is_valid:
+            logger.info(
+                "Instruction join_spec rejected by EXPLAIN: %s <-> %s ON %s — %s",
+                left.get("identifier", "?"), right.get("identifier", "?"),
+                (join_cond or "")[:80], err,
+            )
+            explain_rejected += 1
+            continue
+
         spec_entry = {
             "left": left,
             "right": right,
@@ -2177,13 +2311,19 @@ def _apply_instruction_join_specs(
     write_stage(
         spark, run_id, "INSTRUCTION_JOIN_SPECS", "COMPLETE",
         task_key="enrichment",
-        detail={"candidates_total": len(candidates), "applied": applied},
+        detail={
+            "candidates_total": len(candidates),
+            "applied": applied,
+            "explain_rejected": explain_rejected,
+        },
         catalog=catalog, schema=schema,
     )
 
     _lines = [_section("INSTRUCTION → JOIN SPECS", "-")]
     _lines.append(_kv("Candidates", len(candidates)))
     _lines.append(_kv("Applied", applied))
+    if explain_rejected:
+        _lines.append(_kv("Rejected (EXPLAIN)", explain_rejected))
     for c in candidates[:5]:
         left_id = c.get("left", {}).get("identifier", "?").split(".")[-1]
         right_id = c.get("right", {}).get("identifier", "?").split(".")[-1]
@@ -2414,6 +2554,24 @@ def _run_instruction_prose_mining(
     already-normalised prose finds nothing to promote and the rewrite
     step returns ``SKIP_NO_CHANGE``.
 
+    Source-specific invariant:
+        This path persists sql_snippets / join_specs / example_qsqls from
+        USER-ASSERTED prose (``text_instructions``). User prose is its
+        own authority — no arbiter gate is available (or possible) at
+        the source. Persistence gates:
+
+        - sql_snippet: ``validate_sql_snippet`` EXPLAIN+execute.
+        - join_spec: ``_explain_join_candidate`` EXPLAIN-only.
+        - example_qsql: benchmark-leakage firewall (answer-shape path)
+          + example-SQL ground-truth validator.
+        - table_desc / column_synonym: shape + dedup only.
+        - keep_in_prose: schema-validator only (stays in prose).
+
+        The Bug #4 firewall is intentionally not applied to sql_snippet
+        or join_spec outputs (see scoping comment in
+        ``leakage._PATCH_TEXT_FIELDS``). Structural primitives are not
+        answers, so firewall fingerprint-matching is inappropriate here.
+
     Pipeline:
 
     1. ``_convert_instructions_to_sql_expressions`` (multi-target miner).
@@ -2470,6 +2628,7 @@ def _run_instruction_prose_mining(
         join_applied = _apply_instruction_join_specs(
             w, spark, run_id, space_id, miner_result["join_spec"],
             metadata_snapshot, catalog, schema,
+            warehouse_id=warehouse_id,
         )
         if join_applied:
             _collect_spans("join_spec")
@@ -2612,7 +2771,8 @@ def _repair_existing_sql_snippets(
     """Normalize every existing SQL snippet to fully-qualified form.
 
     Runs unconditionally — unlike :func:`_seed_new_sql_snippets`, which is
-    gated by ``SQL_EXPRESSION_SEEDING_THRESHOLD``. This is the remediation
+    gated by the remaining SQL-snippet headroom (see that function). This
+    is the remediation
     path for spaces whose stored snippets were produced by an older
     GSO version (or by the lever loop before A.1) and still use
     short-form prefixes. The Genie serving path rejects such snippets; the
@@ -2746,71 +2906,138 @@ def _seed_new_sql_snippets(
 ) -> dict:
     """Mine and apply new SQL Expressions (measures, filters, dimensions).
 
-    Gated by ``SQL_EXPRESSION_SEEDING_THRESHOLD``: when the space already has
-    that many snippets, this step skips (repair still runs, see
-    :func:`_repair_existing_sql_snippets`).
+    Gated by the remaining per-space SQL-snippet headroom:
 
-    Mines candidates from benchmark ground-truth SQL and schema patterns;
-    each candidate is validated by execution before being applied.
+        headroom = MAX_SQL_SNIPPETS - existing_count - LEVER_RESERVE
+
+    When ``headroom == 0`` this step skips entirely (repair still runs,
+    see :func:`_repair_existing_sql_snippets`). ``LEVER_RESERVE`` holds
+    back ~25% of the 200-snippet budget for the lever loop.
+
+    Source-specific invariant:
+        This path persists sql_snippets from ARBITER-APPROVED benchmark
+        rows only (verdict == ``both_correct``, pre-filtered by the
+        caller via ``_extract_arbiter_approved_benchmarks``), plus
+        schema-discovery heuristics. Every candidate is EXPLAIN+execute
+        validated via ``validate_sql_snippet`` before being applied.
+
+        The Bug #4 benchmark-leakage firewall is NOT applied here —
+        the arbiter pre-filter is the source gate; adding the firewall
+        would double-gate and reject legitimate structural primitives
+        whose fingerprints happen to match the benchmark corpus (see
+        scoping comment above ``_PATCH_TEXT_FIELDS`` in leakage.py).
     """
     import json as _json
 
     from genie_space_optimizer.common.config import (
+        SQL_EXPRESSION_SEEDING_LEVER_RESERVE,
         SQL_EXPRESSION_SEEDING_MAX_CANDIDATES,
-        SQL_EXPRESSION_SEEDING_THRESHOLD,
     )
     from genie_space_optimizer.common.genie_client import patch_space_config
-    from genie_space_optimizer.common.genie_schema import generate_genie_id, MAX_SQL_SNIPPETS
-    from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
-    from genie_space_optimizer.optimization.leakage import (
-        BenchmarkCorpus, is_benchmark_leak,
+    from genie_space_optimizer.common.genie_schema import (
+        MAX_SQL_SNIPPETS,
+        count_sql_snippets,
+        generate_genie_id,
     )
+    from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
     from genie_space_optimizer.optimization.optimizer import (
         _discover_schema_sql_expressions,
         _enrich_candidates_with_llm,
         _format_existing_sql_snippets,
-        _incr_bug4_counter,
         _mine_sql_expression_candidates,
         _ngram_similarity,
     )
 
-    # Bug #4 firewall — mined SQL expression candidates are compared against
-    # the benchmark corpus (train + held-out). Any snippet that closely
-    # matches a benchmark question or expected_sql is rejected before
-    # persistence. This closes the leak via the pre-loop seeding path.
-    benchmark_corpus = BenchmarkCorpus.from_benchmarks(benchmarks)
+    # ── Source-specific invariant ───────────────────────────────────────
+    # This path persists sql_snippets from arbiter-approved benchmarks
+    # only (``both_correct`` verdict, filtered by the caller via
+    # ``_extract_arbiter_approved_benchmarks``) OR from schema-discovery
+    # heuristics. Every candidate still goes through EXPLAIN+execute via
+    # ``validate_sql_snippet`` below.
+    #
+    # The Bug #4 benchmark-leakage firewall is deliberately NOT run here
+    # (see leakage.py ``_PATCH_TEXT_FIELDS`` scoping comment). The pre-
+    # mining arbiter filter is the source gate; the firewall would
+    # double-gate and reject legitimate structural primitives like
+    # ``SUM(revenue)`` whose fingerprint happens to match a benchmark.
 
     result: dict = {
         "total_candidates": 0,
         "total_seeded": 0,
         "total_rejected": 0,
-        "firewall_rejected": 0,          # Bug #4 benchmark-leakage firewall
+        # ``firewall_rejected`` retained as a zero for back-compat with
+        # observability consumers reading this shape; the firewall no
+        # longer runs in this path.
+        "firewall_rejected": 0,
         "validation_rejected": 0,         # EXPLAIN / execution validator
         "ngram_rejected": 0,              # duplicate of an already-seeded snippet
         "measures_seeded": 0,
         "filters_seeded": 0,
         "expressions_seeded": 0,
         "skipped_reason": None,
+        # Per-candidate rejection diagnostics — bounded list so the
+        # pretty summary block can explain WHY candidates died without
+        # operators having to grep INFO logs. Shape: list of
+        # ``{sql_prefix, snippet_type, gate, reason}``.
+        "rejected_examples": [],
     }
+
+    # Bounded so a pathological pool doesn't balloon the result dict /
+    # write_stage payload. 10 is plenty for diagnostics; the summary
+    # renders at most 3.
+    _MAX_REJECTED_EXAMPLES = 10
+
+    def _record_rejection(
+        sql_raw: str, snippet_type: str, gate: str, reason: str,
+    ) -> None:
+        if len(result["rejected_examples"]) >= _MAX_REJECTED_EXAMPLES:
+            return
+        result["rejected_examples"].append({
+            "sql_prefix": (sql_raw or "")[:120],
+            "snippet_type": snippet_type,
+            "gate": gate,
+            "reason": (reason or "")[:200],
+        })
 
     parsed = config.get("_parsed_space", config)
     existing_snippets = parsed.get("instructions", {}).get("sql_snippets", {})
     if not isinstance(existing_snippets, dict):
         existing_snippets = {}
 
-    existing_count = sum(
-        len(existing_snippets.get(k, []) or [])
-        for k in ("measures", "filters", "expressions")
+    # Headroom-based gate (replaces the old 5-snippet skip threshold).
+    #
+    #   headroom = MAX_SQL_SNIPPETS (200) - existing_sql_snippets - LEVER_RESERVE
+    #
+    # The ``LEVER_RESERVE`` (default 50) holds back budget for the lever
+    # loop's iterative additions later in the optimisation run. Seeding
+    # only contributes up to ``headroom``; when headroom hits zero we
+    # skip seeding entirely so the lever loop retains its runway.
+    #
+    # ``count_sql_snippets`` intentionally counts only the three
+    # sql_snippet buckets (measures + filters + expressions). The
+    # Databricks docs' 200-limit also covers join_specs + table
+    # descriptions, but the code's validator enforces a different
+    # split today; reconciling that is tracked as a separate issue.
+    existing_count = count_sql_snippets(parsed)
+    headroom = max(
+        0,
+        MAX_SQL_SNIPPETS - existing_count - SQL_EXPRESSION_SEEDING_LEVER_RESERVE,
     )
-    remaining_snippet_budget = max(0, MAX_SQL_SNIPPETS - existing_count)
+    remaining_snippet_budget = headroom  # loop-level cap (was: MAX - existing)
 
-    if existing_count >= SQL_EXPRESSION_SEEDING_THRESHOLD:
+    if headroom == 0:
         _lines = [_section("SQL EXPRESSION SEEDING", "-")]
         _lines.append(_kv("Existing snippets", existing_count))
-        _lines.append(_kv("Status", f"Skipped (threshold={SQL_EXPRESSION_SEEDING_THRESHOLD})"))
+        _lines.append(_kv(
+            "Status",
+            f"Skipped (insufficient headroom: "
+            f"existing={existing_count}, "
+            f"reserve={SQL_EXPRESSION_SEEDING_LEVER_RESERVE}, "
+            f"cap={MAX_SQL_SNIPPETS})",
+        ))
         _lines.append(_bar("-"))
         print("\n".join(_lines))
-        result["skipped_reason"] = "sufficient_existing"
+        result["skipped_reason"] = "insufficient_headroom_for_seeding"
         return result
 
     write_stage(
@@ -2876,30 +3103,22 @@ def _seed_new_sql_snippets(
             if any(_ngram_similarity(sql_raw.lower(), e) > 0.85 for e in existing_sql_set):
                 result["ngram_rejected"] += 1
                 result["total_rejected"] += 1
-                continue
-
-            # Bug #4 firewall — reject snippets whose SQL or question-level
-            # fields are substantially similar to any benchmark.
-            patch_type_key = f"add_sql_snippet_{snippet_type}"
-            candidate_proposal = {
-                "sql": sql_raw,
-                "display_name": candidate.get("display_name", ""),
-                "synonyms": candidate.get("synonyms", []),
-                "instruction": candidate.get("instruction", ""),
-            }
-            is_leak, leak_reason = is_benchmark_leak(
-                candidate_proposal, patch_type_key, benchmark_corpus,
-            )
-            if is_leak:
-                _incr_bug4_counter("firewall_rejections")
-                logger.info(
-                    "Bug #4 firewall: rejected %s candidate (%s) - %s",
-                    patch_type_key, str(sql_raw)[:80], leak_reason,
+                _record_rejection(
+                    sql_raw, snippet_type, "ngram",
+                    "duplicate of an already-seeded snippet (>0.85 similarity)",
                 )
-                result["firewall_rejected"] = result.get("firewall_rejected", 0) + 1
-                result["total_rejected"] += 1
                 continue
 
+            # Bug #4 firewall REMOVED at this call site — the mining source
+            # has already been filtered to arbiter-approved baseline rows
+            # (verdict == ``both_correct``, see
+            # ``_extract_arbiter_approved_benchmarks``) which guarantees
+            # the benchmark's ``expected_sql`` is gold-standard, and
+            # ``validate_sql_snippet`` below still runs EXPLAIN+execute
+            # against the warehouse. Adding the firewall here would
+            # double-gate and reject legitimate structural patterns
+            # (``SUM(revenue)`` is STRUCTURE, not an ANSWER — see
+            # docstring above ``_PATCH_TEXT_FIELDS`` in leakage.py).
             _valid_result = validate_sql_snippet(
                 sql_raw, snippet_type, metadata_snapshot,
                 spark=spark, catalog=catalog, gold_schema=schema,
@@ -2912,6 +3131,7 @@ def _seed_new_sql_snippets(
                 logger.info("SQL expression candidate rejected: %s — %s", sql_raw[:80], err)
                 result["validation_rejected"] += 1
                 result["total_rejected"] += 1
+                _record_rejection(sql_raw, snippet_type, "validation", err or "")
                 continue
 
             snippet_entry = {
@@ -2993,6 +3213,21 @@ def _seed_new_sql_snippets(
         _lines.append(_kv("  Firewall (leakage)", result["firewall_rejected"]))
         _lines.append(_kv("  Validation (EXPLAIN)", result["validation_rejected"]))
         _lines.append(_kv("  Ngram duplicate", result["ngram_rejected"]))
+        # Per-candidate rejection reasons — cheap observability so the next
+        # diagnosis doesn't require grepping the job log. We print up to
+        # 3 examples; the full bounded list stays on the result dict.
+        _rejected_examples = result.get("rejected_examples") or []
+        if _rejected_examples:
+            _lines.append(_kv("Rejection examples (up to 3)", ""))
+            for _ex in _rejected_examples[:3]:
+                _sql_prefix = (_ex.get("sql_prefix") or "").strip()
+                _reason = (_ex.get("reason") or "").strip()
+                _gate = _ex.get("gate") or ""
+                _lines.append(_kv(
+                    f"  [{_gate}] {_sql_prefix[:60]}",
+                    _reason[:140],
+                    indent=4,
+                ))
         _lines.append(_bar("-"))
         print("\n".join(_lines))
 
@@ -3282,6 +3517,8 @@ def _run_enrichment(
     schema: str,
     baseline_model_id: str = "",
     optimization_run_id: str = "",
+    *,
+    held_out_benchmarks: list[dict] | None = None,
 ) -> dict:
     """Stage 2.5: Config preparation + proactive enrichment + LoggedModel snapshot.
 
@@ -3377,11 +3614,16 @@ def _run_enrichment(
             # Runs BEFORE proactive seed/expand (per Task C.5 ordering) so
             # legacy ALL-CAPS prose is normalised into the canonical 5-
             # section form before seed/expand see it.
+            #
+            # ``benchmarks`` here is used ONLY as the firewall corpus for
+            # the prose miner's example_qsql target (it does not mine
+            # from benchmarks). Pass the full train+held_out corpus so
+            # the example-SQL firewall can catch held-out leakage.
             _miner_out = _run_instruction_prose_mining(
                 w, spark, run_id, space_id, config, metadata_snapshot,
                 catalog, schema,
                 warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
-                benchmarks=benchmarks,
+                benchmarks=list(benchmarks) + list(held_out_benchmarks or []),
             )
             if _miner_out["total_applied"] or _miner_out["keep_in_prose_count"]:
                 config = fetch_space_config(w, space_id)
@@ -3409,8 +3651,11 @@ def _run_enrichment(
             # ── 5c. Pre-flight example_sql synthesis (fills to 20) ────────
             # Schema-driven, leak-free booster. Threshold-gated
             # (need = max(0, TARGET - existing)) so re-runs are idempotent.
-            # Firewall runs inline via _apply_proactive_example_sqls. See
-            # optimization/preflight_synthesis.py for invariants.
+            # Firewall runs inline via _apply_proactive_example_sqls; it
+            # MUST see the full benchmark corpus (train + held_out) so the
+            # example-SQL fingerprint check catches held-out leakage.
+            # See optimization/preflight_synthesis.py for invariants.
+            _full_firewall_corpus = list(benchmarks) + list(held_out_benchmarks or [])
             preflight_example_result: dict = {}
             if ENABLE_PREFLIGHT_EXAMPLE_SQL_SYNTHESIS:
                 try:
@@ -3419,7 +3664,7 @@ def _run_enrichment(
                     )
                     preflight_example_result = run_preflight_example_synthesis(
                         w, spark, run_id, space_id, config, metadata_snapshot,
-                        benchmarks=benchmarks,
+                        benchmarks=_full_firewall_corpus,
                         catalog=catalog, schema=schema,
                         warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
                     )
@@ -3437,11 +3682,29 @@ def _run_enrichment(
                     )
 
             # ── 5d. SQL Expression REPAIR + SEEDING ───────────────────────
-            # Repair runs unconditionally; seeding is threshold-gated.
+            # Repair runs unconditionally; seeding is headroom-gated.
+            #
+            # Mining source gate: only baseline benchmarks whose arbiter
+            # verdict is ``both_correct`` qualify — the ``expected_sql``
+            # on those rows is proven correct (Genie and GT agreed).
+            # ``genie_correct`` rows are explicitly EXCLUDED because
+            # their ``expected_sql`` may be wrong (that verdict triggers
+            # the separate ground-truth-repair path). First run / no
+            # baseline -> empty subset -> only schema-discovery proposes.
+            approved_benchmarks, _arbiter_verdict_counts = (
+                _extract_arbiter_approved_benchmarks(
+                    spark, run_id, catalog, schema, benchmarks,
+                )
+            )
+            logger.info(
+                "miner.arbiter_filter total=%d approved=%d verdicts=%s",
+                len(benchmarks), len(approved_benchmarks),
+                _arbiter_verdict_counts,
+            )
             sql_expr_result = _run_sql_expression_seeding(
                 w, spark, run_id, space_id, config=config,
                 metadata_snapshot=metadata_snapshot,
-                benchmarks=benchmarks,
+                benchmarks=approved_benchmarks,
                 catalog=catalog, schema=schema,
                 warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
             )
@@ -3595,6 +3858,9 @@ def _build_reflection_entry(
     reflection_text: str = "",
     refinement_mode: str = "",
     escalation_handled: bool = False,
+    root_cause: str = "",
+    blame_set: Any = None,
+    source_cluster_ids: list[str] | None = None,
 ) -> dict:
     """Build a structured reflection dict for the adaptive loop memory.
 
@@ -3604,7 +3870,18 @@ def _build_reflection_entry(
     *refinement_mode* is ``"in_plan"`` when the lever direction was correct
     but caused collateral regressions, or ``"out_of_plan"`` when the
     approach fundamentally did not work (AdaPlanner-style classification).
+
+    Phase C2 added the identity fields (``root_cause``, ``blame_set``,
+    ``source_cluster_ids``, ``lever_set``, ``rollback_class``) that
+    Phases D1-D3 use to build the DO-NOT-RETRY forbidden set without
+    parsing the free-form ``action`` string. Callers that didn't supply
+    identity fields still produce a valid entry; the fields are simply
+    empty and won't match anything in the collision guard.
     """
+    from genie_space_optimizer.optimization.rollback_class import (
+        classify_rollback_reason,
+    )
+
     score_deltas = {
         k: new_scores.get(k, 0.0) - prev_scores.get(k, 0.0)
         for k in set(prev_scores) | set(new_scores)
@@ -3634,6 +3911,13 @@ def _build_reflection_entry(
     _prev = prev_failure_qids or set()
     _new = new_failure_qids or set()
 
+    # Normalise blame_set so reflection entries share the same shape as
+    # :func:`_filter_tried_clusters` expects — this keeps the DO-NOT-RETRY
+    # forbidden set symmetric with the tried-clusters bookkeeping.
+    _blame_norm = _normalise_blame(blame_set)
+
+    _lever_set = sorted({int(l) for l in levers}) if levers else []
+
     return {
         "iteration": iteration,
         "ag_id": ag_id,
@@ -3645,6 +3929,7 @@ def _build_reflection_entry(
         "accuracy_delta": new_acc - prev_acc,
         "new_failures": new_failures,
         "rollback_reason": rollback_reason,
+        "rollback_class": classify_rollback_reason(rollback_reason).value,
         "do_not_retry": do_not_retry,
         "affected_question_ids": affected_question_ids or [],
         "fixed_questions": sorted(_prev - _new),
@@ -3653,7 +3938,37 @@ def _build_reflection_entry(
         "reflection_text": reflection_text,
         "refinement_mode": refinement_mode,
         "escalation_handled": escalation_handled,
+        # Phase C2 identity fields.
+        "root_cause": root_cause or "",
+        "blame_set": _blame_norm,
+        "source_cluster_ids": list(source_cluster_ids or []),
+        "lever_set": _lever_set,
     }
+
+
+# Phase C1 retired the earlier ``_is_schema_fatal_patch_error`` shim in
+# favour of :class:`RollbackClass` and :func:`classify_rollback_reason`
+# from ``optimization/rollback_class``. A deterministic schema rejection
+# now surfaces as ``RollbackClass.SCHEMA_FAILURE`` so all gating code
+# (infra retry budget, diminishing-returns filter, DO-NOT-RETRY guard)
+# reads one source of truth.
+
+
+def _is_schema_fatal_patch_error(error: Any) -> bool:
+    """Backwards-compatible alias for tests and any legacy call sites.
+
+    Returns True when ``error`` classifies as
+    :attr:`RollbackClass.SCHEMA_FAILURE`. New code should call
+    :func:`classify_rollback_reason` directly.
+    """
+    from genie_space_optimizer.optimization.rollback_class import (
+        RollbackClass,
+        classify_rollback_reason,
+    )
+
+    if not error:
+        return False
+    return classify_rollback_reason(str(error)) == RollbackClass.SCHEMA_FAILURE
 
 
 def _diminishing_returns(
@@ -3661,20 +3976,36 @@ def _diminishing_returns(
     epsilon: float | None = None,
     lookback: int | None = None,
 ) -> bool:
-    """Return True if none of the last *lookback* non-escalation iterations
+    """Return True if none of the last *lookback* actionable iterations
     achieved a mean accuracy improvement >= *epsilon*.
 
     Rolled-back iterations count as zero improvement, which correctly
-    signals the optimizer is stuck.  Escalation-handled entries are skipped
-    so they don't pollute the lookback window.
+    signals the optimizer is stuck. Phase C3: only entries whose
+    ``rollback_class`` is ``CONTENT_REGRESSION`` (or which were
+    accepted — those carry an ``accuracy_delta``) participate. Infra,
+    schema, escalation, and other non-content rollbacks carry no
+    content signal and are skipped so they don't artificially trip
+    diminishing-returns before the loop has had a real chance to try
+    a strategy.
     """
+    from genie_space_optimizer.optimization.rollback_class import (
+        RollbackClass,
+    )
+
     if epsilon is None:
         epsilon = DIMINISHING_RETURNS_EPSILON
     if lookback is None:
         lookback = DIMINISHING_RETURNS_LOOKBACK
 
-    non_escalation = [r for r in reflection_buffer if not r.get("escalation_handled")]
-    recent = non_escalation[-lookback:]
+    def _is_content_signal(r: dict) -> bool:
+        if r.get("escalation_handled"):
+            return False
+        if r.get("accepted"):
+            return True
+        return r.get("rollback_class") == RollbackClass.CONTENT_REGRESSION.value
+
+    content_signal = [r for r in reflection_buffer if _is_content_signal(r)]
+    recent = content_signal[-lookback:]
     if len(recent) < lookback:
         return False
 
@@ -3684,35 +4015,165 @@ def _diminishing_returns(
     return True
 
 
+# Phase D1: which lever sets is the router allowed to try for a given
+# root cause? If every one of them has been tried and rolled back, the
+# cluster is truly dead and we can drop it. Keep this conservative —
+# narrower than the strategist's "also Lever N" hints so a single
+# lever-set miss doesn't suppress the whole cluster prematurely.
+_FEASIBLE_LEVER_SETS_BY_ROOT_CAUSE: dict[str, tuple[frozenset[int], ...]] = {
+    # SQL-shape causes: primary Lever 6 (sql_snippet), secondary Lever 5
+    # (example_sql). These are the only two ways to actually install a
+    # missing filter / aggregation / measure without touching benchmarks.
+    "missing_filter":           (frozenset({6}), frozenset({5})),
+    "missing_scd_filter":       (frozenset({6}), frozenset({5})),
+    "missing_temporal_filter":  (frozenset({6}), frozenset({5})),
+    "wrong_filter_condition":   (frozenset({6}), frozenset({5})),
+    "wrong_aggregation":        (frozenset({6}), frozenset({5})),
+    "wrong_measure":            (frozenset({6}), frozenset({5})),
+    "missing_aggregation":      (frozenset({6}), frozenset({5})),
+    "missing_dimension":        (frozenset({6}), frozenset({5})),
+    "wrong_grouping":           (frozenset({6}), frozenset({5})),
+    # Descriptive causes: Lever 1 is primary; Lever 5 instructions also fit.
+    "wrong_column":             (frozenset({1}), frozenset({5})),
+    "wrong_table":              (frozenset({1}), frozenset({5})),
+    "description_mismatch":     (frozenset({1}),),
+    "missing_synonym":          (frozenset({1}),),
+    # Join causes: Lever 4 primary; Lever 5 also suggested by the prompt.
+    "wrong_join":               (frozenset({4}), frozenset({5})),
+    "wrong_join_spec":          (frozenset({4}), frozenset({5})),
+    "missing_join_spec":        (frozenset({4}), frozenset({5})),
+    "wrong_join_type":          (frozenset({5}),),
+    # TVF causes: Lever 3.
+    "tvf_parameter_error":      (frozenset({3}), frozenset({5})),
+    # Routing / instruction causes: Lever 5 only.
+    "asset_routing_error":      (frozenset({5}),),
+    "missing_instruction":      (frozenset({5}),),
+    "ambiguous_question":       (frozenset({5}),),
+}
+
+
+def _feasible_lever_sets(ft: str) -> tuple[frozenset[int], ...]:
+    """Return the tuple of lever sets the router could plausibly try for
+    root cause *ft*. Unknown root causes fall back to an empty tuple,
+    which means the 3-tuple suppression in :func:`_filter_tried_clusters`
+    can never fire — safe default (only the explicit legacy 2-tuple
+    will suppress the cluster).
+    """
+    return _FEASIBLE_LEVER_SETS_BY_ROOT_CAUSE.get(ft, ())
+
+
+def _compute_forbidden_ag_set(
+    reflection_buffer: list[dict],
+) -> set[tuple[str, Any, frozenset[int]]]:
+    """Build the DO-NOT-RETRY forbidden set from the reflection buffer.
+
+    Only CONTENT_REGRESSION rollbacks contribute — infra / schema / other
+    classes don't count as evidence that the strategy was wrong. Returns
+    a set of ``(root_cause, blame_set_norm, frozenset(lever_set))`` tuples.
+    """
+    from genie_space_optimizer.optimization.rollback_class import (
+        RollbackClass,
+    )
+
+    forbidden: set[tuple[str, Any, frozenset[int]]] = set()
+    for r in reflection_buffer:
+        if r.get("accepted"):
+            continue
+        if r.get("escalation_handled"):
+            continue
+        if r.get("rollback_class") != RollbackClass.CONTENT_REGRESSION.value:
+            continue
+        rc = r.get("root_cause") or ""
+        if not rc:
+            continue
+        blame = r.get("blame_set") or ""
+        lever_set = r.get("lever_set") or []
+        if not lever_set:
+            continue
+        forbidden.add((rc, blame, frozenset(int(l) for l in lever_set)))
+    return forbidden
+
+
+def _ag_collision_key(
+    ag: dict,
+    ag_root_cause: str,
+    ag_blame_set: Any,
+    lever_keys: list[str],
+) -> tuple[str, Any, frozenset[int]] | None:
+    """Build the collision key for an action group.
+
+    Returns ``None`` when the AG lacks enough identity to meaningfully
+    collide (no root cause or no lever set). Normalises blame the same
+    way :func:`_build_reflection_entry` does so keys can be compared.
+    """
+    if not ag_root_cause:
+        return None
+    if not lever_keys:
+        return None
+    return (
+        ag_root_cause,
+        _normalise_blame(ag_blame_set),
+        frozenset(int(lk) for lk in lever_keys),
+    )
+
+
 def _filter_tried_clusters(
     clusters: list[dict],
     tried_root_causes: set[tuple],
 ) -> list[dict]:
     """Remove clusters whose root cause was already tried and rolled back.
 
-    *tried_root_causes* stores tuples recorded at rollback time.  Supports
+    *tried_root_causes* stores tuples recorded at rollback time. Supports
     both legacy 2-tuples ``(ft, blame)`` and new 3-tuples
-    ``(ft, blame, frozenset_of_levers)`` — the 3-tuple variant allows the
-    same root cause to be retried with a different lever combination.
+    ``(ft, blame, frozenset_of_levers)``. A cluster is suppressed when
+    EITHER:
+
+    * the legacy ``(ft, blame)`` 2-tuple is present (truly-dead cluster
+      — rolled back across multiple distinct lever sets per Phase D3), OR
+    * every feasible lever set for the cluster's root cause has a matching
+      3-tuple entry (lever-aware suppression — we've exhausted the router's
+      options for this cluster).
+
+    Phase D1 is what makes the 3-tuple bookkeeping actually effective;
+    before D1 the function silently ignored 3-tuples entirely.
     """
     if not tried_root_causes:
         return clusters
-    legacy_keys: set[tuple[str, str]] = set()
-    lever_keys: set[tuple[str, str, frozenset]] = set()
+    legacy_keys: set[tuple[str, Any]] = set()
+    lever_keys: set[tuple[str, Any, frozenset]] = set()
     for entry in tried_root_causes:
         if len(entry) == 2:
             legacy_keys.add(entry)
         elif len(entry) >= 3:
-            lever_keys.add(entry)
+            lever_keys.add((entry[0], entry[1], entry[2]))
 
     filtered: list[dict] = []
     for c in clusters:
         ft = c.get("asi_failure_type") or c.get("root_cause", "other")
-        blame = c.get("asi_blame_set") or ""
+        blame = _normalise_blame(c.get("asi_blame_set"))
         if (ft, blame) in legacy_keys:
+            continue
+        feasible = _feasible_lever_sets(ft)
+        if feasible and all(
+            (ft, blame, frozenset(ls)) in lever_keys for ls in feasible
+        ):
             continue
         filtered.append(c)
     return filtered
+
+
+def _normalise_blame(blame_raw: Any) -> tuple[str, ...] | str:
+    """Canonical blame representation used by reflection entries and the
+    tried-clusters filter. Empty collections normalise to ``""`` (same
+    shape as ``None``) so legacy 2-tuple keys written with an empty
+    blame will match a cluster whose ``asi_blame_set`` is also empty.
+    """
+    if blame_raw is None:
+        return ""
+    if isinstance(blame_raw, (list, tuple, set, frozenset)):
+        items = tuple(sorted(str(b) for b in blame_raw if str(b)))
+        return items or ""
+    return str(blame_raw)
 
 
 def _extract_arbiter_actions_from_baseline(
@@ -3760,6 +4221,82 @@ def _extract_arbiter_actions_from_baseline(
                 "verdict": "genie_correct",
             })
     return actions
+
+
+def _extract_arbiter_approved_benchmarks(
+    spark: SparkSession,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    benchmarks: list[dict],
+) -> tuple[list[dict], dict[str, int]]:
+    """Return the subset of ``benchmarks`` whose baseline arbiter verdict
+    was ``both_correct`` ONLY.
+
+    Per docs/gsl-instruction-schema.md design decision:
+
+    * ``both_correct`` — Genie and the benchmark's ``expected_sql`` both
+      produce the same correct result. The ``expected_sql`` is gold
+      standard and its patterns (aggregations, filters, derived
+      expressions) are safe to mine into structured sql_snippets or
+      join_specs.
+
+    * ``genie_correct`` — Genie is right and the benchmark's
+      ``expected_sql`` is WRONG (hence the separate repair path at
+      :func:`_extract_arbiter_actions_from_baseline`). Mining from
+      ``expected_sql`` here would ingest bad SQL. **EXCLUDED.**
+
+    * ``ground_truth_correct``, ``neither_correct``, ``skipped``,
+      anything else — EXCLUDED (conservative; only ``both_correct``
+      qualifies as unambiguously safe source content).
+
+    Empty-baseline fallback: if no baseline iteration is persisted yet
+    (first GSO run on a fresh space, or baseline crashed), returns
+    ``([], {})`` — caller falls back to schema-discovery-only mining.
+
+    Returns
+    -------
+    (approved_benchmarks, verdict_counts)
+        ``approved_benchmarks`` is the filtered subset.
+        ``verdict_counts`` is a per-verdict tally across all matched
+        rows (for the single-line diagnostic log).
+    """
+    approved: list[dict] = []
+    verdict_counts: dict[str, int] = {}
+
+    if not benchmarks:
+        return approved, verdict_counts
+
+    baseline_iter = load_latest_full_iteration(spark, run_id, catalog, schema)
+    if not baseline_iter:
+        return approved, verdict_counts
+
+    rows_json = baseline_iter.get("rows_json")
+    if isinstance(rows_json, str):
+        try:
+            rows_json = json.loads(rows_json)
+        except (json.JSONDecodeError, TypeError):
+            return approved, verdict_counts
+    if not isinstance(rows_json, list):
+        return approved, verdict_counts
+
+    # Build {question_id: verdict} from baseline rows.
+    verdict_by_qid: dict[str, str] = {}
+    for row in rows_json:
+        av = _get_arbiter_verdict(row)
+        qid = _get_question_id(row)
+        verdict_counts[av] = verdict_counts.get(av, 0) + 1
+        if qid:
+            verdict_by_qid[qid] = av
+
+    for b in benchmarks:
+        qid = str(b.get("id") or b.get("question_id") or "").strip()
+        if not qid:
+            continue
+        if verdict_by_qid.get(qid) == "both_correct":
+            approved.append(b)
+
+    return approved, verdict_counts
 
 
 # ── Cross-Iteration Verdict History ────────────────────────────────────
@@ -4809,6 +5346,13 @@ def _analyze_and_distribute(
             _kv("Soft cluster questions", _soft_qids_total),
             "|",
         ]
+        # Phase E1: annotate each soft cluster with its aggregate signal
+        # class so operators can see at a glance whether a cluster is
+        # driven by NL-text judges (response_quality) or SQL-shape judges.
+        from genie_space_optimizer.optimization.judge_classes import (
+            aggregate_cluster_signal_class,
+        )
+
         for si, sc in enumerate(soft_clusters, 1):
             sc_judge = sc.get("affected_judge", "?")
             sc_cause = sc.get("root_cause", "?")
@@ -4816,8 +5360,10 @@ def _analyze_and_distribute(
             sc_qids = sc.get("question_ids", [])
             sc_blame = sc.get("asi_blame_set", sc.get("blame_set", []))
             blame_str = ", ".join(sc_blame) if isinstance(sc_blame, list) and sc_blame else str(sc_blame) if sc_blame else "(none)"
+            sc_signal = aggregate_cluster_signal_class(sc.get("affected_judges", []))
             _soft_lines.append(f"|  Soft cluster {si} / {len(soft_clusters)}")
             _soft_lines.append(f"|    {'Judge:':<24s} {sc_judge}")
+            _soft_lines.append(f"|    {'Signal class:':<24s} {sc_signal}")
             _soft_lines.append(f"|    {'Root cause:':<24s} {sc_cause}")
             _soft_lines.append(f"|    {'ASI failure type:':<24s} {sc_asi}")
             _soft_lines.append(f"|    {'Blame:':<24s} {blame_str}")
@@ -4836,6 +5382,9 @@ def _analyze_and_distribute(
     _all_cluster_qids: set[str] = set()
     _clusters_with_asi = 0
     _clusters_with_blame = 0
+    from genie_space_optimizer.optimization.judge_classes import (
+        aggregate_cluster_signal_class,
+    )
     for ci, c in enumerate(clusters, 1):
         mapped = _map_to_lever(
             c["root_cause"],
@@ -4848,8 +5397,10 @@ def _analyze_and_distribute(
         blame = c.get("asi_blame_set", c.get("blame_set", []))
         qids = c["question_ids"]
         asi_ft = c.get("asi_failure_type", "n/a")
+        c_signal = aggregate_cluster_signal_class(c.get("affected_judges", []))
         cluster_lines.append(f"|  Cluster {ci} / {len(clusters)}")
         cluster_lines.append(f"|    {'Judge:':<24s} {c['affected_judge']}")
+        cluster_lines.append(f"|    {'Signal class:':<24s} {c_signal}")
         cluster_lines.append(f"|    {'Root cause:':<24s} {c['root_cause']}")
         cluster_lines.append(f"|    {'ASI failure type:':<24s} {asi_ft}")
         cluster_lines.append(f"|    {'Mapped lever:':<24s} {mapped}")
@@ -5405,6 +5956,24 @@ def _run_lever_loop(
     enriched config is loaded from the Genie Space API instead.
 
     Returns dict with best scores, model_id, iteration_counter, levers lists.
+
+    Source-specific invariant (lever-loop-proposed sql_snippets / join_specs):
+        The lever loop proposes structural SQL via the LLM (Lever 6 for
+        sql_snippets; join-lever for join_specs). Persistence gates:
+
+        - Exec-validation at propose time via ``validate_sql_snippet`` /
+          ``_explain_join_candidate``.
+        - Post-iteration full-eval arbiter gate (``detect_regressions``
+          + accuracy-drop check below). Iterations whose patches cause
+          arbiter-detected regression roll back, removing the offending
+          snippet.
+
+        This is the functional equivalent of proactive enrichment's
+        pre-mining arbiter filter: both mechanisms guarantee that
+        persisted sql_snippets / join_specs are arbiter-backed. The
+        Bug #4 firewall is therefore no longer wired for these patch
+        types — see scoping comment above ``_PATCH_TEXT_FIELDS`` in
+        leakage.py.
     """
     levers = levers or DEFAULT_LEVER_ORDER
     thresholds = thresholds or DEFAULT_THRESHOLDS
@@ -5667,11 +6236,22 @@ def _run_lever_loop(
                     )
 
             # ── SQL Expression REPAIR + SEEDING (legacy path) ────────────
-            # Repair runs unconditionally; seeding is threshold-gated.
+            # Repair runs unconditionally; seeding is headroom-gated.
+            # Mining source gate mirrors the primary path
+            # (_run_enrichment): only arbiter-approved (``both_correct``)
+            # baseline rows contribute. See _extract_arbiter_approved_benchmarks
+            # for the verdict-scoping rationale.
+            _legacy_approved, _legacy_verdicts = _extract_arbiter_approved_benchmarks(
+                spark, run_id, catalog, schema, benchmarks,
+            )
+            logger.info(
+                "miner.arbiter_filter path=legacy total=%d approved=%d verdicts=%s",
+                len(benchmarks), len(_legacy_approved), _legacy_verdicts,
+            )
             sql_expr_result = _run_sql_expression_seeding(
                 w, spark, run_id, space_id, config=config,
                 metadata_snapshot=metadata_snapshot,
-                benchmarks=benchmarks,
+                benchmarks=_legacy_approved,
                 catalog=catalog, schema=schema,
                 warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
             )
@@ -5947,17 +6527,29 @@ def _run_lever_loop(
         if _diminishing_returns(reflection_buffer):
             logger.info("Diminishing returns detected — stopping at iteration %d", _iter_num)
             break
+        # Phase C3: only CONTENT_REGRESSION rollbacks count toward the
+        # consecutive-rollback limit. INFRA / SCHEMA / escalation / OTHER
+        # rollbacks carry no content signal and have their own handling
+        # (infra retry budget, schema fatal exit, escalation_handled).
+        from genie_space_optimizer.optimization.rollback_class import (
+            RollbackClass as _RC,
+        )
         _consecutive_rb = 0
         for _rb_entry in reversed(reflection_buffer):
             if _rb_entry.get("escalation_handled"):
                 continue
-            if not _rb_entry.get("accepted"):
+            if _rb_entry.get("accepted"):
+                break
+            if _rb_entry.get("rollback_class") == _RC.CONTENT_REGRESSION.value:
                 _consecutive_rb += 1
             else:
-                break
+                # Non-content rollback (infra/schema/other). Skip without
+                # counting; don't break, so we can still see a
+                # CONTENT_REGRESSION further back in the buffer.
+                continue
         if _consecutive_rb >= CONSECUTIVE_ROLLBACK_LIMIT:
             logger.info(
-                "Consecutive rollback limit (%d) reached — stopping at iteration %d",
+                "Consecutive content-rollback limit (%d) reached — stopping at iteration %d",
                 CONSECUTIVE_ROLLBACK_LIMIT, _iter_num,
             )
             break
@@ -6035,7 +6627,7 @@ def _run_lever_loop(
         # per-iteration budget counter + stamp the active space_id so
         # the P2 arbiter gate can call Genie (both per Bug #4 Phase 3
         # Invariants B and C).
-        metadata_snapshot["failure_clusters"] = clusters
+        metadata_snapshot["_failure_clusters"] = clusters
         metadata_snapshot["_cluster_synthesis_count"] = 0
         metadata_snapshot["_space_id"] = space_id
 
@@ -6245,11 +6837,19 @@ def _run_lever_loop(
             + _bar("=")
         )
 
-        _ag_source_cids = set(ag.get("source_cluster_ids", []))
+        _ag_source_cids = list(ag.get("source_cluster_ids", []))
         _ag_cluster_info: dict = {}
+        # Phase C2: derive identity fields used by DO-NOT-RETRY (D1-D3)
+        # from the first source cluster. Action groups can span multiple
+        # clusters but in practice they share a root cause (the strategist
+        # is instructed to merge clusters with the same blame set). The
+        # first cluster's root_cause / blame_set is representative enough
+        # for collision detection.
+        _ag_root_cause: str = ""
+        _ag_blame_set: Any = None
         for _rc_idx, _rc in enumerate(ranked):
             _rc_cid = _rc.get("cluster_id", "")
-            if _ag_source_cids and _rc_cid not in _ag_source_cids:
+            if _ag_source_cids and _rc_cid not in set(_ag_source_cids):
                 continue
             _ag_cluster_info = {
                 "cluster_id": _rc_cid,
@@ -6259,7 +6859,71 @@ def _run_lever_loop(
                 "root_cause": _rc.get("root_cause") or _rc.get("asi_failure_type"),
                 "affected_questions": _rc.get("question_ids", [])[:20],
             }
+            _ag_root_cause = (
+                _rc.get("asi_failure_type")
+                or _rc.get("root_cause")
+                or ""
+            )
+            _ag_blame_set = _rc.get("asi_blame_set")
             break
+
+        # Phase C2: reusable identity kwargs for every _build_reflection_entry
+        # call in this AG iteration. Keeps call sites DRY while guaranteeing
+        # the forbidden-set / tried-cluster bookkeeping downstream always
+        # sees the same root_cause / blame_set / source_cluster_ids.
+        _ag_identity_kwargs = {
+            "root_cause": _ag_root_cause,
+            "blame_set": _ag_blame_set,
+            "source_cluster_ids": list(_ag_source_cids),
+        }
+
+        # Phase D2: collision guard. The strategist occasionally re-proposes
+        # a previously-rejected (root_cause, blame_set, lever_set) tuple
+        # despite the DO NOT RETRY hint in its prompt (see Q004 regression).
+        # When that happens, skip this AG rather than deploying the same
+        # patch again. The reflection entry is logged with rollback_class
+        # OTHER so this skip doesn't count against any budget — it's
+        # purely a routing correction.
+        _forbidden = _compute_forbidden_ag_set(reflection_buffer)
+        _collision_key = _ag_collision_key(
+            ag, _ag_root_cause, _ag_blame_set, lever_keys,
+        )
+        if _collision_key is not None and _collision_key in _forbidden:
+            _rc_k, _blame_k, _lever_k = _collision_key
+            print(
+                _section(f"[{ag_id}] AG COLLISION — skipping", "!") + "\n"
+                + _kv("Root cause", _rc_k) + "\n"
+                + _kv("Blame", _blame_k) + "\n"
+                + _kv("Lever set", sorted(_lever_k)) + "\n"
+                + _kv(
+                    "Reason",
+                    "strategist re-proposed a (root_cause, blame, lever_set) "
+                    "tuple previously rolled back for content regression",
+                ) + "\n"
+                + _bar("!")
+            )
+            write_stage(
+                spark, run_id, f"AG_{ag_id}_COLLISION_SKIPPED", "SKIPPED",
+                task_key="lever_loop", iteration=iteration_counter,
+                detail={
+                    "root_cause": _rc_k,
+                    "blame_set": list(_blame_k) if isinstance(_blame_k, tuple) else _blame_k,
+                    "lever_set": sorted(_lever_k),
+                },
+                catalog=catalog, schema=schema,
+            )
+            reflection_buffer.append(_build_reflection_entry(
+                iteration=iteration_counter, ag_id=ag_id, accepted=False,
+                levers=[int(lk) for lk in lever_keys], target_objects=[],
+                prev_scores=best_scores, new_scores=best_scores,
+                rollback_reason="ag_collision_with_forbidden_set",
+                patches=[],
+                affected_question_ids=ag.get("affected_questions", []),
+                prev_failure_qids=prev_failure_qids,
+                new_failure_qids=prev_failure_qids,
+                **_ag_identity_kwargs,
+            ))
+            continue
 
         _ag_cluster_info["rationale"] = ag.get("rationale", strategy.get("rationale", "") if strategy else "")
         _ag_cluster_info["escalation"] = ag.get("escalation") or None
@@ -6345,6 +7009,7 @@ def _run_lever_loop(
                     prev_failure_qids=prev_failure_qids,
                     new_failure_qids=prev_failure_qids,
                     escalation_handled=True,
+                    **_ag_identity_kwargs,
                 ))
                 continue
 
@@ -6362,6 +7027,7 @@ def _run_lever_loop(
                         new_failure_qids=prev_failure_qids,
                         reflection_text=f"GT repair applied {_gt_repair_corrections} benchmark correction(s)",
                         escalation_handled=True,
+                        **_ag_identity_kwargs,
                     ))
                 else:
                     _unfixed = set(ag.get("affected_questions", [])) - set(
@@ -6380,6 +7046,7 @@ def _run_lever_loop(
                         prev_failure_qids=prev_failure_qids,
                         new_failure_qids=prev_failure_qids,
                         escalation_handled=True,
+                        **_ag_identity_kwargs,
                     ))
                 continue
 
@@ -6548,6 +7215,7 @@ def _run_lever_loop(
                 affected_question_ids=ag.get("affected_questions", []),
                 prev_failure_qids=prev_failure_qids,
                 new_failure_qids=prev_failure_qids,
+                **_ag_identity_kwargs,
             ))
             continue
 
@@ -6605,15 +7273,22 @@ def _run_lever_loop(
 
         if not apply_log.get("patch_deployed", False) and apply_log.get("applied"):
             _pe = apply_log.get("patch_error", "unknown")
+            from genie_space_optimizer.optimization.rollback_class import (
+                RollbackClass,
+                classify_rollback_reason,
+            )
+            _pe_class = classify_rollback_reason(f"patch_deploy_failed: {_pe}")
             print(
                 _section(f"[{ag_id}] PATCH DEPLOY FAILED", "!") + "\n"
                 + _kv("Error", str(_pe)[:300]) + "\n"
+                + _kv("Rollback class", _pe_class.value) + "\n"
                 + _bar("!")
             )
             write_stage(
                 spark, run_id, f"AG_{ag_id}_PATCH_FAILED", "ERROR",
                 task_key="lever_loop", iteration=iteration_counter,
                 error_message=str(_pe)[:500],
+                detail={"rollback_class": _pe_class.value},
                 catalog=catalog, schema=schema,
             )
             reflection_buffer.append(_build_reflection_entry(
@@ -6625,7 +7300,57 @@ def _run_lever_loop(
                 affected_question_ids=ag.get("affected_questions", []),
                 prev_failure_qids=prev_failure_qids,
                 new_failure_qids=prev_failure_qids,
+                **_ag_identity_kwargs,
             ))
+            if _pe_class == RollbackClass.SCHEMA_FAILURE:
+                print(
+                    _section("LEVER LOOP — SCHEMA-FATAL PATCH ERROR", "!") + "\n"
+                    + _kv("Error", str(_pe)[:300]) + "\n"
+                    + _kv("Rollback class", RollbackClass.SCHEMA_FAILURE.value) + "\n"
+                    + _kv("Reason", "Genie API rejected the PATCH payload structure; retrying would deterministically fail.") + "\n"
+                    + _bar("!")
+                )
+                write_stage(
+                    spark, run_id, "LEVER_LOOP_SCHEMA_FATAL", "ERROR",
+                    task_key="lever_loop", iteration=iteration_counter,
+                    error_message=str(_pe)[:500],
+                    detail={"rollback_class": RollbackClass.SCHEMA_FAILURE.value},
+                    catalog=catalog, schema=schema,
+                )
+                break
+            # Phase C3: INFRA_FAILURE retry budget. Unlike CONTENT_REGRESSION
+            # rollbacks, infra failures don't tell us anything about the
+            # strategy's quality. We don't want them to count against
+            # ``_diminishing_returns`` or the content rollback counter,
+            # but an unbounded loop of infra flakes would spin forever —
+            # hence the separate budget. Exit cleanly when the budget is
+            # exhausted with a dedicated terminal reason.
+            if _pe_class == RollbackClass.INFRA_FAILURE:
+                _consecutive_infra = 0
+                for _rb_entry in reversed(reflection_buffer):
+                    if _rb_entry.get("rollback_class") == RollbackClass.INFRA_FAILURE.value:
+                        _consecutive_infra += 1
+                    else:
+                        break
+                if _consecutive_infra >= INFRA_RETRY_BUDGET:
+                    print(
+                        _section("LEVER LOOP — INFRA RETRY BUDGET EXHAUSTED", "!") + "\n"
+                        + _kv("Consecutive infra rollbacks", _consecutive_infra) + "\n"
+                        + _kv("Budget", INFRA_RETRY_BUDGET) + "\n"
+                        + _kv("Last error", str(_pe)[:300]) + "\n"
+                        + _bar("!")
+                    )
+                    write_stage(
+                        spark, run_id, "LEVER_LOOP_INFRA_EXHAUSTED", "ERROR",
+                        task_key="lever_loop", iteration=iteration_counter,
+                        error_message=str(_pe)[:500],
+                        detail={
+                            "consecutive_infra": _consecutive_infra,
+                            "budget": INFRA_RETRY_BUDGET,
+                        },
+                        catalog=catalog, schema=schema,
+                    )
+                    break
             continue
 
         # ── Applied Patches Detail ───────────────────────────────────
@@ -6697,10 +7422,20 @@ def _run_lever_loop(
             ags_rolled_back.append(ag_id)
             for lk in lever_keys:
                 levers_rolled_back.append(int(lk))
+            # Phase E2: include rollback_class in stage detail so the
+            # run summary can break rollbacks down by class.
+            from genie_space_optimizer.optimization.rollback_class import (
+                classify_rollback_reason as _classify_rb,
+            )
+            _rb_class = _classify_rb(reason).value
             write_stage(
                 spark, run_id, f"AG_{ag_id}_STARTED", "ROLLED_BACK",
                 task_key="lever_loop", iteration=iteration_counter,
-                detail={"reason": reason, "levers": lever_keys},
+                detail={
+                    "reason": reason,
+                    "levers": lever_keys,
+                    "rollback_class": _rb_class,
+                },
                 catalog=catalog, schema=schema,
             )
             _failed_eval = gate_result.get("failed_eval_result", {})
@@ -6757,6 +7492,7 @@ def _run_lever_loop(
                 new_failure_qids=_rb_fail_qids or prev_failure_qids,
                 reflection_text=_rb_reflection,
                 refinement_mode=_rb_refinement,
+                **_ag_identity_kwargs,
             )
             reflection_buffer.append(reflection)
             try:
@@ -6772,30 +7508,52 @@ def _run_lever_loop(
                 if ft and tgt:
                     tried_patches.add((ft, tgt))
             _lever_frozenset = frozenset(int(lk) for lk in lever_keys)
-            _consecutive_rb_count = 0
-            for _rb_entry in reversed(reflection_buffer):
-                if _rb_entry.get("escalation_handled"):
-                    continue
-                if not _rb_entry.get("accepted"):
-                    _consecutive_rb_count += 1
-                else:
-                    break
-            _should_mark_tried = _consecutive_rb_count >= CONSECUTIVE_ROLLBACK_LIMIT - 1
+            # Phase C3 + D3: only CONTENT_REGRESSION rollbacks contribute
+            # to the tried-cluster bookkeeping. Phase D3 also lowers the
+            # threshold so the (root_cause, blame, lever_set) 3-tuple is
+            # marked after the FIRST content rollback, while the legacy
+            # (root_cause, blame) 2-tuple (which suppresses across ALL
+            # levers) is only written when we've exhausted ``>= 2``
+            # distinct lever sets on the same cluster.
+            _content_rb_count = sum(
+                1 for _rb_entry in reflection_buffer
+                if not _rb_entry.get("accepted")
+                and not _rb_entry.get("escalation_handled")
+                and _rb_entry.get("rollback_class") == _RC.CONTENT_REGRESSION.value
+            )
+            _should_mark_tried_lever_aware = _content_rb_count >= 1
             source_cids = set(ag.get("source_cluster_ids", []))
             for c in clusters:
                 cid = c.get("cluster_id", "")
                 if source_cids and cid not in source_cids:
                     continue
                 rc_ft = c.get("asi_failure_type") or c.get("root_cause", "other")
-                rc_blame = c.get("asi_blame_set") or ""
-                if rc_ft and _should_mark_tried:
+                rc_blame = _normalise_blame(c.get("asi_blame_set"))
+                if not rc_ft or not _should_mark_tried_lever_aware:
+                    continue
+                # Always add the 3-tuple (lever-aware) immediately.
+                tried_root_causes.add((rc_ft, rc_blame, _lever_frozenset))
+                # Legacy 2-tuple: only when the same cluster has failed
+                # across >= 2 distinct lever sets (truly-dead cluster).
+                _distinct_lever_sets = {
+                    frozenset(e.get("lever_set") or [])
+                    for e in reflection_buffer
+                    if (
+                        not e.get("accepted")
+                        and not e.get("escalation_handled")
+                        and e.get("rollback_class") == _RC.CONTENT_REGRESSION.value
+                        and e.get("root_cause") == rc_ft
+                        and (e.get("blame_set") or "") == rc_blame
+                    )
+                }
+                # Include the current lever set we're about to add.
+                _distinct_lever_sets.add(_lever_frozenset)
+                if len(_distinct_lever_sets) >= 2:
                     tried_root_causes.add((rc_ft, rc_blame))
-                    tried_root_causes.add((rc_ft, rc_blame, _lever_frozenset))
-            if not _should_mark_tried:
+            if not _should_mark_tried_lever_aware:
                 logger.info(
-                    "Rollback %d/%d — keeping cluster available for retry "
-                    "(root causes NOT marked as tried)",
-                    _consecutive_rb_count, CONSECUTIVE_ROLLBACK_LIMIT,
+                    "No CONTENT_REGRESSION rollbacks yet — keeping cluster "
+                    "available for retry (root causes NOT marked as tried)",
                 )
             continue
 
@@ -6870,6 +7628,7 @@ def _run_lever_loop(
             prev_failure_qids=prev_failure_qids,
             new_failure_qids=_accepted_fail_qids,
             reflection_text=_acc_reflection,
+            **_ag_identity_kwargs,
         )
         reflection_buffer.append(reflection)
         try:
@@ -7017,7 +7776,26 @@ def _run_lever_loop(
     _summary.append("|  --- Lever Loop Changes ---")
     _summary.append(_kv("Action groups attempted", len(ags_attempted)))
     _summary.append(_kv("Action groups accepted", len(ags_accepted)))
-    _summary.append(_kv("Action groups rolled back", len(ags_rolled_back)))
+    # Phase E3: break down rolled-back AGs by rollback_class so operators
+    # can tell "3 rolled back (1 content, 2 infra)" from "3 rolled back
+    # (3 content)" at a glance.
+    _rb_class_counter: Counter[str] = Counter()
+    for _rb_entry in reflection_buffer:
+        if _rb_entry.get("accepted"):
+            continue
+        if _rb_entry.get("escalation_handled"):
+            continue
+        _rb_class_counter[_rb_entry.get("rollback_class", "other")] += 1
+    if len(ags_rolled_back) and _rb_class_counter:
+        _rb_class_str = ", ".join(
+            f"{v} {k}" for k, v in sorted(_rb_class_counter.items())
+        )
+        _summary.append(_kv(
+            "Action groups rolled back",
+            f"{len(ags_rolled_back)} ({_rb_class_str})",
+        ))
+    else:
+        _summary.append(_kv("Action groups rolled back", len(ags_rolled_back)))
     _summary.append(_kv("Levers used", sorted(set(levers_attempted)) if levers_attempted else "none"))
     if lever_changes:
         _summary.append("|")
@@ -8159,6 +8937,7 @@ def optimize_genie_space(
                 w, spark, run_id_str, space_id, domain, train_benchmarks, exp_name,
                 catalog, schema,
                 baseline_model_id=model_id,
+                held_out_benchmarks=held_out_benchmarks,
             )
             if not _enrichment_out["enrichment_skipped"]:
                 _effective_model_id = _enrichment_out["enrichment_model_id"]

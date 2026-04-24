@@ -62,21 +62,62 @@ class Archetype:
 
 # ── Schema trait extraction ────────────────────────────────────────────
 
+
+def _col_type(col: dict) -> str:
+    """Canonical column-type reader.
+
+    Production ``serialized_space`` columns store the type under
+    ``data_type``; older / test fixtures use ``type_text`` or plain
+    ``type``. Reading only one of those silently collapses trait
+    detection to an empty set (which then drags the preflight planner
+    down to a single eligible archetype). Centralising the fallback
+    order here keeps every caller consistent.
+    """
+    return str(
+        col.get("data_type")
+        or col.get("type_text")
+        or col.get("type")
+        or ""
+    ).lower()
+
+
 def schema_traits(metadata_snapshot: dict) -> set[str]:
     """Lightweight classification of schema capabilities used for archetype
     gating. Intentionally coarse; any genuine signal comes from the AFS +
-    blame_set, not from these traits."""
+    blame_set, not from these traits.
+
+    Accepts both snapshot shapes we see in the codebase:
+
+    * Production ``serialized_space`` shape (harness passes
+      ``config["_parsed_space"]``): tables live under
+      ``data_sources.tables`` and metric views under
+      ``data_sources.metric_views``.
+    * Legacy / test fixtures: tables at the top level under ``tables``.
+
+    Prefers ``data_sources.*`` when present; falls back to top-level
+    keys. Silently returning empty traits here used to collapse the
+    preflight planner to a single archetype (``filter_compose``) and
+    caused the ``Generated candidates: 2`` regression.
+    """
     traits: set[str] = set()
-    tables = metadata_snapshot.get("tables", []) or []
-    if not isinstance(tables, list):
-        return traits
+    ds = metadata_snapshot.get("data_sources") or {}
+    if not isinstance(ds, dict):
+        ds = {}
+
+    tables_raw = ds.get("tables") or metadata_snapshot.get("tables") or []
+    metric_views_raw = (
+        ds.get("metric_views") or metadata_snapshot.get("metric_views") or []
+    )
+
+    tables = tables_raw if isinstance(tables_raw, list) else []
+
     for t in tables:
         if not isinstance(t, dict):
             continue
         for col in t.get("column_configs", []) or []:
             if not isinstance(col, dict):
                 continue
-            col_type = str(col.get("type_text", col.get("type", ""))).lower()
+            col_type = _col_type(col)
             if any(x in col_type for x in ("int", "double", "decimal", "long", "float", "numeric")):
                 traits.add("has_numeric")
             if any(x in col_type for x in ("date", "timestamp")):
@@ -85,7 +126,7 @@ def schema_traits(metadata_snapshot: dict) -> set[str]:
                 traits.add("has_categorical")
     if len(tables) >= 2:
         traits.add("has_joinable")
-    if metadata_snapshot.get("metric_views"):
+    if metric_views_raw:
         traits.add("has_metric_view")
     return traits
 
@@ -110,6 +151,24 @@ _ROOT_CAUSES_TIME = frozenset({
 
 
 ARCHETYPES: list[Archetype] = [
+    # Safety net: always eligible regardless of trait detection. Guarantees
+    # the pre-flight planner has at least one archetype to emit even if
+    # ``schema_traits`` returns an empty set (stale metadata, blank types,
+    # etc.). Produces shape-valid, zero-filter SELECT queries that should
+    # never EMPTY_RESULT on a non-empty table.
+    Archetype(
+        name="simple_enumerate",
+        applicable_root_causes=frozenset(),
+        required_schema_traits=frozenset(),
+        prompt_template=(
+            "Produce a straightforward enumerate-or-list query: "
+            "SELECT a few columns FROM a single table, optionally with "
+            "ORDER BY and LIMIT. No WHERE filters, no joins, no aggregation. "
+            "Question should be a clean 'show me N <rows> from <asset>' style."
+        ),
+        output_shape={"requires_constructs": ["SELECT", "LIMIT"]},
+        patch_type="add_example_sql",
+    ),
     Archetype(
         name="top_n_by_metric",
         applicable_root_causes=_ROOT_CAUSES_RANKING | _ROOT_CAUSES_AGG,
@@ -205,6 +264,11 @@ ARCHETYPES: list[Archetype] = [
         ),
         output_shape={"requires_constructs": ["WHERE"]},
         patch_type="add_sql_snippet_filter",
+        # filter_compose emits a ``WHERE`` fragment, not a full SELECT; it is
+        # the wrong shape for example-SQL synthesis. Keep it in the reactive
+        # AFS path (where it still produces add_sql_snippet_filter patches)
+        # but hide it from the schema-only preflight planner.
+        preflight_eligible=False,
     ),
     Archetype(
         name="segment_compare",

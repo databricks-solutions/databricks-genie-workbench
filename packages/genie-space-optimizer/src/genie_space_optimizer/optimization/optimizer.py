@@ -373,12 +373,17 @@ def _map_to_lever(
         "wrong_table": 1,
         "description_mismatch": 1,
         "missing_synonym": 1,
-        "wrong_aggregation": 2,
-        "wrong_measure": 2,
-        "missing_filter": 2,
-        "missing_scd_filter": 2,
-        "wrong_filter_condition": 2,
-        "missing_temporal_filter": 2,
+        # Phase A1: SQL-shape aggregation/filter causes now route to Lever 6
+        # (sql_snippet_* primitives). Lever 2 could only update MV descriptions,
+        # which cannot add a measure, filter, or dimension. Example routing
+        # lookup: missing_filter -> sql_snippet_filter, wrong_aggregation ->
+        # sql_snippet_measure.
+        "wrong_aggregation": 6,
+        "wrong_measure": 6,
+        "missing_filter": 6,
+        "missing_scd_filter": 6,
+        "wrong_filter_condition": 6,
+        "missing_temporal_filter": 6,
         "wrong_join_type": 5,
         "tvf_parameter_error": 3,
         "wrong_join": 4,
@@ -1050,9 +1055,37 @@ def cluster_failures(
             if len(_adjusted) != len(profile["blame_sets"]):
                 profile["blame_sets"] = _adjusted
 
+    # Phase B2: weighted dominant-root-cause selection.
+    # Each judge gets a weight reflecting its signal class (SQL_SHAPE = 1.0,
+    # ROUTING = 0.5, NL_TEXT = 0.1, META/INFRA = 0.0). We sum those weights
+    # per root cause and take the heaviest, breaking ties in favor of
+    # SQL-shape causes so a single NL-text vote can't override multiple
+    # SQL-judge votes (the Q004 regression pattern).
+    from genie_space_optimizer.optimization.judge_classes import (
+        judge_weight_for_root_cause,
+    )
+
     for qid, profile in question_profiles.items():
-        cause_counts = Counter(profile["root_causes"])
-        profile["dominant_root_cause"] = cause_counts.most_common(1)[0][0] if cause_counts else "other"
+        weighted: dict[str, float] = defaultdict(float)
+        for f in profile["failures"]:
+            cause = f.get("_resolved_root_cause", "other")
+            weighted[cause] += judge_weight_for_root_cause(f.get("judge", ""))
+        if weighted:
+            profile["dominant_root_cause"] = max(
+                weighted.items(),
+                key=lambda kv: (
+                    kv[1],
+                    1 if kv[0] in _SQL_SHAPE_ROOT_CAUSES else 0,
+                    # deterministic final tiebreak so tests / logs are stable
+                    -len(kv[0]),
+                ),
+            )[0]
+            profile["dominant_root_cause_weight"] = round(
+                weighted[profile["dominant_root_cause"]], 3,
+            )
+        else:
+            profile["dominant_root_cause"] = "other"
+            profile["dominant_root_cause_weight"] = 0.0
 
     # ── 8a. Per-Question ASI Extraction Trace ───────────────────────────
     _cluster_debug = os.environ.get("CLUSTER_DEBUG", "1").lower() not in ("0", "false", "no")
@@ -1082,9 +1115,11 @@ def cluster_failures(
                         if wclause:
                             lines.append(f"|      wrong_clause:          {wclause}")
                     lines.append(f"|    Final root cause:        {resolved}  (via {method})")
-                lines.append(f"|  Dominant root cause:       {profile['dominant_root_cause']}")
+                _dom = profile['dominant_root_cause']
+                _dom_w = profile.get('dominant_root_cause_weight', 0.0)
+                lines.append(f"|  Dominant root cause:       {_dom} (weight={_dom_w})")
                 blame_key = "|".join(sorted(profile["blame_sets"])) if profile["blame_sets"] else "(none)"
-                lines.append(f"|  Cluster group key:         ({profile['dominant_root_cause']}, \"{blame_key}\")")
+                lines.append(f"|  Cluster group key:         ({_dom}, \"{blame_key}\")")
         else:
             lines.append(f"|  (compact mode — {len(question_profiles)} questions)")
             for qid, profile in question_profiles.items():
@@ -1113,6 +1148,18 @@ def cluster_failures(
         group_key = (root, blame_key)
         cluster_groups[group_key].append(qid)
 
+    # Phase B3: when the cluster's dominant root cause is SQL-shape, we
+    # suppress counterfactuals whose source judge is NL_TEXT or META from
+    # the strategist-facing summary. Per-judge rows are unchanged — they
+    # still land in ``question_traces`` and in the ASI Delta table so
+    # forensics tools see the full picture. The Q004 motivating case:
+    # response_quality's "don't fabricate numbers" counterfactual was
+    # outvoting four SQL-shape judges pointing at missing_filter.
+    from genie_space_optimizer.optimization.judge_classes import (
+        SignalClass,
+        judge_signal_class,
+    )
+
     clusters: list[dict] = []
     for (root_cause, blame_str), qids in cluster_groups.items():
         all_judges: set[str] = set()
@@ -1122,12 +1169,27 @@ def cluster_failures(
         sample_asi_type: str | None = None
         join_assessments: list[dict] = []
 
+        _cluster_is_sql_shape = root_cause in _SQL_SHAPE_ROOT_CAUSES
+        _suppress_classes = {SignalClass.NL_TEXT, SignalClass.META}
+
         question_traces: list[dict] = []
         for qid in qids:
             profile = question_profiles[qid]
             all_judges.update(profile["judges"])
-            all_counterfactuals.extend(profile["counterfactual_fixes"])
             all_wrong_clauses.extend(profile["wrong_clauses"])
+            # Pull counterfactuals per-failure so we can filter by source
+            # judge's signal class when the cluster is SQL-shape.
+            for f in profile["failures"]:
+                cf = f.get("asi_counterfactual_fix")
+                if not cf:
+                    continue
+                if (
+                    _cluster_is_sql_shape
+                    and judge_signal_class(f.get("judge", ""))
+                    in _suppress_classes
+                ):
+                    continue
+                all_counterfactuals.append(cf)
             if profile["sql_context"]:
                 sql_contexts.append(profile["sql_context"])
             if not sample_asi_type:
@@ -1664,6 +1726,8 @@ def _enrich_blank_descriptions(
                 max_tokens=4096,
             )
             result = _extract_json(text)
+            if isinstance(result, list):
+                result = {"changes": result}
         except Exception:
             logger.warning("Description enrichment: LLM call failed for batch", exc_info=True)
             continue
@@ -1863,6 +1927,8 @@ def _enrich_table_descriptions(
                 max_tokens=4096,
             )
             result = _extract_json(text)
+            if isinstance(result, list):
+                result = {"changes": result}
         except Exception:
             logger.warning("Table description enrichment: LLM call failed for batch", exc_info=True)
             continue
@@ -5054,6 +5120,33 @@ _SQL_PATTERN_ROOT_CAUSES = frozenset({
 })
 
 
+_SQL_SHAPE_ROOT_CAUSES = frozenset({
+    # Superset of _SQL_PATTERN_ROOT_CAUSES used by A3 (Lever 5 structural
+    # gate) and B2 (weighted root-cause tie-break). A "SQL-shape" cause is
+    # any failure whose fix requires changing the generated SQL's
+    # structure (tables, joins, filters, measures, dimensions) rather
+    # than prose instructions. For these causes, a Lever 5 text_instruction
+    # is a weak signal; we require an example_sql or route to a different
+    # lever (6, 4, 3, 1).
+    "wrong_table",
+    "wrong_column",
+    "wrong_join",
+    "wrong_join_spec",
+    "missing_join_spec",
+    "missing_filter",
+    "missing_scd_filter",
+    "missing_temporal_filter",
+    "wrong_filter_condition",
+    "wrong_aggregation",
+    "wrong_measure",
+    "missing_aggregation",
+    "missing_dimension",
+    "wrong_grouping",
+    "select_star",
+    "tvf_parameter_error",
+})
+
+
 # ── Bug #4 (benchmark leakage) counters ────────────────────────────────
 # Incremented whenever the optimizer suppresses a path that would have copied
 # benchmark content verbatim. Harvested by write_iteration() and reset per
@@ -5061,6 +5154,10 @@ _SQL_PATTERN_ROOT_CAUSES = frozenset({
 _BUG4_COUNTERS: dict[str, int] = {
     "secondary_mining_blocked": 0,
     "firewall_rejections": 0,
+    # Phase A3: bumped when a Lever 5 instruction-only proposal is blocked
+    # because the cluster's dominant root cause is structural
+    # (in _SQL_SHAPE_ROOT_CAUSES) but no example_sql is attached.
+    "lever5_text_only_blocked": 0,
 }
 
 
@@ -5147,7 +5244,35 @@ def _resolve_lever5_llm_result(
                 "copy of benchmark question/expected_sql)",
                 cluster["root_cause"],
             )
-            # Fall through to the standard text_instruction path below.
+            # Fall through to the structural-gate check below (A3b).
+
+    # Phase A3b: structural-cause gate. For the broader
+    # _SQL_SHAPE_ROOT_CAUSES set, a text-only instruction is a weak
+    # signal — we drop it with a sentinel instead of emitting a
+    # downgraded add_instruction. The caller is expected to recognize
+    # the sentinel and skip the proposal. Bug #4's counter bump above
+    # is preserved so observability parity is maintained for the
+    # narrower _SQL_PATTERN_ROOT_CAUSES overlap.
+    if cluster:
+        _cluster_rc = (
+            cluster.get("asi_failure_type")
+            or cluster.get("root_cause")
+            or ""
+        )
+        if _cluster_rc in _SQL_SHAPE_ROOT_CAUSES:
+            logger.info(
+                "Phase A3b: Lever 5 text_instruction skipped for structural "
+                "root cause '%s' — expected example_sql or different lever.",
+                _cluster_rc,
+            )
+            return "skipped_no_example_sql", {
+                "reason": (
+                    "text_instruction is too weak a signal for structural "
+                    "root causes; an example_sql or structural lever is "
+                    "required."
+                ),
+                "root_cause": _cluster_rc,
+            }
 
     if original_patch_type == "add_example_sql":
         logger.warning(
@@ -8008,10 +8133,24 @@ def _generate_lever6_proposal(
             "questions_fixed": len(cluster.get("question_traces", [])),
         }
 
-        # Bug #4 firewall — reject proposals whose text/SQL fields are
-        # substantially similar to any benchmark. Without the firewall the
-        # LLM could reproduce expected_sql almost verbatim inside a snippet,
-        # contaminating training.
+        # Bug #4 firewall — kept in place for forward-compatibility with
+        # future patch types routed through this code path, BUT now a
+        # no-op for the sql_snippet patch types Lever 6 actually emits.
+        # The patch-type dispatch in ``leakage._PATCH_TEXT_FIELDS`` no
+        # longer contains ``add_sql_snippet_{measure,filter,expression}``
+        # (see scoping docstring there). Rationale:
+        #
+        #   Lever 6 proposes structural primitives (a measure / filter /
+        #   expression), not answer-shaped example_sqls. These are
+        #   exec-validated at propose time via ``validate_sql_snippet``
+        #   AND go through the post-iteration full-eval arbiter gate
+        #   with rollback on regression — a stronger empirical check
+        #   than fingerprint-matching against the benchmark corpus.
+        #
+        # If a future patch type IS added here that persists answer-
+        # shaped content (e.g. a hypothetical Lever 6-emitted
+        # ``add_example_sql``), it will still be firewalled via its
+        # presence in ``_PATCH_TEXT_FIELDS``.
         if benchmarks:
             from genie_space_optimizer.optimization.leakage import (
                 BenchmarkCorpus, is_benchmark_leak,
@@ -8207,6 +8346,7 @@ def _convert_instructions_to_sql_expressions(
     if isinstance(ds, dict):
         all_sources.extend(ds.get("tables", []) or [])
         all_sources.extend(ds.get("metric_views", []) or [])
+    from genie_space_optimizer.optimization.archetypes import _col_type
     schema_lines: list[str] = []
     for t in all_sources:
         if not isinstance(t, dict):
@@ -8214,7 +8354,7 @@ def _convert_instructions_to_sql_expressions(
         tname = t.get("identifier", t.get("name", "")).split(".")[-1]
         for col in (t.get("columns", []) or []):
             cname = col.get("name", "")
-            ctype = col.get("type_text", col.get("type", ""))
+            ctype = _col_type(col)
             desc = col.get("description", "")[:80]
             if cname:
                 schema_lines.append(f"{tname}.{cname} ({ctype}): {desc}")
@@ -8657,6 +8797,14 @@ def _discover_schema_sql_expressions(
       - Numeric columns named like revenue/cost/amount -> SUM measures
       - Date/timestamp columns -> MONTH/QUARTER expressions
 
+    Reads columns from ``column_configs`` (the serialized_space field the
+    Genie API populates) with a legacy fallback to ``columns``. Also
+    scans ``data_sources.metric_views`` so dimensional MVs with date or
+    numeric columns contribute candidates too. Historically this
+    function only read ``columns`` (never populated in production), so
+    the entire schema-discovery source quietly produced zero candidates
+    and the seeding pool collapsed to benchmark mining.
+
     Returns conservative candidates that still need execution validation.
     """
     _MEASURE_PATTERNS = re.compile(
@@ -8677,19 +8825,31 @@ def _discover_schema_sql_expressions(
     candidates: list[dict] = []
     seen_sqls: set[str] = set()
 
-    for table in (ds.get("tables", []) or []):
-        if not isinstance(table, dict):
+    # Visit tables AND metric_views — both can contribute mining-worthy
+    # numeric/date columns on real spaces (your `mv_esr_fact_sales`,
+    # `mv_esr_dim_date`, etc.).
+    sources = list(ds.get("tables", []) or []) + list(ds.get("metric_views", []) or [])
+
+    for source in sources:
+        if not isinstance(source, dict):
             continue
-        table_id = table.get("identifier", "")
+        table_id = source.get("identifier", "") or source.get("name", "")
         if not table_id:
             continue
 
-        columns = table.get("columns", []) or []
+        # Prefer ``column_configs`` (production shape) and fall back to
+        # ``columns`` so legacy fixtures and internal-normalized snapshots
+        # continue to work.
+        columns = (
+            source.get("column_configs")
+            or source.get("columns")
+            or []
+        )
         for col in columns:
             if not isinstance(col, dict):
                 continue
-            col_name = col.get("name", "") or col.get("column_name", "")
-            col_type = (col.get("type_text", "") or col.get("data_type", "")).lower()
+            col_name = col.get("column_name", "") or col.get("name", "")
+            col_type = (col.get("data_type", "") or col.get("type_text", "") or "").lower()
             if not col_name:
                 continue
 
@@ -9054,7 +9214,11 @@ def _resolve_source_cluster_for_ag(
     from genie_space_optimizer.optimization.archetypes import pick_archetype
 
     source_ids = action_group.get("source_cluster_ids", []) or []
-    all_clusters = metadata_snapshot.get("failure_clusters", []) or []
+    all_clusters = (
+        metadata_snapshot.get("_failure_clusters")
+        or metadata_snapshot.get("failure_clusters")
+        or []
+    )
     by_id = {
         c.get("cluster_id"): c
         for c in all_clusters if isinstance(c, dict)
@@ -9421,6 +9585,52 @@ def generate_proposals_from_strategy(
                     example_sqls_list = [legacy]
             if not isinstance(example_sqls_list, list):
                 example_sqls_list = [example_sqls_list] if isinstance(example_sqls_list, dict) else []
+
+            # ── Phase A3a: Lever 5 structural gate ──────────────────────
+            # For clusters whose dominant root cause is SQL-shape
+            # (missing_filter, wrong_aggregation, wrong_join, etc.), a
+            # text-only instruction is a weak signal. Require an
+            # example_sql; otherwise drop the instruction path entirely
+            # and let the example_sqls_list path (cluster-driven
+            # synthesis) carry the fix. This prevents Q004-class
+            # mis-diagnoses where the strategist's counterfactual came
+            # from the NL-text judge but the failure is structural.
+            _ag_structural_root_causes: set[str] = set()
+            _failure_clusters = (
+                metadata_snapshot.get("_failure_clusters")
+                or metadata_snapshot.get("failure_clusters")
+                or []
+            )
+            _cluster_by_id = {
+                c.get("cluster_id"): c
+                for c in _failure_clusters if isinstance(c, dict)
+            }
+            for _sid in source_clusters:
+                _c = _cluster_by_id.get(_sid)
+                if not isinstance(_c, dict):
+                    continue
+                _rc = (
+                    _c.get("asi_failure_type")
+                    or _c.get("root_cause")
+                    or ""
+                )
+                if _rc in _SQL_SHAPE_ROOT_CAUSES:
+                    _ag_structural_root_causes.add(_rc)
+
+            _l5_structural_gate_blocked = bool(
+                _ag_structural_root_causes and not example_sqls_list
+            )
+            if _l5_structural_gate_blocked:
+                _incr_bug4_counter("lever5_text_only_blocked")
+                logger.warning(
+                    "[%s] Lever 5 structural gate: dropping instruction-only "
+                    "proposal. Dominant cluster root cause(s) %s are SQL-shape; "
+                    "no example_sql attached. Expected structural fix via "
+                    "cluster-driven synthesis or a different lever.",
+                    ag_id, sorted(_ag_structural_root_causes),
+                )
+                instruction_sections = None
+                instruction_guidance = ""
 
             if isinstance(instruction_sections, dict) and instruction_sections:
                 from genie_space_optimizer.optimization.applier import _get_general_instructions
@@ -9831,7 +10041,11 @@ def generate_proposals_from_strategy(
             strategist_hints = ag_directives.get("sql_expressions", []) if isinstance(ag_directives, dict) else []
 
             source_cids = set(action_group.get("source_cluster_ids", []))
-            all_clusters = metadata_snapshot.get("failure_clusters", [])
+            all_clusters = (
+                metadata_snapshot.get("_failure_clusters")
+                or metadata_snapshot.get("failure_clusters")
+                or []
+            )
             eligible_clusters = [
                 c for c in all_clusters
                 if c.get("cluster_id") in source_cids

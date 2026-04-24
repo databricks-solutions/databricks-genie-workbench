@@ -256,10 +256,37 @@ def preflight_embedding_endpoint(w: Any, endpoint: str | None = None) -> bool:
 
 
 # ── Patch-type -> text field mapping ────────────────────────────────────
-
-# The text fields the firewall should inspect for each patch type.
-# Fields not listed are not tested (they are scaffolding / not persisted
-# as inference-input content). Keep in sync with docstring in is_benchmark_leak.
+#
+# Firewall scoping (see optimizer design invariant):
+#
+# Structural SQL paths (``add_sql_snippet_measure`` / ``_filter`` /
+# ``_expression``, ``add_join_spec``, ``update_join_spec``) are
+# INTENTIONALLY ABSENT from this dict. A measure / filter / expression /
+# join-condition is a reusable PRIMITIVE, not an answer — Genie still
+# has to pick tables, group-bys, filters to assemble a full query. The
+# persistence gates for these are:
+#
+#   - Proactive seeding — pre-mining arbiter-approved source filter
+#     (baseline verdict == ``both_correct``) + ``validate_sql_snippet``
+#     EXPLAIN+execute / ``EXPLAIN SELECT 1 FROM l JOIN r ON ... LIMIT 1``.
+#   - Lever 6 / join-lever — LLM proposal + exec-validation at propose
+#     time + post-iteration full-eval arbiter gate with rollback on
+#     regression (equivalent invariant, different mechanism).
+#   - Prose miner — user-asserted source + exec-validation.
+#
+# Adding the firewall here would double-gate and reject legitimate
+# structural learning (a benchmark's ``SUM(revenue)`` pattern is
+# STRUCTURE, not an ANSWER).
+#
+# The firewall's narrow surviving role: answer-shape content. Only
+# ``add_example_sql`` carries (question, SQL) pairs that Genie could
+# regurgitate via prompt matching — that entry stays strict.
+# User-facing text fields (instructions, synonyms, column descriptions,
+# dictionaries) stay gated because they can echo benchmark question
+# phrasing in ways that let Genie leak answers through the prompt path.
+# Fields not listed are not tested (scaffolding / not persisted as
+# inference-input content). Keep in sync with docstring in
+# ``is_benchmark_leak``.
 _PATCH_TEXT_FIELDS: dict[str, tuple[str, ...]] = {
     "add_example_sql": ("example_question", "example_sql"),
     "add_instruction": ("new_text",),
@@ -268,11 +295,8 @@ _PATCH_TEXT_FIELDS: dict[str, tuple[str, ...]] = {
     "update_column_description": ("description", "new_text"),
     "add_column_dictionary": ("values", "synonyms"),
     "add_column_synonym": ("synonyms",),
-    "update_join_spec": ("description", "comment"),
-    "add_join_spec": ("description", "comment"),
-    "add_sql_snippet_measure": ("sql", "display_name", "synonyms", "instruction"),
-    "add_sql_snippet_filter": ("sql", "display_name", "synonyms", "instruction"),
-    "add_sql_snippet_expression": ("sql", "display_name", "synonyms", "instruction"),
+    # add_join_spec / update_join_spec: removed — see scoping comment above.
+    # add_sql_snippet_{measure,filter,expression}: removed — see scoping comment above.
 }
 
 # SQL-bearing fields — when a value comes from one of these, we also check

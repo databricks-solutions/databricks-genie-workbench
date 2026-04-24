@@ -161,6 +161,16 @@ CONSECUTIVE_ROLLBACK_LIMIT = 3
 the optimizer is stuck and further iterations are unlikely to help.
 Root causes are only marked as tried when the limit is about to be hit,
 giving the strategist a chance to retry with a different lever."""
+INFRA_RETRY_BUDGET = 3
+"""Stop the lever loop after this many consecutive INFRA_FAILURE
+rollbacks. Infra rollbacks do not count toward
+``CONSECUTIVE_ROLLBACK_LIMIT`` or ``_diminishing_returns`` because
+they carry no content signal, but an unbounded infra-fail loop should
+still terminate with a clear ``LEVER_LOOP_INFRA_EXHAUSTED`` reason
+rather than spinning until the job timeout kills the run. See
+:mod:`genie_space_optimizer.optimization.rollback_class` and
+``classify_rollback_reason`` for which producer prefixes map to
+``INFRA_FAILURE``."""
 CONSECUTIVE_ESCALATION_LIMIT = 2
 """Stop the lever loop after this many consecutive iterations where the
 strategist escalated (gt_repair, flag_for_review) instead of producing
@@ -1479,18 +1489,19 @@ INSTRUCTION_FORMAT_RULES = (
     'ASSET ROUTING:       When user asks about [topic], use [table/TVF/MV] (Lever 5)\n'
     'BUSINESS DEFINITIONS: [term] = [column] from [table] (Lever 1)\n'
     'DISAMBIGUATION:      When [ambiguous scenario], prefer [approach] (Lever 1)\n'
-    'AGGREGATION RULES:   How to aggregate measures, grain rules, avoid double-counting (Lever 2)\n'
+    'AGGREGATION RULES:   How to aggregate measures, grain rules, avoid double-counting (Lever 6 primary; Lever 2 may refine MV column descriptions)\n'
     'FUNCTION ROUTING:    When to use TVFs/UDFs vs raw tables, parameter guidance (Lever 3)\n'
     'JOIN GUIDANCE:       Explicit join paths and conditions (Lever 4)\n'
     'QUERY RULES:         SQL-level rules — filters, ordering, limits\n'
     'QUERY PATTERNS:      Common multi-step query patterns with actual column names\n'
-    'TEMPORAL FILTERS:    Date partitioning, SCD filters, time-range rules (Lever 2/4)\n'
+    'TEMPORAL FILTERS:    Date partitioning, SCD filters, time-range rules (Lever 6 primary; Lever 4 for join-side temporal rules)\n'
     'DATA QUALITY NOTES:  Known nulls, is_current flags, data caveats\n'
     'CONSTRAINTS:         Cross-cutting behavioral constraints, output formatting\n'
     '\n'
     'Lever-to-section alignment (target your contribution to these sections):\n'
     '  Lever 1 -> BUSINESS DEFINITIONS, DISAMBIGUATION\n'
-    '  Lever 2 -> AGGREGATION RULES, TEMPORAL FILTERS\n'
+    '  Lever 2 -> MV column descriptions and synonyms only (CANNOT add measures, filters, or change MV SQL)\n'
+    '  Lever 6 -> AGGREGATION RULES, TEMPORAL FILTERS\n'
     '  Lever 3 -> FUNCTION ROUTING\n'
     '  Lever 4 -> JOIN GUIDANCE, TEMPORAL FILTERS\n'
     '  Lever 5 -> ASSET ROUTING, QUERY RULES, QUERY PATTERNS, DATA QUALITY NOTES, CONSTRAINTS\n'
@@ -1748,7 +1759,7 @@ STRATEGIST_PROMPT = (
     '## Contract: All Instruments of Power\n'
     'For each root cause, specify EVERY lever that should act:\n'
     '- wrong_column / wrong_table / missing_synonym: Primary Lever 1, also Lever 5 + Lever 6\n'
-    '- wrong_aggregation / wrong_measure / missing_filter: Primary Lever 2, also Lever 5 + Lever 6\n'
+    '- wrong_aggregation / wrong_measure / missing_filter: Primary Lever 6 (sql_snippet), also Lever 5 (example_sql); Lever 2 only for MV-column synonym/description refinement\n'
     '- tvf_parameter_error: Primary Lever 3, also Lever 5\n'
     '- wrong_join / missing_join_spec: Primary Lever 4, also Lever 1 + 5\n'
     '- asset_routing_error / ambiguous_question: Primary Lever 5, also Lever 1 + Lever 6\n'
@@ -1907,6 +1918,9 @@ STRATEGIST_TRIAGE_PROMPT = (
     '## Lever Capabilities\n'
     '- Lever 1: Table/column descriptions, synonyms\n'
     '- Lever 2: Metric view column descriptions, synonyms\n'
+    '  NOTE: Lever 2 CANNOT add measures, filters, or change MV SQL. It can only update '
+    'table/column descriptions and synonyms on existing metric views. '
+    'For missing_filter / wrong_aggregation / wrong_measure, use Lever 6 (sql_snippet) instead.\n'
     '- Lever 3: Function descriptions and parameter documentation\n'
     '- Lever 4: Join specifications between tables\n'
     '- Lever 5: Instructions + example SQL queries\n'
@@ -1914,7 +1928,7 @@ STRATEGIST_TRIAGE_PROMPT = (
     '\n'
     '## Lever Mapping (All Instruments of Power)\n'
     '- wrong_column / wrong_table / missing_synonym: Primary Lever 1, also Lever 5 + Lever 6\n'
-    '- wrong_aggregation / wrong_measure / missing_filter: Primary Lever 2, also Lever 5 + Lever 6\n'
+    '- wrong_aggregation / wrong_measure / missing_filter: Primary Lever 6 (sql_snippet), also Lever 5 (example_sql); Lever 2 only for MV-column synonym/description refinement\n'
     '- tvf_parameter_error: Primary Lever 3, also Lever 5\n'
     '- wrong_join / missing_join_spec: Primary Lever 4, also Lever 1 + 5\n'
     '- asset_routing_error / ambiguous_question: Primary Lever 5, also Lever 1 + Lever 6\n'
@@ -2066,7 +2080,8 @@ STRATEGIST_DETAIL_PROMPT = (
     'No Markdown (no ##, no **, no backticks). Plain text only.\n'
     'Target sections aligned with your active levers:\n'
     '  Lever 1 -> BUSINESS DEFINITIONS, DISAMBIGUATION\n'
-    '  Lever 2 -> AGGREGATION RULES, TEMPORAL FILTERS\n'
+    '  Lever 2 -> MV column descriptions and synonyms only (CANNOT add measures, filters, or change MV SQL)\n'
+    '  Lever 6 -> AGGREGATION RULES, TEMPORAL FILTERS\n'
     '  Lever 3 -> FUNCTION ROUTING\n'
     '  Lever 4 -> JOIN GUIDANCE, TEMPORAL FILTERS\n'
     '  Lever 5 -> ASSET ROUTING, QUERY RULES, QUERY PATTERNS, DATA QUALITY NOTES, CONSTRAINTS\n'
@@ -2298,7 +2313,7 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     '## Contract: All Instruments of Power\n'
     'For the root cause you target, specify EVERY lever that should act:\n'
     '- wrong_column / wrong_table / missing_synonym: Primary Lever 1, also Lever 5 + Lever 6\n'
-    '- wrong_aggregation / wrong_measure / missing_filter: Primary Lever 2, also Lever 5 + Lever 6\n'
+    '- wrong_aggregation / wrong_measure / missing_filter: Primary Lever 6 (sql_snippet), also Lever 5 (example_sql); Lever 2 only for MV-column synonym/description refinement\n'
     '- tvf_parameter_error: Primary Lever 3, also Lever 5\n'
     '- wrong_join / missing_join_spec / wrong_join_spec: Primary Lever 4, also Lever 1 + 5\n'
     '- asset_routing_error / ambiguous_question: Primary Lever 5, also Lever 1 + Lever 6\n'
@@ -3867,14 +3882,42 @@ LEVER_PROMPTS["instruction_to_sql_expression"] = PROSE_RULE_MINING_PROMPT
 
 # ── 25. SQL Expression Seeding (Proactive, Lever 0) ───────────────────
 
-SQL_EXPRESSION_SEEDING_THRESHOLD = 5
-"""Skip proactive seeding if the space already has this many SQL snippets."""
-
 SQL_EXPRESSION_MIN_FREQUENCY = 2
 """Minimum benchmark occurrences for a pattern to become a candidate."""
 
-SQL_EXPRESSION_SEEDING_MAX_CANDIDATES = 20
-"""Maximum candidates to evaluate (budget cap for execution validation)."""
+SQL_EXPRESSION_SEEDING_MAX_CANDIDATES = 60
+"""Per-run mining budget. Caps warehouse EXPLAIN+execute cost for the
+validation loop. Seeding also respects the remaining per-space SQL-snippet
+headroom (``MAX_SQL_SNIPPETS`` minus existing count minus
+``SQL_EXPRESSION_SEEDING_LEVER_RESERVE``), whichever is smaller.
+"""
+
+SQL_EXPRESSION_SEEDING_LEVER_RESERVE = 50
+"""Slots in the per-space ``MAX_SQL_SNIPPETS`` (200) budget reserved for
+the lever loop's iterative additions. Proactive seeding stops contributing
+once ``existing_sql_snippets + LEVER_RESERVE >= MAX_SQL_SNIPPETS``, leaving
+room for lever-loop proposals later in the optimisation run.
+
+Tune from observed production snippet-count growth distributions. A value
+of 50 reserves 25% of the 200-snippet budget for the lever loop, which is
+consistent with today's typical lever-loop snippet growth rate.
+
+NOTE (budget-model mismatch, deferred):
+    The Databricks knowledge-store docs
+    (https://docs.databricks.com/aws/en/genie/knowledge-store) state the
+    200-snippet limit combines table descriptions + join specs + SQL
+    expressions. Our internal code counts only SQL-snippet buckets. Joins
+    and table descriptions are effectively unbudgeted today. A separate
+    follow-up issue should reconcile ``_strict_validate``,
+    ``count_instruction_slots``, ``count_sql_snippets``, and any seeding
+    gates against the docs' combined budget.
+"""
+
+SQL_EXPRESSION_SEEDING_THRESHOLD = 5
+"""DEPRECATED: retained only so pre-existing callers and historical Delta
+rows keep deserialising. The seeding gate is now headroom-based; see
+``SQL_EXPRESSION_SEEDING_LEVER_RESERVE``.
+"""
 
 SQL_EXPRESSION_SEEDING_PROMPT = """Given these SQL patterns extracted from \
 proven benchmark queries for a Genie Space, generate business-friendly \
@@ -3947,6 +3990,22 @@ PREFLIGHT_COLUMN_COVERAGE_K = int(
 """Top-K columns per asset included in the narrowed identifier allowlist
 for synthesis. Small K keeps the LLM focused and raises EXPLAIN pass rate."""
 
+PREFLIGHT_PROFILE_VALUES_CAP = int(
+    os.getenv("GENIE_SPACE_OPTIMIZER_PREFLIGHT_PROFILE_VALUES_CAP", "10") or "10"
+)
+"""Maximum number of distinct values rendered for any one column in the
+``## Column value profile`` section of the pre-flight synthesis prompt.
+Columns above this cap show ``+N more``; very high-cardinality columns
+(e.g. ``user_id`` with 10k distinct values) render only the cardinality."""
+
+PREFLIGHT_PROFILE_VALUE_LEN_CAP = int(
+    os.getenv("GENIE_SPACE_OPTIMIZER_PREFLIGHT_PROFILE_VALUE_LEN_CAP", "60")
+    or "60"
+)
+"""Maximum characters any single profile value string is rendered with.
+Longer values are truncated with ``…`` so one pathological row cannot
+blow up the prompt budget on its own."""
+
 PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT = """\
 <role>
 You are generating ONE high-quality question + SQL pair to teach a \
@@ -3968,6 +4027,15 @@ Join spec to exercise:
 Columns to prioritize:
 {{ slice_columns }}
 
+## Column value profile (use ONLY these values when building filters)
+{{ slice_data_profile }}
+
+## Constraint
+When writing filter predicates, quote values EXACTLY from the value \
+profile above. Do not invent values. For numeric columns, use values \
+within the stated range. When filter values are not in the profile \
+(high-cardinality columns), omit the filter instead of guessing.
+
 ## Archetype
 Name: {{ archetype_name }}
 Shape guidance: {{ archetype_prompt_template }}
@@ -3978,6 +4046,8 @@ Output contract: {{ archetype_output_shape }}
 
 ## Existing questions in this space (avoid duplicating intent)
 {{ existing_questions_list }}
+
+{{ retry_feedback }}
 </context>
 
 <instructions>

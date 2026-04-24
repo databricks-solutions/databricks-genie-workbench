@@ -96,7 +96,7 @@ def _mk_snapshot(
         },
         "tables": tables,
         "metric_views": [],
-        "failure_clusters": [],
+        "_failure_clusters": [],
         "_space_id": space_id,
         "_cluster_synthesis_count": 0,
     }
@@ -340,9 +340,11 @@ class TestOrchestrator:
 
 
 class TestLever5Intercept:
-    def test_resolve_source_cluster_picks_archetype_eligible(self):
-        """Helper must skip clusters whose root_cause doesn't map to any
-        shipped archetype and return the first one that does."""
+    def test_resolve_source_cluster_picks_first_listed_cluster(self):
+        """Helper returns the first source cluster that resolves to an
+        archetype. Post Phase 1.R4 the ``simple_enumerate`` safety-net
+        archetype makes every root cause archetype-eligible, so the
+        resolver simply honours ``source_cluster_ids`` ordering."""
         from genie_space_optimizer.optimization.optimizer import (
             _resolve_source_cluster_for_ag,
         )
@@ -354,28 +356,34 @@ class TestLever5Intercept:
             "question_ids": [],
         }
         cluster_good = _mk_cluster("CG", "missing_aggregation")
-        snap["failure_clusters"] = [cluster_bad, cluster_good]
+        snap["_failure_clusters"] = [cluster_bad, cluster_good]
         ag = {"source_cluster_ids": ["CB", "CG"]}
         picked = _resolve_source_cluster_for_ag(ag, snap)
         assert picked is not None
-        assert picked["cluster_id"] == "CG"
+        # CB is listed first and is eligible via simple_enumerate.
+        assert picked["cluster_id"] == "CB"
 
-    def test_resolve_source_cluster_returns_none_when_no_eligible(self):
+    def test_resolve_source_cluster_returns_safety_net_match(self):
+        """Post Phase 1.R4: ``simple_enumerate`` makes any root cause
+        archetype-eligible, so even a previously-unhandled cluster
+        (``terminology_mismatch``) resolves. This is the intended
+        trait-detector regression safety net."""
         from genie_space_optimizer.optimization.optimizer import (
             _resolve_source_cluster_for_ag,
         )
         snap = _mk_snapshot()
-        snap["failure_clusters"] = [
-            {
-                "cluster_id": "CB",
-                "root_cause": "terminology_mismatch",
-                "asi_blame_set": [],
-                "question_ids": [],
-            },
-        ]
-        assert _resolve_source_cluster_for_ag(
+        cluster = {
+            "cluster_id": "CB",
+            "root_cause": "terminology_mismatch",
+            "asi_blame_set": [],
+            "question_ids": [],
+        }
+        snap["_failure_clusters"] = [cluster]
+        picked = _resolve_source_cluster_for_ag(
             {"source_cluster_ids": ["CB", "CX"]}, snap,
-        ) is None
+        )
+        assert picked is not None
+        assert picked["cluster_id"] == "CB"
 
     def test_feature_flag_is_read_lazily_at_call_site(self):
         """The Lever 5 intercept reads ``ENABLE_CLUSTER_DRIVEN_SYNTHESIS``
