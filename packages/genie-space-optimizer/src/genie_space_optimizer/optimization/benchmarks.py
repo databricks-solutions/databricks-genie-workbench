@@ -454,11 +454,58 @@ def validate_ground_truth_sql(
             suggest_match = _re.search(r"Did you mean one of the following\? \[([^\]]+)\]", err_msg)
             col_name = col_match.group(1) if col_match else "?"
             suggestion = suggest_match.group(1) if suggest_match else "?"
-            return False, (
-                f"UNRESOLVED_COLUMN: `{col_name}` — "
-                f"suggestion: {suggestion} "
-                f"(hint: use MEASURE({col_name}) for metric view measures in ORDER BY)"
+
+            # F10 — gate the MEASURE() hint on evidence the unresolved
+            # column is actually a metric-view measure. Previously
+            # every UNRESOLVED_COLUMN got the same MEASURE() hint
+            # unconditionally, including cases where the unresolved
+            # token was a missing TABLE reference (e.g. ``dim_date``
+            # without qualification). The misleading hint then
+            # propagated into the correction-LLM prompt as
+            # ``validation_error``, steering the model toward the
+            # wrong fix (wrap-in-MEASURE instead of qualify-table).
+            # The hint now fires only when either
+            #   (a) the Spark error explicitly reports
+            #       ``METRIC_VIEW_MISSING_MEASURE_FUNCTION`` — the
+            #       canonical signal that a measure needs wrapping, or
+            #   (b) the unresolved column matches a known measure
+            #       name across any metric view in ``config`` — which
+            #       handles the case where Spark collapses the
+            #       failure into a plain UNRESOLVED_COLUMN while
+            #       still being a measure issue.
+            include_measure_hint = (
+                "METRIC_VIEW_MISSING_MEASURE_FUNCTION" in err_msg.upper()
             )
+            if not include_measure_hint and col_name != "?" and config:
+                _lc_col = col_name.lower()
+                _parsed = config.get("_parsed_space", config)
+                _ds = _parsed.get("data_sources", {}) if isinstance(_parsed, dict) else {}
+                _mvs = _ds.get("metric_views", []) if isinstance(_ds, dict) else []
+                for _mv in _mvs:
+                    if not isinstance(_mv, dict):
+                        continue
+                    for _measure in _mv.get("measures", []) or []:
+                        _mname = ""
+                        if isinstance(_measure, dict):
+                            _mname = str(_measure.get("name") or "").strip()
+                        elif isinstance(_measure, str):
+                            _mname = _measure.strip()
+                        if _mname and _mname.lower() == _lc_col:
+                            include_measure_hint = True
+                            break
+                    if include_measure_hint:
+                        break
+
+            base = (
+                f"UNRESOLVED_COLUMN: `{col_name}` — "
+                f"suggestion: {suggestion}"
+            )
+            if include_measure_hint:
+                return False, (
+                    f"{base} "
+                    f"(hint: use MEASURE({col_name}) for metric view measures in ORDER BY)"
+                )
+            return False, base
         return False, err_msg
 
     table_refs = _extract_table_references(resolved)
