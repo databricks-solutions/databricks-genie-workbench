@@ -332,7 +332,13 @@ def _print_manual_schema_repair(
         print("      Automated repair errors:")
         for err in errors:
             print(f"        - {err}")
-    print(f"      Fix it in the Lakebase SQL Editor for project '{project_name}':")
+    print("      Cross-app Lakebase reuse is not supported automatically.")
+    print("      Prefer a fresh Lakebase project for the new app instance.")
+    print(
+        "      If you intentionally need to migrate existing data, ask a "
+        "Lakebase admin to run an ownership migration like this in the "
+        f"SQL Editor for project '{project_name}':"
+    )
     for owner in owners:
         print(f"        GRANT {_quote_ident(owner)} TO CURRENT_USER;")
     print(f"        GRANT {_quote_ident(new_sp)} TO CURRENT_USER;")

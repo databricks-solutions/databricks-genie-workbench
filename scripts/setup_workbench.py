@@ -161,7 +161,9 @@ def provision_workbench(
         if not ok:
             raise RuntimeError(
                 "Lakebase grants incomplete. Existing app state may be owned by "
-                "a previous app service principal; see the Lakebase repair SQL above."
+                "a previous app service principal. Reuse the original app instance, "
+                "use a fresh Lakebase project for this app, or ask a Lakebase admin "
+                "to migrate ownership of the existing genie schema."
             )
         lakebase_db, lakebase_branch = _resolve_lakebase_db(w, lakebase_project)
         if not lakebase_db or not lakebase_branch:

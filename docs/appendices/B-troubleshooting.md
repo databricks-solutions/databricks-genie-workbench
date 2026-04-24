@@ -70,6 +70,9 @@ the existing `genie` schema, tables, and sequences.
 
 ## Debug Commands
 
+In Databricks Web Terminal, omit `--profile <profile>` from these commands
+because the CLI uses current-user auth from the environment.
+
 ```bash
 # View app logs
 databricks apps logs <app-name> --profile <profile>
