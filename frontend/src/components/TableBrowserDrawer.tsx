@@ -205,7 +205,12 @@ export function TableBrowserDrawer({
     <div className="w-80 flex-shrink-0 border-r border-default bg-surface flex flex-col h-full overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-default">
-        <span className="text-xs font-semibold text-primary">Table Browser</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-primary">Table Browser</span>
+          {catalogs.length > 0 && (
+            <span className="text-[10px] text-muted">{catalogs.length} catalogs</span>
+          )}
+        </div>
         <button onClick={onClose} className="text-muted hover:text-primary transition-colors">
           <X className="w-3.5 h-3.5" />
         </button>
@@ -362,7 +367,7 @@ export function TableBrowserDrawer({
       <div className="border-t border-default px-3 py-2 bg-surface">
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-[10px] text-muted">
-            {pending.size}/{MAX_TABLES} table{pending.size !== 1 ? "s" : ""}
+            {pending.size} of {MAX_TABLES} max selected
           </span>
           {diff.hasChanges && (
             <span className="text-[10px] text-accent">
