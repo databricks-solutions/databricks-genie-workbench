@@ -1869,6 +1869,22 @@ def _print_unified_example_summary(
         "Firewall: question echo", rc.get("firewall_question_echo", 0),
     ))
     _lines.append(_kv("Dedup (in-corpus)", rc.get("dedup_in_corpus", 0)))
+    # F8 — deterministic repairs applied inside the correction loop.
+    # Shown only when non-zero so the banner stays terse when the LLM
+    # returns clean output. These mirror the F4/F5 counters the
+    # preflight banner surfaces.
+    _stem_repairs = rc.get("repaired_stemmed_identifiers", 0)
+    _measure_repairs = rc.get("repaired_measure_refs", 0)
+    if _stem_repairs or _measure_repairs:
+        _lines.append("|")
+        if _stem_repairs:
+            _lines.append(_kv(
+                "Stemmed identifiers repaired", _stem_repairs,
+            ))
+        if _measure_repairs:
+            _lines.append(_kv(
+                "MEASURE() refs repaired", _measure_repairs,
+            ))
     if applied_examples:
         _lines.append("|")
         for idx, c in enumerate(applied_examples[:10], 1):

@@ -225,6 +225,9 @@ class TestPhase1SharedCore:
             "metadata", "mv_select_star", "explain_or_execute",
             "arbiter_no", "firewall_fingerprint", "firewall_question_echo",
             "dedup_in_corpus", "unfixable_after_correction",
+            # F8 — deterministic-repair counters must ship in the schema
+            # so the unified banner renderer can read them unconditionally.
+            "repaired_stemmed_identifiers", "repaired_measure_refs",
         ):
             assert key in counters
 
@@ -653,3 +656,242 @@ class TestPhase5IsolationLint:
             )
         finally:
             sys.path.remove(str(script_dir))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F8 — Unified-pipeline deterministic repair parity
+#
+# Mirror of the preflight pipeline's F4 (stem qualification) + F5
+# (MEASURE() wrap) repairs. Tests patch ``_call_llm_for_scoring`` to
+# return SQL with the failure shapes real field logs showed (bare
+# ``dim_date`` stems, bare measure refs in metric-view SELECTs) and
+# assert the unified correction loop now heals them deterministically
+# before re-validation — and that the applied count is surfaced on
+# ``rejection_counters`` so the banner renderer can display parity.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestF8UnifiedRepairPorting:
+    def _allowlist_with_mv(self, config: dict) -> dict:
+        """Build the allowlist via the real production helper so the
+        metadata-enforcement check downstream sees the same shape
+        (all short-form variants) it would in a live run. Faking this
+        by hand would drift from
+        ``_enforce_metadata_constraints``'s expectations.
+        """
+        from genie_space_optimizer.optimization.evaluation import (
+            _build_metadata_allowlist,
+        )
+        return _build_metadata_allowlist(
+            config=config, uc_columns=_mk_uc_columns(), uc_routines=[],
+        )
+
+    def _config_with_mv(self) -> dict:
+        """Extends ``_mk_config()`` so metadata enforcement recognizes
+        the metric view the LLM's repaired SQL references. Without
+        this, ``_enforce_metadata_constraints`` rejects the corrected
+        candidate BEFORE re-validation, masking the repair.
+        """
+        cfg = _mk_config()
+        cfg["_metric_views"] = ["cat.sch.mv_esr_dim_date"]
+        cfg["_parsed_space"]["data_sources"]["metric_views"] = [
+            {"identifier": "cat.sch.mv_esr_dim_date",
+             "measures": [{"name": "cnt", "expr": "COUNT(1)"}]},
+        ]
+        return cfg
+
+    def test_stem_qualification_repair_fires_and_counts(self, monkeypatch):
+        """The LLM returns ``FROM dim_date`` (bare stem). The unified
+        correction loop must rewrite it to the canonical
+        ``cat.sch.mv_esr_dim_date`` — this is the exact failure class
+        the field log surfaced that preflight was healing but unified
+        was rejecting. Counter must also increment so the banner can
+        report it.
+        """
+        from genie_space_optimizer.optimization import evaluation as ev_mod
+
+        def _llm(w, prompt, *, prompt_name=None):
+            # The candidate refers only to columns already present on
+            # the base ``sales`` table so metadata enforcement won't
+            # reject on unknown-column grounds. The stem repair is
+            # what we're isolating here; the metric view is only in
+            # play as the canonical target for the bare stem.
+            return [{
+                "question": "How many sales rows?",
+                "expected_sql": "SELECT COUNT(*) FROM dim_date",
+                "expected_asset": "TABLE",
+                "required_tables": ["cat.sch.mv_esr_dim_date"],
+                "required_columns": [],
+                "expected_facts": [],
+                "category": "lookup",
+            }]
+
+        validate_calls: list[str] = []
+
+        def _validate(sql, spark, catalog, schema, *,
+                      execute=False, w=None, warehouse_id=""):
+            validate_calls.append(sql)
+            # The repair must have run before we see the SQL here.
+            return ("cat.sch.mv_esr_dim_date" in sql), ""
+
+        monkeypatch.setattr(ev_mod, "_call_llm_for_scoring", _llm)
+        monkeypatch.setattr(ev_mod, "_validate_benchmark_sql", _validate)
+
+        counters = {
+            "repaired_stemmed_identifiers": 0,
+            "repaired_measure_refs": 0,
+        }
+        invalid = [{
+            "question": "How many sales rows?",
+            "expected_sql": "SELECT COUNT(*) FROM dim_date",
+            "validation_error": "UNRESOLVED_COLUMN: dim_date",
+        }]
+        cfg = self._config_with_mv()
+        out = ev_mod._attempt_sql_correction(
+            w=None, config=cfg,
+            uc_columns=_mk_uc_columns(), uc_routines=[],
+            invalid_candidates=invalid,
+            catalog="cat", schema="sch", spark=None,
+            allowlist=self._allowlist_with_mv(cfg),
+            correction_prompt_template=EXAMPLE_SQL_CORRECTION_PROMPT,
+            correction_prompt_registry_key="example_sql_correction",
+            repair_counters=counters,
+        )
+
+        assert len(out) == 1
+        assert "cat.sch.mv_esr_dim_date" in out[0]["expected_sql"]
+        assert "FROM dim_date" not in out[0]["expected_sql"]
+        assert counters["repaired_stemmed_identifiers"] >= 1
+        # The SQL fed to ``_validate_benchmark_sql`` is the repaired
+        # form, not the LLM's raw bare-stem output.
+        assert validate_calls
+        assert "cat.sch.mv_esr_dim_date" in validate_calls[0]
+
+    def test_repair_counters_none_is_safe_noop(self, monkeypatch):
+        """When callers omit ``repair_counters`` (e.g. the benchmark
+        adapter), repairs still fire — they can only help — but the
+        count is silently discarded. Must not crash.
+        """
+        from genie_space_optimizer.optimization import evaluation as ev_mod
+
+        def _llm(w, prompt, *, prompt_name=None):
+            return [{
+                "question": "Q", "expected_sql": "SELECT 1 FROM dim_date",
+                "expected_asset": "TABLE",
+                "required_tables": ["cat.sch.mv_esr_dim_date"],
+                "required_columns": [], "expected_facts": [],
+                "category": "lookup",
+            }]
+
+        monkeypatch.setattr(ev_mod, "_call_llm_for_scoring", _llm)
+        monkeypatch.setattr(
+            ev_mod, "_validate_benchmark_sql",
+            lambda *a, **kw: (True, ""),
+        )
+
+        cfg = self._config_with_mv()
+        out = ev_mod._attempt_sql_correction(
+            w=None, config=cfg,
+            uc_columns=_mk_uc_columns(), uc_routines=[],
+            invalid_candidates=[{"question": "Q",
+                                 "expected_sql": "SELECT 1 FROM dim_date"}],
+            catalog="cat", schema="sch", spark=None,
+            allowlist=self._allowlist_with_mv(cfg),
+            correction_prompt_template=EXAMPLE_SQL_CORRECTION_PROMPT,
+            correction_prompt_registry_key="example_sql_correction",
+            # repair_counters intentionally omitted.
+        )
+        assert len(out) == 1
+        # Repair still applied even without a counter to record it.
+        assert "cat.sch.mv_esr_dim_date" in out[0]["expected_sql"]
+
+    def test_benchmark_adapter_forwards_without_counters(self, monkeypatch):
+        """The benchmark-variant adapter does NOT pass
+        ``repair_counters`` (intentionally — the benchmark banner has
+        its own schema). The shared core must accept the omission
+        without altering its behaviour.
+        """
+        from genie_space_optimizer.optimization import evaluation as ev_mod
+
+        captured_kwargs: dict = {}
+
+        def _spy(**kwargs):
+            captured_kwargs.update(kwargs)
+            return []
+
+        monkeypatch.setattr(ev_mod, "_attempt_sql_correction", _spy)
+        ev_mod._attempt_benchmark_correction(
+            w=None, config={}, uc_columns=[], uc_routines=[],
+            invalid_benchmarks=[{"question": "q",
+                                 "expected_sql": "SELECT 1"}],
+            catalog="c", schema="s", spark=None, allowlist={},
+        )
+        # The adapter forwards only the benchmark prompt kwargs —
+        # ``repair_counters`` is absent (None/missing both acceptable).
+        assert "repair_counters" not in captured_kwargs
+
+    def test_unified_banner_surfaces_repair_counts(self):
+        """The harness banner renderer must read the repair counters
+        off ``rejection_counters`` and display them when non-zero.
+        This locks the contract between ``_attempt_sql_correction``
+        (writer) and ``_print_unified_example_summary`` (reader).
+        """
+        import io
+        import contextlib
+
+        from genie_space_optimizer.optimization.harness import (
+            _print_unified_example_summary,
+        )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _print_unified_example_summary(
+                run_id="r1", target=20, existing=0,
+                applied_examples=[],
+                rejection_counters={
+                    "metadata": 0, "mv_select_star": 0,
+                    "explain_or_execute": 0, "arbiter_no": 0,
+                    "firewall_fingerprint": 0,
+                    "firewall_question_echo": 0,
+                    "dedup_in_corpus": 0,
+                    "unfixable_after_correction": 0,
+                    "repaired_stemmed_identifiers": 3,
+                    "repaired_measure_refs": 1,
+                },
+            )
+        out = buf.getvalue()
+        assert "Stemmed identifiers repaired" in out
+        assert "MEASURE() refs repaired" in out
+        assert "3" in out and "1" in out
+
+    def test_unified_banner_hides_repair_counts_when_zero(self):
+        """Banner stays terse when the LLM returned clean output —
+        repair lines only appear when they actually fired. Prevents
+        banner bloat on the happy path.
+        """
+        import io
+        import contextlib
+
+        from genie_space_optimizer.optimization.harness import (
+            _print_unified_example_summary,
+        )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _print_unified_example_summary(
+                run_id="r1", target=20, existing=0,
+                applied_examples=[],
+                rejection_counters={
+                    "metadata": 0, "mv_select_star": 0,
+                    "explain_or_execute": 0, "arbiter_no": 0,
+                    "firewall_fingerprint": 0,
+                    "firewall_question_echo": 0,
+                    "dedup_in_corpus": 0,
+                    "unfixable_after_correction": 0,
+                    "repaired_stemmed_identifiers": 0,
+                    "repaired_measure_refs": 0,
+                },
+            )
+        out = buf.getvalue()
+        assert "Stemmed identifiers repaired" not in out
+        assert "MEASURE() refs repaired" not in out

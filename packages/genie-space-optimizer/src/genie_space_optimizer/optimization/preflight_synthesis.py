@@ -1344,6 +1344,67 @@ def _build_stem_map(canonical: list[str]) -> dict[str, str]:
     return {s: v[0] for s, v in stems.items() if len(v) == 1}
 
 
+def repair_stemmed_identifiers_in_sql(
+    sql: str, canonical: list[str],
+) -> tuple[str, list[tuple[str, str]]]:
+    """Flat-input counterpart of :func:`_repair_stemmed_identifiers`.
+
+    Takes a SQL string and a list of canonical fully-qualified
+    identifiers (tables + metric views), returns
+    ``(rewritten_sql, [(before, after), ...])``.
+
+    Extracted so the unified correction pipeline in ``evaluation.py``
+    — which operates on corrected candidates (flat ``expected_sql``
+    strings) without an ``AssetSlice`` — can apply the exact same
+    deterministic repair. The preflight wrapper
+    :func:`_repair_stemmed_identifiers` delegates here so both
+    pipelines stay in lockstep.
+
+    A substitution fires only when the stemmed token appears as a
+    unique stem of EXACTLY ONE canonical identifier. Ambiguous stems
+    are left untouched so the LLM retry can disambiguate with
+    business context — no deterministic wrong answer.
+    """
+    if not sql or not canonical:
+        return sql, []
+
+    unique_stems = _build_stem_map(canonical)
+    if not unique_stems:
+        return sql, []
+
+    # Longest-first so ``schema.mv_esr_dim_date`` wins over ``dim_date``
+    # when both are present in the SQL. This keeps the final SQL as
+    # close to the LLM's intent as possible.
+    subs: list[tuple[str, str]] = []
+    new_sql = sql
+    for stem in sorted(unique_stems, key=len, reverse=True):
+        canonical_name = unique_stems[stem]
+        if stem == canonical_name.lower():
+            # Already the canonical form — nothing to do.
+            continue
+        # Whole-word match, not preceded or followed by ``.`` or word
+        # chars. Guards against:
+        #   - column qualifier "t.dim_date" (prev char '.') — skipped
+        #   - substring inside longer identifier "dim_date_extra" — skipped
+        pattern = rf"(?<![\w.]){re.escape(stem)}(?![\w.])"
+        replaced_this_round: list[str] = []
+
+        def _repl(
+            match: re.Match,
+            _canon: str = canonical_name,
+            _stem: str = stem,
+            _log: list[str] = replaced_this_round,
+        ) -> str:
+            _log.append(match.group(0))
+            return _canon
+
+        new_sql, _n = re.subn(pattern, _repl, new_sql, flags=re.IGNORECASE)
+        for orig in replaced_this_round:
+            subs.append((orig, canonical_name))
+
+    return new_sql, subs
+
+
 def _repair_stemmed_identifiers(
     proposal: dict, slice_: AssetSlice,
 ) -> tuple[dict, list[tuple[str, str]]]:
@@ -1387,43 +1448,8 @@ def _repair_stemmed_identifiers(
         ident = (asset.get("identifier") or asset.get("name") or "").strip()
         if ident and ident not in canonical:
             canonical.append(ident)
-    if not canonical:
-        return proposal, []
 
-    unique_stems = _build_stem_map(canonical)
-    if not unique_stems:
-        return proposal, []
-
-    # Longest-first so ``schema.mv_esr_dim_date`` wins over ``dim_date``
-    # when both are present in the SQL. This keeps the final SQL as
-    # close to the LLM's intent as possible.
-    subs: list[tuple[str, str]] = []
-    new_sql = sql
-    for stem in sorted(unique_stems, key=len, reverse=True):
-        canonical_name = unique_stems[stem]
-        if stem == canonical_name.lower():
-            # Already the canonical form — nothing to do.
-            continue
-        # Whole-word match, not preceded or followed by ``.`` or word
-        # chars. Guards against:
-        #   - column qualifier "t.dim_date" (prev char '.') — skipped
-        #   - substring inside longer identifier "dim_date_extra" — skipped
-        pattern = rf"(?<![\w.]){re.escape(stem)}(?![\w.])"
-        replaced_this_round: list[str] = []
-
-        def _repl(
-            match: re.Match,
-            _canon: str = canonical_name,
-            _stem: str = stem,
-            _log: list[str] = replaced_this_round,
-        ) -> str:
-            _log.append(match.group(0))
-            return _canon
-
-        new_sql, n = re.subn(pattern, _repl, new_sql, flags=re.IGNORECASE)
-        for orig in replaced_this_round:
-            subs.append((orig, canonical_name))
-
+    new_sql, subs = repair_stemmed_identifiers_in_sql(sql, canonical)
     if not subs:
         return proposal, []
 

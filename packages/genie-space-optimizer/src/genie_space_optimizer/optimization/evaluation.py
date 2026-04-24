@@ -5987,6 +5987,7 @@ def _attempt_sql_correction(
     correction_prompt_template: str,
     correction_prompt_registry_key: str,
     warehouse_id: str = "",
+    repair_counters: dict[str, int] | None = None,
 ) -> list[dict]:
     """Send invalid SQL candidates back to the LLM for correction.
 
@@ -6002,6 +6003,14 @@ def _attempt_sql_correction(
     Note: the LLM output field is still ``expected_sql`` regardless of
     caller, because the correction-prompt contracts (both benchmark and
     example variants) share that schema.
+
+    ``repair_counters`` (optional): when provided, F8 deterministic
+    repairs (stem qualification + MEASURE() wrapping) are counted
+    under the keys ``repaired_stemmed_identifiers`` and
+    ``repaired_measure_refs``. The unified pipeline threads this dict
+    so its summary banner can surface the same F4/F5 counters that the
+    preflight pipeline already displays. When ``None``, repairs still
+    fire (they can only help) but the counts are discarded.
     """
     if not invalid_candidates:
         return []
@@ -6057,12 +6066,85 @@ def _attempt_sql_correction(
         )
         return []
 
+    # F8 — prepare the identifier/measure universes ONCE for the
+    # whole correction batch so the per-candidate repair loop below
+    # stays O(1) per candidate in dict-lookup terms. Both helpers are
+    # side-effect-free so an empty universe is a clean no-op.
+    # Lazy-imported to avoid a module-level cycle: ``preflight_synthesis``
+    # already lazy-imports ``evaluation`` inside its own functions.
+    from genie_space_optimizer.optimization.preflight_synthesis import (
+        repair_stemmed_identifiers_in_sql,
+    )
+
+    # Canonical identifiers come from ``config`` (the source of truth)
+    # NOT ``allowlist["assets"]``. The allowlist expands every asset
+    # into its short-form variants via ``_identifier_candidates`` for
+    # metadata enforcement — e.g. ``cat.sch.mv`` also registers
+    # ``sch.mv`` and ``mv``. Feeding those short forms into the
+    # stem-repair helper would make the leaf stem point to multiple
+    # "canonicals", marking it ambiguous and blocking the rewrite
+    # exactly where production needs it to fire. Using the config's
+    # primary identifiers keeps the unified repair logic 1:1 with
+    # ``_repair_stemmed_identifiers`` in the preflight pipeline.
+    canonical_assets: list[str] = []
+    for key in ("_tables", "_metric_views"):
+        for ident in config.get(key, []) or []:
+            ident_s = str(ident).strip()
+            if ident_s and ident_s not in canonical_assets:
+                canonical_assets.append(ident_s)
+
+    mv_measures = build_metric_view_measures(config)
+
     corrected: list[dict] = []
     for c in corrections:
         sql = c.get("expected_sql")
         if not sql or c.get("unfixable_reason"):
             logger.info("Candidate unfixable: %s — %s", c.get("question", "")[:60], c.get("unfixable_reason", ""))
             continue
+
+        # F8 — apply the same deterministic repairs the preflight
+        # pipeline runs (F4 stem qualification + F5 MEASURE() wrap)
+        # to the LLM's corrected output BEFORE metadata/execute
+        # validation. This closes the gap the field log surfaced:
+        # the unified pipeline rejected candidates with bare table
+        # stems (e.g. ``FROM dim_date`` when the allowlist held
+        # ``cat.sch.mv_esr_dim_date``) even though the preflight
+        # pipeline would have repaired them deterministically. Now
+        # both pipelines handle the same failure shape identically.
+        sql_str = str(sql)
+        repaired_sql, stem_subs = repair_stemmed_identifiers_in_sql(
+            sql_str, canonical_assets,
+        )
+        if stem_subs:
+            sql_str = repaired_sql
+            c["expected_sql"] = sql_str
+            if repair_counters is not None:
+                repair_counters["repaired_stemmed_identifiers"] = (
+                    repair_counters.get("repaired_stemmed_identifiers", 0)
+                    + len(stem_subs)
+                )
+        if mv_measures:
+            wrapped_sql = _rewrite_measure_refs(sql_str, mv_measures)
+            if wrapped_sql != sql_str:
+                # ``_rewrite_measure_refs`` doesn't return a list of
+                # wraps; count the net diff in MEASURE( occurrences
+                # as a proxy. This matches the counter semantics the
+                # preflight pipeline uses (count of rewrites applied).
+                before_count = len(
+                    re.findall(r"\bMEASURE\s*\(", sql_str, re.IGNORECASE),
+                )
+                after_count = len(
+                    re.findall(r"\bMEASURE\s*\(", wrapped_sql, re.IGNORECASE),
+                )
+                sql_str = wrapped_sql
+                c["expected_sql"] = sql_str
+                if repair_counters is not None and after_count > before_count:
+                    repair_counters["repaired_measure_refs"] = (
+                        repair_counters.get("repaired_measure_refs", 0)
+                        + (after_count - before_count)
+                    )
+        sql = sql_str
+
         metadata_ok, _reason_code, reason_message = _enforce_metadata_constraints(
             benchmark=c,
             sql=str(sql),
@@ -6244,6 +6326,14 @@ def generate_validated_sql_examples(
         "firewall_question_echo": 0,
         "dedup_in_corpus": 0,
         "unfixable_after_correction": 0,
+        # F8 — deterministic repairs applied inside
+        # ``_attempt_sql_correction``. Mirror the preflight pipeline's
+        # F4/F5 counters so the unified banner (rendered by
+        # ``harness._print_unified_summary``) can report the same
+        # "LLM output was auto-healed before re-validation" signal
+        # operators already rely on in the preflight output.
+        "repaired_stemmed_identifiers": 0,
+        "repaired_measure_refs": 0,
     }
 
     allowlist = _build_metadata_allowlist(
@@ -6413,6 +6503,7 @@ def generate_validated_sql_examples(
             correction_prompt_template=correction_prompt_template,
             correction_prompt_registry_key=correction_prompt_registry_key,
             warehouse_id=warehouse_id,
+            repair_counters=rejection_counters,
         )
         if not corrected:
             break
