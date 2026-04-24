@@ -295,9 +295,7 @@ which targeted unpinned PyPI packages and GitHub Action tags).
 uv lock --upgrade-package <package-name>
 
 # Regenerate requirements.txt from the updated lock file
-uv export --frozen --no-dev --no-hashes --format requirements-txt \
-  | grep -v "^-e " > requirements.txt
-echo "-e ./packages/genie-space-optimizer" >> requirements.txt
+uv export --frozen --no-dev --no-hashes --format requirements-txt > requirements.txt
 
 # Commit both
 git add uv.lock requirements.txt

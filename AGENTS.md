@@ -32,9 +32,7 @@ cd frontend && npm run lint              # ESLint
 # requirements.txt is auto-generated from uv.lock — do not edit manually.
 # After adding/bumping a Python dep in pyproject.toml:
 uv lock --upgrade-package <package-name>
-uv export --frozen --no-dev --no-hashes --format requirements-txt \
-  | grep -v "^-e " > requirements.txt
-echo "-e ./packages/genie-space-optimizer" >> requirements.txt
+uv export --frozen --no-dev --no-hashes --format requirements-txt > requirements.txt
 
 # Tests (require running backend at localhost:8000)
 python tests/test_e2e_local.py    # E2E create agent tests

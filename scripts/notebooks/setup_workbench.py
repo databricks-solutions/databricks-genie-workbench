@@ -32,10 +32,10 @@
 # MAGIC %md
 # MAGIC ## 1. Install build dependencies
 # MAGIC
-# MAGIC Installs `build` (for the GSO wheel) and ensures `databricks-sdk` supports the Lakebase and Apps APIs used by setup.
+# MAGIC Installs `build` (for the GSO wheel), `psycopg` (for Lakebase grant repair), and ensures `databricks-sdk` supports the Lakebase and Apps APIs used by setup.
 
 # COMMAND ----------
-# MAGIC %pip install --quiet --upgrade "build>=1.0.0" "databricks-sdk>=0.102.0"
+# MAGIC %pip install --quiet --upgrade "build>=1.0.0" "databricks-sdk==0.102.0" "protobuf>=5.26.1,<6" "psycopg[binary]==3.3.3"
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------

@@ -190,9 +190,7 @@ All dependencies are pinned to exact versions with integrity hashes. Lock files 
 
 ```bash
 uv lock --upgrade-package <package-name>
-uv export --frozen --no-dev --no-hashes --format requirements-txt \
-  | grep -v "^-e " > requirements.txt
-echo "-e ./packages/genie-space-optimizer" >> requirements.txt
+uv export --frozen --no-dev --no-hashes --format requirements-txt > requirements.txt
 git add uv.lock requirements.txt
 ```
 
