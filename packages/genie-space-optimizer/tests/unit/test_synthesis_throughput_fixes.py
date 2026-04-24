@@ -1013,6 +1013,228 @@ class TestEnrichmentBatchFailureLogging:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# F7 — Per-batch column/table caps in description enrichment
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestEnrichmentBatchCapChunking:
+    """F7 — _chunk_enrichment_batches splits oversized per-table batches
+    into fixed-size chunks so a single 88-column table can't blow the
+    LLM output budget and return an empty HTTP 200 body.
+    """
+
+    def test_chunks_are_bounded_by_max_size(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _chunk_enrichment_batches,
+        )
+        batch = [{"i": i} for i in range(88)]
+        out = _chunk_enrichment_batches([batch], max_size=25)
+        assert len(out) == 4, (
+            "88 / 25 = 3 full chunks + 1 remainder = 4 chunks"
+        )
+        assert [len(c) for c in out] == [25, 25, 25, 13]
+        # Order is preserved.
+        assert out[0][0]["i"] == 0
+        assert out[-1][-1]["i"] == 87
+
+    def test_small_batches_pass_through_unchanged(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _chunk_enrichment_batches,
+        )
+        small = [{"i": 0}, {"i": 1}]
+        out = _chunk_enrichment_batches([small], max_size=25)
+        assert out == [small]
+
+    def test_exactly_at_max_size_not_split(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _chunk_enrichment_batches,
+        )
+        batch = [{"i": i} for i in range(25)]
+        out = _chunk_enrichment_batches([batch], max_size=25)
+        assert len(out) == 1
+        assert len(out[0]) == 25
+
+    def test_preserves_table_affinity_across_multiple_batches(self):
+        """Rows from different input batches never get merged."""
+        from genie_space_optimizer.optimization.optimizer import (
+            _chunk_enrichment_batches,
+        )
+        t1 = [{"table": "t1", "i": i} for i in range(30)]
+        t2 = [{"table": "t2", "i": i} for i in range(20)]
+        out = _chunk_enrichment_batches([t1, t2], max_size=15)
+        # t1 splits into 2 chunks (15 + 15); t2 splits into 2 chunks (15 + 5).
+        assert len(out) == 4
+        # Each chunk is homogeneous — no cross-table contamination.
+        for chunk in out:
+            tables_in_chunk = {row["table"] for row in chunk}
+            assert len(tables_in_chunk) == 1, (
+                f"chunk mixed tables: {tables_in_chunk}"
+            )
+
+    def test_invalid_max_size_returns_input_unchanged(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _chunk_enrichment_batches,
+        )
+        batches = [[{"i": 0}], [{"i": 1}]]
+        assert _chunk_enrichment_batches(batches, max_size=0) == batches
+        assert _chunk_enrichment_batches(batches, max_size=-5) == batches
+
+
+class TestColumnEnrichmentAppliesCap:
+    """_enrich_blank_descriptions wires _chunk_enrichment_batches so a
+    wide metric view (e.g. the 88-column mv_esr_store_sales seen in the
+    field) is broken into ≤ _MAX_COLUMNS_PER_BATCH chunks before any
+    LLM call fires.
+    """
+
+    def _snapshot_with_wide_table(self, n_columns: int) -> dict:
+        columns = [
+            {"column_name": f"col{i}", "type_text": "DOUBLE"}
+            for i in range(n_columns)
+        ]
+        return {
+            "data_sources": {
+                "tables": [],
+                "metric_views": [
+                    {
+                        "identifier": "cat.sch.mv_wide",
+                        "name": "mv_wide",
+                        "column_configs": columns,
+                    },
+                ],
+            },
+            "instructions": {"join_specs": []},
+            "tables": [],
+            "metric_views": [
+                {
+                    "identifier": "cat.sch.mv_wide",
+                    "name": "mv_wide",
+                    "column_configs": columns,
+                },
+            ],
+        }
+
+    def test_wide_table_splits_into_capped_chunks(self, monkeypatch):
+        """88 blank columns → ceil(88/25)=4 LLM calls, each ≤ 25 rows."""
+        from genie_space_optimizer.optimization import optimizer as opt_mod
+
+        blanks = [
+            {
+                "table": "cat.sch.mv_wide",
+                "column": f"col{i}",
+                "data_type": "DOUBLE",
+                "entity_type": "measure",
+                "table_description": "",
+                "sibling_columns": [],
+            }
+            for i in range(88)
+        ]
+        monkeypatch.setattr(
+            opt_mod, "_collect_blank_columns", lambda _snap: blanks,
+        )
+
+        observed_batch_sizes: list[int] = []
+
+        def _fake_llm(w, system_msg, prompt, **kwargs):
+            # Count rows from the prompt indirectly via span_name — we
+            # capture the actual context length via the prompt length
+            # heuristic instead, since the prompt embeds one row per
+            # column. Easier: count how many times we're called by
+            # stashing the batch slice via a closure variable in the
+            # caller; here we just record '1' per call. The len check
+            # happens via the number of calls.
+            observed_batch_sizes.append(1)
+            return '{"changes": []}', object()
+
+        monkeypatch.setattr(opt_mod, "_traced_llm_call", _fake_llm)
+
+        opt_mod._enrich_blank_descriptions(
+            self._snapshot_with_wide_table(88), w=None,
+        )
+
+        # 88 columns / 25 cap = 4 chunks. Pre-F7 this was 1 call.
+        assert len(observed_batch_sizes) == 4
+
+    def test_threshold_small_single_batch_not_split(self, monkeypatch):
+        """A small run (≤ _ENRICHMENT_BATCH_THRESHOLD total) stays as
+        one batch — the cap only bites when table-grouping produces
+        an oversized single-table batch."""
+        from genie_space_optimizer.optimization import optimizer as opt_mod
+
+        blanks = [
+            {
+                "table": "cat.sch.t",
+                "column": f"col{i}",
+                "data_type": "STRING",
+                "entity_type": "dimension",
+                "table_description": "",
+                "sibling_columns": [],
+            }
+            for i in range(20)  # ≤ _ENRICHMENT_BATCH_THRESHOLD = 30
+        ]
+        monkeypatch.setattr(
+            opt_mod, "_collect_blank_columns", lambda _snap: blanks,
+        )
+
+        call_count = [0]
+
+        def _fake_llm(w, system_msg, prompt, **kwargs):
+            call_count[0] += 1
+            return '{"changes": []}', object()
+
+        monkeypatch.setattr(opt_mod, "_traced_llm_call", _fake_llm)
+
+        opt_mod._enrich_blank_descriptions(
+            self._snapshot_with_wide_table(20), w=None,
+        )
+
+        # 20 rows ≤ cap 25 → single batch → exactly one LLM call.
+        assert call_count[0] == 1
+
+
+class TestTableEnrichmentAppliesCap:
+    """_enrich_table_descriptions applies _MAX_TABLES_PER_BATCH = 15
+    when the single-batch path is active (≤ _ENRICHMENT_BATCH_THRESHOLD
+    tables in total).
+    """
+
+    def test_single_batch_with_20_tables_splits_into_two(self, monkeypatch):
+        from genie_space_optimizer.optimization import optimizer as opt_mod
+
+        # 20 tables, all with insufficient descriptions. The
+        # pre-existing code would put all 20 in one batch since
+        # 20 <= _ENRICHMENT_BATCH_THRESHOLD (30); F7's cap of 15
+        # forces a split into 2 chunks (15 + 5).
+        tables = [
+            {
+                "table": f"cat.sch.t{i}",
+                "current_description": "",
+                "columns": [{"column_name": "c", "type_text": "STRING"}],
+            }
+            for i in range(20)
+        ]
+        monkeypatch.setattr(
+            opt_mod, "_collect_insufficient_tables", lambda _snap: tables,
+        )
+
+        call_count = [0]
+
+        def _fake_llm(w, system_msg, prompt, **kwargs):
+            call_count[0] += 1
+            return '{"changes": []}', object()
+
+        monkeypatch.setattr(opt_mod, "_traced_llm_call", _fake_llm)
+
+        opt_mod._enrich_table_descriptions(
+            {"data_sources": {"tables": [], "metric_views": []},
+             "tables": [], "metric_views": []},
+            w=None,
+        )
+
+        assert call_count[0] == 2  # ceil(20/15) = 2
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # F3 — Honest total_eligible accounting in _run_description_enrichment
 # ═══════════════════════════════════════════════════════════════════════
 

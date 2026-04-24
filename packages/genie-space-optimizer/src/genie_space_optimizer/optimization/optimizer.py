@@ -1036,6 +1036,7 @@ def cluster_failures(
     held_out_qids: set[str] | None = None,
     qid_state: dict | None = None,
     signal_type: str = "hard",
+    namespace: str | None = None,
 ) -> list[dict]:
     """Group evaluation failures into actionable clusters.
 
@@ -1049,6 +1050,16 @@ def cluster_failures(
     and ``Q001`` in the soft cluster with two different root causes —
     the DO-NOT-RETRY bookkeeping then gets confused. ``signal_type`` is
     stamped on each cluster for downstream consumers.
+
+    T1.9: ``namespace`` controls the cluster_id prefix. Hard passes should
+    pass ``namespace="H"`` to mint ``H001, H002, ...``; soft passes should
+    pass ``namespace="S"`` to mint ``S001, S002, ...``. Without this, both
+    passes collide on the ``C001, C002, ...`` namespace and downstream
+    consumers that key off ``source_cluster_ids`` cannot tell whether a
+    cluster is hard or soft. Defaults to ``"H"`` when ``signal_type="hard"``
+    and ``"S"`` otherwise, so callers that don't specify get sensible
+    behaviour. Legacy ``C###`` IDs are still accepted by downstream
+    parsers for replay compatibility with old iterations.
 
     When ``spark/run_id/catalog/schema`` are provided, enriches with stored
     ASI data from ``genie_eval_asi_results`` Delta table.
@@ -1623,8 +1634,9 @@ def cluster_failures(
             if c.get("signal_class")
         })
 
+        _ns = namespace if namespace else ("H" if signal_type == "hard" else "S")
         entry = {
-            "cluster_id": f"C{len(clusters) + 1:03d}",
+            "cluster_id": f"{_ns}{len(clusters) + 1:03d}",
             "root_cause": root_cause,
             "question_ids": unique_qids,
             "base_question_ids": sorted(_base_qids),
@@ -1938,6 +1950,51 @@ def enrich_metadata_with_uc_types(
 _ENRICHMENT_BATCH_THRESHOLD = 30
 _MIN_DESCRIPTION_LENGTH = 10
 
+# F7 — LLM output-budget invariants. ``_ENRICHMENT_BATCH_THRESHOLD``
+# gates *whether* we batch-split (30 rows total → one call); once
+# splitting kicks in, rows are grouped by table. Without a further
+# cap a single very wide table can collapse into one oversized batch
+# — we saw 88 blank columns for one metric view blow the 4096 output
+# budget, producing an empty HTTP 200 body that downstream JSON
+# parsing couldn't recover from.
+#
+# These caps are LLM-budget-driven invariants, not operator tunables:
+# they keep the JSON output comfortably under 4096 completion tokens
+# with the current enrichment prompt. If the prompt or the
+# ``max_tokens`` budget changes, revisit both values together.
+_MAX_COLUMNS_PER_BATCH = 25
+_MAX_TABLES_PER_BATCH = 15
+
+
+def _chunk_enrichment_batches(
+    batches: list[list[dict]], max_size: int,
+) -> list[list[dict]]:
+    """Split each batch that exceeds ``max_size`` into fixed-size chunks.
+
+    Order-preserving; already-small batches pass through untouched so
+    existing test fixtures with tiny inputs see no behavioural change.
+    Used by both column-level (``_MAX_COLUMNS_PER_BATCH``) and
+    table-level (``_MAX_TABLES_PER_BATCH``) enrichment.
+
+    Invariants:
+    * Every output chunk has length in ``(0, max_size]``.
+    * Table affinity of the input is preserved — this function never
+      merges rows from different source batches, only sub-divides.
+    * ``max_size <= 0`` is a caller bug and the input is returned
+      unchanged (defensive; keeps enrichment running even if a future
+      refactor passes a bad constant).
+    """
+    if max_size <= 0:
+        return batches
+    out: list[list[dict]] = []
+    for batch in batches:
+        if len(batch) <= max_size:
+            out.append(batch)
+            continue
+        for i in range(0, len(batch), max_size):
+            out.append(batch[i : i + max_size])
+    return out
+
 
 def _is_description_insufficient(desc: Any) -> bool:
     """Return True when a description is too short to be useful (< 10 chars)."""
@@ -2138,6 +2195,11 @@ def _enrich_blank_descriptions(
         for b in blanks:
             by_table.setdefault(b["table"], []).append(b)
         batches = list(by_table.values())
+
+    # F7 — sub-chunk any oversized per-table batch. Keeps table affinity
+    # (each chunk still contains rows from only one table) so the
+    # prompt's ``table_description`` / sibling context remains coherent.
+    batches = _chunk_enrichment_batches(batches, _MAX_COLUMNS_PER_BATCH)
 
     all_patches: list[dict] = []
     system_msg = "You generate structured column descriptions for a Databricks Genie Space."
@@ -2358,6 +2420,14 @@ def _enrich_table_descriptions(
         batches = [tables]
     else:
         batches = [[t] for t in tables]
+
+    # F7 — cap per-batch table count. Table prompts are denser than
+    # column prompts (each table expands to a table-description block),
+    # so the ceiling is lower (15 vs 25). The above-threshold path
+    # already produces single-table batches, so the cap only bites
+    # when ``len(tables) <= _ENRICHMENT_BATCH_THRESHOLD`` but still
+    # large enough to overflow the output budget.
+    batches = _chunk_enrichment_batches(batches, _MAX_TABLES_PER_BATCH)
 
     all_patches: list[dict] = []
     system_msg = "You generate structured table descriptions for a Databricks Genie Space."
