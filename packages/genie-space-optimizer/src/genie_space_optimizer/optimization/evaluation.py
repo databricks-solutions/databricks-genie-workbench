@@ -2090,7 +2090,13 @@ def make_predict_fn(
                 _trace_metadata["eval_scope"] = eval_scope
             mlflow.update_current_trace(tags=_trace_tags, metadata=_trace_metadata)
         except Exception:
-            pass
+            # Surface tag-update failures so trace-recovery gaps have a
+            # breadcrumb in MLflow metrics instead of a silent miss.
+            logger.debug("Failed to update trace tags", exc_info=True)
+            try:
+                mlflow.log_metric("predict_fn.trace_tag_update_failures", 1)
+            except Exception:
+                pass
 
         comparison: dict[str, Any] = {
             "match": False,
@@ -3373,20 +3379,31 @@ def _recover_trace_map(
 ) -> dict[str, str]:
     """Recover ``question_id -> trace_id`` when ``mlflow.genai.evaluate()`` loses it.
 
-    Tries three independent strategies in order. Each strategy's hit count
-    is logged as ``trace_map.recovery.<strategy>.hit_count`` so monitoring
-    can tell which one is carrying the load in production:
+    Tries three independent strategies in order and UNIONs their results —
+    later strategies fill qids that earlier strategies didn't cover. This
+    replaces the previous "first non-empty wins" behavior which lost
+    traces when strategy 1 returned a partial match (observed symptom:
+    ``Recovered 14/22 trace IDs``).
+
+    Strategies are ordered by preference (most authoritative first):
 
     1. ``tags`` — filter experiment traces by
-       ``genie.optimization_run_id`` + ``genie.iteration`` (original path).
+       ``genie.optimization_run_id`` + ``genie.iteration``.
     2. ``time_window`` — filter by ``start_time_ms`` and match
        ``tags.question_id`` (survives when tag updates are swallowed but
        the earlier ``question_id`` tag made it in).
     3. ``eval_results`` — read ``eval_result.tables['eval_results']
        ['trace_id']`` directly (available on MLflow ≥ 2.18).
 
-    Strategies are short-circuited: if strategy N returns a non-empty map,
-    later strategies are skipped.
+    Contract:
+      * If two strategies return values for the same qid, the earlier
+        strategy's value wins (first-writer-wins per qid).
+      * Once ``len(recovered) >= expected_count`` the loop short-circuits
+        and remaining strategies are not invoked — preserves the
+        zero-extra-API-call happy-path cost.
+      * Each strategy's metric reports NEW qids it contributed (not raw
+        returned size) so sums across strategies = total distinct
+        recovered.
     """
     strategies: list[tuple[str, Any]] = [
         (
@@ -3407,27 +3424,39 @@ def _recover_trace_map(
         ),
     ]
 
-    winning_map: dict[str, str] = {}
-    for name, fn in strategies:
-        if winning_map:
-            _log_trace_map_recovery_metric(name, 0)
-            continue
-        result = fn() or {}
-        _log_trace_map_recovery_metric(name, len(result))
-        if result:
-            logger.info(
-                "Trace map recovery strategy '%s' hit %d/%d traces",
-                name, len(result), expected_count,
-            )
-            winning_map = result
+    recovered: dict[str, str] = {}
+    per_strategy_hits: list[tuple[str, int]] = []
 
-    if not winning_map:
+    for idx, (name, fn) in enumerate(strategies):
+        if expected_count and len(recovered) >= expected_count:
+            for remaining_name, _ in strategies[idx:]:
+                per_strategy_hits.append((remaining_name, 0))
+            break
+        partial = fn() or {}
+        new_hits = 0
+        for qid, tid in partial.items():
+            if qid not in recovered:
+                recovered[qid] = tid
+                new_hits += 1
+        per_strategy_hits.append((name, new_hits))
+
+    for name, count in per_strategy_hits:
+        _log_trace_map_recovery_metric(name, count)
+
+    if recovered:
+        logger.info(
+            "Trace map recovery: %d/%d traces recovered "
+            "(per-strategy new hits: %s)",
+            len(recovered), expected_count,
+            ", ".join(f"{n}={c}" for n, c in per_strategy_hits),
+        )
+    else:
         logger.info(
             "All trace map recovery strategies returned 0 traces "
             "(iteration=%d, expected=%d)",
             iteration, expected_count,
         )
-    return winning_map
+    return recovered
 
 
 _HARNESS_PATCHED = False
