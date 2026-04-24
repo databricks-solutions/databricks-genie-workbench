@@ -681,7 +681,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
           const streamId = streamingMsgIdRef.current
           if (streamId) {
-            // Finalize the streaming message with full content and ui_elements
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === streamId
@@ -692,12 +691,12 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             streamingContentRef.current = ""
             streamingMsgIdRef.current = null
           } else {
-            // Fallback: no preceding deltas (e.g. reasoning text before tool calls)
             setMessages((prev) => [
               ...prev,
               { id: nextId(), role: "assistant", content, timestamp: Date.now(), ui_elements: uiElements as AgentUIElement[] | null | undefined },
             ])
           }
+
         },
         onCreated: (spaceId, url, displayName) => {
           setMessages((prev) => [
@@ -2231,6 +2230,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             )}
           </div>
         )
+      }
+
+      if (el.type === "multi_select" && el.id === "table_selection") {
+        return null
       }
 
       if (el.type === "multi_select" && el.options && el.options.length > 0) {

@@ -49,23 +49,23 @@ STEP_THINKING: dict[str, str] = {
     "post_creation": "Finalizing your Genie Space…",
 }
 
-# Tools allowed per step — structural guardrail to prevent the LLM from
-# calling tools outside the current step's scope.
-# Empty set = no tools (pure conversation). Missing key = all tools (fallback).
+# Tools allowed per step — each step is a cumulative superset of all preceding
+# steps so the agent never loses capabilities as the workflow advances.
+# The prompt guides the agent on what to focus on; STEP_TOOLS is a safety net.
+_DISCOVERY = {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"}
+_INSPECTION = _DISCOVERY | {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"}
+_PLAN = _INSPECTION | {"generate_plan", "present_plan"}
+_CONFIG = _PLAN | {"discover_warehouses", "generate_config", "validate_config", "create_space"}
+_POST = _CONFIG | {"update_config", "update_space"}
+
 STEP_TOOLS: dict[str, set[str]] = {
-    # Requirements has discovery tools so the agent can transition naturally
-    # when the user says "go find my data." The prompt guides the agent to
-    # gather requirements first — tools are available but not encouraged.
-    "requirements": {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"},
-    "discovery": {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"},
-    # Feasibility has inspection tools available so the LLM can call
-    # describe_table after the user confirms. The prompt instructs it to
-    # present an assessment and WAIT before calling tools.
-    "feasibility": {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"},
-    "inspection": {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"},
-    "plan": {"generate_plan", "present_plan", "test_sql"},
-    "config_create": {"discover_warehouses", "generate_config", "validate_config", "create_space"},
-    "post_creation": {"update_config", "validate_config", "update_space"},
+    "requirements": _DISCOVERY,
+    "discovery": _DISCOVERY,
+    "feasibility": _INSPECTION,
+    "inspection": _INSPECTION,
+    "plan": _PLAN,
+    "config_create": _CONFIG,
+    "post_creation": _POST,
 }
 
 STEP_ORDER = [
