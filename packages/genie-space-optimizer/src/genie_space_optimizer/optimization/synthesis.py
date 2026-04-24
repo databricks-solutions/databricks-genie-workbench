@@ -212,18 +212,42 @@ def _extract_json_proposal(raw: str) -> dict | None:
 
 
 def _gate_parse(proposal: dict) -> GateResult:
-    """Gate 1 — structural field presence + SQL parses via sqlglot."""
+    """Gate 1 — structural field presence + SQL parses via sqlglot.
+
+    Tier 3.8: pre-check for unbalanced backticks (odd count) before
+    sqlglot. sqlglot's Databricks dialect is lenient with backtick
+    imbalance in some edge cases; the odd-count check catches the
+    Q10-style "dropped closing backtick in GROUP BY" class deterministically.
+
+    Tier 3.14: enforce strict ``sqlglot.parse`` — no substring fallback,
+    fail closed on any exception so malformed SQL never leaks through
+    to the execute gate.
+    """
     eq = str(proposal.get("example_question") or "").strip()
     es = str(proposal.get("example_sql") or "").strip()
     if not eq or not es:
         return GateResult(False, "parse", "empty example_question or example_sql")
+
+    # Tier 3.8: deterministic backtick-balance precheck.
+    if es.count("`") % 2 == 1:
+        return GateResult(
+            False, "parse",
+            "unbalanced_identifier_quoting: odd number of backticks in example_sql",
+        )
+
     try:
         import sqlglot
     except ImportError:
-        # sqlglot is a core dep; if missing we fail open to execute gate.
-        return GateResult(True, "parse")
+        # sqlglot is a core dep; if missing we fail CLOSED so malformed
+        # SQL can't propagate through the synthesis pipeline without the
+        # parse gate's coverage. Previously this failed open.
+        return GateResult(False, "parse", "sqlglot unavailable; failing closed (Tier 3.14)")
     try:
-        sqlglot.parse_one(es, read="databricks")
+        # Tier 3.14: use parse_one with the databricks dialect. Any
+        # exception fails the gate — no substring fallback.
+        _parsed = sqlglot.parse_one(es, read="databricks")
+        if _parsed is None:
+            return GateResult(False, "parse", "sqlglot returned None AST")
     except Exception as exc:
         return GateResult(False, "parse", f"sqlglot parse failure: {exc}")
     return GateResult(True, "parse")
@@ -648,38 +672,65 @@ def validate_synthesis_proposal(
 def instruction_only_fallback(afs: dict) -> dict | None:
     """Deterministic fallback proposal when synthesis fails for a cluster.
 
-    Produces a plain-text ``add_instruction`` proposal derived solely from
-    the AFS summary — no LLM call, no benchmark text. Safe under any
-    firewall gate because it references only derivative fields.
+    Tier 2.9: we no longer emit diagnostic prose as a Genie Space
+    instruction. Previously this produced ``add_instruction`` patches
+    whose body was metadata like ``- Failure type: missing_aggregation``
+    — not guidance, just a serialised failure signature that polluted
+    every subsequent Genie prompt.
+
+    The new contract: this fallback only returns a proposal when the AFS
+    carries at least one *actionable* counterfactual fix (a suggested SQL
+    shape, column substitution, etc.). If not, the cluster is left for a
+    future iteration's strategist to retry with a different lever, or for
+    escalation to human review if ``tried_root_causes`` already has this
+    signature locked out.
     """
-    summary = str(afs.get("suggested_fix_summary") or "").strip()
-    failure_type = str(afs.get("failure_type") or "").strip()
-    if not summary and not failure_type:
-        return None
-    blame = ", ".join(afs.get("blame_set") or [])[:200]
-    fixes = "; ".join((afs.get("counterfactual_fixes") or [])[:3])[:400]
-    parts = [
-        "Guidance derived from optimizer failure signature:",
-        f"- Failure type: {failure_type}",
+    counterfactual_fixes = afs.get("counterfactual_fixes") or []
+    if isinstance(counterfactual_fixes, str):
+        counterfactual_fixes = [counterfactual_fixes]
+    actionable_fixes = [
+        str(f).strip() for f in counterfactual_fixes
+        if f and str(f).strip() and len(str(f).strip()) > 20
     ]
-    if blame:
-        parts.append(f"- Affected objects: {blame}")
-    if fixes:
-        parts.append(f"- Suggested fixes: {fixes}")
+    if not actionable_fixes:
+        logger.info(
+            "instruction_only_fallback: no actionable counterfactual fixes for "
+            "cluster %s (failure_type=%s) — skipping (no diagnostic-prose "
+            "patches will be written into text_instructions)",
+            afs.get("cluster_id", "?"),
+            afs.get("failure_type", "?"),
+        )
+        return None
+
+    failure_type = str(afs.get("failure_type") or "").strip()
+    blame = ", ".join(afs.get("blame_set") or [])[:200]
+    summary = str(afs.get("suggested_fix_summary") or "").strip()
+
+    # Parts start with the actionable fixes (the part Genie can act on);
+    # diagnostic metadata is relegated to a trailing note.
+    parts: list[str] = []
+    parts.append(f"Guidance for {failure_type or 'this pattern'}:")
+    for fix in actionable_fixes[:3]:
+        parts.append(f"- {fix}")
     if summary:
         parts.append(f"- Summary: {summary}")
+    if blame:
+        parts.append(f"- Affected: {blame}")
+
     return {
         "patch_type": "add_instruction",
         "new_text": "\n".join(parts),
         "proposed_value": "\n".join(parts),
         "rationale": (
-            "Deterministic instruction-only fallback after synthesis failed "
-            "to produce a firewall-passing example_sql for this cluster."
+            "Actionable instruction-only fallback: synthesis failed but the "
+            "AFS carries a concrete counterfactual fix. Retained rather than "
+            "dropped because the fix-text itself is guidance Genie can act on."
         ),
         "provenance": {
             "source": "synthesis_fallback",
             "cluster_id": afs.get("cluster_id", "?"),
             "failure_type": failure_type,
+            "tier": "2.9_actionable_only",
         },
     }
 

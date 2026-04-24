@@ -157,6 +157,24 @@ def promote_best_model(
     if full_evals.empty:
         full_evals = iterations_df
 
+    # Tier 1.2: exclude rolled-back iterations from champion selection so
+    # the run's stored ``best_accuracy`` reflects accepted state only.
+    # Baseline (iteration 0) is never rolled back and remains the floor.
+    if "rolled_back" in full_evals.columns:
+        _rb_mask = full_evals["rolled_back"].fillna(False).astype(bool)
+        _is_baseline = full_evals["iteration"].astype(int) == 0
+        full_evals = full_evals[(~_rb_mask) | _is_baseline]
+
+    if full_evals.empty:
+        logger.warning(
+            "No non-rolled-back full iterations for run %s — "
+            "falling back to all full iterations",
+            run_id,
+        )
+        full_evals = iterations_df[iterations_df["eval_scope"] == "full"]
+        if full_evals.empty:
+            full_evals = iterations_df
+
     best_idx = full_evals["overall_accuracy"].idxmax()
     best_row = full_evals.loc[best_idx]
     best_model_id = best_row.get("model_id")

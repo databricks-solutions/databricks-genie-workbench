@@ -230,15 +230,53 @@ from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
 max_benchmark_count = int(dbutils.jobs.taskValues.get(taskKey="preflight", key="max_benchmark_count", default=str(MAX_BENCHMARK_COUNT)))
 
 scores_json = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="scores")
-prev_scores = json.loads(scores_json)
-prev_accuracy = float(dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="overall_accuracy"))
+_baseline_scores = json.loads(scores_json)
+_baseline_accuracy = float(dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="overall_accuracy"))
 thresholds_met_raw = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="thresholds_met")
-thresholds_met = str(thresholds_met_raw).lower() in ("true", "1")
-prev_model_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="model_id")
+_baseline_thresholds_met = str(thresholds_met_raw).lower() in ("true", "1")
+baseline_model_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="model_id")
 
 enrichment_model_id = dbutils.jobs.taskValues.get(taskKey="enrichment", key="enrichment_model_id")
 enrichment_skipped_raw = dbutils.jobs.taskValues.get(taskKey="enrichment", key="enrichment_skipped")
 enrichment_skipped = str(enrichment_skipped_raw).lower() in ("true", "1")
+
+# Tier 1.3: prefer post-enrichment eval values when present. Enrichment
+# mutates the Genie Space, so the baseline scorecard can be arbitrarily
+# stale by the time Task 4 starts. Without this, gate checks compare
+# against the pre-enrichment baseline while clustering reads post-
+# enrichment rows — the mismatch is the cause of the ghost-ceiling
+# regression loop.
+_post_enr_acc_raw = dbutils.jobs.taskValues.get(
+    taskKey="enrichment", key="post_enrichment_accuracy", default=""
+)
+_post_enr_scores_raw = dbutils.jobs.taskValues.get(
+    taskKey="enrichment", key="post_enrichment_scores", default=""
+)
+_post_enr_model_raw = dbutils.jobs.taskValues.get(
+    taskKey="enrichment", key="post_enrichment_model_id", default=""
+)
+_post_enr_thresholds_raw = dbutils.jobs.taskValues.get(
+    taskKey="enrichment", key="post_enrichment_thresholds_met", default=""
+)
+
+prev_scores = _baseline_scores
+prev_accuracy = _baseline_accuracy
+thresholds_met = _baseline_thresholds_met
+prev_model_id = baseline_model_id
+_accuracy_source = "baseline_eval"
+
+if _post_enr_acc_raw not in ("", None):
+    try:
+        prev_accuracy = float(_post_enr_acc_raw)
+        if _post_enr_scores_raw:
+            prev_scores = json.loads(_post_enr_scores_raw)
+        if _post_enr_model_raw:
+            prev_model_id = _post_enr_model_raw
+        if _post_enr_thresholds_raw not in ("", None):
+            thresholds_met = str(_post_enr_thresholds_raw).lower() in ("true", "1")
+        _accuracy_source = "enrichment.post_enrichment_accuracy"
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
 
 import mlflow
 mlflow.set_experiment(exp_name)
@@ -256,9 +294,11 @@ _log(
     max_iterations=max_iterations,
     levers=levers,
     apply_mode=apply_mode,
-    baseline_accuracy=prev_accuracy,
-    baseline_thresholds_met=thresholds_met,
-    baseline_model_id=prev_model_id,
+    prev_accuracy=prev_accuracy,
+    prev_accuracy_source=_accuracy_source,
+    prev_thresholds_met=thresholds_met,
+    prev_model_id=prev_model_id,
+    baseline_model_id=baseline_model_id,
     enrichment_model_id=enrichment_model_id,
     enrichment_skipped=enrichment_skipped,
     triggered_by=triggered_by,

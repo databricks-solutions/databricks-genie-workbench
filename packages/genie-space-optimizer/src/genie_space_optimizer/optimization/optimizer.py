@@ -999,12 +999,21 @@ def cluster_failures(
     schema: str = "",
     verbose: bool = True,
     held_out_qids: set[str] | None = None,
+    qid_state: dict | None = None,
+    signal_type: str = "hard",
 ) -> list[dict]:
     """Group evaluation failures into actionable clusters.
 
     Groups by ``(judge, asi_failure_type, blame_set_str)``.  Falls back to
     ``(judge, _extract_pattern(rationale), "")`` when ASI is absent.
     Returns clusters with >= 1 question so even single failures are actionable.
+
+    Tier 2.11: the caller can supply a shared ``qid_state`` dict so hard
+    and soft clustering passes see the same ``:vN`` dedup state. Without
+    this, the same physical row shows up as ``Q001`` in the hard cluster
+    and ``Q001`` in the soft cluster with two different root causes —
+    the DO-NOT-RETRY bookkeeping then gets confused. ``signal_type`` is
+    stamped on each cluster for downstream consumers.
 
     When ``spark/run_id/catalog/schema`` are provided, enriches with stored
     ASI data from ``genie_eval_asi_results`` Delta table.
@@ -1070,10 +1079,21 @@ def cluster_failures(
     # with ``:v2`` / ``:v3`` when the request signature differs, and drop
     # pure duplicates (same qid, same question/expected_sql) with a log
     # entry. The rewrite log is surfaced in the CLUSTER FORMATION block.
-    _qid_seen: dict[str, tuple[str, str]] = {}
-    _qid_version: dict[str, int] = {}
-    _qid_rewrites: list[str] = []
-    _qid_pure_duplicates: list[str] = []
+    #
+    # Tier 2.11: when the caller supplies ``qid_state``, the dedup caches
+    # persist across calls. Hard+soft clustering share one state dict so
+    # the same physical row gets one stable qid (possibly with :vN suffix)
+    # and therefore one cluster, not two.
+    if qid_state is not None:
+        _qid_seen = qid_state.setdefault("seen", {})
+        _qid_version = qid_state.setdefault("version", {})
+        _qid_rewrites = qid_state.setdefault("rewrites", [])
+        _qid_pure_duplicates = qid_state.setdefault("pure_duplicates", [])
+    else:
+        _qid_seen = {}
+        _qid_version = {}
+        _qid_rewrites = []
+        _qid_pure_duplicates = []
 
     for row in rows_iter:
         if not isinstance(row, dict):
@@ -1107,6 +1127,13 @@ def cluster_failures(
         _row_question = _req.get("question", "") if isinstance(_req, dict) else ""
         _row_expected = _req.get("expected_sql", "") if isinstance(_req, dict) else ""
         _row_signature = (str(_row_question).strip(), str(_row_expected).strip())
+        # Tier 2.12: capture the base question_id (the real benchmark id)
+        # separately so ``:vN`` tokens never propagate into outward-facing
+        # fields. Downstream consumers that need to map back to a benchmark
+        # row (slice sampler, benchmark lookup, UI drill-down, human-review
+        # flagging) must use base_question_id — not question_id.
+        _base_qid = question_id
+        _trial_index = 1
         if question_id in _qid_seen:
             if _qid_seen[question_id] == _row_signature:
                 _qid_pure_duplicates.append(question_id)
@@ -1115,6 +1142,7 @@ def cluster_failures(
             _qid_version[question_id] = version
             _rewritten = f"{question_id}:v{version}"
             _qid_rewrites.append(f"{question_id} -> {_rewritten}")
+            _trial_index = version
             question_id = _rewritten
             _qid_seen[question_id] = _row_signature
         else:
@@ -1193,8 +1221,33 @@ def cluster_failures(
                         if not asi_join_assessment:
                             asi_join_assessment = uc_asi_entry.get("join_assessment")
 
+                # Tier 2.13 / 2.14: fall back to the Genie-behaviour-pattern
+                # classifier when no specific failure_type was stamped. This
+                # lets the strategist see over_filtered_dimension and
+                # wide_vs_long_shape as distinct clusters instead of
+                # indistinguishable ``wrong_filter_condition`` /
+                # ``wrong_aggregation`` blobs.
+                if not asi_failure_type or asi_failure_type in (
+                    "wrong_filter_condition", "wrong_aggregation", "other",
+                ):
+                    try:
+                        from genie_space_optimizer.optimization.evaluation import (
+                            classify_genie_shape_patterns,
+                        )
+                        _pattern = classify_genie_shape_patterns(row)
+                        if _pattern:
+                            asi_failure_type = _pattern["failure_type"]
+                            if not asi_blame_set:
+                                asi_blame_set = _pattern.get("blame_set")
+                            if not asi_wrong_clause:
+                                asi_wrong_clause = _pattern.get("wrong_clause")
+                    except Exception:
+                        logger.debug("classify_genie_shape_patterns raised", exc_info=True)
+
                 failure_entry: dict = {
                     "question_id": question_id,
+                    "base_question_id": _base_qid,
+                    "trial_index": _trial_index,
                     "judge": judge,
                     "rationale": rationale,
                     "asi_failure_type": asi_failure_type,
@@ -1219,6 +1272,11 @@ def cluster_failures(
                 "wrong_clauses": [],
                 "sql_context": f.get("sql_context", {}),
                 "failures": [],
+                # Tier 2.12: preserve the benchmark's real id so downstream
+                # outward-facing fields (ag.affected_questions, provenance,
+                # slice samplers, UI) never have to strip ``:vN`` tokens.
+                "base_question_id": f.get("base_question_id", qid),
+                "trial_index": f.get("trial_index", 1),
             }
         profile = question_profiles[qid]
         profile["judges"].add(f["judge"])
@@ -1397,7 +1455,13 @@ def cluster_failures(
     clusters: list[dict] = []
     for (root_cause, blame_str), qids in cluster_groups.items():
         all_judges: set[str] = set()
-        all_counterfactuals: list[str] = []
+        _judge_fail_counts: dict[str, int] = {}
+        # Tier 2.15: all_counterfactuals is now a list of dicts tagged
+        # with judge + signal_class so we can apply SQL-shape suppression
+        # _after_ merging across signal types. The pre-aggregation
+        # suppression historically caused clusters to show "(none)" even
+        # when a counterfactual existed on a sibling pathway.
+        all_counterfactuals: list[dict] = []
         all_wrong_clauses: list[str] = []
         sql_contexts: list[dict] = []
         sample_asi_type: str | None = None
@@ -1410,20 +1474,33 @@ def cluster_failures(
         for qid in qids:
             profile = question_profiles[qid]
             all_judges.update(profile["judges"])
+            # Tier 2.2: dominance counting. Track each judge's failure frequency
+            # across this cluster's profiles so ``affected_judge`` reflects the
+            # judge that actually drove the cluster, not the alphabetically
+            # first one.
+            for _f in profile["failures"]:
+                _jn = _f.get("judge", "")
+                if _jn:
+                    _judge_fail_counts[_jn] = _judge_fail_counts.get(_jn, 0) + 1
             all_wrong_clauses.extend(profile["wrong_clauses"])
-            # Pull counterfactuals per-failure so we can filter by source
-            # judge's signal class when the cluster is SQL-shape.
+            # Tier 2.15: merge counterfactual fixes across all signal
+            # classes first, then apply the SQL-shape suppression ONLY if
+            # the merge still has preferred (non-NL-text) entries. This
+            # prevents the "(none)" display bug where a cluster shows no
+            # counterfactual even though a sibling signal type on the same
+            # base_question_id had one populated. The suppression block
+            # below runs once we've seen all failures, not per-failure.
             for f in profile["failures"]:
                 cf = f.get("asi_counterfactual_fix")
                 if not cf:
                     continue
-                if (
-                    _cluster_is_sql_shape
-                    and judge_signal_class(f.get("judge", ""))
-                    in _suppress_classes
-                ):
-                    continue
-                all_counterfactuals.append(cf)
+                _signal_class = judge_signal_class(f.get("judge", ""))
+                all_counterfactuals.append({
+                    "fix": cf,
+                    "judge": f.get("judge", ""),
+                    "signal_class": _signal_class,
+                    "base_question_id": f.get("base_question_id") or profile.get("base_question_id"),
+                })
             if profile["sql_context"]:
                 sql_contexts.append(profile["sql_context"])
             if not sample_asi_type:
@@ -1451,22 +1528,81 @@ def cluster_failures(
                 })
             question_traces.append({
                 "question_id": qid,
+                "base_question_id": profile.get("base_question_id", qid),
+                "trial_index": profile.get("trial_index", 1),
                 "question_text": q_text[:200],
                 "failed_judges": judge_traces,
             })
 
         unique_qids = sorted(set(qids))
+        # Tier 2.12: compute base_question_ids — the real benchmark ids,
+        # with :vN tokens stripped. Downstream consumers that map back to
+        # benchmark rows (slice sampler, UI drill-down, human-review
+        # flagging) use this list.
+        _base_qids: set[str] = set()
+        for _pid in unique_qids:
+            _prof = question_profiles.get(_pid)
+            if _prof:
+                _base_qids.add(str(_prof.get("base_question_id") or _pid))
+            else:
+                _base_qids.add(_pid.split(":v")[0])
+
+        # Tier 2.2: pick affected_judge by dominance (most failures),
+        # breaking ties by CAUSAL_WEIGHT and then alphabetical (stable).
+        # The previous alphabetical pick produced mislabelled clusters
+        # (e.g. soft cluster with 12 response_quality failures labelled
+        # ``completeness`` because ``c`` sorts before ``r``). That label
+        # then feeds ``cluster_impact`` via ``CAUSAL_WEIGHT``, so the
+        # mislabel propagates into prioritisation errors.
+        if all_judges:
+            from genie_space_optimizer.common.config import CAUSAL_WEIGHT
+            _dominant = max(
+                all_judges,
+                key=lambda j: (
+                    _judge_fail_counts.get(j, 0),
+                    CAUSAL_WEIGHT.get(j, 1.0),
+                    -ord(j[0]) if j else 0,
+                ),
+            )
+        else:
+            _dominant = "unknown"
+
+        # Tier 2.15: merge counterfactuals across all signal classes, then
+        # apply the SQL-shape suppression only if there's still a useful
+        # non-NL-text entry left. If every counterfactual came from an
+        # NL_TEXT / META judge, keep them — better to show the
+        # strategist something (even if weak) than "(none)".
+        _preferred_cfs = [
+            c for c in all_counterfactuals
+            if not _cluster_is_sql_shape or c.get("signal_class") not in _suppress_classes
+        ]
+        _merged_cf_source = _preferred_cfs if _preferred_cfs else all_counterfactuals
+        _merged_cfs = list(dict.fromkeys(
+            str(c.get("fix", "")).strip()
+            for c in _merged_cf_source
+            if c.get("fix") and str(c.get("fix")).strip()
+        ))
+        _cf_sources = sorted({
+            c.get("signal_class").name if hasattr(c.get("signal_class"), "name") else str(c.get("signal_class"))
+            for c in _merged_cf_source
+            if c.get("signal_class")
+        })
+
         entry = {
             "cluster_id": f"C{len(clusters) + 1:03d}",
             "root_cause": root_cause,
             "question_ids": unique_qids,
+            "base_question_ids": sorted(_base_qids),
             "affected_judges": sorted(all_judges),
-            "affected_judge": sorted(all_judges)[0] if all_judges else "unknown",
+            "affected_judge": _dominant,
+            "affected_judge_fail_counts": dict(_judge_fail_counts),
             "confidence": min(0.9, 0.5 + 0.1 * len(unique_qids)),
+            "signal_type": signal_type,
             "asi_failure_type": sample_asi_type,
             "asi_blame_set": [b.strip() for b in blame_str.split("|") if b.strip()] if blame_str else None,
             "asi_wrong_clause": next((wc for wc in all_wrong_clauses if wc), None),
-            "asi_counterfactual_fixes": list(dict.fromkeys(cf for cf in all_counterfactuals if cf)),
+            "asi_counterfactual_fixes": _merged_cfs,
+            "asi_counterfactual_sources": _cf_sources,
             "sql_contexts": sql_contexts[:5],
             "question_traces": question_traces,
         }
@@ -1526,10 +1662,17 @@ def cluster_failures(
 def cluster_impact(cluster: dict) -> float:
     """Score a failure cluster by estimated optimisation impact.
 
-    ``impact = question_count × causal_weight × severity × fixability``
+    ``impact = question_count × causal_weight × severity × fixability × soft_dampen``
 
     Higher is more impactful.  Used to rank clusters before the adaptive
     strategist call so the LLM receives a suggested priority order.
+
+    Tier 2.3: soft-signal clusters (where arbiter said rows were correct but
+    individual judges flagged suboptimal patterns) are dampened by 0.5 so
+    hard clusters still dominate at equal question counts, while a large
+    soft cluster can still out-rank a tiny hard one. Without this, a 12-Q
+    soft cluster with ``response_quality = 63%`` systematically lost to a
+    2-Q hard cluster with a clean ``result_correctness`` pass.
     """
     from genie_space_optimizer.common.config import (
         CAUSAL_WEIGHT,
@@ -1548,7 +1691,9 @@ def cluster_impact(cluster: dict) -> float:
     has_cf = bool(cluster.get("asi_counterfactual_fixes"))
     fixability = FIXABILITY_WITH_COUNTERFACTUAL if has_cf else FIXABILITY_WITHOUT_COUNTERFACTUAL
 
-    return q_count * causal * severity * fixability
+    soft_dampen = 0.5 if cluster.get("signal_type") == "soft" else 1.0
+
+    return q_count * causal * severity * fixability * soft_dampen
 
 
 _RANK_TIEBREAK_THRESHOLD = 1.0
@@ -5423,6 +5568,13 @@ _SQL_SHAPE_ROOT_CAUSES = frozenset({
     "wrong_grouping",
     "select_star",
     "tvf_parameter_error",
+    # Tier 2.13 / 2.14: Genie behaviour patterns detected by the
+    # over_filtered_dimension / wide_vs_long_shape classifiers in
+    # evaluation.classify_genie_shape_patterns. Treated as SQL-shape
+    # because the fix is an example_sql showing the correct row shape,
+    # not a prose instruction.
+    "over_filtered_dimension",
+    "wide_vs_long_shape",
 })
 
 
@@ -7090,7 +7242,14 @@ def _call_llm_for_adaptive_strategy(
         "You are a JSON API. You MUST respond with ONLY a valid JSON object. "
         "Do NOT include any explanation, analysis, or markdown outside the JSON. "
         "Your entire response must be parseable by json.loads(). "
-        "The JSON must contain an 'action_groups' array with EXACTLY one entry."
+        "The JSON must contain an 'action_groups' array with EXACTLY one entry. "
+        # Tier 2.5: scope bound — one source cluster per AG.
+        "The action group MUST target exactly ONE source cluster. Multiple "
+        "failure signatures require multiple iterations, not one giant AG. "
+        "Set 'source_cluster_ids' to a list of length 1. If the same root cause "
+        "spans multiple clusters with the same blame set, pick the highest "
+        "impact one; the remaining clusters will be addressed in subsequent "
+        "iterations."
     )
 
     try:
@@ -7113,6 +7272,56 @@ def _call_llm_for_adaptive_strategy(
     action_groups = result.get("action_groups", [])
     if not isinstance(action_groups, list):
         action_groups = []
+
+    # Tier 2.5: AG scope post-validator. Enforce one-cluster-per-AG by
+    # keeping only the highest-impact source cluster when the LLM returns
+    # multiple clusters with different root_causes. AGs with a single
+    # cluster pass through unchanged. This prevents scope-creep AGs like
+    # iteration 2 (3 clusters x 4 levers x 27 patches) where a single bad
+    # patch takes down the other 26 when the iteration rolls back.
+    _all_clusters_map: dict[str, dict] = {
+        c.get("cluster_id", ""): c for c in list(clusters) + list(soft_signal_clusters) if c.get("cluster_id")
+    }
+    _validated_ags: list[dict] = []
+    for _ag in action_groups:
+        if not isinstance(_ag, dict):
+            continue
+        _src_ids = list(_ag.get("source_cluster_ids") or [])
+        if len(_src_ids) <= 1:
+            _validated_ags.append(_ag)
+            continue
+        _src_clusters = [
+            _all_clusters_map.get(str(cid))
+            for cid in _src_ids
+            if _all_clusters_map.get(str(cid))
+        ]
+        _distinct_causes = {
+            c.get("root_cause", "") for c in _src_clusters if c and c.get("root_cause")
+        }
+        if len(_distinct_causes) <= 1:
+            _validated_ags.append(_ag)
+            continue
+        _src_with_impact = [
+            (cluster_impact(c), c) for c in _src_clusters if c
+        ]
+        _src_with_impact.sort(key=lambda t: t[0], reverse=True)
+        if not _src_with_impact:
+            _validated_ags.append(_ag)
+            continue
+        _winner = _src_with_impact[0][1]
+        _winning_id = _winner.get("cluster_id", "")
+        _ag["source_cluster_ids"] = [_winning_id]
+        _ag["affected_questions"] = sorted(_winner.get("question_ids", []) or [])
+        _ag.setdefault("root_cause_summary", _winner.get("root_cause", ""))
+        logger.warning(
+            "AG scope bound (Tier 2.5): dropped %d additional source cluster(s) "
+            "with distinct root_causes (%s) — kept highest-impact cluster %s",
+            len(_src_with_impact) - 1,
+            sorted(_distinct_causes), _winning_id,
+        )
+        _validated_ags.append(_ag)
+    action_groups = _validated_ags
+
     global_rewrite = _normalize_instruction_rewrite(result.get("global_instruction_rewrite"))
     rationale = result.get("rationale", "")
 
@@ -7131,6 +7340,39 @@ def _call_llm_for_adaptive_strategy(
         _rewrite_desc,
         str(rationale)[:300],
     )
+
+    # Tier 2.1 + 2.12: back-fill ``affected_questions`` from
+    # ``source_cluster_ids`` when the LLM omitted it. Prefer
+    # ``base_question_ids`` (real benchmark ids) over the internal
+    # ``question_ids`` (which may carry :vN suffixes) so outward-facing
+    # AG fields never leak synthetic tokens.
+    _all_clusters = list(clusters) + list(soft_signal_clusters)
+    _clusters_by_id = {
+        c.get("cluster_id", ""): c for c in _all_clusters if c.get("cluster_id")
+    }
+    for _ag in action_groups:
+        if not isinstance(_ag, dict):
+            continue
+        if _ag.get("affected_questions"):
+            continue
+        _source_cids = _ag.get("source_cluster_ids") or []
+        if not _source_cids:
+            continue
+        _qids: set[str] = set()
+        for _cid in _source_cids:
+            _src = _clusters_by_id.get(str(_cid))
+            if _src:
+                _qids.update(
+                    _src.get("base_question_ids") or _src.get("question_ids", []) or []
+                )
+        if _qids:
+            _ag["affected_questions"] = sorted(_qids)
+            logger.info(
+                "Back-filled ag.affected_questions from source_cluster_ids=%s "
+                "(%d base_question_id(s))",
+                list(_source_cids), len(_qids),
+            )
+
     _out_lines = [
         f"\n{'=' * _W}",
         f"  STRATEGIST OUTPUT (Iteration {_iter_label})",
@@ -8361,6 +8603,12 @@ def _generate_lever6_proposal(
                 logger.warning("Lever 6: SQL snippet failed execution validation: %s", _valid_result[1])
                 return None
             sql_raw = _valid_result[2] if len(_valid_result) > 2 else sql_raw
+            _validation_passed = True
+        else:
+            # No execution backend: propose without execute-validation.
+            # The applier-side gate (Tier 2.8) will reject this unless
+            # ``validation_passed=True`` is explicitly set by the caller.
+            _validation_passed = False
 
         from genie_space_optimizer.common.genie_schema import count_sql_snippets, MAX_SQL_SNIPPETS
 
@@ -8410,6 +8658,10 @@ def _generate_lever6_proposal(
             "affected_questions": llm_result.get("affected_questions", []),
             "confidence": 0.7,
             "questions_fixed": len(cluster.get("question_traces", [])),
+            # Tier 2.8: validation_passed tracks whether validate_sql_snippet
+            # returned a clean EXPLAIN+execute result. The applier refuses
+            # to persist add_sql_snippet_* patches without this stamp.
+            "validation_passed": _validation_passed,
         }
 
         # Bug #4 firewall — kept in place for forward-compatibility with
@@ -9696,6 +9948,27 @@ def generate_proposals_from_strategy(
     lever_key = str(target_lever)
     lever_dir = directives.get(lever_key, {})
 
+    # Tier 2.7: receive any re-routed sections from sibling levers that
+    # stashed them on the AG. Merge into this lever's directive so they
+    # land in this iteration, not deferred to a future one.
+    _pending_routing = action_group.get("_pending_section_routing") or {}
+    _my_pending = _pending_routing.get(target_lever) or _pending_routing.get(lever_key)
+    if isinstance(_my_pending, dict) and _my_pending:
+        _existing = lever_dir.get("instruction_sections") or {}
+        if not isinstance(_existing, dict):
+            _existing = {}
+        _merged = dict(_existing)
+        for _sec, _val in _my_pending.items():
+            _merged[_sec] = (
+                (_merged.get(_sec, "") + "\n" + _val).strip()
+                if _merged.get(_sec) else _val
+            )
+        lever_dir["instruction_sections"] = _merged
+        logger.info(
+            "Lever %d: absorbed %d re-routed section(s) from sibling levers: %s",
+            target_lever, len(_my_pending), sorted(_my_pending.keys()),
+        )
+
     if not lever_dir and target_lever not in (4, 5, 6):
         return proposals
 
@@ -10072,25 +10345,71 @@ def generate_proposals_from_strategy(
                         k: v for k, v in instruction_sections.items() if k in valid_keys
                     }
 
-                # --- Task 4: section ownership enforcement ---
+                # --- Task 4 / Tier 2.7: section ownership enforcement ---
+                # Before folding unauthorised sections into CONSTRAINTS,
+                # check whether another invoked lever in this AG owns the
+                # section via LEVER_TO_SECTIONS. If so, stash the section
+                # on the AG as ``_pending_section_routing`` so the other
+                # lever's proposal generator can pick it up. If no
+                # invoked lever owns it, DROP the section rather than
+                # polluting CONSTRAINTS with semantically-different
+                # content (JOIN GUIDANCE, TEMPORAL FILTERS, etc.). This
+                # fixes the observed AG2 collapse where both JOIN
+                # GUIDANCE (Lever 4) and TEMPORAL FILTERS (Lever 2) were
+                # dumped into Lever 5's CONSTRAINTS.
                 allowed_sections = set(LEVER_TO_SECTIONS.get(target_lever, []))
+                invoked_levers = {
+                    int(k) for k in action_group.get("lever_directives", {}).keys()
+                    if str(k).isdigit()
+                }
                 if allowed_sections:
                     unauthorized = {
                         k for k in instruction_sections if k not in allowed_sections
                     }
                     if unauthorized:
-                        logger.warning(
-                            "Lever %d attempted to write instruction sections %s "
-                            "(allowed: %s) — folding into CONSTRAINTS",
-                            target_lever, sorted(unauthorized), sorted(allowed_sections),
-                        )
+                        _rerouted: dict[int, dict[str, str]] = {}
+                        _dropped: list[str] = []
                         for k in sorted(unauthorized):
                             val = instruction_sections.pop(k, "")
-                            if val:
-                                existing_c = instruction_sections.get("CONSTRAINTS", "")
-                                instruction_sections["CONSTRAINTS"] = (
-                                    (existing_c + "\n" + val).strip() if existing_c else val
-                                )
+                            if not val:
+                                continue
+                            # Find another invoked lever that owns this section.
+                            _owner_lever = None
+                            for _lv in sorted(invoked_levers):
+                                if _lv == target_lever:
+                                    continue
+                                if k in set(LEVER_TO_SECTIONS.get(_lv, [])):
+                                    _owner_lever = _lv
+                                    break
+                            if _owner_lever is not None:
+                                _rerouted.setdefault(_owner_lever, {})[k] = val
+                            else:
+                                _dropped.append(k)
+
+                        if _rerouted:
+                            # Stash on action_group so the owning lever's
+                            # proposal generator can pick it up in the
+                            # same iteration. Keyed by lever int.
+                            _pending = action_group.setdefault(
+                                "_pending_section_routing", {}
+                            )
+                            for _lv, _secs in _rerouted.items():
+                                _pending.setdefault(_lv, {}).update(_secs)
+                            logger.warning(
+                                "Lever %d: re-routed %d section(s) to invoked "
+                                "owner lever(s): %s",
+                                target_lever,
+                                sum(len(v) for v in _rerouted.values()),
+                                {lv: sorted(secs.keys()) for lv, secs in _rerouted.items()},
+                            )
+                        if _dropped:
+                            logger.warning(
+                                "Lever %d: dropping %d unauthorised section(s) "
+                                "with no invoked owner: %s (LEVER_TO_SECTIONS "
+                                "maps to levers not in this AG; deferred to a "
+                                "future iteration that invokes those levers)",
+                                target_lever, len(_dropped), sorted(_dropped),
+                            )
 
                 # --- Contradiction check against user-authored instructions ---
                 _orig_sections = metadata_snapshot.get("_original_instruction_sections")

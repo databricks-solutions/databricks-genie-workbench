@@ -1946,6 +1946,8 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
                 "source_proposal_id": p.get("proposal_id", ""),
                 "sql_snippet": snippet,
                 "snippet_type": snippet_type_key,
+                # Tier 2.8: propagate validation stamp to the applier gate.
+                "validation_passed": bool(p.get("validation_passed", False)),
             })
             continue
 
@@ -2191,6 +2193,36 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
             json.dumps({"op": "add", "section": "instructions", "new_text": old_text}),
         )
     if patch_type == "rewrite_instruction":
+        # Tier 2.10: full PURPOSE-through-everything rewrites are the
+        # single biggest source of collateral damage (AG1 and AG2 both
+        # regressed 5+ non-target questions via a global Lever-5 rewrite).
+        # Require an explicit ``escalation="full_rewrite"`` stamp on the
+        # patch OR a config opt-in, otherwise default to the sectional
+        # update path. ``update_instruction_section`` (patch_type below)
+        # is the narrower default for normal Lever-5 flows.
+        _escalation = str(patch.get("escalation", "")).strip().lower()
+        _opt_in = os.getenv("GSO_ALLOW_UNSCOPED_REWRITE", "").strip().lower() in ("1", "true", "yes")
+        if _escalation != "full_rewrite" and not _opt_in:
+            logger.warning(
+                "Refusing rewrite_instruction without escalation=full_rewrite. "
+                "Tier 2.10: full instruction rewrites have high collateral "
+                "damage and must be explicitly escalated. Converting to a "
+                "section-scoped merge against CONSTRAINTS."
+            )
+            return action(
+                json.dumps({
+                    "op": "update_section",
+                    "section": "instructions",
+                    "section_name": "CONSTRAINTS",
+                    "new_text": new_text,
+                }),
+                json.dumps({
+                    "op": "update_section",
+                    "section": "instructions",
+                    "section_name": "CONSTRAINTS",
+                    "new_text": old_text,
+                }),
+            )
         rewrite_old = patch.get("old_value", old_text)
         return action(
             json.dumps({"op": "rewrite", "section": "instructions", "new_text": new_text, "old_text": rewrite_old}),
@@ -2352,6 +2384,20 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
         op_prefix = patch_type.split("_sql_snippet_")[0]  # "add", "update", "remove"
         snippet = patch.get("sql_snippet", {})
         snippet_id = snippet.get("id", "") or patch.get("snippet_id", "")
+
+        # Tier 2.8: hard assertion — no ``add_sql_snippet_*`` patch can
+        # be applied unless the proposer stamped ``validation_passed=True``
+        # after ``validate_sql_snippet``. Prevents the observed bug where
+        # CAST_INVALID_INPUT validation failures were logged but the
+        # snippet still landed because a different code path bypassed
+        # the gate.
+        if op_prefix == "add" and not patch.get("validation_passed"):
+            raise ValueError(
+                f"Refusing to apply {patch_type} without validation_passed=True. "
+                f"Tier 2.8: every add_sql_snippet_* patch must carry a clean "
+                f"validate_sql_snippet result. target={patch.get('target_table', '?')}, "
+                f"snippet_id={snippet_id}"
+            )
 
         if op_prefix == "add":
             return action(

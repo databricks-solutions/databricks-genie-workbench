@@ -1196,6 +1196,126 @@ def _normalize_expected_asset(
 _ARBITER_CORRECT_VERDICTS = frozenset({"genie_correct", "both_correct"})
 
 
+def _rc_str(row: dict) -> str:
+    """Extract the ``result_correctness`` value as a lowercase string."""
+    val = row.get("result_correctness/value", row.get("result_correctness", ""))
+    return str(val).strip().lower()
+
+
+def _arbiter_str(row: dict) -> str:
+    """Extract the arbiter verdict as a lowercase string."""
+    val = row.get("arbiter/value", row.get("arbiter", ""))
+    return str(val).strip().lower()
+
+
+def row_is_hard_failure(row: dict) -> bool:
+    """Tier 1.4: Unified hard-failure predicate shared by accuracy and clustering.
+
+    A row is a *hard* failure iff BOTH:
+      - ``result_correctness`` is definitively ``no`` (case-insensitive), AND
+      - the arbiter verdict is NOT in the correct set (i.e. not ``both_correct``
+        and not ``genie_correct``).
+
+    Rationale: the accept gate already counts rows as correct when either
+    ``rc == "yes"`` OR arbiter overrides say so (see
+    ``_compute_arbiter_adjusted_accuracy``). Clustering previously used arbiter
+    alone, which produced phantom hard clusters for rows where ``rc == "yes"``
+    but arbiter flagged a semantic issue. Sharing this predicate closes that
+    gap and prevents the ghost-ceiling loop.
+    """
+    rc = _rc_str(row)
+    av = _arbiter_str(row)
+    rc_is_no = rc in ("no", "false", "0", "0.0")
+    return rc_is_no and av not in _ARBITER_CORRECT_VERDICTS
+
+
+def classify_genie_shape_patterns(row: dict) -> dict | None:
+    """Tier 2.13 / 2.14: detect Genie behaviour patterns from the eval row.
+
+    Returns a dict with ``failure_type`` (one of ``over_filtered_dimension``
+    or ``wide_vs_long_shape``) plus ``wrong_clause`` and ``blame_set`` keys
+    when the row matches a known pattern, else ``None``. Callers can stamp
+    this into the row's ASI metadata before clustering so the strategist
+    sees a distinct failure_type instead of a generic
+    ``wrong_filter_condition``/``wrong_aggregation``.
+
+    Patterns:
+
+    - ``over_filtered_dimension``: Genie added a ``<col> IS NOT NULL``
+      predicate that the ground truth does not have, and Genie returned
+      fewer rows than GT. Observed in the lever-loop regression run on
+      Q14/Q18 (Genie added ``zone_combination IS NOT NULL`` unprompted).
+    - ``wide_vs_long_shape``: Genie returned ``k * gt_rows`` rows with an
+      extra dimension column (typically ``time_window``). Observed on Q20.
+    """
+    import re as _re
+
+    _resp = row.get("response") or {}
+    if isinstance(_resp, str):
+        try:
+            _resp = json.loads(_resp)
+        except (json.JSONDecodeError, TypeError):
+            _resp = {}
+    _comparison = _resp.get("comparison", {}) if isinstance(_resp, dict) else {}
+    if not isinstance(_comparison, dict):
+        return None
+
+    gt_rows = _comparison.get("gt_row_count")
+    genie_rows = _comparison.get("genie_row_count")
+    if not isinstance(gt_rows, (int, float)) or not isinstance(genie_rows, (int, float)):
+        return None
+
+    genie_sql = (
+        _resp.get("response", "") if isinstance(_resp, dict) else ""
+    )
+    _req = row.get("request") or {}
+    if isinstance(_req, str):
+        try:
+            _req = json.loads(_req)
+        except (json.JSONDecodeError, TypeError):
+            _req = {}
+    expected_sql = _req.get("expected_sql", "") if isinstance(_req, dict) else ""
+
+    if not isinstance(genie_sql, str) or not isinstance(expected_sql, str):
+        return None
+
+    genie_upper = genie_sql.upper()
+    expected_upper = expected_sql.upper()
+
+    # over_filtered_dimension: Genie added an IS NOT NULL predicate GT doesn't have.
+    if int(gt_rows) > int(genie_rows) > 0:
+        _isnull_pat = _re.compile(r"`?([\w.]+)`?\s+IS\s+NOT\s+NULL", _re.IGNORECASE)
+        genie_isnull_cols = {m.group(1).split(".")[-1].lower() for m in _isnull_pat.finditer(genie_sql)}
+        gt_isnull_cols = {m.group(1).split(".")[-1].lower() for m in _isnull_pat.finditer(expected_sql)}
+        spurious = genie_isnull_cols - gt_isnull_cols
+        if spurious:
+            return {
+                "failure_type": "over_filtered_dimension",
+                "wrong_clause": "WHERE",
+                "blame_set": sorted(spurious),
+            }
+
+    # wide_vs_long_shape: Genie returned 2× or 3× rows with a time_window-ish col.
+    if int(genie_rows) > int(gt_rows) > 0:
+        _ratio = int(genie_rows) / max(int(gt_rows), 1)
+        if 1.5 <= _ratio <= 4.5 and (int(genie_rows) % int(gt_rows) == 0):
+            _select_cols_pat = _re.compile(r"\bSELECT\s+(.+?)\s+FROM", _re.IGNORECASE | _re.DOTALL)
+            _gm = _select_cols_pat.search(genie_sql)
+            _em = _select_cols_pat.search(expected_sql)
+            if _gm and _em:
+                _g_cols = {c.strip().split()[-1].strip("`,").lower() for c in _gm.group(1).split(",")}
+                _e_cols = {c.strip().split()[-1].strip("`,").lower() for c in _em.group(1).split(",")}
+                extra_cols = _g_cols - _e_cols
+                for _col in extra_cols:
+                    if _col in ("time_window", "time_period", "period", "window", "grain"):
+                        return {
+                            "failure_type": "wide_vs_long_shape",
+                            "wrong_clause": "SELECT",
+                            "blame_set": [_col],
+                        }
+    return None
+
+
 @dataclass
 class RowExclusion:
     """Why a single benchmark row was dropped from the accuracy denominator.
@@ -1219,6 +1339,12 @@ class ArbiterAdjustedResult:
     Adding this type replaces a brittle 4-tuple and gives the persistence and
     API layers a single source of truth for the denominator (``evaluated_count``)
     of ``overall_accuracy``.
+
+    Tier 1.7: ``both_correct_count`` / ``both_correct_rate`` expose the stricter
+    accuracy anchor (only rows where arbiter said ``both_correct``). Used by
+    the lever loop to avoid ghost-ceiling rejections when ``overall_accuracy``
+    is inflated by arbiter overrides of rc=yes rows whose SQL is semantically
+    wrong.
     """
 
     accuracy_pct: float
@@ -1227,6 +1353,8 @@ class ArbiterAdjustedResult:
     excluded_count: int
     failure_ids: list[str] = field(default_factory=list)
     exclusions: list[RowExclusion] = field(default_factory=list)
+    both_correct_count: int = 0
+    both_correct_rate: float = 0.0
 
 
 # Stable per-row exclusion reason codes. Keep in sync with
@@ -1329,6 +1457,8 @@ def _compute_arbiter_adjusted_accuracy(
             excluded_count=0,
             failure_ids=[],
             exclusions=[],
+            both_correct_count=0,
+            both_correct_rate=0.0,
         )
 
     _quarantined = quarantined_qids or set()
@@ -1336,6 +1466,7 @@ def _compute_arbiter_adjusted_accuracy(
 
     total = 0
     correct = 0
+    both_correct = 0
     excluded = 0
     failure_ids: list[str] = []
     exclusions: list[RowExclusion] = []
@@ -1415,6 +1546,14 @@ def _compute_arbiter_adjusted_accuracy(
             rc in ("no", "false", "0", "0.0") and av in _ARBITER_CORRECT_VERDICTS
         )
 
+        # Tier 1.7: count both_correct separately so callers can anchor
+        # best_accuracy to the stricter rate (rows where arbiter explicitly
+        # agreed, not overrides of rc=yes). Note that a row can have
+        # arbiter=both_correct even when rc=yes (the arbiter ran anyway and
+        # confirmed); we count that here.
+        if av == "both_correct":
+            both_correct += 1
+
         if is_correct:
             correct += 1
         else:
@@ -1422,6 +1561,7 @@ def _compute_arbiter_adjusted_accuracy(
                 failure_ids.append(str(qid))
 
     accuracy_pct = round((correct / total) * 100, 2) if total > 0 else 0.0
+    both_correct_rate = round((both_correct / total) * 100, 2) if total > 0 else 0.0
     return ArbiterAdjustedResult(
         accuracy_pct=accuracy_pct,
         correct_count=correct,
@@ -1429,6 +1569,8 @@ def _compute_arbiter_adjusted_accuracy(
         excluded_count=excluded,
         failure_ids=failure_ids,
         exclusions=exclusions,
+        both_correct_count=both_correct,
+        both_correct_rate=both_correct_rate,
     )
 
 
@@ -1738,6 +1880,44 @@ def _precheck_benchmarks_for_eval(
                 )
                 valid.append(benchmark)
                 continue
+
+        # Tier 3.10: move METRIC_VIEW_JOIN pre-check upstream of EXPLAIN.
+        # This pattern (direct JOIN between two metric views without a
+        # CTE wrapper) is deterministically rejected by Databricks SQL
+        # at EXPLAIN time with METRIC_VIEW_JOIN_NOT_SUPPORTED. Catching
+        # it here saves the gRPC round-trip (and its triplicated log
+        # spam) plus a warehouse call on every such benchmark row.
+        _expected_asset_pre = _normalize_expected_asset(
+            str(benchmark.get("expected_asset", "")),
+            resolved_sql,
+            hint=benchmark.get("expected_asset_hint"),
+        )
+        _uses_measure_pre = "MEASURE(" in resolved_sql.upper()
+        _refs_mv_pre = any(
+            mv in resolved_sql.lower() for mv in mv_names_lower
+        ) if mv_names_lower else False
+        _is_mv_context_pre = _expected_asset_pre == "MV" or _uses_measure_pre or _refs_mv_pre
+        _uses_cte_pre = bool(
+            re.search(r"\bWITH\b\s+\w+\s+AS\s*\(", resolved_sql, re.IGNORECASE)
+        )
+        if _is_mv_context_pre and _MV_JOIN_RE.search(resolved_sql) and not _uses_cte_pre:
+            quarantined.append(
+                {
+                    "question_id": qid,
+                    "question": question,
+                    "reason": "metric_view_join",
+                    "sqlstate": None,
+                    "error": (
+                        "Metric view / MEASURE() benchmarks cannot use direct JOINs "
+                        "(METRIC_VIEW_JOIN_NOT_SUPPORTED). Use the CTE-first pattern: "
+                        "materialize the metric view in a WITH clause, then JOIN the CTE. "
+                        "(Detected upstream of EXPLAIN — Tier 3.10.)"
+                    ),
+                    "expected_sql": resolved_sql[:1500],
+                }
+            )
+            reason_counts["invalid_benchmark_count"] += 1
+            continue
 
         try:
             if w and warehouse_id:
@@ -4108,6 +4288,8 @@ def run_evaluation(
     lever: int | None = None,
     model_creation_kwargs: dict | None = None,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
+    run_name: str | None = None,
+    extra_tags: dict[str, str] | None = None,
 ) -> dict:
     """Run ``mlflow.genai.evaluate()`` and return structured results.
 
@@ -4115,6 +4297,12 @@ def run_evaluation(
         reference_sqls: Optional ``{question_id: sql}`` from a prior iteration.
             When provided the ``repeatability_scorer`` is automatically added
             and ``previous_sql`` is injected into each row's expectations.
+        run_name: Tier 4 — optional explicit MLflow run name. When provided,
+            the function uses it verbatim (typically built via
+            ``common.mlflow_names``); when omitted, falls back to the legacy
+            timestamp-based template for back-compat.
+        extra_tags: Tier 4 — tags merged onto the run alongside the defaults.
+            Callers pass v2 tags from ``common.mlflow_names.default_tags``.
 
     Returns dict with: run_id, run_name, experiment_id, iteration,
     overall_accuracy, per_judge, thresholds_passed, failure_question_ids,
@@ -4141,9 +4329,10 @@ def run_evaluation(
     if not scope_filtered and benchmarks:
         scope_filtered = benchmarks
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _tpl = BASELINE_RUN_NAME_TEMPLATE if iteration == 0 else RUN_NAME_TEMPLATE
-    run_name = format_mlflow_template(_tpl, iteration=iteration, timestamp=ts)
+    if not run_name:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        _tpl = BASELINE_RUN_NAME_TEMPLATE if iteration == 0 else RUN_NAME_TEMPLATE
+        run_name = format_mlflow_template(_tpl, iteration=iteration, timestamp=ts)
 
     with _scorer_feedback_scope(), mlflow.start_run(run_name=run_name) as run:
         _version_tags: dict[str, str] = {
@@ -4158,6 +4347,12 @@ def run_evaluation(
             _version_tags["genie.lever"] = str(lever)
         else:
             _version_tags["genie.lever"] = "baseline"
+        # Tier 4: merge caller-supplied v2 tags (``genie.run_id``,
+        # ``genie.run_name_version``, ``genie.stage``, etc.) on top of the
+        # local defaults. Caller tags win on key collisions so operators
+        # can override iteration/lever for non-standard runs.
+        if extra_tags:
+            _version_tags.update({str(k): str(v) for k, v in extra_tags.items()})
         mlflow.set_tags(_version_tags)
 
         if model_creation_kwargs:
@@ -4591,6 +4786,8 @@ def run_evaluation(
         failure_ids = _arbiter_result.failure_ids
         excluded_count = _arbiter_result.excluded_count
         evaluated_count = _arbiter_result.evaluated_count
+        both_correct_count = _arbiter_result.both_correct_count
+        both_correct_rate = _arbiter_result.both_correct_rate
 
         # Index exclusions by qid for O(1) lookup when annotating rows_for_output.
         _exclusions_by_qid: dict[str, RowExclusion] = {
@@ -4636,6 +4833,15 @@ def run_evaluation(
 
         # Arbiter-adjust result_correctness so detect_regressions sees true
         # signal instead of raw hash-mismatch noise.
+        #
+        # Tier 1.8: also stamp ``result_correctness/arbiter_override_value``
+        # on the row so downstream tooling (UI drill-down, clustering, ASI
+        # classifiers) can see the semantic verdict, not just the hash
+        # result. Without this, rows with arbiter=both_correct but hash
+        # mismatch (column/row ordering differences, alias renames) appear
+        # as phantom per-judge regressions. The original
+        # ``result_correctness/value`` is preserved for audit, but
+        # ``_is_semantic_correct`` should be used by gate logic.
         if rows_for_output:
             _rc_total = _rc_correct = 0
             for _rc_row in rows_for_output:
@@ -4651,10 +4857,16 @@ def run_evaluation(
                 if _rc_err_type in ("both_empty", "genie_result_unavailable"):
                     continue
                 _rc_total += 1
-                if _rc_val in ("yes", "true", "1", "1.0"):
+                _rc_av = str(_rc_row.get("arbiter/value", "")).lower()
+                _is_correct = _rc_val in ("yes", "true", "1", "1.0")
+                if _is_correct:
                     _rc_correct += 1
-                elif str(_rc_row.get("arbiter/value", "")).lower() in _ARBITER_CORRECT_VERDICTS:
+                elif _rc_av in _ARBITER_CORRECT_VERDICTS:
                     _rc_correct += 1
+                    _rc_row["result_correctness/arbiter_override_value"] = "yes"
+                    _rc_row["_is_semantic_correct"] = True
+                else:
+                    _rc_row.setdefault("_is_semantic_correct", _is_correct)
             if _rc_total > 0:
                 per_judge["result_correctness"] = _rc_correct / _rc_total
 
@@ -4816,6 +5028,8 @@ def run_evaluation(
             "total_questions": len(filtered),
             "evaluated_count": evaluated_count,
             "correct_count": arbiter_adjusted_correct,
+            "both_correct_count": both_correct_count,
+            "both_correct_rate": both_correct_rate,
             "scores": scores_100,
             "thresholds_met": thresholds_passed,
             "thresholds_passed": thresholds_passed,
@@ -4913,6 +5127,8 @@ def run_repeatability_evaluation(
     model_id: str | None = None,
     run_label: str = "",
     reference_result_hashes: dict[str, str] | None = None,
+    run_name: str | None = None,
+    extra_tags: dict[str, str] | None = None,
 ) -> dict:
     """Run a repeatability evaluation through ``mlflow.genai.evaluate()``.
 
@@ -4941,9 +5157,10 @@ def run_repeatability_evaluation(
         warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
     )
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    suffix = f"_{run_label}" if run_label else ""
-    run_name = f"genie_repeatability_iter{iteration}_{ts}{suffix}"
+    if not run_name:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        suffix = f"_{run_label}" if run_label else ""
+        run_name = f"genie_repeatability_iter{iteration}_{ts}{suffix}"
 
     scorers = make_repeatability_scorers()
 
@@ -4986,6 +5203,10 @@ def run_repeatability_evaluation(
     eval_data = pd.DataFrame(eval_records)
 
     with _scorer_feedback_scope(), mlflow.start_run(run_name=run_name) as run:
+        # Tier 4: apply v2 tags from the caller (repeatability passes
+        # identified by ``finalize/repeat_pass_{k}`` stage + iteration).
+        if extra_tags:
+            mlflow.set_tags({str(k): str(v) for k, v in extra_tags.items()})
         mlflow.log_params(
             {
                 "space_id": space_id,

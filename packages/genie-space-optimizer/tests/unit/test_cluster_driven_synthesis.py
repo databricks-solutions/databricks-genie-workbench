@@ -408,18 +408,37 @@ class TestLever5Intercept:
         )
 
     def test_lever5_fallback_shape_when_synthesis_returns_none(self):
-        """The intercept must emit an add_instruction proposal (not
-        add_example_sql) when synthesis declines — verified structurally
-        via the fallback factory."""
+        """Tier 2.9: fallback emits ``add_instruction`` only when the AFS
+        carries actionable counterfactual fixes (not bare metadata like
+        ``failure_type: missing_aggregation``).
+
+        - Without counterfactuals → returns None (no diagnostic-prose
+          patches leak into Genie Space text_instructions).
+        - With counterfactuals → emits ``add_instruction`` whose body
+          leads with the actionable guidance.
+        """
         from genie_space_optimizer.optimization.synthesis import (
             instruction_only_fallback,
         )
         from genie_space_optimizer.optimization.afs import format_afs
+
+        # Case 1: no counterfactuals — fallback must decline (Tier 2.9).
         cluster = _mk_cluster("CF", "missing_aggregation")
         fb = instruction_only_fallback(format_afs(cluster))
-        assert fb is not None
-        assert fb["patch_type"] == "add_instruction"
-        assert fb["new_text"]
+        assert fb is None
+
+        # Case 2: actionable counterfactuals present — fallback emits
+        # an add_instruction whose body starts with guidance.
+        afs_with_fix = format_afs(cluster)
+        afs_with_fix["counterfactual_fixes"] = [
+            "Aggregate sales by region using SUM(amount) and GROUP BY region",
+        ]
+        fb2 = instruction_only_fallback(afs_with_fix)
+        assert fb2 is not None
+        assert fb2["patch_type"] == "add_instruction"
+        assert fb2["new_text"]
+        # The actionable guidance must appear before any trailing metadata.
+        assert "Aggregate sales by region" in fb2["new_text"]
 
 
 # ═══════════════════════════════════════════════════════════════════════

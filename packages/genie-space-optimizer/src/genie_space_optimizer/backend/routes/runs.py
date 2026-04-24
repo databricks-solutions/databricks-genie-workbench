@@ -1399,6 +1399,12 @@ def _get_baseline_and_best_accuracy(
     to the decimal with the tab labels (which are computed from the same
     counts on the frontend). Legacy rows without counts fall back to the
     stored `overall_accuracy` so old dashboards don't suddenly go blank.
+
+    Tier 1.2: rolled-back iterations are excluded from the ``scored`` pool so
+    ``optimizedScore`` represents the current Genie Space state, not a
+    rolled-back iteration's eval. Iteration 0 (baseline) is always kept
+    regardless of flag because it is never rolled back and serves as the
+    floor of the max aggregation.
     """
     full_rows = [r for r in iters_rows if str(r.get("eval_scope", "")).lower() == "full"]
     if not full_rows:
@@ -1411,9 +1417,21 @@ def _get_baseline_and_best_accuracy(
         iteration=0 if baseline_row else None,
     )
 
+    def _is_rolled_back(row: dict) -> bool:
+        val = row.get("rolled_back")
+        if val is None:
+            return False
+        if isinstance(val, bool):
+            return val
+        return str(val).strip().lower() in ("true", "1", "t", "yes")
+
+    scoring_rows = [
+        r for r in full_rows
+        if _safe_int(r.get("iteration")) == 0 or not _is_rolled_back(r)
+    ]
     scored = [
         _derived_accuracy(r, run_id=run_id, iteration=_safe_int(r.get("iteration")))
-        for r in full_rows
+        for r in scoring_rows
     ]
     finite_scores = [s for s in scored if s is not None]
     if not finite_scores:

@@ -111,6 +111,11 @@ def _migrate_add_columns(spark: SparkSession, catalog: str, schema: str) -> None
         (TABLE_ITERATIONS, "arbiter_rejection_count", "BIGINT COMMENT 'Bug #4 (Phase 3) - synthesis proposals rejected by the arbiter gate this iteration'"),
         (TABLE_ITERATIONS, "cluster_fallback_to_instruction_count", "BIGINT COMMENT 'Bug #4 (Phase 3) - clusters that fell back to instruction-only after synthesis failed repeatedly'"),
         (TABLE_ITERATIONS, "synthesis_archetype_distribution", "STRING COMMENT 'JSON MAP<STRING,BIGINT>: Bug #4 (Phase 3) - count of persisted synthesized example_sqls per archetype this iteration'"),
+        (TABLE_ITERATIONS, "rolled_back", "BOOLEAN DEFAULT false COMMENT 'Tier 1.1: true if this iteration was rolled back by the accept/rollback gate. Readers that represent current state must filter this out (see _get_baseline_and_best_accuracy, promote_best_model, load_latest_full_iteration).'"),
+        (TABLE_ITERATIONS, "rolled_back_at", "TIMESTAMP COMMENT 'Tier 1.1: timestamp of rollback'"),
+        (TABLE_ITERATIONS, "rollback_reason", "STRING COMMENT 'Tier 1.1: human-readable rollback reason (mirrors genie_opt_patches.rollback_reason)'"),
+        (TABLE_ITERATIONS, "both_correct_count", "INT COMMENT 'Tier 1.7: count of rows with arbiter verdict == both_correct. Used to anchor best_accuracy to both_correct_rate when rc=yes overrides inflate overall_accuracy.'"),
+        (TABLE_ITERATIONS, "both_correct_rate", "DOUBLE COMMENT 'Tier 1.7: both_correct_count / evaluated_count * 100. Stricter than overall_accuracy (which counts arbiter override rows as correct). Lever loop anchors acceptance to this to avoid ghost-ceiling rejections.'"),
     ]
     import re as _re
     _default_re = _re.compile(r"\bDEFAULT\s+'[^']*'", _re.IGNORECASE)
@@ -415,6 +420,17 @@ def write_iteration(
     if not isinstance(_synthesis_archetype_distribution, dict):
         _synthesis_archetype_distribution = {}
 
+    # Tier 1.7: both_correct_count / both_correct_rate. These are
+    # strictly stricter than overall_accuracy (which counts arbiter
+    # overrides of rc=yes). Defaults preserve back-compat with eval
+    # results emitted before the migration landed.
+    _both_correct_count = int(eval_result.get("both_correct_count", 0) or 0)
+    _both_correct_rate_val = eval_result.get("both_correct_rate")
+    if _both_correct_rate_val is None and _evaluated_count:
+        _both_correct_rate_val = round(
+            100.0 * _both_correct_count / int(_evaluated_count), 2
+        ) if int(_evaluated_count) > 0 else 0.0
+
     col_names = (
         "run_id, iteration, lever, eval_scope, timestamp, mlflow_run_id, model_id, "
         "overall_accuracy, total_questions, correct_count, scores_json, failures_json, "
@@ -423,7 +439,8 @@ def write_iteration(
         "evaluated_count, excluded_count, quarantined_benchmarks_json, "
         "leakage_count_by_type, firewall_rejection_count_by_type, secondary_mining_blocked, "
         "synthesis_slots_persisted, arbiter_rejection_count, "
-        "cluster_fallback_to_instruction_count, synthesis_archetype_distribution"
+        "cluster_fallback_to_instruction_count, synthesis_archetype_distribution, "
+        "rolled_back, both_correct_count, both_correct_rate"
     )
     vals = ", ".join(
         [
@@ -456,6 +473,9 @@ def write_iteration(
             str(_arbiter_rejection_count),
             str(_cluster_fallback_to_instruction_count),
             _opt_json(_synthesis_archetype_distribution) if _synthesis_archetype_distribution else "NULL",
+            "false",
+            str(_both_correct_count),
+            str(_both_correct_rate_val) if _both_correct_rate_val is not None else "NULL",
         ]
     )
 
@@ -571,17 +591,43 @@ def mark_patches_rolled_back(
     catalog: str,
     schema: str,
 ) -> None:
-    """Set ``rolled_back=true`` on all patches for a given run + iteration."""
+    """Set ``rolled_back=true`` on all patches AND the iteration row for a given run + iteration.
+
+    Tier 1.1: also stamps ``genie_opt_iterations`` so downstream readers
+    (``load_latest_full_iteration``, ``_get_baseline_and_best_accuracy``,
+    ``promote_best_model``) can filter rolled-back iterations out of
+    "current state" computations. Without this, iteration N's clustering
+    would re-read iteration N-1's rolled-back eval data (ghost-cluster
+    feedback loop), and the UI would show a rolled-back iteration's
+    accuracy as ``optimizedScore``.
+    """
     now = datetime.now(timezone.utc).isoformat()
-    fqn = _fqn(catalog, schema, TABLE_PATCHES)
+    patches_fqn = _fqn(catalog, schema, TABLE_PATCHES)
+    iters_fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
     safe_reason = reason.replace("'", "''")
     spark.sql(
-        f"UPDATE {fqn} SET rolled_back = true, "
+        f"UPDATE {patches_fqn} SET rolled_back = true, "
         f"rolled_back_at = TIMESTAMP '{now}', "
         f"rollback_reason = '{safe_reason}' "
         f"WHERE run_id = '{run_id}' AND iteration = {iteration}"
     )
-    logger.info("Rolled back patches for run %s iteration %d: %s", run_id, iteration, reason)
+    try:
+        spark.sql(
+            f"UPDATE {iters_fqn} SET rolled_back = true, "
+            f"rolled_back_at = TIMESTAMP '{now}', "
+            f"rollback_reason = '{safe_reason}' "
+            f"WHERE run_id = '{run_id}' AND iteration = {iteration}"
+        )
+    except Exception:
+        # Non-fatal: the patches-table stamp is still correct, so the
+        # deployed Genie Space state is accurate. Only the iteration
+        # filter downstream is affected; readers fall back to reading
+        # ``rolled_back`` from patches via a join if needed.
+        logger.warning(
+            "Failed to stamp rolled_back on iterations row run=%s iter=%d",
+            run_id, iteration, exc_info=True,
+        )
+    logger.info("Rolled back patches + iteration row for run %s iteration %d: %s", run_id, iteration, reason)
 
 
 # ── ASI & Provenance Write Functions ─────────────────────────────────────
@@ -796,13 +842,26 @@ def read_latest_stage(
 
 
 def load_latest_full_iteration(
-    spark: SparkSession, run_id: str, catalog: str, schema: str
+    spark: SparkSession, run_id: str, catalog: str, schema: str,
+    *, include_rolled_back: bool = False,
 ) -> dict | None:
-    """Latest iteration with ``eval_scope='full'``. Used for resume + convergence."""
+    """Latest iteration with ``eval_scope='full'``. Used for resume + convergence.
+
+    Tier 1.2: by default excludes iterations marked ``rolled_back=true`` so
+    downstream clustering / best-score computations don't re-read reverted
+    state (the ghost-cluster feedback loop). Set ``include_rolled_back=True``
+    only when a caller specifically needs to reason about the rolled-back
+    data (e.g. post-mortem audits).
+    """
     fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+    rollback_filter = (
+        "" if include_rolled_back
+        else " AND (rolled_back IS NULL OR rolled_back = false)"
+    )
     df = run_query(
         spark,
-        f"SELECT * FROM {fqn} WHERE run_id = '{run_id}' AND eval_scope = 'full' "
+        f"SELECT * FROM {fqn} WHERE run_id = '{run_id}' AND eval_scope = 'full'"
+        f"{rollback_filter} "
         f"ORDER BY iteration DESC LIMIT 1",
     )
     if df.empty:

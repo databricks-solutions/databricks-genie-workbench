@@ -1702,6 +1702,26 @@ def validate_sql_snippet(
     try:
         _run_sql(wrapped)
     except Exception as exc:
+        # Tier 3.13: classify CAST_INVALID_INPUT separately. This fires
+        # when a filter-type snippet compares a STRING literal to a
+        # non-STRING column (typically BIGINT booleans encoded as 'Y'/'N',
+        # where the UC column is numeric). The error is NOT a parser
+        # bug — it's a type-mismatch in the proposed filter itself, so
+        # we return a cleaner reason code. Callers that see
+        # ``cast_invalid_input`` know to reject the proposal without
+        # a broad "Execution failed" blob in the log.
+        _msg = str(exc)
+        if "CAST_INVALID_INPUT" in _msg or "cannot be cast to" in _msg:
+            return (
+                False,
+                (
+                    f"cast_invalid_input: filter predicate compares values "
+                    f"that Databricks SQL can't coerce. Check the column's "
+                    f"UC-declared type vs the literal in the snippet. "
+                    f"Detail: {_msg[:200]}"
+                ),
+                prefixed_sql,
+            )
         return False, f"Execution failed: {exc}", prefixed_sql
 
     # S8 — post-execution selectivity probe. EXPLAIN + LIMIT 1 passed;

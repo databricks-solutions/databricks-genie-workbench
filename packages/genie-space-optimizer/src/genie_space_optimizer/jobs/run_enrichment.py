@@ -156,6 +156,10 @@ except Exception as exc:
         "enrichment_model_id": baseline_model_id,
         "enrichment_skipped": True,
         "summary": {"total_enrichments": 0},
+        "post_enrichment_accuracy": None,
+        "post_enrichment_scores": {},
+        "post_enrichment_model_id": baseline_model_id,
+        "post_enrichment_thresholds_met": False,
     }
 
 # COMMAND ----------
@@ -170,11 +174,26 @@ dbutils.jobs.taskValues.set(key="enrichment_model_id", value=enrichment_out["enr
 dbutils.jobs.taskValues.set(key="enrichment_skipped", value=enrichment_out["enrichment_skipped"])
 dbutils.jobs.taskValues.set(key="total_enrichments", value=enrichment_out["summary"]["total_enrichments"])
 
+# Tier 1.3: publish post-enrichment eval so Task 4 can gate against the
+# current space state (not the stale baseline). Present only when
+# enrichment actually applied and the eval succeeded.
+_post_enr_acc = enrichment_out.get("post_enrichment_accuracy")
+_post_enr_scores = enrichment_out.get("post_enrichment_scores") or {}
+_post_enr_model_id = enrichment_out.get("post_enrichment_model_id") or enrichment_out["enrichment_model_id"]
+_post_enr_thresholds_met = bool(enrichment_out.get("post_enrichment_thresholds_met", False))
+if _post_enr_acc is not None:
+    dbutils.jobs.taskValues.set(key="post_enrichment_accuracy", value=_post_enr_acc)
+    dbutils.jobs.taskValues.set(key="post_enrichment_scores", value=json.dumps(_post_enr_scores))
+    dbutils.jobs.taskValues.set(key="post_enrichment_model_id", value=_post_enr_model_id)
+    dbutils.jobs.taskValues.set(key="post_enrichment_thresholds_met", value=_post_enr_thresholds_met)
+
 _log(
     "Task values published",
     enrichment_model_id=enrichment_out["enrichment_model_id"],
     enrichment_skipped=enrichment_out["enrichment_skipped"],
     total_enrichments=enrichment_out["summary"]["total_enrichments"],
+    post_enrichment_accuracy=_post_enr_acc,
+    post_enrichment_thresholds_met=_post_enr_thresholds_met,
 )
 _banner("Task 3 Completed")
 dbutils.notebook.exit(json.dumps(enrichment_out["summary"], default=str))

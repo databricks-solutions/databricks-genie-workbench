@@ -114,6 +114,21 @@ DEFAULT_THRESHOLDS = {
     "asset_routing": 85.0,
 }
 
+INFO_ONLY_JUDGES = frozenset({
+    # Tier 3.6: judges that are diagnostic-only and must NOT drive
+    # clustering / soft-signal detection. Their failures are tracked
+    # for observability but don't justify a lever-loop iteration.
+    #
+    # ``repeatability`` compares this run's SQL against prior runs —
+    # failing on iteration 2 just means the SQL differs from iter 1's
+    # SQL, not that something is wrong.
+    # ``previous_sql`` is a sibling diagnostic that fires on every row
+    # where the SQL differs from the last accepted iteration's SQL; same
+    # reasoning — diagnostic, not actionable.
+    "repeatability",
+    "previous_sql",
+})
+
 REPEATABILITY_TARGET = 90.0
 
 MLFLOW_THRESHOLDS = {
@@ -161,6 +176,13 @@ CONSECUTIVE_ROLLBACK_LIMIT = 3
 the optimizer is stuck and further iterations are unlikely to help.
 Root causes are only marked as tried when the limit is about to be hit,
 giving the strategist a chance to retry with a different lever."""
+MAX_AG_PATCHES = 8
+"""Tier 2.6: hard cap on the number of patches applied in a single action
+group. Rationale: a single bad patch in a 27-patch AG (iteration 2 of the
+lever-loop regression case) takes down the other 26 when the iteration
+rolls back. Keeping the batch small keeps the rollback blast radius small
+and enables lever-boundary batch-apply with slice-gate checks between
+batches for AGs that genuinely need more."""
 INFRA_RETRY_BUDGET = 3
 """Stop the lever loop after this many consecutive INFRA_FAILURE
 rollbacks. Infra rollbacks do not count toward
