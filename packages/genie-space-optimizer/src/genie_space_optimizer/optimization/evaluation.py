@@ -1562,12 +1562,17 @@ def _compute_arbiter_adjusted_accuracy(
 
     accuracy_pct = round((correct / total) * 100, 2) if total > 0 else 0.0
     both_correct_rate = round((both_correct / total) * 100, 2) if total > 0 else 0.0
+    # Dedup qids while preserving first-seen order: duplicate rows for the
+    # same qid (repeatability sub-runs, harness retries) would otherwise
+    # inflate the persisted ``failure_count`` metric and render a confusing
+    # ``Failed questions: [..., q3, q3, ...]`` list.
+    deduped_failure_ids = list(dict.fromkeys(failure_ids))
     return ArbiterAdjustedResult(
         accuracy_pct=accuracy_pct,
         correct_count=correct,
         evaluated_count=total,
         excluded_count=excluded,
-        failure_ids=failure_ids,
+        failure_ids=deduped_failure_ids,
         exclusions=exclusions,
         both_correct_count=both_correct,
         both_correct_rate=both_correct_rate,
@@ -4009,6 +4014,7 @@ def _print_eval_summary(
 
     _logical_pass_count = 0
     _all_judge_pass_count = 0
+    _arbiter_rescued_count = 0
     _fail_count = 0
     use_legacy_headline = scoring_v2_is_legacy()
 
@@ -4060,7 +4066,16 @@ def _print_eval_summary(
             )
             continue
 
-        _fail_count += 1
+        # Non-headline-pass rows split into two buckets so the header
+        # reconciles with ``Overall accuracy: X/Y`` below:
+        #   * arbiter-rescued — rc=no but arbiter settled on
+        #     ``genie_correct``/``both_correct`` → contributes to
+        #     ``Overall accuracy`` numerator.
+        #   * real fail — neither judges nor arbiter saved the row.
+        if arbiter_val in _ARBITER_CORRECT_VERDICTS:
+            _arbiter_rescued_count += 1
+        else:
+            _fail_count += 1
 
         genie_sql = (
             _response.get("response")
@@ -4167,18 +4182,21 @@ def _print_eval_summary(
         lines.append("-" * width)
 
     if use_legacy_headline:
-        _headline_pass = _all_judge_pass_count
-        _headline_label = "all-pass"
+        # Legacy mode keeps the pre-v2 phrasing so reviewers comparing old
+        # runs see unchanged output.
+        _summary_line = (
+            f"  {total_questions} questions: {_all_judge_pass_count} all-pass, "
+            f"{_fail_count + _arbiter_rescued_count} with failures (details below)"
+        )
     else:
-        _headline_pass = _logical_pass_count
-        _headline_label = "logical-pass"
-    _summary_line = (
-        f"  {total_questions} questions: {_headline_pass} {_headline_label}, "
-        f"{_fail_count} with failures (details below)"
-    )
-    if not use_legacy_headline:
-        _summary_line += (
-            f"  [all-judge-pass: {_all_judge_pass_count}]"
+        # v2 header: three buckets that sum to total and reconcile with
+        # the ``Overall accuracy: correct/evaluated`` line below.
+        _summary_line = (
+            f"  {total_questions} questions: "
+            f"{_logical_pass_count} logical-pass · "
+            f"{_arbiter_rescued_count} arbiter-override-pass · "
+            f"{_fail_count} fail"
+            f"   [all-judge-pass: {_all_judge_pass_count}]"
         )
     lines.insert(3, _summary_line)
 
@@ -4248,6 +4266,17 @@ def _print_eval_summary(
     lines.append(
         f"|   Overall accuracy: {adj_accuracy:.1f}% "
         f"({_adj_result.correct_count}/{_adj_result.evaluated_count})"
+    )
+    # Strict metric: fraction of rows where *every* judge passed, without
+    # arbiter rescue. This is the number that the lever loop moves when
+    # metadata patches land, and the header-only count hid it from readers.
+    _all_judge_pct = (
+        round(100 * _all_judge_pass_count / total_questions, 1)
+        if total_questions else 0.0
+    )
+    lines.append(
+        f"|   All-judge-pass (no arbiter rescue): {_all_judge_pct:.1f}% "
+        f"({_all_judge_pass_count}/{total_questions})"
     )
     lines.append(
         f"|   result_correctness (pre-arbiter): {rc_pre_arbiter_pct:.1f}%  "
@@ -5096,11 +5125,18 @@ def _log_pass_bucket_metrics(rows_for_output: list[dict]) -> None:
                 logical += 1
             if ap:
                 all_judge += 1
+        total = len(rows_for_output) or 1
+        logical_pct = round(100 * logical / total, 2)
+        all_judge_pct = round(100 * all_judge / total, 2)
         mlflow.log_metric("logical_pass_count", float(logical))
         mlflow.log_metric("all_judge_pass_count", float(all_judge))
+        mlflow.log_metric("logical_pass_pct", float(logical_pct))
+        mlflow.log_metric("all_judge_pass_pct", float(all_judge_pct))
         if scoring_v2_is_shadow():
             mlflow.log_metric("shadow.all_judge_pass_count", float(all_judge))
             mlflow.log_metric("shadow.logical_pass_count", float(logical))
+            mlflow.log_metric("shadow.all_judge_pass_pct", float(all_judge_pct))
+            mlflow.log_metric("shadow.logical_pass_pct", float(logical_pct))
     except Exception:
         logger.debug("Failed to log pass-bucket metrics", exc_info=True)
 

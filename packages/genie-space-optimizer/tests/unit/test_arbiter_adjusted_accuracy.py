@@ -167,3 +167,33 @@ def test_all_rows_excluded_yields_zero_accuracy() -> None:
     assert result.evaluated_count == 0
     assert result.excluded_count == 5
     assert result.accuracy_pct == 0
+
+
+def test_failure_ids_are_deduplicated_across_duplicate_rows() -> None:
+    """Duplicate rows for the same qid (repeatability sub-runs, harness
+    retries) must not inflate ``failure_ids`` — consumers treat this list
+    as the set of distinct failing questions, and the persisted MLflow
+    ``failure_count`` metric is derived from ``len(failure_ids)``.
+    """
+    rows = [
+        _row("q1", correct=False),
+        _row("q2", correct=False),
+        _row("q1", correct=False),  # duplicate qid — same failure
+    ]
+    result = _compute_arbiter_adjusted_accuracy(rows)
+    assert result.failure_ids == ["q1", "q2"]
+
+
+def test_failure_ids_preserve_first_seen_order_with_dedup() -> None:
+    """Dedup must preserve first-seen order so clustering (which consumes
+    this list) doesn't see a different stable ordering after the fix.
+    """
+    rows = [
+        _row("q3", correct=False),
+        _row("q1", correct=False),
+        _row("q2", correct=False),
+        _row("q1", correct=False),  # duplicate — drop the second occurrence
+        _row("q3", correct=False),  # duplicate — drop the second occurrence
+    ]
+    result = _compute_arbiter_adjusted_accuracy(rows)
+    assert result.failure_ids == ["q3", "q1", "q2"]

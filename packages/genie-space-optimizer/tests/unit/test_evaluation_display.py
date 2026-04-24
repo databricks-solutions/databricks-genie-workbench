@@ -378,3 +378,183 @@ class TestResultCorrectnessRawLabel:
         out = capsys.readouterr().out
 
         assert "result_correctness (pre-arbiter): 0.0%" in out
+
+
+# ---------------------------------------------------------------------------
+# Header split line: logical-pass · arbiter-override-pass · fail
+# ---------------------------------------------------------------------------
+
+class TestHeaderSplitLine:
+    """The header must break down non-headline-pass rows into the two
+    buckets that actually matter for the reader:
+      * arbiter-override-pass — rows that failed the judges but the arbiter
+        rescued (they contribute to ``Overall accuracy``).
+      * fail — rows that neither passed judges nor got rescued.
+    Previously both were collapsed into ``N with failures`` which conflicted
+    with the ``Overall accuracy: X/Y`` line at the bottom of the card.
+    """
+
+    @staticmethod
+    def _all_pass_row(qid: str, arbiter: str = "both_correct") -> dict:
+        return _base_row(
+            question_id=qid,
+            arbiter=arbiter,
+            verdicts={
+                "syntax_validity": "yes", "schema_accuracy": "yes",
+                "logical_accuracy": "yes", "semantic_equivalence": "yes",
+                "completeness": "yes", "response_quality": "yes",
+                "asset_routing": "yes", "result_correctness": "yes",
+            },
+        )
+
+    @staticmethod
+    def _rescued_row(qid: str) -> dict:
+        # rc=no triggers logical_pass=False; arbiter=genie_correct rescues
+        # the row in _compute_arbiter_adjusted_accuracy.
+        return _base_row(
+            question_id=qid,
+            arbiter="genie_correct",
+            verdicts={"result_correctness": "no"},
+        )
+
+    @staticmethod
+    def _true_fail_row(qid: str) -> dict:
+        # rc=no, arbiter sided with GT → not rescued, real failure.
+        return _base_row(
+            question_id=qid,
+            arbiter="ground_truth_correct",
+            verdicts={"result_correctness": "no"},
+        )
+
+    def test_header_splits_rescued_vs_true_fail(self, capsys):
+        """11 pass + 5 rescued + 6 real-fail = 22 rows → Overall 16/22.
+
+        The header must print the 3-way breakdown so it reconciles with
+        the bottom-line number without the reader doing arithmetic.
+        """
+        from genie_space_optimizer.optimization.evaluation import (
+            _print_eval_summary,
+        )
+
+        rows = (
+            [self._all_pass_row(f"p{i}") for i in range(11)]
+            + [self._rescued_row(f"r{i}") for i in range(5)]
+            + [self._true_fail_row(f"f{i}") for i in range(6)]
+        )
+
+        _print_eval_summary(
+            rows=rows,
+            scores_100=_scores_100_all_100(),
+            thresholds_passed=True,
+            iteration=0,
+            eval_scope="full",
+            total_questions=22,
+        )
+        out = capsys.readouterr().out
+
+        # Exact substring — the breakdown reconciles with 16/22.
+        assert (
+            "22 questions: 11 logical-pass · 5 arbiter-override-pass · 6 fail"
+        ) in out
+
+        # The legacy "N with failures" phrasing that conflicts with the
+        # Overall accuracy line must be gone.
+        assert "with failures (details below)" not in out
+
+        # Invariant: logical + rescued = correct_count reported below.
+        assert "Overall accuracy: 72.7% (16/22)" in out
+
+    def test_header_with_zero_rescues_still_splits_cleanly(self, capsys):
+        """If no rows are rescued, the rescued bucket reads ``0``."""
+        from genie_space_optimizer.optimization.evaluation import (
+            _print_eval_summary,
+        )
+
+        rows = (
+            [self._all_pass_row(f"p{i}") for i in range(3)]
+            + [self._true_fail_row(f"f{i}") for i in range(2)]
+        )
+
+        _print_eval_summary(
+            rows=rows,
+            scores_100=_scores_100_all_100(),
+            thresholds_passed=True,
+            iteration=0,
+            eval_scope="full",
+            total_questions=5,
+        )
+        out = capsys.readouterr().out
+
+        assert (
+            "5 questions: 3 logical-pass · 0 arbiter-override-pass · 2 fail"
+        ) in out
+
+
+# ---------------------------------------------------------------------------
+# All-judge-pass % — surface the strict metric in the SCORE SUMMARY block
+# ---------------------------------------------------------------------------
+
+class TestAllJudgePassPercent:
+    """The strict ``all-judge-pass`` count is already computed for the
+    header; it must also be surfaced as a percentage in the SCORE SUMMARY
+    so it shows up next to ``Overall accuracy`` where readers look.
+    """
+
+    def test_all_judge_pass_percent_renders_in_score_summary(self, capsys):
+        """4 all-judge-pass out of 22 = 18.2%."""
+        from genie_space_optimizer.optimization.evaluation import (
+            _print_eval_summary,
+        )
+
+        all_pass = [
+            _base_row(
+                question_id=f"p{i}",
+                arbiter="both_correct",
+                verdicts={
+                    "syntax_validity": "yes", "schema_accuracy": "yes",
+                    "logical_accuracy": "yes", "semantic_equivalence": "yes",
+                    "completeness": "yes", "response_quality": "yes",
+                    "asset_routing": "yes", "result_correctness": "yes",
+                },
+            )
+            for i in range(4)
+        ]
+        # 18 rows where at least one judge says no (so all_judge_pass=False).
+        non_pass = [
+            _base_row(
+                question_id=f"x{i}",
+                arbiter="genie_correct",
+                verdicts={"result_correctness": "no"},
+            )
+            for i in range(18)
+        ]
+
+        _print_eval_summary(
+            rows=all_pass + non_pass,
+            scores_100=_scores_100_all_100(),
+            thresholds_passed=True,
+            iteration=0,
+            eval_scope="full",
+            total_questions=22,
+        )
+        out = capsys.readouterr().out
+
+        assert "All-judge-pass (no arbiter rescue): 18.2% (4/22)" in out
+
+    def test_all_judge_pass_percent_handles_zero_questions(self, capsys):
+        """Guard against division-by-zero on empty input."""
+        from genie_space_optimizer.optimization.evaluation import (
+            _print_eval_summary,
+        )
+
+        _print_eval_summary(
+            rows=[],
+            scores_100=_scores_100_all_100(),
+            thresholds_passed=True,
+            iteration=0,
+            eval_scope="full",
+            total_questions=0,
+        )
+        out = capsys.readouterr().out
+
+        assert "All-judge-pass (no arbiter rescue): 0.0% (0/0)" in out
