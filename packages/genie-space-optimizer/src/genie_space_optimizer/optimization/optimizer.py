@@ -156,6 +156,26 @@ def _truncate_to_budget(
 # module for backward compatibility with tests and other consumers.
 
 
+def _attach_last_response(exc: BaseException, text: str) -> None:
+    """Stamp the last LLM body onto an exception for downstream logging.
+
+    When ``_traced_llm_call`` exhausts retries, callers need to know
+    *what the model actually returned* — not just that parsing failed.
+    Attaching via attribute (vs. wrapping the exception) preserves the
+    original type/traceback so existing ``except`` chains and MLflow
+    span events keep working unchanged.
+
+    The attributes are best-effort: if ``exc`` is a frozen / C-level
+    exception that rejects attribute assignment, we swallow the
+    AttributeError silently (the caller falls back to an empty preview).
+    """
+    try:
+        exc.last_response_text = text  # type: ignore[attr-defined]
+        exc.last_response_chars = len(text)  # type: ignore[attr-defined]
+    except (AttributeError, TypeError):
+        pass
+
+
 def _traced_llm_call(
     w: WorkspaceClient | None,
     system_msg: str,
@@ -203,6 +223,12 @@ def _traced_llm_call(
 
         client = _get_openai_client(w)
         text = ""
+        # F6 — track the most recent HTTP 200 body across attempts so we
+        # can attach it to the raised exception if every retry ends in
+        # validator/RPC failure. Callers (description enrichment, etc.)
+        # read this off the exception to log a structured preview of
+        # *what the model actually returned* rather than an empty string.
+        last_response_text: str = ""
         last_err: Exception | None = None
 
         for attempt in range(max_retries):
@@ -227,6 +253,7 @@ def _traced_llm_call(
                 if not content:
                     raise ValueError("LLM response content is empty")
                 text = str(content).strip()
+                last_response_text = text
 
                 if response_validator is not None:
                     try:
@@ -244,6 +271,10 @@ def _traced_llm_call(
                         if attempt < max_retries - 1:
                             time.sleep(2**attempt)
                             continue
+                        # F6 — attach the last-seen body to the
+                        # exception so the caller's warning can log a
+                        # real preview instead of an empty string.
+                        _attach_last_response(exc, last_response_text)
                         raise
 
                 _log_token_usage(span, response)
@@ -267,6 +298,10 @@ def _traced_llm_call(
             "error": str(last_err)[:500] if last_err else "unknown",
             "attempts": max_retries,
         })
+        # F6 — attach before re-raise on the non-validator exhaustion
+        # path too (HTTP failures, empty-choice responses, etc.).
+        if last_err is not None:
+            _attach_last_response(last_err, last_response_text)
         raise last_err  # type: ignore[misc]
 
 
@@ -2132,15 +2167,22 @@ def _enrich_blank_descriptions(
             if isinstance(result, list):
                 result = {"changes": result}
         except Exception as exc:
-            preview = (text or "")[:300].replace("\n", "\\n")
+            # F6 — prefer the last-seen HTTP 200 body stamped on the
+            # exception by ``_traced_llm_call``. Falls back to local
+            # ``text`` (still "" here because _traced_llm_call raised
+            # before returning) if the attribute is missing.
+            preview_text = getattr(exc, "last_response_text", "") or text
+            chars = getattr(exc, "last_response_chars", len(preview_text))
+            preview = preview_text[:300].replace("\n", "\\n")
             logger.warning(
                 "Description enrichment: batch %d (table=%s, %d cols) — "
                 "LLM response not parseable as JSON after retries: %s | "
-                "preview=%r",
+                "response_chars=%d | preview=%r",
                 batch_idx,
                 batch[0]["table"] if batch else "?",
                 len(batch),
                 exc,
+                chars,
                 preview,
             )
             continue
@@ -2345,14 +2387,20 @@ def _enrich_table_descriptions(
             if isinstance(result, list):
                 result = {"changes": result}
         except Exception as exc:
-            preview = (text or "")[:300].replace("\n", "\\n")
+            # F6 — same pattern as _enrich_blank_descriptions: pull the
+            # last-seen body off the exception so the warning can
+            # surface a real preview instead of "".
+            preview_text = getattr(exc, "last_response_text", "") or text
+            chars = getattr(exc, "last_response_chars", len(preview_text))
+            preview = preview_text[:300].replace("\n", "\\n")
             logger.warning(
                 "Table description enrichment: batch %d (%d tables) — "
                 "LLM response not parseable as JSON after retries: %s | "
-                "preview=%r",
+                "response_chars=%d | preview=%r",
                 batch_idx,
                 len(batch),
                 exc,
+                chars,
                 preview,
             )
             continue

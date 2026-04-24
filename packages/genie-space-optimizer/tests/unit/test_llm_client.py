@@ -501,3 +501,106 @@ class TestTracedLlmCallValidator:
 
         assert '"changes"' in text
         assert mock_client.chat.completions.create.call_count == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# F6 — Last-response attachment on validator exhaustion
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTracedLlmCallLastResponseAttachment:
+    """F6 — _traced_llm_call must stamp the last HTTP 200 body onto the
+    raised exception so callers can log what the model actually returned,
+    not an empty string.
+    """
+
+    @patch("genie_space_optimizer.optimization.optimizer._get_openai_client")
+    @patch("time.sleep", return_value=None)
+    def test_exhausted_validator_attaches_last_response_text(
+        self, _mock_sleep, mock_get_client,
+    ):
+        """After all validator retries fail, exc.last_response_text holds
+        the last non-JSON body we saw."""
+        from genie_space_optimizer.optimization.evaluation import _extract_json
+        from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            _make_openai_response("first non-json"),
+            _make_openai_response("second non-json body"),
+        ]
+        mock_get_client.return_value = mock_client
+
+        with pytest.raises(json.JSONDecodeError) as exc_info:
+            _traced_llm_call(
+                None, "system", "user",
+                span_name="test_last_response",
+                max_retries=2,
+                response_validator=_extract_json,
+            )
+
+        assert getattr(exc_info.value, "last_response_text", None) == (
+            "second non-json body"
+        )
+        assert getattr(exc_info.value, "last_response_chars", None) == len(
+            "second non-json body"
+        )
+
+    @patch("genie_space_optimizer.optimization.optimizer._get_openai_client")
+    @patch("time.sleep", return_value=None)
+    def test_exhausted_rpc_failures_attach_empty_string(
+        self, _mock_sleep, mock_get_client,
+    ):
+        """If every attempt fails *before* producing a body (e.g. RPC
+        errors), last_response_text is '' — not a crash."""
+        from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = RuntimeError(
+            "network down"
+        )
+        mock_get_client.return_value = mock_client
+
+        with pytest.raises(RuntimeError, match="network down") as exc_info:
+            _traced_llm_call(
+                None, "system", "user",
+                span_name="test_rpc_fail",
+                max_retries=2,
+            )
+
+        # Attribute is set to '' rather than missing — callers use
+        # getattr with a default anyway, but attachment should be
+        # symmetric across failure classes.
+        assert getattr(exc_info.value, "last_response_text", None) == ""
+        assert getattr(exc_info.value, "last_response_chars", None) == 0
+
+    @patch("genie_space_optimizer.optimization.optimizer._get_openai_client")
+    @patch("time.sleep", return_value=None)
+    def test_validator_failure_then_rpc_failure_keeps_last_good_body(
+        self, _mock_sleep, mock_get_client,
+    ):
+        """Mixed failure sequence: first attempt returns HTTP 200 with a
+        body that fails validation, second attempt RPC-fails. The caller
+        should still see the first body since that was the last
+        successful HTTP 200."""
+        from genie_space_optimizer.optimization.evaluation import _extract_json
+        from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            _make_openai_response("not json body"),
+            RuntimeError("429 rate limited"),
+        ]
+        mock_get_client.return_value = mock_client
+
+        with pytest.raises(RuntimeError, match="429 rate limited") as exc_info:
+            _traced_llm_call(
+                None, "system", "user",
+                span_name="test_mixed_failures",
+                max_retries=2,
+                response_validator=_extract_json,
+            )
+
+        assert getattr(exc_info.value, "last_response_text", None) == (
+            "not json body"
+        )

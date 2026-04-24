@@ -935,6 +935,82 @@ class TestEnrichmentBatchFailureLogging:
         preview_len = msg.count("x")
         assert preview_len <= 300
 
+    def test_column_batch_preview_reads_last_response_text_from_exc(
+        self, monkeypatch, caplog,
+    ):
+        """F6 — when ``_traced_llm_call`` raises with ``last_response_text``
+        attached, the warning's preview must come from the exception
+        attribute, not the empty local ``text`` variable.
+
+        This is the bug observed in the field: the caller initialises
+        ``text = ""`` and never gets past the raising call, so the old
+        code logged ``preview=''`` no matter what the LLM returned.
+        """
+        import logging
+
+        from genie_space_optimizer.optimization import optimizer as opt_mod
+
+        self._mock_blank_columns(monkeypatch, opt_mod)
+
+        def _raising(*_a, **_k):
+            exc = ValueError("Expecting value: line 1 column 1 (char 0)")
+            # Exactly what the real _traced_llm_call stamps on exhaustion.
+            exc.last_response_text = '[{"partial":'
+            exc.last_response_chars = len('[{"partial":')
+            raise exc
+
+        monkeypatch.setattr(opt_mod, "_traced_llm_call", _raising)
+
+        with caplog.at_level(logging.WARNING, logger="genie_space_optimizer"):
+            opt_mod._enrich_blank_descriptions(self._SNAPSHOT, w=None)
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings
+        msg = warnings[0].getMessage()
+        assert "preview=" in msg
+        # The body the model returned is surfaced — not the empty string.
+        assert '[{"partial":' in msg
+        assert "preview=''" not in msg
+        # response_chars reflects the attached length, not 0.
+        assert "response_chars=12" in msg
+
+    def test_table_batch_preview_reads_last_response_text_from_exc(
+        self, monkeypatch, caplog,
+    ):
+        """F6 (table variant) — the same attribute-first preview lookup
+        applies to _enrich_table_descriptions."""
+        import logging
+
+        from genie_space_optimizer.optimization import optimizer as opt_mod
+
+        monkeypatch.setattr(
+            opt_mod, "_collect_insufficient_tables",
+            lambda _snap: [
+                {
+                    "table": "cat.sch.t",
+                    "current_description": "",
+                    "columns": [{"column_name": "c", "type_text": "STRING"}],
+                },
+            ],
+        )
+
+        def _raising(*_a, **_k):
+            exc = ValueError("Expecting value: line 1 column 1 (char 0)")
+            exc.last_response_text = "<refusal>I cannot help"
+            exc.last_response_chars = len("<refusal>I cannot help")
+            raise exc
+
+        monkeypatch.setattr(opt_mod, "_traced_llm_call", _raising)
+
+        with caplog.at_level(logging.WARNING, logger="genie_space_optimizer"):
+            opt_mod._enrich_table_descriptions(self._SNAPSHOT, w=None)
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings
+        msg = warnings[0].getMessage()
+        assert "<refusal>I cannot help" in msg
+        assert "preview=''" not in msg
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # F3 — Honest total_eligible accounting in _run_description_enrichment
