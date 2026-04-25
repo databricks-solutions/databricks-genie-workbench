@@ -1082,3 +1082,484 @@ class TestF13MetricViewRowCaptureRecovery:
         assert counters.get(
             "arbiter_row_capture_exec_failed", 0,
         ) == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PR 21 — Adaptive overdraw short-circuit + MV-detection banner counter
+#
+# When ``mv_measures`` is empty AND every LLM round dies on the same
+# ``mv_missing_measure_function`` reject, additional rounds cannot
+# recover (without measures the auto-wrap rewriter is a no-op). The
+# short-circuit cuts the loop after the first round, stamps a marker on
+# rejection_counters, and surfaces the failure mode on the banner along
+# with the per-source MV-detection counts so log readers can attribute
+# the cluster to "no MVs at all" vs "MVs exist but none of the
+# detection paths saw them".
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestPR21AdaptiveOverdrawShortCircuit:
+    """Locks the budget guard and the banner counter contract."""
+
+    def _llm_with_bad_mv_sql(self):
+        """Return a fake LLM that emits a single MV-shaped SQL the
+        execute gate will reject with the same reason every round.
+        Runs forever absent a short-circuit.
+        """
+        return [{
+            "question": "Top regions by sales?",
+            "expected_sql": (
+                "SELECT region, SUM(revenue) AS total "
+                "FROM cat.sch.sales GROUP BY region"
+            ),
+            "expected_asset": "TABLE",
+            "required_tables": ["cat.sch.sales"],
+            "required_columns": ["region", "revenue"],
+            "expected_facts": ["region"],
+            "category": "agg",
+        }]
+
+    def test_short_circuit_fires_when_no_mv_measures_and_dominant_reject(
+        self, patched_core, monkeypatch,
+    ):
+        """No MVs configured + every round dies on
+        ``mv_missing_measure_function`` → break out of the overdraw
+        loop after round 0 and stamp ``adaptive_overdraw_short_circuited
+        = 'no_mv_measures'``. The legacy ``adaptive_overdraw_rounds_used``
+        counter should report 1 (not the configured 3).
+        """
+        from genie_space_optimizer.optimization import evaluation as ev_mod
+
+        # The default ``_mk_config`` has no MVs → ``build_metric_view_measures``
+        # returns ``{}``, which is the exact precondition the short-circuit
+        # guards on.
+
+        monkeypatch.setattr(
+            ev_mod, "_call_llm_for_scoring",
+            lambda w, prompt, *, prompt_name=None: self._llm_with_bad_mv_sql(),
+        )
+
+        def _validate_always_fail_with_mv_error(
+            sql, spark, catalog, schema, *,
+            execute=False, w=None, warehouse_id="",
+        ):
+            return False, (
+                "[METRIC_VIEW_MISSING_MEASURE_FUNCTION] The aggregate "
+                "function 'sum(revenue)' must be wrapped with MEASURE()."
+            )
+
+        monkeypatch.setattr(
+            ev_mod, "_validate_benchmark_sql",
+            _validate_always_fail_with_mv_error,
+        )
+
+        # Stub the correction loop so it doesn't burn additional rounds —
+        # we want to isolate the OUTER overdraw-loop short-circuit.
+        monkeypatch.setattr(
+            ev_mod, "_attempt_sql_correction",
+            lambda **kwargs: [],
+        )
+
+        _survivors, counters = generate_validated_sql_examples(
+            w=None, spark=None,
+            config=_mk_config(), uc_columns=_mk_uc_columns(),
+            uc_tags=[], uc_routines=[],
+            domain="sales", catalog="cat", schema="sch",
+            target_count=5,
+            generation_prompt_template=EXAMPLE_SQL_GENERATION_PROMPT,
+            correction_prompt_template=EXAMPLE_SQL_CORRECTION_PROMPT,
+            generation_prompt_registry_key="example_sql_generation",
+            correction_prompt_registry_key="example_sql_correction",
+            provenance="synthetic_example_sql",
+        )
+
+        assert (
+            counters.get("adaptive_overdraw_short_circuited")
+            == "no_mv_measures"
+        ), counters
+        assert counters.get("adaptive_overdraw_rounds_used") == 1, counters
+
+    def test_short_circuit_does_not_fire_when_mv_measures_present(
+        self, patched_core, monkeypatch,
+    ):
+        """If catalog detection populated ``_metric_view_yaml`` with at
+        least one measure, the rewriter has a fighting chance and we
+        must NOT short-circuit — overdraw runs the full configured
+        rounds (3 by default) when the deficit persists.
+        """
+        from genie_space_optimizer.optimization import evaluation as ev_mod
+
+        cfg = _mk_config()
+        cfg["_metric_view_yaml"] = {
+            "cat.sch.mv_sales": {
+                "measures": [{"name": "total_revenue", "expr": "SUM(revenue)"}],
+            },
+        }
+
+        monkeypatch.setattr(
+            ev_mod, "_call_llm_for_scoring",
+            lambda w, prompt, *, prompt_name=None: self._llm_with_bad_mv_sql(),
+        )
+        monkeypatch.setattr(
+            ev_mod, "_validate_benchmark_sql",
+            lambda *a, **kw: (False, "[METRIC_VIEW_MISSING_MEASURE_FUNCTION] x"),
+        )
+        monkeypatch.setattr(
+            ev_mod, "_attempt_sql_correction",
+            lambda **kwargs: [],
+        )
+
+        _survivors, counters = generate_validated_sql_examples(
+            w=None, spark=None,
+            config=cfg, uc_columns=_mk_uc_columns(),
+            uc_tags=[], uc_routines=[],
+            domain="sales", catalog="cat", schema="sch",
+            target_count=5,
+            generation_prompt_template=EXAMPLE_SQL_GENERATION_PROMPT,
+            correction_prompt_template=EXAMPLE_SQL_CORRECTION_PROMPT,
+            generation_prompt_registry_key="example_sql_generation",
+            correction_prompt_registry_key="example_sql_correction",
+            provenance="synthetic_example_sql",
+        )
+
+        assert "adaptive_overdraw_short_circuited" not in counters or (
+            counters.get("adaptive_overdraw_short_circuited") in (None, "")
+        ), counters
+        # We continued through every configured round.
+        assert counters.get("adaptive_overdraw_rounds_used") == 3, counters
+
+    def test_count_mv_detection_sources_returns_three_buckets(self):
+        """The helper must attribute each MV to exactly one detection
+        path. Catalog-only finds (no overlap with config or column
+        flags) populate the ``catalog`` bucket, etc. Used by both the
+        unified and preflight banners — a drift in this contract drifts
+        both banners simultaneously, so this test is the canary.
+        """
+        from genie_space_optimizer.optimization.evaluation import (
+            _count_mv_detection_sources,
+        )
+
+        cfg = {
+            "_parsed_space": {
+                "data_sources": {
+                    "metric_views": [
+                        {"identifier": "cat.sch.mv_a", "measures": [{"name": "m"}]},
+                    ],
+                    "tables": [
+                        {
+                            "identifier": "cat.sch.mv_b",
+                            "column_configs": [
+                                {"column_name": "m", "column_type": "measure"},
+                            ],
+                        },
+                    ],
+                },
+            },
+            "_metric_view_yaml": {
+                "cat.sch.mv_c": {"measures": [{"name": "m"}]},
+                # Already counted by ``config`` — must NOT also count as catalog.
+                "cat.sch.mv_a": {"measures": [{"name": "m"}]},
+            },
+        }
+        counts = _count_mv_detection_sources(cfg)
+        assert counts == {"config": 1, "column_flags": 1, "catalog": 1}
+
+    def test_count_mv_detection_sources_empty_config(self):
+        from genie_space_optimizer.optimization.evaluation import (
+            _count_mv_detection_sources,
+        )
+        assert _count_mv_detection_sources({}) == {
+            "config": 0, "column_flags": 0, "catalog": 0,
+        }
+
+    def test_unified_banner_renders_mv_detection_counts(self):
+        """When ``config`` is provided, the banner must surface the
+        MV-detection summary line so log readers don't have to trawl
+        DEBUG logs to find out whether catalog detection fired.
+        """
+        import io
+        import contextlib
+
+        from genie_space_optimizer.optimization.harness import (
+            _print_unified_example_summary,
+        )
+
+        cfg = {
+            "_parsed_space": {
+                "data_sources": {
+                    "metric_views": [
+                        {"identifier": "cat.sch.mv_a", "measures": [{"name": "m"}]},
+                        {"identifier": "cat.sch.mv_b", "measures": [{"name": "m"}]},
+                    ],
+                    "tables": [],
+                },
+            },
+            "_metric_view_yaml": {
+                "cat.sch.mv_c": {"measures": [{"name": "m"}]},
+            },
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _print_unified_example_summary(
+                run_id="r1", target=20, existing=0,
+                applied_examples=[],
+                rejection_counters={},
+                config=cfg,
+            )
+        out = buf.getvalue()
+        assert "MVs detected" in out
+        assert "config: 2" in out
+        assert "column-flags: 0" in out
+        assert "catalog: 1" in out
+
+    def test_unified_banner_renders_short_circuit_marker(self):
+        """When ``adaptive_overdraw_short_circuited`` is set on the
+        counters, the banner must surface it on its own line so
+        operators see why round count plateaued at 1.
+        """
+        import io
+        import contextlib
+
+        from genie_space_optimizer.optimization.harness import (
+            _print_unified_example_summary,
+        )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _print_unified_example_summary(
+                run_id="r1", target=20, existing=0,
+                applied_examples=[],
+                rejection_counters={
+                    "adaptive_overdraw_short_circuited": "no_mv_measures",
+                },
+            )
+        out = buf.getvalue()
+        assert "Adaptive overdraw short-circuited" in out
+        assert "no_mv_measures" in out
+
+    def test_unified_banner_omits_short_circuit_when_unset(self):
+        import io
+        import contextlib
+
+        from genie_space_optimizer.optimization.harness import (
+            _print_unified_example_summary,
+        )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _print_unified_example_summary(
+                run_id="r1", target=20, existing=0,
+                applied_examples=[],
+                rejection_counters={
+                    "metadata": 0,
+                    "explain_or_execute": 0,
+                },
+            )
+        out = buf.getvalue()
+        assert "Adaptive overdraw short-circuited" not in out
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# PR 22 — Sub-bucket parity between unified and preflight banners
+#
+# PR 18 surfaced per-reason sub-buckets on the unified banner so
+# operators could attribute ``EXPLAIN/execute rejected: 40`` to a
+# specific failure class (unknown column / mv_missing_measure_function /
+# alias collision / etc.). PR 20 added ``mv_measure_in_where`` as a new
+# reason code; this suite verifies that:
+#
+#   1. ``_classify_sql_validation_error`` returns the new code for
+#      WHERE/HAVING/ON-clause measure errors so PR 18's sub-bucket
+#      machinery picks it up automatically.
+#   2. The preflight banner now renders the same sub-bucket breakdown
+#      for execute-gate rejections so both pipelines tell the same
+#      story.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestPR22SubBucketParity:
+    def test_unified_subbuckets_capture_mv_measure_in_where(
+        self, patched_core, monkeypatch,
+    ):
+        """End-to-end: feed a candidate that fails with the WHERE-clause
+        flavor of ``METRIC_VIEW_MISSING_MEASURE_FUNCTION``; assert the
+        sub-bucket breakdown reports ``mv_measure_in_where`` (not the
+        plain ``mv_missing_measure_function``).
+        """
+        from genie_space_optimizer.optimization import evaluation as ev_mod
+
+        monkeypatch.setattr(
+            ev_mod, "_call_llm_for_scoring",
+            lambda w, prompt, *, prompt_name=None: [{
+                "question": "Filter on a measure?",
+                "expected_sql": (
+                    "SELECT region FROM cat.sch.sales "
+                    "WHERE total_revenue > 0"
+                ),
+                "expected_asset": "TABLE",
+                "required_tables": ["cat.sch.sales"],
+                "required_columns": ["region"],
+                "expected_facts": ["region"],
+                "category": "filter",
+            }],
+        )
+        monkeypatch.setattr(
+            ev_mod, "_validate_benchmark_sql",
+            lambda *a, **kw: (False, (
+                "[METRIC_VIEW_MISSING_MEASURE_FUNCTION] measure column "
+                "'total_revenue' in WHERE clause must be wrapped in MEASURE()"
+            )),
+        )
+        monkeypatch.setattr(
+            ev_mod, "_attempt_sql_correction",
+            lambda **kwargs: [],
+        )
+
+        _, counters = generate_validated_sql_examples(
+            w=None, spark=None,
+            config=_mk_config(), uc_columns=_mk_uc_columns(),
+            uc_tags=[], uc_routines=[],
+            domain="sales", catalog="cat", schema="sch",
+            target_count=1,
+            generation_prompt_template=EXAMPLE_SQL_GENERATION_PROMPT,
+            correction_prompt_template=EXAMPLE_SQL_CORRECTION_PROMPT,
+            generation_prompt_registry_key="example_sql_generation",
+            correction_prompt_registry_key="example_sql_correction",
+            provenance="synthetic_example_sql",
+        )
+        sub = counters.get("explain_or_execute_subbuckets") or {}
+        assert sub.get("mv_measure_in_where", 0) >= 1, counters
+        # And the plain bucket DOES NOT also count this candidate.
+        assert sub.get("mv_missing_measure_function", 0) == 0, counters
+
+    def test_unified_banner_renders_mv_measure_in_where_subbucket(self):
+        """Banner must show ``mv_measure_in_where`` as a separate
+        sub-bucket line (not folded into the catch-all bucket)."""
+        import io
+        import contextlib
+
+        from genie_space_optimizer.optimization.harness import (
+            _print_unified_example_summary,
+        )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _print_unified_example_summary(
+                run_id="r1", target=20, existing=0,
+                applied_examples=[],
+                rejection_counters={
+                    "explain_or_execute": 3,
+                    "explain_or_execute_subbuckets": {
+                        "mv_measure_in_where": 2,
+                        "mv_missing_measure_function": 1,
+                    },
+                    "explain_or_execute_examples": {
+                        "mv_measure_in_where": [{
+                            "question": "Filter on measure?",
+                            "error": "WHERE clause has measure col",
+                        }],
+                    },
+                },
+            )
+        out = buf.getvalue()
+        assert "mv_measure_in_where" in out
+        assert "mv_missing_measure_function" in out
+
+    def test_preflight_banner_renders_execute_subbuckets(self):
+        """The preflight banner must mirror the unified banner's
+        sub-bucket rendering for execute-gate rejections — same shape
+        so operators reading either pipeline see the same diagnostic.
+        """
+        import io
+        import contextlib
+
+        from genie_space_optimizer.optimization.preflight_synthesis import (
+            _print_summary,
+        )
+
+        result = {
+            "applied": 0,
+            "need": 5,
+            "existing": 0,
+            "target": 5,
+            "generated": 5,
+            "passed_parse": 5,
+            "passed_identifier_qualification": 5,
+            "passed_execute": 0,
+            "passed_firewall": 0,
+            "passed_structural": 0,
+            "passed_arbiter": 0,
+            "passed_genie_agreement": 0,
+            "dedup_rejected": 0,
+            "rejected_by_gate": {"execute": 5},
+            "asset_coverage": {},
+            "archetype_distribution": {},
+            "skipped_reason": None,
+            "traits": [],
+            "eligible_archetypes": [],
+            "gate_rejected_examples": [],
+            "execute_subbuckets": {
+                "mv_measure_in_where": 3,
+                "mv_missing_measure_function": 2,
+            },
+            "execute_subbucket_examples": {
+                "mv_measure_in_where": [{
+                    "question": "Q1",
+                    "error": "WHERE on measure col",
+                }],
+                "mv_missing_measure_function": [{
+                    "question": "Q2",
+                    "error": "Wrap in MEASURE()",
+                }],
+            },
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _print_summary(result)
+        out = buf.getvalue()
+        assert "execute sub-buckets" in out
+        assert "mv_measure_in_where" in out
+        assert "mv_missing_measure_function" in out
+        # Most-frequent reason rendered first (count 3 > count 2).
+        assert out.find("mv_measure_in_where") < out.find(
+            "mv_missing_measure_function"
+        )
+
+    def test_preflight_banner_omits_subbuckets_when_empty(self):
+        """When no execute-gate rejections were sub-bucketed, the
+        section is hidden so the banner stays terse on clean runs.
+        """
+        import io
+        import contextlib
+
+        from genie_space_optimizer.optimization.preflight_synthesis import (
+            _print_summary,
+        )
+
+        result = {
+            "applied": 5,
+            "need": 5,
+            "existing": 0,
+            "target": 5,
+            "generated": 5,
+            "passed_parse": 5,
+            "passed_identifier_qualification": 5,
+            "passed_execute": 5,
+            "passed_firewall": 5,
+            "passed_structural": 5,
+            "passed_arbiter": 5,
+            "passed_genie_agreement": 0,
+            "dedup_rejected": 0,
+            "rejected_by_gate": {},
+            "asset_coverage": {},
+            "archetype_distribution": {},
+            "skipped_reason": None,
+            "traits": [],
+            "eligible_archetypes": [],
+            "gate_rejected_examples": [],
+        }
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _print_summary(result)
+        out = buf.getvalue()
+        assert "execute sub-buckets" not in out

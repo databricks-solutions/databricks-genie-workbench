@@ -86,8 +86,19 @@ def create_genie_model_version(
             )
 
         run_id = active_run.info.run_id
-        _log_dict_artifact(config, f"{artifact_prefix}/space_config.json")
-        _log_dict_artifact(metadata_snapshot, f"{artifact_prefix}/metadata_snapshot.json")
+        # Phase 1.1: project a clean view that drops optimizer-internal
+        # ``_*`` keys (``_failure_clusters``, ``_data_profile``,
+        # ``_original_instruction_sections``, ``_uc_columns``,
+        # ``_space_id``, ``_cluster_synthesis_count``, ``_parsed_space``,
+        # ``_strategy``, etc.) before serializing. These keys can hold
+        # cycles that crash ``json.dump`` with
+        # ``ValueError: Circular reference detected`` and they have no
+        # business in the on-disk Genie space config artifact.
+        clean_config = _project_space_config_for_artifact(config)
+        clean_metadata = dict(metadata_snapshot)
+        clean_metadata["space_config"] = clean_config
+        _log_dict_artifact(clean_config, f"{artifact_prefix}/space_config.json")
+        _log_dict_artifact(clean_metadata, f"{artifact_prefix}/metadata_snapshot.json")
 
         model = _initialize_logged_model(
             name=model_name,
@@ -842,14 +853,132 @@ def _finalize_logged_model(model_id: str) -> None:
         logger.debug("Ignoring finalize_logged_model failure for %s", model_id, exc_info=True)
 
 
+_SAFE_SPACE_CONFIG_KEYS: frozenset[str] = frozenset({
+    "data_sources",
+    "instructions",
+    "description",
+    "title",
+    "name",
+    "id",
+    "space_id",
+    "warehouse_id",
+    "permissions",
+    "owner",
+    "created_at",
+    "updated_at",
+    "tags",
+    "serialized_space",
+})
+"""Whitelist of Genie-domain keys that are safe to persist in
+``space_config.json``. Everything else (notably the ``_*`` keys mutated by
+the lever loop — ``_failure_clusters``, ``_data_profile``,
+``_original_instruction_sections``, ``_uc_columns``, ``_space_id``,
+``_cluster_synthesis_count``, ``_parsed_space``, ``_strategy``) is dropped
+before serialization."""
+
+
+def _project_space_config_for_artifact(parsed: Any) -> dict[str, Any]:
+    """Return a clean projection of the Genie space config for JSON logging.
+
+    Drops every key that starts with ``_`` (optimizer-internal state) and
+    every key not in :data:`_SAFE_SPACE_CONFIG_KEYS`. The result is a
+    fresh dict suitable for ``json.dump`` with no risk of circular
+    references introduced by lever-loop mutations.
+    """
+    if not isinstance(parsed, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for k, v in parsed.items():
+        if not isinstance(k, str):
+            continue
+        if k.startswith("_"):
+            continue
+        if k not in _SAFE_SPACE_CONFIG_KEYS:
+            continue
+        out[k] = v
+    return out
+
+
+def _decycle(obj: Any, _seen: set[int] | None = None) -> Any:
+    """Return a deep copy of *obj* with cycles broken by sentinel strings.
+
+    Defensive fallback for ``_log_dict_artifact``: if ``json.dump`` would
+    crash on a circular reference, this function walks the structure
+    once, replacing any dict/list whose ``id()`` has already been seen
+    with the literal string ``"<cycle>"``. ``_seen`` tracks identities
+    on the current recursion path only (not globally), so legitimate
+    shared references between sibling sub-trees are preserved.
+    """
+    if _seen is None:
+        _seen = set()
+    obj_id = id(obj)
+    if isinstance(obj, dict):
+        if obj_id in _seen:
+            return "<cycle>"
+        _seen.add(obj_id)
+        try:
+            return {k: _decycle(v, _seen) for k, v in obj.items()}
+        finally:
+            _seen.discard(obj_id)
+    if isinstance(obj, list):
+        if obj_id in _seen:
+            return "<cycle>"
+        _seen.add(obj_id)
+        try:
+            return [_decycle(v, _seen) for v in obj]
+        finally:
+            _seen.discard(obj_id)
+    if isinstance(obj, tuple):
+        return tuple(_decycle(v, _seen) for v in obj)
+    return obj
+
+
 def _log_dict_artifact(payload: dict[str, Any], artifact_file: str) -> None:
-    """Log dict artifact across MLflow API variants."""
+    """Log dict artifact across MLflow API variants.
+
+    Phase 1.1 defense in depth: if the underlying ``mlflow.log_dict``
+    crashes with ``ValueError: Circular reference detected`` we retry
+    with a de-cycled copy and write via the tempfile path. This
+    guarantees a single bad reference can never abort the whole
+    iteration.
+    """
     log_dict_fn = getattr(mlflow, "log_dict", None)
     if callable(log_dict_fn):
-        log_dict_fn(payload, artifact_file)
-        return
+        try:
+            log_dict_fn(payload, artifact_file)
+            return
+        except ValueError as exc:
+            if "Circular reference" not in str(exc):
+                raise
+            logger.warning(
+                "Circular reference detected when logging %s — "
+                "falling back to de-cycled copy",
+                artifact_file,
+            )
+            safe_payload = _decycle(payload)
+            try:
+                log_dict_fn(safe_payload, artifact_file)
+                return
+            except Exception:
+                logger.warning(
+                    "log_dict still failed after decycle for %s — "
+                    "falling back to tempfile",
+                    artifact_file,
+                    exc_info=True,
+                )
+                payload = safe_payload
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="genie-opt-"))
     tmp_file = tmp_dir / Path(artifact_file).name
-    tmp_file.write_text(json.dumps(payload, default=str, indent=2), encoding="utf-8")
+    try:
+        tmp_file.write_text(
+            json.dumps(payload, default=str, indent=2), encoding="utf-8",
+        )
+    except ValueError as exc:
+        if "Circular reference" not in str(exc):
+            raise
+        tmp_file.write_text(
+            json.dumps(_decycle(payload), default=str, indent=2),
+            encoding="utf-8",
+        )
     mlflow.log_artifact(str(tmp_file), artifact_path=str(Path(artifact_file).parent))

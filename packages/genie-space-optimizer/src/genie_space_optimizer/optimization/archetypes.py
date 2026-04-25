@@ -148,6 +148,18 @@ def schema_traits(metadata_snapshot: dict) -> set[str]:
                     break
             if "has_metric_view" in traits:
                 break
+
+    # PR 19: catalog-detection fallback. Genie's serialized payload
+    # sometimes omits both ``data_sources.metric_views`` AND the
+    # ``column_type='measure'`` / ``is_measure`` flags, leaving real MVs
+    # invisible to the two branches above. The harness populates
+    # ``_metric_view_yaml`` from a ``DESCRIBE TABLE EXTENDED ... AS
+    # JSON`` probe; consult it as a third source of truth so the trait
+    # fires whenever any of the three detection paths sees an MV.
+    if "has_metric_view" not in traits:
+        cache = metadata_snapshot.get("_metric_view_yaml") or {}
+        if isinstance(cache, dict) and cache:
+            traits.add("has_metric_view")
     return traits
 
 

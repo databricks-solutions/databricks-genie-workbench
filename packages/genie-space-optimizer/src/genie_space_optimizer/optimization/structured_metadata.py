@@ -93,6 +93,45 @@ LEVER_SECTION_OWNERSHIP: dict[int, set[str]] = {
     5: set(),
 }
 
+# Phase 1.2: column-level field ownership.  ``LEVER_SECTION_OWNERSHIP``
+# was historically used as a single flat allow-list, which conflated
+# table-level sections with column-level fields and silently dropped
+# the ``aggregation`` field on column updates from Lever 1 (observed in
+# iter-1 log: "Lever 1: skipping locked sections ['aggregation']").
+# Lever 1 (Tables & Columns) owns the entire column-template surface;
+# this map is consulted by :func:`_allowed_sections_for_lever` when the
+# entity type is a column type.
+LEVER_COLUMN_FIELD_OWNERSHIP: dict[int, set[str]] = {
+    0: {
+        "definition", "values", "synonyms", "aggregation", "grain_note", "join",
+    },
+    1: {
+        "definition", "values", "synonyms", "aggregation", "grain_note", "join",
+    },
+    2: {"definition", "values", "aggregation", "grain_note", "synonyms"},
+    3: set(),
+    4: {"join"},
+    5: set(),
+}
+
+_COLUMN_ENTITY_TYPES: frozenset[str] = frozenset({
+    "column_dim", "column_measure", "column_key",
+})
+
+
+def _allowed_sections_for_lever(lever: int, entity_type: str) -> set[str]:
+    """Return the effective allow-list of section keys for ``(lever, entity_type)``.
+
+    Phase 1.2: when ``entity_type`` is a column type, the lever's
+    column-field ownership (``LEVER_COLUMN_FIELD_OWNERSHIP``) is unioned
+    with the table-section ownership (``LEVER_SECTION_OWNERSHIP``). This
+    fixes the silent drop of ``aggregation`` on Lever-1 column patches.
+    """
+    base = set(LEVER_SECTION_OWNERSHIP.get(lever, set()))
+    if entity_type in _COLUMN_ENTITY_TYPES:
+        base |= LEVER_COLUMN_FIELD_OWNERSHIP.get(lever, set())
+    return base
+
 # Regex that matches legacy ``**Label:** rest-of-line`` at start of a line
 _SECTION_RE = re.compile(
     r"^\*\*(?P<label>[^*:]+?):\*\*\s*(?P<value>.*)$",
@@ -360,11 +399,11 @@ def update_section(
     Raises ``LeverOwnershipError`` if the lever does not own the section
     or if the value embeds other section headers inline.
     """
-    allowed = LEVER_SECTION_OWNERSHIP.get(lever, set())
+    allowed = _allowed_sections_for_lever(lever, entity_type)
     if section not in allowed:
         raise LeverOwnershipError(
             f"Lever {lever} cannot modify section '{section}' "
-            f"(allowed: {sorted(allowed)})"
+            f"on entity_type '{entity_type}' (allowed: {sorted(allowed)})"
         )
 
     embedded = _contains_embedded_headers(section, new_value)
@@ -384,6 +423,8 @@ def update_sections(
     updates: dict[str, str],
     lever: int,
     entity_type: EntityType,
+    *,
+    replacement_intent: str = "merge",
 ) -> list[str]:
     """Update multiple sections at once, validating lever ownership for each.
 
@@ -391,14 +432,26 @@ def update_sections(
     does not own are silently skipped (with a warning) rather than rejecting
     the entire patch.  Only raises ``LeverOwnershipError`` when *every*
     requested section is locked.
+
+    Phase 4.1 — *replacement_intent*:
+    - ``"merge"`` (default): preserve legacy behavior. When a new value
+      would shrink an existing section by more than 30 percent, the new
+      value is concatenated onto the old instead of replacing it. This
+      matches the historical incremental-enrichment use case.
+    - ``"replace"``: caller has explicitly authored a focused rewrite
+      and wants the new value to win even if shorter. Used by
+      strategist patches that carry ``escalation == "replace"`` or
+      ``_split_from == "rewrite_instruction"``. Skips the loss-threshold
+      guard so a focused, deliberate rewrite is not silently blended
+      with stale prior content.
     """
-    allowed = LEVER_SECTION_OWNERSHIP.get(lever, set())
+    allowed = _allowed_sections_for_lever(lever, entity_type)
     applicable = {k: v for k, v in updates.items() if k in allowed}
     skipped = sorted(k for k in updates if k not in allowed)
     if skipped:
         logger.warning(
-            "Lever %d: skipping locked sections %s (allowed: %s)",
-            lever, skipped, sorted(allowed),
+            "Lever %d (%s): skipping locked sections %s (allowed: %s)",
+            lever, entity_type, skipped, sorted(allowed),
         )
 
     clean_applicable: dict[str, str] = {}
@@ -424,19 +477,37 @@ def update_sections(
 
     _INFO_LOSS_THRESHOLD = 0.7
     _MIN_EXISTING_LEN = 20
-    for key, new_val in applicable.items():
-        old_val = sections.get(key, "")
-        if (
-            old_val
-            and new_val
-            and len(old_val.strip()) > _MIN_EXISTING_LEN
-            and len(new_val.strip()) < len(old_val.strip()) * _INFO_LOSS_THRESHOLD
-        ):
-            logger.warning(
-                "Section '%s' would lose content (%d -> %d chars) — merging instead of replacing",
-                key, len(old_val.strip()), len(new_val.strip()),
-            )
-            applicable[key] = f"{old_val.rstrip('. ')}. {new_val.lstrip()}"
+    _do_merge = (replacement_intent or "merge").strip().lower() != "replace"
+    if _do_merge:
+        for key, new_val in applicable.items():
+            old_val = sections.get(key, "")
+            if (
+                old_val
+                and new_val
+                and len(old_val.strip()) > _MIN_EXISTING_LEN
+                and len(new_val.strip()) < len(old_val.strip()) * _INFO_LOSS_THRESHOLD
+            ):
+                logger.warning(
+                    "Section '%s' would lose content (%d -> %d chars) — "
+                    "merging instead of replacing",
+                    key, len(old_val.strip()), len(new_val.strip()),
+                )
+                applicable[key] = f"{old_val.rstrip('. ')}. {new_val.lstrip()}"
+    else:
+        # Phase 4.1: log when we replace shorter content so operators
+        # can verify the intent matches the strategist's proposal.
+        for key, new_val in applicable.items():
+            old_val = sections.get(key, "")
+            if (
+                old_val
+                and len(old_val.strip()) > _MIN_EXISTING_LEN
+                and len(new_val.strip()) < len(old_val.strip()) * _INFO_LOSS_THRESHOLD
+            ):
+                logger.info(
+                    "Section '%s' replacement_intent=replace: %d -> %d chars "
+                    "(no merge)",
+                    key, len(old_val.strip()), len(new_val.strip()),
+                )
 
     sections.update(applicable)
     return render_structured_description(sections, entity_type)

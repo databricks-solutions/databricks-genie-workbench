@@ -210,6 +210,120 @@ def _get_general_instructions(config: dict) -> str:
     return str(content)
 
 
+def _canonicalize_and_dedup_instructions(config: dict) -> bool:
+    """Phase 3.4: single end-of-pipeline normalization for instruction text.
+
+    Runs after every patch application path so that all roads converge
+    on a single canonical form regardless of who wrote the bytes:
+
+    - GSO-owned policy bullets (apply_gso_quality_instructions)
+    - Strategist ``update_instruction_section`` patches
+    - Strategist ``rewrite_instruction`` splits (legacy ALL-CAPS headers)
+    - The :func:`_sanitize_plaintext_instructions` markdown-to-plain pass
+
+    Returns ``True`` if the text was rewritten in place. Idempotent:
+    canonical input passes through unchanged.
+    """
+    inst = config.get("instructions")
+    if not isinstance(inst, dict):
+        return False
+    ti = inst.get("text_instructions")
+    if not isinstance(ti, list) or not ti:
+        return False
+
+    head = ti[0]
+    if not isinstance(head, dict):
+        return False
+    content = head.get("content")
+    if isinstance(content, list):
+        original = "\n".join(c for c in content if c)
+    elif isinstance(content, str):
+        original = content
+    else:
+        return False
+    if not original.strip():
+        return False
+
+    # Lazy import to break a circular at module load.
+    from genie_space_optimizer.optimization.optimizer import (
+        _sanitize_plaintext_instructions,
+    )
+
+    sanitized = _sanitize_plaintext_instructions(original)
+    if not sanitized:
+        return False
+
+    # Deduplicate sections.  We treat any pair of headers that map to
+    # the same legacy ALL-CAPS name (whether written ``## CONSTRAINTS``
+    # or ``CONSTRAINTS:``) as the same section; the second occurrence
+    # has its body merged into the first and the duplicate header line
+    # is dropped.  Bullet-level dedup within each section is also
+    # applied so a policy bullet present in both versions of the
+    # section collapses to a single bullet.
+    lines = sanitized.split("\n")
+    section_order: list[str] = []
+    section_lines: dict[str, list[str]] = {}
+    section_seen_bullets: dict[str, set[str]] = {}
+    preamble: list[str] = []
+    current: str | None = None
+
+    _legacy_re = re.compile(r"^\s*([A-Z][A-Z0-9 _/]{2,40})\s*:\s*$")
+    _markdown_re = re.compile(r"^\s*##\s+([^\n]+?)\s*$")
+
+    def _start_section(name: str) -> None:
+        nonlocal current
+        current = name
+        if name not in section_lines:
+            section_lines[name] = []
+            section_seen_bullets[name] = set()
+            section_order.append(name)
+
+    for raw_line in lines:
+        m_md = _markdown_re.match(raw_line)
+        m_lg = _legacy_re.match(raw_line) if not m_md else None
+        if m_md:
+            _start_section(m_md.group(1).upper().rstrip(":").strip())
+            continue
+        if m_lg:
+            _start_section(m_lg.group(1).upper().rstrip(":").strip())
+            continue
+        if current is None:
+            preamble.append(raw_line)
+            continue
+        stripped = raw_line.strip()
+        if stripped:
+            # Bullet-level dedup keyed by the bullet body so identical
+            # policy bullets emitted twice (e.g. once via GSO-quality
+            # and once via a strategist split) collapse.
+            if stripped in section_seen_bullets[current]:
+                continue
+            section_seen_bullets[current].add(stripped)
+        section_lines[current].append(raw_line)
+
+    rebuilt_parts: list[str] = []
+    if any(_l.strip() for _l in preamble):
+        rebuilt_parts.extend(preamble)
+        if rebuilt_parts and rebuilt_parts[-1].strip():
+            rebuilt_parts.append("")
+    for name in section_order:
+        rebuilt_parts.append(f"{name}:")
+        # Trim trailing blanks within the section.
+        body = section_lines[name]
+        while body and not body[-1].strip():
+            body.pop()
+        rebuilt_parts.extend(body)
+        rebuilt_parts.append("")
+
+    rebuilt = "\n".join(rebuilt_parts).rstrip() + "\n"
+    rebuilt = rebuilt.rstrip()
+    # Idempotency: only mutate when canonicalization changed something.
+    if rebuilt == sanitized.rstrip() and rebuilt == original.rstrip():
+        return False
+
+    head["content"] = [rebuilt]
+    return True
+
+
 _HEX_32 = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -2422,6 +2536,9 @@ def _split_rewrite_instruction_patch(patch: dict) -> list[dict] | None:
         )
         child["_split_from"] = "rewrite_instruction"
         child["_proposal_patch_type"] = "rewrite_instruction"
+        # Phase 4.1: rewrite splits are deliberate focused rewrites —
+        # the new text should win even if shorter than the old.
+        child["replacement_intent"] = "replace"
         children.append(child)
         routed_log.append(
             f"L{owner_lever}[{section_name} ({len(body_for_section)} chars)]"
@@ -2444,6 +2561,7 @@ def _split_rewrite_instruction_patch(patch: dict) -> list[dict] | None:
         )
         child["_split_from"] = "rewrite_instruction"
         child["_proposal_patch_type"] = "rewrite_instruction"
+        child["replacement_intent"] = "replace"
         children.append(child)
 
     if children:
@@ -3191,12 +3309,21 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
             if not etype_str:
                 data_type = cc.get("data_type", "")
                 etype_str = entity_type_for_column(col_name, data_type)
+            # Phase 4.1: respect explicit replace intent from the
+            # strategist (set via ``escalation == "replace"`` or by the
+            # rewrite-instruction split path).
+            _intent = (
+                cmd.get("replacement_intent")
+                or ("replace" if cmd.get("_split_from") == "rewrite_instruction"
+                    else "merge")
+            )
             try:
                 new_desc = update_sections(
                     cc.get("description"),
                     sections_update,
                     lever_num,
                     etype_str,
+                    replacement_intent=_intent,
                 )
                 cc["description"] = new_desc
                 return True
@@ -3233,12 +3360,20 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
             sections_update = cmd["structured_sections"]
             lever_num = cmd.get("lever", 0)
             entity_type = cmd.get("table_entity_type", "table")
+            # Phase 4.1: respect explicit replace intent from the
+            # strategist; default to legacy merge behavior.
+            _intent = (
+                cmd.get("replacement_intent")
+                or ("replace" if cmd.get("_split_from") == "rewrite_instruction"
+                    else "merge")
+            )
             try:
                 new_desc = update_sections(
                     tbl.get("description"),
                     sections_update,
                     lever_num,
                     entity_type,
+                    replacement_intent=_intent,
                 )
                 tbl["description"] = new_desc
                 return True
@@ -3870,6 +4005,39 @@ def apply_patch_set(
                     except Exception as exc2:
                         patch_error = str(exc2)
                         logger.exception("Retry without join specs also failed")
+
+    # Phase 3.4: end-of-pipeline canonicalization + dedup of the
+    # instruction text. Single safety net that catches every write path
+    # (GSO-quality, strategist update_instruction_section, rewrite
+    # splits, sanitizer) so the on-disk Genie config never carries
+    # duplicate ``CONSTRAINTS`` / ``DATA QUALITY NOTES`` blocks.
+    # Toggle via ``GSO_CANONICAL_HEADERS_ALLCAPS=0`` to keep legacy
+    # behavior during rollout.
+    if (
+        os.getenv("GSO_CANONICAL_HEADERS_ALLCAPS", "1")
+        .strip().lower() not in ("0", "false", "no", "off")
+    ):
+        try:
+            if _canonicalize_and_dedup_instructions(config):
+                logger.info(
+                    "Phase 3.4: end-of-pipeline canonicalize-and-dedup "
+                    "rewrote instruction text for space %s", space_id,
+                )
+                if w is not None and patch_deployed:
+                    try:
+                        patch_space_config(w, space_id, config)
+                    except Exception:
+                        logger.warning(
+                            "Failed to push canonicalized instructions "
+                            "to Genie API — local snapshot is correct, "
+                            "but next read may regress",
+                            exc_info=True,
+                        )
+        except Exception:
+            logger.warning(
+                "Canonicalize-and-dedup pass failed (non-fatal)",
+                exc_info=True,
+            )
 
     return {
         "space_id": space_id,

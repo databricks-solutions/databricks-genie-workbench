@@ -1588,13 +1588,22 @@ def cluster_failures(
                 # apart from "MLflow didn't propagate it" apart from
                 # "rationale parse fallback worked".
                 _asi_source = "none"
+                # Phase 2.3: respect the row-level ``_asi_source``
+                # breadcrumb stamped by ``_merge_row_sources`` so the
+                # histogram correctly reports ``trace`` /
+                # ``recovered_trace`` / ``cache`` instead of always
+                # collapsing to ``row_metadata``.
+                _row_level_source = row.get("_asi_source") or ""
                 judge_meta = row.get(f"feedback/{judge}/metadata")
                 if judge_meta:
                     _asi_source = "feedback_metadata"
                 else:
                     judge_meta = row.get(f"{judge}/metadata")
                     if judge_meta:
-                        _asi_source = "row_metadata"
+                        _asi_source = (
+                            f"row_metadata:{_row_level_source}"
+                            if _row_level_source else "row_metadata"
+                        )
                     else:
                         judge_meta = {}
                 if not isinstance(judge_meta, dict):
@@ -7173,8 +7182,45 @@ def _call_llm_for_join_discovery(
     return []
 
 
+_MARKDOWN_RESIDUE_RE = re.compile(
+    r'(?m)'
+    r'(?:^```[a-z]*\s*$)'                     # fenced code blocks
+    r'|(?:^---+\s*$)'                         # horizontal rules
+    r'|(?:^\*\*\*+\s*$)'
+    r'|(?:^___+\s*$)'
+    r'|(?:^#{1,6}\s+\S)'                      # leading ``## HEADER``
+    r'|(?:\*\*[^*]+\*\*)'                     # bold
+    r'|(?:`[^`]+`)'                           # inline backticks
+    r'|(?:\[[^\]]+\]\([^)]+\))'               # markdown links
+    r'|(?:\n{3,})'                            # excess blank lines
+)
+
+
+def _is_already_canonical_plaintext(text: str) -> bool:
+    """Phase 3.3: cheap idempotency check for the sanitizer.
+
+    Returns True if *text* contains no Markdown residue that
+    :func:`_sanitize_plaintext_instructions` would otherwise touch. We
+    skip the regex pipeline in that case so a second pass over already-
+    canonical input doesn't generate spurious diffs (re-stripping
+    backticks, re-flowing whitespace) on every iteration.
+    """
+    if not text:
+        return True
+    return _MARKDOWN_RESIDUE_RE.search(text) is None
+
+
 def _sanitize_plaintext_instructions(text: str) -> str:
-    """Strip residual Markdown from instruction text for plain-text display."""
+    """Strip residual Markdown from instruction text for plain-text display.
+
+    Phase 3.3: idempotent — if the input already has no Markdown
+    residue, the function returns the (stripped) text unchanged
+    instead of running the regex pipeline. This eliminates the
+    "every iteration produces a diff for unchanged content" symptom
+    from the iter-1 lever loop.
+    """
+    if _is_already_canonical_plaintext(text):
+        return text.strip() if text else ""
     text = re.sub(r'^```[a-z]*\s*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^---+\s*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\*\*\*+\s*$', '', text, flags=re.MULTILINE)
@@ -11132,6 +11178,29 @@ def generate_proposals_from_strategy(
     q_fixed = len(affected_qs)
     source_clusters = action_group.get("source_cluster_ids", [])
 
+    # Phase 4.2: per-proposal rationale helper. Until this PR every
+    # proposal stamped the same ``Strategy: <root_cause>.
+    # <coordination_notes>`` string regardless of which target/section
+    # was being modified — so the iter-1 log showed 18 proposals with
+    # byte-identical rationale text. Append target identity so each
+    # proposal carries its own context.
+    def _per_target_rationale(
+        target_id: str,
+        section_keys: list[str] | None = None,
+        extra: str = "",
+    ) -> str:
+        head = f"Strategy: {root_cause}." if root_cause else "Strategy:"
+        parts: list[str] = [head]
+        if coordination_notes:
+            parts.append(coordination_notes.strip())
+        if target_id:
+            parts.append(f"Target: {target_id} (lever {target_lever}).")
+        if section_keys:
+            parts.append(f"Sections: {', '.join(sorted(section_keys))}.")
+        if extra:
+            parts.append(extra.strip())
+        return " ".join(p for p in parts if p)
+
     provenance_base = {
         "cluster_id": ag_id,
         "root_cause": root_cause,
@@ -11172,7 +11241,9 @@ def generate_proposals_from_strategy(
                         "patch_type": "update_description",
                         "change_description": f"[{ag_id}] Update table {tbl} sections={list(tbl_sections.keys())}",
                         "proposed_value": "",
-                        "rationale": f"Strategy: {root_cause}. {coordination_notes}",
+                        "rationale": _per_target_rationale(
+                            tbl, list(tbl_sections.keys()),
+                        ),
                         "dual_persistence": DUAL_PERSIST_PATHS.get(target_lever, DUAL_PERSIST_PATHS[5]),
                         "confidence": 0.85,
                         "questions_fixed": q_fixed,
@@ -11207,7 +11278,9 @@ def generate_proposals_from_strategy(
                         "patch_type": "update_column_description",
                         "change_description": f"[{ag_id}] Update {tbl}.{col} sections={list(col_sections.keys())}",
                         "proposed_value": "",
-                        "rationale": f"Strategy: {root_cause}. {coordination_notes}",
+                        "rationale": _per_target_rationale(
+                            f"{tbl}.{col}", list(col_sections.keys()),
+                        ),
                         "dual_persistence": DUAL_PERSIST_PATHS.get(target_lever, DUAL_PERSIST_PATHS[5]),
                         "confidence": 0.85,
                         "questions_fixed": q_fixed,
@@ -11243,7 +11316,9 @@ def generate_proposals_from_strategy(
                         "patch_type": "update_function_description",
                         "change_description": f"[{ag_id}] Update function {fn_name} sections={list(fn_sections.keys())}",
                         "proposed_value": "",
-                        "rationale": f"Strategy: {root_cause}. {coordination_notes}",
+                        "rationale": _per_target_rationale(
+                            fn_name, list(fn_sections.keys()),
+                        ),
                         "dual_persistence": DUAL_PERSIST_PATHS.get(3, DUAL_PERSIST_PATHS[5]),
                         "confidence": 0.85,
                         "questions_fixed": q_fixed,
@@ -11308,7 +11383,10 @@ def generate_proposals_from_strategy(
                         "patch_type": "add_join_spec",
                         "change_description": f"[{ag_id}] Join: {left_table} ↔ {right_table}",
                         "proposed_value": "",
-                        "rationale": f"Strategy: {root_cause}. {coordination_notes}",
+                        "rationale": _per_target_rationale(
+                            f"{left_table} <-> {right_table}",
+                            extra="add_join_spec",
+                        ),
                         "join_spec": join_spec,
                         "dual_persistence": DUAL_PERSIST_PATHS.get(4, DUAL_PERSIST_PATHS[5]),
                         "confidence": 0.8,
@@ -11670,7 +11748,10 @@ def generate_proposals_from_strategy(
                     "change_description": f"[{ag_id}] Instruction rewrite ({len(merged_text)} chars)",
                     "proposed_value": merged_text,
                     "old_value": current_instructions,
-                    "rationale": f"Strategy: {root_cause}. {coordination_notes}",
+                    "rationale": _per_target_rationale(
+                        "general_instructions",
+                        extra=f"rewrite_instruction ({len(merged_text)} chars)",
+                    ),
                     "dual_persistence": DUAL_PERSIST_PATHS.get(5, DUAL_PERSIST_PATHS[5]),
                     "confidence": 0.85,
                     "questions_fixed": q_fixed,
@@ -11731,7 +11812,10 @@ def generate_proposals_from_strategy(
                     "change_description": f"[{ag_id}] Instruction rewrite ({len(merged_text)} chars)",
                     "proposed_value": merged_text,
                     "old_value": current_instructions,
-                    "rationale": f"Strategy: {root_cause}. {coordination_notes}",
+                    "rationale": _per_target_rationale(
+                        "general_instructions",
+                        extra=f"instruction_guidance ({len(merged_text)} chars)",
+                    ),
                     "dual_persistence": DUAL_PERSIST_PATHS.get(5, DUAL_PERSIST_PATHS[5]),
                     "confidence": 0.85,
                     "questions_fixed": q_fixed,
@@ -11794,7 +11878,10 @@ def generate_proposals_from_strategy(
                             "example_sql": es,
                             "parameters": example_sql_dir.get("parameters", []),
                             "usage_guidance": example_sql_dir.get("usage_guidance", ""),
-                            "rationale": f"Strategy: {root_cause}. {coordination_notes}",
+                            "rationale": _per_target_rationale(
+                                f"example_sql_{ex_idx + 1}",
+                                extra=eq[:120],
+                            ),
                             "dual_persistence": DUAL_PERSIST_PATHS.get(5, DUAL_PERSIST_PATHS[5]),
                             "confidence": 0.8,
                             "questions_fixed": 1,
@@ -12248,7 +12335,14 @@ def generate_metadata_proposals(
         return proposals
 
     # ── Standard per-cluster path (levers 1-4) ───────────────────────
-    _MAX_CLUSTERS_PER_LEVER = 3
+    # Phase 1.3: ``_MAX_CLUSTERS_PER_LEVER`` was a hard cap of 3, which
+    # silently dropped a 4th cluster even when each cluster had a
+    # distinct root_cause and deserved its own proposal (observed in
+    # iter-1 log: H001 ``wrong_measure`` was dropped because H002/H003/H004
+    # also mapped to Lever 1).  Lift the floor to the number of distinct
+    # root_causes among eligible clusters so every distinct failure mode
+    # gets at least one proposal slot.
+    _MIN_CLUSTER_BUDGET = 3
     eligible_clusters: list[tuple[dict, int]] = []
     for cluster in clusters:
         natural_lever = _map_to_lever(
@@ -12263,12 +12357,37 @@ def generate_metadata_proposals(
         eligible_clusters.append((cluster, lever))
 
     eligible_clusters.sort(key=lambda x: len(x[0]["question_ids"]), reverse=True)
-    if len(eligible_clusters) > _MAX_CLUSTERS_PER_LEVER:
+    _distinct_root_causes = {
+        c.get("root_cause", "other") for c, _ in eligible_clusters
+    }
+    _max_clusters = max(_MIN_CLUSTER_BUDGET, len(_distinct_root_causes))
+    if len(eligible_clusters) > _max_clusters:
         logger.info(
-            "Capping clusters for lever %s: %d -> %d (keeping top by question count)",
-            target_lever, len(eligible_clusters), _MAX_CLUSTERS_PER_LEVER,
+            "Capping clusters for lever %s: %d -> %d "
+            "(distinct_root_causes=%d, floor=%d)",
+            target_lever, len(eligible_clusters), _max_clusters,
+            len(_distinct_root_causes), _MIN_CLUSTER_BUDGET,
         )
-        eligible_clusters = eligible_clusters[:_MAX_CLUSTERS_PER_LEVER]
+        # Preserve at least one cluster per distinct root_cause before
+        # filling remaining slots by question count.
+        _kept: list[tuple[dict, int]] = []
+        _seen_rc: set[str] = set()
+        for c, lv in eligible_clusters:
+            _rc = c.get("root_cause", "other")
+            if _rc not in _seen_rc:
+                _kept.append((c, lv))
+                _seen_rc.add(_rc)
+            if len(_kept) >= _max_clusters:
+                break
+        # Fill any remaining slots with the highest-question-count clusters.
+        if len(_kept) < _max_clusters:
+            for c, lv in eligible_clusters:
+                if (c, lv) in _kept:
+                    continue
+                _kept.append((c, lv))
+                if len(_kept) >= _max_clusters:
+                    break
+        eligible_clusters = _kept
 
     for cluster, lever in eligible_clusters:
 
@@ -12512,6 +12631,32 @@ def generate_metadata_proposals(
     proposals = _merge_overlapping_instructions(proposals)
     proposals = _filter_no_op_proposals(proposals, metadata_snapshot)
     proposals.sort(key=lambda p: p["net_impact"], reverse=True)
+
+    # Phase 4.2: post-LLM rationale uniqueness validation. The
+    # ``_per_target_rationale`` helper above guarantees per-target
+    # context within this function, but downstream paths
+    # (``_call_llm_for_proposal``, holistic rewrite) can still produce
+    # near-duplicate rationales when the LLM stamps the same strategy
+    # summary on every proposal. When uniqueness drops below 50%, log
+    # a structured warning and rewrite each rationale by appending the
+    # patch-specific ``change_description`` so operators have at least
+    # a target-aware breadcrumb on every proposal.
+    if proposals:
+        _rationales = [str(p.get("rationale") or "").strip() for p in proposals]
+        _unique = len(set(_rationales))
+        if _unique < max(1, len(proposals) // 2):
+            logger.warning(
+                "Phase 4.2: low rationale uniqueness (%d unique / %d proposals) "
+                "— augmenting with target-specific change_description suffix",
+                _unique, len(proposals),
+            )
+            for _p in proposals:
+                _r = str(_p.get("rationale") or "").strip()
+                _cd = str(_p.get("change_description") or "").strip()
+                if _cd and _cd not in _r:
+                    _p["rationale"] = (
+                        f"{_r} | per-target: {_cd}" if _r else _cd
+                    )
 
     return proposals
 

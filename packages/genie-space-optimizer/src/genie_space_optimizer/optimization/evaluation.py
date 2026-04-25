@@ -619,6 +619,215 @@ def _repair_measure_alias_collisions(sql: str) -> tuple[str, int]:
     return new_sql, len(rename_map)
 
 
+def _repair_measure_in_where(
+    sql: str,
+    mv_measures: dict[str, set[str]],
+) -> tuple[str, int]:
+    """Rewrite ``WHERE <measure_col> …`` into a CTE-first pattern (PR 20).
+
+    Spark's metric-view planner rejects measure column references inside
+    ``WHERE`` / ``HAVING`` / ``ON`` clauses with the same
+    ``METRIC_VIEW_MISSING_MEASURE_FUNCTION`` error class as a bare
+    measure in SELECT. The canonical fix per the
+    `Databricks Metric Views docs
+    <https://docs.databricks.com/aws/en/business-semantics/metric-views/query>`_
+    is to materialize the measure in a CTE alias and filter on the
+    alias::
+
+        -- BAD: WHERE references a measure column directly
+        SELECT zone, MEASURE(total_sales) AS sales
+        FROM mv_x
+        WHERE store_day_count > 0
+        GROUP BY zone;
+
+        -- GOOD: CTE-first; filter on the materialized alias
+        WITH __mv_base AS (
+          SELECT zone,
+                 MEASURE(total_sales) AS sales,
+                 MEASURE(store_day_count) AS store_day_count_value
+          FROM mv_x
+          GROUP BY zone
+        )
+        SELECT zone, sales
+        FROM __mv_base
+        WHERE store_day_count_value > 0;
+
+    The function detects measure column references in the WHERE clause
+    using ``mv_measures`` (keyed by short MV name → measure names),
+    promotes each referenced measure into the inner SELECT as
+    ``MEASURE(m) AS m_value``, and rewrites the WHERE clause to use the
+    materialized alias. The outer SELECT replays the original
+    projections (by output-name) so callers (LLM correction, example
+    SQL gates) see the same shape they would have without the repair.
+
+    Returns ``(new_sql, num_measures_lifted)``. Conservative: returns
+    ``(sql, 0)`` unchanged when sqlglot is unavailable, parsing fails,
+    the root expression is not a single ``SELECT``, the query already
+    has a ``WITH`` clause / outer ``JOIN`` / FROM-side subquery / set-op
+    (``UNION``/``EXCEPT``/``INTERSECT``), or no relevant measure column
+    appears in the WHERE clause. False negatives only — by design we
+    prefer leaving the SQL alone over emitting a wrong rewrite.
+    """
+    if not sql or not mv_measures or "WHERE" not in sql.upper():
+        return sql, 0
+
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+    except Exception:
+        return sql, 0
+
+    try:
+        tree = sqlglot.parse_one(sql, read="databricks")
+    except Exception:
+        return sql, 0
+
+    if not isinstance(tree, exp.Select):
+        # Set-ops (Union/Except/Intersect) and DDL parse to non-Select
+        # roots; we don't try to rewrite them.
+        return sql, 0
+
+    # Conservative bail-outs: leave anything we don't fully understand
+    # alone so the LLM can fix it on retry. sqlglot stores these args
+    # under trailing-underscore keys (``with_``, ``from_``) but also
+    # exposes ``with``/``from`` aliases on some versions; accept either.
+    if tree.args.get("with") or tree.args.get("with_"):
+        return sql, 0
+    if tree.args.get("joins"):
+        return sql, 0
+
+    from_ = tree.args.get("from") or tree.args.get("from_")
+    if from_ is not None:
+        sources: list[Any] = []
+        if hasattr(from_, "expressions") and from_.expressions:
+            sources.extend(from_.expressions)
+        elif from_.this is not None:
+            sources.append(from_.this)
+        for src in sources:
+            if isinstance(src, exp.Subquery):
+                return sql, 0
+
+    where_clause = tree.args.get("where")
+    if where_clause is None:
+        return sql, 0
+
+    # Subqueries in WHERE (e.g. ``WHERE x IN (SELECT …)``) are out of
+    # scope — refusing keeps the rewrite deterministic.
+    if any(True for _ in where_clause.find_all(exp.Subquery)):
+        return sql, 0
+
+    # Resolve which measures are reachable from the FROM clause of THIS
+    # query. Reuses the same alias-aware helper as ``_rewrite_measure_refs``
+    # so both repairs see the same set of measure names.
+    relevant_measures = _build_relevant_measures(sql, mv_measures)
+    if not relevant_measures:
+        return sql, 0
+    all_measure_names: set[str] = set()
+    for s in relevant_measures.values():
+        all_measure_names.update(s)
+    if not all_measure_names:
+        return sql, 0
+
+    # Collect measure-column references inside WHERE. We match on the
+    # column's bare name (case-insensitive) — Spark's resolver does the
+    # same when matching a measure column on a metric view.
+    measures_in_where: list[str] = []
+    seen: set[str] = set()
+    for col in where_clause.find_all(exp.Column):
+        nm = (col.name or "").lower()
+        if nm in all_measure_names and nm not in seen:
+            seen.add(nm)
+            measures_in_where.append(nm)
+    if not measures_in_where:
+        return sql, 0
+
+    # Build the inner SELECT: original tree minus its WHERE clause, with
+    # ``MEASURE(m) AS m_value`` projections appended for each measure
+    # that needs to be available to the outer filter.
+    inner = tree.copy()
+    inner.set("where", None)
+
+    existing_aliases: set[str] = set()
+    for proj in inner.expressions:
+        if isinstance(proj, exp.Alias):
+            alias_id = proj.args.get("alias")
+            if alias_id is not None:
+                existing_aliases.add(str(alias_id.name or "").lower())
+
+    alias_map: dict[str, str] = {}
+    for m in measures_in_where:
+        alias_name = f"{m}_value"
+        # Avoid colliding with any pre-existing alias on the inner.
+        suffix = 2
+        while alias_name.lower() in existing_aliases:
+            alias_name = f"{m}_value{suffix}"
+            suffix += 1
+        alias_map[m] = alias_name
+        existing_aliases.add(alias_name.lower())
+        new_proj = exp.Alias(
+            this=exp.Anonymous(
+                this="MEASURE",
+                expressions=[exp.column(m)],
+            ),
+            alias=exp.to_identifier(alias_name),
+        )
+        inner.expressions.append(new_proj)
+
+    # Rewrite the WHERE clause: rebind each measure-column reference to
+    # the materialized alias on the CTE.
+    new_where = where_clause.copy()
+    for col in new_where.find_all(exp.Column):
+        nm = (col.name or "").lower()
+        if nm in alias_map:
+            col.set("this", exp.to_identifier(alias_map[nm]))
+            # Drop any table qualifier — the column now lives on the
+            # CTE, not the original metric view.
+            col.set("table", None)
+            col.set("db", None)
+            col.set("catalog", None)
+
+    # Outer projection list: replay the original SELECT's output names
+    # so callers see the same shape pre- vs post-repair. Anything we
+    # can't unambiguously name (e.g. a non-aliased complex expression)
+    # forces a ``SELECT *`` fallback.
+    outer_projs: list[exp.Expression] = []
+    fallback_to_star = False
+    for p in tree.expressions:
+        out_name: str | None = None
+        if isinstance(p, exp.Alias):
+            alias_id = p.args.get("alias")
+            if alias_id is not None and alias_id.name:
+                out_name = str(alias_id.name)
+        elif isinstance(p, exp.Column):
+            out_name = p.name
+        if out_name:
+            outer_projs.append(
+                exp.Column(this=exp.to_identifier(out_name)),
+            )
+        else:
+            fallback_to_star = True
+            break
+    if fallback_to_star or not outer_projs:
+        outer_projs = [exp.Star()]
+
+    # Assemble the wrapper. ``Select.with_`` is the only sqlglot API
+    # that wires ``WITH … AS (…) SELECT …`` such that the WITH renders
+    # when the tree is serialised; setting ``args["with"]`` directly
+    # silently drops the CTE on render.
+    outer = exp.Select(expressions=outer_projs)
+    outer.set(
+        "from",
+        exp.From(this=exp.Table(this=exp.to_identifier("__mv_base"))),
+    )
+    outer.set("where", new_where)
+    outer = outer.with_("__mv_base", inner, copy=False)
+
+    try:
+        return outer.sql(dialect="databricks"), len(measures_in_where)
+    except Exception:
+        return sql, 0
+
+
 # Tokens that look like an identifier in a "FROM/JOIN <table> <alias>"
 # regex but are actually SQL keywords starting the next clause; never
 # treat them as aliases.
@@ -1092,13 +1301,21 @@ def effective_table_identifiers(config: dict) -> set[str]:
 def build_metric_view_measures(config: dict) -> dict[str, set[str]]:
     """Build ``{lowered_short_name: {measure_col, ...}}`` for all effective MVs.
 
-    "Effective" means we walk both ``data_sources.metric_views`` and any
-    ``data_sources.tables`` entries that look like an MV (have at least
-    one measure-typed column config). This is the single source of
-    truth used by the MEASURE auto-wrap rewriter — keeping detection
-    here ensures the unified pipeline, the preflight pipeline, and the
-    benchmark/example correction loops all rewrite the same set of
-    columns.
+    "Effective" means we walk three sources and union the results:
+
+    1. ``data_sources.metric_views`` — Genie's explicit MV serialization.
+    2. ``data_sources.tables`` entries with at least one measure-typed
+       column config (legacy serialization where MVs land under tables).
+    3. ``config["_metric_view_yaml"]`` — the catalog-detection cache
+       populated by :func:`metric_view_catalog.detect_metric_views_via_catalog`.
+       This is the *only* path that catches MVs whose Genie payload omits
+       both ``column_type='measure'`` and ``is_measure``, which is the
+       common-in-production failure mode that PR 19 fixes.
+
+    This is the single source of truth used by the MEASURE auto-wrap
+    rewriter — keeping detection here ensures the unified pipeline, the
+    preflight pipeline, and the benchmark/example correction loops all
+    rewrite the same set of columns.
     """
     result: dict[str, set[str]] = {}
     for mv in _iter_effective_metric_view_entries(config):
@@ -1118,7 +1335,100 @@ def build_metric_view_measures(config: dict) -> dict[str, set[str]]:
                 measures.add(col_name.lower())
         if measures:
             result[short_name] = measures
+
+    # PR 19: union with the catalog-detection cache. The cache is keyed
+    # by fully-qualified, lower-cased identifier; the rewriter keys on
+    # the bare short name so we collapse to the last segment.
+    cache = config.get("_metric_view_yaml") or {}
+    if not cache:
+        parsed = config.get("_parsed_space")
+        if isinstance(parsed, dict):
+            cache = parsed.get("_metric_view_yaml") or {}
+    if isinstance(cache, dict):
+        for fq_ident, yaml_doc in cache.items():
+            if not isinstance(yaml_doc, dict):
+                continue
+            short = str(fq_ident).split(".")[-1].lower()
+            if not short:
+                continue
+            measures = result.setdefault(short, set())
+            for m in yaml_doc.get("measures") or []:
+                if isinstance(m, dict):
+                    name = m.get("name")
+                    if isinstance(name, str) and name:
+                        measures.add(name.lower())
+        # Drop any short names whose measure set ended up empty (e.g. an
+        # entry made it into the cache but the YAML had no measures
+        # block) so callers don't probe rewriter logic against empty
+        # sets.
+        result = {k: v for k, v in result.items() if v}
     return result
+
+
+def _count_mv_detection_sources(config: dict) -> dict[str, int]:
+    """Count how many MVs each detection path contributed (PR 21).
+
+    Returns ``{"config": int, "column_flags": int, "catalog": int}``::
+
+      - ``config``       — entries declared under ``data_sources.metric_views``.
+      - ``column_flags`` — entries serialized under ``data_sources.tables``
+        but with at least one measure-typed column_config (Genie's older
+        "tables-shaped" MV serialization).
+      - ``catalog``      — entries discovered at runtime by
+        :func:`metric_view_catalog.detect_metric_views_via_catalog` and
+        cached under ``config["_metric_view_yaml"]``. Only catalog-only
+        finds (i.e. not already counted by either of the prior buckets)
+        are included so the three counts add up to a unique-MV total.
+
+    Used by the unified and preflight banners so log readers can attribute
+    a missing-MEASURE() failure cluster to the right detection source — a
+    catalog-only count of zero with a positive ``column_flags`` count
+    means Genie *did* serialize the MV but stripped the YAML block, and
+    a flat zero across all three is the canonical "no MVs at all" state
+    that PR 21's adaptive-overdraw short-circuit keys on.
+    """
+    config_ids: set[str] = set()
+    flag_ids: set[str] = set()
+    parsed = config.get("_parsed_space", config)
+    ds = parsed.get("data_sources", {}) if isinstance(parsed, dict) else {}
+    if not isinstance(ds, dict):
+        ds = {}
+    for mv in (ds.get("metric_views") or []):
+        if isinstance(mv, dict):
+            ident = str(mv.get("identifier") or mv.get("name") or "").strip().lower()
+            if ident:
+                config_ids.add(ident)
+    for tbl in (ds.get("tables") or []):
+        if not isinstance(tbl, dict):
+            continue
+        ident = str(tbl.get("identifier") or "").strip().lower()
+        if not ident or ident in config_ids:
+            continue
+        for cc in tbl.get("column_configs") or []:
+            if not isinstance(cc, dict):
+                continue
+            col_type = str(cc.get("column_type", "")).lower()
+            if col_type == "measure" or cc.get("is_measure"):
+                flag_ids.add(ident)
+                break
+
+    catalog_ids: set[str] = set()
+    cache = config.get("_metric_view_yaml") or {}
+    if not cache:
+        parsed = config.get("_parsed_space")
+        if isinstance(parsed, dict):
+            cache = parsed.get("_metric_view_yaml") or {}
+    if isinstance(cache, dict):
+        for fq in cache.keys():
+            ident = str(fq).strip().lower()
+            if ident and ident not in config_ids and ident not in flag_ids:
+                catalog_ids.add(ident)
+
+    return {
+        "config": len(config_ids),
+        "column_flags": len(flag_ids),
+        "catalog": len(catalog_ids),
+    }
 
 
 def _parse_struct_field_names(data_type: str) -> list[str]:
@@ -1793,23 +2103,100 @@ def _extract_assessments_from_traces(results_df) -> dict[int, dict[str, dict]]:
     return out
 
 
+def _fetch_assessments_for_recovered_qids(
+    trace_map: dict[str, str],
+) -> dict[str, dict[str, dict]]:
+    """Fetch judge rationale/metadata via ``mlflow.get_trace`` for recovered traces.
+
+    Phase 2.2: when ``mlflow.genai.evaluate`` loses trace context and
+    ``_recover_trace_map`` falls back to tag/time-window search, the
+    recovery returns ``{qid: trace_id}`` but the assessments are still
+    not joined onto the data rows. This helper closes that gap by
+    fetching each recovered trace and pulling its assessments
+    explicitly.
+
+    Returns ``{qid: {judge_name: {"rationale": str, "metadata": dict}}}``.
+    Failures (missing trace, RPC error) are tolerated silently per qid;
+    the caller treats absent qids as no-data and falls through to other
+    assessment sources.
+    """
+    out: dict[str, dict[str, dict]] = {}
+    if not trace_map:
+        return out
+
+    for qid, trace_id in trace_map.items():
+        if not qid or not trace_id:
+            continue
+        try:
+            trace = mlflow.get_trace(trace_id)
+        except Exception:
+            logger.debug(
+                "Failed to fetch trace %s for qid=%s", trace_id, qid,
+                exc_info=True,
+            )
+            continue
+        if trace is None:
+            continue
+
+        assessments: Any = None
+        for attr_chain in (("data", "assessments"), ("info", "assessments")):
+            obj: Any = trace
+            for attr in attr_chain:
+                obj = getattr(obj, attr, None)
+                if obj is None:
+                    break
+            if obj:
+                assessments = obj
+                break
+        if not assessments:
+            continue
+
+        row_data: dict[str, dict] = {}
+        for a in assessments:
+            if isinstance(a, dict):
+                name = a.get("name", "") or ""
+                rationale_raw = a.get("rationale", "") or ""
+                meta = a.get("metadata")
+                if not isinstance(meta, dict):
+                    meta = {}
+            else:
+                name = getattr(a, "name", "") or ""
+                rationale_raw = getattr(a, "rationale", "") or ""
+                meta = getattr(a, "metadata", None)
+                if not isinstance(meta, dict):
+                    meta = {}
+            if not meta:
+                meta = _parse_asi_from_rationale(rationale_raw)
+            if name:
+                row_data[name] = {
+                    "rationale": rationale_raw,
+                    "metadata": meta,
+                }
+        if row_data:
+            out[qid] = row_data
+    return out
+
+
 def _merge_row_sources(
     row_dict: dict[str, Any],
     assessment_map_row: dict[str, dict] | None,
     cached_feedback_qid: dict[str, dict] | None,
+    recovered_assessments_qid: dict[str, dict] | None = None,
 ) -> dict[str, Any]:
-    """Reconcile judge rationale/metadata from three sources.
+    """Reconcile judge rationale/metadata from up to four sources.
 
     Precedence (authoritative first):
-    1. Trace assessments (``assessment_map_row``) — what MLflow stored in
-       the trace. This is the ground truth displayed in the MLflow UI.
-    2. The run-scoped scorer feedback cache (``cached_feedback_qid``) —
-       captured directly from the scorer at return time; only consulted
-       when the trace layer is silent for that judge.
-    3. Any ``<judge>/rationale`` / ``<judge>/metadata`` column already
-       present in ``row_dict`` (copied from ``results_df``) — the weakest
-       source, since the ``eval_results`` table is known to misalign
-       rationales to the wrong row in some MLflow versions.
+
+    1. Trace assessments by row index (``assessment_map_row``) — what
+       MLflow stored in the trace and joined directly to the row.
+    2. Phase 2.2: recovered trace assessments by qid
+       (``recovered_assessments_qid``) — fetched via ``mlflow.get_trace``
+       after ``_recover_trace_map`` reattached a trace_id to a qid that
+       lost its row-level join. Same authority level as (1) but reached
+       only when (1) is silent.
+    3. The run-scoped scorer feedback cache (``cached_feedback_qid``).
+    4. Any ``<judge>/rationale`` / ``<judge>/metadata`` column already
+       present in ``row_dict``.
 
     Mutates and returns ``row_dict``. Only overwrites keys for judges that
     actually have data in the higher-priority source; untouched judges
@@ -1817,8 +2204,18 @@ def _merge_row_sources(
     """
     assessment_map_row = assessment_map_row or {}
     cached_feedback_qid = cached_feedback_qid or {}
+    recovered_assessments_qid = recovered_assessments_qid or {}
 
-    judge_names: set[str] = set(assessment_map_row) | set(cached_feedback_qid)
+    judge_names: set[str] = (
+        set(assessment_map_row)
+        | set(cached_feedback_qid)
+        | set(recovered_assessments_qid)
+    )
+
+    # Phase 2.3: emit a single per-row source breadcrumb so the
+    # iteration log can show "ASI present from N rows" instead of the
+    # blanket ``none=100%`` we observed at iter-1.
+    _source_used: str | None = None
 
     for judge_name in judge_names:
         rat_key = f"{judge_name}/rationale"
@@ -1828,19 +2225,36 @@ def _merge_row_sources(
         trace_rationale = trace_data.get("rationale")
         trace_metadata = trace_data.get("metadata")
 
+        recovered_data = recovered_assessments_qid.get(judge_name) or {}
+        recovered_rationale = recovered_data.get("rationale")
+        recovered_metadata = recovered_data.get("metadata")
+
         cache_data = cached_feedback_qid.get(judge_name) or {}
         cache_rationale = cache_data.get("rationale")
         cache_metadata = cache_data.get("metadata")
 
         if trace_rationale:
             row_dict[rat_key] = trace_rationale
+            _source_used = _source_used or "trace"
+        elif recovered_rationale:
+            row_dict[rat_key] = recovered_rationale
+            _source_used = _source_used or "recovered_trace"
         elif cache_rationale:
             row_dict[rat_key] = cache_rationale
+            _source_used = _source_used or "cache"
 
         if trace_metadata:
             row_dict[meta_key] = trace_metadata
+            _source_used = _source_used or "trace"
+        elif recovered_metadata:
+            row_dict[meta_key] = recovered_metadata
+            _source_used = _source_used or "recovered_trace"
         elif cache_metadata:
             row_dict[meta_key] = cache_metadata
+            _source_used = _source_used or "cache"
+
+    if _source_used:
+        row_dict["_asi_source"] = _source_used
 
     return row_dict
 
@@ -2309,6 +2723,9 @@ def filter_benchmarks_by_scope(
     scope: str = "full",
     patched_objects: list[str] | None = None,
     affected_question_ids: set[str] | None = None,
+    *,
+    baseline_passing_qids: set[str] | None = None,
+    stratified: bool | None = None,
 ) -> list[dict]:
     """Filter benchmarks based on evaluation scope.
 
@@ -2317,24 +2734,63 @@ def filter_benchmarks_by_scope(
 
     For "slice" scope, benchmarks are included if:
     - Their required tables/columns overlap with *patched_objects*, OR
-    - Their question id is in *affected_question_ids* (from proposal clusters).
+    - Their question id is in *affected_question_ids* (from proposal
+      clusters).
+
+    Phase 5.1 — stratified slice composition:
+      When *stratified* is True (or env-flag ``GSO_SLICE_STRATIFIED=1``)
+      and *baseline_passing_qids* is provided, the slice is augmented
+      with a 40% sample of baseline-passing questions. This turns the
+      slice gate into a regression detector instead of a rubber-stamp:
+      patches that improve the targeted questions but break previously-
+      passing ones now fail the slice gate.
     """
     if scope == "full":
         return benchmarks
     if scope == "slice":
         patched = {o.lower() for o in patched_objects} if patched_objects else set()
         affected_qids = affected_question_ids or set()
-        result = []
+        targeted: list[dict] = []
         for b in benchmarks:
             qid = b.get("id", "")
             if qid and qid in affected_qids:
-                result.append(b)
+                targeted.append(b)
                 continue
             if patched and any(
                 t.lower() in patched
                 for t in b.get("required_tables", []) + b.get("required_columns", [])
             ):
-                result.append(b)
+                targeted.append(b)
+
+        if stratified is None:
+            stratified = (
+                os.getenv("GSO_SLICE_STRATIFIED", "1")
+                .strip().lower() not in ("0", "false", "no", "off")
+            )
+        if not (stratified and baseline_passing_qids):
+            return targeted
+
+        # 60/40 split: targeted rows fill 60% of the budget; the
+        # remaining 40% comes from baseline-passing questions sampled
+        # in deterministic order (sorted by qid for repeatability).
+        _targeted_qids = {b.get("id") for b in targeted}
+        passing_pool = [
+            b for b in benchmarks
+            if b.get("id") in baseline_passing_qids
+            and b.get("id") not in _targeted_qids
+        ]
+        passing_pool.sort(key=lambda b: str(b.get("id") or ""))
+        n_targeted = len(targeted)
+        # Aim for ratio targeted:regression = 60:40
+        n_regression = max(1, int(n_targeted * (40 / 60))) if n_targeted else 0
+        n_regression = min(n_regression, len(passing_pool))
+        result = list(targeted) + passing_pool[:n_regression]
+        if n_regression:
+            logger.info(
+                "Phase 5.1: stratified slice = %d targeted + %d "
+                "baseline-passing (regression detector)",
+                n_targeted, n_regression,
+            )
         return result
     if scope == "p0":
         return [b for b in benchmarks if b.get("priority", "P1") == "P0"]
@@ -2518,9 +2974,32 @@ def _classify_sql_validation_error(message: str) -> str:
       against an MV; fix is to wrap with ``MEASURE()``.
     * ``mv_alias_collision`` — ``MEASURE(col) AS col`` shadowed the
       underlying column; fix is to rename the alias.
+
+    PR 20 added:
+
+    * ``mv_measure_in_where`` — a measure column was referenced inside
+      a ``WHERE`` / ``HAVING`` / ``ON`` clause (Spark forbids this even
+      when wrapped in ``MEASURE()``). Fix is the CTE-first rewrite.
     """
     lowered = (message or "").lower()
     if "metric_view_missing_measure_function" in lowered:
+        # Disambiguate: if the planner cited a WHERE/HAVING/ON clause
+        # the LLM needs the CTE-first hint, not the wrap-in-MEASURE
+        # hint. Spark's error message text varies by release; we look
+        # for any of the three clause keywords near the error preamble.
+        if any(
+            kw in lowered
+            for kw in (
+                "in where",
+                "in the where",
+                "where clause",
+                "in having",
+                "having clause",
+                "in on",
+                " on clause",
+            )
+        ):
+            return "mv_measure_in_where"
         return "mv_missing_measure_function"
     if (
         "missing_attributes.resolved_attribute_appear_in_operation" in lowered
@@ -2551,6 +3030,20 @@ _REPAIR_HINTS_BY_REASON: dict[str, str] = {
         "view. Wrap every measure column in MEASURE() in the SELECT "
         "and ORDER BY clauses (NEVER in WHERE / HAVING / ON). The "
         "Metric Views section above lists which columns are measures."
+    ),
+    "mv_measure_in_where": (
+        "FIX: A measure column appeared in a WHERE / HAVING / ON "
+        "clause. Spark forbids this even when wrapped in MEASURE(). "
+        "Use the CTE-first pattern from the Metric Views docs: "
+        "materialize each filtered measure as ``MEASURE(m) AS m_value`` "
+        "in a WITH-clause SELECT, then filter on the alias in the "
+        "outer query. Example:\n"
+        "  WITH __mv_base AS (\n"
+        "    SELECT zone, MEASURE(total_sales) AS sales,\n"
+        "           MEASURE(store_day_count) AS store_day_count_value\n"
+        "    FROM mv_x GROUP BY zone\n"
+        "  )\n"
+        "  SELECT zone, sales FROM __mv_base WHERE store_day_count_value > 0;"
     ),
     "mv_alias_collision": (
         "FIX: MEASURE(col) was aliased back to the same column name "
@@ -2656,6 +3149,10 @@ def _precheck_benchmarks_for_eval(
         if _mv_measures:
             resolved_sql = _rewrite_measure_refs(resolved_sql, _mv_measures)
             resolved_sql, _ = _repair_measure_alias_collisions(resolved_sql)
+            # PR 20: lift measure-column references out of WHERE into a
+            # CTE-first pattern. Returns unchanged when no measure
+            # appears in WHERE.
+            resolved_sql, _ = _repair_measure_in_where(resolved_sql, _mv_measures)
 
         _found_params = _extract_sql_params(resolved_sql)
         if _found_params:
@@ -2855,11 +3352,12 @@ def make_predict_fn(
         own SQL warehouse; re-executing via Spark Connect can hit different
         limitations (e.g. METRIC_VIEW_JOIN_NOT_SUPPORTED).
         """
+        _qid_for_span = kwargs.get("question_id", "")
         try:
             if instruction_prompt_name:
                 _link_prompt_to_trace(instruction_prompt_name)
             _trace_tags: dict[str, str] = {
-                "question_id": kwargs.get("question_id", ""),
+                "question_id": _qid_for_span,
                 "space_id": space_id,
             }
             if optimization_run_id:
@@ -2882,6 +3380,26 @@ def make_predict_fn(
             if eval_scope:
                 _trace_metadata["eval_scope"] = eval_scope
             mlflow.update_current_trace(tags=_trace_tags, metadata=_trace_metadata)
+            # Phase 2.1: belt-and-suspenders. Also stamp question_id as
+            # a SPAN attribute (in addition to the trace tag above) so
+            # downstream consumers that inspect ``trace.data.spans`` —
+            # not just ``trace.info.tags`` — can recover the qid even
+            # when the trace-tag propagation path is unreliable in
+            # ``mlflow.genai.evaluate``.
+            try:
+                _active_span = mlflow.get_current_active_span()
+                if _active_span is not None and _qid_for_span:
+                    _active_span.set_attribute("question_id", _qid_for_span)
+                    if optimization_run_id:
+                        _active_span.set_attribute(
+                            "genie.optimization_run_id", optimization_run_id,
+                        )
+                    if iteration is not None:
+                        _active_span.set_attribute(
+                            "genie.iteration", str(iteration),
+                        )
+            except Exception:
+                logger.debug("Failed to stamp span attributes", exc_info=True)
         except Exception:
             # Surface tag-update failures so trace-recovery gaps have a
             # breadcrumb in MLflow metrics instead of a silent miss.
@@ -2916,6 +3434,8 @@ def make_predict_fn(
             if _mv_measures and gt_sql:
                 gt_sql = _rewrite_measure_refs(gt_sql, _mv_measures)
                 gt_sql, _ = _repair_measure_alias_collisions(gt_sql)
+                # PR 20: CTE-first lift for measures referenced in WHERE.
+                gt_sql, _ = _repair_measure_in_where(gt_sql, _mv_measures)
             temporal_intent = _detect_temporal_intent(question)
             if temporal_intent and gt_sql:
                 gt_sql, temporal_rewrite_meta = _rewrite_temporal_dates(gt_sql, temporal_intent)
@@ -5139,6 +5659,24 @@ def _print_eval_summary(
         f"|   result_correctness (pre-arbiter): {rc_pre_arbiter_pct:.1f}%  "
         f"(arbiter-adjusted: {rc_adjusted_pct:.1f}%)"
     )
+    # Phase 5.2: bound arbiter rescue rate. When the arbiter rescues
+    # more than 30% of rows that judges flagged as failures, the
+    # arbiter-adjusted overall accuracy is masking widespread judge
+    # dissent (e.g. iter-1 retail run: 45.8% rescued, 12.5% all-judge
+    # pass). Surface a SEVERITY:HIGH banner so operators can't miss
+    # it.
+    if total_questions:
+        _rescue_rate = (
+            (arbiter_counts.get("both_correct", 0) - _all_judge_pass_count)
+            / total_questions
+        )
+        if _rescue_rate > 0.30:
+            lines.append(
+                f"|   [SEVERITY:HIGH] Arbiter rescue rate "
+                f"{_rescue_rate*100:.1f}% > 30% — overall accuracy is "
+                f"masking judge dissent. Consider pre-arbiter accuracy "
+                f"({rc_pre_arbiter_pct:.1f}%) as the truthful signal."
+            )
     if adj_excluded:
         lines.append(f"|   Excluded (GT infra / both-empty / unavailable): {adj_excluded}")
     lines.append(f"|   Thresholds met: {'YES' if thresholds_passed else 'NO'}")
@@ -5529,6 +6067,64 @@ def run_evaluation(
 
             assessment_map = _extract_assessments_from_traces(results_df)
 
+            # Phase 2.2: pre-compute trace recovery before the row loop
+            # so we can backfill assessments for rows whose ``trace``
+            # column was lost during ``mlflow.genai.evaluate``. Skipped
+            # when the env-flag is off, when no rows are silent on
+            # assessments, or when the experiment is missing.
+            _enable_recovery = os.getenv(
+                "GSO_ASI_RECOVERY_FETCH_ASSESSMENTS", "1",
+            ).strip().lower() not in ("0", "false", "no", "off")
+            recovered_assessments_by_qid: dict[str, dict[str, dict]] = {}
+            if _enable_recovery and exp:
+                # Determine whether recovery is even worth attempting:
+                # only fetch traces when ``assessment_map`` has fewer
+                # populated rows than ``results_df`` (i.e. trace context
+                # was at least partially lost).
+                _populated_rows = sum(
+                    1 for v in assessment_map.values() if v
+                )
+                _total_rows = len(results_df)
+                if _populated_rows < _total_rows:
+                    _early_trace_map: dict[str, str] = {}
+                    for _r_idx, (_, _r_row) in enumerate(results_df.iterrows()):
+                        _r_qid = (
+                            _r_row.get("inputs/question_id")
+                            if hasattr(_r_row, "get") else None
+                        )
+                        _r_tid = (
+                            _r_row.get("trace_id")
+                            if hasattr(_r_row, "get") else None
+                        )
+                        if _r_qid and _r_tid:
+                            _early_trace_map[str(_r_qid)] = str(_r_tid)
+                    if len(_early_trace_map) < _total_rows:
+                        try:
+                            _early_trace_map.update(_recover_trace_map(
+                                experiment_id=exp.experiment_id,
+                                optimization_run_id=optimization_run_id,
+                                iteration=iteration,
+                                expected_count=_total_rows,
+                                start_time_ms=_predict_fn_start_ms,
+                                eval_result=eval_result,
+                            ))
+                        except Exception:
+                            logger.debug(
+                                "Early _recover_trace_map call failed",
+                                exc_info=True,
+                            )
+                    if _early_trace_map:
+                        recovered_assessments_by_qid = (
+                            _fetch_assessments_for_recovered_qids(_early_trace_map)
+                        )
+                        if recovered_assessments_by_qid:
+                            logger.info(
+                                "Phase 2.2: fetched assessments for %d/%d "
+                                "qids via recovered traces",
+                                len(recovered_assessments_by_qid),
+                                _total_rows,
+                            )
+
             for row_idx, (_, row) in enumerate(results_df.iterrows()):
                 row_dict = {}
                 for col in results_df.columns:
@@ -5584,6 +6180,7 @@ def run_evaluation(
                     row_dict,
                     assessment_map.get(row_idx),
                     cached_feedback.get(qid) if qid else None,
+                    recovered_assessments_by_qid.get(qid) if qid else None,
                 )
 
                 for col_name in list(row_dict.keys()):
@@ -7170,6 +7767,19 @@ def _attempt_sql_correction(
             )
             c["expected_sql"] = sql_str
 
+        # PR 20: lift measure-column references out of WHERE into a
+        # CTE-first pattern. Conservative: no-op when no measure appears
+        # in WHERE, when the SQL already has a WITH clause, when there's
+        # an outer JOIN / set-op / subquery, or when sqlglot can't parse.
+        if mv_measures:
+            sql_str, _where_lifts = _repair_measure_in_where(sql_str, mv_measures)
+            if _where_lifts and repair_counters is not None:
+                repair_counters["repaired_measure_in_where"] = (
+                    repair_counters.get("repaired_measure_in_where", 0)
+                    + _where_lifts
+                )
+                c["expected_sql"] = sql_str
+
         # Fix 3b: short-circuit candidates with dangling qualifiers
         # (``<qual>.<col>`` where ``qual`` is neither a FROM/JOIN table,
         # an explicit alias, nor a struct column on any FROM table).
@@ -7797,6 +8407,13 @@ def generate_validated_sql_examples(
                         rejection_counters.get("measure_alias_collisions_repaired", 0)
                         + _alias_fixes
                     )
+                # PR 20: CTE-first lift for measure-in-WHERE.
+                sql_str, _where_lifts = _repair_measure_in_where(sql_str, mv_measures)
+                if _where_lifts:
+                    rejection_counters["measure_in_where_repaired"] = (
+                        rejection_counters.get("measure_in_where_repaired", 0)
+                        + _where_lifts
+                    )
                 candidate["expected_sql"] = sql_str
 
             is_valid, err = _validate_benchmark_sql(
@@ -7848,6 +8465,46 @@ def generate_validated_sql_examples(
         # Carry the still-invalid candidates so the post-loop counter
         # update reflects all rounds (not just the last one).
         invalid_carry.extend(invalid)
+
+        # ── PR 21: adaptive overdraw short-circuit ──────────────────
+        # When ``mv_measures`` is empty AND the dominant rejection
+        # bucket from this round is ``mv_missing_measure_function``,
+        # additional rounds are guaranteed to fail the same way:
+        # without a measures map the auto-wrap rewriter is a no-op,
+        # and Spark will keep rejecting the same SQL shape. Break out
+        # to save 2/3 of the LLM budget and stamp a marker so the
+        # banner can surface the failure mode. The check fires only
+        # when there is still a deficit (otherwise the outer loop
+        # already exits via ``deficit <= 0``).
+        if not mv_measures and (target_count - len(valid)) > 0:
+            round_invalid_reasons: dict[str, int] = {}
+            for cand in invalid:
+                reason = (
+                    str(cand.get("validation_reason_code") or "").strip()
+                    or "sql_compile_error"
+                )
+                round_invalid_reasons[reason] = (
+                    round_invalid_reasons.get(reason, 0) + 1
+                )
+            if round_invalid_reasons:
+                _dominant_reason, _dom_count = max(
+                    round_invalid_reasons.items(),
+                    key=lambda kv: (kv[1], kv[0]),
+                )
+                if _dominant_reason == "mv_missing_measure_function":
+                    rejection_counters[
+                        "adaptive_overdraw_short_circuited"
+                    ] = "no_mv_measures"  # type: ignore[assignment]
+                    logger.info(
+                        "gvse adaptive overdraw short-circuited after "
+                        "round %d/%d: mv_measures empty and dominant "
+                        "rejection bucket is mv_missing_measure_function "
+                        "(%d/%d candidates) — additional rounds cannot "
+                        "recover without catalog-detected MV measures",
+                        gen_round + 1, ADAPTIVE_OVERDRAW_MAX_ROUNDS,
+                        _dom_count, sum(round_invalid_reasons.values()),
+                    )
+                    break
 
     rejection_counters["explain_or_execute"] += len(invalid_carry)
     rejection_counters["unfixable_after_correction"] = len(invalid_carry)

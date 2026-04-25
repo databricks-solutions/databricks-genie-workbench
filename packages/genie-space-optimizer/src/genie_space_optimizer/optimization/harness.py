@@ -2020,6 +2020,7 @@ def _run_unified_example_sql_generation(
             existing=len(existing_sqls),
             applied_examples=[],
             rejection_counters=rejection_counters or {},
+            config=config,
         )
         return out
 
@@ -2055,6 +2056,7 @@ def _run_unified_example_sql_generation(
         existing=len(existing_sqls),
         applied_examples=candidates,
         rejection_counters=rejection_counters or {},
+        config=config,
     )
 
     return out
@@ -2067,17 +2069,45 @@ def _print_unified_example_summary(
     existing: int,
     applied_examples: list[dict],
     rejection_counters: dict[str, int],
+    config: dict | None = None,
 ) -> None:
     """Pretty-print the unified example-SQL generator outcome.
 
     Seven distinct rejection classes are surfaced so operators can
     attribute yield shortfall to a specific stage (metadata vs MV vs
     execute vs arbiter vs firewall vs dedup) rather than one bucket.
+
+    PR 21 — when ``config`` is provided, the banner also surfaces a
+    one-line MV-detection summary (``MVs detected: N (config: a,
+    column-flags: b, catalog: c)``) and the adaptive-overdraw
+    short-circuit reason, so log readers see at a glance whether a
+    cluster of ``mv_missing_measure_function`` rejections is rooted in
+    "no MVs at all" vs "MVs detected but not by the path the rewriter
+    consults".
     """
     _lines = [_section("EXAMPLE SQL GENERATION (unified)", "=")]
     _lines.append(_kv("Target", target))
     _lines.append(_kv("Existing examples", existing))
     _lines.append(_kv("Applied (new)", len(applied_examples)))
+    if isinstance(config, dict):
+        try:
+            from genie_space_optimizer.optimization.evaluation import (
+                _count_mv_detection_sources,
+            )
+            _mv_counts = _count_mv_detection_sources(config)
+            _mv_total = (
+                _mv_counts.get("config", 0)
+                + _mv_counts.get("column_flags", 0)
+                + _mv_counts.get("catalog", 0)
+            )
+            _lines.append(_kv(
+                "MVs detected",
+                f"{_mv_total} (config: {_mv_counts.get('config', 0)}, "
+                f"column-flags: {_mv_counts.get('column_flags', 0)}, "
+                f"catalog: {_mv_counts.get('catalog', 0)})",
+            ))
+        except Exception:
+            pass
     _lines.append("|")
     rc = rejection_counters or {}
     _lines.append(_kv("Metadata rejected", rc.get("metadata", 0)))
@@ -2166,6 +2196,15 @@ def _print_unified_example_summary(
             _lines.append(_kv(
                 "Adaptive overdraw rounds used", _overdraw_rounds,
             ))
+    # PR 21 — surface the short-circuit reason whenever it is set,
+    # independent of whether any deterministic-repair counters
+    # fired. Operators reading the banner should always see the
+    # signal that we cut overdraw short and why.
+    _short_circuit = rc.get("adaptive_overdraw_short_circuited")
+    if _short_circuit:
+        _lines.append(_kv(
+            "Adaptive overdraw short-circuited", str(_short_circuit),
+        ))
     if applied_examples:
         _lines.append("|")
         for idx, c in enumerate(applied_examples[:10], 1):
@@ -3966,6 +4005,52 @@ def _prepare_lever_loop(
             run_id, exc,
         )
         uc_columns = config.get("_uc_columns", [])
+
+    # ── 2b. Catalog-level metric-view detection (PR 19) ──────────────
+    # Genie's serialized space sometimes omits the ``column_type='measure'``
+    # / ``is_measure`` flags on metric-view columns and lists MVs under
+    # ``data_sources.tables`` with no ``data_sources.metric_views`` entry,
+    # which makes the entire MV machinery (effective identifier set,
+    # ``build_metric_view_measures`` map, ``has_metric_view`` trait,
+    # MEASURE() auto-wrap) blind. Probing the catalog with
+    # ``DESCRIBE TABLE EXTENDED ... AS JSON`` is the only reliable way
+    # to recover; we cache the parsed YAML on the config so every
+    # downstream stage sees the same answer without re-running DESCRIBE.
+    # Idempotent: skipped when the cache is already populated (e.g. the
+    # snapshot was warmed by a prior preflight run).
+    if not (
+        isinstance(config.get("_metric_view_yaml"), dict)
+        and config["_metric_view_yaml"]
+    ):
+        try:
+            from genie_space_optimizer.common.metric_view_catalog import (
+                detect_metric_views_via_catalog,
+            )
+            _warehouse_id = os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "")
+            _, _yamls = detect_metric_views_via_catalog(
+                spark,
+                table_refs,
+                w=w,
+                warehouse_id=_warehouse_id,
+                catalog=catalog,
+                schema=schema,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Catalog metric-view detection failed for %s "
+                "(non-fatal, MV-aware features may be degraded): %s: %s",
+                run_id, type(exc).__name__, exc,
+            )
+            _yamls = {}
+        if _yamls:
+            config["_metric_view_yaml"] = _yamls
+            _ps = config.get("_parsed_space")
+            if isinstance(_ps, dict):
+                _ps["_metric_view_yaml"] = _yamls
+            logger.info(
+                "Catalog metric-view detection: %d MV(s) detected via DESCRIBE",
+                len(_yamls),
+            )
 
     # ── 3. Print detailed inventory diagnostic ───────────────────────
     _parsed = config.get("_parsed_space", {})
@@ -6571,6 +6656,7 @@ def _run_gate_checks(
     affected_question_ids: set[str] | None = None,
     lever_keys: list[str] | None = None,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
+    prev_failure_qids: set[str] | None = None,
 ) -> dict:
     """Run slice → P0 → full eval gate sequence for an action group.
 
@@ -6675,9 +6761,21 @@ def _run_gate_checks(
     _run_slice = False
     if ENABLE_SLICE_GATE:
         affected_qids: set[str] = affected_question_ids or set()
+        # Phase 5.1: stratified slice. Compute the set of
+        # baseline-passing qids (benchmarks minus prior-iteration
+        # failures) so the slice can include a regression-detector
+        # subset alongside the targeted rows. When ``prev_failure_qids``
+        # is unavailable (iteration 0 + no resume), fall back to the
+        # legacy targeted-only slice.
+        _all_qids = {b.get("id") for b in benchmarks if b.get("id")}
+        _baseline_passing = (
+            _all_qids - set(prev_failure_qids or set())
+            if prev_failure_qids is not None else None
+        )
         slice_benchmarks = filter_benchmarks_by_scope(
             benchmarks, "slice", patched_objects,
             affected_question_ids=affected_qids,
+            baseline_passing_qids=_baseline_passing,
         )
         _total = len(benchmarks)
         _sliced = len(slice_benchmarks) if slice_benchmarks else 0
@@ -7986,6 +8084,25 @@ def _run_lever_loop(
     _verdict_history: dict[str, list] = {}
     _last_full_mlflow_run_id: str = baseline_iter.get("mlflow_run_id", "") if baseline_iter else ""
 
+    # Phase 1.3: pending action groups buffer.  When the strategist
+    # returns multiple action_groups, only AG[0] is consumed in the
+    # current iteration; remaining AGs are buffered for the next
+    # iteration so we don't need a fresh (and expensive) strategist
+    # round-trip to address the next-priority cluster.  Each buffered
+    # AG is re-validated against the current cluster set before reuse;
+    # if its source clusters have been resolved or the schema state has
+    # diverged, the buffer is drained and the strategist is re-called.
+    # Toggle via ``GSO_PROCESS_ALL_AGS=0`` to fall back to the legacy
+    # AG[0]-only behavior.
+    _process_all_ags = os.getenv(
+        "GSO_PROCESS_ALL_AGS", "1",
+    ).strip().lower() not in ("0", "false", "no", "off")
+    _MAX_AGS_PER_STRATEGIST_CALL = int(
+        os.getenv("GSO_MAX_AGS_PER_STRATEGIST_CALL", "3"),
+    )
+    pending_action_groups: list[dict] = []
+    pending_strategy: dict | None = None
+
     for _iter_num in range(1, max_iterations + 1):
         # ── Exit checks ──────────────────────────────────────────────
         if all_thresholds_met(best_scores, thresholds):
@@ -8307,26 +8424,99 @@ def _run_lever_loop(
                 "genie.run_type": "strategy",
             })
 
-            strategy = _call_llm_for_adaptive_strategy(
-                clusters=clusters,
-                soft_signal_clusters=soft_signal_clusters,
-                metadata_snapshot=metadata_snapshot,
-                reflection_buffer=reflection_buffer,
-                priority_ranking=ranked,
-                tried_patches=tried_patches,
-                w=w,
-                total_benchmarks=_total_q,
-                passing_benchmarks=max(0, _passing_q),
-                verdict_history=_verdict_history,
-                skill_exemplars=skill_exemplars or None,
-                human_suggestions=_human_suggestions or None,
-                iq_scan_summary=(
-                    iq_scan_summary if _iq_scan_strategist_enabled() else None
-                ),
-            )
-            strategy["_source_clusters"] = clusters + soft_signal_clusters
-            action_groups = strategy.get("action_groups", [])
-            ag = action_groups[0] if action_groups else None
+            # Phase 1.3: try buffered AG first.  We re-validate against
+            # the current cluster set so a buffered AG whose source
+            # clusters have been resolved (or split) by a prior
+            # iteration is dropped and the strategist is re-called.
+            ag = None
+            strategy = pending_strategy if _process_all_ags else None
+            if _process_all_ags and pending_action_groups:
+                _live_cluster_ids = {
+                    c.get("cluster_id", "") for c in clusters + (soft_signal_clusters or [])
+                }
+                while pending_action_groups:
+                    _candidate = pending_action_groups.pop(0)
+                    _src_ids = set(_candidate.get("source_cluster_ids", []) or [])
+                    if not _src_ids or (_src_ids & _live_cluster_ids):
+                        ag = _candidate
+                        break
+                if ag is not None:
+                    print(
+                        _section(
+                            f"REUSING BUFFERED AG (skipping strategist call) — "
+                            f"{len(pending_action_groups)} more queued",
+                            "-",
+                        ) + "\n"
+                        + _kv("AG id", ag.get("id", "?")) + "\n"
+                        + _kv("Source clusters", sorted(_src_ids)) + "\n"
+                        + _bar("-")
+                    )
+                else:
+                    pending_strategy = None
+                    strategy = None
+
+            if ag is None:
+                strategy = _call_llm_for_adaptive_strategy(
+                    clusters=clusters,
+                    soft_signal_clusters=soft_signal_clusters,
+                    metadata_snapshot=metadata_snapshot,
+                    reflection_buffer=reflection_buffer,
+                    priority_ranking=ranked,
+                    tried_patches=tried_patches,
+                    w=w,
+                    total_benchmarks=_total_q,
+                    passing_benchmarks=max(0, _passing_q),
+                    verdict_history=_verdict_history,
+                    skill_exemplars=skill_exemplars or None,
+                    human_suggestions=_human_suggestions or None,
+                    iq_scan_summary=(
+                        iq_scan_summary if _iq_scan_strategist_enabled() else None
+                    ),
+                )
+                strategy["_source_clusters"] = clusters + soft_signal_clusters
+                action_groups = strategy.get("action_groups", [])
+                # Sort by priority (lower = higher priority); fall back
+                # to source-cluster impact_score when priority is
+                # missing or tied.
+                _impact_by_cid = {
+                    c.get("cluster_id", ""): float(c.get("impact_score", 0.0))
+                    for c in clusters + (soft_signal_clusters or [])
+                }
+
+                def _ag_sort_key(_ag: dict) -> tuple:
+                    _pri = _ag.get("priority")
+                    _pri_v = float(_pri) if isinstance(_pri, (int, float)) else 999.0
+                    _src = _ag.get("source_cluster_ids", []) or []
+                    _impact = max(
+                        (_impact_by_cid.get(_cid, 0.0) for _cid in _src),
+                        default=0.0,
+                    )
+                    return (_pri_v, -_impact)
+
+                action_groups = sorted(action_groups, key=_ag_sort_key)
+                ag = action_groups[0] if action_groups else None
+                if _process_all_ags and len(action_groups) > 1:
+                    pending_action_groups = list(
+                        action_groups[1:_MAX_AGS_PER_STRATEGIST_CALL]
+                    )
+                    pending_strategy = strategy
+                    print(
+                        _section(
+                            f"BUFFERING {len(pending_action_groups)} ADDITIONAL AG(S) "
+                            f"FOR LATER ITERATION(S)",
+                            "-",
+                        ) + "\n"
+                        + _kv(
+                            "Buffered AGs",
+                            ", ".join(
+                                _a.get("id", "?") for _a in pending_action_groups
+                            ),
+                        ) + "\n"
+                        + _bar("-")
+                    )
+                else:
+                    pending_action_groups = []
+                    pending_strategy = None
 
             _global_rewrite = strategy.get("global_instruction_rewrite")
             if isinstance(_global_rewrite, dict):
@@ -9035,6 +9225,29 @@ def _run_lever_loop(
         # ── Apply coordinated patch set ──────────────────────────────
         patches = proposals_to_patches(all_proposals)
 
+        # Phase 4.3: expand ``rewrite_instruction`` proposals into
+        # ``update_instruction_section`` children BEFORE the cap so a
+        # single rewrite_instruction proposal does not balloon past the
+        # cap inside ``apply_patch_set``. Idempotent — applier will not
+        # re-split children that already carry ``_split_from``.
+        try:
+            from genie_space_optimizer.optimization.applier import (
+                _expand_rewrite_splits as _harness_expand_splits,
+            )
+            _pre_split_count = len(patches)
+            patches = _harness_expand_splits(patches)
+            if len(patches) > _pre_split_count:
+                logger.info(
+                    "Phase 4.3: rewrite splits expanded patch list "
+                    "%d -> %d before diversity-aware cap",
+                    _pre_split_count, len(patches),
+                )
+        except Exception:
+            logger.debug(
+                "Phase 4.3: pre-cap rewrite split expansion failed (non-fatal)",
+                exc_info=True,
+            )
+
         # Tier 2.6: cap AG patch-set size. A single failing patch in a
         # large batch rolls back everything — including the patches that
         # would have helped. If the cap is exceeded, keep the highest-
@@ -9057,6 +9270,10 @@ def _run_lever_loop(
             _known_levers = [1, 2, 3, 4, 5, 6]
             _seen_levers: list[int] = []
             _by_lever: dict[int, list[dict]] = {}
+            # Phase 4.3: also bucket by ``(lever, section_name)`` so a
+            # single ``rewrite_instruction`` that expanded into N
+            # section patches can't consume the whole Lever-5 budget.
+            _by_lever_section: dict[tuple[int, str], list[dict]] = {}
             for p in patches:
                 try:
                     L = int(p.get("lever", 5))
@@ -9065,6 +9282,8 @@ def _run_lever_loop(
                 if L not in _by_lever:
                     _seen_levers.append(L)
                 _by_lever.setdefault(L, []).append(p)
+                _section_key = str(p.get("section_name") or p.get("section") or "")
+                _by_lever_section.setdefault((L, _section_key), []).append(p)
             _lever_order = (
                 [L for L in _known_levers if L in _by_lever]
                 + [L for L in _seen_levers if L not in _known_levers]
@@ -9074,8 +9293,39 @@ def _run_lever_loop(
             remaining: dict[int, list[dict]] = {
                 k: list(v) for k, v in _by_lever.items()
             }
+            # Phase 4.3 pass-1: take one patch per ``(lever, section)``
+            # pair so a single rewrite-instruction split can't dominate
+            # the entire Lever-5 budget. After this pass, every distinct
+            # section that the strategist proposed has at least one slot
+            # in the cap.
+            _seen_section_keys: set[tuple[int, str]] = set()
             for L in _lever_order:
-                if remaining.get(L):
+                _bucket = remaining.get(L) or []
+                # Pull the first patch for each unique section in this
+                # lever's bucket, preserving original order.
+                _new_bucket: list[dict] = []
+                for _p in _bucket:
+                    _sec = str(_p.get("section_name") or _p.get("section") or "")
+                    _key = (L, _sec)
+                    if _key not in _seen_section_keys:
+                        kept.append(_p)
+                        _seen_section_keys.add(_key)
+                        if len(kept) >= MAX_AG_PATCHES:
+                            break
+                    else:
+                        _new_bucket.append(_p)
+                remaining[L] = _new_bucket + [
+                    _p for _p in _bucket
+                    if (L, str(_p.get("section_name") or _p.get("section") or ""))
+                    in _seen_section_keys and _p not in kept
+                ]
+                if len(kept) >= MAX_AG_PATCHES:
+                    break
+
+            # Pass 2: keep at least one patch per remaining lever (any
+            # section).  Preserves the original "diverse levers" goal.
+            for L in _lever_order:
+                if remaining.get(L) and L not in {int(p.get("lever", 5)) for p in kept}:
                     kept.append(remaining[L].pop(0))
                     if len(kept) >= MAX_AG_PATCHES:
                         break
@@ -9329,6 +9579,7 @@ def _run_lever_loop(
             affected_question_ids=set(ag.get("affected_questions", [])),
             lever_keys=lever_keys,
             max_benchmark_count=max_benchmark_count,
+            prev_failure_qids=prev_failure_qids,
         )
 
         # ── 3B.7: Accept or rollback ────────────────────────────────
@@ -9343,6 +9594,18 @@ def _run_lever_loop(
                 spark, run_id, iteration_counter, reason, catalog, schema,
             )
             ags_rolled_back.append(ag_id)
+            # Phase 1.3: drop the AG buffer when an AG rolls back.  The
+            # buffered AGs were produced from the same strategist call
+            # and tend to share the same flawed root-cause hypothesis;
+            # forcing a fresh strategist call gives the next iteration
+            # a clean slate informed by the rollback in reflection_buffer.
+            if pending_action_groups:
+                logger.info(
+                    "Dropping %d buffered AG(s) after rollback of %s",
+                    len(pending_action_groups), ag_id,
+                )
+                pending_action_groups = []
+                pending_strategy = None
             for lk in lever_keys:
                 levers_rolled_back.append(int(lk))
             # Phase E2: include rollback_class in stage detail so the
@@ -9629,6 +9892,124 @@ def _run_lever_loop(
         metadata_snapshot = apply_log.get("post_snapshot", metadata_snapshot)
         if _original_instruction_sections:
             metadata_snapshot["_original_instruction_sections"] = _original_instruction_sections
+
+        # Phase 7: end-of-iteration diagnostics. Single block summarizing
+        # ASI source quality, cluster processing, patch capping, and
+        # pre-arbiter accuracy so operators can spot degenerate values
+        # at a glance. Any field at a danger threshold (ASI=none > 50%,
+        # arbiter rescue > 30%) emits an inline SEVERITY:HIGH banner.
+        try:
+            _diag_lines = [_section("LEVER_LOOP_DIAGNOSTICS", "=")]
+            _diag_lines.append(_kv("Iteration", iteration_counter))
+            _diag_lines.append(_kv("AG id", ag_id))
+
+            # ASI source histogram from the latest eval rows. The
+            # ``_eval_rows`` variable is populated below in the join-
+            # mining block but doesn't exist yet at this point in the
+            # iteration; pull rows directly from ``full_result``.
+            _asi_source_counts: dict[str, int] = {}
+            _asi_total = 0
+            _diag_rows = full_result.get("rows", []) if isinstance(full_result, dict) else []
+            if not _diag_rows and isinstance(full_result, dict):
+                _rows_json = full_result.get("rows_json")
+                if isinstance(_rows_json, list):
+                    _diag_rows = _rows_json
+                elif isinstance(_rows_json, str):
+                    try:
+                        import json as _json_diag
+                        _diag_rows = _json_diag.loads(_rows_json)
+                    except (ValueError, TypeError):
+                        _diag_rows = []
+            for _r in _diag_rows:
+                if not isinstance(_r, dict):
+                    continue
+                for _log in (_r.get("_asi_extraction_log") or []):
+                    if not isinstance(_log, dict):
+                        continue
+                    _src = str(_log.get("source") or "none")
+                    _asi_source_counts[_src] = _asi_source_counts.get(_src, 0) + 1
+                    _asi_total += 1
+            if _asi_total:
+                _none_pct = (
+                    100 * _asi_source_counts.get("none", 0) / _asi_total
+                )
+                _hist = ", ".join(
+                    f"{k}={v}"
+                    for k, v in sorted(
+                        _asi_source_counts.items(), key=lambda kv: -kv[1],
+                    )
+                )
+                _diag_lines.append(_kv("ASI source histogram", _hist))
+                if _none_pct > 50.0:
+                    _diag_lines.append(
+                        f"|   [SEVERITY:HIGH] ASI source none={_none_pct:.0f}% > 50% "
+                        f"— strategist is reasoning blind on heuristic root_causes"
+                    )
+            else:
+                _diag_lines.append(_kv("ASI source histogram", "(no rows)"))
+
+            # Cluster processing.
+            _diag_lines.append(_kv(
+                "Hard clusters formed", len(clusters or []),
+            ))
+            _diag_lines.append(_kv(
+                "Soft clusters formed", len(soft_signal_clusters or []),
+            ))
+            _diag_lines.append(_kv("AGs attempted (cumulative)", len(ags_attempted)))
+            _diag_lines.append(_kv("AGs accepted (cumulative)", len(ags_accepted)))
+            _diag_lines.append(_kv("AGs rolled back (cumulative)", len(ags_rolled_back)))
+            _diag_lines.append(_kv("Pending AGs in buffer", len(pending_action_groups)))
+
+            # Patch cap.
+            _diag_lines.append(_kv("Patches applied this AG", len(apply_log.get("applied", []))))
+
+            # Pre-arbiter accuracy + arbiter rescue rate.
+            _full_scores = (
+                full_result.get("scores", {})
+                if isinstance(full_result, dict) else {}
+            )
+            _pre_arb = _full_scores.get(
+                "_pre_arbiter/overall_accuracy",
+                _full_scores.get("_pre_arbiter/result_correctness"),
+            )
+            _adj = (
+                full_result.get("overall_accuracy")
+                if isinstance(full_result, dict) else None
+            )
+            if _pre_arb is not None:
+                _diag_lines.append(
+                    _kv("Pre-arbiter accuracy", f"{_pre_arb:.1f}%"),
+                )
+            if _adj is not None:
+                _diag_lines.append(
+                    _kv("Arbiter-adjusted accuracy", f"{_adj:.1f}%"),
+                )
+            _bcr = (
+                full_result.get("both_correct_rate")
+                if isinstance(full_result, dict) else None
+            )
+            if isinstance(_bcr, (int, float)) and _bcr is not None:
+                _alljudge = float(
+                    _full_scores.get("_pre_arbiter/result_correctness", 0.0)
+                ) / 100.0
+                _rescue = max(0.0, float(_bcr) - _alljudge)
+                _diag_lines.append(
+                    _kv("Arbiter rescue rate", f"{_rescue*100:.1f}%"),
+                )
+                if _rescue > 0.30:
+                    _diag_lines.append(
+                        f"|   [SEVERITY:HIGH] Arbiter rescue rate "
+                        f"{_rescue*100:.1f}% > 30% — pre-arbiter is the "
+                        f"truthful signal"
+                    )
+
+            _diag_lines.append(_bar("="))
+            print("\n".join(_diag_lines))
+        except Exception:
+            logger.debug(
+                "Phase 7: LEVER_LOOP_DIAGNOSTICS block failed (non-fatal)",
+                exc_info=True,
+            )
 
         # ── Mine execution-proven joins from latest eval rows ────────
         try:

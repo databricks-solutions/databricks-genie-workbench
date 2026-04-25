@@ -2560,6 +2560,37 @@ def run_preflight_example_synthesis(
             else:
                 reject_by_gate[gr.gate] = reject_by_gate.get(gr.gate, 0) + 1
                 _record_gate_rejection(gr.gate, gr.reason, proposal)
+                # PR 22 — sub-bucket execute-gate rejections by the
+                # canonical reason code so the preflight banner can show
+                # the same per-class breakdown the unified banner does
+                # (PR 18). Subclassing only on the execute gate keeps
+                # the breakdown focused on the failure class operators
+                # actually act on (mv_missing_measure_function /
+                # mv_measure_in_where / mv_alias_collision /
+                # unknown_column / etc.).
+                if gr.gate == "execute":
+                    try:
+                        from genie_space_optimizer.optimization.evaluation import (
+                            _classify_sql_validation_error,
+                        )
+                        _sub = _classify_sql_validation_error(gr.reason or "")
+                    except Exception:
+                        _sub = "sql_compile_error"
+                    _sub_counts = result.setdefault(
+                        "execute_subbuckets", {},
+                    )
+                    _sub_counts[_sub] = _sub_counts.get(_sub, 0) + 1
+                    _sub_examples = result.setdefault(
+                        "execute_subbucket_examples", {},
+                    )
+                    _ex_list = _sub_examples.setdefault(_sub, [])
+                    if len(_ex_list) < 3:
+                        _ex_list.append({
+                            "question": str(
+                                proposal.get("example_question") or ""
+                            )[:80],
+                            "error": str(gr.reason or "")[:200],
+                        })
                 break  # first fail short-circuits the rest
         if not passed:
             continue
@@ -2849,6 +2880,31 @@ def _print_summary(result: dict) -> None:
             "Rejected by gate",
             ", ".join(f"{k}={v}" for k, v in rejections.items()),
         ))
+
+    # PR 22 — per-reason sub-buckets for execute-gate rejections,
+    # mirroring the unified banner's PR 18 breakdown so both pipelines
+    # surface the same diagnostic shape. Rendered only when the gate
+    # has at least one rejection so the banner stays terse on clean
+    # runs.
+    _exec_subs = result.get("execute_subbuckets") or {}
+    _exec_examples = result.get("execute_subbucket_examples") or {}
+    if isinstance(_exec_subs, dict) and _exec_subs:
+        lines.append(_kv("  execute sub-buckets", ""))
+        _ordered = sorted(
+            _exec_subs.items(), key=lambda kv: (-kv[1], kv[0]),
+        )
+        for _reason, _count in _ordered:
+            lines.append(_kv(f"    {_reason}", _count, indent=4))
+            _ex_list = _exec_examples.get(_reason) or []
+            if isinstance(_ex_list, list):
+                for _ex in _ex_list[:3]:
+                    if not isinstance(_ex, dict):
+                        continue
+                    _q = str(_ex.get("question", ""))[:80]
+                    _err = str(_ex.get("error", ""))[:120]
+                    lines.append(
+                        f"        [{_reason}] {_q} — {_err}",
+                    )
 
     # Per-candidate rejection reasons — surfaced so operators can see
     # WHY candidates died without having to grep the job log. Bounded
