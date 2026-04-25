@@ -258,128 +258,13 @@ def _ensure_experiment_parent_dir(ws: WorkspaceClient, experiment_path: str) -> 
         return False
 
 
-def _detect_metric_views_via_catalog(
-    spark: "SparkSession",
-    refs: list[tuple[str, str, str]],
-    *,
-    w: Any = None,
-    warehouse_id: str = "",
-    catalog: str = "",
-    schema: str = "",
-    exec_sql: Any = None,
-) -> tuple[set[str], dict[str, dict]]:
-    """Catalog-level metric-view detection.
-
-    Runs ``DESCRIBE TABLE EXTENDED <fq> AS JSON`` for each ref and parses
-    the JSON envelope. A ref is classified as a metric view when the
-    response contains a ``view_text`` (or equivalent field) whose YAML
-    payload has the metric-view top-level shape — a ``source`` plus at
-    least one of ``dimensions`` / ``measures``.
-
-    Returns ``(detected, yamls)`` where:
-      * ``detected`` is a set of fully-qualified, lower-cased identifiers
-        for refs classified as MVs.
-      * ``yamls`` maps each detected identifier to its parsed YAML dict
-        so downstream callers (MV-aware data profiling, prompt building)
-        can inspect dimensions and measures without re-running DESCRIBE.
-
-    Detection is *permissive* — false negatives only, never false
-    positives. Failures are logged at debug level and the ref is treated
-    as a non-MV so the regular table-profile path remains correct for
-    real tables.
-
-    The optional ``exec_sql`` lets tests inject a stub; callers in
-    production leave it ``None`` and the helper resolves the canonical
-    ``evaluation._exec_sql``.
-    """
-    import json as _json
-
-    import yaml as _yaml
-
-    if exec_sql is None:
-        from genie_space_optimizer.optimization.evaluation import _exec_sql as _exec
-    else:
-        _exec = exec_sql
-
-    detected: set[str] = set()
-    yamls: dict[str, dict] = {}
-
-    for cat, sch, name in refs:
-        cat = (cat or "").strip()
-        sch = (sch or "").strip()
-        name = (name or "").strip()
-        if not (cat and sch and name):
-            continue
-        fq_lower = f"{cat}.{sch}.{name}".lower()
-        fq_quoted = ".".join(f"`{p}`" for p in (cat, sch, name))
-
-        try:
-            describe_df = _exec(
-                f"DESCRIBE TABLE EXTENDED {fq_quoted} AS JSON",
-                spark,
-                w=w,
-                warehouse_id=warehouse_id,
-                catalog=catalog,
-                schema=schema,
-            )
-        except Exception:
-            logger.debug(
-                "MV catalog detection: DESCRIBE failed for %s, treating as non-MV",
-                fq_lower,
-                exc_info=True,
-            )
-            continue
-
-        if describe_df is None or describe_df.empty:
-            continue
-
-        # The JSON payload may live under different column names depending on
-        # whether the warehouse path or the Spark path returned the row;
-        # search the row's values for the first parseable JSON envelope.
-        envelope: dict[str, Any] | None = None
-        for value in describe_df.iloc[0].tolist():
-            if not isinstance(value, str):
-                continue
-            try:
-                parsed = _json.loads(value)
-            except (ValueError, TypeError):
-                continue
-            if isinstance(parsed, dict):
-                envelope = parsed
-                break
-        if envelope is None:
-            continue
-
-        view_text = (
-            envelope.get("view_text")
-            or envelope.get("View Text")
-            or envelope.get("view_definition")
-            or envelope.get("ViewText")
-            or ""
-        )
-        if not isinstance(view_text, str) or not view_text.strip():
-            continue
-
-        try:
-            yaml_doc = _yaml.safe_load(view_text)
-        except Exception:
-            logger.debug(
-                "MV catalog detection: YAML parse failed for %s", fq_lower,
-                exc_info=True,
-            )
-            continue
-
-        if not isinstance(yaml_doc, dict):
-            continue
-        if not yaml_doc.get("source"):
-            continue
-        if not (yaml_doc.get("dimensions") or yaml_doc.get("measures")):
-            continue
-
-        detected.add(fq_lower)
-        yamls[fq_lower] = yaml_doc
-
-    return detected, yamls
+# PR 19: detection moved to ``common.metric_view_catalog`` so harness's
+# enrichment startup can reuse it without importing the entire preflight
+# module. Re-exported here under the original name so existing call
+# sites and tests continue to work unchanged.
+from genie_space_optimizer.common.metric_view_catalog import (  # noqa: E402
+    detect_metric_views_via_catalog as _detect_metric_views_via_catalog,
+)
 
 
 def _collect_data_profile(
@@ -395,7 +280,7 @@ def _collect_data_profile(
     warehouse_id: str = "",
     catalog: str = "",
     schema: str = "",
-) -> dict[str, dict]:
+) -> tuple[dict[str, dict], list[str]]:
     """Profile actual data values for Genie Space tables.
 
     For each table (up to *max_tables*) runs a single TABLESAMPLE-bounded
@@ -406,8 +291,16 @@ def _collect_data_profile(
     the SQL warehouse Statement Execution API; otherwise Spark SQL is used
     as a fallback.
 
-    Returns ``{table_fqn: {"row_count": N, "columns": {col: {...}}}}``.
-    Failures on individual tables are logged and skipped.
+    Returns ``(profile, reclassified_mvs)`` where:
+      * ``profile`` maps ``{table_fqn: {"row_count": N, "columns": {col: ...}}}``
+        for each ref that was successfully profiled.
+      * ``reclassified_mvs`` lists fully-qualified identifiers of refs whose
+        profile query Spark rejected with a metric-view error
+        (``METRIC_VIEW_UNSUPPORTED_USAGE`` etc.). The caller merges these
+        back into the effective MV set and the MV YAML cache so all
+        downstream gates treat them as MVs for the rest of the run.
+
+    Failures on individual tables (non-MV) are logged and skipped.
     """
     import json as _json
 
@@ -451,6 +344,8 @@ def _collect_data_profile(
         return sorted(str(v) for v in raw_vals)
 
     profile: dict[str, dict] = {}
+    reclassified_mvs: list[str] = []
+    from genie_space_optimizer.optimization.evaluation import is_metric_view_error
     for table_fqn in tables[:max_tables]:
         _leaf = table_fqn.split(".")[-1].strip("`").lower()
         if _leaf in metric_view_names or table_fqn.strip().lower() in metric_view_names:
@@ -510,14 +405,38 @@ def _collect_data_profile(
 
         try:
             stats_df = _exec_sql(query, spark, **_sql_kw)
-        except Exception:
+        except Exception as exc:
+            # Tier-A #2: reactive reclassification. If Spark rejects the
+            # aggregate with a metric-view error, the ref is actually a
+            # metric view (catalog detection didn't catch it — perhaps
+            # the DESCRIBE call returned a non-YAML envelope, or the
+            # YAML lacked the ``source`` key). Record the ref so the
+            # caller can merge it into ``_metric_view_yaml`` for the
+            # rest of the run, and skip the table-shape fallback (which
+            # would also fail and just adds log noise).
+            if is_metric_view_error(str(exc)):
+                logger.info(
+                    "Data profiling: %s reclassified as metric view "
+                    "(Spark rejected: %s)",
+                    table_fqn, str(exc)[:200],
+                )
+                reclassified_mvs.append(table_fqn)
+                continue
             fallback_query = (
                 f"SELECT {select_clause} "
                 f"FROM (SELECT * FROM {fq_table} LIMIT {sample_size})"
             )
             try:
                 stats_df = _exec_sql(fallback_query, spark, **_sql_kw)
-            except Exception:
+            except Exception as fallback_exc:
+                if is_metric_view_error(str(fallback_exc)):
+                    logger.info(
+                        "Data profiling: %s reclassified as metric view "
+                        "(fallback also rejected: %s)",
+                        table_fqn, str(fallback_exc)[:200],
+                    )
+                    reclassified_mvs.append(table_fqn)
+                    continue
                 logger.info("Data profiling: stats query failed for %s, skipping", table_fqn, exc_info=True)
                 continue
 
@@ -591,7 +510,7 @@ def _collect_data_profile(
             table_fqn, row_count, len(columns_profile), len(low_card_cols),
         )
 
-    return profile
+    return profile, reclassified_mvs
 
 
 def _compute_join_overlaps(
@@ -1411,12 +1330,31 @@ def preflight_collect_uc_metadata(
             task_key="preflight", catalog=catalog, schema=schema,
         )
         try:
-            data_profile = _collect_data_profile(
+            data_profile, reclassified_mvs = _collect_data_profile(
                 spark, table_names, uc_columns_dicts,
                 metric_view_names=_mv_names,
                 w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
             )
+            # Tier-A #2: merge runtime-reclassified MVs into the YAML cache
+            # (with empty payloads — we have no YAML, just the fact that
+            # Spark told us they're MVs) so all four downstream gates
+            # (MEASURE auto-wrap, MV ``SELECT *`` guard, MV prompt block,
+            # data-profile skip-list) immediately treat them as MVs.
+            if reclassified_mvs:
+                _yaml_cache = config.get("_metric_view_yaml")
+                if not isinstance(_yaml_cache, dict):
+                    _yaml_cache = {}
+                    config["_metric_view_yaml"] = _yaml_cache
+                for _fqn in reclassified_mvs:
+                    _yaml_cache.setdefault(_fqn.lower(), {})
+                _ps_for_mirror = config.get("_parsed_space")
+                if isinstance(_ps_for_mirror, dict):
+                    _ps_for_mirror["_metric_view_yaml"] = dict(_yaml_cache)
+                # Refresh the local effective-MV set so the Coverage line
+                # below sees the runtime reclassifications.
+                _eff_mvs = effective_metric_view_identifiers_with_catalog(config)
             config["_data_profile"] = data_profile
+            config["_data_profile_reclassified_mvs"] = list(reclassified_mvs)
             _ps = config.get("_parsed_space")
             if isinstance(_ps, dict):
                 _ps["_data_profile"] = data_profile

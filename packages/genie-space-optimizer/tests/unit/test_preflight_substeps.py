@@ -137,7 +137,7 @@ class TestPreflightCollectUcMetadata:
         """warehouse_id is forwarded to _collect_data_profile."""
         from genie_space_optimizer.optimization.preflight import preflight_collect_uc_metadata
 
-        mock_profile.return_value = {}
+        mock_profile.return_value = ({}, [])
         preflight_collect_uc_metadata(
             MagicMock(), mock_spark, "run-1", "cat", "gold",
             config={}, snapshot={}, genie_table_refs=[],

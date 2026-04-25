@@ -72,7 +72,7 @@ def _run_preflight(
         patch.object(preflight, "_collect_or_empty", return_value=rows_stub),
         patch.object(
             preflight, "_collect_data_profile",
-            return_value=data_profile or {},
+            return_value=(data_profile or {}, []),
         ),
         patch.object(
             preflight, "_detect_metric_views_via_catalog",

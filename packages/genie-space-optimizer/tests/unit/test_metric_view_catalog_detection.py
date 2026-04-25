@@ -238,3 +238,242 @@ def test_effective_with_catalog_falls_back_when_yaml_cache_absent():
     base = effective_metric_view_identifiers(config)
     extended = effective_metric_view_identifiers_with_catalog(config)
     assert base == extended
+
+
+# ── PR 19: cache-aware measures map + traits + harness wiring ────────
+
+
+def test_build_metric_view_measures_unions_yaml_cache():
+    """``_metric_view_yaml`` alone (no measure column_configs) yields measures."""
+    from genie_space_optimizer.optimization.evaluation import (
+        build_metric_view_measures,
+    )
+
+    config = {
+        # Genie reported the MV as a regular table with no measure flags.
+        "_parsed_space": {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": "cat.sch.mv_esr_store_sales",
+                        "column_configs": [
+                            {"column_name": "store_id", "column_type": "dimension"},
+                            {"column_name": "total_sales_usd_day"},
+                        ],
+                    },
+                ],
+                "metric_views": [],
+            },
+        },
+        # Catalog DESCRIBE recovered the real MV definition.
+        "_metric_view_yaml": {
+            "cat.sch.mv_esr_store_sales": {
+                "source": "cat.sch.fact_sales",
+                "dimensions": [{"name": "store_id", "expr": "store_id"}],
+                "measures": [
+                    {"name": "total_sales_usd_day", "expr": "SUM(total_sales)"},
+                    {"name": "store_day_count_day", "expr": "COUNT(*)"},
+                ],
+            },
+        },
+    }
+
+    measures = build_metric_view_measures(config)
+    assert "mv_esr_store_sales" in measures
+    assert measures["mv_esr_store_sales"] == {
+        "total_sales_usd_day",
+        "store_day_count_day",
+    }
+
+
+def test_build_metric_view_measures_unions_columns_and_yaml():
+    """Both column_configs *and* YAML cache contribute to the same MV."""
+    from genie_space_optimizer.optimization.evaluation import (
+        build_metric_view_measures,
+    )
+
+    config = {
+        "_parsed_space": {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": "cat.sch.mv_sales",
+                        "column_configs": [
+                            {
+                                "column_name": "revenue",
+                                "column_type": "measure",
+                            },
+                        ],
+                    },
+                ],
+            },
+        },
+        "_metric_view_yaml": {
+            "cat.sch.mv_sales": {
+                "source": "cat.sch.fact",
+                "measures": [
+                    {"name": "qty", "expr": "SUM(qty)"},
+                ],
+            },
+        },
+    }
+
+    measures = build_metric_view_measures(config)
+    assert measures.get("mv_sales") == {"revenue", "qty"}
+
+
+def test_build_metric_view_measures_reads_yaml_cache_from_parsed_space():
+    """Cache stamped under ``_parsed_space`` is also picked up."""
+    from genie_space_optimizer.optimization.evaluation import (
+        build_metric_view_measures,
+    )
+
+    config = {
+        "_parsed_space": {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": "cat.sch.mv_only",
+                        "column_configs": [],
+                    },
+                ],
+            },
+            "_metric_view_yaml": {
+                "cat.sch.mv_only": {
+                    "source": "cat.sch.src",
+                    "measures": [{"name": "amount", "expr": "SUM(x)"}],
+                },
+            },
+        },
+    }
+
+    measures = build_metric_view_measures(config)
+    assert measures.get("mv_only") == {"amount"}
+
+
+def test_schema_traits_yaml_cache_only():
+    """No metric_views, no measure flags, but populated cache → has_metric_view."""
+    from genie_space_optimizer.optimization.archetypes import schema_traits
+
+    metadata_snapshot = {
+        "data_sources": {
+            "tables": [
+                {
+                    "identifier": "cat.sch.mv_via_catalog",
+                    "column_configs": [
+                        {"column_name": "id", "data_type": "string"},
+                    ],
+                },
+            ],
+            "metric_views": [],
+        },
+        "_metric_view_yaml": {
+            "cat.sch.mv_via_catalog": {
+                "source": "cat.sch.src",
+                "measures": [{"name": "x", "expr": "SUM(x)"}],
+            },
+        },
+    }
+
+    traits = schema_traits(metadata_snapshot)
+    assert "has_metric_view" in traits
+
+
+def test_schema_traits_no_cache_and_no_flags_no_mv_trait():
+    """Sanity: empty cache must not synthesize the trait."""
+    from genie_space_optimizer.optimization.archetypes import schema_traits
+
+    metadata_snapshot = {
+        "data_sources": {
+            "tables": [
+                {
+                    "identifier": "cat.sch.regular",
+                    "column_configs": [
+                        {"column_name": "id", "data_type": "string"},
+                    ],
+                },
+            ],
+            "metric_views": [],
+        },
+        "_metric_view_yaml": {},
+    }
+
+    traits = schema_traits(metadata_snapshot)
+    assert "has_metric_view" not in traits
+
+
+def test_run_enrichment_invokes_catalog_detection(monkeypatch):
+    """``_prepare_lever_loop`` runs ``detect_metric_views_via_catalog`` and
+    stamps ``_metric_view_yaml`` on the loaded config."""
+    from genie_space_optimizer.optimization import harness as _harness
+
+    yaml_payload = {
+        "cat.sch.mv_x": {
+            "source": "cat.sch.src",
+            "measures": [{"name": "amount", "expr": "SUM(amount)"}],
+        },
+    }
+
+    fetched_config = {
+        "_parsed_space": {
+            "data_sources": {
+                "tables": [
+                    {"identifier": "cat.sch.mv_x", "column_configs": []},
+                ],
+                "metric_views": [],
+            },
+        },
+    }
+
+    # Stub out everything _prepare_lever_loop touches around the new
+    # block. ``fetch_space_config``, ``extract_genie_space_table_refs``,
+    # and ``get_columns_for_tables_rest`` are imported lazily inside the
+    # function — patch their source modules.
+    monkeypatch.setattr(_harness, "load_run", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.genie_client.fetch_space_config",
+        lambda *a, **k: fetched_config,
+    )
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.uc_metadata.extract_genie_space_table_refs",
+        lambda config: [("cat", "sch", "mv_x")],
+    )
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.uc_metadata.get_columns_for_tables_rest",
+        lambda w, refs: [],
+    )
+
+    # Stub the catalog detector itself.
+    called = {"args": None}
+
+    def fake_detect(spark, refs, *, w, warehouse_id, catalog, schema):
+        called["args"] = (refs, catalog, schema)
+        return set(yaml_payload), yaml_payload
+
+    monkeypatch.setattr(
+        "genie_space_optimizer.common.metric_view_catalog."
+        "detect_metric_views_via_catalog",
+        fake_detect,
+    )
+
+    # Disable downstream-of-detection branches that would require Spark
+    # / Workspace clients we don't have in the unit test.
+    monkeypatch.setattr(_harness, "ENABLE_PROMPT_MATCHING_AUTO_APPLY", False)
+    monkeypatch.setattr(
+        "genie_space_optimizer.iq_scan.collect_rls_audit",
+        lambda *a, **k: {},
+    )
+
+    config = _harness._prepare_lever_loop(
+        w=MagicMock(),
+        spark=MagicMock(),
+        run_id="run-1",
+        space_id="space-1",
+        catalog="cat",
+        schema="sch",
+        benchmarks=None,
+    )
+
+    assert called["args"] is not None
+    assert config.get("_metric_view_yaml") == yaml_payload
+    assert config["_parsed_space"]["_metric_view_yaml"] == yaml_payload
