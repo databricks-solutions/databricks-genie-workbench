@@ -303,6 +303,118 @@ def test_row_count_falls_back_to_minus_one_on_mv_error():
     assert result.get("row_count") == -1
 
 
+def test_data_profiling_stage_detail_includes_mv_metrics():
+    """The DATA_PROFILING stage detail surfaces three new keys so MLflow
+    + the persisted run snapshot can show MV behaviour without humans
+    grepping stdout: ``metric_views_detected_via_catalog``,
+    ``metric_views_reclassified_at_runtime``, and
+    ``metric_view_profile_outcomes`` (one entry per effective MV with
+    its outcome and dimensions_profiled count)."""
+    from genie_space_optimizer.optimization import preflight
+
+    config: dict = {
+        "_tables": ["cat.sch.real_table", "cat.sch.mv_in_disguise"],
+        "_metric_views": ["cat.sch.mv_orders"],
+        "_functions": [],
+        "_parsed_space": {},
+    }
+
+    cols = [
+        {
+            "catalog_name": "cat", "schema_name": "sch",
+            "table_name": "real_table",
+            "column_name": "id", "data_type": "string",
+        },
+        {
+            "catalog_name": "cat", "schema_name": "sch",
+            "table_name": "mv_orders",
+            "column_name": "region", "data_type": "string",
+            "column_type": "dimension",
+        },
+    ]
+
+    captured_stage_detail: dict = {}
+
+    def fake_write_stage(spark, run_id, stage_name, status, **kwargs):
+        if stage_name == "DATA_PROFILING" and status == "COMPLETE":
+            captured_stage_detail.update(kwargs.get("detail") or {})
+
+    mv_profile_result = {
+        "row_count": 50,
+        "columns": {
+            "region": {"cardinality": 4},
+            "channel": {"cardinality": 3},
+        },
+        "measures": {"total_revenue": {"expression": "SUM(amount)"}},
+        "kind": "metric_view",
+    }
+
+    table_profile_result = (
+        {"cat.sch.real_table": {"row_count": 100, "columns": {"id": {"cardinality": 5}}}},
+        ["cat.sch.mv_in_disguise"],  # reclassified at runtime
+    )
+
+    with (
+        patch.object(preflight, "_compute_join_overlaps", return_value=[]),
+        patch.object(preflight, "_validate_core_access"),
+        patch.object(preflight, "write_stage", side_effect=fake_write_stage),
+        patch.object(preflight, "_update_run_status"),
+        patch.object(preflight, "_collect_or_empty", return_value=(cols, None)),
+        patch.object(
+            preflight, "_collect_data_profile",
+            return_value=table_profile_result,
+        ),
+        patch.object(
+            preflight, "_detect_metric_views_via_catalog",
+            return_value=({"cat.sch.mv_orders"}, {"cat.sch.mv_orders": {"source": "x"}}),
+        ),
+        patch.object(preflight, "get_columns_for_tables_rest", return_value=[]),
+        patch.object(preflight, "get_tags_for_tables_rest", return_value=[]),
+        patch.object(preflight, "get_routines_for_schemas_rest", return_value=[]),
+        patch.object(preflight, "get_foreign_keys_for_tables_rest", return_value=[]),
+    ):
+        # Pre-seed the data_profile so the stage detail can read it
+        # (the actual MV-aware dispatch is exercised in the dedicated
+        # ``_profile_metric_view`` tests above; this assertion is only
+        # about the stage-detail enrichment).
+        preflight._collect_data_profile.return_value = (
+            {**table_profile_result[0], "cat.sch.mv_orders": mv_profile_result},
+            ["cat.sch.mv_in_disguise"],
+        )
+        preflight.preflight_collect_uc_metadata(
+            w=MagicMock(),
+            spark=MagicMock(),
+            run_id="run-test",
+            catalog="cat",
+            schema="sch",
+            config=config,
+            snapshot={},
+            genie_table_refs=[
+                ("cat", "sch", "real_table"),
+                ("cat", "sch", "mv_in_disguise"),
+                ("cat", "sch", "mv_orders"),
+            ],
+        )
+
+    assert captured_stage_detail.get("metric_views_detected_via_catalog") == 1, (
+        f"Expected 1 catalog-detected MV; got detail={captured_stage_detail!r}"
+    )
+    assert captured_stage_detail.get("metric_views_reclassified_at_runtime") == 1, (
+        f"Expected 1 runtime reclassification; got detail={captured_stage_detail!r}"
+    )
+    outcomes = captured_stage_detail.get("metric_view_profile_outcomes")
+    assert isinstance(outcomes, list) and outcomes, (
+        f"Expected non-empty outcomes list; got {outcomes!r}"
+    )
+    fqns = {o.get("fqn") for o in outcomes}
+    assert "cat.sch.mv_orders" in fqns
+    assert "cat.sch.mv_in_disguise" in fqns
+    by_fqn = {o["fqn"]: o for o in outcomes}
+    assert by_fqn["cat.sch.mv_orders"]["outcome"] == "profiled"
+    assert by_fqn["cat.sch.mv_orders"].get("dimensions_profiled") == 2
+    assert by_fqn["cat.sch.mv_in_disguise"]["outcome"] == "reclassified"
+
+
 def test_collect_data_profile_dispatches_mvs_to_mv_path():
     """Effective MVs in ``tables`` argument are routed through the MV
     profile path; their result lands in ``profile`` (not in

@@ -1693,14 +1693,84 @@ def preflight_collect_uc_metadata(
                 _dp_lines.append("")
             _dp_lines.append(_pf_bar())
             print("\n".join(_dp_lines))
+
+            # Tier-C #7: enrich the DATA_PROFILING stage detail with
+            # MV-specific telemetry so MLflow + the persisted run
+            # snapshot capture the failure mode the GSO terminal output
+            # surfaces. ``metric_view_profile_outcomes`` lists one
+            # entry per effective MV with its outcome
+            # (``profiled`` / ``skipped`` / ``reclassified``), the
+            # number of dimensions actually queried, and any error
+            # truncated to 200 chars.
+            _eff_mvs_for_detail: set[str] = set()
+            try:
+                _eff_mvs_for_detail = set(
+                    effective_metric_view_identifiers_with_catalog(config)
+                )
+            except Exception:
+                _eff_mvs_for_detail = set()
+            _eff_mvs_for_detail |= {
+                str(n).strip().lower()
+                for n in (config.get("_metric_views") or [])
+                if isinstance(n, str) and n.strip()
+            }
+            _eff_mvs_for_detail |= {str(r).strip().lower() for r in reclassified_mvs}
+
+            _reclassified_set_lower = {
+                str(r).strip().lower() for r in reclassified_mvs
+            }
+            _profile_keys_lower = {
+                str(k).strip().lower(): k for k in data_profile.keys()
+            }
+
+            mv_outcomes: list[dict] = []
+            for _mv_lower in sorted(_eff_mvs_for_detail):
+                _outcome: str
+                _dims_profiled = 0
+                _err: str | None = None
+                if _mv_lower in _reclassified_set_lower:
+                    _outcome = "reclassified"
+                elif _mv_lower in _profile_keys_lower:
+                    _key = _profile_keys_lower[_mv_lower]
+                    _entry = data_profile.get(_key) or {}
+                    if _entry.get("kind") == "metric_view":
+                        _outcome = "profiled"
+                        _dims_profiled = len(_entry.get("columns") or {})
+                    else:
+                        # The ref landed in the profile dict via the
+                        # table path — treat as profiled for
+                        # observability but don't claim dim count.
+                        _outcome = "profiled"
+                        _dims_profiled = len(_entry.get("columns") or {})
+                else:
+                    _outcome = "skipped"
+                mv_outcomes.append({
+                    "fqn": _mv_lower,
+                    "outcome": _outcome,
+                    "dimensions_profiled": _dims_profiled,
+                    "error": _err,
+                })
+
+            _stage_detail = {
+                "tables_profiled": profiled_tables,
+                "columns_profiled": total_cols_profiled,
+                "low_cardinality_columns": low_card_count,
+                "metric_views_detected_via_catalog": len(_catalog_mvs),
+                "metric_views_reclassified_at_runtime": len(reclassified_mvs),
+                "metric_view_profile_outcomes": mv_outcomes,
+            }
+            # Mirror the same fields onto the persisted run-status
+            # snapshot so the harness's resume / re-run paths see them
+            # without re-reading the stage history.
+            config["_data_profile_stage_detail"] = _stage_detail
+            _ps_stage_mirror = config.get("_parsed_space")
+            if isinstance(_ps_stage_mirror, dict):
+                _ps_stage_mirror["_data_profile_stage_detail"] = dict(_stage_detail)
+
             write_stage(
                 spark, run_id, "DATA_PROFILING", "COMPLETE",
                 task_key="preflight", catalog=catalog, schema=schema,
-                detail={
-                    "tables_profiled": profiled_tables,
-                    "columns_profiled": total_cols_profiled,
-                    "low_cardinality_columns": low_card_count,
-                },
+                detail=_stage_detail,
             )
         except Exception:
             logger.warning("Data profiling failed — continuing without profile", exc_info=True)
