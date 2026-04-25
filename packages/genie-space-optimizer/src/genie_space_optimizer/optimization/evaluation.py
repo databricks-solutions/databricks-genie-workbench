@@ -619,73 +619,260 @@ def _repair_measure_alias_collisions(sql: str) -> tuple[str, int]:
     return new_sql, len(rename_map)
 
 
+# Tokens that look like an identifier in a "FROM/JOIN <table> <alias>"
+# regex but are actually SQL keywords starting the next clause; never
+# treat them as aliases.
+_NOT_AN_ALIAS = frozenset({
+    "on", "using", "where", "group", "order", "having", "limit",
+    "union", "intersect", "except", "join", "inner", "left", "right",
+    "full", "cross", "outer", "natural", "lateral",
+    "as",  # bare AS (no alias word) shouldn't happen but be safe
+})
+
+
+def _build_relevant_measures(
+    sql: str,
+    metric_view_measures: dict[str, set[str]],
+) -> dict[str, set[str]]:
+    """Return ``{alias_or_short: {measure_col, …}}`` for every FROM/JOIN
+    table that maps to an entry in *metric_view_measures*.
+
+    Alias-aware: registers BOTH the short table name and any explicit
+    alias (``FROM mv AS x`` / ``FROM mv x`` / ``JOIN mv x ON …``) so the
+    rewriter can recognise ``mv.col`` *and* ``x.col``.
+    """
+    out: dict[str, set[str]] = {}
+    # Negative lookahead on the alias group prevents the pattern from
+    # consuming the next clause keyword (``ON`` / ``JOIN`` / ``WHERE`` /
+    # …) as an alias when no alias is present. Without it
+    # ``FROM mv1 JOIN mv2`` collapses to a single match and the second
+    # MV is silently dropped.
+    not_an_alias_alts = "|".join(
+        sorted(_NOT_AN_ALIAS, key=len, reverse=True),
+    )
+    pattern = re.compile(
+        r"\b(?:FROM|JOIN)\s+`?([\w.]+)`?"
+        rf"(?:\s+(?:AS\s+)?`?(?!(?:{not_an_alias_alts})\b)([A-Za-z_]\w*)`?)?",
+        re.IGNORECASE,
+    )
+    for m in pattern.finditer(sql):
+        ident = (m.group(1) or "").replace("`", "").strip()
+        if not ident:
+            continue
+        short = ident.split(".")[-1].lower()
+        alias = (m.group(2) or "").strip()
+        if alias.lower() in _NOT_AN_ALIAS:
+            alias = ""
+        measures = metric_view_measures.get(short, set())
+        if not measures:
+            continue
+        out.setdefault(short, set()).update(measures)
+        if alias:
+            out.setdefault(alias.lower(), set()).update(measures)
+    return out
+
+
 def _rewrite_measure_refs(
     sql: str,
     metric_view_measures: dict[str, set[str]],
 ) -> str:
-    """Wrap bare metric view measure names with MEASURE() in SELECT and ORDER BY.
+    """Wrap bare metric-view measure references with ``MEASURE()``.
 
-    Only applies when the SQL references a metric view in its FROM clause.
-    ``metric_view_measures`` maps lowercased short table names to sets of
-    lowercased measure column names.
+    Covers SELECT, HAVING, and ORDER BY clauses. Skips WHERE and ON
+    clauses (Spark forbids ``MEASURE()`` there; the diagnostic the user
+    sees on a violation is clearer than a silently-wrapped reference).
+
+    Alias-aware: handles both unqualified bare references
+    (``SELECT gross_sales FROM mv_x``) and qualified references
+    (``SELECT x.gross_sales FROM mv_x x``). The latter mode lets the
+    rewriter cover spaces where the LLM emits an alias even when it
+    technically isn't required, which the original short-name-only
+    parser missed entirely.
+
+    ``metric_view_measures`` maps lowercased short table names to sets
+    of lowercased measure column names.
     """
     if not metric_view_measures or not sql:
         return sql
 
-    from_tables: list[str] = []
-    for m in re.finditer(r"\bFROM\s+([\w.`]+)", sql, re.IGNORECASE):
-        from_tables.append(m.group(1).replace("`", "").split(".")[-1].lower())
-
-    relevant_measures: set[str] = set()
-    for tbl in from_tables:
-        if tbl in metric_view_measures:
-            relevant_measures |= metric_view_measures[tbl]
-
+    relevant_measures = _build_relevant_measures(sql, metric_view_measures)
     if not relevant_measures:
         return sql
 
+    all_measure_names: set[str] = set()
+    for s in relevant_measures.values():
+        all_measure_names |= s
+
     already_measured = re.compile(r"\bMEASURE\s*\(", re.IGNORECASE)
 
-    def _wrap(m: re.Match) -> str:
-        col = m.group(1)
-        if col.lower() in relevant_measures:
-            return f"MEASURE({col})"
-        return col
+    # Single combined pattern: optional ``alias.`` prefix + column. The
+    # negative lookbehind on ``[\w.]`` prevents matching the middle
+    # component of a 3-part identifier (``catalog.schema.table``); the
+    # negative lookahead on ``\s*\(`` prevents wrapping function calls.
+    measure_token = re.compile(
+        r"(?<![\w.])([A-Za-z_]\w*\.)?([A-Za-z_]\w*)\b(?!\s*\()",
+    )
 
-    # Rewrite bare measures in SELECT clause
+    def _rewrite_clause(text: str) -> str:
+        def _repl(m: re.Match) -> str:
+            full = m.group(0)
+            alias_dot = m.group(1) or ""
+            col = m.group(2)
+            start = m.start()
+            window_start = max(0, start - 12)
+            if already_measured.search(text[window_start:start]):
+                return full
+            col_lower = col.lower()
+            if alias_dot:
+                alias = alias_dot[:-1].lower()
+                measures = relevant_measures.get(alias)
+                if measures and col_lower in measures:
+                    return f"MEASURE({full})"
+                return full
+            if col_lower in all_measure_names:
+                return f"MEASURE({col})"
+            return full
+
+        return measure_token.sub(_repl, text)
+
+    def _next_clause_offset(haystack: str) -> int:
+        """Return offset (relative to ``haystack`` start) of the next
+        clause-boundary keyword, or ``len(haystack)`` when no boundary
+        is present.
+        """
+        m = re.search(
+            r"\b(WHERE|GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT|UNION|INTERSECT|EXCEPT)\b",
+            haystack,
+            re.IGNORECASE,
+        )
+        return m.start() if m else len(haystack)
+
+    # SELECT clause — between SELECT and FROM. Constrained to the head of
+    # the statement; nested subqueries are not handled (the existing
+    # implementation didn't either).
     select_match = re.search(r"\bSELECT\b", sql, re.IGNORECASE)
     from_match = re.search(r"\bFROM\b", sql, re.IGNORECASE)
     if select_match and from_match and select_match.end() < from_match.start():
-        select_clause = sql[select_match.end() : from_match.start()]
-        rewritten_select = re.sub(
-            r"\b([A-Za-z_]\w*)\b(?!\s*\()",
-            lambda m: (
-                m.group(0)
-                if already_measured.search(
-                    sql[
-                        max(0, select_match.end() + m.start() - 10) : select_match.end() + m.start()
-                    ]
-                )
-                else _wrap(m)
-            ),
-            select_clause,
-        )
-        sql = sql[: select_match.end()] + rewritten_select + sql[from_match.start() :]
+        head = sql[: select_match.end()]
+        clause = sql[select_match.end() : from_match.start()]
+        tail = sql[from_match.start() :]
+        sql = head + _rewrite_clause(clause) + tail
 
-    # Rewrite bare measures in ORDER BY clause
+    # HAVING clause — between HAVING and the next clause boundary.
+    having_match = re.search(r"\bHAVING\b", sql, re.IGNORECASE)
+    if having_match:
+        offset = _next_clause_offset(sql[having_match.end():])
+        having_end = having_match.end() + offset
+        head = sql[: having_match.end()]
+        clause = sql[having_match.end() : having_end]
+        tail = sql[having_end:]
+        sql = head + _rewrite_clause(clause) + tail
+
+    # ORDER BY clause — between ORDER BY and the next boundary
+    # (LIMIT / set-op / end of statement).
     order_match = re.search(r"\bORDER\s+BY\b", sql, re.IGNORECASE)
-    if not order_match:
-        return sql
+    if order_match:
+        offset = _next_clause_offset(sql[order_match.end():])
+        order_end = order_match.end() + offset
+        head = sql[: order_match.end()]
+        clause = sql[order_match.end() : order_end]
+        tail = sql[order_end:]
+        sql = head + _rewrite_clause(clause) + tail
 
-    prefix = sql[: order_match.end()]
-    tail = sql[order_match.end() :]
+    return sql
 
-    rewritten_tail = re.sub(
-        r"\b([A-Za-z_]\w*)\b(?!\s*\()",
-        lambda m: m.group(0) if already_measured.search(sql[max(0, order_match.end() + m.start() - 10) : order_match.end() + m.start()]) else _wrap(m),
-        tail,
-    )
-    return prefix + rewritten_tail
+
+_OUTER_AGG_AROUND_MEASURE_RE = re.compile(
+    r"\b(SUM|AVG|COUNT|MIN|MAX|MEDIAN|STDDEV|STDDEV_POP|STDDEV_SAMP|"
+    r"VAR|VAR_POP|VAR_SAMP|VARIANCE|ANY_VALUE)\s*\(\s*"
+    r"(MEASURE\s*\([^()]*\))\s*\)",
+    re.IGNORECASE,
+)
+
+
+def _strip_outer_agg_around_measure(sql: str) -> tuple[str, int]:
+    """Strip a redundant aggregate that wraps a single ``MEASURE(x)`` arg.
+
+    The LLM occasionally emits ``SUM(MEASURE(gross_sales))`` even though
+    metric-view measure references must NOT be re-aggregated by the user
+    — Spark expands ``MEASURE(gross_sales)`` to ``SUM(gross_sales)``
+    internally, which yields ``SUM(MEASURE(SUM(gross_sales)))`` and a
+    ``NESTED_AGGREGATE_FUNCTION`` rejection. Stripping the outer
+    aggregate is the deterministic fix.
+
+    Behaviour:
+      - When the aggregate's *only* argument is a ``MEASURE(...)`` call
+        (case-insensitive), the aggregate node is replaced with the
+        inner ``MEASURE(...)`` call.
+      - Non-aggregate wrappers like ``COALESCE(MEASURE(x), 0)`` are left
+        alone — only true aggregates on the allowed list are stripped.
+      - Multi-arg aggregates such as ``COUNT(MEASURE(x), 1)`` are left
+        alone (extremely rare, but the regex requires a single arg).
+      - Falls back to a regex-only path when sqlglot fails to parse the
+        SQL (best-effort; the regex is intentionally conservative).
+
+    Returns ``(new_sql, count)`` where ``count`` is the number of
+    aggregate-strip rewrites applied. Used by the proposal-side and the
+    correction pipelines so both fix the same LLM mode identically.
+    """
+    if not sql or "MEASURE" not in sql.upper():
+        return sql, 0
+
+    # Try sqlglot AST first — handles whitespace, comments, and nested
+    # parens correctly.
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+    except Exception:  # pragma: no cover - sqlglot is a hard dep, but be safe.
+        sqlglot = None  # type: ignore[assignment]
+
+    count = 0
+    if sqlglot is not None:
+        try:
+            tree = sqlglot.parse_one(sql, read="databricks")
+        except Exception:
+            tree = None
+        if tree is not None:
+            agg_class_names = {
+                "Sum", "Avg", "Count", "Min", "Max", "Median",
+                "Stddev", "StddevPop", "StddevSamp",
+                "Variance", "VariancePop", "VarianceSamp",
+                "AnyValue",
+            }
+            for node in list(tree.walk()):
+                # ``walk()`` yields tuples in some sqlglot versions.
+                expr_node = node[0] if isinstance(node, tuple) else node
+                if not isinstance(expr_node, exp.AggFunc):
+                    continue
+                if type(expr_node).__name__ not in agg_class_names:
+                    continue
+                arg = expr_node.this
+                if arg is None:
+                    continue
+                # Single-arg aggregate only. ``args`` may carry
+                # ``distinct``/``order_by`` siblings — those are fine
+                # to drop with the outer agg.
+                if (
+                    isinstance(arg, exp.Anonymous)
+                    and str(arg.name or "").upper() == "MEASURE"
+                ):
+                    expr_node.replace(arg.copy())
+                    count += 1
+            if count:
+                try:
+                    return tree.sql(dialect="databricks"), count
+                except Exception:
+                    pass  # fall through to regex
+            else:
+                # AST traversed cleanly with no rewrites — done.
+                return sql, 0
+
+    # Regex fallback — used when sqlglot fails to parse OR fails to
+    # render. Conservative: the inner-MEASURE arg list is matched as
+    # a single ``[^()]*`` chunk so MEASURE calls with embedded parens
+    # (rare but possible inside CASE expressions) are skipped.
+    new_sql, n = _OUTER_AGG_AROUND_MEASURE_RE.subn(r"\2", sql)
+    return new_sql, n
 
 
 def _entry_has_measure_columns(entry: Any) -> bool:
@@ -821,6 +1008,232 @@ def build_metric_view_measures(config: dict) -> dict[str, set[str]]:
         if measures:
             result[short_name] = measures
     return result
+
+
+def _parse_struct_field_names(data_type: str) -> list[str]:
+    """Return top-level struct field names from a Spark ``struct<…>`` type.
+
+    Mirrors :func:`optimization.optimizer._parse_struct_field_names` but
+    duplicated locally to avoid a cross-module import in the hot SQL repair
+    path. Tracks angle / paren depth so nested types don't bleed top-level
+    fields. Returns an empty list when the type is not a struct.
+    """
+    if not data_type:
+        return []
+    s = data_type.strip()
+    if not s.lower().startswith("struct<") or not s.endswith(">"):
+        return []
+    body = s[len("struct<"):-1]
+    fields: list[str] = []
+    depth = 0
+    cursor = 0
+    for i, ch in enumerate(body):
+        if ch in "<(":
+            depth += 1
+        elif ch in ">)":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            chunk = body[cursor:i]
+            cursor = i + 1
+            colon = chunk.find(":")
+            if colon > 0:
+                fields.append(chunk[:colon].strip())
+    chunk = body[cursor:]
+    colon = chunk.find(":")
+    if colon > 0:
+        fields.append(chunk[:colon].strip())
+    return [f for f in fields if f]
+
+
+def build_table_columns(
+    config: dict,
+) -> dict[str, dict[str, set[str]]]:
+    """Build per-table column / struct-column index from the Genie config.
+
+    Returns ``{lower_short_name: {"columns": {…}, "struct_columns": {…}}}``
+    covering both ``data_sources.tables`` and ``data_sources.metric_views``.
+    Used by :func:`_check_dangling_qualifiers` to decide whether a
+    ``<qual>.<col>`` reference can be resolved against the FROM/JOIN tables.
+    """
+    result: dict[str, dict[str, set[str]]] = {}
+    parsed = config.get("_parsed_space", config)
+    if not isinstance(parsed, dict):
+        return result
+    ds = parsed.get("data_sources", {})
+    if not isinstance(ds, dict):
+        return result
+    sources: list[dict] = []
+    sources.extend(ds.get("tables", []) or [])
+    sources.extend(ds.get("metric_views", []) or [])
+    for tbl in sources:
+        if not isinstance(tbl, dict):
+            continue
+        identifier = (tbl.get("identifier") or tbl.get("name") or "").strip()
+        short = identifier.split(".")[-1].lower()
+        if not short:
+            continue
+        columns: set[str] = set()
+        struct_columns: set[str] = set()
+        for cc in tbl.get("column_configs", []) or []:
+            if not isinstance(cc, dict):
+                continue
+            col_name = (cc.get("column_name") or cc.get("name") or "").strip()
+            if not col_name:
+                continue
+            columns.add(col_name.lower())
+            data_type = str(cc.get("data_type", "") or "")
+            if _parse_struct_field_names(data_type):
+                struct_columns.add(col_name.lower())
+        existing = result.setdefault(
+            short, {"columns": set(), "struct_columns": set()},
+        )
+        existing["columns"].update(columns)
+        existing["struct_columns"].update(struct_columns)
+    return result
+
+
+# Match an unquoted identifier reference of the form ``qual.tail`` where
+# ``tail`` may be a single name. Allows backticks around either side. The
+# regex purposely excludes the catalog.schema.table 3-part form by
+# requiring the previous character not be a word char or backtick.
+_QUALIFIED_REF_RE = re.compile(
+    r"(?:(?<![\w`.])|(?<=^))`?([A-Za-z_]\w*)`?\s*\.\s*`?([A-Za-z_]\w*)`?",
+)
+
+# Token sets to skip when scanning for ``<qual>.<col>`` shapes:
+#   - SQL keywords that often appear before a dotted ref but aren't quals.
+#   - Catalog/schema chunks. These appear in the FROM/JOIN clause only;
+#     we strip those clauses out before scanning so the head of any
+#     remaining dotted ref must be a table or alias.
+_SQL_RESERVED_BEFORE_DOT = frozenset({
+    "select", "from", "where", "group", "order", "by", "having",
+    "join", "inner", "left", "right", "full", "cross", "outer",
+    "on", "and", "or", "not", "in", "is", "null", "as", "distinct",
+    "case", "when", "then", "else", "end", "with", "union", "intersect",
+    "except", "values", "limit", "offset", "fetch", "next", "rows",
+    "only", "between", "like", "ilike", "exists", "cast", "interval",
+})
+
+
+def _strip_from_join_clauses(sql: str) -> str:
+    """Return *sql* with FROM/JOIN clause heads removed up to the next
+    statement keyword.
+
+    We only want to flag ``<qual>.<col>`` references that appear in
+    SELECT / WHERE / GROUP BY / HAVING / ORDER BY positions — the FROM
+    and JOIN clauses legitimately carry ``catalog.schema.table`` forms
+    where the head of the dot is a catalog or schema name, not a column
+    qualifier. Stripping those substrings out before scanning avoids
+    false-positive flags on the catalog component.
+    """
+    if not sql:
+        return sql
+    # Match: FROM/JOIN <ws> <table-spec> until the next clause boundary.
+    # The terminator is the next SQL clause keyword or end of statement.
+    pattern = re.compile(
+        r"\b(?:FROM|JOIN)\b[\s\S]*?"
+        r"(?=\b(?:WHERE|GROUP\s+BY|HAVING|ORDER\s+BY|LIMIT|UNION|INTERSECT|EXCEPT|"
+        r"FROM|JOIN|ON|WHEN|END|CROSS|INNER|LEFT|RIGHT|FULL|OUTER)\b|$|;|\))",
+        re.IGNORECASE,
+    )
+    return pattern.sub(" ", sql)
+
+
+def _extract_from_join_aliases(sql: str) -> set[str]:
+    """Return the set of effective qualifiers visible in FROM/JOIN clauses.
+
+    For each entry the set includes:
+      - The table's short name (last dot component) — covers unaliased
+        references like ``mv_x.col``.
+      - The alias when present — covers ``mv_x AS x`` / ``mv_x x``.
+
+    Implementation is regex-based to avoid a hard sqlglot dependency in
+    the hot repair path. Handles backticks and ``AS`` keyword. The alias
+    group uses a negative lookahead to avoid consuming the next clause
+    keyword (e.g. ``JOIN cat.sch.t ON …`` — ``ON`` is not the alias) so
+    multiple FROM/JOIN entries in the same statement all get indexed.
+    """
+    out: set[str] = set()
+    # The alias group's identifier must NOT be a reserved keyword, so we
+    # exclude FROM/JOIN/ON/WHERE/etc to keep them anchoring boundaries.
+    reserved_alts = "|".join(sorted(_SQL_RESERVED_BEFORE_DOT, key=len, reverse=True))
+    pattern = re.compile(
+        r"\b(?:FROM|JOIN)\s+`?([\w.]+)`?"
+        rf"(?:\s+(?:AS\s+)?`?(?!(?:{reserved_alts})\b)([A-Za-z_]\w*)`?)?",
+        re.IGNORECASE,
+    )
+    for m in pattern.finditer(sql):
+        ident = (m.group(1) or "").strip()
+        alias = (m.group(2) or "").strip()
+        if ident:
+            short = ident.split(".")[-1]
+            if short and short.lower() not in _SQL_RESERVED_BEFORE_DOT:
+                out.add(short.lower())
+        if alias and alias.lower() not in _SQL_RESERVED_BEFORE_DOT:
+            out.add(alias.lower())
+    return out
+
+
+def _check_dangling_qualifiers(
+    sql: str,
+    table_columns: dict[str, dict[str, set[str]]],
+) -> list[str]:
+    """Detect ``<qual>.<col>`` references whose qualifier isn't in scope.
+
+    A qualifier is in scope when it is one of:
+      - A FROM/JOIN table short name (``FROM mv_x`` → ``mv_x``).
+      - An explicit alias (``FROM mv_x AS x`` → ``x``; ``JOIN t y`` → ``y``).
+      - The name of a struct column on any FROM/JOIN table — covers
+        ``dim_location.region`` where ``dim_location`` is a struct column
+        on a metric view in FROM.
+
+    Anything else is dangling. The most common shape we want to catch is
+    the LLM analogising ``dim_location.region`` (real struct field) onto
+    ``dim_date.year`` (a separate metric view that must be JOINed).
+
+    Returns a sorted list of unresolved qualifier strings (deduplicated).
+    Empty list means the SQL has no dangling qualifier — does NOT mean the
+    SQL is otherwise valid (downstream EXPLAIN still owns truth).
+    """
+    if not sql or not sql.strip() or not table_columns:
+        return []
+
+    aliases = _extract_from_join_aliases(sql)
+    if not aliases:
+        return []
+
+    # Collect struct column names visible from any FROM/JOIN table.
+    visible_struct_cols: set[str] = set()
+    for alias in aliases:
+        info = table_columns.get(alias)
+        if info:
+            visible_struct_cols |= info.get("struct_columns", set())
+
+    allowed = aliases | visible_struct_cols
+
+    # Strip out FROM/JOIN tails so catalog.schema.table doesn't generate
+    # false positives.
+    body = _strip_from_join_clauses(sql)
+
+    unresolved: set[str] = set()
+    for m in _QUALIFIED_REF_RE.finditer(body):
+        qual = m.group(1).lower()
+        if qual in _SQL_RESERVED_BEFORE_DOT:
+            continue
+        # Skip when the match is part of a longer dotted chain
+        # (``cat.sch.tbl.col`` or ``cat.sch.tbl``). The regex matches
+        # only the first two segments so the trailing ``.`` would still
+        # be present in the body. A 3+ part column reference is fine
+        # in Spark SQL when the prefix matches a FROM table; the head
+        # catalog/schema components must NOT be flagged.
+        end = m.end()
+        if end < len(body) and body[end:end + 1] == ".":
+            continue
+        if qual in allowed:
+            continue
+        unresolved.add(qual)
+
+    return sorted(unresolved)
 
 
 _SELECT_STAR_RE = re.compile(r"\bSELECT\s+\*\s+FROM\b", re.IGNORECASE)
@@ -6569,6 +6982,7 @@ def _attempt_sql_correction(
                 canonical_assets.append(ident_s)
 
     mv_measures = build_metric_view_measures(config)
+    table_columns = build_table_columns(config)
 
     corrected: list[dict] = []
     for c in corrections:
@@ -6618,6 +7032,23 @@ def _attempt_sql_correction(
                         repair_counters.get("repaired_measure_refs", 0)
                         + (after_count - before_count)
                     )
+            # Fix 5: strip ``SUM(MEASURE(x))`` → ``MEASURE(x)``. Runs
+            # AFTER the measure-wrap so wraps the LLM emitted directly
+            # (no outer agg) aren't double-touched, and wraps the
+            # rewriter just inserted are normalised the same way as
+            # those the LLM wrote inline.
+            stripped_sql, strip_count = _strip_outer_agg_around_measure(
+                sql_str,
+            )
+            if strip_count:
+                sql_str = stripped_sql
+                c["expected_sql"] = sql_str
+                if repair_counters is not None:
+                    repair_counters["stripped_outer_aggregate_around_measure"] = (
+                        repair_counters.get(
+                            "stripped_outer_aggregate_around_measure", 0,
+                        ) + strip_count
+                    )
         # PR 15: rename ``MEASURE(col) AS col`` to avoid Spark's
         # MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION.
         sql_str, _alias_fixes = _repair_measure_alias_collisions(sql_str)
@@ -6627,6 +7058,34 @@ def _attempt_sql_correction(
                 + _alias_fixes
             )
             c["expected_sql"] = sql_str
+
+        # Fix 3b: short-circuit candidates with dangling qualifiers
+        # (``<qual>.<col>`` where ``qual`` is neither a FROM/JOIN table,
+        # an explicit alias, nor a struct column on any FROM table).
+        # The most common shape we want to catch is the LLM analogising
+        # a real struct field (``dim_location.region``) onto a separate
+        # dim table (``dim_date.year``) — these always fail the EXPLAIN
+        # gate downstream, so we save the round-trip by rejecting here.
+        # Auto-injecting JOINs is intentionally out of scope (would
+        # require trustworthy FK direction inference); the rejection
+        # alone is high signal for the strategist on the next loop.
+        if table_columns:
+            unresolved = _check_dangling_qualifiers(sql_str, table_columns)
+            if unresolved:
+                c["unfixable_reason"] = (
+                    f"unresolved_qualifier: {','.join(unresolved)} "
+                    "(not in FROM/aliases/struct cols)"
+                )
+                if repair_counters is not None:
+                    repair_counters["rejected_unresolved_qualifier"] = (
+                        repair_counters.get("rejected_unresolved_qualifier", 0)
+                        + 1
+                    )
+                logger.info(
+                    "Candidate rejected for dangling qualifier(s): %s — %s",
+                    c.get("question", "")[:60], c["unfixable_reason"],
+                )
+                continue
         sql = sql_str
 
         metadata_ok, _reason_code, reason_message = _enforce_metadata_constraints(

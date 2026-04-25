@@ -978,6 +978,46 @@ def rewrite_instructions_from_miner_output(
 
     # ── Step 4: render ──────────────────────────────────────────────
     rendered_list = render_canonical_sections(new_sections)
+
+    # ── Step 4b: deterministic trim to fit MAX_TEXT_INSTRUCTIONS_CHARS
+    # Mirrors the two-layer trim in :func:`_run_enrichment` for the
+    # expand path. Applies only when the rendered total exceeds the
+    # cap. Without this, originals already over cap (legacy spaces with
+    # ALL-CAPS prose >2000 chars) deterministically fail validation
+    # even when span removal alone would put them on a path to fit.
+    pre_trim_len = sum(len(p) for p in rendered_list)
+    if pre_trim_len > MAX_TEXT_INSTRUCTIONS_CHARS:
+        # Layer 1 — per-section bullet trim. Derive a per-section budget
+        # from the cap minus a fixed-overhead estimate (~15 chars per
+        # rendered section header + blank line). Headers themselves are
+        # tiny but additive across N sections.
+        header_overhead = 15 * max(len(new_sections), 1)
+        body_budget = max(MAX_TEXT_INSTRUCTIONS_CHARS - header_overhead, 0)
+        per_section_budget = (
+            body_budget // max(len(new_sections), 1) if new_sections else 0
+        )
+        trimmed_sections: dict[str, list[str]] = {}
+        for header, lines in new_sections.items():
+            body = "\n".join(lines)
+            clipped = _trim_bullets_to_budget(body, per_section_budget)
+            if not clipped.strip():
+                continue
+            trimmed_sections[header] = [
+                ln for ln in clipped.splitlines() if ln.strip()
+            ]
+        rendered_list = render_canonical_sections(trimmed_sections)
+        # Layer 2 — post-render global cap. Handles header overhead the
+        # per-section trim can't see.
+        rendered_list = _trim_rendered_to_cap(
+            rendered_list, MAX_TEXT_INSTRUCTIONS_CHARS,
+        )
+        post_trim_len = sum(len(p) for p in rendered_list)
+        if post_trim_len < pre_trim_len:
+            logger.info(
+                "miner.rewrite.trimmed chars_before=%d chars_after=%d cap=%d",
+                pre_trim_len, post_trim_len, MAX_TEXT_INSTRUCTIONS_CHARS,
+            )
+
     new_text = "".join(rendered_list).rstrip() + ("\n" if rendered_list else "")
 
     # ── Step 5: validate strictly ───────────────────────────────────

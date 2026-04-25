@@ -2919,6 +2919,18 @@ def _apply_instruction_table_descriptions(
             by_full[ident] = t
             by_short.setdefault(ident.split(".")[-1], t)
 
+    def _desc_as_text(value: Any) -> str:
+        # The Genie API stores ``description`` as ``list[str]`` for tables
+        # and metric views, but some legacy snapshots / proactive seeds
+        # write a plain string. Normalise both shapes to one comparison
+        # string so dedupe / contains checks work uniformly. Mirrors the
+        # ``_section_text`` helper in :mod:`applier`.
+        if isinstance(value, list):
+            return "\n".join(str(x) for x in value)
+        if value is None:
+            return ""
+        return str(value)
+
     applied = 0
     updated_ids: list[str] = []
     for c in candidates:
@@ -2929,12 +2941,23 @@ def _apply_instruction_table_descriptions(
         tbl = by_full.get(tid_lower) or by_short.get(tid_lower.split(".")[-1])
         if not tbl:
             continue
-        existing = str(tbl.get("description", "") or "")
-        if desc_append.lower() in existing.lower():
+        existing_value = tbl.get("description", "") or ""
+        existing_text = _desc_as_text(existing_value)
+        if desc_append.lower() in existing_text.lower():
             continue  # idempotent — already present
-        new_desc = (existing + ("\n" if existing and not existing.endswith("\n") else "")
-                    + desc_append).strip()
-        tbl["description"] = new_desc
+        # Preserve the input shape: list-shaped descriptions stay
+        # ``list[str]`` (the Genie API contract), string-shaped stay str.
+        # Writing back a Python ``repr`` of a list (the prior bug) caused
+        # PATCH to reject with "Expected an array for description".
+        if isinstance(existing_value, list):
+            tbl["description"] = list(existing_value) + [desc_append]
+        else:
+            new_desc = (
+                existing_text
+                + ("\n" if existing_text and not existing_text.endswith("\n") else "")
+                + desc_append
+            ).strip()
+            tbl["description"] = new_desc
         updated_ids.append(tbl.get("identifier", tbl.get("name", "?")))
         applied += 1
 

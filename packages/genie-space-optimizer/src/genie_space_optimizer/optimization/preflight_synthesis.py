@@ -1706,6 +1706,7 @@ def _repair_measure_refs_on_proposal(
     """
     from genie_space_optimizer.optimization.evaluation import (
         _rewrite_measure_refs,
+        _strip_outer_agg_around_measure,
     )
 
     sql = str(proposal.get("example_sql") or "")
@@ -1726,6 +1727,16 @@ def _repair_measure_refs_on_proposal(
         return proposal, []
 
     new_sql = _rewrite_measure_refs(sql, {short: measures})
+    # Fix 5: also strip redundant outer aggregates around MEASURE() so
+    # ``SUM(MEASURE(x))`` (LLM mode) and ``SUM(MEASURE(x))`` produced
+    # by the rewriter when SUM(x) was already in the source both
+    # collapse to ``MEASURE(x)``. Runs unconditionally — cheap when no
+    # candidates are present, and keeps the eval and proposal paths
+    # symmetric so both fix the same shape.
+    stripped_sql, _strip_count = _strip_outer_agg_around_measure(new_sql)
+    if stripped_sql != new_sql:
+        new_sql = stripped_sql
+
     if new_sql == sql:
         return proposal, []
 
@@ -1744,6 +1755,41 @@ def _repair_measure_refs_on_proposal(
     trace.extend(("measure", w) for w in wrapped)
     new_proposal["_repair_trace"] = trace
     return new_proposal, wrapped
+
+
+def _check_dangling_qualifiers_on_proposal(
+    proposal: dict,
+    metadata_snapshot: dict,
+) -> list[str]:
+    """Pre-EXPLAIN dangling-qualifier check for synthesis proposals.
+
+    Wraps :func:`evaluation._check_dangling_qualifiers` so the proposal
+    pipeline rejects ``<qual>.<col>`` references whose qualifier is not
+    in FROM/JOIN/aliases/struct cols *before* spending an EXPLAIN call.
+    The deterministic stem-repair and MEASURE-wrap repairs run first; if
+    a residual dangling qualifier remains, it almost always indicates the
+    LLM hallucinated a separate dim table as a struct field — a class
+    that no auto-repair can correct without inventing a JOIN.
+
+    Returns the list of unresolved qualifiers (empty when clean).
+    """
+    from genie_space_optimizer.optimization.evaluation import (
+        _check_dangling_qualifiers,
+        build_table_columns,
+    )
+
+    sql = str(proposal.get("example_sql") or "")
+    if not sql:
+        return []
+    # Construct a minimal config-shaped wrapper around the metadata
+    # snapshot. ``build_table_columns`` reads
+    # ``config["_parsed_space"]["data_sources"]`` so we forward the
+    # snapshot directly under that key.
+    config = {"_parsed_space": metadata_snapshot}
+    table_columns = build_table_columns(config)
+    if not table_columns:
+        return []
+    return _check_dangling_qualifiers(sql, table_columns)
 
 
 def _format_existing_questions(existing_questions: list[str]) -> str:
@@ -2267,6 +2313,36 @@ def run_preflight_example_synthesis(
                 "wraps=%s",
                 archetype.name, len(_pre_meas), _pre_meas[:3],
             )
+
+        # Fix 3b — short-circuit dangling qualifiers BEFORE the EXPLAIN
+        # gate. The most common shape is the LLM analogising a real
+        # struct field (e.g. ``dim_location.region``) onto a separate
+        # dim metric view (e.g. ``dim_date.year``). EXPLAIN always
+        # rejects these, so we save the round-trip and feed the
+        # strategist a high-signal failure code (``unresolved_qualifier``)
+        # on the next loop. Auto-injecting JOINs is intentionally out of
+        # scope.
+        unresolved_quals = _check_dangling_qualifiers_on_proposal(
+            proposal, metadata_snapshot,
+        )
+        if unresolved_quals:
+            reason = (
+                f"unresolved_qualifier: {','.join(unresolved_quals)} "
+                "(not in FROM/aliases/struct cols)"
+            )
+            reject_by_gate["unresolved_qualifier"] = (
+                reject_by_gate.get("unresolved_qualifier", 0) + 1
+            )
+            _record_gate_rejection(
+                "unresolved_qualifier", reason, proposal,
+            )
+            logger.info(
+                "preflight.synthesis.rejected_unresolved_qualifier "
+                "archetype=%s quals=%s question=%r",
+                archetype.name, unresolved_quals[:3],
+                (proposal.get("example_question") or "")[:80],
+            )
+            continue
 
         # ── Validate via the shared 5-gate ────────────────────────
         slice_allowlist = set(slice_.asset_ids())

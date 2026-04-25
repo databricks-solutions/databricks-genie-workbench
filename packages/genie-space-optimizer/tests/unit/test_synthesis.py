@@ -537,3 +537,201 @@ def test_full_pipeline_no_leak_across_large_corpus() -> None:
         flat = proposal["example_sql"] + " " + proposal["example_question"]
         for b in big_benchmarks:
             assert b["expected_sql"] not in flat
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Fix 3a — schema rendering signals struct-vs-table distinction.
+#
+# ``_build_schema_data`` in :mod:`optimization.optimizer` is the single
+# source of truth for the schema brief shipped to every Lever 6 /
+# synthesis prompt. The lever loop run that triggered the
+# ``UNRESOLVED_COLUMN: dim_date`` cluster of 34 candidates landed
+# because the brief failed to differentiate:
+#
+#   * ``dim_location`` — a ``struct<region:string, …>`` column on the
+#     metric view; ``dim_location.region`` is a valid nested ref.
+#   * ``mv_esr_dim_date`` — a separate metric view reachable via JOIN;
+#     ``dim_date.year`` is an ``UNRESOLVED_COLUMN`` unless joined.
+#
+# The fix attaches ``kind: "struct"`` + ``fields`` to struct columns
+# and ``related_tables`` derived from ``join_specs`` to each table
+# entry so the LLM can tell them apart.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestBuildSchemaDataStructAndRelated:
+    def _snapshot_with_struct_and_join(self) -> dict:
+        # MV ``mv_sales`` has a real struct column ``dim_location``
+        # (nested fields) and a join_spec to ``mv_dim_date``. The two
+        # signals together let the LLM resolve ``dim_location.region``
+        # as a nested field but ``dim_date.year`` only when joined.
+        return {
+            "data_sources": {
+                "tables": [],
+                "metric_views": [
+                    {
+                        "identifier": "cat.sch.mv_sales",
+                        "name": "mv_sales",
+                        "description": "Sales metric view",
+                        "column_configs": [
+                            {
+                                "column_name": "cy_sales",
+                                "data_type": "decimal(18,2)",
+                            },
+                            {
+                                "column_name": "dim_location",
+                                "data_type": (
+                                    "struct<region:string,"
+                                    "city:string,"
+                                    "store_no:int>"
+                                ),
+                            },
+                        ],
+                    },
+                    {
+                        "identifier": "cat.sch.mv_dim_date",
+                        "name": "mv_dim_date",
+                        "column_configs": [
+                            {"column_name": "year", "data_type": "int"},
+                            {"column_name": "month", "data_type": "int"},
+                        ],
+                    },
+                ],
+            },
+            "instructions": {
+                "join_specs": [
+                    {
+                        "left": {
+                            "identifier": "cat.sch.mv_sales",
+                            "column": "date_id",
+                        },
+                        "right": {
+                            "identifier": "cat.sch.mv_dim_date",
+                            "column": "date_id",
+                        },
+                    },
+                ],
+            },
+        }
+
+    def test_struct_column_carries_kind_and_fields(self) -> None:
+        from genie_space_optimizer.optimization.optimizer import _build_schema_data
+
+        schema = _build_schema_data(self._snapshot_with_struct_and_join())
+        sales_entry = next(e for e in schema if e["table"] == "cat.sch.mv_sales")
+        cols_by_name = {c["name"]: c for c in sales_entry["columns"]}
+
+        loc = cols_by_name["dim_location"]
+        assert loc.get("kind") == "struct", (
+            f"struct column missing kind=struct marker: {loc!r}"
+        )
+        # Top-level field names only — nested struct fields are NOT
+        # flattened (parser-correctness regression coverage).
+        assert loc.get("fields") == ["region", "city", "store_no"]
+
+        # Plain decimal column gets neither marker — kind/fields are
+        # struct-only signals.
+        cy = cols_by_name["cy_sales"]
+        assert "kind" not in cy
+        assert "fields" not in cy
+
+    def test_related_tables_attached_from_join_specs(self) -> None:
+        from genie_space_optimizer.optimization.optimizer import _build_schema_data
+
+        schema = _build_schema_data(self._snapshot_with_struct_and_join())
+
+        # Both sides of the join_spec see each other in related_tables —
+        # the index is bidirectional so the LLM gets the same signal
+        # whichever table is the FROM table.
+        sales_entry = next(e for e in schema if e["table"] == "cat.sch.mv_sales")
+        related = sales_entry.get("related_tables") or []
+        assert any(
+            r.get("table") == "cat.sch.mv_dim_date" for r in related
+        ), f"sales entry missing related dim_date: {related!r}"
+        # join_on is rendered with the leaf-only ``L.col = R.col`` form.
+        assert any(
+            "mv_sales.date_id" in (r.get("join_on") or "")
+            and "mv_dim_date.date_id" in (r.get("join_on") or "")
+            for r in related
+        ), f"join_on not rendered as 'L.col = R.col': {related!r}"
+
+        date_entry = next(
+            e for e in schema if e["table"] == "cat.sch.mv_dim_date"
+        )
+        date_related = date_entry.get("related_tables") or []
+        assert any(
+            r.get("table") == "cat.sch.mv_sales" for r in date_related
+        )
+
+    def test_table_with_no_join_spec_omits_related_tables(self) -> None:
+        from genie_space_optimizer.optimization.optimizer import _build_schema_data
+
+        snapshot = {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": "cat.sch.t_lonely",
+                        "name": "t_lonely",
+                        "column_configs": [
+                            {"column_name": "id", "data_type": "long"},
+                        ],
+                    },
+                ],
+                "metric_views": [],
+            },
+            "instructions": {"join_specs": []},
+        }
+        schema = _build_schema_data(snapshot)
+        entry = next(e for e in schema if e["table"] == "cat.sch.t_lonely")
+        assert "related_tables" not in entry
+
+    def test_non_struct_data_types_do_not_get_marked(self) -> None:
+        from genie_space_optimizer.optimization.optimizer import _build_schema_data
+
+        snapshot = {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": "cat.sch.t",
+                        "name": "t",
+                        "column_configs": [
+                            {"column_name": "tags", "data_type": "array<string>"},
+                            {"column_name": "props", "data_type": "map<string,int>"},
+                            {"column_name": "name", "data_type": "string"},
+                        ],
+                    },
+                ],
+                "metric_views": [],
+            },
+            "instructions": {"join_specs": []},
+        }
+        schema = _build_schema_data(snapshot)
+        entry = next(e for e in schema if e["table"] == "cat.sch.t")
+        for col in entry["columns"]:
+            assert "kind" not in col, (
+                f"non-struct {col['name']} ({col.get('type')}) "
+                f"wrongly flagged: {col!r}"
+            )
+
+    def test_parse_struct_field_names_skips_nested_fields(self) -> None:
+        """Nested struct fields are NOT surfaced — only top-level names."""
+        from genie_space_optimizer.optimization.optimizer import (
+            _parse_struct_field_names,
+        )
+
+        out = _parse_struct_field_names(
+            "struct<a:int,b:struct<c:int,d:int>,e:array<int>>",
+        )
+        assert out == ["a", "b", "e"], (
+            f"top-level only expected, got {out!r}"
+        )
+
+    def test_parse_struct_field_names_returns_empty_for_non_struct(self) -> None:
+        from genie_space_optimizer.optimization.optimizer import (
+            _parse_struct_field_names,
+        )
+
+        assert _parse_struct_field_names("") == []
+        assert _parse_struct_field_names("string") == []
+        assert _parse_struct_field_names("array<string>") == []
+        assert _parse_struct_field_names("decimal(18,2)") == []

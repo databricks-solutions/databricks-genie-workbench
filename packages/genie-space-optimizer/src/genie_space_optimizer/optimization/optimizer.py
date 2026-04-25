@@ -5803,11 +5803,119 @@ def _build_soft_signal_data(soft_clusters: list[dict]) -> list[dict]:
     return result
 
 
+def _parse_struct_field_names(data_type: str) -> list[str]:
+    """Return top-level field names from a Spark ``struct<…>`` data type.
+
+    Handles nested types correctly by tracking angle / paren depth so a
+    ``struct<a:int, b:struct<c:int, d:int>, e:array<int>>`` returns
+    ``["a", "b", "e"]`` and not ``["a", "b", "c", "d", "e"]``. Returns an
+    empty list when the type is not a struct or cannot be parsed.
+
+    The LLM uses this to distinguish struct columns (``foo.bar`` is a
+    nested-field reference) from separate dim tables of the same name
+    (``foo.bar`` is an ``UNRESOLVED_COLUMN`` unless joined). Mis-mapping
+    one onto the other was the root cause of the ``dim_date`` hallucination.
+    """
+    if not data_type:
+        return []
+    s = data_type.strip()
+    if not s.lower().startswith("struct<") or not s.endswith(">"):
+        return []
+    body = s[len("struct<"):-1]
+
+    fields: list[str] = []
+    depth = 0
+    cursor = 0
+    for i, ch in enumerate(body):
+        if ch in "<(":
+            depth += 1
+        elif ch in ">)":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            chunk = body[cursor:i]
+            cursor = i + 1
+            colon = chunk.find(":")
+            if colon > 0:
+                fields.append(chunk[:colon].strip())
+    chunk = body[cursor:]
+    colon = chunk.find(":")
+    if colon > 0:
+        fields.append(chunk[:colon].strip())
+    return [f for f in fields if f]
+
+
+def _collect_related_tables_by_identifier(
+    metadata_snapshot: dict,
+) -> dict[str, list[dict[str, str]]]:
+    """Index ``join_specs`` by identifier so each table sees its joinable peers.
+
+    Returns ``{lower_identifier: [{table, join_on}, …]}``. ``join_on`` is the
+    rendered ``L.col = R.col`` form when extractable, otherwise the spec's
+    ``description``. Surfacing this in the schema brief tells the LLM that
+    e.g. ``mv_esr_dim_date`` is reached via JOIN, not as a struct column on
+    a sibling MV.
+    """
+    ds = metadata_snapshot.get("data_sources", {}) or {}
+    if not isinstance(ds, dict):
+        ds = {}
+    _inst = metadata_snapshot.get("instructions", {})
+    if not isinstance(_inst, dict):
+        _inst = {}
+    join_specs = (
+        metadata_snapshot.get("join_specs", [])
+        or _inst.get("join_specs", [])
+        or ds.get("join_specs", [])
+        or []
+    )
+    by_id: dict[str, list[dict[str, str]]] = {}
+    seen_pairs: set[tuple[str, str, str]] = set()
+    for spec in join_specs:
+        if not isinstance(spec, dict):
+            continue
+        left_obj = spec.get("left", {})
+        right_obj = spec.get("right", {})
+        if isinstance(left_obj, dict) and isinstance(right_obj, dict):
+            lt = str(left_obj.get("identifier", "")).strip()
+            rt = str(right_obj.get("identifier", "")).strip()
+            l_col = str(left_obj.get("column", left_obj.get("column_name", ""))).strip()
+            r_col = str(right_obj.get("column", right_obj.get("column_name", ""))).strip()
+        else:
+            lt = str(spec.get("left_table_name", "")).strip()
+            rt = str(spec.get("right_table_name", "")).strip()
+            l_col = str(spec.get("left_column_name", "")).strip()
+            r_col = str(spec.get("right_column_name", "")).strip()
+        if not lt or not rt:
+            continue
+        if l_col and r_col:
+            join_on = f"{lt.split('.')[-1]}.{l_col} = {rt.split('.')[-1]}.{r_col}"
+        else:
+            join_on = str(spec.get("description", "") or "").strip()
+        for src, dst in ((lt, rt), (rt, lt)):
+            key = (src.lower(), dst.lower(), join_on)
+            if key in seen_pairs:
+                continue
+            seen_pairs.add(key)
+            by_id.setdefault(src.lower(), []).append(
+                {"table": dst, "join_on": join_on} if join_on else {"table": dst}
+            )
+    return by_id
+
+
 def _build_schema_data(
     metadata_snapshot: dict,
     filter_tables: set[str] | None = None,
 ) -> list[dict]:
-    """Build schema context as structured list of table dicts."""
+    """Build schema context as structured list of table dicts.
+
+    Each column entry now carries ``kind: "struct"`` plus a ``fields`` list
+    when the column's ``data_type`` is a Spark struct, so the LLM can tell a
+    nested field reference apart from a reference to a separately-joined dim
+    table of the same name. Each table entry also carries ``related_tables``
+    derived from ``join_specs`` so dim tables look like joinable peers, not
+    nested fields. Together these prevent the LLM from analogising
+    ``dim_location.region`` (a real struct field) onto ``dim_date.year``
+    (a separate MV that must be JOINed).
+    """
     from genie_space_optimizer.optimization.structured_metadata import (
         deduplicate_structured_description,
     )
@@ -5817,6 +5925,7 @@ def _build_schema_data(
         ds = {}
     tables = ds.get("tables", []) or metadata_snapshot.get("tables", [])
     mvs = ds.get("metric_views", []) or []
+    related_by_id = _collect_related_tables_by_identifier(metadata_snapshot)
     result: list[dict] = []
     for tbl in list(tables) + list(mvs):
         identifier = tbl.get("identifier", "")
@@ -5842,6 +5951,10 @@ def _build_schema_data(
             col_entry: dict[str, Any] = {"name": col_name}
             if data_type:
                 col_entry["type"] = data_type
+                struct_fields = _parse_struct_field_names(data_type)
+                if struct_fields:
+                    col_entry["kind"] = "struct"
+                    col_entry["fields"] = struct_fields
             if desc:
                 col_entry["description"] = desc
             syns = cc.get("synonyms", [])
@@ -5853,6 +5966,9 @@ def _build_schema_data(
             entry["description"] = tbl_desc
         if columns:
             entry["columns"] = columns
+        related = related_by_id.get((identifier or "").lower(), [])
+        if related:
+            entry["related_tables"] = related
         result.append(entry)
     return result
 

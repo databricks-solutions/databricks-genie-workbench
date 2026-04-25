@@ -544,6 +544,125 @@ class TestRewriteInstructions:
         assert outcome == RewriteResult.WRITE
         assert "user-curated purpose that was not tagged by the miner" in new_text
 
+    # ─────────────────────────────────────────────────────────────
+    # Fix 2 — deterministic trim before strict validation.
+    #
+    # Without the two-layer trim, legacy spaces whose seeded prose is
+    # already over ``MAX_TEXT_INSTRUCTIONS_CHARS`` (the failing run had
+    # 2315-char originals) deterministically returned
+    # ``DECLINE_MALFORMED`` even when span removal + trim could fit the
+    # output under the cap. The trim mirrors ``_run_enrichment``'s expand
+    # path (see harness.py) so the WRITE outcome is reachable without a
+    # separate compaction LLM call.
+    # ─────────────────────────────────────────────────────────────
+
+    def test_over_cap_but_trimmable_writes_under_cap(self, caplog):
+        """Original prose is >2000 chars; span removal + trim fits cap.
+
+        Constructs a realistic over-cap original (existing canonical
+        ``## PURPOSE`` + ``## CONSTRAINTS`` totalling ~2400 chars) and a
+        miner that promotes one bullet (~80 chars). After span removal
+        the text would still be ~2300 chars; the deterministic two-layer
+        trim must clip the rendered output to fit under the cap and emit
+        ``WRITE`` (not ``DECLINE_MALFORMED``).
+        """
+        # ~70-char bullets × 35 ≈ 2450 chars body + headers > 2000 cap.
+        bullets_purpose = [
+            f"- purpose detail {i:02d}: " + ("p" * 50)
+            for i in range(20)
+        ]
+        bullets_constraints = [
+            f"- constraint rule {i:02d}: " + ("c" * 50)
+            for i in range(15)
+        ]
+        original = (
+            "## PURPOSE\n"
+            + "\n".join(bullets_purpose)
+            + "\n\n## CONSTRAINTS\n"
+            + "\n".join(bullets_constraints)
+            + "\n"
+        )
+        assert len(original) > MAX_TEXT_INSTRUCTIONS_CHARS, (
+            "test setup: original prose must exceed the cap to exercise "
+            f"the trim path (len={len(original)}, cap="
+            f"{MAX_TEXT_INSTRUCTIONS_CHARS})"
+        )
+
+        # Miner promotes one bullet; without trim the rest of the prose
+        # would still keep the rendered output over cap.
+        applied = [bullets_purpose[0]]
+
+        with caplog.at_level("INFO"):
+            outcome, new_text, errors = rewrite_instructions_from_miner_output(
+                original, applied, keep_in_prose_spans=[],
+            )
+
+        assert outcome == RewriteResult.WRITE, (
+            f"expected WRITE after trim, got {outcome}; errors={errors}"
+        )
+        assert len(new_text) <= MAX_TEXT_INSTRUCTIONS_CHARS, (
+            f"trimmed text still exceeds cap: {len(new_text)} > "
+            f"{MAX_TEXT_INSTRUCTIONS_CHARS}"
+        )
+        # Promoted bullet should be gone.
+        assert bullets_purpose[0].lstrip("- ") not in new_text
+        # Trim emitted the structured telemetry log line.
+        assert any(
+            "miner.rewrite.trimmed" in rec.getMessage()
+            for rec in caplog.records
+        ), "expected miner.rewrite.trimmed log line on trim"
+
+    def test_under_cap_skips_trim_path(self, caplog):
+        """Inputs already under cap must not engage the trim layers.
+
+        Negative coverage so we don't accidentally clip well-formed
+        prose. The ``miner.rewrite.trimmed`` log line is the canary.
+        """
+        original = (
+            "## PURPOSE\n- Sales analytics for H1 revenue.\n\n"
+            "## CONSTRAINTS\n- never expose ssn.\n"
+        )
+        assert len(original) < MAX_TEXT_INSTRUCTIONS_CHARS
+
+        with caplog.at_level("INFO"):
+            outcome, _new_text, _errors = rewrite_instructions_from_miner_output(
+                original, applied_spans=[], keep_in_prose_spans=[],
+            )
+        assert outcome == RewriteResult.SKIP_NO_CHANGE
+        assert not any(
+            "miner.rewrite.trimmed" in rec.getMessage()
+            for rec in caplog.records
+        )
+
+    def test_over_cap_with_sql_still_declines(self):
+        """The trim must not bypass SQL-in-prose validation.
+
+        Over-cap original with a keep_in_prose entry that injects raw
+        SQL into ``## CONSTRAINTS``. After trim the length is fine, but
+        scanner v2 still rejects SQL → ``DECLINE_MALFORMED``. Confirms
+        the existing DECLINE path is preserved end-to-end (the plan's
+        ``header-only-overhead DECLINE path`` invariant generalised:
+        when validation fails for any reason after trim, we decline).
+        """
+        bullets = [
+            f"- ordinary bullet {i:02d}: " + ("x" * 60)
+            for i in range(35)
+        ]
+        original = "## PURPOSE\n" + "\n".join(bullets) + "\n"
+        assert len(original) > MAX_TEXT_INSTRUCTIONS_CHARS
+        keep = [{
+            "section": "## CONSTRAINTS",
+            "source_span": "- SELECT raw_pii FROM users WHERE id = 1",
+        }]
+        outcome, new_text, errors = rewrite_instructions_from_miner_output(
+            original, applied_spans=[], keep_in_prose_spans=keep,
+        )
+        assert outcome == RewriteResult.DECLINE_MALFORMED, (
+            f"expected DECLINE on SQL-in-prose, got {outcome}; errors={errors}"
+        )
+        # ``new_text`` is the untouched original on decline.
+        assert new_text == original
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Pillar B — Miner happy-path integration (LLM call mocked)

@@ -570,3 +570,226 @@ class TestStemAndMeasureRepairInteraction:
         assert p["example_sql"].count("MEASURE(") == 1
         assert "MEASURE(cy_sales)" in p["example_sql"]
         assert "cat.sch.mv_esr_sales" in p["example_sql"]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Fix 4 — alias-aware MEASURE wrap on ``<alias>.<col>`` and HAVING.
+#
+# The lever loop run produced 5 ``METRIC_VIEW_MISSING_MEASURE_FUNCTION``
+# candidates that the previous repair missed because they referenced
+# the measure via an explicit alias (``FROM mv s SELECT s.cy_sales``)
+# or in the HAVING clause. The refactored ``_rewrite_measure_refs``:
+#
+#   * walks FROM/JOIN clauses, capturing both short-name and alias.
+#   * builds a ``relevant_measures`` map keyed by alias_or_short.
+#   * recognises both the unqualified (``cy_sales``) and qualified
+#     (``s.cy_sales``) forms.
+#   * extends rewrite coverage to HAVING in addition to SELECT and
+#     ORDER BY.
+#
+# These tests exercise the new behaviour through the proposal-side
+# wrapper (``_repair_measure_refs_on_proposal``) since that's how the
+# preflight pipeline drives it; the wrapper delegates to the same
+# ``_rewrite_measure_refs`` used by the eval pipeline so this also
+# covers the eval path.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestAliasAwareMeasureRewrite:
+    def test_qualified_measure_via_explicit_alias_is_wrapped(self):
+        """``FROM mv s ... SELECT s.cy_sales`` → ``MEASURE(s.cy_sales)``."""
+        slice_ = _slice_with_mv(
+            "cat.sch.mv_sales", measures=["cy_sales"], dimensions=["zone"],
+        )
+        sql = "SELECT zone, s.cy_sales FROM cat.sch.mv_sales s GROUP BY ALL"
+        p, _wrapped = _repair_measure_refs_on_proposal(
+            {"example_sql": sql}, slice_,
+        )
+        assert "MEASURE(s.cy_sales)" in p["example_sql"], (
+            f"qualified measure not wrapped: {p['example_sql']!r}"
+        )
+
+    def test_qualified_measure_with_AS_alias_is_wrapped(self):
+        slice_ = _slice_with_mv(
+            "cat.sch.mv_sales", measures=["cy_sales"], dimensions=[],
+        )
+        sql = "SELECT s.cy_sales FROM cat.sch.mv_sales AS s"
+        p, _ = _repair_measure_refs_on_proposal({"example_sql": sql}, slice_)
+        assert "MEASURE(s.cy_sales)" in p["example_sql"]
+
+    def test_qualified_measure_via_short_name_is_wrapped(self):
+        """``FROM mv ... SELECT mv.cy_sales`` (no alias) — qualifier is
+        the table's short name."""
+        slice_ = _slice_with_mv(
+            "cat.sch.mv_sales", measures=["cy_sales"], dimensions=[],
+        )
+        sql = "SELECT mv_sales.cy_sales FROM cat.sch.mv_sales"
+        p, _ = _repair_measure_refs_on_proposal({"example_sql": sql}, slice_)
+        assert "MEASURE(mv_sales.cy_sales)" in p["example_sql"]
+
+    def test_having_clause_measure_is_wrapped(self):
+        """HAVING coverage — bare measure in HAVING should also be
+        wrapped (previously only SELECT / ORDER BY were covered)."""
+        slice_ = _slice_with_mv(
+            "cat.sch.mv_sales", measures=["cy_sales"], dimensions=["zone"],
+        )
+        sql = (
+            "SELECT zone, MEASURE(cy_sales) AS s FROM cat.sch.mv_sales "
+            "GROUP BY zone HAVING cy_sales > 1000"
+        )
+        p, _ = _repair_measure_refs_on_proposal({"example_sql": sql}, slice_)
+        # The HAVING reference must be wrapped — the SELECT alias `s`
+        # is not necessarily resolvable in HAVING in Spark SQL.
+        having_segment = p["example_sql"].split("HAVING", 1)[1]
+        assert "MEASURE(cy_sales)" in having_segment, (
+            f"HAVING measure not wrapped: {p['example_sql']!r}"
+        )
+
+    def test_group_by_is_left_alone(self):
+        """Measures should never appear in GROUP BY; if they do, let
+        EXPLAIN reject. The rewriter must NOT wrap GROUP BY columns
+        (would mask the underlying error)."""
+        slice_ = _slice_with_mv(
+            "cat.sch.mv_sales", measures=["cy_sales"], dimensions=[],
+        )
+        # Pathological proposal: bare measure in GROUP BY. The rewrite
+        # only touches SELECT / HAVING / ORDER BY.
+        sql = "SELECT cy_sales FROM cat.sch.mv_sales GROUP BY cy_sales"
+        p, _ = _repair_measure_refs_on_proposal({"example_sql": sql}, slice_)
+        group_segment = p["example_sql"].split("GROUP BY", 1)[1]
+        # GROUP BY clause unchanged — no MEASURE() wrap there.
+        assert "MEASURE(" not in group_segment, (
+            f"GROUP BY wrongly wrapped: {p['example_sql']!r}"
+        )
+
+    def test_unqualified_measure_with_aliased_from_still_wraps(self):
+        """``FROM mv s SELECT cy_sales`` — bare ``cy_sales`` (no alias
+        prefix) is still resolvable because we have a single MV in
+        FROM. Must wrap."""
+        slice_ = _slice_with_mv(
+            "cat.sch.mv_sales", measures=["cy_sales"], dimensions=["zone"],
+        )
+        sql = "SELECT zone, cy_sales FROM cat.sch.mv_sales s GROUP BY ALL"
+        p, _ = _repair_measure_refs_on_proposal({"example_sql": sql}, slice_)
+        assert "MEASURE(cy_sales)" in p["example_sql"]
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Fix 5 — strip redundant outer aggregate around MEASURE().
+#
+# After MV expansion ``MEASURE(SUM(...))`` is the canonical shape; the
+# LLM sometimes emits ``SUM(MEASURE(...))`` which after expansion
+# becomes ``SUM(MEASURE(SUM(...)))`` — Spark rejects it as
+# ``NESTED_AGGREGATE_FUNCTION``. ``_strip_outer_agg_around_measure``
+# walks the SQL AST (sqlglot) and collapses the redundant aggregate
+# wrapper. Falls back to a regex when sqlglot can't parse.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestStripOuterAggregateAroundMeasure:
+    def test_sum_around_measure_is_stripped(self):
+        from genie_space_optimizer.optimization.evaluation import (
+            _strip_outer_agg_around_measure,
+        )
+
+        sql, count = _strip_outer_agg_around_measure(
+            "SELECT SUM(MEASURE(cy_sales)) FROM cat.sch.mv_sales",
+        )
+        assert count == 1, f"expected 1 strip, got {count}"
+        # Outer SUM is gone; MEASURE wrap is preserved.
+        assert "SUM(" not in sql.upper().split("FROM")[0]
+        assert "MEASURE(cy_sales)" in sql
+
+    def test_avg_around_qualified_measure_is_stripped(self):
+        from genie_space_optimizer.optimization.evaluation import (
+            _strip_outer_agg_around_measure,
+        )
+
+        sql, count = _strip_outer_agg_around_measure(
+            "SELECT AVG(MEASURE(s.amt)) FROM cat.sch.mv s",
+        )
+        assert count == 1
+        assert "AVG(" not in sql.upper().split("FROM")[0]
+        assert "MEASURE(s.amt)" in sql
+
+    def test_non_aggregate_wrapper_left_alone(self):
+        """``COALESCE(MEASURE(x), 0)`` is NOT a nested aggregate — it's
+        a perfectly valid expression. Must not be stripped."""
+        from genie_space_optimizer.optimization.evaluation import (
+            _strip_outer_agg_around_measure,
+        )
+
+        original = "SELECT COALESCE(MEASURE(cy_sales), 0) FROM cat.sch.mv_sales"
+        sql, count = _strip_outer_agg_around_measure(original)
+        assert count == 0, f"unexpected strip: {sql!r}"
+        # COALESCE preserved.
+        assert "COALESCE" in sql.upper()
+        assert "MEASURE(cy_sales)" in sql
+
+    def test_aggregate_with_extra_args_not_stripped(self):
+        """``COUNT(MEASURE(x), 'extra')`` (hypothetical) shouldn't strip
+        — only single-argument outer aggregates collapse."""
+        from genie_space_optimizer.optimization.evaluation import (
+            _strip_outer_agg_around_measure,
+        )
+
+        # Use ``GREATEST`` which is a known multi-arg function (not in
+        # the aggregate-allowlist) to verify the helper doesn't touch
+        # multi-arg wrappers.
+        original = (
+            "SELECT GREATEST(MEASURE(cy_sales), 0) FROM cat.sch.mv_sales"
+        )
+        sql, count = _strip_outer_agg_around_measure(original)
+        assert count == 0
+        assert "GREATEST" in sql.upper()
+
+    def test_no_measure_call_is_noop(self):
+        from genie_space_optimizer.optimization.evaluation import (
+            _strip_outer_agg_around_measure,
+        )
+
+        original = "SELECT SUM(amount) FROM cat.sch.t_orders"
+        sql, count = _strip_outer_agg_around_measure(original)
+        assert count == 0
+        assert sql == original or sql.strip() == original.strip()
+
+    def test_proposal_pipeline_runs_strip_after_rewrite(self):
+        """End-to-end via the proposal hook: a proposal that emits
+        ``SUM(MEASURE(...))`` must come out as ``MEASURE(...)`` after
+        the proposal repair pipeline (rewrite + strip)."""
+        slice_ = _slice_with_mv(
+            "cat.sch.mv_sales", measures=["cy_sales"], dimensions=[],
+        )
+        sql = "SELECT SUM(MEASURE(cy_sales)) AS s FROM cat.sch.mv_sales"
+        p, _ = _repair_measure_refs_on_proposal({"example_sql": sql}, slice_)
+        # The outer SUM around MEASURE should be gone after the
+        # proposal-side strip step.
+        select_segment = p["example_sql"].split("FROM", 1)[0]
+        assert "SUM(" not in select_segment.upper(), (
+            f"outer SUM not stripped: {p['example_sql']!r}"
+        )
+        assert "MEASURE(cy_sales)" in p["example_sql"]
+
+    def test_regex_fallback_handles_unparseable_sql(self):
+        """If sqlglot fails to parse, the regex fallback should still
+        catch the simple ``AGG(MEASURE(x))`` shape.
+
+        Construct a malformed-but-trimmable input by inserting an
+        unmatched bracket downstream of the offending pattern. sqlglot
+        will reject the parse; the regex fallback must still strip.
+        """
+        from genie_space_optimizer.optimization.evaluation import (
+            _strip_outer_agg_around_measure,
+        )
+
+        # Trailing junk that breaks AST parsing but leaves the head
+        # well-formed for the regex.
+        malformed = "SELECT SUM(MEASURE(cy_sales)) FROM cat.sch.mv ((( ?"
+        sql, count = _strip_outer_agg_around_measure(malformed)
+        # Either the AST path or the regex fallback should strip the
+        # outer SUM. The exact count depends on which path engages,
+        # but the result must contain MEASURE without the outer SUM.
+        head = sql.split("FROM", 1)[0]
+        assert "SUM(" not in head.upper() or count >= 1, (
+            f"fallback failed to strip: count={count} sql={sql!r}"
+        )
