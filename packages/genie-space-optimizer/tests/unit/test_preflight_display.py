@@ -49,16 +49,20 @@ def _run_preflight(
     genie_table_refs=None,
     collect_or_empty_rows=None,
     data_profile=None,
+    catalog_mvs=None,
 ):
     """Invoke ``preflight_collect_uc_metadata`` with all externals stubbed.
 
     ``collect_or_empty_rows`` seeds the Spark-collect path with a canned
     ``(rows, error)`` tuple. ``data_profile`` seeds the profile returned by
-    ``_collect_data_profile``. Either can be ``None`` to use sensible empties.
+    ``_collect_data_profile``. ``catalog_mvs`` seeds the catalog detector
+    return value as ``(detected_set, yamls_dict)``. Each can be ``None``
+    to use sensible empties.
     """
     from genie_space_optimizer.optimization import preflight
 
     rows_stub = collect_or_empty_rows or ([], None)
+    catalog_stub = catalog_mvs if catalog_mvs is not None else (set(), {})
 
     with (
         _stub_patches()[0],
@@ -69,6 +73,10 @@ def _run_preflight(
         patch.object(
             preflight, "_collect_data_profile",
             return_value=data_profile or {},
+        ),
+        patch.object(
+            preflight, "_detect_metric_views_via_catalog",
+            return_value=catalog_stub,
         ),
         patch.object(
             preflight, "get_columns_for_tables_rest", return_value=[],
@@ -246,3 +254,64 @@ class TestDataProfileRowCounts:
         out = capsys.readouterr().out
         assert "(row count unavailable)" in out
         assert "~?" not in out
+
+
+# ---------------------------------------------------------------------------
+# C3: Catalog-reclassification parenthetical
+# ---------------------------------------------------------------------------
+
+class TestCatalogReclassificationDisplay:
+    def test_split_reflects_catalog_reclassification(self, capsys):
+        """When the catalog detector finds an MV that Genie listed as a table,
+        the UC Refs split shows the *effective* counts, not the raw config
+        counts, and appends a reclassification parenthetical.
+        """
+        config = _config_with_split(n_tables=4, n_mvs=0, n_funcs=0)
+        _run_preflight(
+            config,
+            collect_or_empty_rows=(_uc_column_rows(config["_tables"]), None),
+            catalog_mvs=({"cat.sch.t1"}, {"cat.sch.t1": {"source": "x"}}),
+        )
+
+        out = capsys.readouterr().out
+        assert "UC Refs split" in out
+        assert "tables=3" in out
+        assert "metric_views=1" in out
+        assert "functions=0" in out
+        assert "total 4" in out
+        assert "reclassified" in out.lower()
+
+    def test_no_parenthetical_when_no_reclassification(self, capsys):
+        """No catalog reclassifications -> no parenthetical in the split line."""
+        config = _config_with_split(n_tables=4, n_mvs=2, n_funcs=0)
+        _run_preflight(
+            config,
+            collect_or_empty_rows=(
+                _uc_column_rows(config["_tables"] + config["_metric_views"]),
+                None,
+            ),
+            catalog_mvs=(set(), {}),
+        )
+
+        out = capsys.readouterr().out
+        assert "UC Refs split" in out
+        for line in out.splitlines():
+            if "UC Refs split" in line:
+                assert "reclassified" not in line.lower()
+                break
+        else:
+            pytest.fail("UC Refs split line not found in output")
+
+    def test_coverage_uses_effective_mv_count(self, capsys):
+        """Coverage line counts catalog-detected MVs in the skipped tally."""
+        config = _config_with_split(n_tables=1, n_mvs=0, n_funcs=0)
+        _run_preflight(
+            config,
+            collect_or_empty_rows=(_uc_column_rows(config["_tables"]), None),
+            catalog_mvs=({"cat.sch.t0"}, {"cat.sch.t0": {"source": "x"}}),
+            data_profile={},
+        )
+
+        out = capsys.readouterr().out
+        assert "Coverage:" in out
+        assert "metric_views skipped: 1" in out

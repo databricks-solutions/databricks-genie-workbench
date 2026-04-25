@@ -286,6 +286,48 @@ def _known_policy_bullets_by_header() -> dict[str, set[str]]:
     return by_header
 
 
+# Header equivalence: a canonical ``## X`` is the same conceptual section
+# as a legacy ``X:`` (uppercase, no ``##``, no trailing colon — that's how
+# ``parse_canonical_sections`` keys the legacy bucket). Used by the
+# semantic strip pass to dedup GSO-owned bullets across both schemes.
+_CANONICAL_TO_LEGACY_HEADER: dict[str, str] = {
+    h: h.removeprefix("## ").upper() for h in CANONICAL_SECTION_HEADERS
+}
+
+
+def _normalize_policy_body(text: str) -> str:
+    """Normalize a bullet body for semantic (cross-format) comparison.
+
+    Strips inline-code backticks (which ``_sanitize_plaintext_instructions``
+    removes when flipping ``## X`` → ``X:``) and collapses internal
+    whitespace, so a bullet that has round-tripped through any plain-text
+    rewrite still matches its canonical-form original. Without this
+    normalisation the strip pass falls back to byte-exact match and silently
+    fails the moment downstream prose mutates our prior output, leaving
+    duplicate sections (one canonical, one legacy) on each subsequent run.
+    """
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _known_policy_bodies_normalized() -> dict[str, set[str]]:
+    """Return ``{canonical_header: {normalized_body, ...}}`` for current +
+    deprecated GSO bullets.
+
+    Mirrors :func:`_known_policy_bullets_by_header` but pre-normalises each
+    body for the semantic strip pass.
+    """
+    by_header: dict[str, set[str]] = {}
+    for _key, header, text in _GSO_QUALITY_V1_POLICIES:
+        by_header.setdefault(header, set()).add(_normalize_policy_body(text))
+    owned_headers = set(by_header.keys())
+    for text in _GSO_QUALITY_V1_DEPRECATED_BULLETS:
+        for header in owned_headers:
+            by_header.setdefault(header, set()).add(_normalize_policy_body(text))
+    return by_header
+
+
 def _bullet_text(line: str) -> str:
     """Strip leading bullet marker + whitespace so ``- foo`` and ``foo`` match."""
     return re.sub(r"^\s*[-*]\s*", "", line).strip()
@@ -341,15 +383,27 @@ def apply_gso_quality_instructions(config: dict) -> bool:
     """Insert or refresh the D1–D3 quality bullets in general instructions.
 
     Each policy is rendered as a plain bullet under its target canonical
-    ``##`` section so the customer never sees our machinery. Idempotent:
-    any existing bullet whose text matches a known policy body (current
-    or deprecated) is stripped, then — when
+    ``##`` section so the customer never sees our machinery. Idempotent
+    via a *semantic* strip pass: any existing bullet whose normalised body
+    matches a known policy body (current or deprecated) is stripped from
+    BOTH the canonical bucket (``## CONSTRAINTS``) AND the equivalent
+    legacy bucket (``CONSTRAINTS:``). Then — when
     ``GSO_APPLY_QUALITY_INSTRUCTIONS=on`` — the current bullet is
-    re-inserted. Legacy ``-- BEGIN/END GSO_QUALITY_V1:<key>`` sentinel
-    blocks from pre-Option-C runs are also swept out.
+    re-inserted under the canonical header.
 
-    Customer-authored bullets with any wording different from the known
-    allowlist are preserved verbatim.
+    The semantic strip is required because ``_sanitize_plaintext_instructions``
+    (and a handful of other plain-text rewrite paths) flip ``## X`` →
+    ``X:`` and strip inline-code backticks. Without normalisation, the
+    strip pass fails byte-equality on those mutated copies and the next
+    run emits a fresh canonical section on top of the legacy one, with
+    each successive run cementing the duplication.
+
+    Legacy ``-- BEGIN/END GSO_QUALITY_V1:<key>`` sentinel blocks from
+    pre-Option-C runs are also swept out. Customer-authored bullets with
+    any wording different from the known allowlist (after normalisation)
+    are preserved verbatim. Legacy sections that become empty after the
+    strip have their header removed so we don't leave orphan
+    ``CONSTRAINTS:`` lines behind.
 
     Returns ``True`` if the instruction text changed.
     """
@@ -363,14 +417,47 @@ def apply_gso_quality_instructions(config: dict) -> bool:
 
     canonical, legacy, preamble = parse_canonical_sections(legacy_swept)
 
-    known = _known_policy_bullets_by_header()
-    for header in list(canonical.keys()):
-        targets = known.get(header)
-        if not targets:
+    known = _known_policy_bodies_normalized()
+
+    # Strip GSO-owned bullets from the canonical bucket (semantic match).
+    stripped_canonical = 0
+    for header, targets in known.items():
+        if header not in canonical:
             continue
+        before = len(canonical[header])
         canonical[header] = [
-            ln for ln in canonical[header] if _bullet_text(ln) not in targets
+            ln for ln in canonical[header]
+            if _normalize_policy_body(_bullet_text(ln)) not in targets
         ]
+        stripped_canonical += before - len(canonical[header])
+
+    # Strip GSO-owned bullets from the equivalent legacy bucket. This is
+    # the cross-scheme dedup that closes the duplication cycle: bullets
+    # that originated as canonical content but were later mutated by
+    # ``_sanitize_plaintext_instructions`` (``## X`` → ``X:``, backticks
+    # removed) are recognised by their normalised body and removed.
+    stripped_legacy = 0
+    for canonical_header, legacy_key in _CANONICAL_TO_LEGACY_HEADER.items():
+        targets = known.get(canonical_header)
+        if not targets or legacy_key not in legacy:
+            continue
+        before = len(legacy[legacy_key])
+        legacy[legacy_key] = [
+            ln for ln in legacy[legacy_key]
+            if _normalize_policy_body(_bullet_text(ln)) not in targets
+        ]
+        stripped_legacy += before - len(legacy[legacy_key])
+        # If the section is now empty (or whitespace-only), drop the
+        # header entirely so we don't leave an orphan ``CONSTRAINTS:``
+        # line behind.
+        if not any(ln.strip() for ln in legacy[legacy_key]):
+            legacy.pop(legacy_key)
+
+    if stripped_canonical or stripped_legacy:
+        logger.info(
+            "gso_quality.dedup canonical=%d legacy=%d",
+            stripped_canonical, stripped_legacy,
+        )
 
     if apply_quality_instructions_is_on():
         for _key, header, text in _GSO_QUALITY_V1_POLICIES:

@@ -1226,17 +1226,94 @@ def preflight_collect_uc_metadata(
         for c in uc_columns_dicts if isinstance(c, dict) and c.get("table_name")
     }
 
-    _n_tables = len(config.get("_tables", []) or [])
-    _n_mvs = len(config.get("_metric_views", []) or [])
+    # Tier-A #1: catalog-level MV detection. Genie sometimes serializes a
+    # metric view under ``data_sources.tables`` *without* declaring its
+    # measures in ``column_configs`` (the column-config heuristic relies
+    # on that). Run ``DESCRIBE TABLE EXTENDED ... AS JSON`` per ref to
+    # detect MV-ness at the catalog level so the four downstream gates —
+    # MEASURE auto-wrap, MV ``SELECT *`` guard, MV prompt block, data
+    # profile dispatcher — see the asset for what it really is. Run this
+    # before the UC Refs split / Coverage display so those lines reflect
+    # the *effective* MV count, not the raw config count.
+    try:
+        _catalog_mvs, _catalog_mv_yamls = _detect_metric_views_via_catalog(
+            spark, list(genie_table_refs),
+            w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
+        )
+    except Exception:
+        logger.debug("MV catalog detection failed — continuing without it", exc_info=True)
+        _catalog_mvs, _catalog_mv_yamls = set(), {}
+    if _catalog_mv_yamls:
+        config["_metric_view_yaml"] = _catalog_mv_yamls
+        _ps_mirror = config.get("_parsed_space")
+        if isinstance(_ps_mirror, dict):
+            _ps_mirror["_metric_view_yaml"] = _catalog_mv_yamls
+        logger.info(
+            "MV catalog detection: %d ref(s) classified as metric views (%s)",
+            len(_catalog_mv_yamls), sorted(_catalog_mv_yamls.keys()),
+        )
+
+    from genie_space_optimizer.optimization.evaluation import (
+        effective_metric_view_identifiers,
+        effective_metric_view_identifiers_with_catalog,
+    )
+    # Effective MV set unions:
+    #   (a) ``data_sources.metric_views`` (flat ``_metric_views`` field
+    #       — Genie's canonical MV shelf),
+    #   (b) ``data_sources.tables`` entries whose column_configs declare
+    #       a measure (column-config heuristic),
+    #   (c) catalog-detected MVs from this run.
+    # The ``_with_catalog`` helper covers (b) + (c) but walks
+    # ``_parsed_space``; some upstream paths populate the flat
+    # ``_metric_views`` list without re-mirroring it into parsed_space,
+    # so we union both representations to keep counts robust.
+    _eff_mvs_set: set[str] = set(effective_metric_view_identifiers_with_catalog(config))
+    _eff_mvs_lower: set[str] = {ident.lower() for ident in _eff_mvs_set}
+    for ident in config.get("_metric_views", []) or []:
+        ident_s = str(ident).strip()
+        if ident_s and ident_s.lower() not in _eff_mvs_lower:
+            _eff_mvs_set.add(ident_s)
+            _eff_mvs_lower.add(ident_s.lower())
+
+    # Reflect the *effective* split rather than the raw config split so
+    # SAs reading the log can reconcile the totals against what GSO is
+    # actually treating as an MV.
     _n_funcs = len(config.get("_functions", []) or [])
+    _n_total_refs = (
+        len(config.get("_tables", []) or [])
+        + len(config.get("_metric_views", []) or [])
+    )
+    _n_mvs = len(_eff_mvs_set)
+    _n_tables = max(0, _n_total_refs - _n_mvs)
+
+    # The reclassification parenthetical only fires for catalog-driven
+    # detections (column_configs are part of the existing heuristic and
+    # already reflected in the raw config split when populated upstream).
+    _base_mv_lower = {
+        ident.lower() for ident in effective_metric_view_identifiers(config)
+    }
+    for ident in config.get("_metric_views", []) or []:
+        ident_s = str(ident).strip().lower()
+        if ident_s:
+            _base_mv_lower.add(ident_s)
+    _reclassified_count = sum(
+        1
+        for ident in _eff_mvs_set
+        if ident.lower() not in _base_mv_lower
+    )
+
+    _split_payload = (
+        f"tables={_n_tables}, metric_views={_n_mvs}, functions={_n_funcs} "
+        f"(total {_n_tables + _n_mvs + _n_funcs})"
+    )
+    if _reclassified_count > 0:
+        _split_payload += (
+            f" ({_reclassified_count} reclassified from tables via catalog)"
+        )
 
     _lines = [_pf_section("PREFLIGHT — UC METADATA COLLECTION SUMMARY")]
     _lines.append(_pf_kv("UC Columns", f"{len(uc_columns_dicts):>5}  (covering {len(_uc_table_names)} tables, source: {_actual_source.get('uc_columns', 'unknown')})"))
-    _lines.append(_pf_kv(
-        "UC Refs split",
-        f"tables={_n_tables}, metric_views={_n_mvs}, functions={_n_funcs} "
-        f"(total {_n_tables + _n_mvs + _n_funcs})",
-    ))
+    _lines.append(_pf_kv("UC Refs split", _split_payload))
     _lines.append(_pf_kv("Genie config", f"{configured_cols:>5}  column_configs entries (descriptions/FA/VD)"))
     _lines.append(_pf_kv("Tags", f"{len(uc_tags_dicts):>5}  (source: {_actual_source.get('uc_tags', 'unknown')})"))
     _lines.append(_pf_kv("Routines", f"{len(uc_routines_dicts):>5}  (source: {_actual_source.get('uc_routines', 'unknown')})"))
@@ -1317,40 +1394,11 @@ def preflight_collect_uc_metadata(
         detail=stage_detail,
     )
 
-    # PR 14: use the *effective* MV identifier set so that data
-    # profiling skips MVs Genie serialized under ``data_sources.tables``.
-    # Profiling an MV triggers METRIC_VIEW_MISSING_MEASURE_FUNCTION and
-    # the column never gets a value dictionary entry.
-    #
-    # Tier-A #1: catalog-level detection. Genie sometimes serializes a
-    # metric view under ``data_sources.tables`` *without* declaring its
-    # measures in ``column_configs`` (the column-config heuristic relies
-    # on that). Run ``DESCRIBE TABLE EXTENDED ... AS JSON`` per ref to
-    # detect MV-ness at the catalog level so the four downstream gates
-    # — MEASURE auto-wrap, MV ``SELECT *`` guard, MV prompt block, data
-    # profile dispatcher — see the asset for what it really is.
-    try:
-        _catalog_mvs, _catalog_mv_yamls = _detect_metric_views_via_catalog(
-            spark, list(genie_table_refs),
-            w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
-        )
-    except Exception:
-        logger.debug("MV catalog detection failed — continuing without it", exc_info=True)
-        _catalog_mvs, _catalog_mv_yamls = set(), {}
-    if _catalog_mv_yamls:
-        config["_metric_view_yaml"] = _catalog_mv_yamls
-        _ps_mirror = config.get("_parsed_space")
-        if isinstance(_ps_mirror, dict):
-            _ps_mirror["_metric_view_yaml"] = _catalog_mv_yamls
-        logger.info(
-            "MV catalog detection: %d ref(s) classified as metric views (%s)",
-            len(_catalog_mv_yamls), sorted(_catalog_mv_yamls.keys()),
-        )
-
-    from genie_space_optimizer.optimization.evaluation import (
-        effective_metric_view_identifiers_with_catalog,
-    )
-    _eff_mvs = effective_metric_view_identifiers_with_catalog(config)
+    # PR 14 + Tier-A #1: data profiling skips effective MVs. The
+    # catalog-detection + column-config heuristic was already evaluated
+    # above (so the UC Refs split could reflect reclassification);
+    # reuse that set here.
+    _eff_mvs = _eff_mvs_set
     table_names = list(config.get("_tables", [])) + list(config.get("_metric_views", []))
     _mv_names = frozenset(
         n.strip().lower().split(".")[-1]
@@ -1382,7 +1430,12 @@ def preflight_collect_uc_metadata(
                 for c in t.get("columns", {}).values()
                 if c.get("distinct_values")
             )
-            _n_mvs_skipped = len(config.get("_metric_views", []) or [])
+            # Coverage reflects effective MVs (column-config heuristic +
+            # catalog detection) so the "metric_views skipped" tally
+            # matches the UC Refs split above. Without this the two
+            # lines disagreed when Genie serialized an MV under
+            # ``data_sources.tables`` without measure column configs.
+            _n_mvs_skipped = len(_eff_mvs)
             _n_funcs_excluded = len(config.get("_functions", []) or [])
             _n_total_refs = len(table_names) + _n_funcs_excluded
 
