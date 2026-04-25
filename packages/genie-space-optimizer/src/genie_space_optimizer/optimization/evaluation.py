@@ -530,6 +530,95 @@ def _call_llm_for_scoring(
     raise last_err  # type: ignore[misc]
 
 
+_MEASURE_ALIAS_COLLISION_PATTERN = re.compile(
+    r"MEASURE\s*\(\s*`?([A-Za-z_][\w]*)`?\s*\)\s+AS\s+`?([A-Za-z_][\w]*)`?",
+    re.IGNORECASE,
+)
+
+
+def _repair_measure_alias_collisions(sql: str) -> tuple[str, int]:
+    """Rewrite ``MEASURE(col) AS col`` to ``MEASURE(col) AS col_value``.
+
+    PR 15 — when a SELECT projects ``MEASURE(col) AS col`` against a
+    metric view, Spark's resolver shadows the underlying measure column
+    with the alias. Subsequent references in ORDER BY / HAVING that use
+    ``MEASURE(col)`` then resolve to the alias output (a regular
+    aggregate expression) and fail the planner with::
+
+        [MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION]
+        Resolved attribute(s) "col" missing from "..., col, ..." in
+        operator !Aggregate ... measure(col#alias_id) AS measure(col)
+
+    The deterministic fix is to rename the alias so it no longer matches
+    the underlying column name. We append ``_value`` because it
+    survives downstream prompt-matching and is unambiguous in
+    user-facing queries. Bare references to the original alias in
+    ORDER BY / HAVING / GROUP BY are remapped to the new alias so
+    semantically-equivalent queries continue to return the same
+    rows in the same order.
+
+    Returns ``(new_sql, num_collisions_fixed)``. The counter feeds the
+    unified-pipeline yield diagnostics (PR 18) so operators can see how
+    often this repair fires.
+    """
+    if not sql or "MEASURE" not in sql.upper():
+        return sql, 0
+
+    # First pass: identify collisions, build alias-rename map.
+    rename_map: dict[str, str] = {}
+    for m in _MEASURE_ALIAS_COLLISION_PATTERN.finditer(sql):
+        col, alias = m.group(1), m.group(2)
+        if col.lower() == alias.lower() and col.lower() not in rename_map:
+            rename_map[col.lower()] = f"{col}_value"
+    if not rename_map:
+        return sql, 0
+
+    # Second pass: replace each collision-style alias with the safe one.
+    def _replace(m: re.Match) -> str:
+        col, alias = m.group(1), m.group(2)
+        if col.lower() != alias.lower():
+            return m.group(0)
+        new_alias = rename_map[col.lower()]
+        return f"MEASURE({col}) AS {new_alias}"
+
+    new_sql = _MEASURE_ALIAS_COLLISION_PATTERN.sub(_replace, sql)
+
+    # Third pass: rewrite bare alias references in ORDER BY / HAVING /
+    # GROUP BY clauses (the only places where SELECT aliases are
+    # legally usable outside the projection list). We match the old
+    # alias as a whole identifier and skip occurrences inside
+    # ``MEASURE(...)`` (those still resolve to the underlying column).
+    # Conservative: only rewrite within ORDER BY / HAVING tail to avoid
+    # touching anything in the FROM / WHERE clauses.
+    def _rewrite_clause(text: str) -> str:
+        for old_col, new_alias in rename_map.items():
+            # Match `old_col` as a whole identifier not inside MEASURE(.
+            # The lookbehind on ``MEASURE\s*\(\s*`?`` is variable-width
+            # so we approximate with a 12-char window check.
+            pattern = re.compile(rf"\b{re.escape(old_col)}\b", re.IGNORECASE)
+
+            def _sub(match: re.Match) -> str:
+                start = match.start()
+                window_start = max(0, start - 12)
+                prefix = text[window_start:start]
+                if re.search(r"MEASURE\s*\(\s*`?$", prefix, re.IGNORECASE):
+                    return match.group(0)
+                return new_alias
+
+            text = pattern.sub(_sub, text)
+        return text
+
+    # Locate ORDER BY / HAVING / GROUP BY tails. Rewriting the whole
+    # tail captures all three clauses regardless of order.
+    tail_anchor = re.search(r"\b(ORDER\s+BY|HAVING|GROUP\s+BY)\b", new_sql, re.IGNORECASE)
+    if tail_anchor:
+        head = new_sql[: tail_anchor.start()]
+        tail = new_sql[tail_anchor.start() :]
+        new_sql = head + _rewrite_clause(tail)
+
+    return new_sql, len(rename_map)
+
+
 def _rewrite_measure_refs(
     sql: str,
     metric_view_measures: dict[str, set[str]],
@@ -599,21 +688,130 @@ def _rewrite_measure_refs(
     return prefix + rewritten_tail
 
 
-def build_metric_view_measures(config: dict) -> dict[str, set[str]]:
-    """Build {lowered_short_name: {measure_col, ...}} from the parsed Genie config."""
+def _entry_has_measure_columns(entry: Any) -> bool:
+    """Return True if a data-source entry has any measure-typed column.
+
+    Genie's serialized space sometimes places a metric view under
+    ``data_sources.tables`` rather than ``data_sources.metric_views``
+    (depends on whether the user formally registered it as an MV in
+    the space; the underlying UC asset is still a metric view and
+    Spark enforces the ``MEASURE()`` contract regardless of where the
+    config records it). The deterministic signal is a column_config
+    with ``column_type == "measure"`` or ``is_measure: True`` — both
+    indicate a column that must be wrapped in ``MEASURE()`` when
+    referenced in a SELECT/ORDER BY against the asset. Keeps this
+    function side-effect free so callers can reuse it cheaply across
+    the synthesis hot path.
+    """
+    if not isinstance(entry, dict):
+        return False
+    for cc in entry.get("column_configs", []) or []:
+        if not isinstance(cc, dict):
+            continue
+        if str(cc.get("column_type", "")).lower() == "measure":
+            return True
+        if cc.get("is_measure"):
+            return True
+    return False
+
+
+def _iter_effective_metric_view_entries(config: dict) -> Iterator[dict]:
+    """Yield each effective metric-view data-source entry from *config*.
+
+    Walks both ``data_sources.metric_views`` (always treated as MVs) and
+    ``data_sources.tables`` (filtered by :func:`_entry_has_measure_columns`).
+    Mirrors the canonical Genie shape so downstream callers can extract
+    measures / dimensions without caring which list the MV originally
+    landed in. De-duplicates by identifier so a snapshot that pre-reclassified
+    one of its MVs cannot double-yield it.
+    """
     parsed = config.get("_parsed_space", config)
+    if not isinstance(parsed, dict):
+        return
     ds = parsed.get("data_sources", {})
     if not isinstance(ds, dict):
-        return {}
-    mvs = ds.get("metric_views", [])
+        return
+    seen: set[str] = set()
+    for mv in ds.get("metric_views", []) or []:
+        if not isinstance(mv, dict):
+            continue
+        ident = (mv.get("identifier") or "").strip().lower()
+        if ident and ident in seen:
+            continue
+        if ident:
+            seen.add(ident)
+        yield mv
+    for tbl in ds.get("tables", []) or []:
+        if not isinstance(tbl, dict):
+            continue
+        if not _entry_has_measure_columns(tbl):
+            continue
+        ident = (tbl.get("identifier") or "").strip().lower()
+        if ident and ident in seen:
+            continue
+        if ident:
+            seen.add(ident)
+        yield tbl
+
+
+def effective_metric_view_identifiers(config: dict) -> set[str]:
+    """Return the set of identifier strings for all effective metric views.
+
+    The "effective" view unifies entries that Genie placed under
+    ``metric_views`` with entries placed under ``tables`` whose column
+    configs declare measures — the only signal Spark cares about when
+    enforcing the ``MEASURE()`` contract. Used by the MV ``SELECT *``
+    guard, the MEASURE auto-wrap rewriter, the metric-view prompt
+    block, and the data-profile skip-list so all four agree on what
+    counts as an MV regardless of how Genie's serializer happened to
+    classify it on this fetch.
+    """
+    out: set[str] = set()
+    for mv in _iter_effective_metric_view_entries(config):
+        ident = (mv.get("identifier") or "").strip()
+        if ident:
+            out.add(ident)
+    return out
+
+
+def effective_table_identifiers(config: dict) -> set[str]:
+    """Return identifiers from ``_tables`` that are not effective MVs.
+
+    Excludes ``data_sources.tables`` entries reclassified as metric
+    views by :func:`effective_metric_view_identifiers` so callers
+    enumerating "real" tables (e.g. data profiling, table allowlist
+    rendering) skip MV-shaped entries without manual filtering.
+    """
+    mv_idents = {ident.lower() for ident in effective_metric_view_identifiers(config)}
+    out: set[str] = set()
+    for tbl in config.get("_tables", []) or []:
+        ident = str(tbl).strip()
+        if ident and ident.lower() not in mv_idents:
+            out.add(ident)
+    return out
+
+
+def build_metric_view_measures(config: dict) -> dict[str, set[str]]:
+    """Build ``{lowered_short_name: {measure_col, ...}}`` for all effective MVs.
+
+    "Effective" means we walk both ``data_sources.metric_views`` and any
+    ``data_sources.tables`` entries that look like an MV (have at least
+    one measure-typed column config). This is the single source of
+    truth used by the MEASURE auto-wrap rewriter — keeping detection
+    here ensures the unified pipeline, the preflight pipeline, and the
+    benchmark/example correction loops all rewrite the same set of
+    columns.
+    """
     result: dict[str, set[str]] = {}
-    for mv in mvs:
+    for mv in _iter_effective_metric_view_entries(config):
         identifier = mv.get("identifier", "")
         short_name = identifier.split(".")[-1].lower() if identifier else ""
         if not short_name:
             continue
         measures: set[str] = set()
-        for cc in mv.get("column_configs", []):
+        for cc in mv.get("column_configs", []) or []:
+            if not isinstance(cc, dict):
+                continue
             col_name = cc.get("column_name", "")
             if not col_name:
                 continue
@@ -1787,8 +1985,25 @@ def _extract_sqlstate(message: str) -> str | None:
 
 
 def _classify_sql_validation_error(message: str) -> str:
-    """Classify SQL validation failures into stable reason codes."""
+    """Classify SQL validation failures into stable reason codes.
+
+    PR 16 added the following codes to enable class-specific repair
+    hints in the LLM correction prompt:
+
+    * ``mv_missing_measure_function`` — bare measure column referenced
+      against an MV; fix is to wrap with ``MEASURE()``.
+    * ``mv_alias_collision`` — ``MEASURE(col) AS col`` shadowed the
+      underlying column; fix is to rename the alias.
+    """
     lowered = (message or "").lower()
+    if "metric_view_missing_measure_function" in lowered:
+        return "mv_missing_measure_function"
+    if (
+        "missing_attributes.resolved_attribute_appear_in_operation" in lowered
+        or "resolved attribute" in lowered
+        and "appear in the operation" in lowered
+    ):
+        return "mv_alias_collision"
     if "metric_view_join_not_supported" in lowered:
         return "metric_view_join"
     if "insufficient_permissions" in lowered or "permission denied" in lowered:
@@ -1804,6 +2019,59 @@ def _classify_sql_validation_error(message: str) -> str:
     if "parseexception" in lowered or "syntax error" in lowered:
         return "syntax_error"
     return "sql_compile_error"
+
+
+_REPAIR_HINTS_BY_REASON: dict[str, str] = {
+    "mv_missing_measure_function": (
+        "FIX: A bare measure column was referenced against a metric "
+        "view. Wrap every measure column in MEASURE() in the SELECT "
+        "and ORDER BY clauses (NEVER in WHERE / HAVING / ON). The "
+        "Metric Views section above lists which columns are measures."
+    ),
+    "mv_alias_collision": (
+        "FIX: MEASURE(col) was aliased back to the same column name "
+        "(e.g. MEASURE(cy_sales) AS cy_sales), which Spark resolves as "
+        "a re-application of MEASURE on the alias. Rename the alias "
+        "to something distinct (e.g. cy_sales_value) and update any "
+        "ORDER BY / HAVING references."
+    ),
+    "unknown_column": (
+        "FIX: A column reference doesn't exist on the cited asset. "
+        "Replace it with a column from the Column Allowlist that "
+        "matches the question intent. NEVER stem or invent column "
+        "names; use the FQ identifier as written in the allowlist."
+    ),
+    "missing_object": (
+        "FIX: The SQL references a table / view / function that does "
+        "not exist. Replace with an allowlisted asset from VALID Data "
+        "Assets. NEVER stem or aliase the asset identifier."
+    ),
+    "metric_view_join": (
+        "FIX: Direct JOIN against a metric view triggered "
+        "METRIC_VIEW_JOIN_NOT_SUPPORTED. Use the CTE-first pattern: "
+        "materialize the metric view query in a WITH clause, then "
+        "JOIN the CTE result to the dimension table."
+    ),
+    "bad_join_key": (
+        "FIX: The JOIN ON clause references a column that doesn't "
+        "exist on one side of the join. Use the Join Specifications "
+        "section to pick the correct join keys."
+    ),
+    "syntax_error": (
+        "FIX: SQL parse error. Re-author the query — preserve the "
+        "question intent but write it in valid Spark SQL."
+    ),
+}
+
+
+def _repair_hint_for_reason(reason: str) -> str:
+    """Return a class-specific repair hint or empty string if unknown.
+
+    The hint is appended to the ``benchmarks_to_fix`` payload so the
+    LLM correction call gets a deterministic nudge toward the right
+    fix instead of guessing from the raw error string.
+    """
+    return _REPAIR_HINTS_BY_REASON.get(reason, "")
 
 
 _MV_JOIN_RE = re.compile(r"\bJOIN\b", re.IGNORECASE)
@@ -1863,6 +2131,7 @@ def _precheck_benchmarks_for_eval(
         resolved_sql = resolve_sql(sql, catalog=catalog, gold_schema=gold_schema)
         if _mv_measures:
             resolved_sql = _rewrite_measure_refs(resolved_sql, _mv_measures)
+            resolved_sql, _ = _repair_measure_alias_collisions(resolved_sql)
 
         _found_params = _extract_sql_params(resolved_sql)
         if _found_params:
@@ -2122,6 +2391,7 @@ def make_predict_fn(
             gt_sql = fix_mv_alias_sort_collision(gt_sql)
             if _mv_measures and gt_sql:
                 gt_sql = _rewrite_measure_refs(gt_sql, _mv_measures)
+                gt_sql, _ = _repair_measure_alias_collisions(gt_sql)
             temporal_intent = _detect_temporal_intent(question)
             if temporal_intent and gt_sql:
                 gt_sql, temporal_rewrite_meta = _rewrite_temporal_dates(gt_sql, temporal_intent)
@@ -5971,11 +6241,22 @@ def extract_genie_space_benchmarks(
 
 
 def _build_valid_assets_context(config: dict) -> str:
-    """Build an explicit allowlist of Genie space data assets for the LLM prompt."""
+    """Build an explicit allowlist of Genie space data assets for the LLM prompt.
+
+    Uses the *effective* MV / table classification so that any
+    ``data_sources.tables`` entries Genie serialized but which carry
+    measure-typed column configs are surfaced to the LLM as METRIC
+    VIEW (the only label that triggers the MEASURE() worked example
+    in the prompt). Otherwise the LLM happily emits ``SUM(measure)``
+    against an MV and the execute gate rejects every candidate with
+    ``METRIC_VIEW_MISSING_MEASURE_FUNCTION``.
+    """
+    mv_idents = effective_metric_view_identifiers(config)
+    table_idents = effective_table_identifiers(config)
     lines: list[str] = []
-    for tbl in config.get("_tables", []):
+    for tbl in sorted(table_idents):
         lines.append(f"- TABLE: {tbl}")
-    for mv in config.get("_metric_views", []):
+    for mv in sorted(mv_idents):
         lines.append(f"- METRIC VIEW: {mv}")
     for fn in config.get("_functions", []):
         lines.append(f"- FUNCTION: {fn}")
@@ -6021,49 +6302,47 @@ def _build_schema_contexts(
     )
 
     # -- Metric views: enrich with measure/dimension column detail --
-    mvs_raw = config.get("_metric_views", [])
+    # Walk the *effective* MV set: union of ``data_sources.metric_views``
+    # plus any ``data_sources.tables`` entries that carry measure-typed
+    # column configs. This catches the case where Genie serialized an
+    # MV under ``tables`` (e.g. when ``metric_views: 0`` in the config
+    # but Spark plans the asset as MetricView) — without this fixup the
+    # prompt's metric-view block reads "(none)", the LLM never gets
+    # the MEASURE() worked example, and the execute gate rejects every
+    # candidate against the MV.
     parsed_space = config.get("_parsed_space", {})
     if not isinstance(parsed_space, dict):
         parsed_space = {}
-    ds = parsed_space.get("data_sources", {})
-    if not isinstance(ds, dict):
-        ds = {}
-    mv_sources = ds.get("metric_views", [])
 
-    mv_detail: dict[str, dict] = {}
-    for mv in (mv_sources if isinstance(mv_sources, list) else []):
-        ident = mv.get("identifier", "")
+    mv_lines: list[str] = []
+    for mv in _iter_effective_metric_view_entries(config):
+        ident = (mv.get("identifier") or "").strip()
         if not ident:
             continue
         measures: list[str] = []
         dimensions: list[str] = []
-        for cc in mv.get("column_configs", []):
+        for cc in mv.get("column_configs", []) or []:
+            if not isinstance(cc, dict):
+                continue
             col = cc.get("column_name", "")
             if not col:
                 continue
-            if str(cc.get("column_type", "")).lower() == "measure" or cc.get("is_measure"):
+            if (
+                str(cc.get("column_type", "")).lower() == "measure"
+                or cc.get("is_measure")
+            ):
                 measures.append(col)
             else:
                 dimensions.append(col)
-        mv_detail[ident] = {"measures": measures, "dimensions": dimensions}
-
-    if mvs_raw:
-        mv_lines: list[str] = []
-        for mv_ident in mvs_raw:
-            detail = mv_detail.get(mv_ident, {})
-            m = detail.get("measures", [])
-            d = detail.get("dimensions", [])
-            parts = [f"- {mv_ident}"]
-            if m:
-                parts.append(f"  Measures (use MEASURE() syntax): {', '.join(m)}")
-            if d:
-                parts.append(f"  Dimensions (for GROUP BY / WHERE): {', '.join(d)}")
-            if not m and not d:
-                parts.append("  (no column detail available)")
-            mv_lines.append("\n".join(parts))
-        metric_views_context = "\n".join(mv_lines)
-    else:
-        metric_views_context = "(none)"
+        parts = [f"- {ident}"]
+        if measures:
+            parts.append(f"  Measures (use MEASURE() syntax): {', '.join(measures)}")
+        if dimensions:
+            parts.append(f"  Dimensions (for GROUP BY / WHERE): {', '.join(dimensions)}")
+        if not measures and not dimensions:
+            parts.append("  (no column detail available)")
+        mv_lines.append("\n".join(parts))
+    metric_views_context = "\n".join(mv_lines) if mv_lines else "(none)"
 
     tvfs = config.get("_functions", [])
     tvfs_context = "\n".join(
@@ -6204,28 +6483,36 @@ def _attempt_sql_correction(
         return []
 
     ctx = _build_schema_contexts(config, uc_columns, uc_routines)
+
+    def _benchmark_payload(b: dict) -> dict:
+        err_str = str(b.get("validation_error", "") or "")
+        # PR 16: emit class-specific repair hints so the LLM gets a
+        # deterministic nudge toward the correct fix instead of
+        # re-deriving the diagnosis from the raw error string. Reuse
+        # the validation reason code already attached to the
+        # benchmark when available (avoids a re-classification round
+        # trip); fall back to classifying the error string when the
+        # caller didn't pre-classify.
+        reason = str(b.get("validation_reason_code") or "").strip()
+        if not reason:
+            reason = _classify_sql_validation_error(err_str)
+        repair_hint = _repair_hint_for_reason(reason)
+        execution_note = (
+            "Query returns 0 rows — pick realistic filter values from the Data Profile"
+            if err_str == "Query returns 0 rows"
+            else ""
+        )
+        return {
+            "question": b["question"],
+            "original_expected_sql": b["expected_sql"],
+            "error": err_str or "unknown",
+            "validation_reason_code": reason,
+            "repair_hint": repair_hint,
+            "execution_note": execution_note,
+        }
+
     benchmarks_to_fix = json.dumps(
-        [
-            {
-                "question": b["question"],
-                "original_expected_sql": b["expected_sql"],
-                "error": b.get("validation_error", "unknown"),
-                "execution_note": (
-                    "Query returns 0 rows — pick realistic filter values from the Data Profile"
-                    if b.get("validation_error") == "Query returns 0 rows"
-                    else ""
-                ),
-                "mv_hint": (
-                    "METRIC VIEW ALIAS COLLISION: Replace 'ORDER BY alias' with "
-                    "'ORDER BY MEASURE(column)' for any MEASURE() expression. "
-                    "Do NOT alias MEASURE(col) AS col (same name as source column)."
-                    if "MISSING_ATTRIBUTES" in str(b.get("validation_error", ""))
-                    or "RESOLVED_ATTRIBUTE" in str(b.get("validation_error", ""))
-                    else ""
-                ),
-            }
-            for b in invalid_candidates
-        ],
+        [_benchmark_payload(b) for b in invalid_candidates],
         indent=2,
     )
 
@@ -6331,6 +6618,15 @@ def _attempt_sql_correction(
                         repair_counters.get("repaired_measure_refs", 0)
                         + (after_count - before_count)
                     )
+        # PR 15: rename ``MEASURE(col) AS col`` to avoid Spark's
+        # MISSING_ATTRIBUTES.RESOLVED_ATTRIBUTE_APPEAR_IN_OPERATION.
+        sql_str, _alias_fixes = _repair_measure_alias_collisions(sql_str)
+        if _alias_fixes and repair_counters is not None:
+            repair_counters["repaired_measure_alias_collisions"] = (
+                repair_counters.get("repaired_measure_alias_collisions", 0)
+                + _alias_fixes
+            )
+            c["expected_sql"] = sql_str
         sql = sql_str
 
         metadata_ok, _reason_code, reason_message = _enforce_metadata_constraints(
@@ -6726,6 +7022,10 @@ def generate_validated_sql_examples(
         # operators already rely on in the preflight output.
         "repaired_stemmed_identifiers": 0,
         "repaired_measure_refs": 0,
+        # PR 17 — number of adaptive overdraw rounds we actually
+        # used (1 = single LLM call, no overdraw needed; 2/3 = the
+        # first round under-produced and we re-asked the LLM).
+        "adaptive_overdraw_rounds_used": 0,
     }
 
     allowlist = _build_metadata_allowlist(
@@ -6735,48 +7035,16 @@ def generate_validated_sql_examples(
     )
     ctx = _build_schema_contexts(config, uc_columns, uc_routines)
 
-    existing_questions_context = ""
-    if existing_questions:
-        existing_questions_context = (
-            "\n\n## Already Covered Questions (do NOT duplicate these)\n"
-            + "\n".join(f"- {q}" for q in existing_questions)
-        )
-
-    # ── 1. One-shot batched LLM call ─────────────────────────────
-    prompt = format_mlflow_template(
-        generation_prompt_template,
-        domain=domain,
-        target_count=target_count,
-        categories=json.dumps(BENCHMARK_CATEGORIES),
-        **ctx,
-    )
-    if existing_questions_context:
-        prompt += existing_questions_context
-
-    try:
-        response = _call_llm_for_scoring(
-            w, prompt,
-            prompt_name=get_registered_prompt_name(generation_prompt_registry_key),
-        )
-    except Exception:
-        logger.warning(
-            "generate_validated_sql_examples: LLM call failed (registry=%s)",
-            generation_prompt_registry_key,
-            exc_info=True,
-        )
-        return [], rejection_counters
-
-    raw_candidates: list[dict] = (
-        response if isinstance(response, list)
-        else response.get("benchmarks", [])
-    )
-
     # ── 2. Per-candidate validation + MEASURE auto-wrap ──────────
     valid: list[dict] = []
-    invalid: list[dict] = []
     accepted_q_lower: set[str] = set()
     mv_measures = build_metric_view_measures(config)
-    mv_names = set(config.get("_metric_views", []))
+    # Effective MV identifier set — includes assets Genie serialized
+    # under ``data_sources.tables`` whose column_configs declare measures
+    # (PR 14). The MV ``SELECT *`` guard and metric-view-aware dedup keys
+    # rely on this set being complete or they wave through SQL that the
+    # execute gate then rejects.
+    mv_names = effective_metric_view_identifiers(config)
 
     def _register_valid(cand: dict) -> None:
         q = str(cand.get("question") or "").strip().lower()
@@ -6786,132 +7054,266 @@ def generate_validated_sql_examples(
         accepted_q_lower.add(q)
         valid.append(cand)
 
-    for b in raw_candidates:
-        if not isinstance(b, dict):
-            continue
-        sql_str = str(b.get("expected_sql") or "").strip()
-        question = str(b.get("question") or "").strip()
-        if not sql_str or not question:
-            continue
+    # ── PR 17: Adaptive overdraw without weakening gates ─────────
+    # When the first LLM call returns fewer survivors than ``target_
+    # count`` (because the model under-produced or because EXPLAIN /
+    # execute / correction rejected most of them), do up to
+    # ``ADAPTIVE_OVERDRAW_MAX_ROUNDS`` additional generation rounds
+    # to top off the corpus. Each round:
+    #   - Excludes already-accepted questions so the LLM doesn't echo
+    #     the same questions back.
+    #   - Requests exactly the deficit (no inflated multiplier — the
+    #     correction loop already amortizes the per-round cost).
+    #   - Runs the same strict per-candidate validation + correction
+    #     as round 0. Gates are NEVER weakened to hit the target.
+    # Arbiter / firewall remain a single post-loop pass; the dominant
+    # rejection class in observed runs is the execute gate, so
+    # over-drawing pre-arbiter is the highest-leverage knob.
+    ADAPTIVE_OVERDRAW_MAX_ROUNDS = 3
+    invalid_carry: list[dict] = []
+    for gen_round in range(ADAPTIVE_OVERDRAW_MAX_ROUNDS):
+        deficit = target_count - len(valid)
+        if deficit <= 0:
+            break
 
-        # Skip duplicates of the in-corpus questions.
-        if question.lower() in existing_q_lower:
-            rejection_counters["dedup_in_corpus"] += 1
-            continue
+        rejection_counters["adaptive_overdraw_rounds_used"] = gen_round + 1
+        if gen_round == 0:
+            request_count = target_count
+        else:
+            request_count = deficit
+            logger.info(
+                "gvse adaptive overdraw round %d/%d: %d valid < target %d, "
+                "requesting %d more candidates",
+                gen_round + 1, ADAPTIVE_OVERDRAW_MAX_ROUNDS,
+                len(valid), target_count, request_count,
+            )
 
-        candidate: dict[str, Any] = {
-            "question": question,
-            "expected_sql": sql_str,
-            "expected_asset": _normalize_expected_asset(
-                b.get("expected_asset", "TABLE"), sql_str,
-                hint=b.get("expected_asset_hint"),
-            ),
-            "category": b.get("category", ""),
-            "required_tables": [str(t) for t in b.get("required_tables", []) or []],
-            "required_columns": [str(c) for c in b.get("required_columns", []) or []],
-            "expected_facts": [str(f) for f in b.get("expected_facts", []) or []],
-            "usage_guidance": b.get("usage_guidance", ""),
-            "source": "llm_generated",
-            "provenance": provenance,
-            "validation_status": "valid",
-            "validation_reason_code": "ok",
-            "validation_error": None,
-            "correction_source": "",
-        }
+        excluded_questions: list[str] = list(existing_questions)
+        excluded_questions.extend(sorted(accepted_q_lower))
+        excluded_questions_context = ""
+        if excluded_questions:
+            excluded_questions_context = (
+                "\n\n## Already Covered Questions (do NOT duplicate these)\n"
+                + "\n".join(f"- {q}" for q in excluded_questions)
+            )
 
-        metadata_ok, reason_code, reason_message = _enforce_metadata_constraints(
-            benchmark=candidate, sql=sql_str, allowlist=allowlist,
-            catalog=catalog, schema=schema,
+        prompt = format_mlflow_template(
+            generation_prompt_template,
+            domain=domain,
+            target_count=request_count,
+            categories=json.dumps(BENCHMARK_CATEGORIES),
+            **ctx,
         )
-        if not metadata_ok:
-            if reason_code == "unknown_column":
-                corrected_sql, replacements = _apply_metadata_field_drift_corrections(
-                    sql=sql_str,
-                    required_columns=candidate["required_columns"],
-                    allowed_index=allowlist["column_index"],
+        if excluded_questions_context:
+            prompt += excluded_questions_context
+
+        try:
+            response = _call_llm_for_scoring(
+                w, prompt,
+                prompt_name=get_registered_prompt_name(
+                    generation_prompt_registry_key
+                ),
+            )
+        except Exception:
+            logger.warning(
+                "generate_validated_sql_examples: LLM call failed "
+                "(registry=%s, round=%d)",
+                generation_prompt_registry_key, gen_round + 1,
+                exc_info=True,
+            )
+            if gen_round == 0:
+                return [], rejection_counters
+            break
+
+        raw_candidates: list[dict] = (
+            response if isinstance(response, list)
+            else response.get("benchmarks", [])
+        )
+        if not raw_candidates:
+            # Empty response on a follow-up round means the model
+            # has nothing more to add — stop early to avoid
+            # spinning on the same exclusion list.
+            if gen_round > 0:
+                logger.info(
+                    "gvse adaptive overdraw round %d returned 0 "
+                    "candidates — stopping",
+                    gen_round + 1,
                 )
-                if replacements and corrected_sql != sql_str:
-                    candidate["expected_sql"] = corrected_sql
-                    candidate["provenance"] = "auto_corrected"
-                    candidate["correction_source"] = "metadata_suggestion"
-                    candidate["field_drift_fixes"] = replacements
-                    metadata_ok, reason_code, reason_message = (
-                        _enforce_metadata_constraints(
-                            benchmark=candidate, sql=corrected_sql,
-                            allowlist=allowlist,
-                            catalog=catalog, schema=schema,
-                        )
-                    )
-                    sql_str = corrected_sql
-            if not metadata_ok:
-                candidate["validation_status"] = "invalid"
-                candidate["validation_reason_code"] = reason_code
-                candidate["validation_error"] = reason_message
-                invalid.append(candidate)
-                rejection_counters["metadata"] += 1
+                break
+
+        invalid: list[dict] = []
+
+        for b in raw_candidates:
+            if not isinstance(b, dict):
+                continue
+            sql_str = str(b.get("expected_sql") or "").strip()
+            question = str(b.get("question") or "").strip()
+            if not sql_str or not question:
                 continue
 
-        is_star_ok, star_reason = _guard_mv_select_star(sql_str, mv_names)
-        if not is_star_ok:
-            candidate["validation_status"] = "invalid"
-            candidate["validation_reason_code"] = "mv_select_star"
-            candidate["validation_error"] = star_reason
-            invalid.append(candidate)
-            rejection_counters["mv_select_star"] += 1
-            continue
+            # Skip duplicates of the in-corpus questions and any
+            # already-accepted question from a prior overdraw round.
+            qlow = question.lower()
+            if qlow in existing_q_lower or qlow in accepted_q_lower:
+                rejection_counters["dedup_in_corpus"] += 1
+                continue
 
-        if mv_measures:
-            sql_str = _rewrite_measure_refs(sql_str, mv_measures)
-            candidate["expected_sql"] = sql_str
+            candidate: dict[str, Any] = {
+                "question": question,
+                "expected_sql": sql_str,
+                "expected_asset": _normalize_expected_asset(
+                    b.get("expected_asset", "TABLE"), sql_str,
+                    hint=b.get("expected_asset_hint"),
+                ),
+                "category": b.get("category", ""),
+                "required_tables": [str(t) for t in b.get("required_tables", []) or []],
+                "required_columns": [str(c) for c in b.get("required_columns", []) or []],
+                "expected_facts": [str(f) for f in b.get("expected_facts", []) or []],
+                "usage_guidance": b.get("usage_guidance", ""),
+                "source": "llm_generated",
+                "provenance": provenance,
+                "validation_status": "valid",
+                "validation_reason_code": "ok",
+                "validation_error": None,
+                "correction_source": "",
+            }
 
-        is_valid, err = _validate_benchmark_sql(
-            sql_str, spark, catalog, schema, execute=True,
-            w=w, warehouse_id=warehouse_id,
+            metadata_ok, reason_code, reason_message = _enforce_metadata_constraints(
+                benchmark=candidate, sql=sql_str, allowlist=allowlist,
+                catalog=catalog, schema=schema,
+            )
+            if not metadata_ok:
+                if reason_code == "unknown_column":
+                    corrected_sql, replacements = _apply_metadata_field_drift_corrections(
+                        sql=sql_str,
+                        required_columns=candidate["required_columns"],
+                        allowed_index=allowlist["column_index"],
+                    )
+                    if replacements and corrected_sql != sql_str:
+                        candidate["expected_sql"] = corrected_sql
+                        candidate["provenance"] = "auto_corrected"
+                        candidate["correction_source"] = "metadata_suggestion"
+                        candidate["field_drift_fixes"] = replacements
+                        metadata_ok, reason_code, reason_message = (
+                            _enforce_metadata_constraints(
+                                benchmark=candidate, sql=corrected_sql,
+                                allowlist=allowlist,
+                                catalog=catalog, schema=schema,
+                            )
+                        )
+                        sql_str = corrected_sql
+                if not metadata_ok:
+                    candidate["validation_status"] = "invalid"
+                    candidate["validation_reason_code"] = reason_code
+                    candidate["validation_error"] = reason_message
+                    invalid.append(candidate)
+                    rejection_counters["metadata"] += 1
+                    continue
+
+            is_star_ok, star_reason = _guard_mv_select_star(sql_str, mv_names)
+            if not is_star_ok:
+                candidate["validation_status"] = "invalid"
+                candidate["validation_reason_code"] = "mv_select_star"
+                candidate["validation_error"] = star_reason
+                invalid.append(candidate)
+                rejection_counters["mv_select_star"] += 1
+                continue
+
+            if mv_measures:
+                sql_str = _rewrite_measure_refs(sql_str, mv_measures)
+                sql_str, _alias_fixes = _repair_measure_alias_collisions(sql_str)
+                if _alias_fixes:
+                    rejection_counters["measure_alias_collisions_repaired"] = (
+                        rejection_counters.get("measure_alias_collisions_repaired", 0)
+                        + _alias_fixes
+                    )
+                candidate["expected_sql"] = sql_str
+
+            is_valid, err = _validate_benchmark_sql(
+                sql_str, spark, catalog, schema, execute=True,
+                w=w, warehouse_id=warehouse_id,
+            )
+            if is_valid:
+                candidate["validation_status"] = "valid"
+                candidate["validation_reason_code"] = "ok"
+                candidate["validation_error"] = None
+                _register_valid(candidate)
+            else:
+                candidate["validation_status"] = "invalid"
+                candidate["validation_reason_code"] = _classify_sql_validation_error(err)
+                candidate["validation_error"] = err
+                invalid.append(candidate)
+                # Counter incremented at correction-loop exit if still invalid.
+
+        # ── 3. Bounded correction loop ───────────────────────────
+        for correction_round in range(MAX_CORRECTION_ROUNDS):
+            if not invalid:
+                break
+            logger.info(
+                "gvse correction round %d/%d: attempting to fix %d invalid candidates",
+                correction_round + 1, MAX_CORRECTION_ROUNDS, len(invalid),
+            )
+            corrected = _attempt_sql_correction(
+                w=w, config=config, uc_columns=uc_columns, uc_routines=uc_routines,
+                invalid_candidates=invalid,
+                catalog=catalog, schema=schema, spark=spark, allowlist=allowlist,
+                correction_prompt_template=correction_prompt_template,
+                correction_prompt_registry_key=correction_prompt_registry_key,
+                warehouse_id=warehouse_id,
+                repair_counters=rejection_counters,
+            )
+            if not corrected:
+                break
+            for c in corrected:
+                _register_valid(c)
+            corrected_q = {
+                str(c.get("question") or "").strip().lower()
+                for c in corrected
+            }
+            invalid = [
+                b for b in invalid
+                if str(b.get("question") or "").strip().lower() not in corrected_q
+            ]
+
+        # Carry the still-invalid candidates so the post-loop counter
+        # update reflects all rounds (not just the last one).
+        invalid_carry.extend(invalid)
+
+    rejection_counters["explain_or_execute"] += len(invalid_carry)
+    rejection_counters["unfixable_after_correction"] = len(invalid_carry)
+
+    # ── PR 18: split EXPLAIN/execute rejected into sub-buckets ───
+    # Operators previously saw a single ``EXPLAIN/execute rejected:
+    # N`` line in the unified banner with no breakdown. Bucket the
+    # unfixable candidates by ``validation_reason_code`` and surface
+    # the counts plus up to 3 example questions per bucket so the
+    # log immediately points at the failure class (unknown column /
+    # missing measure function / alias collision / metric view join /
+    # syntax / etc.). The sub-bucket counters live alongside the
+    # legacy ``explain_or_execute`` total so downstream consumers
+    # that don't know about PR 18 keep working unchanged.
+    sub_bucket_counts: dict[str, int] = {}
+    sub_bucket_examples: dict[str, list[dict[str, str]]] = {}
+    for cand in invalid_carry:
+        reason = (
+            str(cand.get("validation_reason_code") or "").strip()
+            or "sql_compile_error"
         )
-        if is_valid:
-            candidate["validation_status"] = "valid"
-            candidate["validation_reason_code"] = "ok"
-            candidate["validation_error"] = None
-            _register_valid(candidate)
-        else:
-            candidate["validation_status"] = "invalid"
-            candidate["validation_reason_code"] = _classify_sql_validation_error(err)
-            candidate["validation_error"] = err
-            invalid.append(candidate)
-            # Counter incremented at correction-loop exit if still invalid.
-
-    # ── 3. Bounded correction loop ───────────────────────────────
-    for correction_round in range(MAX_CORRECTION_ROUNDS):
-        if not invalid:
-            break
-        logger.info(
-            "gvse correction round %d/%d: attempting to fix %d invalid candidates",
-            correction_round + 1, MAX_CORRECTION_ROUNDS, len(invalid),
+        sub_bucket_counts[reason] = sub_bucket_counts.get(reason, 0) + 1
+        bucket_examples = sub_bucket_examples.setdefault(reason, [])
+        if len(bucket_examples) < 3:
+            err_short = str(cand.get("validation_error") or "")[:200]
+            bucket_examples.append({
+                "question": str(cand.get("question") or "")[:80],
+                "error": err_short,
+            })
+    if sub_bucket_counts:
+        rejection_counters["explain_or_execute_subbuckets"] = (
+            sub_bucket_counts  # type: ignore[assignment]
         )
-        corrected = _attempt_sql_correction(
-            w=w, config=config, uc_columns=uc_columns, uc_routines=uc_routines,
-            invalid_candidates=invalid,
-            catalog=catalog, schema=schema, spark=spark, allowlist=allowlist,
-            correction_prompt_template=correction_prompt_template,
-            correction_prompt_registry_key=correction_prompt_registry_key,
-            warehouse_id=warehouse_id,
-            repair_counters=rejection_counters,
+        rejection_counters["explain_or_execute_examples"] = (
+            sub_bucket_examples  # type: ignore[assignment]
         )
-        if not corrected:
-            break
-        for c in corrected:
-            _register_valid(c)
-        corrected_q = {
-            str(c.get("question") or "").strip().lower()
-            for c in corrected
-        }
-        invalid = [
-            b for b in invalid
-            if str(b.get("question") or "").strip().lower() not in corrected_q
-        ]
-
-    rejection_counters["explain_or_execute"] += len(invalid)
-    rejection_counters["unfixable_after_correction"] = len(invalid)
 
     # ── 4. Arbiter approval (opt-in) ─────────────────────────────
     if run_arbiter and valid:
@@ -7471,7 +7873,7 @@ def _fill_coverage_gaps(
             )
             continue
 
-        _mv_names = set(config.get("_metric_views", []))
+        _mv_names = effective_metric_view_identifiers(config)
         _is_star_ok, _ = _guard_mv_select_star(expected_sql, _mv_names)
         if not _is_star_ok:
             continue
@@ -8032,8 +8434,8 @@ def generate_benchmarks(
             )
             continue
 
-        # MV guard: reject SELECT * on metric views
-        _mv_names = set(config.get("_metric_views", []))
+        # MV guard: reject SELECT * on metric views (PR 14: effective MVs).
+        _mv_names = effective_metric_view_identifiers(config)
         _is_star_ok, _star_reason = _guard_mv_select_star(expected_sql, _mv_names)
         if not _is_star_ok:
             benchmark["validation_status"] = "invalid"

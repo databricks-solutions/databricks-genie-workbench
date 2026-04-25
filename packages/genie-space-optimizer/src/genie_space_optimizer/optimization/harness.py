@@ -2085,6 +2085,28 @@ def _print_unified_example_summary(
     _lines.append(_kv(
         "EXPLAIN/execute rejected", rc.get("explain_or_execute", 0),
     ))
+    # PR 18 — split EXPLAIN/execute rejected into sub-buckets keyed by
+    # the validation reason code so operators can see at a glance
+    # whether the dominant failure class is unknown columns vs
+    # missing-MEASURE() vs alias collisions vs join issues. Also
+    # surface up to 3 example questions per bucket so the log is
+    # immediately actionable.
+    _subbuckets = rc.get("explain_or_execute_subbuckets") or {}
+    _examples = rc.get("explain_or_execute_examples") or {}
+    if isinstance(_subbuckets, dict) and _subbuckets:
+        _ordered = sorted(
+            _subbuckets.items(), key=lambda kv: (-kv[1], kv[0]),
+        )
+        for _reason, _count in _ordered:
+            _lines.append(_kv(f"  {_reason}", _count))
+            _ex_list = _examples.get(_reason) or []
+            if isinstance(_ex_list, list):
+                for _ex in _ex_list[:3]:
+                    if not isinstance(_ex, dict):
+                        continue
+                    _q = str(_ex.get("question", ""))[:80]
+                    _err = str(_ex.get("error", ""))[:120]
+                    _lines.append(f"|     [{_reason}] {_q} — {_err}")
     _lines.append(_kv(
         "Arbiter verdict=no", rc.get("arbiter_no", 0),
     ))
@@ -2116,7 +2138,12 @@ def _print_unified_example_summary(
     # preflight banner surfaces.
     _stem_repairs = rc.get("repaired_stemmed_identifiers", 0)
     _measure_repairs = rc.get("repaired_measure_refs", 0)
-    if _stem_repairs or _measure_repairs:
+    _alias_repairs = rc.get("measure_alias_collisions_repaired", 0)
+    _overdraw_rounds = rc.get("adaptive_overdraw_rounds_used", 0)
+    if (
+        _stem_repairs or _measure_repairs or _alias_repairs
+        or (isinstance(_overdraw_rounds, int) and _overdraw_rounds > 1)
+    ):
         _lines.append("|")
         if _stem_repairs:
             _lines.append(_kv(
@@ -2125,6 +2152,19 @@ def _print_unified_example_summary(
         if _measure_repairs:
             _lines.append(_kv(
                 "MEASURE() refs repaired", _measure_repairs,
+            ))
+        # PR 15 — alias collisions deterministically repaired via
+        # ``_repair_measure_alias_collisions``.
+        if _alias_repairs:
+            _lines.append(_kv(
+                "MEASURE() alias collisions repaired", _alias_repairs,
+            ))
+        # PR 17 — number of adaptive overdraw rounds we used. Show
+        # only when > 1 (i.e. the first round under-produced and we
+        # had to re-ask the LLM).
+        if isinstance(_overdraw_rounds, int) and _overdraw_rounds > 1:
+            _lines.append(_kv(
+                "Adaptive overdraw rounds used", _overdraw_rounds,
             ))
     if applied_examples:
         _lines.append("|")

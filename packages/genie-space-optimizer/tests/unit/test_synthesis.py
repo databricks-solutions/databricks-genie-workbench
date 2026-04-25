@@ -183,6 +183,42 @@ def test_pick_archetype_for_pattern_labels(
     )
 
 
+@pytest.mark.parametrize(
+    "failure_type",
+    ["wrong_join_spec", "missing_join_spec", "wrong_join", "wrong_join_type"],
+)
+def test_join_spec_causes_route_to_correct_join_spec(failure_type: str) -> None:
+    """Join-spec failures must route to ``correct_join_spec``, not
+    ``cohort_retention``.
+
+    Before this change, ``_ROOT_CAUSES_JOIN`` was added to
+    ``cohort_retention``, which would synthesize an unrelated cohort-by-
+    first-activity-month example for any join-spec failure. The dedicated
+    ``correct_join_spec`` archetype now owns the join causes.
+    """
+    afs = {"failure_type": failure_type}
+    picked = pick_archetype(afs, _SCHEMA_SNAPSHOT)
+    assert picked is not None
+    assert picked.name == "correct_join_spec", (
+        f"{failure_type} routed to {picked.name}, expected correct_join_spec"
+    )
+
+
+def test_cohort_retention_no_longer_claims_join_causes() -> None:
+    """cohort_retention's applicable_root_causes must not include any of
+    the join-spec labels — those now belong to correct_join_spec."""
+    cohort = next(a for a in ARCHETYPES if a.name == "cohort_retention")
+    for rc in (
+        "wrong_join_spec",
+        "missing_join_spec",
+        "wrong_join",
+        "wrong_join_type",
+    ):
+        assert rc not in cohort.applicable_root_causes, (
+            f"cohort_retention should not claim {rc}"
+        )
+
+
 # ── _extract_json_proposal ────────────────────────────────────────────
 
 

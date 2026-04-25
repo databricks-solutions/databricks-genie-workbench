@@ -463,6 +463,21 @@ def _map_to_lever(
         "select_star": 0,
         "missing_dimension": 6,
         "wrong_grouping": 6,
+        # P1 pattern labels (Phase 2). Without explicit entries here these
+        # labels fall through to ``_JUDGE_TO_LEVER[judge]``, which routes
+        # plural_top_n_collapse / granularity_drop / time_window_pivot to
+        # Lever 2 (Metric Views) on logical_accuracy failures. Lever 2 can
+        # only update MV descriptions and cannot reshape SQL — exactly the
+        # pathology the Phase A1 reroute fixed for wrong_aggregation et al.
+        # Routing the SQL-shape patterns to Lever 5 lets the structural gate
+        # force example_sql synthesis. Filter literal mismatches go to
+        # Lever 6 (sql_snippet_filter); column ambiguity goes to Lever 1
+        # (column synonyms / descriptions).
+        "plural_top_n_collapse": 5,
+        "time_window_pivot": 5,
+        "granularity_drop": 5,
+        "value_format_mismatch": 6,
+        "column_disambiguation": 1,
     }
 
     if asi_failure_type and asi_failure_type in mapping:

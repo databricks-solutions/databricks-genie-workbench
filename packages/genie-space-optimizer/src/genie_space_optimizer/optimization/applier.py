@@ -2869,6 +2869,24 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                 structured = None
 
             if isinstance(structured, dict):
+                # ``_ensure_structured`` returns ``dict[str, list[str]]`` (one
+                # entry per non-blank line). Flatten to ``dict[str, str]`` once
+                # so all subsequent reads/writes/renders below operate on a
+                # single, uniform value type. Without this normalization the
+                # render loop crashed with ``AttributeError: 'list' object has
+                # no attribute 'strip'`` whenever any other section in the
+                # config still held its original list shape.
+                def _section_text(value: Any) -> str:
+                    if isinstance(value, list):
+                        return "\n".join(
+                            str(ln) for ln in value if str(ln).strip()
+                        )
+                    return str(value or "")
+
+                structured = {
+                    k: _section_text(v) for k, v in structured.items()
+                }
+
                 existing = structured.get(section_name, "")
                 merged = (existing.rstrip() + "\n\n" + text.strip()).strip() if existing else text.strip()
                 structured[section_name] = merged
@@ -2880,7 +2898,7 @@ def _apply_action_to_config(config: dict, action: dict) -> bool:
                 for _header, _body in structured.items():
                     if _header in set(INSTRUCTION_SECTION_ORDER):
                         continue
-                    _body_s = (_body or "").strip()
+                    _body_s = _body.strip()
                     if _body_s:
                         rendered_parts.append(f"{_header}:\n{_body_s}")
                 new_full = "\n\n".join(rendered_parts)

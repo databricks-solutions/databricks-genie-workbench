@@ -416,6 +416,74 @@ def _resolve_asset_by_identifier(
     return None
 
 
+def _entry_is_effective_metric_view(entry: dict) -> bool:
+    """Return True if a ``data_sources.tables`` entry is actually an MV.
+
+    PR 14: Genie occasionally serializes a metric view under
+    ``data_sources.tables`` rather than ``data_sources.metric_views``
+    (depends on how the asset was registered). Spark still enforces the
+    ``MEASURE()`` contract regardless of where the config wrote it, so
+    the planner needs to treat any tables entry with measure-typed
+    column configs as a metric view — otherwise it picks the
+    ``simple_enumerate`` archetype, the LLM emits ``SUM(measure)``, and
+    every candidate fails the execute gate with
+    ``METRIC_VIEW_MISSING_MEASURE_FUNCTION``.
+    """
+    if not isinstance(entry, dict):
+        return False
+    for cc in entry.get("column_configs", []) or []:
+        if not isinstance(cc, dict):
+            continue
+        if str(cc.get("column_type", "")).lower() == "measure":
+            return True
+        if cc.get("is_measure"):
+            return True
+    return False
+
+
+def _effective_data_source_split(
+    metadata_snapshot: dict,
+) -> tuple[list[dict], list[dict]]:
+    """Return ``(tables, metric_views)`` after PR 14 reclassification.
+
+    Walks ``data_sources.tables`` and lifts entries with measure-typed
+    column configs into the metric_views list, then concatenates with
+    the original ``data_sources.metric_views`` (de-duplicated by
+    lowered identifier so a snapshot already pre-classified can't
+    double-count). The original snapshot dict is *not* mutated — the
+    planner uses the returned lists locally.
+    """
+    ds = metadata_snapshot.get("data_sources", {}) or {}
+    raw_tables = [t for t in (ds.get("tables", []) or []) if isinstance(t, dict)]
+    raw_mvs = [mv for mv in (ds.get("metric_views", []) or []) if isinstance(mv, dict)]
+
+    promoted: list[dict] = []
+    real_tables: list[dict] = []
+    for tbl in raw_tables:
+        if _entry_is_effective_metric_view(tbl):
+            promoted.append(tbl)
+        else:
+            real_tables.append(tbl)
+
+    metric_views: list[dict] = []
+    seen: set[str] = set()
+    for mv in list(raw_mvs) + promoted:
+        ident = (mv.get("identifier") or mv.get("name") or "").strip().lower()
+        if ident and ident in seen:
+            continue
+        if ident:
+            seen.add(ident)
+        metric_views.append(mv)
+
+    if promoted:
+        logger.info(
+            "preflight.plan.effective_mv_promoted count=%d identifiers=%s",
+            len(promoted),
+            sorted({(mv.get("identifier") or mv.get("name") or "?") for mv in promoted}),
+        )
+    return real_tables, metric_views
+
+
 def plan_asset_coverage(
     metadata_snapshot: dict,
     need: int,
@@ -459,11 +527,11 @@ def plan_asset_coverage(
     rng = rng or random.Random()
     target = max(1, int(-(-need * overdraw // 1)))  # ceil(need * overdraw)
 
-    ds = metadata_snapshot.get("data_sources", {}) or {}
-    tables = [t for t in (ds.get("tables", []) or []) if isinstance(t, dict)]
-    metric_views = [
-        mv for mv in (ds.get("metric_views", []) or []) if isinstance(mv, dict)
-    ]
+    # PR 14: Reclassify tables-shaped entries that are actually MVs so
+    # the planner picks MV-aware archetypes (period_over_period,
+    # ratio_by_dimension, etc.) and the synthesis prompt receives the
+    # MEASURE() worked example for them.
+    tables, metric_views = _effective_data_source_split(metadata_snapshot)
     join_specs = [
         j for j in (
             (metadata_snapshot.get("instructions", {}) or {}).get("join_specs", []) or []

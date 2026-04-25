@@ -128,6 +128,26 @@ def schema_traits(metadata_snapshot: dict) -> set[str]:
         traits.add("has_joinable")
     if metric_views_raw:
         traits.add("has_metric_view")
+    else:
+        # PR 14: detect MVs that Genie serialized under ``data_sources.tables``
+        # by their measure-typed column configs. Without this, schemas
+        # whose only MV is mis-classified as a table miss the
+        # ``has_metric_view`` trait, which blocks the period_over_period
+        # / ratio_by_dimension archetypes.
+        for t in tables:
+            if not isinstance(t, dict):
+                continue
+            for col in t.get("column_configs", []) or []:
+                if not isinstance(col, dict):
+                    continue
+                if (
+                    str(col.get("column_type", "")).lower() == "measure"
+                    or col.get("is_measure")
+                ):
+                    traits.add("has_metric_view")
+                    break
+            if "has_metric_view" in traits:
+                break
     return traits
 
 
@@ -220,8 +240,28 @@ ARCHETYPES: list[Archetype] = [
         output_shape={"requires_constructs": ["SELECT", "WHERE", "GROUP_BY"]},
     ),
     Archetype(
+        name="correct_join_spec",
+        applicable_root_causes=frozenset({
+            "wrong_join_spec",
+            "missing_join_spec",
+            "wrong_join",
+            "wrong_join_type",
+        }),
+        required_schema_traits=frozenset({"has_joinable"}),
+        prompt_template=(
+            "Demonstrate the correct join between two related entities. "
+            "Use the foreign-key column names explicitly (e.g. "
+            "child.parent_id = parent.id) and pick the right join type "
+            "(INNER for required matches, LEFT for optional). Project a "
+            "small handful of columns from both sides so the relationship "
+            "is unambiguous."
+        ),
+        output_shape={"requires_constructs": ["SELECT", "JOIN"]},
+        preflight_eligible=False,  # needs failure context to pick the join keys
+    ),
+    Archetype(
         name="cohort_retention",
-        applicable_root_causes=_ROOT_CAUSES_AGG | _ROOT_CAUSES_JOIN,
+        applicable_root_causes=_ROOT_CAUSES_AGG,
         required_schema_traits=frozenset({"has_date", "has_joinable"}),
         prompt_template=(
             "Cohort retention: group users by their first activity month, "

@@ -1193,10 +1193,18 @@ def preflight_collect_uc_metadata(
         detail=stage_detail,
     )
 
+    # PR 14: use the *effective* MV identifier set so that data
+    # profiling skips MVs Genie serialized under ``data_sources.tables``.
+    # Profiling an MV triggers METRIC_VIEW_MISSING_MEASURE_FUNCTION and
+    # the column never gets a value dictionary entry.
+    from genie_space_optimizer.optimization.evaluation import (
+        effective_metric_view_identifiers,
+    )
+    _eff_mvs = effective_metric_view_identifiers(config)
     table_names = list(config.get("_tables", [])) + list(config.get("_metric_views", []))
     _mv_names = frozenset(
         n.strip().lower().split(".")[-1]
-        for n in config.get("_metric_views", [])
+        for n in _eff_mvs
         if isinstance(n, str) and n.strip()
     )
     if table_names and uc_columns_dicts:
