@@ -1583,11 +1583,15 @@ def _is_measure_function_failure(gate_result: Any) -> bool:
     Distinct from :func:`_is_qualification_failure` — the fix is
     wrapping an existing identifier, not rewriting to a different
     identifier. The retry loop dispatches on this classifier to pick
-    the right feedback builder.
+    the right feedback builder. Delegates to
+    :func:`evaluation.metric_view_error_kind` so this and every other
+    MV-error call-site stay in sync as new error classes appear.
     """
-    if gate_result is None or gate_result.passed:
+    if gate_result is None or getattr(gate_result, "passed", False):
         return False
-    return _MEASURE_FAILURE_MARKER in (gate_result.reason or "").upper()
+    from genie_space_optimizer.optimization.evaluation import metric_view_error_kind
+
+    return metric_view_error_kind(getattr(gate_result, "reason", None)) == "missing_measure"
 
 
 def _extract_offending_measures(reason: str) -> list[str]:

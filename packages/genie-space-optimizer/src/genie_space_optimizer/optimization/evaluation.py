@@ -875,6 +875,81 @@ def _strip_outer_agg_around_measure(sql: str) -> tuple[str, int]:
     return new_sql, n
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Centralized metric-view error matchers
+# ─────────────────────────────────────────────────────────────────────
+# Spark Connect emits metric-view rejections under two spellings of the
+# same error class — ``METRIC_VIEW_UNSUPPORTED_USAGE`` is the form we
+# observe in GRPC traces today, ``UNSUPPORTED_METRIC_VIEW_USAGE`` is the
+# spelling Databricks documentation uses; both refer to the same Spark
+# planner rejection. ``METRIC_VIEW_MISSING_MEASURE_FUNCTION`` and
+# ``METRIC_VIEW_JOIN_NOT_SUPPORTED`` are the two more-specific subclasses
+# we already dispatch on. Centralizing the marker list here keeps the
+# four call-sites — preflight data profiling, preflight synthesis
+# measure-repair, benchmark validation MEASURE-hint gating, and benchmark
+# validation MV-join detection — in lock-step when a new MV error class
+# eventually shows up.
+
+_MV_ERROR_MARKERS: tuple[str, ...] = (
+    "UNSUPPORTED_METRIC_VIEW_USAGE",
+    "METRIC_VIEW_UNSUPPORTED_USAGE",
+    "METRIC_VIEW_MISSING_MEASURE_FUNCTION",
+    "METRIC_VIEW_JOIN_NOT_SUPPORTED",
+)
+
+
+def is_metric_view_error(reason: Any) -> bool:
+    """Return True when *reason* names any known metric-view error class.
+
+    Accepts ``None`` and non-string inputs (returns ``False``) so call
+    sites can pass exception messages, ``GateResult.reason`` payloads,
+    or raw strings interchangeably.
+    """
+    if reason is None:
+        return False
+    if not isinstance(reason, str):
+        try:
+            reason = str(reason)
+        except Exception:
+            return False
+    upper = reason.upper()
+    return any(marker in upper for marker in _MV_ERROR_MARKERS)
+
+
+def metric_view_error_kind(reason: Any) -> str | None:
+    """Return a stable kind string for the metric-view error in *reason*.
+
+    Returns one of ``"unsupported_usage"`` (the generic planner rejection
+    that surfaces as either ``METRIC_VIEW_UNSUPPORTED_USAGE`` or
+    ``UNSUPPORTED_METRIC_VIEW_USAGE``), ``"missing_measure"``,
+    ``"join_not_supported"``, or ``None`` when the input does not name a
+    metric-view error.
+
+    When the payload mentions multiple kinds (e.g. a generic
+    unsupported_usage frame that also references the more specific
+    missing_measure subclass), the most specific kind wins so callers
+    that dispatch on the kind string get the right repair behaviour.
+    """
+    if reason is None:
+        return None
+    if not isinstance(reason, str):
+        try:
+            reason = str(reason)
+        except Exception:
+            return None
+    upper = reason.upper()
+    if "METRIC_VIEW_MISSING_MEASURE_FUNCTION" in upper:
+        return "missing_measure"
+    if "METRIC_VIEW_JOIN_NOT_SUPPORTED" in upper:
+        return "join_not_supported"
+    if (
+        "UNSUPPORTED_METRIC_VIEW_USAGE" in upper
+        or "METRIC_VIEW_UNSUPPORTED_USAGE" in upper
+    ):
+        return "unsupported_usage"
+    return None
+
+
 def _entry_has_measure_columns(entry: Any) -> bool:
     """Return True if a data-source entry has any measure-typed column.
 

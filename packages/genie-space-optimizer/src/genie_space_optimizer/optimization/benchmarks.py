@@ -473,9 +473,11 @@ def validate_ground_truth_sql(
             #       handles the case where Spark collapses the
             #       failure into a plain UNRESOLVED_COLUMN while
             #       still being a measure issue.
-            include_measure_hint = (
-                "METRIC_VIEW_MISSING_MEASURE_FUNCTION" in err_msg.upper()
+            from genie_space_optimizer.optimization.evaluation import (
+                metric_view_error_kind,
             )
+
+            include_measure_hint = metric_view_error_kind(err_msg) == "missing_measure"
             if not include_measure_hint and col_name != "?" and config:
                 _lc_col = col_name.lower()
                 _parsed = config.get("_parsed_space", config)
