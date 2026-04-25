@@ -147,8 +147,40 @@ def test_archetype_catalog_covers_common_root_causes() -> None:
     for must in (
         "missing_aggregation", "wrong_aggregation", "missing_filter",
         "wrong_join", "missing_limit",
+        # Cluster vocabulary aliases (added in the SQL-shape patterns +
+        # archetype reconciliation pass).
+        "wrong_filter_condition", "wrong_join_spec",
+        # P1 pattern labels emitted by ``_detect_failure_pattern``.
+        "plural_top_n_collapse", "time_window_pivot",
+        "value_format_mismatch", "column_disambiguation",
+        "granularity_drop",
     ):
         assert must in covered, f"No archetype covers root cause {must!r}"
+
+
+@pytest.mark.parametrize(
+    "failure_type, expected_archetype",
+    [
+        ("plural_top_n_collapse", "top_n_by_metric"),
+        ("time_window_pivot", "period_over_period"),
+        ("value_format_mismatch", "filter_compose"),
+        ("column_disambiguation", "disambiguate_column"),
+        ("granularity_drop", "group_by_all_projected_keys"),
+    ],
+)
+def test_pick_archetype_for_pattern_labels(
+    failure_type: str, expected_archetype: str,
+) -> None:
+    """The five P1 pattern labels must each route to a tailored archetype
+    (not the ``simple_enumerate`` safety net) when the schema snapshot
+    has the standard numeric+date+categorical traits.
+    """
+    afs = {"failure_type": failure_type}
+    picked = pick_archetype(afs, _SCHEMA_SNAPSHOT)
+    assert picked is not None
+    assert picked.name == expected_archetype, (
+        f"{failure_type} routed to {picked.name}, expected {expected_archetype}"
+    )
 
 
 # ── _extract_json_proposal ────────────────────────────────────────────

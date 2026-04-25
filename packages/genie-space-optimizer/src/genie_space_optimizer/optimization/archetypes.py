@@ -137,10 +137,12 @@ _ROOT_CAUSES_AGG = frozenset({
     "missing_aggregation", "wrong_aggregation", "wrong_measure", "select_star",
 })
 _ROOT_CAUSES_FILTER = frozenset({
-    "missing_filter", "wrong_filter", "temporal_filter_missing",
+    "missing_filter", "wrong_filter", "wrong_filter_condition",
+    "value_format_mismatch", "temporal_filter_missing",
 })
 _ROOT_CAUSES_JOIN = frozenset({
-    "wrong_join", "missing_join", "wrong_table",
+    "wrong_join", "wrong_join_spec", "missing_join", "missing_join_spec",
+    "wrong_table",
 })
 _ROOT_CAUSES_RANKING = frozenset({
     "missing_limit", "wrong_ordering", "ranking_missing",
@@ -171,7 +173,11 @@ ARCHETYPES: list[Archetype] = [
     ),
     Archetype(
         name="top_n_by_metric",
-        applicable_root_causes=_ROOT_CAUSES_RANKING | _ROOT_CAUSES_AGG,
+        applicable_root_causes=(
+            _ROOT_CAUSES_RANKING | _ROOT_CAUSES_AGG | frozenset({
+                "plural_top_n_collapse",
+            })
+        ),
         required_schema_traits=frozenset({"has_numeric"}),
         prompt_template=(
             "Produce a Top-N query: aggregate a numeric column by a "
@@ -184,8 +190,27 @@ ARCHETYPES: list[Archetype] = [
         },
     ),
     Archetype(
+        name="group_by_all_projected_keys",
+        applicable_root_causes=frozenset({
+            "granularity_drop", "wrong_grouping",
+        }),
+        required_schema_traits=frozenset({"has_numeric", "has_categorical"}),
+        prompt_template=(
+            "Aggregate a numeric metric and report it for EVERY non-aggregated "
+            "column in the SELECT list. The GROUP BY clause must enumerate ALL "
+            "projected non-aggregated columns; do not drop any dimension that "
+            "appears in SELECT. Demonstrate the rule on two or more grouping "
+            "keys (e.g. region + time_window)."
+        ),
+        output_shape={"requires_constructs": ["SELECT", "GROUP_BY"]},
+    ),
+    Archetype(
         name="period_over_period",
-        applicable_root_causes=_ROOT_CAUSES_TIME | _ROOT_CAUSES_AGG,
+        applicable_root_causes=(
+            _ROOT_CAUSES_TIME | _ROOT_CAUSES_AGG | frozenset({
+                "time_window_pivot",
+            })
+        ),
         required_schema_traits=frozenset({"has_numeric", "has_date"}),
         prompt_template=(
             "Compare a metric across two time windows (e.g. this month vs "
@@ -237,7 +262,9 @@ ARCHETYPES: list[Archetype] = [
     ),
     Archetype(
         name="rank_within_group",
-        applicable_root_causes=_ROOT_CAUSES_RANKING,
+        applicable_root_causes=(
+            _ROOT_CAUSES_RANKING | frozenset({"plural_top_n_collapse"})
+        ),
         required_schema_traits=frozenset({"has_numeric", "has_categorical"}),
         prompt_template=(
             "Rank rows within each group: ROW_NUMBER() or RANK() OVER "
@@ -279,6 +306,25 @@ ARCHETYPES: list[Archetype] = [
             "customers). Use CASE inside SUM or separate CTEs."
         ),
         output_shape={"requires_constructs": ["SELECT", "GROUP_BY"]},
+    ),
+    Archetype(
+        name="disambiguate_column",
+        applicable_root_causes=frozenset({
+            "column_disambiguation", "wrong_column",
+        }),
+        required_schema_traits=frozenset(),
+        prompt_template=(
+            "Pick the correct column among prefix-similar candidates. Phrase "
+            "the example question so the answer hinges on choosing one of two "
+            "columns that share a common name prefix (e.g. "
+            "is_month_to_date_prior_year_same_day vs "
+            "is_one_day_prior_year_same_day). Show the correct column in the "
+            "SELECT list and explain the choice in the question."
+        ),
+        output_shape={"requires_constructs": ["SELECT"]},
+        # Schema-only synthesis cannot know which prefix-pair is actually
+        # confusing; the reactive cluster-driven path supplies that signal.
+        preflight_eligible=False,
     ),
     Archetype(
         name="time_window_aggregate",
@@ -339,7 +385,17 @@ def pick_archetype(
 ) -> Archetype | None:
     """Deterministic matcher. Returns the first Archetype in the catalog
     whose ``applicable_root_causes`` covers ``failure_type`` and whose
-    ``required_schema_traits`` are all present in the snapshot."""
+    ``required_schema_traits`` are all present in the snapshot.
+
+    Selection is two-pass: archetypes that explicitly claim the failure
+    root cause (non-empty ``applicable_root_causes``) win first, so the
+    vocabulary reconciliation actually routes clusters to tailored
+    shapes. Only when nothing in the catalog claims the cause do we
+    fall through to safety-net archetypes (``applicable_root_causes``
+    empty, e.g. ``simple_enumerate``). This preserves the
+    ``simple_enumerate`` fallback for unknown root causes while
+    preventing it from preempting every other archetype.
+    """
     if not cluster_afs or not isinstance(cluster_afs, dict):
         return None
     failure_type = str(cluster_afs.get("failure_type") or "").strip()
@@ -347,6 +403,9 @@ def pick_archetype(
         return None
     traits = schema_traits(metadata_snapshot or {})
     for arch in ARCHETYPES:
-        if arch.matches(failure_type, traits):
+        if arch.applicable_root_causes and arch.matches(failure_type, traits):
+            return arch
+    for arch in ARCHETYPES:
+        if not arch.applicable_root_causes and arch.matches(failure_type, traits):
             return arch
     return None

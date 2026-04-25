@@ -14,6 +14,8 @@ parity check and is deliberately updated to reflect the new contract.
 
 from __future__ import annotations
 
+import pytest
+
 from genie_space_optimizer.optimization.optimizer import (
     _BUG4_COUNTERS,
     _SQL_SHAPE_ROOT_CAUSES,
@@ -21,6 +23,18 @@ from genie_space_optimizer.optimization.optimizer import (
     generate_proposals_from_strategy,
     reset_bug4_counters,
 )
+
+
+# P1 pattern labels promoted into _SQL_SHAPE_ROOT_CAUSES. The structural
+# gate (A3a/A3b) must treat each one as SQL-shape, blocking text-only
+# proposals and demanding example_sql instead.
+P1_PATTERN_LABELS = [
+    "plural_top_n_collapse",
+    "time_window_pivot",
+    "value_format_mismatch",
+    "column_disambiguation",
+    "granularity_drop",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -172,3 +186,57 @@ def test_strategist_allows_instruction_when_example_sql_attached() -> None:
     # present (even if downstream synthesis might reject it for other
     # reasons, the gate itself must not fire).
     assert _BUG4_COUNTERS["lever5_text_only_blocked"] == 0
+
+
+# ---------------------------------------------------------------------------
+# P1 pattern labels: gate must treat each as SQL-shape
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("root_cause", P1_PATTERN_LABELS)
+def test_p1_pattern_labels_in_sql_shape_set(root_cause: str) -> None:
+    """The five P1 pattern labels must all be in _SQL_SHAPE_ROOT_CAUSES so
+    both gate paths (resolver A3b and strategist A3a) recognise them.
+    """
+    assert root_cause in _SQL_SHAPE_ROOT_CAUSES
+
+
+@pytest.mark.parametrize("root_cause", P1_PATTERN_LABELS)
+def test_resolver_skips_text_instruction_for_p1_pattern(root_cause: str) -> None:
+    """A3b: when the LLM returns text_instruction for any P1 pattern
+    cluster, the resolver must return the skipped_no_example_sql sentinel.
+    """
+    reset_bug4_counters()
+    cluster = {"root_cause": root_cause, "sql_contexts": []}
+    llm_result = {
+        "instruction_type": "text_instruction",
+        "instruction_text": "Always include the right shape",
+    }
+    patch_type, extra = _resolve_lever5_llm_result(
+        llm_result, original_patch_type="add_instruction", cluster=cluster,
+    )
+    assert patch_type == "skipped_no_example_sql"
+    assert extra["root_cause"] == root_cause
+    assert extra["root_cause"] in _SQL_SHAPE_ROOT_CAUSES
+
+
+@pytest.mark.parametrize("root_cause", P1_PATTERN_LABELS)
+def test_strategist_blocks_instruction_only_for_p1_pattern(
+    root_cause: str,
+) -> None:
+    """A3a: when the AG's cluster has a P1 pattern root cause and only an
+    instruction directive (no example_sqls), the strategist path must
+    drop the rewrite_instruction and bump the lever5_text_only_blocked
+    counter.
+    """
+    reset_bug4_counters()
+    proposals = generate_proposals_from_strategy(
+        strategy={},
+        action_group=_structural_ag(),
+        metadata_snapshot=_metadata_snapshot_with_cluster(root_cause),
+        target_lever=5,
+        apply_mode="genie_config",
+    )
+    rewrite = [p for p in proposals if p.get("patch_type") == "rewrite_instruction"]
+    assert not rewrite, rewrite
+    assert _BUG4_COUNTERS["lever5_text_only_blocked"] >= 1

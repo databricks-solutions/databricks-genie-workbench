@@ -6422,6 +6422,16 @@ _SQL_SHAPE_ROOT_CAUSES = frozenset({
     # not a prose instruction.
     "over_filtered_dimension",
     "wide_vs_long_shape",
+    # P1 pattern labels emitted by ``_detect_failure_pattern`` (this file,
+    # near L990+). Each pattern's corrective fix is an ``example_sql``
+    # demonstrating the right SQL shape — never a prose instruction —
+    # so they belong here so the Lever 5 structural gate (A3a/A3b) blocks
+    # text-only proposals and forces example_sql synthesis.
+    "plural_top_n_collapse",
+    "time_window_pivot",
+    "value_format_mismatch",
+    "column_disambiguation",
+    "granularity_drop",
 })
 
 
