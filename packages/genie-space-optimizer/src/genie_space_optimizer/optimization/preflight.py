@@ -267,6 +267,247 @@ from genie_space_optimizer.common.metric_view_catalog import (  # noqa: E402
 )
 
 
+def _profile_metric_view(
+    spark: "SparkSession",
+    mv_fqn: str,
+    mv_yaml: dict | None,
+    uc_columns: list[dict],
+    *,
+    sample_size: int = 0,
+    low_cardinality_threshold: int = 0,
+    w: Any = None,
+    warehouse_id: str = "",
+    catalog: str = "",
+    schema: str = "",
+) -> dict | None:
+    """Profile a metric view through MV-legal queries.
+
+    The standard table profile path issues ``SELECT count(distinct …),
+    min(…), max(…) FROM (SELECT * FROM tbl TABLESAMPLE …)`` which Spark
+    rejects on metric views (``METRIC_VIEW_UNSUPPORTED_USAGE`` —
+    ``SELECT *`` and naked aggregates over an MV are both forbidden).
+    This helper instead issues per-dimension ``GROUP BY`` queries which
+    the MV planner accepts:
+
+    .. code-block:: sql
+
+       SELECT count(distinct `dim`) AS card,
+              min(`dim`) AS min_v,
+              max(`dim`) AS max_v
+       FROM (SELECT `dim` FROM <mv> GROUP BY `dim`)
+
+    Dimension list resolution:
+      1. ``mv_yaml["dimensions"][*]["name"]`` if available — this is the
+         authoritative list parsed from the catalog.
+      2. UC ``column_type`` rows that are *not* ``measure`` — used as a
+         fallback when the YAML cache is empty (e.g. runtime
+         reclassification with no DESCRIBE payload).
+
+    Measures are not value-profiled (cardinality / min / max over an
+    aggregate is meaningless). Their YAML expressions are recorded
+    verbatim under a top-level ``measures`` key so the synthesis prompt
+    builder can describe each one to the LLM.
+
+    Returns ``{"row_count": N, "columns": {dim: {...}}, "measures": {...}}``,
+    or ``None`` when no dimensions can be resolved (no YAML, no
+    dimension-typed UC columns) — the caller skips the entity in that
+    case.
+    """
+    import json as _json
+
+    from genie_space_optimizer.common.config import (
+        LOW_CARDINALITY_THRESHOLD,
+        PROFILE_SAMPLE_SIZE,
+    )
+    from genie_space_optimizer.optimization.evaluation import (
+        _exec_sql,
+        is_metric_view_error,
+    )
+
+    sample_size = sample_size or PROFILE_SAMPLE_SIZE
+    low_cardinality_threshold = low_cardinality_threshold or LOW_CARDINALITY_THRESHOLD
+
+    _sql_kw: dict[str, Any] = dict(
+        w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
+    )
+
+    parts = mv_fqn.replace("`", "").split(".")
+    fq_quoted = ".".join(f"`{p.strip()}`" for p in parts)
+    leaf = parts[-1].lower()
+
+    # 1. Dimension resolution — YAML first, UC columns as fallback. We
+    #    record dtype alongside the name so min/max projections only
+    #    fire for numeric/date dims (string min/max is rarely useful
+    #    and risks awkward planner choices on collation-sensitive
+    #    catalogs).
+    dim_meta: list[tuple[str, str]] = []  # (name, dtype)
+    seen: set[str] = set()
+    if isinstance(mv_yaml, dict):
+        for dim in mv_yaml.get("dimensions") or []:
+            if isinstance(dim, dict):
+                name = str(dim.get("name") or "").strip()
+                if name and name.lower() not in seen:
+                    seen.add(name.lower())
+                    dtype = str(dim.get("data_type") or "").strip().lower()
+                    dim_meta.append((name, dtype))
+
+    if not dim_meta:
+        for col in uc_columns or []:
+            if not isinstance(col, dict):
+                continue
+            tbl = str(col.get("table_name") or "").strip().lower()
+            if tbl and tbl != leaf:
+                continue
+            ctype = str(col.get("column_type") or "").strip().lower()
+            if ctype == "measure":
+                continue
+            name = str(col.get("column_name") or "").strip()
+            if not name or name.lower() in seen:
+                continue
+            seen.add(name.lower())
+            dtype = str(col.get("data_type") or "").strip().lower().split("(")[0]
+            dim_meta.append((name, dtype))
+
+    if not dim_meta:
+        logger.info(
+            "Metric-view profile: no dimensions resolvable for %s, skipping",
+            mv_fqn,
+        )
+        return None
+
+    # 2. Row count — single-row aggregate without ``MEASURE`` is allowed
+    #    on most MV implementations but we treat it as best-effort.
+    try:
+        count_df = _exec_sql(
+            f"SELECT COUNT(*) AS cnt FROM {fq_quoted}", spark, **_sql_kw,
+        )
+        row_count = int(count_df.iloc[0]["cnt"]) if not count_df.empty else 0
+    except Exception as exc:
+        if is_metric_view_error(str(exc)):
+            logger.debug(
+                "Metric-view profile: COUNT(*) blocked on %s — using -1",
+                mv_fqn,
+            )
+        else:
+            logger.debug(
+                "Metric-view profile: COUNT(*) failed for %s",
+                mv_fqn, exc_info=True,
+            )
+        row_count = -1
+
+    _NUMERIC_TYPES = frozenset({
+        "int", "integer", "bigint", "smallint", "tinyint",
+        "float", "double", "decimal", "numeric", "long", "short",
+    })
+    _DATE_TYPES = frozenset({"date", "timestamp", "timestamp_ntz"})
+    _COMPLEX_TYPES = frozenset({"map", "array", "struct", "binary"})
+
+    def _parse_collect_set(raw_vals: Any) -> list[str]:
+        if raw_vals is None:
+            return []
+        if isinstance(raw_vals, str):
+            try:
+                raw_vals = _json.loads(raw_vals)
+            except (ValueError, TypeError):
+                return [raw_vals]
+        return sorted(str(v) for v in raw_vals)
+
+    columns_profile: dict[str, dict] = {}
+    low_card_dims: list[tuple[str, str]] = []
+
+    for name, dtype in dim_meta:
+        escaped = f"`{name}`"
+        # The inner GROUP BY is the only construct the MV planner
+        # accepts as a ``FROM`` argument for further aggregation.
+        query = (
+            f"SELECT count(distinct {escaped}) AS `_card_{name}`, "
+            f"min({escaped}) AS `_min_{name}`, "
+            f"max({escaped}) AS `_max_{name}` "
+            f"FROM (SELECT {escaped} FROM {fq_quoted} GROUP BY {escaped})"
+        )
+        try:
+            stats_df = _exec_sql(query, spark, **_sql_kw)
+        except Exception as exc:
+            logger.debug(
+                "Metric-view profile: dimension query failed for %s.%s: %s",
+                mv_fqn, name, str(exc)[:200],
+            )
+            continue
+        if stats_df.empty:
+            continue
+        row = stats_df.iloc[0]
+        card = row.get(f"_card_{name}")
+        col_info: dict[str, Any] = {
+            "cardinality": int(card) if card is not None else 0,
+        }
+        if dtype in _NUMERIC_TYPES or dtype in _DATE_TYPES:
+            min_val = row.get(f"_min_{name}")
+            max_val = row.get(f"_max_{name}")
+            if min_val is not None:
+                col_info["min"] = str(min_val)
+            if max_val is not None:
+                col_info["max"] = str(max_val)
+        if (
+            col_info["cardinality"] > 0
+            and col_info["cardinality"] <= low_cardinality_threshold
+            and dtype not in _NUMERIC_TYPES
+            and dtype not in _DATE_TYPES
+            and not any(dtype.startswith(ct) for ct in _COMPLEX_TYPES)
+        ):
+            low_card_dims.append((name, dtype))
+        columns_profile[name] = col_info
+
+    # 3. Distinct values for low-cardinality string dims — same
+    #    GROUP-BY-then-aggregate envelope.
+    for name, _dtype in low_card_dims:
+        escaped = f"`{name}`"
+        dv_query = (
+            f"SELECT collect_set({escaped}) AS vals "
+            f"FROM (SELECT {escaped} FROM {fq_quoted} GROUP BY {escaped}) "
+            f"WHERE {escaped} IS NOT NULL"
+        )
+        try:
+            dv_df = _exec_sql(dv_query, spark, **_sql_kw)
+            if not dv_df.empty and dv_df.iloc[0].get("vals") is not None:
+                parsed = _parse_collect_set(dv_df.iloc[0]["vals"])
+                if parsed:
+                    columns_profile[name]["distinct_values"] = parsed
+        except Exception:
+            logger.debug(
+                "Metric-view profile: collect_set failed for %s.%s",
+                mv_fqn, name, exc_info=True,
+            )
+
+    # 4. Measures — record YAML expressions for the prompt builder. No
+    #    value profiling: cardinality / min / max over a measure is
+    #    meaningless once ``MEASURE()`` resolves it.
+    measures: dict[str, dict] = {}
+    if isinstance(mv_yaml, dict):
+        for m in mv_yaml.get("measures") or []:
+            if not isinstance(m, dict):
+                continue
+            name = str(m.get("name") or "").strip()
+            if not name:
+                continue
+            expr = m.get("expr") or m.get("expression")
+            measures[name] = {
+                "expression": str(expr) if expr is not None else None,
+                "kind": "measure",
+            }
+
+    logger.info(
+        "Metric-view profile: %s — %d rows, %d dimensions, %d measures",
+        mv_fqn, row_count, len(columns_profile), len(measures),
+    )
+
+    return {
+        "row_count": row_count,
+        "columns": columns_profile,
+        "measures": measures,
+        "kind": "metric_view",
+    }
+
+
 def _collect_data_profile(
     spark: "SparkSession",
     tables: list[str],
@@ -276,6 +517,7 @@ def _collect_data_profile(
     sample_size: int = 0,
     low_cardinality_threshold: int = 0,
     metric_view_names: frozenset[str] = frozenset(),
+    metric_view_yaml: dict[str, dict] | None = None,
     w: Any = None,
     warehouse_id: str = "",
     catalog: str = "",
@@ -345,11 +587,32 @@ def _collect_data_profile(
 
     profile: dict[str, dict] = {}
     reclassified_mvs: list[str] = []
+    yaml_cache = metric_view_yaml or {}
     from genie_space_optimizer.optimization.evaluation import is_metric_view_error
     for table_fqn in tables[:max_tables]:
         _leaf = table_fqn.split(".")[-1].strip("`").lower()
-        if _leaf in metric_view_names or table_fqn.strip().lower() in metric_view_names:
-            logger.info("Data profiling: %s is a metric view, skipping", table_fqn)
+        _fq_lower = table_fqn.strip().lower()
+        if _leaf in metric_view_names or _fq_lower in metric_view_names:
+            # Tier-B #5: dispatch to the MV-aware profile path. The YAML
+            # may be empty (runtime reclassification) — _profile_metric_view
+            # falls back to UC column rows when so.
+            mv_yaml = (
+                yaml_cache.get(_fq_lower) or yaml_cache.get(table_fqn) or None
+            )
+            mv_profile = _profile_metric_view(
+                spark, table_fqn, mv_yaml, uc_columns,
+                sample_size=sample_size,
+                low_cardinality_threshold=low_cardinality_threshold,
+                w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
+            )
+            if mv_profile is not None:
+                profile[table_fqn] = mv_profile
+            else:
+                logger.info(
+                    "Data profiling: %s is a metric view but no dimensions "
+                    "could be resolved — skipping",
+                    table_fqn,
+                )
             continue
 
         tbl_key = table_fqn.strip().lower()
@@ -1333,6 +1596,7 @@ def preflight_collect_uc_metadata(
             data_profile, reclassified_mvs = _collect_data_profile(
                 spark, table_names, uc_columns_dicts,
                 metric_view_names=_mv_names,
+                metric_view_yaml=config.get("_metric_view_yaml") or {},
                 w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
             )
             # Tier-A #2: merge runtime-reclassified MVs into the YAML cache
@@ -1390,10 +1654,17 @@ def preflight_collect_uc_metadata(
             _dp_lines.append(_pf_bar())
             for _dp_table_fqn, _dp_tinfo in sorted(data_profile.items()):
                 _dp_row_count = _dp_tinfo.get("row_count")
+                _dp_is_mv = _dp_tinfo.get("kind") == "metric_view"
                 if isinstance(_dp_row_count, int) and _dp_row_count >= 0:
-                    _dp_row_label = f"({_dp_row_count} rows)"
+                    _dp_row_label = (
+                        f"(metric view, {_dp_row_count} rows)" if _dp_is_mv
+                        else f"({_dp_row_count} rows)"
+                    )
                 else:
-                    _dp_row_label = "(row count unavailable)"
+                    _dp_row_label = (
+                        "(metric view, row count unavailable)" if _dp_is_mv
+                        else "(row count unavailable)"
+                    )
                 _dp_lines.append(f"  {_dp_table_fqn} {_dp_row_label}")
                 for _dp_col, _dp_cinfo in sorted(_dp_tinfo.get("columns", {}).items()):
                     _dp_card = _dp_cinfo.get("cardinality", "?")
@@ -1408,6 +1679,17 @@ def preflight_collect_uc_metadata(
                     if _dp_minv is not None:
                         _dp_parts.append(f"range=[{_dp_minv}, {_dp_maxv}]")
                     _dp_lines.append(f"    {_dp_col}: {', '.join(_dp_parts)}")
+                # Render the measures block for metric-view profiles so
+                # the synthesis prompt builder, evaluators, and humans
+                # reading the preflight output can see what each measure
+                # actually computes — the YAML expression is the only
+                # source of truth (the column itself is opaque post-MEASURE).
+                _dp_measures = _dp_tinfo.get("measures") or {}
+                if _dp_measures:
+                    _dp_lines.append("    measures:")
+                    for _mname, _minfo in sorted(_dp_measures.items()):
+                        _expr = (_minfo or {}).get("expression") or "(no expression)"
+                        _dp_lines.append(f"      {_mname}: {_expr}")
                 _dp_lines.append("")
             _dp_lines.append(_pf_bar())
             print("\n".join(_dp_lines))
