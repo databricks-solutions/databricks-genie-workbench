@@ -1036,15 +1036,51 @@ def effective_metric_view_identifiers(config: dict) -> set[str]:
     return out
 
 
+def effective_metric_view_identifiers_with_catalog(config: dict) -> set[str]:
+    """Like :func:`effective_metric_view_identifiers` plus catalog detection.
+
+    Unions the column-config heuristic (which only fires when Genie's
+    serialized space declares a measure-typed column on the entry) with
+    the runtime catalog detection cached at ``config["_metric_view_yaml"]``
+    by :func:`preflight._detect_metric_views_via_catalog`.
+
+    Use this variant from sites that gate on "is this asset an MV?" —
+    MEASURE auto-wrap, MV ``SELECT *`` guard, MV prompt block, and the
+    data-profile skip-list. Without the catalog union we miss MVs that
+    Genie serialized under ``data_sources.tables`` without measure
+    column configs (the actual failure mode that motivated the helper).
+    """
+    base = effective_metric_view_identifiers(config)
+    out: set[str] = set(base)
+    base_lower = {ident.lower() for ident in base}
+
+    cache = config.get("_metric_view_yaml")
+    if not isinstance(cache, dict):
+        _ps = config.get("_parsed_space")
+        if isinstance(_ps, dict):
+            cache = _ps.get("_metric_view_yaml")
+    if isinstance(cache, dict):
+        for ident in cache.keys():
+            ident_str = str(ident).strip()
+            if ident_str and ident_str.lower() not in base_lower:
+                out.add(ident_str)
+                base_lower.add(ident_str.lower())
+    return out
+
+
 def effective_table_identifiers(config: dict) -> set[str]:
     """Return identifiers from ``_tables`` that are not effective MVs.
 
     Excludes ``data_sources.tables`` entries reclassified as metric
-    views by :func:`effective_metric_view_identifiers` so callers
-    enumerating "real" tables (e.g. data profiling, table allowlist
-    rendering) skip MV-shaped entries without manual filtering.
+    views by :func:`effective_metric_view_identifiers_with_catalog` so
+    callers enumerating "real" tables (e.g. data profiling, table
+    allowlist rendering) skip MV-shaped entries without manual
+    filtering.
     """
-    mv_idents = {ident.lower() for ident in effective_metric_view_identifiers(config)}
+    mv_idents = {
+        ident.lower()
+        for ident in effective_metric_view_identifiers_with_catalog(config)
+    }
     out: set[str] = set()
     for tbl in config.get("_tables", []) or []:
         ident = str(tbl).strip()
@@ -6739,7 +6775,7 @@ def _build_valid_assets_context(config: dict) -> str:
     against an MV and the execute gate rejects every candidate with
     ``METRIC_VIEW_MISSING_MEASURE_FUNCTION``.
     """
-    mv_idents = effective_metric_view_identifiers(config)
+    mv_idents = effective_metric_view_identifiers_with_catalog(config)
     table_idents = effective_table_identifiers(config)
     lines: list[str] = []
     for tbl in sorted(table_idents):
@@ -7578,7 +7614,7 @@ def generate_validated_sql_examples(
     # (PR 14). The MV ``SELECT *`` guard and metric-view-aware dedup keys
     # rely on this set being complete or they wave through SQL that the
     # execute gate then rejects.
-    mv_names = effective_metric_view_identifiers(config)
+    mv_names = effective_metric_view_identifiers_with_catalog(config)
 
     def _register_valid(cand: dict) -> None:
         q = str(cand.get("question") or "").strip().lower()
@@ -8407,7 +8443,7 @@ def _fill_coverage_gaps(
             )
             continue
 
-        _mv_names = effective_metric_view_identifiers(config)
+        _mv_names = effective_metric_view_identifiers_with_catalog(config)
         _is_star_ok, _ = _guard_mv_select_star(expected_sql, _mv_names)
         if not _is_star_ok:
             continue
@@ -8969,7 +9005,7 @@ def generate_benchmarks(
             continue
 
         # MV guard: reject SELECT * on metric views (PR 14: effective MVs).
-        _mv_names = effective_metric_view_identifiers(config)
+        _mv_names = effective_metric_view_identifiers_with_catalog(config)
         _is_star_ok, _star_reason = _guard_mv_select_star(expected_sql, _mv_names)
         if not _is_star_ok:
             benchmark["validation_status"] = "invalid"
