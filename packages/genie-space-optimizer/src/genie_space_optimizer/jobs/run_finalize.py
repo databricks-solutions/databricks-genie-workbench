@@ -1,6 +1,6 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Task 4: Finalize — Training Guide
+# MAGIC # Task 5: Finalize — Training Guide
 # MAGIC
 # MAGIC | Quick Reference | |
 # MAGIC |---|---|
@@ -9,11 +9,13 @@
 # MAGIC | **Reads from** | `preflight` (run context) + `lever_loop` or `baseline_eval` (scores, model_id) |
 # MAGIC | **Publishes to** | `deploy` (status, convergence_reason, repeatability_pct, report_path) |
 # MAGIC | **Typical duration** | 10–120 min (depends on repeatability test size) |
-# MAGIC | **Log label** | `[TASK-4 FINALIZE]` |
+# MAGIC | **Log label** | `[TASK-4 FINALIZE]` (the constant lags the markdown — see note below) |
+# MAGIC
+# MAGIC > **📝 Note:** This task is the **5th** task in the 6-task DAG. The `_TASK_LABEL` constant in this notebook still reads `"TASK-4 FINALIZE"`, so log lines will appear as `[TASK-4 FINALIZE]` in production. That mismatch is a deferred-cleanup item (the markdown was updated independently of code in the lever-loop consolidated fix); operators reading run logs should expect `[TASK-4 FINALIZE]` and it is the intended marker for this task until the constant is updated.
 # MAGIC
 # MAGIC ## 🎯 Purpose
 # MAGIC
-# MAGIC Task 4 (Finalize) is the penultimate stage of the Genie Space optimization pipeline. It performs **repeatability testing**, **model promotion**, and **final report generation** before the optional deploy step. This task ensures that the optimized configuration is validated for consistency and that all downstream consumers receive a complete, auditable summary of the run.
+# MAGIC Task 5 (Finalize) is the penultimate stage of the Genie Space optimization pipeline. It performs **repeatability testing**, **model promotion**, and **final report generation** before the optional deploy step. This task ensures that the optimized configuration is validated for consistency and that all downstream consumers receive a complete, auditable summary of the run.
 # MAGIC
 # MAGIC ## 🏗️ DAG Position
 # MAGIC
@@ -269,6 +271,20 @@ _log(
 # MAGIC a comprehensive optimization report (scores, convergence, iteration history,
 # MAGIC repeatability), and publish benchmarks to the Genie Space's native benchmarks
 # MAGIC section so they appear in the Genie UI.
+# MAGIC
+# MAGIC ### Champion Selection: Rolled-Back Iterations Excluded (Tier 1.2)
+# MAGIC
+# MAGIC > **📝 Note:** `promote_best_model` filters out iterations stamped `rolled_back=true` before computing `idxmax(overall_accuracy)`. Iteration 0 (baseline) is unconditionally retained as the floor of the max aggregation. Without this filter, a rolled-back iteration whose eval row sat above an accepted iteration's eval row could be selected as champion — the run's stored `best_accuracy` would then disagree with the deployed Genie Space state.
+# MAGIC
+# MAGIC ### MLflow Run Naming v2 (Tier 4)
+# MAGIC
+# MAGIC | Stage | v2 run name |
+# MAGIC |---|---|
+# MAGIC | Held-out generalization eval | `<run_short>/finalize/held_out` |
+# MAGIC | Repeatability pass *k* | `<run_short>/finalize/repeat_pass_{k}` |
+# MAGIC | Pyfunc deploy snapshot | reuses the champion's source `run_id` (no new name) |
+# MAGIC
+# MAGIC All runs carry `genie.run_id`, `genie.iteration`, `genie.stage`, and `genie.run_name_version="v2"` tags so operators can filter the experiment by tag without parsing names.
 
 # COMMAND ----------
 

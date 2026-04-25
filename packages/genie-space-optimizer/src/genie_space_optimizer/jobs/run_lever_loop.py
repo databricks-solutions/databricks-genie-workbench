@@ -6,8 +6,10 @@
 # MAGIC |---|---|
 # MAGIC | **Task** | 4 of 6 — Lever Loop (Adaptive Optimization Engine) |
 # MAGIC | **Harness functions** | `_run_lever_loop()` in `optimization/harness.py` |
-# MAGIC | **Reads from** | `preflight` (run context, levers, max_iterations) + `baseline_eval` (scores, thresholds_met, model_id) + `enrichment` (enrichment_model_id, enrichment_skipped) |
+# MAGIC | **Reads from** | `preflight` (run context, levers, max_iterations) + `baseline_eval` (scores, overall_accuracy, thresholds_met, model_id) + `enrichment` (enrichment_model_id, enrichment_skipped, **plus** Tier 1.3 post-enrichment values: `post_enrichment_accuracy`, `post_enrichment_scores`, `post_enrichment_model_id`, `post_enrichment_thresholds_met`) |
 # MAGIC | **Publishes to** | `finalize` (scores, accuracy, model_id, iteration_counter, debug_info) |
+# MAGIC
+# MAGIC > **📝 Note:** When `post_enrichment_*` is present, `prev_accuracy` / `prev_scores` / `thresholds_met` are sourced from there (logged as `prev_accuracy_source="enrichment.post_enrichment_accuracy"`); otherwise the loop falls back to `baseline_eval` (`prev_accuracy_source="baseline_eval"`). This closes the ghost-ceiling regression loop where the loop gated against a stale baseline while clustering read post-enrichment rows (Tier 1.3).
 # MAGIC | **Typical duration** | 15–90 min (depends on iteration count and benchmark size) |
 # MAGIC | **Log label** | `[TASK-4 LEVER_LOOP]` |
 # MAGIC
@@ -52,6 +54,7 @@
 # MAGIC - **No actionable clusters** — no remaining failure clusters to address (all fixed or all previously attempted)
 # MAGIC - **Strategist produces 0 action groups** — the LLM determines there is nothing left to fix
 # MAGIC - **Max iterations reached** — `iteration_counter >= max_iterations`
+# MAGIC - **Arbiter-saturated, no clusters** (Tier 1.6) — baseline accuracy ≥ 99% AND zero unified hard failures: tagged `convergence_reason="arbiter_saturated_no_clusters"` and exits without firing the loop. Distinct from `arbiter_saturated` (kept for cases where arbiter mostly overrode but unified hard failures remain).
 
 # COMMAND ----------
 
@@ -68,7 +71,7 @@
 # MAGIC
 # MAGIC | Step | What Happens | Key Function |
 # MAGIC |:----:|--------------|-------------|
-# MAGIC | 1 | **Re-cluster** failures from latest eval (baseline on iter 1, gate-3 results on iter 2+) | `_analyze_and_distribute()` |
+# MAGIC | 1 | **Re-cluster** failures from the latest **non-rolled-back** full iteration (baseline on iter 1, last accepted eval on iter 2+) using the unified `row_is_hard_failure` predicate (Tier 1.4) | `_analyze_and_distribute()` |
 # MAGIC | 2 | **Filter** clusters already attempted via `tried_patches` | `_filter_tried_clusters()` |
 # MAGIC | 3 | **Rank** clusters by impact score (causal weight, severity, fixability) | `rank_clusters()` |
 # MAGIC | 4 | **Strategist** call: 1 LLM call with reflection buffer and priority ranking produces exactly 1 action group | `_call_llm_for_adaptive_strategy()` |
@@ -83,9 +86,9 @@
 # MAGIC
 # MAGIC | Gate | Scope | Pass Condition | On Failure |
 # MAGIC |:----:|-------|---------------|------------|
-# MAGIC | **1. Slice** | Only benchmarks touching **patched objects** | No regression vs. best scores (noise-floor-adjusted `SLICE_GATE_TOLERANCE`) | Rollback → reflect → next iteration |
+# MAGIC | **1. Slice** | Only benchmarks touching **patched objects** | No regression vs. best scores (noise-floor-adjusted `SLICE_GATE_TOLERANCE`). **Tier 3.12:** small corpora (≤30 benchmarks) use a relaxed `_slice_threshold = 0.9` so the gate stays useful when affected_qids covers most of the suite. | Rollback → reflect → next iteration |
 # MAGIC | **2. P0** | Top 3 most critical questions | Zero P0 failures | Rollback → reflect → next iteration |
-# MAGIC | **3. Full** | All benchmarks | No regression vs. best scores (noise-floor-adjusted `REGRESSION_THRESHOLD`) | Rollback → reflect → next iteration |
+# MAGIC | **3. Full** | All benchmarks | No regression vs. best scores (noise-floor-adjusted `REGRESSION_THRESHOLD`). **Tier 1.5:** `overall_accuracy_guard` triggers only when `full_accuracy < best_accuracy − noise_floor`, not on any drop. **Tier 1.8:** `result_correctness` regressions are suppressed when `both_correct_rate` held within tolerance — that is hash-noise (column reorder, alias rename), not a semantic regression. | Rollback → reflect → next iteration |
 # MAGIC
 # MAGIC **On full-gate success:** Accept iteration → update best_scores/best_model_id → write iteration to Delta → register instruction version snapshot → update reference SQLs → log expectations on traces.
 # MAGIC
@@ -93,13 +96,27 @@
 # MAGIC
 # MAGIC Each iteration produces a **reflection entry** recording what was attempted, whether it was accepted or rolled back, the score delta, which levers and targets were involved, and lessons learned. The strategist receives recent reflections in full detail and older ones in compressed form. A **"DO NOT RETRY" list** prevents the strategist from repeating previously failed approaches.
 # MAGIC
+# MAGIC ### AG Scope: One Source Cluster Per AG (Tier 2.5)
+# MAGIC
+# MAGIC The strategist prompt enforces **one source cluster per AG**. A post-LLM validator inspects `source_cluster_ids`: if the LLM returned multiple clusters with **different** `root_cause` values, the validator drops all but the highest-`cluster_impact` cluster and back-fills `affected_questions` from that cluster's `base_question_ids` (Tier 2.1). Multi-cluster failure patterns are addressed across multiple iterations rather than one giant AG that risks taking down the other 26 patches when one bad patch rolls back.
+# MAGIC
 # MAGIC ### Cluster-Level Impact Scoring
 # MAGIC
-# MAGIC Failure clusters are scored deterministically using: question count in the cluster, causal weight of the judges that flagged it, failure type severity, and fixability (whether a counterfactual SQL exists). Higher-impact clusters are addressed first.
+# MAGIC Failure clusters are scored deterministically as `q_count × causal_weight × severity × fixability × soft_dampen` (see `cluster_impact` in `optimization/optimizer.py`). Higher-impact clusters are addressed first.
+# MAGIC
+# MAGIC **Tier 2.3 — Soft-cluster ranking.** Soft clusters (rows where the arbiter said the result was correct but individual judges flagged suboptimal patterns) are dampened by `0.5` so hard clusters dominate at equal `q_count`, while a large soft cluster (e.g. a 12-question `response_quality=63%` block) can still out-rank a tiny hard cluster and earn strategist attention.
+# MAGIC
+# MAGIC **Tier 2.11 — Unified qid state across hard + soft.** Hard and soft clustering passes share a single `qid_state` dict so a physical row that fails both pathways gets one stable qid (with `:vN` suffix on signature collisions) and lands in exactly one cluster with one dominant root cause. Without this, Q001 could appear as `missing_aggregation` in the hard cluster and `wrong_filter_condition` in the soft cluster — the DO-NOT-RETRY bookkeeping then can't reconcile them.
+# MAGIC
+# MAGIC **Tier 2.12 — `base_question_id` propagated separately.** Each profile carries `base_question_id` (the real benchmark id) and `trial_index` so `:vN` tokens never leak into outward-facing fields: `ag.affected_questions`, provenance rows, slice-gate samples, UI drill-down, human-review flagging. Internal dedup keys stay `(base_question_id, trial_index)`.
+# MAGIC
+# MAGIC **Tier 2.15 — Counterfactual merge across signal types.** A cluster's `asi_counterfactual_fixes` is computed across hard+soft pathway profiles for the same `base_question_id`. The SQL-shape suppression (drop NL_TEXT/META counterfactuals on SQL-shape clusters) runs **after** the merge, so a cluster never shows `Counterfactual: (none)` when a sibling pathway has actionable fixes.
 # MAGIC
 # MAGIC ### Rollback Mechanism
 # MAGIC
 # MAGIC When any gate fails, `rollback(apply_log, w, space_id, metadata_snapshot)` reverses all applied patches. The space returns to its pre-iteration state. Patches are marked as rolled back in Delta for audit.
+# MAGIC
+# MAGIC > **📝 Note:** Tier 1.1 / 1.2 — `mark_patches_rolled_back` stamps **both** the `genie_opt_patches` rows **and** the `genie_opt_iterations` row with `rolled_back=true`, `rolled_back_at`, and `rollback_reason`. Every "current state" reader filters rolled-back rows by default: `load_latest_full_iteration` (clustering input), `_get_baseline_and_best_accuracy` (UI optimizedScore), and `promote_best_model` (champion selection). Iteration 0 is always retained as the floor of the max aggregation. Without this stamp, iteration N+1's clustering would re-read iteration N's rolled-back rows — the ghost-cluster feedback loop.
 # MAGIC
 # MAGIC ### Instruction Slot Budget
 # MAGIC
@@ -108,13 +125,47 @@
 # MAGIC - **Post-apply guard**: `apply_patch_set()` trims excess examples if the limit is somehow breached
 # MAGIC - **Structural validation**: `_strict_validate()` rejects any config exceeding 100 slots before it reaches the API
 # MAGIC
+# MAGIC ### Patch Cap & Applier Gates (Tier 2.6 / 2.8 / 2.10)
+# MAGIC
+# MAGIC | Gate | Where | What it does |
+# MAGIC |---|---|---|
+# MAGIC | `MAX_AG_PATCHES = 8` | `common/config.py`, enforced in `_run_lever_loop` before `apply_patch_set` | Bounds rollback blast radius — one bad patch in a 27-patch AG used to take down the other 26 (Tier 2.6). Excess tail patches are dropped with a warning; remaining targets are addressed in subsequent iterations. |
+# MAGIC | `validation_passed` required for `add_sql_snippet_*` | `optimization/applier.py::render_patch` | Refuses to apply any `add_sql_snippet_*` patch without `validation_passed=True` from `validate_sql_snippet` (Tier 2.8). Closes the bug where `CAST_INVALID_INPUT` validation failures were logged but the snippet still landed via a different code path. |
+# MAGIC | `rewrite_instruction` defaults to a CONSTRAINTS section merge | `optimization/applier.py::render_patch` | Full PURPOSE-through-everything rewrites (Tier 2.10) require explicit `escalation="full_rewrite"` (or `GSO_ALLOW_UNSCOPED_REWRITE=1`). The default behaviour converts the patch to a `update_section` against `CONSTRAINTS` so collateral-damage rewrites don't strand 5+ unrelated questions per iteration. |
+# MAGIC
+# MAGIC ### Section Routing (Tier 2.7)
+# MAGIC
+# MAGIC When Lever 5's strategist returns instruction-section content for sections it doesn't own (per `LEVER_TO_SECTIONS`), `generate_proposals_from_strategy` checks whether **another invoked lever in the same AG** owns that section:
+# MAGIC
+# MAGIC - If yes — re-route the section to that lever via `action_group["_pending_section_routing"]`. The owning lever's proposal generator picks it up in the same iteration.
+# MAGIC - If no — drop the section. Don't fold into CONSTRAINTS (which historically polluted Lever 5 prose with `JOIN GUIDANCE` and `TEMPORAL FILTERS` content owned by Levers 4 and 2).
+# MAGIC
+# MAGIC ### Instruction-Only Fallback (Tier 2.9)
+# MAGIC
+# MAGIC > **📝 Note:** When `cluster_driven_synthesis` declines, `optimization/synthesis.py::instruction_only_fallback` returns a proposal **only if** the AFS carries an actionable `counterfactual_fixes` entry of ≥20 chars. Bare metadata like `Failure type: missing_aggregation` is never written into Genie Space `text_instructions` — it polluted every subsequent prompt the space saw and is now suppressed at the source.
+# MAGIC
 # MAGIC ### Arbiter Benchmark Corrections (Pre-Loop)
 # MAGIC
 # MAGIC > **📝 Note:** Before the adaptive loop begins, the harness runs `_extract_arbiter_actions_from_baseline()` to find rows where the arbiter verdict was `genie_correct` — meaning Genie's SQL was actually correct and the benchmark's expected SQL was wrong. When `genie_correct` verdicts meet or exceed `ARBITER_CORRECTION_TRIGGER` (default 3), `apply_benchmark_corrections()` rewrites those benchmarks' `expected_sql`. This prevents chasing false failures caused by stale gold SQL.
 # MAGIC
-# MAGIC ### Arbiter Verdict Filtering in Failure Clustering
+# MAGIC ### Unified Hard-Failure Predicate (Tier 1.4)
 # MAGIC
-# MAGIC During each iteration, the harness filters out rows with arbiter verdict `genie_correct` before passing them to `cluster_failures()`. The optimizer only proposes fixes for questions where Genie is genuinely wrong.
+# MAGIC During each iteration, `_analyze_and_distribute` partitions rows using the **unified hard-failure predicate** `row_is_hard_failure(row)` from `optimization/evaluation.py`:
+# MAGIC
+# MAGIC ```
+# MAGIC row_is_hard_failure(row) ≡
+# MAGIC     result_correctness == "no" AND arbiter NOT IN {both_correct, genie_correct}
+# MAGIC ```
+# MAGIC
+# MAGIC This is the **same** predicate the accept gate uses for accuracy counting. Rows where `rc=yes` AND the arbiter said `ground_truth_correct` (Genie's row set happened to match GT despite semantically wrong SQL) are no longer routed to hard clusters — they remain in the `arbiter_excluded` bucket so the gate's 100% accuracy reading and the clusterer's view of "failures" agree. Before this unification, the loop produced phantom hard clusters even when the gate saw 100% accuracy.
+# MAGIC
+# MAGIC | Row | rc | arbiter | Hard cluster? | Counted correct? |
+# MAGIC |---|---|---|---|---|
+# MAGIC | both ok | yes | both_correct | no (arbiter_excluded) | yes |
+# MAGIC | rc-yes, GT-correct | yes | ground_truth_correct | **no** (arbiter_excluded — Tier 1.4 fix) | yes (rc=yes override) |
+# MAGIC | arbiter override of bad SQL | no | both_correct | no (arbiter_excluded) | yes (arbiter override) |
+# MAGIC | genuine hard failure | no | ground_truth_correct | **yes** (filtered_failure_rows) | no |
+# MAGIC | judge-only soft failure | yes | both_correct | no (soft_signal_rows if any judge fails) | yes |
 # MAGIC
 # MAGIC ### Reference SQL Tracking
 # MAGIC
@@ -145,7 +196,27 @@
 # MAGIC
 # MAGIC ### What `thresholds_met` Means
 # MAGIC
-# MAGIC `thresholds_met` is a boolean from Task 2 (baseline_eval). It is `True` when `all_thresholds_met(scores, DEFAULT_THRESHOLDS)` returns `True` — i.e., every quality dimension meets its target threshold. When `True`, the lever loop is skipped.
+# MAGIC `thresholds_met` is a boolean originally produced by Task 2 (baseline_eval). It is `True` when `all_thresholds_met(scores, DEFAULT_THRESHOLDS)` returns `True` — i.e., every quality dimension meets its target threshold. When `True`, the lever loop is skipped.
+# MAGIC
+# MAGIC > **📝 Note:** Tier 1.3 — when Task 3 publishes `post_enrichment_thresholds_met=True`, this notebook prefers it over `baseline_eval.thresholds_met`. Enrichment can flip the bool either direction (sealing thresholds the baseline missed, or revealing post-enrichment regressions); the loop reads the freshest signal so it doesn't run unnecessary iterations or skip warranted ones.
+# MAGIC
+# MAGIC ### MLflow Run Naming v2 (Tier 4)
+# MAGIC
+# MAGIC Every MLflow run uses the v2 scheme `<run_short>/<stage>/<detail>` from `common/mlflow_names.py`. Iteration indices are zero-padded so MLflow's lex-sort produces the chronological order:
+# MAGIC
+# MAGIC | Stage | v2 run name |
+# MAGIC |---|---|
+# MAGIC | Strategy call | `e9c0b491/iter_03_strategy/AG2` |
+# MAGIC | Slice eval | `e9c0b491/iter_03_slice_eval` |
+# MAGIC | P0 eval | `e9c0b491/iter_03_p0_eval` |
+# MAGIC | Full eval (run 1) | `e9c0b491/iter_03_full_eval/run_1` |
+# MAGIC | Full eval (confirm) | `e9c0b491/iter_03_full_eval/run_2_confirm` |
+# MAGIC
+# MAGIC Every run also carries `genie.run_id`, `genie.iteration` (zero-padded), `genie.stage`, `genie.ag_id`, and `genie.run_name_version="v2"` tags so operators can filter the experiment by tag without parsing names. Retries append `/retry_{k}` rather than minting fresh names.
+# MAGIC
+# MAGIC ### INFO-Only Judges (Tier 3.6)
+# MAGIC
+# MAGIC `repeatability` and `previous_sql` are **diagnostic-only** judges (`threshold == 0.0` in `DEFAULT_THRESHOLDS`). Their failures are tracked for observability — every iteration produces fresh SQL that differs from the prior iteration's, and that difference shows up as a "failure" of these two judges — but they are excluded from clustering and soft-signal detection via `INFO_ONLY_JUDGES` in `common/config.py`. Without this exclusion, every row in iteration 2+ would appear in a soft cluster purely because the SQL was newly generated.
 
 # COMMAND ----------
 

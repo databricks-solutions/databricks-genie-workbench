@@ -7,7 +7,7 @@
 # MAGIC | **Task** | 3 of 6 — Proactive Enrichment |
 # MAGIC | **Harness function** | `_run_enrichment()` in `optimization/harness.py` |
 # MAGIC | **Reads from** | `preflight` (run context) + `baseline_eval` (scores, thresholds_met, model_id) |
-# MAGIC | **Publishes to** | `lever_loop` (enrichment_model_id, enrichment_skipped, total_enrichments) |
+# MAGIC | **Publishes to** | `lever_loop` (enrichment_model_id, enrichment_skipped, total_enrichments) **plus** post-enrichment eval (Tier 1.3): `post_enrichment_accuracy`, `post_enrichment_scores`, `post_enrichment_model_id`, `post_enrichment_thresholds_met` — present only when enrichment actually ran and the eval succeeded |
 # MAGIC | **Typical duration** | 2–10 min |
 # MAGIC | **Log label** | `[TASK-3 ENRICHMENT]` |
 # MAGIC
@@ -37,6 +37,25 @@
 # MAGIC | Example SQL mining | Extract reference queries from benchmarks | Yes (if applied) |
 # MAGIC
 # MAGIC After all sub-steps, an MLflow LoggedModel snapshot captures the enriched state.
+# MAGIC
+# MAGIC ### Post-Enrichment Eval Feedback (Tier 1.3)
+# MAGIC
+# MAGIC Enrichment **mutates** the Genie Space — descriptions, joins, instructions, example SQLs change. Without a fresh eval, Task 4 (lever loop) would gate against the *pre-enrichment* baseline scorecard while its clustering reads *post-enrichment* rows. Those two realities can disagree arbitrarily and produce the "ghost-ceiling" rollback loop where every iteration looks like a regression against a stale anchor.
+# MAGIC
+# MAGIC When enrichment runs successfully, `_run_enrichment` performs a single-pass evaluation against the post-enrichment LoggedModel and publishes:
+# MAGIC
+# MAGIC | Task value | Purpose |
+# MAGIC |---|---|
+# MAGIC | `post_enrichment_accuracy` | Float — current `overall_accuracy` of the enriched space |
+# MAGIC | `post_enrichment_scores` | JSON — per-judge scores |
+# MAGIC | `post_enrichment_model_id` | Genie model ID for the snapshot |
+# MAGIC | `post_enrichment_thresholds_met` | Bool — whether the enriched space already meets all thresholds |
+# MAGIC
+# MAGIC Task 4 prefers these over `baseline_eval.*` when present (see the `prev_accuracy_source` log entry for the resolution decision).
+# MAGIC
+# MAGIC ### Skip Path
+# MAGIC
+# MAGIC > **📝 Note:** When `enrichment_skipped=True` (baseline already met thresholds, or the entire enrichment block failed and fell back to baseline) the `post_enrichment_*` task values are **absent**. Task 4's reader treats that as "fall back to `baseline_eval.*`" so the contract degrades gracefully.
 
 # COMMAND ----------
 

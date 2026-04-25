@@ -46,6 +46,10 @@
 # MAGIC
 # MAGIC > **📝 Note:** DABs integration is pending full implementation. The harness currently writes stage records and returns status.
 # MAGIC
+# MAGIC ## MLflow Integration
+# MAGIC
+# MAGIC > **📝 Note:** Deploy does **not** mint a new MLflow run name. The pyfunc model snapshot is logged into the champion iteration's source `run_id` (see `register_uc_model` → `mlflow.start_run(run_id=source_run_id)` in `optimization/models.py`). The v2 run-naming scheme (`<run_short>/<stage>/<detail>`, see `common/mlflow_names.py`) governs every other task — baseline, enrichment, strategy, slice/p0/full evals, finalize/held_out, finalize/repeat_pass_k — so champion artefacts are reachable via the same `genie.run_id` tag (Tier 4).
+# MAGIC
 # MAGIC ## ⚠️ What Happens If This Task Fails
 # MAGIC
 # MAGIC > **📝 Note:** Optimization results are **not lost** — scores, model, and report from finalize are already persisted in Delta and MLflow.

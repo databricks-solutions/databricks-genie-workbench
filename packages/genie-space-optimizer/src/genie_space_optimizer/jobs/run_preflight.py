@@ -426,6 +426,20 @@ except Exception as exc:
 # MAGIC Validate each benchmark's SQL via `EXPLAIN` to ensure it compiles against the
 # MAGIC current schema. Invalid benchmarks (unresolved columns, missing tables, syntax errors)
 # MAGIC are quarantined. If fewer than 5 valid benchmarks remain, regeneration is triggered.
+# MAGIC
+# MAGIC ### Pre-EXPLAIN Gates (Tier 3.8 / 3.10 / 3.14)
+# MAGIC
+# MAGIC Several deterministic checks run **before** the gRPC `EXPLAIN` round-trip so
+# MAGIC operators don't see triplicated stack traces from gRPC reattach retries on
+# MAGIC well-classified failure modes:
+# MAGIC
+# MAGIC | Check | Where | Effect on classification |
+# MAGIC |---|---|---|
+# MAGIC | Balanced-backtick precheck (Tier 3.8) | `scorers/syntax_validity.py::_has_unbalanced_backticks`, also `synthesis._gate_parse` | Odd `` ` `` count short-circuits to `failure_type="unbalanced_identifier_quoting"` without an EXPLAIN call |
+# MAGIC | METRIC_VIEW_JOIN upstream pre-check (Tier 3.10) | `evaluation._precheck_benchmarks_for_eval` | Direct JOINs between two metric views without a CTE wrapper are quarantined locally with `reason="metric_view_join"` |
+# MAGIC | Strict `sqlglot.parse` in synthesis (Tier 3.14) | `optimization/synthesis.py::_gate_parse` | Synthesis proposals fail closed on any parse exception — no substring fallback, no malformed SQL leaks downstream |
+# MAGIC
+# MAGIC > **💡 Tip:** When a benchmark is quarantined upstream of EXPLAIN, the rejection record carries the local-classifier reason so log readers can distinguish "Genie Space schema doesn't support this SQL pattern" from "the SQL itself is malformed."
 
 # COMMAND ----------
 
