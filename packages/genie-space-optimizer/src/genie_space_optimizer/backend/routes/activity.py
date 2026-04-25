@@ -13,8 +13,9 @@ import logging
 
 from ..core import Dependencies, create_router
 from ..models import ActivityItem
-from ..utils import ensure_utc_iso, safe_float
+from ..utils import ensure_utc_iso
 from .._spark import get_spark
+from ...common.accuracy import RunScores, compute_run_scores_by_run_id
 
 router = create_router()
 logger = logging.getLogger(__name__)
@@ -101,7 +102,7 @@ def get_activity(
         ws, sp_ws, unique_space_ids, user_email, user_groups,
     )
 
-    baseline_scores = _load_baseline_scores(
+    scores_by_run = _load_run_scores(
         spark, list(df["run_id"]), config.catalog, config.schema_name,
     )
 
@@ -111,6 +112,7 @@ def get_activity(
         if access_by_space.get(row_space_id) is None:
             continue
         run_id_val = row.get("run_id", "")
+        scores = scores_by_run.get(run_id_val) or RunScores(None, None, None, None)
         items.append(
             ActivityItem(
                 runId=run_id_val,
@@ -118,8 +120,9 @@ def get_activity(
                 spaceName=row.get("domain", ""),
                 status=row.get("status", ""),
                 initiatedBy=row.get("triggered_by") or "system",
-                baselineScore=safe_float(baseline_scores.get(run_id_val)),
-                optimizedScore=safe_float(row.get("best_accuracy")),
+                baselineScore=scores.baseline,
+                optimizedScore=scores.optimized,
+                bestIteration=scores.best_iteration,
                 timestamp=ensure_utc_iso(row.get("started_at")) or "",
             )
         )
@@ -128,10 +131,17 @@ def get_activity(
     return items
 
 
-def _load_baseline_scores(
+def _load_run_scores(
     spark, run_ids: list[str], catalog: str, schema: str,
-) -> dict[str, float | None]:
-    """Bulk-fetch baseline accuracy (iteration 0, full eval) for a list of runs."""
+) -> dict[str, RunScores]:
+    """Bulk-fetch canonical baseline + optimized + best_iteration for runs.
+
+    Single Delta query for all run_ids (no N+1). Routes the per-run grouping
+    + max() through ``compute_run_scores_by_run_id`` so list endpoints get
+    the same floor-at-baseline / rolled-back-excluded semantics as detail
+    endpoints. PR 4 will replace this with a denormalized
+    ``display_accuracy`` column and drop the per-iteration scan.
+    """
     from genie_space_optimizer.common.config import TABLE_ITERATIONS
     from genie_space_optimizer.common.delta_helpers import _fqn, run_query
 
@@ -142,13 +152,14 @@ def _load_baseline_scores(
     try:
         df = run_query(
             spark,
-            f"SELECT run_id, overall_accuracy FROM {fqn} "
-            f"WHERE run_id IN ({ids_csv}) AND iteration = 0 AND eval_scope = 'full'",
+            f"SELECT run_id, iteration, eval_scope, overall_accuracy, "
+            f"correct_count, evaluated_count, rolled_back FROM {fqn} "
+            f"WHERE run_id IN ({ids_csv})",
         )
     except Exception:
+        logger.debug("Bulk run-scores query failed", exc_info=True)
         return {}
-    result: dict[str, float | None] = {}
-    if not df.empty:
-        for _, row in df.iterrows():
-            result[row.get("run_id", "")] = safe_float(row.get("overall_accuracy"))
-    return result
+    if df.empty:
+        return {}
+    rows = df.to_dict("records")
+    return compute_run_scores_by_run_id(rows, logger=logger)

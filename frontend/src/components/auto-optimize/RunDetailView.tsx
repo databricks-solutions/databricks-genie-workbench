@@ -144,8 +144,12 @@ export function RunDetailView({ runId, onBack }: RunDetailViewProps) {
         </button>
       </div>
 
-      {/* Score summary cards */}
-      <ScoreSummary baselineScore={run.baselineScore} optimizedScore={run.optimizedScore} />
+      <ScoreSummary
+        baselineScore={run.baselineScore}
+        optimizedScore={run.optimizedScore}
+        bestIteration={run.bestIteration}
+        status={run.status}
+      />
 
       {/* Human Review Banner */}
       {run.labelingSessionUrl && (

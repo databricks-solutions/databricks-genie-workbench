@@ -1375,6 +1375,27 @@ def repair_stemmed_identifiers_in_sql(
     # Longest-first so ``schema.mv_esr_dim_date`` wins over ``dim_date``
     # when both are present in the SQL. This keeps the final SQL as
     # close to the LLM's intent as possible.
+    #
+    # Two complementary passes per stem:
+    #
+    #   * Pass A — bare table reference (``FROM dim_date``,
+    #     ``JOIN dim_date d``). Lookahead ``(?![\w.])`` blocks
+    #     ``dim_date_extra`` (substring) and ``dim_date.col``
+    #     (qualifier — handled by Pass B instead).
+    #   * Pass B — table qualifier before a column reference
+    #     (``dim_date.day_of_week``). This is the dominant LLM error
+    #     shape in production: the model treats the stem as a table
+    #     alias before a dotted column. The lookahead ``(?=\.\w)``
+    #     requires a literal dot followed by a word char, so a
+    #     malformed trailing-dot ``dim_date.`` does not match. The
+    #     lookbehind is unchanged across both passes so an
+    #     alias-qualified column ``t.dim_date`` is still skipped
+    #     (``t`` is ``\w`` and blocks ``(?<![\w.])``).
+    #
+    # The two passes are disjoint by construction (Pass A excludes
+    # next ``.`` via ``(?![\w.])``; Pass B requires next ``.`` via
+    # ``(?=\.\w)``) so order between them does not matter and they
+    # never double-rewrite the same span.
     subs: list[tuple[str, str]] = []
     new_sql = sql
     for stem in sorted(unique_stems, key=len, reverse=True):
@@ -1382,11 +1403,8 @@ def repair_stemmed_identifiers_in_sql(
         if stem == canonical_name.lower():
             # Already the canonical form — nothing to do.
             continue
-        # Whole-word match, not preceded or followed by ``.`` or word
-        # chars. Guards against:
-        #   - column qualifier "t.dim_date" (prev char '.') — skipped
-        #   - substring inside longer identifier "dim_date_extra" — skipped
-        pattern = rf"(?<![\w.]){re.escape(stem)}(?![\w.])"
+        pass_a_pattern = rf"(?<![\w.]){re.escape(stem)}(?![\w.])"
+        pass_b_pattern = rf"(?<![\w.]){re.escape(stem)}(?=\.\w)"
         replaced_this_round: list[str] = []
 
         def _repl(
@@ -1398,7 +1416,12 @@ def repair_stemmed_identifiers_in_sql(
             _log.append(match.group(0))
             return _canon
 
-        new_sql, _n = re.subn(pattern, _repl, new_sql, flags=re.IGNORECASE)
+        new_sql, _ = re.subn(
+            pass_a_pattern, _repl, new_sql, flags=re.IGNORECASE,
+        )
+        new_sql, _ = re.subn(
+            pass_b_pattern, _repl, new_sql, flags=re.IGNORECASE,
+        )
         for orig in replaced_this_round:
             subs.append((orig, canonical_name))
 
@@ -1418,10 +1441,18 @@ def _repair_stemmed_identifiers(
 
     Matching rules:
 
-    * Token boundary: ``[\\w.]`` on both sides. This prevents column
-      qualifiers like ``t.dim_date`` (where ``.dim_date`` is a column,
-      not a table) from being mis-matched, and prevents the rewrite
-      from gluing onto an adjacent identifier.
+    * Two complementary passes per stem (see
+      :func:`repair_stemmed_identifiers_in_sql` for details):
+
+      - Bare table reference (``FROM dim_date``, ``JOIN dim_date d``).
+      - Table qualifier before a column ref (``dim_date.day_of_week``).
+        This is the dominant LLM error shape in production — the
+        model writes the unqualified stem as a table prefix on a
+        dotted column reference.
+
+    * Lookbehind ``(?<![\\w.])`` blocks alias-qualified columns
+      (``t.dim_date``) on both passes — ``t`` is ``\\w`` so the
+      stem is not treated as a table reference.
     * Case-insensitive find, case-preserving replace (canonical name
       is used verbatim).
     * FROM, JOIN, CTE references all covered because the rule is purely

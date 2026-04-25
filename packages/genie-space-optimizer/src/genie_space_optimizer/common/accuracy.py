@@ -13,16 +13,27 @@ finding #5: parse ``evaluated_count`` first, then gate on the parsed result,
 so a non-numeric string in the column can never silently drop us into the
 ``total - excluded`` derived-denominator branch (which is exactly the
 pre-Bug-#2 regression this whole pipeline exists to prevent).
+
+This module ALSO owns ``compute_run_scores`` — the canonical "Baseline +
+Optimized" pair every UI surface must consume. The contract is documented on
+the function. Adding new endpoints? Call ``compute_run_scores``. Don't write
+another loop.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from genie_space_optimizer.backend.utils import safe_float, safe_int
 
-__all__ = ["derived_accuracy"]
+__all__ = [
+    "RunScores",
+    "compute_run_scores",
+    "compute_run_scores_by_run_id",
+    "derived_accuracy",
+]
 
 
 def derived_accuracy(
@@ -96,3 +107,201 @@ def derived_accuracy(
         )
 
     return derived
+
+
+# ---------------------------------------------------------------------------
+# Canonical "Baseline + Optimized" pair
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RunScores:
+    """Canonical baseline + optimized pair for a run.
+
+    Wire/UI contract (locks down the bug where a 100% slice probe was being
+    rendered as the "Optimized" headline mid-run, see PR description):
+
+    * ``baseline`` is iteration 0's full-scope arbiter-adjusted accuracy.
+      ``None`` only before iteration 0 has been written (i.e. before the
+      Baseline Evaluation step completes).
+    * ``optimized`` is ``max(baseline, best_non_rolled_back_full_scope_iter_>0)``.
+      Two important consequences:
+      - Optimized is NEVER less than baseline. Regressions don't get
+        deployed, so they don't count as the Optimized headline either.
+      - When no iter > 0 has been written yet (mid-run after Baseline
+        Evaluation), Optimized equals Baseline. The frontend interprets the
+        ``best_iteration == 0`` signal to render "—" with an
+        "Optimization in progress" tooltip and to wire the existing
+        convergence-reason copy with "Baseline retained" once the run is
+        terminal.
+    * ``baseline_iteration`` is ``0`` when baseline exists, else ``None``.
+    * ``best_iteration`` is the iteration whose accuracy ``optimized`` came
+      from. Tie goes to baseline (returns ``0``) — we only credit a later
+      iteration when it strictly exceeds baseline. ``None`` only when
+      baseline itself is ``None``.
+
+    Wire format: callers MUST send floats on the 0–100 scale. Pydantic
+    validators in ``backend/models.py`` enforce this (PR 2).
+    """
+
+    baseline: float | None
+    optimized: float | None
+    baseline_iteration: int | None
+    best_iteration: int | None
+
+
+def _is_rolled_back(row: dict[str, Any]) -> bool:
+    """True iff the iteration was rejected by detect_regressions (or similar).
+
+    Mirrors ``backend.routes.runs._is_rolled_back``: legacy rows written
+    before the Tier 1.1 column migration return ``False`` so historical
+    dashboards don't suddenly drop iterations from the max() pool.
+    """
+    val = row.get("rolled_back")
+    if val is None:
+        return False
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        return val.strip().lower() in {"true", "t", "1", "yes", "y"}
+    return False
+
+
+def compute_run_scores(
+    iter_rows: list[dict[str, Any]] | None,
+    *,
+    run_id: str | None = None,
+    logger: logging.Logger | None = None,
+) -> RunScores:
+    """Canonical baseline + optimized scores for a run.
+
+    Args:
+        iter_rows: All iteration rows for the run, in any order. Each row is
+            a Delta-shaped dict (the ``genie_opt_iterations`` SELECT
+            result). ``None`` / empty → ``RunScores(None, None, None, None)``.
+        run_id: Only used for drift-log identification.
+        logger: Optional logger for drift lines emitted by
+            :func:`derived_accuracy`.
+
+    Returns:
+        :class:`RunScores`. See class docstring for the full contract.
+
+    The selection algorithm:
+
+    1. Filter to ``eval_scope == "full"`` rows only. Slice/p0/held-out probes
+       evaluate on a tiny subset and routinely show 100% — they MUST NOT
+       contribute to the headline.
+    2. Iteration 0 is always retained, even if some bug stamped
+       ``rolled_back=true`` on it. Baseline is the floor.
+    3. For iter > 0, drop ``rolled_back == true`` rows. They were rejected by
+       the regression detector and never deployed.
+    4. Baseline = ``derived_accuracy(iter_0_full_row)``.
+    5. Best-iter accuracy = max over remaining (iter > 0) rows. If the max
+       row's accuracy strictly exceeds baseline, ``best_iteration`` is that
+       row's iteration number. Otherwise ``best_iteration == 0`` (baseline
+       retained).
+    6. ``optimized = max(baseline, best_iter_accuracy)`` so the headline is
+       never below baseline. (PR description: "regressions don't get posted —
+       they should either stay as baseline or an improvement.")
+    """
+    if not iter_rows:
+        return RunScores(None, None, None, None)
+
+    full_rows = [
+        r for r in iter_rows
+        if str(r.get("eval_scope") or "full").lower() == "full"
+    ]
+    if not full_rows:
+        return RunScores(None, None, None, None)
+
+    iter_zero_rows = [r for r in full_rows if safe_int(r.get("iteration")) == 0]
+    iter_zero = iter_zero_rows[0] if iter_zero_rows else None
+    baseline = derived_accuracy(
+        iter_zero, run_id=run_id, iteration=0, logger=logger,
+    )
+
+    if baseline is None:
+        # No baseline yet — there is nothing meaningful to call "Optimized"
+        # either. The frontend renders "—" with a tooltip in this state.
+        return RunScores(None, None, None, None)
+
+    candidates: list[tuple[int, float]] = []
+    for row in full_rows:
+        it = safe_int(row.get("iteration"))
+        if it is None or it <= 0:
+            continue
+        if _is_rolled_back(row):
+            continue
+        acc = derived_accuracy(
+            row, run_id=run_id, iteration=it, logger=logger,
+        )
+        if acc is None:
+            continue
+        candidates.append((it, acc))
+
+    if not candidates:
+        # Mid-run: Baseline Evaluation finished but no iter > 0 has been
+        # accepted yet. Optimized == baseline, best_iteration == 0. The
+        # frontend uses ``best_iteration == 0`` to render
+        # "—" / "Optimization in progress" while the run is active and
+        # "Baseline retained" once the run is terminal.
+        return RunScores(
+            baseline=baseline,
+            optimized=baseline,
+            baseline_iteration=0,
+            best_iteration=0,
+        )
+
+    # Pick the highest accuracy; tie-break on the lowest iteration number so
+    # the earliest accepted plateau gets the credit (matches the existing
+    # ``promote_best_model`` behavior in optimization/models.py).
+    candidates.sort(key=lambda pair: (-pair[1], pair[0]))
+    best_it, best_acc = candidates[0]
+
+    if best_acc > baseline:
+        return RunScores(
+            baseline=baseline,
+            optimized=best_acc,
+            baseline_iteration=0,
+            best_iteration=best_it,
+        )
+
+    # Best iter > 0 didn't exceed baseline — baseline retained.
+    return RunScores(
+        baseline=baseline,
+        optimized=baseline,
+        baseline_iteration=0,
+        best_iteration=0,
+    )
+
+
+def compute_run_scores_by_run_id(
+    iter_rows: list[dict[str, Any]] | None,
+    *,
+    logger: logging.Logger | None = None,
+) -> dict[str, RunScores]:
+    """Group ``iter_rows`` by ``run_id`` and compute :class:`RunScores` per group.
+
+    Built for the list endpoints (``/activity``, ``/spaces/{id}`` history,
+    ``/runs/recent``) so they make ONE Delta query for N runs and still get
+    the canonical floor-at-baseline semantics. Pre-fix those endpoints read
+    a stored ``best_accuracy`` column that drifted from the per-iteration
+    derivation, especially for runs with rolled-back iterations.
+
+    Missing ``run_id`` rows are silently skipped (defensive — should never
+    happen but no reason to blow up a list endpoint over one bad row).
+    """
+    if not iter_rows:
+        return {}
+    by_run: dict[str, list[dict[str, Any]]] = {}
+    for row in iter_rows:
+        run_id = row.get("run_id")
+        if not run_id:
+            continue
+        by_run.setdefault(str(run_id), []).append(row)
+    return {
+        rid: compute_run_scores(rows, run_id=rid, logger=logger)
+        for rid, rows in by_run.items()
+    }

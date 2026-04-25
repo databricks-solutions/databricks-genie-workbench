@@ -2088,6 +2088,21 @@ def _print_unified_example_summary(
     _lines.append(_kv(
         "Arbiter verdict=no", rc.get("arbiter_no", 0),
     ))
+    # F12 — row-capture-side failures get differentiated counters so
+    # the banner distinguishes "judge said no" from "judge never saw
+    # rows because capture raised". The subquery-unsupported bucket
+    # is the diagnostic signal for PR 13's metric-view-safe fallback;
+    # the exec-failed bucket flags timeouts / permissions / other
+    # infrastructure issues. Both are emitted unconditionally so a
+    # zero count is itself a reassurance signal in the log.
+    _lines.append(_kv(
+        "Arbiter row-capture: subquery unsupported",
+        rc.get("arbiter_row_capture_subquery_unsupported", 0),
+    ))
+    _lines.append(_kv(
+        "Arbiter row-capture: exec failed",
+        rc.get("arbiter_row_capture_exec_failed", 0),
+    ))
     _lines.append(_kv(
         "Firewall: SQL fingerprint match", rc.get("firewall_fingerprint", 0),
     ))
@@ -5061,6 +5076,33 @@ def _get_question_id(row: dict) -> str:
     )
 
 
+def _is_quarantined_qid(qid: str, quarantined: set[str]) -> bool:
+    """Return True when *qid* (or its base form) is in the quarantine set.
+
+    The benchmark-suffix scheme produces qids like ``retail_..._002:v2``
+    and ``retail_..._002:v3`` whose base qid is ``retail_..._002``.
+    Exact-equality match misses these, leaking quarantined questions
+    through the row filter and the cluster prune. Strip the ``:vN``
+    suffix on either side so the base qid is the canonical key.
+
+    Defensive on both directions: a quarantined entry may itself be
+    a base qid (the common case) or an already-suffixed string (when
+    a previous iteration recorded the suffixed variant directly).
+    """
+    if not qid or not quarantined:
+        return False
+    if qid in quarantined:
+        return True
+    if ":" in qid:
+        base = qid.split(":", 1)[0]
+        if base in quarantined:
+            return True
+    for q in quarantined:
+        if ":" in q and q.split(":", 1)[0] == qid:
+            return True
+    return False
+
+
 def _get_question_text(row: dict) -> str:
     """Extract the question text from an evaluation row."""
     return str(
@@ -6137,7 +6179,11 @@ def _analyze_and_distribute(
         qid = _get_question_id(row)
         arbiter_counts[av] = arbiter_counts.get(av, 0) + 1
 
-        if qid in _quarantined:
+        # B3.2 — match base qid AND ``:vN`` suffix variants so a
+        # quarantined ``_002`` excludes ``_002:v2`` and ``_002:v3``
+        # rows at the source. Without this, the soft-signal cluster
+        # below picks them up and the strategist re-targets them.
+        if _is_quarantined_qid(qid, _quarantined):
             quarantine_excluded.append(qid)
             continue
 
@@ -7035,9 +7081,21 @@ def _run_gate_checks(
     # T0.3: run the overall-accuracy regression check against the
     # *primary* signal (pre-arbiter under the default objective). The
     # post-arbiter accuracy is checked separately below as a guardrail.
+    #
+    # B0.3 — use the FULL variance-widened tolerance, not tol/2. The
+    # halving was a vestige from the legacy per-judge code path that
+    # made the gate undershoot run-to-run noise by 2x and rolled back
+    # legitimate iterations whose drop fit comfortably inside the
+    # variance band T0.2 already widened. The other two arms
+    # (noise_floor, question_weight + 0.5) remain as floors so we
+    # never go below the per-question discreteness guard.
     accuracy_drop = _primary_prev - _primary_cur
     question_weight = 100.0 / max(len(benchmarks), 1)
-    accuracy_threshold = max(effective_regression_tol / 2, noise_floor, question_weight + 0.5)
+    accuracy_threshold = max(
+        effective_regression_tol,
+        noise_floor,
+        question_weight + 0.5,
+    )
     if accuracy_drop >= accuracy_threshold:
         regressions.append({
             "judge": f"overall_accuracy ({_primary_label})",
@@ -7100,7 +7158,13 @@ def _run_gate_checks(
     # 100% baseline this is catastrophic (every iteration rolls back). The
     # tolerance-aware version mirrors the per-judge threshold arithmetic so
     # small drops are classed as noise not regressions.
-    _guard_tolerance = noise_floor
+    # B0.3 — hard guard uses the same variance-widened tolerance as
+    # the primary regression check above. Anything tighter than the
+    # variance estimate defeats the purpose of T0.2 (we'd reject
+    # iterations whose drop sits inside the run-to-run noise band).
+    # ``noise_floor`` remains as a lower bound for deterministic
+    # corpora where ``effective_regression_tol`` collapses to zero.
+    _guard_tolerance = max(noise_floor, effective_regression_tol)
     # T0.3: run the hard-guard on the *primary* signal (pre-arbiter under
     # the default objective). Post-arbiter noise shouldn't block a real
     # pre-arbiter improvement.
@@ -7313,6 +7377,17 @@ def _run_lever_loop(
 
     baseline_accuracy = prev_accuracy
     best_scores = dict(prev_scores)
+    # B0.2 — defensive fallback for resumed/older runs that pre-date
+    # B0.1's ``_pre_arbiter/overall_accuracy`` stamping. When the prior
+    # eval emitted only ``_pre_arbiter/result_correctness`` (the
+    # canonical primary signal), promote it so the gate's
+    # baseline-pre-arbiter lookup returns a real pre-arbiter number
+    # rather than silently falling back to post-arbiter accuracy.
+    if "_pre_arbiter/overall_accuracy" not in best_scores:
+        if "_pre_arbiter/result_correctness" in best_scores:
+            best_scores["_pre_arbiter/overall_accuracy"] = best_scores[
+                "_pre_arbiter/result_correctness"
+            ]
     best_accuracy = prev_accuracy
     best_model_id = prev_model_id
     best_iteration = iteration_counter
@@ -8100,10 +8175,23 @@ def _run_lever_loop(
                             )
                     except Exception:
                         logger.warning("Failed to flag quarantined questions for human review", exc_info=True)
-                for c in clusters:
+                # B3.3 — prune both hard and soft clusters using the
+                # shared base-qid helper so a quarantined ``_002``
+                # excludes ``_002:v2`` / ``_002:v3`` from S001 too.
+                # Soft clusters were previously left untouched, which
+                # is what let iter-2's S001 still contain the suffixed
+                # variants of quarantined base qids.
+                for c in list(clusters) + list(soft_signal_clusters or []):
                     c_qids = c.get("question_ids", [])
-                    c["question_ids"] = [q for q in c_qids if q not in _quarantine_qids]
+                    c["question_ids"] = [
+                        q for q in c_qids
+                        if not _is_quarantined_qid(q, _quarantine_qids)
+                    ]
                 clusters = [c for c in clusters if c.get("question_ids")]
+                soft_signal_clusters = [
+                    c for c in (soft_signal_clusters or [])
+                    if c.get("question_ids")
+                ]
                 if not clusters and not soft_signal_clusters:
                     logger.info("All clusters emptied after quarantine — stopping at iteration %d", _iter_num)
                     break
@@ -8607,14 +8695,49 @@ def _run_lever_loop(
                 _ptype, _target = _s.split(" on ", 1)
                 _patch_forbidden.add((_ptype.strip(), _target.strip()))
 
+        # B1.3 — diagnostics so an empty ``_patch_forbidden`` is
+        # debuggable: distinguish (a) no rollbacks yet, (b) all
+        # rollbacks classified non-CONTENT_REGRESSION, (c)
+        # CONTENT_REGRESSION rollbacks but empty ``do_not_retry``.
+        from genie_space_optimizer.optimization.rollback_class import (
+            RollbackClass as _RC_DIAG,
+        )
+        _total_rb = sum(
+            1 for r in reflection_buffer if not r.get("accepted")
+        )
+        _content_rb = sum(
+            1 for r in reflection_buffer
+            if not r.get("accepted")
+            and r.get("rollback_class") == _RC_DIAG.CONTENT_REGRESSION.value
+        )
+        _content_rb_with_dnr = sum(
+            1 for r in reflection_buffer
+            if not r.get("accepted")
+            and r.get("rollback_class") == _RC_DIAG.CONTENT_REGRESSION.value
+            and r.get("do_not_retry")
+        )
+        logger.info(
+            "[%s] T2.2 forbidden set: size=%d  rollbacks_total=%d  "
+            "content_rollbacks=%d  with_do_not_retry=%d",
+            ag_id, len(_patch_forbidden), _total_rb, _content_rb,
+            _content_rb_with_dnr,
+        )
+
         if _patch_forbidden:
             _kept: list[dict] = []
             _dropped: list[tuple[str, str, str]] = []  # (ptype, target, reason)
             for _p in all_proposals:
                 _ptype = str(_p.get("type") or _p.get("patch_type") or "")
+                # B1.1 — raw proposals carry ``table`` (column-level
+                # patches) before ``proposals_to_patches`` populates
+                # ``target``. Without reading ``table`` here, T2.2
+                # extracts ``"?"`` and never matches the forbidden
+                # set entries (which use the FQN target string).
                 _target = str(
                     _p.get("target") or _p.get("target_object")
-                    or _p.get("target_table") or "?"
+                    or _p.get("target_table")
+                    or _p.get("table")
+                    or "?"
                 )
                 _key = (_ptype, _target)
                 _justification = str(_p.get("escalation_justification") or "").strip()
@@ -8655,37 +8778,60 @@ def _run_lever_loop(
         _affected_qids = set(ag.get("affected_questions", []) or [])
         _affected_n = max(len(_affected_qids), 1)
         _collateral_details: list[tuple[str, str, list[str]]] = []
+
+        # B2 — SQL-text fallback for benchmarks that don't carry
+        # ``required_tables`` / ``required_columns`` metadata. The
+        # original scan was silent in that case; substring-matching
+        # against the benchmark's expected/ground-truth SQL keeps
+        # detection working even when auto-synthesis skipped the
+        # asset metadata.
+        def _sql_text_for_benchmark(_b: dict) -> str:
+            return " ".join(
+                str(_b.get(k, "")) for k in
+                ("expected_response", "expected_sql", "ground_truth_sql")
+            ).lower()
+
         for _p in all_proposals:
             _ptype = str(_p.get("type") or _p.get("patch_type") or "")
+            # B2 — read ``table`` for raw column-level proposals
+            # (parallel to B1.1). Without this, every column-level
+            # proposal had ``_target == ""`` and ``continue``d
+            # silently, so the scan never ran for any column patch.
             _target = str(
                 _p.get("target") or _p.get("target_object")
-                or _p.get("target_table") or ""
+                or _p.get("target_table") or _p.get("table") or ""
             ).lower()
             _target_column = str(_p.get("column") or "").lower()
             if not _target:
                 continue
+            # B2 — FQN normalisation. Patch targets are usually
+            # ``catalog.schema.table`` while benchmarks may carry
+            # only ``table`` (unqualified) in their SQL or asset
+            # lists. Match on the unqualified tail too.
+            _target_tail = _target.split(".")[-1] if "." in _target else _target
+            _target_candidates = {_target, _target_tail}
+            if _target_column:
+                _target_candidates.add(f"{_target_tail}.{_target_column}")
             _dependents: list[str] = []
             for _b in benchmarks:
                 _bid = _b.get("id", "")
                 if not _bid or _bid not in _passing_qids:
                     continue
-                # Cheap containment check — benchmarks store
-                # ``required_tables`` and ``required_columns`` as lists
-                # of fully-qualified names. Patch targets can be table
-                # names, fully-qualified names, or column FQNs.
                 _bench_assets = [
                     str(t).lower() for t in
                     (_b.get("required_tables") or []) + (_b.get("required_columns") or [])
                 ]
-                if any(
-                    _target in _ba or _ba in _target
+                _matched = any(
+                    any(c == _ba or c in _ba or _ba in c for c in _target_candidates)
                     for _ba in _bench_assets
-                ):
-                    _dependents.append(_bid)
-                    continue
-                if _target_column and any(
-                    _target_column in _ba for _ba in _bench_assets
-                ):
+                )
+                if not _matched:
+                    _sql_text = _sql_text_for_benchmark(_b)
+                    if _sql_text and any(
+                        c and c in _sql_text for c in _target_candidates
+                    ):
+                        _matched = True
+                if _matched:
                     _dependents.append(_bid)
             if _dependents:
                 _p["passing_dependents"] = _dependents[:50]
@@ -8694,19 +8840,31 @@ def _run_lever_loop(
                     _collateral_details.append(
                         (_ptype, _target, _dependents[:10])
                     )
+        # B2 — ALWAYS print a summary so operators can distinguish
+        # "scan ran, nothing flagged" from "scan didn't run".
+        _total_with_metadata = sum(
+            1 for _b in benchmarks if _b.get("required_tables")
+        )
+        logger.info(
+            "[%s] T2.4 counterfactual scan: %d/%d proposal(s) high-risk; "
+            "benchmarks_with_required_tables=%d/%d (SQL-text fallback used otherwise)",
+            ag_id, len(_collateral_details), len(all_proposals),
+            _total_with_metadata, len(benchmarks),
+        )
+        print(
+            _section(
+                f"[{ag_id}] T2.4 Counterfactual scan: "
+                f"{len(_collateral_details)} high-risk proposal(s)",
+                "-",
+            )
+        )
+        print(
+            _kv(
+                "Benchmarks with required_tables",
+                f"{_total_with_metadata}/{len(benchmarks)}",
+            )
+        )
         if _collateral_details:
-            logger.warning(
-                "[%s] T2.4: %d proposal(s) carry high collateral risk "
-                "(>= 2x the affected-question count in passing dependents):",
-                ag_id, len(_collateral_details),
-            )
-            print(
-                _section(
-                    f"[{ag_id}] T2.4 Counterfactual scan: "
-                    f"{len(_collateral_details)} high-risk proposal(s)",
-                    "-",
-                )
-            )
             for _ptype, _target, _deps in _collateral_details:
                 print(
                     f"|  - {_ptype} on {_target}  "
@@ -8714,7 +8872,7 @@ def _run_lever_loop(
                     f"affected: {_affected_n})"
                 )
                 print(f"|    sample deps: {', '.join(_deps[:5])}")
-            print(_bar("-"))
+        print(_bar("-"))
 
         # ── Log proposals ────────────────────────────────────────────
         _n_valid = 0
@@ -8820,24 +8978,84 @@ def _run_lever_loop(
         # confidence / highest-impact patches first (sorted by the
         # caller); extras are dropped with a clear warning.
         if len(patches) > MAX_AG_PATCHES:
+            # B4 — diversity-aware cap. The previous slice-only cap
+            # consumed the budget with low-risk Lever-1 column
+            # patches and dropped Lever-5 / Lever-6 patches at the
+            # tail — exactly the patches that address pattern-level
+            # failures. Pass 1 keeps at least one patch per distinct
+            # lever; pass 2 fills the remaining budget by the
+            # public ``risk_level`` field, preserving stable
+            # original order within each risk group.
+            #
+            # Uses each patch's existing ``risk_level`` (set by
+            # ``proposals_to_patches`` via ``classify_risk``) — no
+            # private import from applier.
+            _LOCAL_RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
+            _known_levers = [1, 2, 3, 4, 5, 6]
+            _seen_levers: list[int] = []
+            _by_lever: dict[int, list[dict]] = {}
+            for p in patches:
+                try:
+                    L = int(p.get("lever", 5))
+                except (TypeError, ValueError):
+                    L = 5
+                if L not in _by_lever:
+                    _seen_levers.append(L)
+                _by_lever.setdefault(L, []).append(p)
+            _lever_order = (
+                [L for L in _known_levers if L in _by_lever]
+                + [L for L in _seen_levers if L not in _known_levers]
+            )
+
+            kept: list[dict] = []
+            remaining: dict[int, list[dict]] = {
+                k: list(v) for k, v in _by_lever.items()
+            }
+            for L in _lever_order:
+                if remaining.get(L):
+                    kept.append(remaining[L].pop(0))
+                    if len(kept) >= MAX_AG_PATCHES:
+                        break
+
+            if len(kept) < MAX_AG_PATCHES:
+                _remaining_flat = [
+                    p for L in _lever_order for p in remaining.get(L, [])
+                ]
+                _remaining_flat.sort(
+                    key=lambda p: _LOCAL_RISK_ORDER.get(
+                        str(p.get("risk_level", "low")).lower(), 1
+                    ),
+                )
+                kept.extend(_remaining_flat[: MAX_AG_PATCHES - len(kept)])
+
+            _levers_kept = sorted({int(p.get("lever", 5)) for p in kept})
+            _levers_dropped = sorted(
+                {int(p.get("lever", 5)) for p in patches}
+                - set(_levers_kept)
+            )
             logger.warning(
-                "AG %s patch cap (Tier 2.6): capping %d patches to %d. "
-                "Remaining targets can be addressed in subsequent iterations.",
-                ag_id, len(patches), MAX_AG_PATCHES,
+                "AG %s patch cap (diversity-aware): kept %d of %d. "
+                "Levers kept: %s; levers fully dropped: %s.",
+                ag_id, len(kept), len(patches),
+                _levers_kept, _levers_dropped,
             )
             print(
-                _section(f"[{ag_id}] PATCH CAP APPLIED", "-") + "\n"
+                _section(f"[{ag_id}] PATCH CAP APPLIED (diversity-aware)", "-") + "\n"
                 + _kv("Original size", len(patches)) + "\n"
-                + _kv("Capped at", MAX_AG_PATCHES) + "\n"
+                + _kv("Kept", len(kept)) + "\n"
+                + _kv("Levers kept", _levers_kept) + "\n"
+                + _kv(
+                    "Levers fully dropped",
+                    _levers_dropped if _levers_dropped else "(none)",
+                ) + "\n"
                 + _kv(
                     "Reason",
-                    "Large patch sets amplify rollback blast radius — "
-                    "dropping tail patches so one bad edit doesn't revert "
-                    "the useful ones.",
+                    "Diversity-aware cap: preserve one patch per distinct "
+                    "lever before filling by risk_level.",
                 ) + "\n"
                 + _bar("-")
             )
-            patches = patches[:MAX_AG_PATCHES]
+            patches = kept
 
         # T3.3: shadow apply. When enabled, the intent is to clone the
         # space, apply patches to the clone, eval, and promote only on
@@ -9145,8 +9363,15 @@ def _run_lever_loop(
             except Exception:
                 logger.debug("Failed to persist reflection for rollback iter %d", iteration_counter, exc_info=True)
             for p in patches:
-                ft = p.get("patch_type", "")
-                tgt = p.get("target_object", "")
+                # B1.2 — converted patches use ``type`` / ``target``;
+                # the legacy fields ``patch_type`` / ``target_object``
+                # are absent on the conversion path so the previous
+                # extractor returned ``("", "")`` and the guard
+                # silently rejected every entry. Read both for
+                # backward compatibility with any pre-conversion
+                # fixtures.
+                ft = str(p.get("type") or p.get("patch_type") or "").strip()
+                tgt = str(p.get("target") or p.get("target_object") or "").strip()
                 if ft and tgt:
                     tried_patches.add((ft, tgt))
             _lever_frozenset = frozenset(int(lk) for lk in lever_keys)

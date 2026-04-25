@@ -19,6 +19,7 @@ import {
   getAutoOptimizeAsiResults,
   getAutoOptimizeQuestionResults,
 } from "@/lib/api"
+import { convergenceReasonText } from "@/lib/score-display"
 import type { GSORunStatus, GSOPermissionCheck, GSOQuestionDetail } from "@/types"
 
 interface AutoOptimizeTabProps {
@@ -310,6 +311,8 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
               <ScoreSummary
                 baselineScore={runStatus.baselineScore}
                 optimizedScore={runStatus.optimizedScore}
+                bestIteration={runStatus.bestIteration}
+                status={runStatus.status}
               />
             )}
           </div>
@@ -346,11 +349,18 @@ export function AutoOptimizeTab({ spaceId, onRescan }: AutoOptimizeTabProps) {
           </div>
         </div>
 
-        {runStatus?.convergenceReason && (
-          <p className="text-sm text-muted">
-            Reason: {runStatus.convergenceReason}
-          </p>
-        )}
+        {runStatus && (() => {
+          const reason = convergenceReasonText({
+            baselineScore: runStatus.baselineScore,
+            optimizedScore: runStatus.optimizedScore,
+            bestIteration: runStatus.bestIteration,
+            status: runStatus.status,
+            convergenceReason: runStatus.convergenceReason,
+          })
+          return reason ? (
+            <p className="text-sm text-muted">Reason: {reason}</p>
+          ) : null
+        })()}
 
         {/* Two-column question layout */}
         <div className="grid grid-cols-3 gap-4 min-h-[450px]">

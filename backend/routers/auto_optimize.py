@@ -17,7 +17,10 @@ from backend.routers._validators import RunId, SpaceId
 from backend.services.auth import get_workspace_client, get_service_principal_client, get_databricks_host
 from backend.services import gso_lakebase
 from genie_space_optimizer.backend.utils import safe_int, safe_float, safe_finite, safe_json_parse
-from genie_space_optimizer.common.accuracy import derived_accuracy as _canonical_derived_accuracy
+from genie_space_optimizer.common.accuracy import (
+    compute_run_scores,
+    derived_accuracy as _canonical_derived_accuracy,
+)
 from genie_space_optimizer.integration import (
     trigger_optimization,
     apply_optimization,
@@ -1222,18 +1225,13 @@ async def get_run(run_id: RunId):
             f"WHERE run_id = '{run_id}' ORDER BY iteration, lever, patch_index"
         )
 
-    # Inject baseline_accuracy into run_data for step summary builders
-    baseline_iter = next(
-        (r for r in iterations if _safe_int(r.get("iteration")) == 0 and str(r.get("eval_scope", "")).lower() == "full"),
-        None,
-    )
-    if not baseline_iter:
-        baseline_iter = next((r for r in iterations if _safe_int(r.get("iteration")) == 0), None)
-    # Bug #2: derive from correct/evaluated so the `baselineScore` we return
-    # agrees with what the frontend computes for the Baseline Evaluation tab
-    # label from the same iteration row. Falls back to stored overall_accuracy
-    # for legacy rows without evaluated_count.
-    baseline_accuracy = _derived_accuracy(baseline_iter, run_id=run_id, iteration=0)
+    # Canonical baseline + optimized + best_iteration. See
+    # ``genie_space_optimizer.common.accuracy.compute_run_scores`` for the
+    # contract — closes the "100% Optimized during Baseline Evaluation" UI
+    # bug by enforcing full-scope-only filtering, rolled-back exclusion, and
+    # the floor-at-baseline invariant.
+    run_scores = compute_run_scores(iterations, run_id=run_id, logger=logger)
+    baseline_accuracy = run_scores.baseline
     run["baseline_accuracy"] = baseline_accuracy
 
     # Build pipeline steps with rich IO
@@ -1273,30 +1271,10 @@ async def get_run(run_id: RunId):
         for s in stages
     ]
 
-    # Find baseline and best scores from full-scope iterations only.
-    # Bug #2: optimized_score is derived from correct_count/evaluated_count
-    # per iteration so the optimized card in ScoreSummary agrees to the
-    # decimal with what RunDetailView computes for the Final Evaluation tab.
-    baseline_score = baseline_accuracy
-    baseline_iteration = 0 if baseline_accuracy is not None else None
-    optimized_score = None
-    best_iteration = None
-    for it in iterations:
-        it_num = int(it.get("iteration", -1))
-        if it.get("eval_scope") == "full" and it_num > 0:
-            accuracy = _derived_accuracy(it, run_id=run_id, iteration=it_num)
-            if accuracy is not None and (optimized_score is None or accuracy > optimized_score):
-                optimized_score = accuracy
-                best_iteration = it_num
-
-    if optimized_score is None:
-        for it in iterations:
-            it_num = int(it.get("iteration", -1))
-            if it_num > 0:
-                accuracy = _derived_accuracy(it, run_id=run_id, iteration=it_num)
-                if accuracy is not None and (optimized_score is None or accuracy > optimized_score):
-                    optimized_score = accuracy
-                    best_iteration = it_num
+    baseline_score = run_scores.baseline
+    baseline_iteration = run_scores.baseline_iteration
+    optimized_score = run_scores.optimized
+    best_iteration = run_scores.best_iteration
 
     # Build resource links (absolute URLs)
     config = _build_gso_config()
@@ -1424,34 +1402,15 @@ async def get_run_status(run_id: RunId):
     if not iterations and _is_configured():
         iterations = _select_iterations_delta(run_id) or []
 
-    # Bug #2: derive from correct/evaluated. The monitoring ScoreSummary
-    # card in AutoOptimizeTab consumes these directly and must agree with
-    # RunDetailView's tab labels to the decimal.
-    baseline_score = None
-    optimized_score = None
-    for it in iterations:
-        it_num = _safe_int(it.get("iteration"))
-        scope = str(it.get("eval_scope", "")).lower()
-        if it_num == 0 and scope == "full":
-            acc = _derived_accuracy(it, run_id=run_id, iteration=0)
-            if acc is not None:
-                baseline_score = acc
-        elif it_num is not None and it_num > 0 and scope == "full":
-            acc = _derived_accuracy(it, run_id=run_id, iteration=it_num)
-            if acc is not None and (optimized_score is None or acc > optimized_score):
-                optimized_score = acc
-    if baseline_score is None:
-        for it in iterations:
-            if _safe_int(it.get("iteration")) == 0:
-                baseline_score = _derived_accuracy(it, run_id=run_id, iteration=0)
-                break
-    if optimized_score is None:
-        for it in iterations:
-            it_num = _safe_int(it.get("iteration"))
-            if it_num is not None and it_num > 0:
-                acc = _derived_accuracy(it, run_id=run_id, iteration=it_num)
-                if acc is not None and (optimized_score is None or acc > optimized_score):
-                    optimized_score = acc
+    # Canonical baseline + optimized + best_iteration. See
+    # ``genie_space_optimizer.common.accuracy.compute_run_scores``.
+    #
+    # This endpoint is the one feeding the AutoOptimizeTab ScoreSummary
+    # card. Pre-fix: a 100% slice/p0 probe row could win the optimized
+    # headline mid-run (the "100% Optimized at step 2/6" screenshot bug),
+    # and rolled-back iterations were not filtered. The canonical helper
+    # closes both: full-scope only, exclude rolled-back, floor-at-baseline.
+    run_scores = compute_run_scores(iterations, run_id=run_id, logger=logger)
 
     return {
         "runId": run.get("run_id"),
@@ -1459,8 +1418,9 @@ async def get_run_status(run_id: RunId):
         "spaceId": run.get("space_id"),
         "startedAt": _isoformat(run.get("started_at")),
         "completedAt": _isoformat(run.get("completed_at")),
-        "baselineScore": baseline_score,
-        "optimizedScore": optimized_score if optimized_score is not None else baseline_score,
+        "baselineScore": run_scores.baseline,
+        "optimizedScore": run_scores.optimized,
+        "bestIteration": run_scores.best_iteration,
         "convergenceReason": run.get("convergence_reason"),
         "stepsCompleted": steps_completed,
         "totalSteps": 6,

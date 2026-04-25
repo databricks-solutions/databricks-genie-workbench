@@ -216,7 +216,14 @@ export interface IterationDetailResponse {
   runId: string;
   spaceId: string;
   baselineScore: number | null;
+  // Canonical "arbiter adjusted accuracy" headline. Backend guarantees
+  // ``optimizedScore >= baselineScore`` and is null while no full-scope
+  // iteration > 0 has been evaluated.
   optimizedScore: number | null;
+  // ``0`` means baseline retained (no iter > 0 strictly improved on it,
+  // or optimization is still running). ``N > 0`` is the iteration that
+  // actually achieved ``optimizedScore``.
+  bestIteration: number | null;
   totalIterations: number;
   iterations: IterationDetail[];
   flaggedQuestions: Record<string, unknown>[];

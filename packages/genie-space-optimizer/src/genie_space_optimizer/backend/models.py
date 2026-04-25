@@ -2,12 +2,41 @@
 
 from __future__ import annotations
 
-from typing import Any
+import math
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field, model_serializer
+from pydantic import AfterValidator, BaseModel, Field, model_serializer
 
 from .. import __version__
 from .utils import scrub_nan_inf
+
+
+def _validate_pct_0_100(value: float | None) -> float | None:
+    """Ensure score fields are on the 0–100 percentage scale.
+
+    The wire contract: every accuracy / dimension-score field is a float in
+    [0, 100]. Before this validator existed, the workbench frontend had to
+    carry a defensive ``n > 1 ? n : n * 100`` rescaler because some
+    backends send 0.83 and others send 83. That silently masked
+    misconfigured endpoints. We now reject anything outside [0, 100] loudly
+    so misroutes get caught in tests, not on a customer's screen.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)) or math.isnan(value) or math.isinf(value):
+        return None
+    if value < 0.0 or value > 100.0:
+        raise ValueError(
+            f"score field must be a percentage in [0, 100]; got {value}. "
+            "Wire contract: backends MUST send 0–100 floats. If you have "
+            "a 0–1 fraction, multiply by 100 at the source."
+        )
+    return float(value)
+
+
+# Annotated alias so every score field gets the same validator without
+# repeating it on every model.
+ScorePct = Annotated[float | None, AfterValidator(_validate_pct_0_100)]
 
 
 def _safe_model_dict(model: BaseModel) -> dict:
@@ -110,8 +139,9 @@ class JoinInfo(BaseModel):
 class RunSummary(SafeModel):
     runId: str
     status: str
-    baselineScore: float | None = None
-    optimizedScore: float | None = None
+    baselineScore: ScorePct = None
+    optimizedScore: ScorePct = None
+    bestIteration: int | None = None
     timestamp: str
 
 
@@ -165,8 +195,9 @@ class RunStatusResponse(SafeModel):
     spaceId: str
     startedAt: str | None = None
     completedAt: str | None = None
-    baselineScore: float | None = None
-    optimizedScore: float | None = None
+    baselineScore: ScorePct = None
+    optimizedScore: ScorePct = None
+    bestIteration: int | None = None
     convergenceReason: str | None = None
 
 
@@ -188,8 +219,8 @@ class LeverStatus(SafeModel):
     name: str
     status: str
     patchCount: int = 0
-    scoreBefore: float | None = None
-    scoreAfter: float | None = None
+    scoreBefore: ScorePct = None
+    scoreAfter: ScorePct = None
     scoreDelta: float | None = None
     rollbackReason: str | None = None
     patches: list[dict] = []
@@ -210,8 +241,9 @@ class PipelineRun(SafeModel):
     startedAt: str
     completedAt: str | None = None
     initiatedBy: str = "system"
-    baselineScore: float | None = None
-    optimizedScore: float | None = None
+    baselineScore: ScorePct = None
+    optimizedScore: ScorePct = None
+    bestIteration: int | None = None
     steps: list[PipelineStep]
     levers: list[LeverStatus] = []
     convergenceReason: str | None = None
@@ -225,8 +257,8 @@ class PipelineRun(SafeModel):
 
 class DimensionScore(SafeModel):
     dimension: str
-    baseline: float
-    optimized: float
+    baseline: ScorePct
+    optimized: ScorePct
     delta: float
 
 
@@ -245,12 +277,13 @@ class ComparisonData(SafeModel):
     runId: str
     spaceId: str
     spaceName: str
-    baselineScore: float
-    optimizedScore: float
+    baselineScore: ScorePct
+    optimizedScore: ScorePct
     improvementPct: float
     perDimensionScores: list[DimensionScore]
     original: SpaceConfiguration
     optimized: SpaceConfiguration
+    bestIteration: int | None = None
 
 
 # ── Action Models ───────────────────────────────────────────────────────
@@ -271,8 +304,9 @@ class ActivityItem(SafeModel):
     spaceName: str
     status: str
     initiatedBy: str = "system"
-    baselineScore: float | None = None
-    optimizedScore: float | None = None
+    baselineScore: ScorePct = None
+    optimizedScore: ScorePct = None
+    bestIteration: int | None = None
     timestamp: str
 
 
@@ -399,7 +433,7 @@ class IterationSummary(SafeModel):
     iteration: int
     lever: int | None = None
     evalScope: str
-    overallAccuracy: float
+    overallAccuracy: ScorePct = None  # type: ignore[assignment]
     # Bug #2 denominator contract — see _resolve_eval_counts in routes/runs.py.
     # totalQuestions is retained for back-compat; UI should prefer
     # evaluatedCount as the denominator of overallAccuracy.
@@ -488,7 +522,7 @@ class QuestionResult(SafeModel):
 
 class GateResult(SafeModel):
     gateName: str
-    accuracy: float | None = None
+    accuracy: ScorePct = None
     totalQuestions: int | None = None
     passed: bool | None = None
     mlflowRunId: str | None = None
@@ -527,7 +561,7 @@ class IterationDetail(SafeModel):
     iteration: int
     agId: str | None = None
     status: str
-    overallAccuracy: float
+    overallAccuracy: ScorePct = None  # type: ignore[assignment]
     judgeScores: dict[str, float | None] = {}
     # Bug #2 denominator contract — prefer evaluatedCount for UI math.
     totalQuestions: int = 0
@@ -560,8 +594,9 @@ class IterationDetail(SafeModel):
 class IterationDetailResponse(SafeModel):
     runId: str
     spaceId: str
-    baselineScore: float | None = None
-    optimizedScore: float | None = None
+    baselineScore: ScorePct = None
+    optimizedScore: ScorePct = None
+    bestIteration: int | None = None
     totalIterations: int
     iterations: list[IterationDetail]
     flaggedQuestions: list[dict] = []

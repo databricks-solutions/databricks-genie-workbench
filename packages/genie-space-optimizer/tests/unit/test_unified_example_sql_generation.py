@@ -154,7 +154,11 @@ def patched_core(monkeypatch):
 
     def _fake_capture_rows(sql, spark, catalog, schema, *,
                            w=None, warehouse_id="", limit=20):
-        return [{"region": "NA", "total_revenue": 1000}]
+        # F12 — capture helper now returns a 3-tuple
+        # ``(rows, error_class, error_message)``. Success path emits
+        # ``(rows, None, None)``; failure paths emit
+        # ``(None, "subquery_unsupported"|"exec_failed", "msg")``.
+        return ([{"region": "NA", "total_revenue": 1000}], None, None)
 
     class _FakeArbiterReturn(dict):
         pass
@@ -895,3 +899,186 @@ class TestF8UnifiedRepairPorting:
         out = buf.getvalue()
         assert "Stemmed identifiers repaired" not in out
         assert "MEASURE() refs repaired" not in out
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# F13 — two-tier row capture, end-to-end through the unified pipeline
+#
+# The unit-level coverage in test_arbiter_row_capture.py exercises
+# ``_capture_result_rows`` in isolation. This integration test wires the
+# full unified shared core (LLM → metadata → execute → row capture →
+# arbiter) and confirms a metric-view-style candidate that previously
+# died at ``arbiter_no_result_rows`` now reaches the arbiter with rows
+# and gets applied. This is the production path PR 13 is fixing.
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestF13MetricViewRowCaptureRecovery:
+    """The Tier 2 LIMIT-injection fallback must recover candidates whose
+    SQL targets a metric view at the top level — DBSQL refuses the
+    Tier 1 ``SELECT * FROM ({sql})`` wrap there, but the original SQL
+    with a top-level ``LIMIT`` runs cleanly.
+    """
+
+    def _config_with_mv(self) -> dict:
+        cfg = _mk_config()
+        cfg["_metric_views"] = ["cat.sch.mv_sales"]
+        cfg["_parsed_space"]["data_sources"]["metric_views"] = [
+            {
+                "identifier": "cat.sch.mv_sales",
+                "measures": [
+                    {"name": "total_revenue", "expr": "SUM(revenue)"},
+                ],
+                "dimensions": [{"name": "region"}],
+            },
+        ]
+        return cfg
+
+    def _mv_candidate(self) -> dict:
+        # Question must NOT echo any benchmark-corpus question — the
+        # leakage firewall would otherwise reject before row capture
+        # ever runs and the test would silently miss the recovery path.
+        return {
+            "question": "Show me yesterday's regional sales breakdown please",
+            "expected_sql": (
+                "SELECT region, MEASURE(total_revenue) AS rev "
+                "FROM cat.sch.mv_sales GROUP BY region"
+            ),
+            "expected_asset": "METRIC_VIEW",
+            "required_tables": ["cat.sch.mv_sales"],
+            "required_columns": ["region"],
+            "expected_facts": ["region"],
+            "category": "metric_view_aggregation",
+        }
+
+    def test_metric_view_candidate_reaches_arbiter_with_rows(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """End-to-end: LLM emits a ``MEASURE()`` candidate; Tier 1 wrap
+        would fail on a real warehouse so we simulate that exact shape;
+        the arbiter must see actual rows (not the ``None`` that the
+        pre-F13 row-capture surfaced) and the candidate is applied.
+
+        Key observable contract: ``arbiter_no_result_rows`` /
+        ``arbiter_row_capture_subquery_unsupported`` MUST NOT be the
+        rejection reason — that's the regression we're guarding against.
+        """
+        from genie_space_optimizer.optimization import evaluation as ev_mod
+        from genie_space_optimizer.optimization.scorers import (
+            arbiter as arb_mod,
+        )
+
+        # 1. LLM emits a single metric-view candidate.
+        monkeypatch.setattr(
+            ev_mod, "_call_llm_for_scoring",
+            lambda w, prompt, *, prompt_name=None: [self._mv_candidate()],
+        )
+
+        # 2. Metadata enforcement / EXPLAIN both pass — the bug PR 13
+        # fixes lives strictly between EXPLAIN-pass and arbiter call.
+        monkeypatch.setattr(
+            ev_mod, "_validate_benchmark_sql",
+            lambda *a, **kw: (True, ""),
+        )
+
+        # 3. Two-tier execution behavior:
+        # Tier 1 wrap (subquery) → DBSQL-style metric-view rejection
+        # Tier 2 (raw SQL + LIMIT) → returns an actual row.
+        captured_sql: list[str] = []
+
+        class _FakeDF:
+            def __init__(self, rows: list[dict]) -> None:
+                self._rows = rows
+
+            @property
+            def empty(self) -> bool:
+                return not self._rows
+
+            def head(self, n: int) -> "_FakeDF":
+                return _FakeDF(self._rows[:n])
+
+            def to_dict(self, orient: str = "records") -> list[dict]:
+                assert orient == "records"
+                return list(self._rows)
+
+        def _exec(sql: str, spark, **kwargs) -> object:
+            captured_sql.append(sql)
+            if "_gvse_sample" in sql:
+                # Tier 1 — the wrap that DBSQL refuses on metric views.
+                raise RuntimeError(
+                    "UNSUPPORTED_SUBQUERY_EXPRESSION_CATEGORY: "
+                    "scalar metric view"
+                )
+            return _FakeDF([{"region": "NA", "rev": 12345.6}])
+
+        monkeypatch.setattr(ev_mod, "_exec_sql", _exec)
+
+        # 4. Arbiter records what it sees and approves.
+        seen: dict = {}
+
+        def _arbiter(question, sql, result_rows, *, w, metadata_snapshot=None):
+            seen["question"] = question
+            seen["sql"] = sql
+            seen["rows"] = result_rows
+            return {"value": "yes", "rationale": "ok"}
+
+        monkeypatch.setattr(
+            arb_mod, "score_example_sql_correctness", _arbiter,
+        )
+
+        # Use an unrelated benchmark corpus so the leakage firewall
+        # doesn't reject the candidate on n-gram overlap before row
+        # capture has a chance to run — we're testing the row-capture
+        # recovery path, not leakage detection.
+        unrelated_corpus = BenchmarkCorpus.from_benchmarks([
+            {
+                "id": "x1",
+                "question": "How many customers churned last quarter?",
+                "expected_sql": (
+                    "SELECT COUNT(DISTINCT customer_id) FROM churn_events "
+                    "WHERE quarter = 'Q4'"
+                ),
+            },
+        ])
+        oracle = LeakageOracle(unrelated_corpus)
+        survivors, counters = generate_example_sqls(
+            w=None, spark=object(),  # truthy → row capture fires
+            config=self._config_with_mv(),
+            uc_columns=_mk_uc_columns(),
+            uc_tags=[], uc_routines=[],
+            domain="sales", catalog="cat", schema="sch",
+            target_count=1,
+            leakage_oracle=oracle,
+        )
+
+        # The candidate must have been applied — pre-F13, this would
+        # have been zero with rejection_counters
+        # ["arbiter_no_result_rows"] = 1.
+        assert len(survivors) >= 1, (
+            f"metric-view candidate was not recovered; counters={counters}; "
+            f"sql_seen={captured_sql}"
+        )
+
+        # The arbiter saw real rows.
+        assert seen.get("rows"), (
+            "arbiter received empty/None rows — Tier 2 fallback didn't "
+            "deliver row capture"
+        )
+        assert seen["rows"][0].get("region") == "NA"
+
+        # Tier 2 actually fired: there's a non-wrap exec containing
+        # the raw MEASURE() candidate with a LIMIT appended.
+        tier2_runs = [s for s in captured_sql if "_gvse_sample" not in s]
+        assert tier2_runs, (
+            f"Tier 2 LIMIT-injection path never executed; captured={captured_sql}"
+        )
+        assert "MEASURE(total_revenue)" in tier2_runs[0]
+        assert "LIMIT" in tier2_runs[0].upper()
+
+        # No row-capture-attributed rejection in the counters.
+        assert counters.get(
+            "arbiter_row_capture_subquery_unsupported", 0,
+        ) == 0
+        assert counters.get(
+            "arbiter_row_capture_exec_failed", 0,
+        ) == 0

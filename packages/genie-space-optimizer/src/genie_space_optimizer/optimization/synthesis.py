@@ -548,14 +548,19 @@ def _gate_arbiter(
         return GateResult(False, "arbiter", "arbiter_empty_sql")
 
     rows: list[dict] | None = result_rows
+    capture_error_class: str | None = None
+    capture_error_message: str | None = None
     if rows is None and has_backend:
         try:
             from genie_space_optimizer.optimization.evaluation import (
+                ROW_CAPTURE_ERR_SUBQUERY_UNSUPPORTED,
                 _capture_result_rows,
             )
-            rows = _capture_result_rows(
-                sql, spark, catalog, gold_schema,
-                w=w, warehouse_id=warehouse_id,
+            rows, capture_error_class, capture_error_message = (
+                _capture_result_rows(
+                    sql, spark, catalog, gold_schema,
+                    w=w, warehouse_id=warehouse_id,
+                )
             )
         except Exception as exc:
             return GateResult(
@@ -564,10 +569,29 @@ def _gate_arbiter(
             )
 
     if rows is None:
-        # Backend was available but row capture returned None (e.g.
-        # the underlying _capture_result_rows swallowed an error).
-        # This IS an arbiter-side failure — fail closed so an audit
-        # catches it instead of silently passing.
+        # F12 — row capture returned a diagnostic tuple. The previous
+        # ``arbiter_no_result_rows`` reason code conflated two distinct
+        # failure modes; emit a differentiated reason so the rejection
+        # banner reflects the actual cause. Subquery-wrap incompat with
+        # metric-view SQL (the dominant production case) gets its own
+        # bucket; everything else falls through to the generic exec
+        # failure code.
+        if capture_error_class == ROW_CAPTURE_ERR_SUBQUERY_UNSUPPORTED:
+            return GateResult(
+                False, "arbiter",
+                "arbiter_row_capture_subquery_unsupported",
+            )
+        if capture_error_class is not None:
+            return GateResult(
+                False, "arbiter",
+                "arbiter_row_capture_exec_failed",
+            )
+        # ``capture_error_class is None`` reaches here only if the
+        # caller passed ``result_rows=None`` AND the backend was
+        # unavailable AND the early skip-no-backend branch above did
+        # not trigger — i.e. an inconsistent state. Preserve the legacy
+        # opaque reason code in that defensive corner so behavior on
+        # paths the tests already cover doesn't shift.
         return GateResult(False, "arbiter", "arbiter_no_result_rows")
 
     try:

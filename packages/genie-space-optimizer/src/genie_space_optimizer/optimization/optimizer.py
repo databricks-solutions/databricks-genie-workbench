@@ -918,6 +918,69 @@ _PLURAL_TOP_N_QUESTION_RE = re.compile(
 )
 _STRING_LITERAL_RE = re.compile(r"'([^']{1,64})'")
 
+# P1 — column_disambiguation / granularity_drop helpers.
+# Identifier extractor for SELECT/WHERE/GROUP-BY tokens; deliberately
+# permissive so we catch ``schema.column``, ``alias.column``, and bare
+# names. Aliases (``AS something``) are stripped before matching.
+_IDENTIFIER_RE = re.compile(
+    r"(?:[A-Za-z_][A-Za-z0-9_]*\.)*([A-Za-z_][A-Za-z0-9_]*)"
+)
+_GROUP_BY_BLOCK_RE = re.compile(
+    r"\bgroup\s+by\b(.+?)(?=\b(order\s+by|having|limit|window|qualify|"
+    r"union|except|intersect|;|$))",
+    re.IGNORECASE | re.DOTALL,
+)
+_SELECT_BLOCK_RE = re.compile(
+    r"\bselect\b(.+?)\bfrom\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_columns_from_block(block: str) -> set[str]:
+    """Return lowercase identifiers referenced in *block* (SELECT/GROUP BY).
+
+    Strips aliases (``AS x``), measure / function calls (we keep their
+    inner identifiers), and string literals before tokenising. Used by
+    the granularity_drop and column_disambiguation matchers.
+    """
+    if not block:
+        return set()
+    s = re.sub(r"'[^']*'", " ", block)
+    s = re.sub(r"\s+as\s+[A-Za-z_][A-Za-z0-9_]*", " ", s, flags=re.IGNORECASE)
+    out: set[str] = set()
+    for m in _IDENTIFIER_RE.finditer(s):
+        tok = m.group(1).lower()
+        if tok in {
+            "select", "from", "where", "and", "or", "not", "group",
+            "by", "order", "limit", "asc", "desc", "case", "when",
+            "then", "else", "end", "as", "on", "using", "join",
+            "inner", "left", "right", "outer", "full", "is", "null",
+            "in", "exists", "between", "like", "ilike", "true", "false",
+            "all", "any", "some", "distinct", "having", "with", "over",
+            "partition", "rows", "range", "preceding", "following",
+            "current", "row", "interval",
+        }:
+            continue
+        # Skip pure SQL functions / aggregate names. We still keep
+        # their argument identifiers (the regex returns the *last*
+        # capture per match, so ``MEASURE(foo)`` already yields ``foo``).
+        if tok in {"measure", "sum", "count", "avg", "min", "max",
+                   "rank", "dense_rank", "row_number", "coalesce",
+                   "nullif", "cast", "extract", "date_trunc", "date_add",
+                   "year", "month", "day", "to_date", "current_date"}:
+            continue
+        out.add(tok)
+    return out
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    """Return length of the shared lowercase prefix of *a* and *b*."""
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i].lower() == b[i].lower():
+        i += 1
+    return i
+
 
 def _detect_failure_pattern(ctx: dict) -> tuple[str | None, float, str]:
     """T1.2: Return (pattern_label, confidence, evidence) for a failure.
@@ -945,6 +1008,11 @@ def _detect_failure_pattern(ctx: dict) -> tuple[str | None, float, str]:
       at least one other column that has the same data type — a
       disambiguation pair. Drives Q3 (is_one_day_prior_year_same_day
       vs is_month_to_date_prior_year_same_day).
+    - ``granularity_drop``:  GT groups by ``{K1, K2, ...}``; Genie's
+      GROUP BY is a strict subset; the missing keys appear in GT's
+      SELECT projection (i.e. they're carried as output dimensions,
+      not just join keys). Drives Q11 (GT groups by time_window and
+      returns per-time-window rows; Genie drops time_window).
 
     Each detector is independent and cheap; they run in declared order
     and the first with confidence >= 0.7 wins. Confidence is a coarse
@@ -1038,6 +1106,101 @@ def _detect_failure_pattern(ctx: dict) -> tuple[str | None, float, str]:
                             f"({len(_gl)} chars)."
                         ),
                     )
+
+    # P1 — column_disambiguation. The chosen column shares a common
+    # prefix (>= 5 chars) with at least one other column on the same
+    # table, and the table metadata (when available) confirms both
+    # share a data type. We compare GT's projected/filtered columns
+    # vs Genie's; when the unique GT-only column shares a long prefix
+    # with the unique Genie-only column on the same table, the pattern
+    # fires. Confidence 0.85 if metadata corroborates same-type, else
+    # 0.7 (prefix-only).
+    _gt_select_match = _SELECT_BLOCK_RE.search(expected_sql)
+    _gn_select_match = _SELECT_BLOCK_RE.search(generated_sql)
+    _gt_select_cols = (
+        _extract_columns_from_block(_gt_select_match.group(1))
+        if _gt_select_match else set()
+    )
+    _gn_select_cols = (
+        _extract_columns_from_block(_gn_select_match.group(1))
+        if _gn_select_match else set()
+    )
+    _gt_only = _gt_select_cols - _gn_select_cols
+    _gn_only = _gn_select_cols - _gt_select_cols
+    _metadata_snapshot = ctx.get("metadata_snapshot") or {}
+    if _gt_only and _gn_only:
+        for _gtc in _gt_only:
+            for _gnc in _gn_only:
+                if _gtc == _gnc:
+                    continue
+                _prefix = _common_prefix_len(_gtc, _gnc)
+                if _prefix < 5:
+                    continue
+                # Try to corroborate via metadata: are both columns
+                # present in any one table with the same data type?
+                _same_type = False
+                _tables = (
+                    _metadata_snapshot.get("tables")
+                    if isinstance(_metadata_snapshot, dict) else None
+                )
+                if isinstance(_tables, dict):
+                    for _t_name, _t_meta in _tables.items():
+                        _cols = (
+                            _t_meta.get("columns")
+                            if isinstance(_t_meta, dict) else None
+                        )
+                        if not isinstance(_cols, dict):
+                            continue
+                        if _gtc not in _cols or _gnc not in _cols:
+                            continue
+                        _t1 = (
+                            (_cols.get(_gtc) or {}).get("data_type", "")
+                            if isinstance(_cols.get(_gtc), dict) else ""
+                        )
+                        _t2 = (
+                            (_cols.get(_gnc) or {}).get("data_type", "")
+                            if isinstance(_cols.get(_gnc), dict) else ""
+                        )
+                        if _t1 and _t2 and str(_t1).lower() == str(_t2).lower():
+                            _same_type = True
+                            break
+                _conf = 0.85 if _same_type else 0.7
+                return (
+                    "column_disambiguation",
+                    _conf,
+                    (
+                        f"GT projects {_gtc!r}; Genie projects "
+                        f"{_gnc!r}; columns share {_prefix}-char prefix"
+                        + (
+                            "; metadata confirms same data type."
+                            if _same_type else "."
+                        )
+                    ),
+                )
+
+    # P1 — granularity_drop. GT groups by ``{K1, K2, ...}``; Genie's
+    # GROUP BY is a strict subset; the missing keys appear in GT's
+    # SELECT projection (carried as output dimensions). Confidence
+    # 0.85.
+    _gt_group_match = _GROUP_BY_BLOCK_RE.search(expected_sql)
+    _gn_group_match = _GROUP_BY_BLOCK_RE.search(generated_sql)
+    if _gt_group_match and _gn_group_match:
+        _gt_keys = _extract_columns_from_block(_gt_group_match.group(1))
+        _gn_keys = _extract_columns_from_block(_gn_group_match.group(1))
+        _missing = _gt_keys - _gn_keys
+        if _gt_keys and _gn_keys and _missing and _gn_keys < _gt_keys:
+            _carried = _missing & _gt_select_cols
+            if _carried:
+                return (
+                    "granularity_drop",
+                    0.85,
+                    (
+                        f"GT GROUP BY includes {sorted(_gt_keys)}; "
+                        f"Genie GROUP BY drops {sorted(_missing)}; "
+                        f"dropped keys appear in GT projection: "
+                        f"{sorted(_carried)}."
+                    ),
+                )
 
     # No pattern matched with sufficient confidence.
     return None, 0.0, ""
@@ -1563,26 +1726,48 @@ def cluster_failures(
         generated_sql = str(sql_context.get("generated_sql", "") or "").strip()
         asi_ft = f.get("asi_failure_type")
 
+        # P1.3 — pass metadata snapshot through so the
+        # ``column_disambiguation`` matcher can corroborate same-type
+        # candidates without re-reading the snapshot from disk.
+        if metadata_snapshot and "metadata_snapshot" not in sql_context:
+            sql_context["metadata_snapshot"] = metadata_snapshot
+
         if not generated_sql:
             root = "missing_sql_generation"
             resolution_method = "empty_sql_shortcut"
         elif asi_ft and asi_ft != "other":
             root = asi_ft
             resolution_method = "asi_metadata"
-        elif (
-            (asi_ft == "other" or not asi_ft)
-            and _blame_set_matches_metadata(f.get("asi_blame_set"), metadata_snapshot)
-        ):
-            root = "missing_data_asset"
-            resolution_method = "asi_blame_set"
         else:
-            pattern = _extract_pattern(f["rationale"])
-            if pattern != "other":
-                root = pattern
-                resolution_method = "rationale_pattern"
+            # P1.3 — promote structural pattern detection above the
+            # blame_set / rationale branches so a high-confidence
+            # pattern (>= 0.7) wins over the generic
+            # ``missing_data_asset`` / rationale-derived bucket. The
+            # ASI-metadata branch above still wins when present;
+            # patterns only run when ASI is absent or generic.
+            _pattern_label, _pattern_conf, _pattern_evidence = (
+                _detect_failure_pattern(sql_context)
+            )
+            if _pattern_label and _pattern_conf >= 0.7:
+                root = _pattern_label
+                resolution_method = "structural_pattern"
+                sql_context.setdefault("_pattern_label", _pattern_label)
+                sql_context.setdefault("_pattern_confidence", _pattern_conf)
+                sql_context.setdefault("_pattern_evidence", _pattern_evidence)
+            elif (
+                (asi_ft == "other" or not asi_ft)
+                and _blame_set_matches_metadata(f.get("asi_blame_set"), metadata_snapshot)
+            ):
+                root = "missing_data_asset"
+                resolution_method = "asi_blame_set"
             else:
-                root = _classify_sql_diff(sql_context)
-                resolution_method = "sql_diff"
+                pattern = _extract_pattern(f["rationale"])
+                if pattern != "other":
+                    root = pattern
+                    resolution_method = "rationale_pattern"
+                else:
+                    root = _classify_sql_diff(sql_context)
+                    resolution_method = "sql_diff"
         f["_resolved_root_cause"] = root
         f["_resolution_method"] = resolution_method
 
@@ -1600,6 +1785,16 @@ def cluster_failures(
         elif resolution_method == "asi_blame_set":
             _attribution_source = "trace_evidence"
             _attrib_confidence = 0.8
+        elif resolution_method == "structural_pattern":
+            # P1.3 — promoted above blame_set / rationale; the pattern
+            # detector returned its own confidence which is already
+            # stamped on sql_context. Read it back here so the
+            # attribution record carries the matcher's confidence
+            # rather than a flat default.
+            _attribution_source = "sql_diff"
+            _attrib_confidence = float(
+                sql_context.get("_pattern_confidence", 0.75)
+            )
         elif resolution_method == "rationale_pattern":
             _attribution_source = "judge_text"
             _attrib_confidence = 0.65

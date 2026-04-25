@@ -213,6 +213,135 @@ class TestRepairStemmedIdentifiersNegative:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# F11 — table-qualifier rewrite (``dim_date.col`` shape)
+#
+# Production logs show the dominant qualification failure is the LLM
+# emitting the stem as a table-qualifier prefix on a dotted column
+# reference (``SELECT dim_date.day_of_week FROM ... JOIN
+# mv_esr_dim_date d ON ...``). The original single-pass regex (Pass A
+# only) blocked this because its lookahead refused any ``.`` after the
+# stem. PR 11 adds a second pass that fires only on ``stem.\w`` while
+# the lookbehind continues to skip alias-qualified columns
+# (``t.dim_date``).
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestRepairStemmedIdentifiersTableQualifier:
+    def test_table_qualifier_before_column_is_rewritten(self):
+        """The exact shape from the production log: ``dim_date.day_of_week``
+        with a fully-qualified ``mv_esr_dim_date`` join target."""
+        sql = (
+            "SELECT dim_date.day_of_week "
+            "FROM cat.sch.mv_esr_fact_sales f "
+            "JOIN cat.sch.mv_esr_dim_date d "
+            "ON f.calendar_sk = d.calendar_sk"
+        )
+        p, subs = _repair_stemmed_identifiers(
+            {"example_sql": sql},
+            _slice([
+                "cat.sch.mv_esr_dim_date",
+                "cat.sch.mv_esr_fact_sales",
+            ]),
+        )
+        assert (
+            "cat.sch.mv_esr_dim_date.day_of_week"
+            in p["example_sql"]
+        )
+        assert any(
+            orig == "dim_date" and tgt == "cat.sch.mv_esr_dim_date"
+            for orig, tgt in subs
+        )
+
+    def test_alias_qualified_column_is_not_rewritten(self):
+        """``t.dim_date`` (alias-qualified column ref) must stay
+        untouched even though we now also match ``stem.col`` shapes
+        — the lookbehind catches the leading ``\\w`` and skips it."""
+        sql = (
+            "SELECT t.dim_date.day_of_week "
+            "FROM cat.sch.mv_esr_fact_sales t "
+            "WHERE t.dim_date.calendar_sk = 1"
+        )
+        p, subs = _repair_stemmed_identifiers(
+            {"example_sql": sql},
+            _slice([
+                "cat.sch.mv_esr_dim_date",
+                "cat.sch.mv_esr_fact_sales",
+            ]),
+        )
+        # No ``dim_date`` substitution should fire because every
+        # occurrence is preceded by ``t.`` (alias qualifier).
+        assert all(orig != "dim_date" for orig, _ in subs)
+        # The SQL string itself should be unchanged with respect to
+        # the alias-qualified ``dim_date`` token.
+        assert "t.dim_date.day_of_week" in p["example_sql"]
+        assert "t.dim_date.calendar_sk" in p["example_sql"]
+
+    def test_mixed_bare_and_qualifier_both_repaired(self):
+        """Both shapes ``FROM dim_date`` (bare) and
+        ``dim_date.day_of_week`` (qualifier) appear in the same SQL
+        — both passes fire and both occurrences get rewritten."""
+        sql = (
+            "SELECT dim_date.day_of_week "
+            "FROM dim_date "
+            "JOIN cat.sch.mv_esr_fact_sales f "
+            "ON f.calendar_sk = dim_date.calendar_sk"
+        )
+        p, subs = _repair_stemmed_identifiers(
+            {"example_sql": sql},
+            _slice([
+                "cat.sch.mv_esr_dim_date",
+                "cat.sch.mv_esr_fact_sales",
+            ]),
+        )
+        new_sql = p["example_sql"]
+        assert "FROM cat.sch.mv_esr_dim_date" in new_sql
+        assert "cat.sch.mv_esr_dim_date.day_of_week" in new_sql
+        assert "cat.sch.mv_esr_dim_date.calendar_sk" in new_sql
+        # Three distinct occurrences should have been rewritten.
+        assert sum(1 for o, _ in subs if o == "dim_date") == 3
+
+    def test_qualifier_with_ambiguous_stem_is_not_rewritten(self):
+        """Ambiguity safety carries over: when the stem maps to two
+        canonicals, neither pass rewrites — the LLM retry decides."""
+        sql = (
+            "SELECT dim_date.day_of_week "
+            "FROM cat.sch.mv_esr_fact_sales"
+        )
+        p, subs = _repair_stemmed_identifiers(
+            {"example_sql": sql},
+            _slice([
+                "cat.a.mv_esr_dim_date",
+                "cat.b.other_dim_date",
+            ]),
+        )
+        assert p["example_sql"] == sql
+        assert all(orig != "dim_date" for orig, _ in subs)
+
+    def test_qualifier_substring_inside_longer_id_is_not_matched(self):
+        """``dim_date_extra.day_of_week`` must not be rewritten — the
+        ``_`` before ``.`` blocks the lookahead because the stem
+        ``dim_date`` would need to be followed by ``.\\w`` not ``_``.
+        """
+        sql = "SELECT dim_date_extra.day_of_week FROM whatever"
+        p, subs = _repair_stemmed_identifiers(
+            {"example_sql": sql}, _slice(["cat.sch.mv_esr_dim_date"]),
+        )
+        assert p["example_sql"] == sql
+        assert subs == []
+
+    def test_qualifier_with_trailing_dot_no_word_is_not_matched(self):
+        """``dim_date.`` (no column after the dot, malformed SQL) is
+        not the table-qualifier shape — Pass B requires ``\\w`` after
+        the dot to fire."""
+        sql = "SELECT 1 WHERE dim_date. = 1"
+        p, subs = _repair_stemmed_identifiers(
+            {"example_sql": sql}, _slice(["cat.sch.mv_esr_dim_date"]),
+        )
+        assert p["example_sql"] == sql
+        assert subs == []
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # _extract_offending_identifiers
 # ═══════════════════════════════════════════════════════════════════════
 

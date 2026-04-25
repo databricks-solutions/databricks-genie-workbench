@@ -12,6 +12,12 @@ import {
   RefreshCw,
 } from "lucide-react"
 import type { GSOIterationResult, GSOPipelineRun } from "@/types"
+import { Tooltip } from "@/components/ui/tooltip"
+import {
+  convergenceReasonText,
+  presentBaselineScore,
+  presentOptimizedScore,
+} from "@/lib/score-display"
 
 // ── types ────────────────────────────────────────────────────────────────────
 
@@ -61,13 +67,6 @@ function stripStatusPrefix(text: string): string {
   return text.replace(/^(Accepted|Rolled\s*back|Rollback)[:\s]+/i, "").trim()
 }
 
-function toPct(v: number | null | undefined): number | null {
-  if (v == null) return null
-  const n = Number(v)
-  if (isNaN(n)) return null
-  return n > 1 ? n : n * 100
-}
-
 // ── outcome mapping ───────────────────────────────────────────────────────────
 
 function outcomeInfo(status: string): {
@@ -99,25 +98,44 @@ function RunNarrative({
   run: GSOPipelineRun
   reflections: ReflectionEntry[]
 }) {
-  const basePct = toPct(run.baselineScore)
-  const optPct = toPct(run.optimizedScore)
-  const delta = basePct != null && optPct != null ? optPct - basePct : null
+  const baseline = presentBaselineScore(run.baselineScore)
+  const optimized = presentOptimizedScore({
+    baselineScore: run.baselineScore,
+    optimizedScore: run.optimizedScore,
+    bestIteration: run.bestIteration,
+    status: run.status,
+  })
+  const delta =
+    baseline.pct != null && optimized.pct != null
+      ? optimized.pct - baseline.pct
+      : null
 
   const acceptedCount = reflections.filter((r) => r.accepted).length
   const rolledBackCount = reflections.filter((r) => !r.accepted).length
   const isNoOpRun = reflections.length === 0
 
-  // Top insights: accepted iterations sorted by questions fixed, capped at 3
   const insights = reflections
     .filter((r) => r.accepted && r.reflectionText.trim().length > 0)
     .sort((a, b) => b.fixedQuestions.length - a.fixedQuestions.length)
     .slice(0, 3)
 
   const { text: outcomeText, variant: outcomeVariant } = outcomeInfo(run.status)
+  const reasonCopy = convergenceReasonText({
+    baselineScore: run.baselineScore,
+    optimizedScore: run.optimizedScore,
+    bestIteration: run.bestIteration,
+    status: run.status,
+    convergenceReason: run.convergenceReason,
+  })
+
+  const optimizedNumber = (
+    <p className="text-xl font-bold text-blue-600 dark:text-blue-400">
+      {optimized.text}
+    </p>
+  )
 
   return (
     <div className="rounded-xl border border-default bg-surface p-5 space-y-4">
-      {/* Outcome pill + iteration count */}
       <div className="flex items-center gap-2 flex-wrap">
         <Badge variant={outcomeVariant}>{outcomeText}</Badge>
         {!isNoOpRun && (
@@ -129,16 +147,13 @@ function RunNarrative({
         )}
       </div>
 
-      {/* Accuracy arc */}
-      {(basePct != null || optPct != null) && (
+      {(baseline.pct != null || optimized.pct != null) && (
         <div className="flex items-center gap-3">
           <div className="text-center">
             <p className="text-[10px] font-semibold uppercase tracking-widest text-muted mb-0.5">
               Baseline
             </p>
-            <p className="text-xl font-bold text-primary">
-              {basePct != null ? `${basePct.toFixed(1)}%` : "—"}
-            </p>
+            <p className="text-xl font-bold text-primary">{baseline.text}</p>
           </div>
           <ArrowRight
             className={`h-4 w-4 shrink-0 ${
@@ -155,9 +170,13 @@ function RunNarrative({
             <p className="text-[10px] font-semibold uppercase tracking-widest text-blue-500 mb-0.5">
               Optimized
             </p>
-            <p className="text-xl font-bold text-blue-600 dark:text-blue-400">
-              {optPct != null ? `${optPct.toFixed(1)}%` : "—"}
-            </p>
+            {optimized.tooltip ? (
+              <Tooltip content={optimized.tooltip} side="bottom">
+                {optimizedNumber}
+              </Tooltip>
+            ) : (
+              optimizedNumber
+            )}
           </div>
           {delta != null && (
             <div
@@ -176,7 +195,10 @@ function RunNarrative({
         </div>
       )}
 
-      {/* No-op: lever loop was skipped */}
+      {reasonCopy && (
+        <p className="text-xs text-muted italic">{reasonCopy}</p>
+      )}
+
       {isNoOpRun && (
         <p className="text-sm text-muted">
           No optimization iterations were needed — the baseline already met all accuracy
@@ -318,7 +340,13 @@ function IterationLogDisclosure({ reflections }: { reflections: ReflectionEntry[
 interface OptimizationNarrativeProps {
   run: GSOPipelineRun
   iterations: GSOIterationResult[]
-  convergenceReason: string | null
+  /**
+   * @deprecated The narrative now reads ``convergenceReason`` directly from
+   * ``run`` so it can be combined with the canonical ``bestIteration``
+   * signal (e.g. "Baseline retained — no improvement after 3 attempts").
+   * Kept on the props for back-compat with existing callers.
+   */
+  convergenceReason?: string | null
 }
 
 export function OptimizationNarrative({ run, iterations }: OptimizationNarrativeProps) {

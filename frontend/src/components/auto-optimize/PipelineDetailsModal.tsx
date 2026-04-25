@@ -15,6 +15,13 @@ import { JudgePassRates } from "@/components/auto-optimize/JudgePassRates"
 import { OptimizationNarrative } from "@/components/auto-optimize/OptimizationNarrative"
 import { SuggestionsPanel } from "@/components/auto-optimize/SuggestionsPanel"
 import { getAutoOptimizeRun, getAutoOptimizeIterations } from "@/lib/api"
+import {
+  convergenceReasonText,
+  formatScorePct,
+  presentBaselineScore,
+  presentOptimizedScore,
+} from "@/lib/score-display"
+import { Tooltip } from "@/components/ui/tooltip"
 import type { GSOPipelineRun, GSOIterationResult } from "@/types"
 
 interface PipelineDetailsModalProps {
@@ -43,12 +50,6 @@ const STATUS_VARIANT: Record<string, "default" | "success" | "warning" | "danger
   IN_PROGRESS: "info",
   RUNNING: "info",
   QUEUED: "secondary",
-}
-
-function toPct(v: number | null | undefined): string {
-  if (v == null) return "\u2014"
-  const n = Number(v)
-  return `${(n > 1 ? n : n * 100).toFixed(1)}%`
 }
 
 function formatDateTime(iso: string): string {
@@ -123,11 +124,30 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
   const progressPct = Math.round((stepsCompleted / totalSteps) * 100)
   const allComplete = stepsCompleted === totalSteps
 
-  const baselineScore = run?.baselineScore != null ? Number(run.baselineScore) : null
-  const optimizedScore = run?.optimizedScore != null ? Number(run.optimizedScore) : null
-  const bNorm = baselineScore != null ? (baselineScore > 1 ? baselineScore : baselineScore * 100) : null
-  const oNorm = optimizedScore != null ? (optimizedScore > 1 ? optimizedScore : optimizedScore * 100) : null
-  const improvement = bNorm != null && oNorm != null ? oNorm - bNorm : null
+  const baselinePresentation = presentBaselineScore(run?.baselineScore ?? null)
+  const optimizedPresentation = run
+    ? presentOptimizedScore({
+        baselineScore: run.baselineScore,
+        optimizedScore: run.optimizedScore,
+        bestIteration: run.bestIteration,
+        status: run.status,
+      })
+    : presentBaselineScore(null)
+  const reasonCopy = run
+    ? convergenceReasonText({
+        baselineScore: run.baselineScore,
+        optimizedScore: run.optimizedScore,
+        bestIteration: run.bestIteration,
+        status: run.status,
+        convergenceReason: run.convergenceReason,
+      })
+    : null
+  const improvement =
+    baselinePresentation.pct != null && optimizedPresentation.pct != null
+      ? optimizedPresentation.pct - baselinePresentation.pct
+      : null
+  const hasAnyScore =
+    baselinePresentation.pct != null || optimizedPresentation.pct != null
 
   // Extract baseline judge scores from step 2 (Baseline Evaluation) outputs
   const baselineStep = run?.steps?.find((s) => s.stepNumber === 2)
@@ -187,26 +207,36 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                 </div>
               </div>
 
-              {/* Score KPI cards */}
-              {(baselineScore != null || optimizedScore != null) && (
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="rounded-xl border border-default p-5">
-                    <p className="text-xs font-medium text-muted uppercase tracking-wide mb-1">Baseline</p>
-                    <p className="text-3xl font-bold text-primary">{toPct(baselineScore)}</p>
+              {hasAnyScore && (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-3 gap-4">
+                    <div className="rounded-xl border border-default p-5">
+                      <p className="text-xs font-medium text-muted uppercase tracking-wide mb-1">Baseline</p>
+                      <p className="text-3xl font-bold text-primary">{baselinePresentation.text}</p>
+                    </div>
+                    <div className="rounded-xl border border-accent/30 bg-accent/5 p-5">
+                      <p className="text-xs font-medium text-accent uppercase tracking-wide mb-1">Optimized</p>
+                      {optimizedPresentation.tooltip ? (
+                        <Tooltip content={optimizedPresentation.tooltip} side="bottom">
+                          <p className="text-3xl font-bold text-accent">{optimizedPresentation.text}</p>
+                        </Tooltip>
+                      ) : (
+                        <p className="text-3xl font-bold text-accent">{optimizedPresentation.text}</p>
+                      )}
+                    </div>
+                    <div className={`rounded-xl border p-5 ${improvement != null && improvement > 0 ? "border-emerald-500/30 bg-emerald-500/5" : "border-default"}`}>
+                      <p className="text-xs font-medium text-muted uppercase tracking-wide mb-1 flex items-center gap-1">
+                        <TrendingUp className="w-3 h-3" />
+                        Improvement
+                      </p>
+                      <p className={`text-3xl font-bold ${improvement != null && improvement > 0 ? "text-emerald-500" : "text-primary"}`}>
+                        {improvement != null ? `${improvement > 0 ? "+" : ""}${improvement.toFixed(1)}%` : "\u2014"}
+                      </p>
+                    </div>
                   </div>
-                  <div className="rounded-xl border border-accent/30 bg-accent/5 p-5">
-                    <p className="text-xs font-medium text-accent uppercase tracking-wide mb-1">Optimized</p>
-                    <p className="text-3xl font-bold text-accent">{toPct(optimizedScore)}</p>
-                  </div>
-                  <div className={`rounded-xl border p-5 ${improvement != null && improvement > 0 ? "border-emerald-500/30 bg-emerald-500/5" : "border-default"}`}>
-                    <p className="text-xs font-medium text-muted uppercase tracking-wide mb-1 flex items-center gap-1">
-                      <TrendingUp className="w-3 h-3" />
-                      Improvement
-                    </p>
-                    <p className={`text-3xl font-bold ${improvement != null && improvement > 0 ? "text-emerald-500" : "text-primary"}`}>
-                      {improvement != null ? `${improvement > 0 ? "+" : ""}${improvement.toFixed(1)}%` : "\u2014"}
-                    </p>
-                  </div>
+                  {reasonCopy && (
+                    <p className="text-xs text-muted italic">Reason: {reasonCopy}</p>
+                  )}
                 </div>
               )}
 
@@ -304,7 +334,7 @@ export function PipelineDetailsModal({ runId, isOpen, onClose }: PipelineDetails
                                   </td>
                                   <td className="px-4 py-2.5 text-right font-mono">
                                     <span className={isBest ? "text-emerald-600 dark:text-emerald-400 font-semibold" : "text-primary"}>
-                                      {toPct(it.overall_accuracy)}
+                                      {formatScorePct(it.overall_accuracy)}
                                     </span>
                                     {isBest && <span className="ml-1.5 text-xs text-emerald-600 dark:text-emerald-400">\u2190 best</span>}
                                   </td>

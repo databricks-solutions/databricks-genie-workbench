@@ -1631,6 +1631,34 @@ def _is_vacuous_filter_syntactic(sql: str) -> bool:
     return any(p.match(candidate) for p in _VACUOUS_FILTER_PATTERNS)
 
 
+# B5 — match ``<identifier> = '<literal>'`` or ``<identifier> = <numeric>``.
+# The zero-row-rejection guard below uses this to limit the false-positive
+# blast radius: range / inequality / IN-list filters that legitimately
+# match no current rows (e.g. ``created_at > 2030-01-01``) bypass the
+# guard and stay accepted.
+_SIMPLE_EQUALITY_PATTERN = _re.compile(
+    r"""^\s*
+        (?:[A-Za-z_][A-Za-z0-9_]*\.)*       # optional table / schema prefix
+        [A-Za-z_][A-Za-z0-9_]*              # identifier
+        \s*=\s*
+        (?:                                 # right-hand-side literal:
+            '(?:[^']|'')*'                   #   single-quoted string
+          | -?\d+(?:\.\d+)?                  #   numeric
+        )
+        \s*$
+    """,
+    _re.IGNORECASE | _re.VERBOSE,
+)
+
+
+def _is_simple_equality(sql: str) -> bool:
+    """Return True when *sql* is a single equality on a literal RHS."""
+    candidate = (sql or "").strip().strip(";").strip()
+    if candidate.startswith("(") and candidate.endswith(")"):
+        candidate = candidate[1:-1].strip()
+    return bool(_SIMPLE_EQUALITY_PATTERN.match(candidate))
+
+
 def validate_sql_snippet(
     sql: str,
     snippet_type: str,
@@ -1803,6 +1831,25 @@ def validate_sql_snippet(
                     False,
                     f"filter is vacuous: selects all rows "
                     f"({filtered_count}/{total_count})",
+                    prefixed_sql,
+                )
+            # B5 — zero-rows guard. Strategists occasionally
+            # hallucinate equality literals (e.g. ``open_status_code
+            # = 'Y'`` when stored values are ``'O'`` / ``'C'``); the
+            # filter parses, EXPLAINs cleanly, and selects zero rows
+            # at runtime. Reject only when the filter is a simple
+            # equality on a literal — range / inequality / IN-list
+            # filters often legitimately match zero current rows
+            # (e.g. ``created_at > 2030-01-01``).
+            if (
+                total_count > 0
+                and filtered_count == 0
+                and _is_simple_equality(prefixed_sql)
+            ):
+                return (
+                    False,
+                    f"filter matches zero rows ({filtered_count}/{total_count}); "
+                    f"likely hallucinated literal — actual stored values may differ",
                     prefixed_sql,
                 )
 

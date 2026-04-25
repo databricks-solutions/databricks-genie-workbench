@@ -12,7 +12,7 @@ from fastapi import HTTPException
 
 from ..core import Dependencies, create_router
 from ..models import LeverInfo, RunStatusResponse, TriggerRequest, TriggerResponse
-from ..utils import ensure_utc_iso, safe_float
+from ..utils import ensure_utc_iso
 from .._spark import get_spark
 
 router = create_router()
@@ -88,22 +88,21 @@ def get_trigger_status(
         status = "RUNNING"
 
     from genie_space_optimizer.optimization.state import load_iterations
+    from .runs import get_run_scores
 
-    baseline_score: float | None = None
+    # Canonical baseline + optimized + best_iteration. See
+    # ``common.accuracy.compute_run_scores`` for the contract — in particular
+    # the floor-at-baseline invariant. Pre-fix this endpoint sent
+    # ``optimizedScore = stored best_accuracy`` which could include
+    # rolled-back iterations and slice-scope probes.
+    iters_rows: list[dict] = []
     try:
         iters_df = load_iterations(spark, run_id, config.catalog, config.schema_name)
         if not iters_df.empty:
             iters_rows = iters_df.to_dict("records")
-            baseline_row = next(
-                (r for r in iters_rows
-                 if int(r.get("iteration", -1)) == 0
-                 and str(r.get("eval_scope", "")).lower() == "full"),
-                None,
-            )
-            if baseline_row:
-                baseline_score = safe_float(baseline_row.get("overall_accuracy"))
     except Exception:
         pass
+    run_scores = get_run_scores(iters_rows, run_id=run_id)
 
     return RunStatusResponse(
         runId=run_id,
@@ -111,8 +110,9 @@ def get_trigger_status(
         spaceId=run_data.get("space_id", ""),
         startedAt=ensure_utc_iso(run_data.get("started_at")),
         completedAt=ensure_utc_iso(run_data.get("completed_at")),
-        baselineScore=baseline_score,
-        optimizedScore=safe_float(run_data.get("best_accuracy")),
+        baselineScore=run_scores.baseline,
+        optimizedScore=run_scores.optimized,
+        bestIteration=run_scores.best_iteration,
         convergenceReason=run_data.get("convergence_reason"),
     )
 

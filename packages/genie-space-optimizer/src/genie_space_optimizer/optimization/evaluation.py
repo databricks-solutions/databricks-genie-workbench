@@ -4710,6 +4710,26 @@ def run_evaluation(
         _STRIP_COLS = {"trace", "assessments", "spans", "trace_metadata"}
         cached_feedback = _drain_scorer_feedback_cache()
 
+        # I1 — ASI source instrumentation. The forensic review showed
+        # ``asi_source histogram: none=29 (100%)`` even though the
+        # scorers are emitting ``Feedback(metadata=...)``. The likeliest
+        # culprits are (a) the cache never populated (scorers ran
+        # outside the active scope), (b) row-level qid extraction
+        # failed silently, or (c) cache key mismatch (e.g. ``:vN``
+        # suffix on row qids vs base qids in cache). Counters below
+        # let us tell those apart in a single eval log line.
+        _i1_cache_qid_count = len(cached_feedback)
+        _i1_cache_judge_count = sum(
+            len(j_map) for j_map in cached_feedback.values()
+        )
+        _i1_row_qid_extracted = 0
+        _i1_row_qid_missing = 0
+        _i1_cache_hit_rows = 0
+        _i1_dump_row_keys = (
+            os.getenv("GENIE_SPACE_OPTIMIZER_ASI_INSTRUMENTATION", "false")
+            .lower() in {"1", "true", "yes", "on"}
+        )
+
         if hasattr(eval_result, "tables") and "eval_results" in eval_result.tables:
             results_df = eval_result.tables["eval_results"]
 
@@ -4742,6 +4762,30 @@ def run_evaluation(
                     or (_req_raw.get("question_id") if isinstance(_req_raw, dict) else None)
                     or ""
                 )
+                # I1 — track qid extraction outcome. Distinguishing
+                # "row had no qid" from "qid present but no cache
+                # entry" tells us whether the bug is in benchmark
+                # threading or in cache key alignment.
+                if qid:
+                    _i1_row_qid_extracted += 1
+                    if qid in cached_feedback:
+                        _i1_cache_hit_rows += 1
+                    elif _i1_dump_row_keys:
+                        logger.warning(
+                            "[I1 ASI] cache miss row=%s qid=%r cache_keys_sample=%r",
+                            row_idx, qid, list(cached_feedback)[:5],
+                        )
+                else:
+                    _i1_row_qid_missing += 1
+                    if _i1_dump_row_keys:
+                        logger.warning(
+                            "[I1 ASI] qid missing for row=%s row_keys=%r",
+                            row_idx,
+                            sorted(
+                                k for k in row_dict
+                                if "question" in k.lower() or "input" in k.lower()
+                            )[:10],
+                        )
                 _merge_row_sources(
                     row_dict,
                     assessment_map.get(row_idx),
@@ -4795,6 +4839,27 @@ def run_evaluation(
                             "new_expected_sql": str(_gc_sql),
                             "verdict": "genie_correct",
                         })
+
+        # I1 — emit a single summary log so operators can read it
+        # alongside the existing ``ASI source histogram`` line and tell
+        # at a glance which of the three failure modes occurred:
+        #   * cache=0 / hits=0  → scorers never wrote (scope binding bug)
+        #   * cache=N / hits=0  → key mismatch (qid suffix / extraction)
+        #   * cache=N / hits=M  → cache works; ASI extraction is the bug
+        try:
+            logger.info(
+                "[I1 ASI] cache populates: qids=%d judges=%d | row qid extract: "
+                "ok=%d missing=%d | cache hits: %d/%d rows | dump_row_keys=%s",
+                _i1_cache_qid_count,
+                _i1_cache_judge_count,
+                _i1_row_qid_extracted,
+                _i1_row_qid_missing,
+                _i1_cache_hit_rows,
+                len(rows_for_output),
+                _i1_dump_row_keys,
+            )
+        except Exception:
+            logger.debug("[I1 ASI] summary log raised", exc_info=True)
 
         question_failure_artifacts: list[dict[str, Any]] = []
         for row in rows_for_output:
@@ -5047,6 +5112,20 @@ def run_evaluation(
             # judge-name keys for backward compatibility).
             for _jn, _frac in _pre_arbiter_per_judge.items():
                 scores_100[f"_pre_arbiter/{_jn}"] = round(_frac * 100, 1)
+            # B0.1 — stamp an overall-accuracy pre-arbiter key so every
+            # eval result (including baseline) carries it. Downstream
+            # gate code reads ``_pre_arbiter/overall_accuracy`` from
+            # ``best_scores``; without this key the gate silently falls
+            # back to post-arbiter accuracy and treats a pre-arbiter
+            # improvement as a regression. Result_correctness is the
+            # canonical primary signal under the ``pre_arbiter``
+            # objective; if it isn't available (e.g. pre-T0.3 evaluator
+            # versions), fall back to the arbiter-adjusted value so
+            # legacy callers still get a sane number.
+            scores_100["_pre_arbiter/overall_accuracy"] = scores_100.get(
+                "_pre_arbiter/result_correctness",
+                arbiter_adjusted_accuracy,
+            )
             thresholds_passed = all_thresholds_met(scores_100)
 
         row_unresolved_column_count = sum(
@@ -6333,6 +6412,96 @@ def _attempt_benchmark_correction(
 # ``docs/example-sql-isolation.md``.
 
 
+# F12 — error-class buckets returned by ``_capture_result_rows`` so the
+# arbiter gate (and the unified pipeline counters) can attribute a row-
+# capture miss to its underlying cause instead of a single opaque
+# ``arbiter_no_result_rows`` reason. ``subquery_unsupported`` covers the
+# Spark/DBSQL family of errors emitted when the candidate SQL targets a
+# metric view at the top level — e.g. ``MEASURE()`` against an MV is
+# legal as a top-level query but rejected when wrapped as an inline
+# subquery. ``exec_failed`` is the catch-all for anything else
+# (timeouts, permissions, real syntax errors that slipped past EXPLAIN).
+ROW_CAPTURE_ERR_SUBQUERY_UNSUPPORTED = "subquery_unsupported"
+ROW_CAPTURE_ERR_EXEC_FAILED = "exec_failed"
+
+# Substrings (case-insensitive) that mark a Spark/DBSQL error as
+# stemming from inline-subquery incompatibility with metric views. The
+# canonical Spark error code is ``UNSUPPORTED_SUBQUERY_EXPRESSION_CATEGORY``;
+# DBSQL surfaces the metric-view variant with explicit ``metric view`` /
+# ``MEASURE`` wording. We match conservatively — any one substring is
+# enough to bucket the failure as ``subquery_unsupported`` rather than
+# the generic ``exec_failed``.
+_SUBQUERY_UNSUPPORTED_MARKERS = (
+    "unsupported_subquery_expression_category",
+    "subquery_expression_in",
+    "metric view",
+    "metric_view",
+    "measure(",
+)
+
+
+def _classify_row_capture_error(err_msg: str) -> str:
+    """Bucket a Spark/DBSQL row-capture exception message.
+
+    Returns one of ``ROW_CAPTURE_ERR_SUBQUERY_UNSUPPORTED`` or
+    ``ROW_CAPTURE_ERR_EXEC_FAILED``. The classification is purely
+    string-based — we cannot rely on Spark exception types because
+    ``_exec_sql`` may route through the warehouse REST path which
+    surfaces errors as plain strings.
+    """
+    lower = (err_msg or "").lower()
+    for marker in _SUBQUERY_UNSUPPORTED_MARKERS:
+        if marker in lower:
+            return ROW_CAPTURE_ERR_SUBQUERY_UNSUPPORTED
+    return ROW_CAPTURE_ERR_EXEC_FAILED
+
+
+# F13 — heuristic detection for metric-view / MEASURE-style SQL that the
+# Tier 1 inline-subquery wrap cannot handle. The conservative trigger is
+# ``MEASURE(`` substring (case-insensitive) anywhere in the resolved
+# SQL; other metric-view shapes (e.g. plain ``SELECT * FROM mv`` with
+# auto-rewritten measure aliases) get covered by the Tier 1 →
+# Tier 2 fallback path on subquery-unsupported errors.
+_MV_MEASURE_PATTERN = re.compile(r"\bMEASURE\s*\(", re.IGNORECASE)
+
+# Match a top-level ``LIMIT <n>`` (with optional ``OFFSET <m>``) at the
+# tail of the SQL string, after stripping a trailing ``;``. We don't
+# attempt to parse nested LIMITs inside CTEs / subqueries — we only
+# care about whether the outer query already caps its row count, so
+# Tier 2 doesn't need to append.
+_TRAILING_LIMIT_RE = re.compile(
+    r"\bLIMIT\s+\d+(?:\s+OFFSET\s+\d+)?\s*$", re.IGNORECASE,
+)
+
+
+def _has_top_level_limit(sql: str) -> bool:
+    """Heuristic — does the trimmed SQL already end with a LIMIT clause?"""
+    s = (sql or "").rstrip().rstrip(";").rstrip()
+    return bool(_TRAILING_LIMIT_RE.search(s))
+
+
+def _inject_limit_clause(sql: str, limit: int) -> str:
+    """Append ``LIMIT <n>`` to ``sql`` if no top-level LIMIT is present.
+
+    Preserves a trailing ``;`` if the input had one. Leaves SQL with
+    an existing top-level ``LIMIT`` clause untouched (we don't
+    second-guess the LLM's row cap — Tier 2 only needs the SQL to
+    return a bounded number of rows). Used by Tier 2 of
+    :func:`_capture_result_rows` for metric-view / MEASURE-style SQL
+    that DBSQL refuses to wrap as a subquery.
+    """
+    if _has_top_level_limit(sql):
+        return sql
+    s = (sql or "").rstrip()
+    trailing_semi = s.endswith(";")
+    if trailing_semi:
+        s = s.rstrip(";").rstrip()
+    s = f"{s} LIMIT {int(limit)}"
+    if trailing_semi:
+        s += ";"
+    return s
+
+
 def _capture_result_rows(
     sql: str,
     spark: SparkSession,
@@ -6342,35 +6511,139 @@ def _capture_result_rows(
     w: Any = None,
     warehouse_id: str = "",
     limit: int = 20,
-) -> list[dict] | None:
+) -> tuple[list[dict] | None, str | None, str | None]:
     """Run ``sql`` once and return the first ``limit`` rows as dicts.
 
     Used by the unified engine to give the arbiter judge actual result
     rows to evaluate. Uses the shared ``_exec_sql`` helper so the
     warehouse-vs-Spark routing is consistent with every other
-    execution path in this module. Returns ``None`` on any failure —
-    the caller fails open (keeps the candidate) because
-    ``_validate_benchmark_sql`` has already asserted the SQL executes;
-    this helper's failure is pure arbiter-side observability.
+    execution path in this module.
+
+    Two-tier execution strategy (added in F13):
+
+    1. **Tier 1 — subquery wrap** (preferred for plain SQL). Wraps as
+       ``SELECT * FROM ({sql}) _gvse_sample LIMIT n``. Cheap,
+       deterministic row count, doesn't touch the candidate text.
+       DBSQL refuses this wrap when the inner query is a top-level
+       ``MEASURE()`` against a metric view — the ``measure`` operator
+       is not a legal subquery expression.
+    2. **Tier 2 — LIMIT injection** (fallback / preferred for
+       MEASURE-style SQL). Runs the candidate SQL directly with a
+       top-level ``LIMIT n`` appended (no-op if it already has one).
+       Avoids the subquery wrap, so metric-view candidates that
+       passed EXPLAIN can finally reach the arbiter with rows.
+
+    Tier 2 fires either pro-actively (when ``MEASURE(`` is detected
+    in the SQL — skips Tier 1's known-failure case) or reactively
+    (when Tier 1 raises a ``subquery_unsupported`` Spark error). Any
+    other Tier 1 exception class returns immediately as
+    ``(None, exec_failed, ...)`` without a Tier 2 attempt — those
+    failures are not subquery-wrap-related and re-running with LIMIT
+    injection won't fix them.
+
+    Returns a 3-tuple ``(rows, error_class, error_message)``:
+
+    * ``(rows_list, None, None)`` — SQL ran and produced rows
+      (possibly an empty list if the query is valid but matches no
+      data; empty rows are NOT a failure).
+    * ``(None, error_class, error_message)`` — execution raised, with
+      ``error_class`` one of :data:`ROW_CAPTURE_ERR_SUBQUERY_UNSUPPORTED`
+      or :data:`ROW_CAPTURE_ERR_EXEC_FAILED`. The error message is
+      truncated to the first ~200 chars for log-line ergonomics.
+
+    The diagnostic tuple was added in F12: ``arbiter_no_result_rows``
+    was previously the single opaque code for both "DBSQL refused the
+    subquery wrap because the SQL targets a metric view" and "the
+    underlying execution genuinely failed" — operators had no signal
+    to tell them apart at the banner level. Callers now branch on
+    ``error_class`` and emit differentiated counters / reason codes.
+
+    The exception is logged at WARNING (was DEBUG) with the SQL
+    preview and error class so it shows up in the standard run log
+    — a single ``arbiter_no_result_rows`` line was making field
+    diagnosis impossible.
     """
+    from genie_space_optimizer.optimization.benchmarks import resolve_sql
     try:
-        from genie_space_optimizer.optimization.benchmarks import resolve_sql
-        resolved = resolve_sql(sql, catalog, schema)
-        sampling_sql = f"SELECT * FROM ({resolved}) _gvse_sample LIMIT {int(limit)}"
+        # NOTE: ``resolve_sql`` accepts only ``sql`` positionally; the
+        # rest are kwargs. Earlier call shape ``resolve_sql(sql, catalog,
+        # schema)`` raised ``TypeError`` and was caught by the broad
+        # except block below — making row capture silently impossible
+        # in production. F12's WARNING-level logging surfaces this
+        # class of failure, but the actual fix is to pass kwargs as
+        # the function declares.
+        resolved = resolve_sql(sql, catalog=catalog, gold_schema=schema)
+    except Exception as exc:  # pragma: no cover — defensive
+        err_msg = str(exc)[:200]
+        logger.warning(
+            "arbiter result-row capture failed (resolve_sql): %s | sql=%s",
+            err_msg, (sql or "")[:200],
+        )
+        return None, ROW_CAPTURE_ERR_EXEC_FAILED, err_msg
+
+    # Tier selection: skip Tier 1 entirely when MEASURE() is present —
+    # the wrap is a known-failure shape there, no point burning a round-
+    # trip just to re-discover it. For everything else, prefer Tier 1
+    # (cheap, deterministic) and only fall back on subquery_unsupported.
+    use_tier2_first = _MV_MEASURE_PATTERN.search(resolved or "") is not None
+
+    if not use_tier2_first:
+        sampling_sql = (
+            f"SELECT * FROM ({resolved}) _gvse_sample LIMIT {int(limit)}"
+        )
+        try:
+            df = _exec_sql(
+                sampling_sql, spark,
+                w=w, warehouse_id=warehouse_id,
+                catalog=catalog, schema=schema,
+            )
+            if df is None or df.empty:
+                return [], None, None
+            return df.head(limit).to_dict(orient="records"), None, None
+        except Exception as exc:  # pragma: no cover — defensive
+            err_msg = str(exc)[:200]
+            err_class = _classify_row_capture_error(err_msg)
+            if err_class != ROW_CAPTURE_ERR_SUBQUERY_UNSUPPORTED:
+                # Not a subquery-wrap problem — Tier 2 wouldn't help.
+                logger.warning(
+                    "arbiter result-row capture failed (%s) [tier=1]: %s "
+                    "| sql=%s",
+                    err_class, err_msg, (sql or "")[:200],
+                )
+                return None, err_class, err_msg
+            # Tier 1 hit the subquery-unsupported wall — log a downgrade
+            # signal at INFO and fall through to Tier 2. This is the
+            # expected path for metric-view candidates that don't have
+            # an explicit ``MEASURE(`` in the candidate text but trigger
+            # the subquery rejection at execution time.
+            logger.info(
+                "arbiter result-row capture: tier 1 subquery wrap "
+                "unsupported, falling back to tier 2 LIMIT-injection "
+                "(err=%s | sql=%s)",
+                err_msg, (sql or "")[:200],
+            )
+
+    # Tier 2 — execute the original (resolved) SQL with a top-level
+    # LIMIT injected. Reuses ``_exec_sql`` so warehouse-vs-Spark routing
+    # stays consistent with the rest of the module.
+    limited_sql = _inject_limit_clause(resolved, limit)
+    try:
         df = _exec_sql(
-            sampling_sql, spark,
+            limited_sql, spark,
             w=w, warehouse_id=warehouse_id,
             catalog=catalog, schema=schema,
         )
         if df is None or df.empty:
-            return []
-        return df.head(limit).to_dict(orient="records")
+            return [], None, None
+        return df.head(limit).to_dict(orient="records"), None, None
     except Exception as exc:  # pragma: no cover — defensive
-        logger.debug(
-            "arbiter result-row capture failed: %s",
-            str(exc)[:200],
+        err_msg = str(exc)[:200]
+        err_class = _classify_row_capture_error(err_msg)
+        logger.warning(
+            "arbiter result-row capture failed (%s) [tier=2]: %s | sql=%s",
+            err_class, err_msg, (sql or "")[:200],
         )
-    return None
+        return None, err_class, err_msg
 
 
 def generate_validated_sql_examples(
@@ -6431,6 +6704,16 @@ def generate_validated_sql_examples(
         "mv_select_star": 0,
         "explain_or_execute": 0,
         "arbiter_no": 0,
+        # F12 — row-capture diagnostic counters. ``arbiter_no`` is the
+        # LLM judge saying "no" / "uncertain"; the two ``arbiter_row_
+        # capture_*`` buckets cover the case where ``_capture_result_
+        # rows`` raised before the judge was even consulted. Splitting
+        # these gives operators an unambiguous banner signal: zero
+        # subquery-unsupported counts means PR 13's metric-view-safe
+        # fallback is doing its job; non-zero exec_failed counts point
+        # at a different infrastructure issue (timeouts, perms).
+        "arbiter_row_capture_subquery_unsupported": 0,
+        "arbiter_row_capture_exec_failed": 0,
         "firewall_fingerprint": 0,
         "firewall_question_echo": 0,
         "dedup_in_corpus": 0,
@@ -6647,10 +6930,36 @@ def generate_validated_sql_examples(
             if score_example_sql_correctness is None:
                 arbitrated.append(cand)
                 continue
-            rows = _capture_result_rows(
+            rows, capture_err_class, _capture_err_msg = _capture_result_rows(
                 cand["expected_sql"], spark, catalog, schema,
                 w=w, warehouse_id=warehouse_id,
             )
+            # F12 — fail closed when row capture itself raised. The
+            # arbiter LLM cannot make a meaningful judgment without
+            # rows, and the previous code path silently passed
+            # ``rows=None`` to the judge which then said "uncertain"
+            # / "no" — masking row-capture failures as ``arbiter_no``.
+            # Increment the differentiated counter so operators see
+            # the real signal in the banner.
+            if rows is None:
+                if (
+                    capture_err_class
+                    == ROW_CAPTURE_ERR_SUBQUERY_UNSUPPORTED
+                ):
+                    rejection_counters[
+                        "arbiter_row_capture_subquery_unsupported"
+                    ] += 1
+                else:
+                    rejection_counters[
+                        "arbiter_row_capture_exec_failed"
+                    ] += 1
+                logger.info(
+                    "gvse: arbiter row-capture failed (%s) — "
+                    "dropping candidate: %s",
+                    capture_err_class or "unknown",
+                    cand.get("question", "")[:80],
+                )
+                continue
             try:
                 verdict = score_example_sql_correctness(
                     question=cand["question"],

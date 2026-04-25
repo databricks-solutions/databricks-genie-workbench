@@ -286,7 +286,16 @@ export interface GSORunStatus {
   startedAt: string | null
   completedAt: string | null
   baselineScore: number | null
+  // Canonical "arbiter adjusted accuracy" headline. The backend guarantees
+  // ``optimizedScore >= baselineScore`` (regressions are clamped to baseline,
+  // since regressions don't get posted) and ``optimizedScore`` is null while
+  // no full-scope iteration > 0 has been evaluated yet.
   optimizedScore: number | null
+  // ``0`` means baseline was retained (no iter > 0 strictly improved on it,
+  // or optimization is still running). ``N > 0`` is the iteration that
+  // actually achieved ``optimizedScore``. ``null`` if there's no baseline at
+  // all yet.
+  bestIteration: number | null
   convergenceReason: string | null
   stepsCompleted?: number | null
   totalSteps?: number | null
