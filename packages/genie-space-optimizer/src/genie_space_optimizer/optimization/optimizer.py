@@ -1659,15 +1659,17 @@ def cluster_failures(
                         if not asi_join_assessment:
                             asi_join_assessment = uc_asi_entry.get("join_assessment")
 
-                # Tier 2.13 / 2.14: fall back to the Genie-behaviour-pattern
-                # classifier when no specific failure_type was stamped. This
-                # lets the strategist see over_filtered_dimension and
-                # wide_vs_long_shape as distinct clusters instead of
-                # indistinguishable ``wrong_filter_condition`` /
-                # ``wrong_aggregation`` blobs.
-                if not asi_failure_type or asi_failure_type in (
-                    "wrong_filter_condition", "wrong_aggregation", "other",
-                ):
+                # Tier 2.13 / 2.14 (narrowed by Task 7): fall back to the
+                # Genie-behaviour-pattern classifier ONLY when ASI carries
+                # no specific failure_type. ``wrong_filter_condition`` and
+                # ``wrong_aggregation`` are themselves specific labels —
+                # the typed ``SqlDiff`` produced by Task 6 supplies the
+                # finer routing signal, so the override is reserved for
+                # ``other`` / missing labels. This stops the override
+                # from flattening five generic ``other`` verdicts onto
+                # the same pattern label and inflating dominance, the
+                # G1 failure mode the retail run exhibited.
+                if not asi_failure_type or asi_failure_type == "other":
                     try:
                         from genie_space_optimizer.optimization.evaluation import (
                             classify_genie_shape_patterns,
@@ -2374,6 +2376,87 @@ def cluster_failures(
 # ═══════════════════════════════════════════════════════════════════════
 
 
+# Task 7: NL_TEXT judges that fail on natural-language quality alone.
+# A cluster whose ``dominant_failed_judges`` is a subset of this set
+# cannot be fixed by any SQL-shape lever — routing it through the
+# default strategist track wastes the SQL-shape patch budget on
+# narrative-only failures. ``route_nl_text_only_cluster`` returns
+# ``"narrative_only"`` for these clusters; the harness then restricts
+# them to instruction-section patches (lever 3) and excludes them
+# from the ``MAX_AG_PATCHES`` SQL-shape budget.
+NL_TEXT_ONLY_JUDGES: frozenset[str] = frozenset({
+    "response_quality",
+    "table_routing_quality_text",
+})
+
+
+def is_nl_text_only_cluster(cluster: dict) -> bool:
+    """True when every failing judge in the cluster is NL_TEXT-only.
+
+    Checks both ``dominant_failed_judges`` (set during cluster build)
+    and ``affected_judges`` (legacy field) so old call sites continue
+    to work.
+    """
+    failed_judges: set[str] = set()
+    for key in ("dominant_failed_judges", "affected_judges", "failed_judges"):
+        val = cluster.get(key)
+        if isinstance(val, (list, tuple, set, frozenset)):
+            for j in val:
+                if isinstance(j, str) and j:
+                    failed_judges.add(j)
+    if not failed_judges:
+        return False
+    return failed_judges.issubset(NL_TEXT_ONLY_JUDGES)
+
+
+def route_nl_text_only_cluster(cluster: dict) -> str:
+    """Return the proposal track this cluster should follow.
+
+    ``"narrative_only"`` clusters are restricted to ``add_instruction``
+    / ``rewrite_instruction`` proposals (lever 3); ``"default"`` is
+    the standard SQL-shape track.
+    """
+    if not is_nl_text_only_cluster(cluster):
+        return "default"
+    return "narrative_only"
+
+
+# Task 7: deterministic ranking tiebreakers. Higher rank => earlier in
+# the strategist's priority list. SQL-shape beats ROUTING beats
+# NL_TEXT beats META so an SQL-shape cluster with the same impact
+# always wins.
+_SIGNAL_CLASS_RANK: dict[str, int] = {
+    "sql_shape": 3,
+    "routing": 2,
+    "nl_text": 1,
+    "meta": 0,
+    "infra": 0,
+    "mixed": 2,  # mixed treated mid-rank
+}
+
+
+def _signal_class_rank(cluster: dict) -> int:
+    """Map the cluster's aggregate signal class string to a numeric
+    tiebreaker value (higher beats lower)."""
+    sc = cluster.get("signal_class")
+    if sc is None:
+        # Fall back to deriving from failing judges if signal_class
+        # was not pre-stamped.
+        from genie_space_optimizer.optimization.judge_classes import (
+            aggregate_cluster_signal_class,
+        )
+        judges = []
+        for key in ("affected_judges", "dominant_failed_judges", "failed_judges"):
+            val = cluster.get(key)
+            if isinstance(val, (list, tuple, set, frozenset)):
+                judges.extend(j for j in val if isinstance(j, str))
+        sc = aggregate_cluster_signal_class(judges)
+    if hasattr(sc, "value"):
+        sc = sc.value
+    sc_str = str(sc).lower()
+    return _SIGNAL_CLASS_RANK.get(sc_str, 0)
+
+
 def cluster_impact(cluster: dict) -> float:
     """Score a failure cluster by estimated optimisation impact.
 
@@ -2537,7 +2620,24 @@ def rank_clusters(
             )
         scored.append(enriched)
 
-    scored.sort(key=lambda c: c["impact_score"], reverse=True)
+    # Task 7: deterministic tiebreakers. Without these, two clusters
+    # with the same impact_score (the retail-run condition where the
+    # top 5 all came in at impact=1.7) sorted by Python's stable-sort
+    # default — i.e. by insertion order, which tracks lexicographic
+    # qid. The new key prefers (in order): impact, hard > soft, then
+    # SQL_SHAPE > ROUTING > NL_TEXT > META, then signal_quality.combined,
+    # then mean_judge_failure_ratio. All real signal-based; no qid
+    # ordering creeps in.
+    scored.sort(
+        key=lambda c: (
+            float(c.get("impact_score") or 0.0),
+            1 if c.get("signal_type") == "hard" else 0,
+            _signal_class_rank(c),
+            float((c.get("signal_quality") or {}).get("combined", 0.0)),
+            float(c.get("mean_judge_failure_ratio") or 0.0),
+        ),
+        reverse=True,
+    )
 
     if recommended_levers:
         # Swap adjacent pairs that are within the tiebreak threshold when the
