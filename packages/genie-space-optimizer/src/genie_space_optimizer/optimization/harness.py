@@ -6410,6 +6410,43 @@ def _analyze_and_distribute(
             continue
 
         if row_is_hard_failure(row):
+            # Task 6: stamp typed SQL feature diff on confirmed-failure
+            # rows so downstream stages can route off ``_feature_diff``
+            # instead of pattern-detector heuristics. ``compute_diff``
+            # is pure and ``mine_sql_features`` returns empty features
+            # on parse errors, so this stamping is safe to fail open.
+            try:
+                from genie_space_optimizer.optimization.feature_mining import (
+                    compute_diff as _t6_compute_diff,
+                    mine_sql_features as _t6_mine_features,
+                )
+                _genie_sql = (
+                    row.get("outputs.predictions.sql")
+                    or row.get("generated_sql")
+                    or row.get("genie_sql")
+                    or ""
+                )
+                _expected_sql = (
+                    row.get("inputs.expected_sql")
+                    or row.get("expected_sql")
+                    or ""
+                )
+                if _genie_sql and _expected_sql:
+                    row["_feature_diff"] = _t6_compute_diff(
+                        genie=_t6_mine_features(_genie_sql),
+                        ground_truth=_t6_mine_features(_expected_sql),
+                    )
+                    # Task 6: thread the SQL pair so afs._structural_diff
+                    # can finally invoke the existing compute_ast_diff
+                    # path (was dead code without a populator).
+                    row["_sql_pairs_for_ast_diff"] = (
+                        _genie_sql, _expected_sql,
+                    )
+            except Exception:
+                logger.debug(
+                    "Task 6 feature mining failed (non-fatal) for qid=%s",
+                    qid, exc_info=True,
+                )
             filtered_failure_rows.append(row)
         elif _has_individual_judge_failure(row):
             soft_signal_rows.append(row)
@@ -6697,6 +6734,27 @@ def _analyze_and_distribute(
     _lineage_lines.append("=" * 78)
     print("\n".join(_lineage_lines))
 
+    # Task 6: aggregate the per-row ``_feature_diff`` stamps into a
+    # DiffKind histogram so the lever loop can carry typed-evidence
+    # telemetry into the Task 3 audit (stage_letter "D",
+    # gate_name "feature_mining"). Pure aggregation; safe to fail open.
+    _feature_diff_histogram: dict[str, int] = {}
+    _feature_diff_count = 0
+    try:
+        for _row in filtered_failure_rows:
+            _fd = _row.get("_feature_diff")
+            _kind = getattr(getattr(_fd, "primary_kind", None), "value", None)
+            if _kind:
+                _feature_diff_histogram[_kind] = (
+                    _feature_diff_histogram.get(_kind, 0) + 1
+                )
+                _feature_diff_count += 1
+    except Exception:
+        logger.debug(
+            "Task 6 feature_diff histogram aggregation failed (non-fatal)",
+            exc_info=True,
+        )
+
     return {
         "lever_assignments": lever_assignments,
         "all_clusters": clusters,
@@ -6707,6 +6765,11 @@ def _analyze_and_distribute(
         # Task 1: corpus-review queue payloads (Delta-shaped). The caller
         # is responsible for persisting via state.write_gt_correction_candidates.
         "gt_correction_candidates": gt_correction_candidates,
+        # Task 6: typed-evidence telemetry. Carries a DiffKind ->
+        # count map plus the total count of confirmed-failure rows
+        # that received a feature diff stamp.
+        "feature_diff_histogram": _feature_diff_histogram,
+        "feature_diff_count": _feature_diff_count,
     }
 
 
