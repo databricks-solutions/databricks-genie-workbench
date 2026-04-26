@@ -314,6 +314,25 @@ apply with intra-AG slice gates — is no longer in the gate sequence
 after Task 2 disabled slice/P0 gates by default."""
 
 MIN_PROPOSAL_RELEVANCE = float(os.getenv("GSO_MIN_PROPOSAL_RELEVANCE", "0.1"))
+
+ENFORCE_REFLECTION_REVALIDATION: bool = (
+    os.getenv("GSO_ENFORCE_REFLECTION_REVALIDATION", "true").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""Task 10: when True (default), the T2.2 reflection-as-validator
+bypass requires a substantive ``escalation_justification`` (≥ 16
+chars) to override a previously-rolled-back ``(patch_type, target)``
+pair. Surviving rewrites are stamped with a fresh ``proposal_id`` +
+``parent_proposal_id`` for attribution and emit a
+``reflection_rewrite`` decision audit row before flowing through
+grounding (Task 5), counterfactual scan, AFS / leakage firewall, and
+apply.
+
+Set ``GSO_ENFORCE_REFLECTION_REVALIDATION=false`` to fall back to the
+legacy "any non-empty justification bypasses" behavior. The legacy
+mode still tags rewrites and emits the audit row, but no longer
+requires the justification to be non-trivial."""
+
 """Minimum fraction of a proposal's identifier targets that must
 appear in some failing question's surface for the proposal to be kept
 by ``proposal_grounding.select_patch_bundle``. Default ``0.1`` keeps

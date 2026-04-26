@@ -9644,8 +9644,26 @@ def _run_lever_loop(
         )
 
         if _patch_forbidden:
+            from genie_space_optimizer.common.config import (
+                ENFORCE_REFLECTION_REVALIDATION,
+            )
             _kept: list[dict] = []
             _dropped: list[tuple[str, str, str]] = []  # (ptype, target, reason)
+            _reflection_rewrites: list[dict] = []  # for audit emission below
+            # Map ``(ptype, target)`` → previous proposal_id so we can
+            # link parent_proposal_id when a rewrite passes the bypass.
+            _prev_proposal_ids: dict[tuple[str, str], str] = {}
+            for _rb in reflection_buffer:
+                if _rb.get("accepted"):
+                    continue
+                for _entry in _rb.get("do_not_retry", []) or []:
+                    _es = str(_entry).strip()
+                    if " on " in _es:
+                        _ept, _etgt = _es.split(" on ", 1)
+                        _prev_proposal_ids.setdefault(
+                            (_ept.strip(), _etgt.strip()),
+                            str(_rb.get("ag_id") or ""),
+                        )
             for _p in all_proposals:
                 _ptype = str(_p.get("type") or _p.get("patch_type") or "")
                 # B1.1 — raw proposals carry ``table`` (column-level
@@ -9661,9 +9679,44 @@ def _run_lever_loop(
                 )
                 _key = (_ptype, _target)
                 _justification = str(_p.get("escalation_justification") or "").strip()
-                if _key in _patch_forbidden and not _justification:
-                    _dropped.append((_ptype, _target,
-                                     "rolled back previously (no escalation_justification)"))
+                if _key in _patch_forbidden:
+                    if not _justification:
+                        _dropped.append((_ptype, _target,
+                                         "rolled back previously (no escalation_justification)"))
+                        continue
+                    if (
+                        ENFORCE_REFLECTION_REVALIDATION
+                        and len(_justification) < 16
+                    ):
+                        # Task 10: a one-word justification is not
+                        # enough evidence. Require concrete reasoning
+                        # so the bypass is auditable, not free.
+                        _dropped.append((_ptype, _target,
+                                         "escalation_justification too short to be concrete"))
+                        continue
+                    # Task 10: this is a reflection rewrite. Treat as
+                    # a brand-new proposal: stamp fresh proposal_id,
+                    # link parent_proposal_id for attribution, mark
+                    # the rewrite flag so downstream gates and the
+                    # audit trail can recognise it.
+                    _orig_pid = str(_p.get("proposal_id") or "")
+                    _parent_pid = (
+                        _prev_proposal_ids.get(_key) or _orig_pid or ""
+                    )
+                    _new_pid = f"{_orig_pid or 'rewrite'}:rev{iteration_counter}"
+                    _p["parent_proposal_id"] = _parent_pid
+                    _p["proposal_id"] = _new_pid
+                    _p["is_reflection_rewrite"] = True
+                    _p["requires_full_revalidation"] = True
+                    _reflection_rewrites.append({
+                        "ptype": _ptype,
+                        "target": _target,
+                        "parent_proposal_id": _parent_pid,
+                        "proposal_id": _new_pid,
+                        "justification": _justification[:240],
+                        "cluster_id": _p.get("cluster_id"),
+                    })
+                    _kept.append(_p)
                 else:
                     _kept.append(_p)
             if _dropped:
@@ -9685,6 +9738,59 @@ def _run_lever_loop(
                 for _ptype, _target, _reason in _dropped:
                     print(f"|  - {_ptype} on {_target} ({_reason})")
                 print(_bar("-"))
+            # Task 10: emit a ``reflection_rewrite`` decision audit
+            # row for every rewrite that survived the bypass. Lets
+            # operators query "show me every AG where the strategist
+            # re-tried a previously-rolled-back patch with a fresh
+            # justification" without log scraping.
+            if _reflection_rewrites:
+                try:
+                    from genie_space_optimizer.optimization.state import (
+                        write_lever_loop_decisions as _t10_audit,
+                    )
+                    _t10_rows: list[dict] = []
+                    for _idx, _rw in enumerate(_reflection_rewrites, start=1):
+                        _t10_rows.append({
+                            "run_id": run_id,
+                            "iteration": iteration_counter,
+                            "ag_id": ag_id,
+                            "decision_order": _idx,
+                            "stage_letter": "G",
+                            "gate_name": "reflection_rewrite",
+                            "decision": "accepted",
+                            "reason_code": "escalation_justification_supplied",
+                            "reason_detail": (
+                                f"{_rw['ptype']} on {_rw['target']}: "
+                                f"{_rw['justification']}"
+                            )[:2000],
+                            "proposal_ids": [_rw["proposal_id"]],
+                            "source_cluster_ids": (
+                                [_rw["cluster_id"]] if _rw.get("cluster_id") else []
+                            ),
+                            "metrics": {
+                                "patch_type": _rw["ptype"],
+                                "target": _rw["target"],
+                                "parent_proposal_id": _rw["parent_proposal_id"],
+                            },
+                        })
+                    if _t10_rows:
+                        _t10_audit(
+                            spark, _t10_rows,
+                            catalog=catalog, schema=schema,
+                        )
+                except Exception:
+                    logger.debug(
+                        "Task 10 reflection_rewrite audit emission "
+                        "failed (non-fatal)",
+                        exc_info=True,
+                    )
+                logger.info(
+                    "[%s] T2.2 reflection-as-validator accepted %d "
+                    "rewrite(s) with escalation_justification; each will "
+                    "re-run grounding (Task 5) + counterfactual + apply "
+                    "gates as a brand-new proposal.",
+                    ag_id, len(_reflection_rewrites),
+                )
             all_proposals = _kept
 
         # ── T2.4: Counterfactual asset-impact scan ───────────────────
