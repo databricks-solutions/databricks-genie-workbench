@@ -94,7 +94,7 @@ frontend/
   vite.config.ts           # Vite config with /api proxy to localhost:8000
 packages/
   genie-space-optimizer/   # GSO engine: separate Python package deployed as a wheel
-                           # Has its own pyproject.toml, uv.lock, package.json, bun.lock
+                           # Has its own pyproject.toml, uv.lock, package.json, package-lock.json
 ```
 
 ## Key Patterns
@@ -162,7 +162,6 @@ attacks like the litellm PyPI credential stealer (March 2026) and axios npm RAT
 | `packages/genie-space-optimizer/uv.lock` | GSO Python deps | SHA256 hashes |
 | `frontend/package-lock.json` | Frontend npm deps | SHA-512 integrity |
 | `packages/genie-space-optimizer/package-lock.json` | GSO UI npm deps | SHA-512 integrity |
-| `packages/genie-space-optimizer/bun.lock` | GSO UI deps | Integrity hashes |
 
 ## Gotchas
 

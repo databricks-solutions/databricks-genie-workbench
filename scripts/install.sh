@@ -725,7 +725,13 @@ while true; do
         fi
         echo ""
         _info "Available Lakebase Autoscaling projects:"
-        _select_from LAKEBASE_INSTANCE "Select existing Lakebase project" "${LB_NAMES[@]}"
+        EXISTING_LB_OPTIONS=("${LB_NAMES[@]}" "Back to Lakebase options")
+        _select_from LAKEBASE_INSTANCE "Select existing Lakebase project" "${EXISTING_LB_OPTIONS[@]}"
+        if [[ "$LAKEBASE_INSTANCE" == "Back to Lakebase options" ]]; then
+            LAKEBASE_INSTANCE=""
+            echo ""
+            continue
+        fi
         _ok "Lakebase Autoscaling project: $LAKEBASE_INSTANCE"
         break
     fi
@@ -886,8 +892,11 @@ for space in spaces:
 
 print(granted)
 " 2>/dev/null || echo "0")
+    if [[ ! "$GENIE_SPACES_GRANTED" =~ ^[0-9]+$ ]]; then
+        GENIE_SPACES_GRANTED=0
+    fi
 
-    if [ "$GENIE_SPACES_GRANTED" -gt 0 ] 2>/dev/null; then
+    if [ "$GENIE_SPACES_GRANTED" -gt 0 ]; then
         _ok "Granted access to $GENIE_SPACES_GRANTED Genie Space(s)."
         AUTOMATED+=("Genie Space SP access ($GENIE_SPACES_GRANTED spaces)")
     else
@@ -948,7 +957,7 @@ if [ ${#AUTOMATED[@]} -gt 0 ]; then
     done
 fi
 
-if [ "$GENIE_SPACES_GRANTED" -eq 0 ] 2>/dev/null; then
+if [ "$GENIE_SPACES_GRANTED" -eq 0 ]; then
     if [ "$GRANT_SPACES" = "Y" ] && [ -n "$SP_CLIENT_ID" ]; then
         echo -e "    ${YELLOW}⚠${NC} No existing Genie Spaces were granted to the app SP"
     elif [ "$GRANT_SPACES" != "Y" ]; then

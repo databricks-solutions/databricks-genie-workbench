@@ -200,7 +200,6 @@ All dependencies are pinned to exact versions with integrity hashes. Lock files 
 | `packages/genie-space-optimizer/uv.lock` | GSO Python deps | SHA256 hashes |
 | `frontend/package-lock.json` | Frontend npm deps | SHA-512 integrity |
 | `packages/genie-space-optimizer/package-lock.json` | GSO UI npm deps | SHA-512 integrity |
-| `packages/genie-space-optimizer/bun.lock` | GSO UI deps | Integrity hashes |
 
 ### Updating Python dependencies
 

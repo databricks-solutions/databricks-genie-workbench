@@ -336,6 +336,14 @@ if [ "$BUNDLE_EXIT" -ne 0 ]; then
     echo "       - Auth issue with profile '$PROFILE'"
     echo "       - GSO wheel build failure (missing 'build' package)"
     echo "       - Terraform state conflict (try: databricks bundle deploy -t app --force-lock)"
+    if [[ "$BUNDLE_OUTPUT" == *"run_as service principal does not exist"* ]]; then
+        echo ""
+        echo "  Detected stale install state:"
+        echo "    The bundle references a run_as service principal that no longer exists."
+        echo "    This usually means a previous app/job installation still has workspace state."
+        echo "    Clean it up with: ./scripts/deploy.sh --destroy"
+        echo "    Then re-run the installer or deploy command."
+    fi
     echo "    3. Fix the issue and re-run: ./scripts/deploy.sh --update"
     exit 1
 fi

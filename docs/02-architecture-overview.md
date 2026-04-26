@@ -119,9 +119,9 @@ The frontend is a React 19 + TypeScript + Tailwind CSS v4 application built with
 The `packages/genie-space-optimizer/` directory contains a separate Python package with its own frontend:
 
 - **Python backend** — optimization pipeline, job notebooks, FastAPI service
-- **React frontend** — built with Bun (not npm), includes a "How It Works" walkthrough UI
+- **React frontend** — npm-managed Vite UI, includes a "How It Works" walkthrough UI
 - **Deployed as** — a wheel installed into the app's Python environment + a Databricks Job for the optimization DAG
-- **Has its own** — `pyproject.toml`, `uv.lock`, `package.json`, `bun.lock`
+- **Has its own** — `pyproject.toml`, `uv.lock`, `package.json`, `package-lock.json`
 
 The main Workbench app proxies GSO functionality through `backend/routers/auto_optimize.py`.
 

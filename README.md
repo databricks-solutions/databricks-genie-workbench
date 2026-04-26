@@ -312,7 +312,6 @@ which targeted unpinned PyPI packages and GitHub Action tags).
 | `packages/genie-space-optimizer/uv.lock` | GSO Python deps with SHA256 hashes | uv |
 | `frontend/package-lock.json` | All frontend npm deps with SHA-512 integrity hashes | npm |
 | `packages/genie-space-optimizer/package-lock.json` | GSO UI npm deps with SHA-512 integrity hashes | npm |
-| `packages/genie-space-optimizer/bun.lock` | GSO UI deps | bun |
 
 ### Updating Python dependencies
 
