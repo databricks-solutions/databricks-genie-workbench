@@ -566,9 +566,15 @@ preflight_out = {
     "human_corrections": ctx_feedback["human_corrections"],
 }
 
+_train_n = sum(1 for _b in _benchmarks if _b.get("split") != "held_out")
+_held_n = len(_benchmarks) - _train_n
 _log(
     "Preflight complete",
     benchmark_count=len(_benchmarks),
+    train_count=_train_n,
+    held_out_count=_held_n,
+    held_out_ratio=f"{HELD_OUT_RATIO:.0%}",
+    held_out_note="reserved for Finalize generalization check; baseline/lever_loop see train only",
     model_creation="deferred to baseline eval",
     experiment_name=preflight_out["experiment_name"],
 )

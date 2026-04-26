@@ -23,6 +23,7 @@ from genie_space_optimizer.common.config import (
 )
 from genie_space_optimizer.common.genie_client import fetch_space_config
 from genie_space_optimizer.common.genie_schema import validate_serialized_space
+from genie_space_optimizer.common.mlflow_names import default_tags, preflight_run_name
 from genie_space_optimizer.common.uc_metadata import (
     extract_genie_space_table_refs,
     get_columns,
@@ -1417,10 +1418,18 @@ def preflight_collect_uc_metadata(
     # profile dispatcher — see the asset for what it really is. Run this
     # before the UC Refs split / Coverage display so those lines reflect
     # the *effective* MV count, not the raw config count.
+    _catalog_outcomes: dict[str, str] = {}
     try:
-        _catalog_mvs, _catalog_mv_yamls = _detect_metric_views_via_catalog(
-            spark, list(genie_table_refs),
-            w=w, warehouse_id=warehouse_id, catalog=catalog, schema=schema,
+        from genie_space_optimizer.common.metric_view_catalog import (
+            detect_metric_views_via_catalog_with_outcomes,
+            summarize_outcomes,
+        )
+        _catalog_mvs, _catalog_mv_yamls, _catalog_outcomes = (
+            detect_metric_views_via_catalog_with_outcomes(
+                spark, list(genie_table_refs),
+                w=w, warehouse_id=warehouse_id,
+                catalog=catalog, schema=schema,
+            )
         )
     except Exception:
         logger.debug("MV catalog detection failed — continuing without it", exc_info=True)
@@ -1434,6 +1443,30 @@ def preflight_collect_uc_metadata(
             "MV catalog detection: %d ref(s) classified as metric views (%s)",
             len(_catalog_mv_yamls), sorted(_catalog_mv_yamls.keys()),
         )
+    # PR 23 — Always emit a one-line outcome summary, even when zero
+    # MVs were detected, so log readers can distinguish "no MVs in this
+    # space" from "DESCRIBE silently failed on every ref".
+    _refs_seen = list(genie_table_refs) if genie_table_refs else []
+    if _refs_seen:
+        try:
+            _counts = summarize_outcomes(_catalog_outcomes)
+            logger.info(
+                "MV catalog detection summary: refs=%d, detected=%d, "
+                "describe_error=%d, empty_result=%d, no_envelope=%d, "
+                "no_view_text=%d, yaml_parse_error=%d, not_mv_shape=%d",
+                len(_refs_seen),
+                _counts["detected"],
+                _counts["describe_error"],
+                _counts["empty_result"],
+                _counts["no_envelope"],
+                _counts["no_view_text"],
+                _counts["yaml_parse_error"],
+                _counts["not_mv_shape"],
+            )
+        except Exception:
+            logger.debug(
+                "MV detection summary aggregation failed", exc_info=True,
+            )
 
     from genie_space_optimizer.optimization.evaluation import (
         effective_metric_view_identifiers,
@@ -1863,13 +1896,15 @@ def preflight_generate_benchmarks(
             exc_info=True,
         )
 
-    with mlflow.start_run(run_name="benchmark_generation") as _bench_run:
-        mlflow.set_tags({
-            "genie.space_id": space_id,
-            "genie.domain": domain,
-            "genie.stage": "benchmark_generation",
-            "genie.run_id": run_id,
-        })
+    with mlflow.start_run(run_name=preflight_run_name(run_id)) as _bench_run:
+        _pf_tags = default_tags(
+            run_id,
+            space_id=space_id,
+            stage="benchmark_generation",
+            iteration=0,
+        )
+        _pf_tags["genie.domain"] = domain
+        mlflow.set_tags(_pf_tags)
 
         benchmarks, _benchmarks_regenerated = _load_or_generate_benchmarks(
             w, spark, config, uc_columns, uc_tags, uc_routines,

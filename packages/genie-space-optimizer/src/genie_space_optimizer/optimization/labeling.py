@@ -17,10 +17,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime
 from typing import Any
 
 import mlflow
+
+from genie_space_optimizer.common.mlflow_names import labeling_run_name
 
 logger = logging.getLogger(__name__)
 
@@ -171,13 +172,7 @@ def create_review_session(
 
     mlflow.set_experiment(experiment_name)
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    suffix = f"_{run_id[:8]}_{ts}"
-    prefix = f"opt_{domain}"
-    max_prefix = 64 - len(suffix)
-    if len(prefix) > max_prefix:
-        prefix = prefix[:max_prefix]
-    session_name = f"{prefix}{suffix}"
+    session_name = labeling_run_name(run_id)
 
     print(
         f"[Labeling] Creating session '{session_name}' in experiment '{experiment_name}' "

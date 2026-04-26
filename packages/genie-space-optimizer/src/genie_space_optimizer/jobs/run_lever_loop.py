@@ -408,10 +408,19 @@ if thresholds_met:
 # COMMAND ----------
 
 uc_schema = f"{catalog}.{schema}"
-benchmarks = load_benchmarks_from_dataset(spark, uc_schema, domain)
-benchmarks = [b for b in benchmarks if b.get("split") != "held_out"]
+_all_benchmarks = load_benchmarks_from_dataset(spark, uc_schema, domain)
+benchmarks = [b for b in _all_benchmarks if b.get("split") != "held_out"]
+_held_out_n = len(_all_benchmarks) - len(benchmarks)
 _banner("Loaded Benchmarks")
-_log("Benchmark dataset (train only)", uc_schema=uc_schema, domain=domain, benchmark_count=len(benchmarks))
+_log(
+    "Benchmark dataset (train/held-out split)",
+    uc_schema=uc_schema,
+    domain=domain,
+    total_loaded=len(_all_benchmarks),
+    train_count=len(benchmarks),
+    held_out_count=_held_out_n,
+    note="held-out reserved for Finalize generalization check",
+)
 if not benchmarks:
     raise RuntimeError(f"No benchmarks found in {uc_schema}.genie_benchmarks_{domain}")
 

@@ -368,6 +368,21 @@ def test_data_profiling_stage_detail_includes_mv_metrics():
             preflight, "_detect_metric_views_via_catalog",
             return_value=({"cat.sch.mv_orders"}, {"cat.sch.mv_orders": {"source": "x"}}),
         ),
+        # PR 23 — preflight now calls the ``_with_outcomes`` variant
+        # for the always-on summary line; patch both for back-compat.
+        patch(
+            "genie_space_optimizer.common.metric_view_catalog."
+            "detect_metric_views_via_catalog_with_outcomes",
+            return_value=(
+                {"cat.sch.mv_orders"},
+                {"cat.sch.mv_orders": {"source": "x"}},
+                {
+                    "cat.sch.real_table": "no_view_text",
+                    "cat.sch.mv_in_disguise": "no_view_text",
+                    "cat.sch.mv_orders": "detected",
+                },
+            ),
+        ),
         patch.object(preflight, "get_columns_for_tables_rest", return_value=[]),
         patch.object(preflight, "get_tags_for_tables_rest", return_value=[]),
         patch.object(preflight, "get_routines_for_schemas_rest", return_value=[]),

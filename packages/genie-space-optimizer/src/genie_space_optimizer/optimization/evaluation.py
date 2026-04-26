@@ -828,6 +828,313 @@ def _repair_measure_in_where(
         return sql, 0
 
 
+# PR 26 — direct-JOIN-on-metric-view pre-check + CTE-first repair.
+#
+# Spark's metric-view planner rejects any direct ``JOIN`` whose left or
+# right operand is a metric view with the
+# ``METRIC_VIEW_JOIN_NOT_SUPPORTED`` error class. The documented fix is
+# to materialize each metric view inside a ``WITH`` CTE first (computing
+# every required measure with ``MEASURE()`` and projecting the
+# dimensions used in the JOIN predicate) and then JOIN the CTE's result
+# in the outer query. The benchmark validation path already short-
+# circuits this shape upstream of EXPLAIN; PR 26 mirrors the gate into
+# the unified example-SQL synthesis path so the LLM either receives an
+# auto-repaired candidate or sees the candidate rejected with an
+# actionable reason code instead of being re-prompted with an opaque
+# Spark error string.
+
+
+def _check_metric_view_join_pre(
+    sql: str,
+    mv_set: set[str],
+) -> str | None:
+    """Reject SQL that JOINs directly against a metric view (PR 26).
+
+    Returns ``"metric_view_join"`` when the SQL contains a ``JOIN``
+    whose left or right operand is a known metric view (resolved by
+    short-name match against ``mv_set``) and the SQL does NOT already
+    use a ``WITH`` clause to materialize the MV. Returns ``None``
+    otherwise (no JOIN, no MV in the JOIN, or the MV is wrapped in a
+    CTE).
+
+    The ``mv_set`` should contain short basenames (lowercased), e.g.
+    ``{"mv_sales", "mv_returns"}``. ``cat.sch.mv_sales`` references in
+    the SQL match because the resolver compares the basename
+    (``mv_sales``).
+
+    Conservative: returns ``None`` when sqlglot is unavailable, parsing
+    fails, the SQL already contains a top-level ``WITH`` (the LLM
+    likely emitted the CTE-first pattern already), or there is no
+    ``JOIN`` at all.
+    """
+    if not sql or not mv_set:
+        return None
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+    except Exception:
+        return None
+
+    try:
+        tree = sqlglot.parse_one(sql, read="databricks")
+    except Exception:
+        return None
+
+    if not isinstance(tree, exp.Select):
+        return None
+    if tree.args.get("with") or tree.args.get("with_"):
+        # CTE present — assume the LLM already emitted the documented
+        # CTE-first pattern. False negatives here only surface as the
+        # generic ``metric_view_join`` Spark error downstream, which the
+        # correction loop can still fix.
+        return None
+    joins = tree.args.get("joins") or []
+    if not joins:
+        return None
+
+    mv_lower = {m.lower() for m in mv_set if m}
+
+    def _table_basename(t: exp.Table) -> str:
+        nm = (t.name or "").strip("`").lower()
+        return nm
+
+    # Collect every operand on the FROM + JOIN side of the query.
+    from_ = tree.args.get("from") or tree.args.get("from_")
+    operand_tables: list[exp.Table] = []
+    if from_ is not None:
+        for src in getattr(from_, "expressions", None) or [from_.this]:
+            if isinstance(src, exp.Table):
+                operand_tables.append(src)
+    for j in joins:
+        right = j.this if isinstance(j, exp.Join) else None
+        if isinstance(right, exp.Table):
+            operand_tables.append(right)
+
+    for t in operand_tables:
+        if _table_basename(t) in mv_lower:
+            return "metric_view_join"
+    return None
+
+
+def _repair_metric_view_join(
+    sql: str,
+    mv_set: set[str],
+    mv_measures: dict[str, set[str]] | None = None,
+) -> tuple[str, int]:
+    """Wrap each metric view referenced in a JOIN with a CTE (PR 26).
+
+    For each MV referenced in the FROM or any JOIN clause, builds a
+    ``WITH __mv_<n> AS (SELECT <referenced_dims>, MEASURE(<m>) AS <m>,
+    … FROM <mv>)`` CTE and rewrites the original Table node to
+    reference the CTE alias. Outer-query references to the MV alias's
+    columns continue to work because the CTE projects the same column
+    names; outer ``MEASURE(alias.measure)`` calls are flattened to
+    ``alias.measure`` (the CTE has already materialized the measure).
+
+    Returns ``(new_sql, num_mvs_wrapped)``. Conservative — returns
+    ``(sql, 0)`` unchanged when sqlglot is unavailable, parsing fails,
+    the SQL already has a ``WITH`` clause, no MV appears in the
+    query, the rewrite would be ambiguous (e.g. unqualified column
+    references that could resolve to either side of the JOIN), or any
+    transform raises.
+
+    The repair is best-effort: when it cannot produce a clean rewrite
+    it returns ``(sql, 0)`` so the caller (synthesis pre-check) records
+    the candidate as ``metric_view_join`` rejected and lets the
+    correction loop / LLM hint do the work on the next round.
+    """
+    if not sql or not mv_set:
+        return sql, 0
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+    except Exception:
+        return sql, 0
+
+    try:
+        tree = sqlglot.parse_one(sql, read="databricks")
+    except Exception:
+        return sql, 0
+
+    if not isinstance(tree, exp.Select):
+        return sql, 0
+    if tree.args.get("with") or tree.args.get("with_"):
+        return sql, 0
+    joins = tree.args.get("joins") or []
+    if not joins:
+        return sql, 0
+
+    mv_lower = {m.lower() for m in mv_set if m}
+    measures_by_mv = {k.lower(): set(v) for k, v in (mv_measures or {}).items()}
+
+    def _table_basename(t: exp.Table) -> str:
+        return (t.name or "").strip("`").lower()
+
+    # Identify each MV reference (FROM and every JOIN side). Track the
+    # alias the LLM used so we can rebind outer-query column refs.
+    from_ = tree.args.get("from") or tree.args.get("from_")
+    mv_refs: list[tuple[exp.Table, str]] = []  # (table_node, alias)
+
+    def _alias_of(t: exp.Table) -> str:
+        a = t.args.get("alias")
+        if isinstance(a, exp.TableAlias) and a.name:
+            return str(a.name)
+        return _table_basename(t)
+
+    if from_ is not None:
+        for src in getattr(from_, "expressions", None) or [from_.this]:
+            if isinstance(src, exp.Table) and _table_basename(src) in mv_lower:
+                mv_refs.append((src, _alias_of(src)))
+    for j in joins:
+        right = j.this if isinstance(j, exp.Join) else None
+        if isinstance(right, exp.Table) and _table_basename(right) in mv_lower:
+            mv_refs.append((right, _alias_of(right)))
+
+    if not mv_refs:
+        return sql, 0
+
+    # Build a CTE for each MV ref and rewrite the Table node in place.
+    # The CTE projects every column referenced from the MV alias in
+    # the rest of the SQL plus the MV's known measures (when we have
+    # them) wrapped in MEASURE(). Unknown column shapes (no qualifier,
+    # ambiguous resolution) cause us to bail.
+    new_tree = tree.copy()
+    # Re-bind operand_tables on the COPY since we just deep-copied.
+    new_from = new_tree.args.get("from") or new_tree.args.get("from_")
+    new_joins = new_tree.args.get("joins") or []
+
+    # Record (table_node, original_user_alias, cte_alias, mv_basename)
+    # tuples — the basename is captured BEFORE the rewrite swaps the
+    # table's identifier to the CTE alias, otherwise the outer-query
+    # MEASURE() flatten step below can't find which MV a given alias
+    # belongs to.
+    new_mv_refs: list[tuple[exp.Table, str, str, str]] = []
+    cte_idx = 0
+    if new_from is not None:
+        for src in getattr(new_from, "expressions", None) or [new_from.this]:
+            if isinstance(src, exp.Table) and _table_basename(src) in mv_lower:
+                cte_idx += 1
+                cte_alias = f"__mv_{cte_idx}"
+                new_mv_refs.append(
+                    (src, _alias_of(src), cte_alias, _table_basename(src)),
+                )
+    for j in new_joins:
+        right = j.this if isinstance(j, exp.Join) else None
+        if isinstance(right, exp.Table) and _table_basename(right) in mv_lower:
+            cte_idx += 1
+            cte_alias = f"__mv_{cte_idx}"
+            new_mv_refs.append(
+                (right, _alias_of(right), cte_alias, _table_basename(right)),
+            )
+
+    # Collect referenced columns per MV alias from the entire tree.
+    cols_per_alias: dict[str, set[str]] = {
+        a.lower(): set() for _, a, _, _ in new_mv_refs
+    }
+    for col in new_tree.find_all(exp.Column):
+        tbl = (col.table or "").strip("`").lower()
+        if tbl and tbl in cols_per_alias:
+            cols_per_alias[tbl].add((col.name or "").lower())
+
+    cte_definitions: list[tuple[str, exp.Select]] = []
+    alias_to_basename: dict[str, str] = {
+        a.lower(): basename for _, a, _, basename in new_mv_refs
+    }
+    for table_node, original_alias, cte_alias, basename in new_mv_refs:
+        measures_for_mv = measures_by_mv.get(basename, set())
+        referenced_cols = cols_per_alias.get(original_alias.lower(), set())
+        if not referenced_cols and not measures_for_mv:
+            # Nothing tangible to project; bail conservatively.
+            return sql, 0
+
+        # Partition referenced columns into dims vs measures.
+        dim_cols: list[str] = []
+        measure_cols_used: set[str] = set()
+        for c in sorted(referenced_cols):
+            if c in measures_for_mv:
+                measure_cols_used.add(c)
+            else:
+                dim_cols.append(c)
+        # Always include any known measure that wasn't directly
+        # referenced — keeping the CTE's projection a superset of the
+        # outer query's needs is safer than under-projecting.
+        for m in sorted(measures_for_mv):
+            measure_cols_used.add(m)
+
+        cte_projections: list[exp.Expression] = []
+        for d in dim_cols:
+            cte_projections.append(exp.column(d))
+        for m in sorted(measure_cols_used):
+            cte_projections.append(
+                exp.Alias(
+                    this=exp.Anonymous(
+                        this="MEASURE",
+                        expressions=[exp.column(m)],
+                    ),
+                    alias=exp.to_identifier(m),
+                ),
+            )
+        if not cte_projections:
+            return sql, 0
+
+        # FROM the original MV (preserve full qualification by copying
+        # the original table node, sans alias). ``exp.select(...).
+        # from_(table)`` is the only sqlglot API that wires the FROM
+        # clause such that it renders; ``Select.set('from', From(...))``
+        # silently drops the FROM on serialization for newly-built
+        # SELECT trees.
+        from_table = exp.Table(
+            this=exp.to_identifier(table_node.name),
+            db=table_node.args.get("db"),
+            catalog=table_node.args.get("catalog"),
+        )
+        cte_select = exp.select(*cte_projections).from_(from_table)
+        cte_definitions.append((cte_alias, cte_select))
+
+        # Rewrite the original Table node to reference the CTE alias.
+        table_node.set("this", exp.to_identifier(cte_alias))
+        table_node.set("db", None)
+        table_node.set("catalog", None)
+        # Re-pin the alias so outer-query qualified references
+        # (``alias.col``) keep resolving — alias text is unchanged.
+        if not table_node.args.get("alias"):
+            table_node.set(
+                "alias",
+                exp.TableAlias(this=exp.to_identifier(original_alias)),
+            )
+
+    # Outer query: flatten ``MEASURE(alias.measure)`` to
+    # ``alias.measure`` because the CTE already materialized the
+    # measure under the same column name.
+    for anon in list(new_tree.find_all(exp.Anonymous)):
+        if (anon.this or "").upper() != "MEASURE":
+            continue
+        args = anon.expressions or []
+        if len(args) != 1 or not isinstance(args[0], exp.Column):
+            continue
+        col = args[0]
+        tbl = (col.table or "").strip("`").lower()
+        nm = (col.name or "").lower()
+        basename_for_alias = alias_to_basename.get(tbl)
+        if (
+            basename_for_alias
+            and nm in measures_by_mv.get(basename_for_alias, set())
+        ):
+            anon.replace(col.copy())
+
+    # Attach each CTE in order. ``Select.with_`` chains them so the
+    # final serialized SQL has ``WITH __mv_1 AS (…), __mv_2 AS (…)
+    # SELECT …``.
+    out_tree = new_tree
+    for alias, sel in cte_definitions:
+        out_tree = out_tree.with_(alias, sel, copy=False)
+
+    try:
+        return out_tree.sql(dialect="databricks"), len(cte_definitions)
+    except Exception:
+        return sql, 0
+
+
 # Tokens that look like an identifier in a "FROM/JOIN <table> <alias>"
 # regex but are actually SQL keywords starting the next clause; never
 # treat them as aliases.
@@ -6698,14 +7005,17 @@ def run_evaluation(
             "soft_signal_qids": _soft_signal_qids,
         }
 
+        # Must be inside the `with mlflow.start_run(...)` block: log_metric
+        # without an active run silently auto-starts a fresh adjective-animal
+        # run that never gets closed (RUNNING-status "ghost runs" in the UI).
+        _log_pass_bucket_metrics(rows_for_output)
+
     logger.info(
         "Evaluation complete: %s — accuracy=%.1f%%, thresholds=%s",
         run_name,
         output["overall_accuracy"],
         "PASS" if thresholds_passed else "FAIL",
     )
-
-    _log_pass_bucket_metrics(rows_for_output)
 
     if EVAL_DEBUG:
         _print_eval_summary(
@@ -7463,6 +7773,30 @@ def _build_schema_contexts(
         if not measures and not dimensions:
             parts.append("  (no column detail available)")
         mv_lines.append("\n".join(parts))
+    if mv_lines:
+        # PR 26 — explicit anti-pattern reminder + a positive minimal
+        # example so the LLM has both the rule ("never JOIN MVs
+        # directly") AND a worked template ("CTE-first pattern") in
+        # the context that lists this run's metric views. The hint is
+        # in addition to the per-template ``no direct JOINs`` rule
+        # text already baked into the synthesis prompts so even
+        # custom prompts that override those rules still surface the
+        # anti-pattern alongside the MV detail.
+        mv_lines.append(
+            "\nAnti-pattern reminder for the metric views above:\n"
+            "  Do NOT JOIN metric views directly. Spark rejects every "
+            "such query with METRIC_VIEW_JOIN_NOT_SUPPORTED.\n"
+            "  Compute every required measure inside a per-MV CTE "
+            "(SELECT the dims you need + MEASURE(<m>) AS <m>), then "
+            "JOIN the CTE results in the outer query. Example:\n"
+            "    WITH __mv_sales AS (\n"
+            "      SELECT region, MEASURE(total_sales) AS total_sales\n"
+            "      FROM cat.sch.mv_sales\n"
+            "    )\n"
+            "    SELECT s.region, s.total_sales, d.region_name\n"
+            "    FROM __mv_sales s\n"
+            "    JOIN cat.sch.dim_region d ON s.region = d.region_code;"
+        )
     metric_views_context = "\n".join(mv_lines) if mv_lines else "(none)"
 
     tvfs = config.get("_functions", [])
@@ -7691,6 +8025,17 @@ def _attempt_sql_correction(
 
     mv_measures = build_metric_view_measures(config)
     table_columns = build_table_columns(config)
+    # PR 26 — short MV-name set for the direct-JOIN repair, mirrors
+    # the unified synthesis path so the correction pipeline applies
+    # the same CTE-first rewriter when the LLM's corrected SQL still
+    # emits a direct JOIN against an MV.
+    _mv_names_corr = effective_metric_view_identifiers_with_catalog(config)
+    mv_short_set_corr: set[str] = {
+        str(n).split(".")[-1].lower() for n in (_mv_names_corr or set()) if n
+    }
+    mv_short_set_corr.update(
+        k.lower() for k in (mv_measures or {}).keys() if k
+    )
 
     corrected: list[dict] = []
     for c in corrections:
@@ -7779,6 +8124,29 @@ def _attempt_sql_correction(
                     + _where_lifts
                 )
                 c["expected_sql"] = sql_str
+
+        # PR 26 — apply the same CTE-first rewriter for direct JOINs
+        # on metric views. When the LLM correction round still emits a
+        # raw MV-on-X join, hoist each MV into a CTE before the
+        # downstream EXPLAIN/execute gate so we don't wastefully
+        # re-prompt for a fix the rewriter can apply deterministically.
+        if mv_short_set_corr:
+            _join_reason = _check_metric_view_join_pre(
+                sql_str, mv_short_set_corr,
+            )
+            if _join_reason:
+                repaired_sql_join, _join_wraps = _repair_metric_view_join(
+                    sql_str, mv_short_set_corr, mv_measures,
+                )
+                if _join_wraps:
+                    sql_str = repaired_sql_join
+                    c["expected_sql"] = sql_str
+                    if repair_counters is not None:
+                        repair_counters["repaired_metric_view_join"] = (
+                            repair_counters.get(
+                                "repaired_metric_view_join", 0,
+                            ) + _join_wraps
+                        )
 
         # Fix 3b: short-circuit candidates with dangling qualifiers
         # (``<qual>.<col>`` where ``qual`` is neither a FROM/JOIN table,
@@ -8206,6 +8574,14 @@ def generate_validated_sql_examples(
         # used (1 = single LLM call, no overdraw needed; 2/3 = the
         # first round under-produced and we re-asked the LLM).
         "adaptive_overdraw_rounds_used": 0,
+        # PR 26 — synthesis-side counters for the direct-JOIN-on-MV
+        # pre-check. ``metric_view_join`` counts candidates the
+        # pre-check rejected outright; ``metric_view_join_repaired``
+        # counts MV references the deterministic CTE-first rewriter
+        # successfully hoisted into a WITH clause, saving an EXPLAIN
+        # round-trip + a correction loop iteration.
+        "metric_view_join": 0,
+        "metric_view_join_repaired": 0,
     }
 
     allowlist = _build_metadata_allowlist(
@@ -8225,6 +8601,16 @@ def generate_validated_sql_examples(
     # rely on this set being complete or they wave through SQL that the
     # execute gate then rejects.
     mv_names = effective_metric_view_identifiers_with_catalog(config)
+    # PR 26 — short-name MV set for the direct-JOIN pre-check. The
+    # check matches by basename (``mv_sales``) so the LLM's
+    # ``cat.sch.mv_sales`` references resolve regardless of whether
+    # ``mv_names`` carries the fully-qualified or short form.
+    mv_short_set: set[str] = {
+        str(n).split(".")[-1].lower() for n in (mv_names or set()) if n
+    }
+    mv_short_set.update(
+        k.lower() for k in (mv_measures or {}).keys() if k
+    )
 
     def _register_valid(cand: dict) -> None:
         q = str(cand.get("question") or "").strip().lower()
@@ -8415,6 +8801,45 @@ def generate_validated_sql_examples(
                         + _where_lifts
                     )
                 candidate["expected_sql"] = sql_str
+
+            # PR 26: detect direct JOINs against a metric view BEFORE
+            # we burn an EXPLAIN round-trip. Try the deterministic
+            # CTE-first repair first; on failure, reject with the
+            # ``metric_view_join`` reason so the correction loop /
+            # adaptive overdraw can route the candidate appropriately.
+            if mv_short_set:
+                _join_reason = _check_metric_view_join_pre(
+                    sql_str, mv_short_set,
+                )
+                if _join_reason:
+                    repaired_sql, _wraps = _repair_metric_view_join(
+                        sql_str, mv_short_set, mv_measures,
+                    )
+                    if _wraps:
+                        rejection_counters["metric_view_join_repaired"] = (
+                            rejection_counters.get(
+                                "metric_view_join_repaired", 0,
+                            ) + _wraps
+                        )
+                        sql_str = repaired_sql
+                        candidate["expected_sql"] = sql_str
+                    else:
+                        candidate["validation_status"] = "invalid"
+                        candidate["validation_reason_code"] = (
+                            "metric_view_join"
+                        )
+                        candidate["validation_error"] = (
+                            "Direct JOIN against a metric view "
+                            "(METRIC_VIEW_JOIN_NOT_SUPPORTED). Use the "
+                            "CTE-first pattern: materialize the metric "
+                            "view in a WITH clause, then JOIN the CTE."
+                        )
+                        invalid.append(candidate)
+                        rejection_counters["metric_view_join"] = (
+                            rejection_counters.get("metric_view_join", 0)
+                            + 1
+                        )
+                        continue
 
             is_valid, err = _validate_benchmark_sql(
                 sql_str, spark, catalog, schema, execute=True,

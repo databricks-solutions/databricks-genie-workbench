@@ -63,6 +63,20 @@ def _run_preflight(
 
     rows_stub = collect_or_empty_rows or ([], None)
     catalog_stub = catalog_mvs if catalog_mvs is not None else (set(), {})
+    # PR 23 — synthesize the matching outcomes dict from the legacy
+    # ``catalog_stub`` so the new ``_with_outcomes`` API stays in sync
+    # with the older 2-tuple shape the test fixtures pass in.
+    _catalog_mv_set, _catalog_mv_yamls = catalog_stub
+    _outcomes_stub = {
+        f"{c}.{s}.{n}".lower(): (
+            "detected" if f"{c}.{s}.{n}".lower() in _catalog_mv_set
+            else "no_view_text"
+        )
+        for c, s, n in (genie_table_refs or [])
+    }
+    catalog_stub_with_outcomes = (
+        _catalog_mv_set, _catalog_mv_yamls, _outcomes_stub,
+    )
 
     with (
         _stub_patches()[0],
@@ -77,6 +91,11 @@ def _run_preflight(
         patch.object(
             preflight, "_detect_metric_views_via_catalog",
             return_value=catalog_stub,
+        ),
+        patch(
+            "genie_space_optimizer.common.metric_view_catalog."
+            "detect_metric_views_via_catalog_with_outcomes",
+            return_value=catalog_stub_with_outcomes,
         ),
         patch.object(
             preflight, "get_columns_for_tables_rest", return_value=[],

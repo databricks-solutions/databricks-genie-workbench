@@ -2089,6 +2089,7 @@ def _print_unified_example_summary(
     _lines.append(_kv("Target", target))
     _lines.append(_kv("Existing examples", existing))
     _lines.append(_kv("Applied (new)", len(applied_examples)))
+    _mv_total_for_hint = 0
     if isinstance(config, dict):
         try:
             from genie_space_optimizer.optimization.evaluation import (
@@ -2100,6 +2101,7 @@ def _print_unified_example_summary(
                 + _mv_counts.get("column_flags", 0)
                 + _mv_counts.get("catalog", 0)
             )
+            _mv_total_for_hint = _mv_total
             _lines.append(_kv(
                 "MVs detected",
                 f"{_mv_total} (config: {_mv_counts.get('config', 0)}, "
@@ -2108,6 +2110,29 @@ def _print_unified_example_summary(
             ))
         except Exception:
             pass
+    # PR 23 — when zero MVs are detected but the run produced any
+    # ``mv_*`` rejection bucket, the catalog-detection helper either
+    # silently no-op'd (DBR < 16.2, permission failure, JSON envelope
+    # mismatch) or the unified pipeline has a stale cache. Surface a
+    # one-line hint so operators reading the banner are pointed at
+    # the catalog-detection summary log line for the underlying cause.
+    rc_for_hint = rejection_counters or {}
+    _has_mv_reject = False
+    _exec_subbuckets = rc_for_hint.get("explain_or_execute_subbuckets") or {}
+    if isinstance(_exec_subbuckets, dict):
+        for _reason in _exec_subbuckets:
+            if isinstance(_reason, str) and _reason.startswith("mv_"):
+                _has_mv_reject = True
+                break
+    if (
+        _mv_total_for_hint == 0
+        and _has_mv_reject
+        and isinstance(config, dict)
+    ):
+        _lines.append(
+            "|  hint: 0 MVs detected but mv_* rejections present — "
+            "see catalog-detection summary log line",
+        )
     _lines.append("|")
     rc = rejection_counters or {}
     _lines.append(_kv("Metadata rejected", rc.get("metadata", 0)))
@@ -4022,12 +4047,15 @@ def _prepare_lever_loop(
         isinstance(config.get("_metric_view_yaml"), dict)
         and config["_metric_view_yaml"]
     ):
+        _yamls: dict[str, dict] = {}
+        _outcomes: dict[str, str] = {}
         try:
             from genie_space_optimizer.common.metric_view_catalog import (
-                detect_metric_views_via_catalog,
+                detect_metric_views_via_catalog_with_outcomes,
+                summarize_outcomes,
             )
             _warehouse_id = os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "")
-            _, _yamls = detect_metric_views_via_catalog(
+            _, _yamls, _outcomes = detect_metric_views_via_catalog_with_outcomes(
                 spark,
                 table_refs,
                 w=w,
@@ -4041,16 +4069,38 @@ def _prepare_lever_loop(
                 "(non-fatal, MV-aware features may be degraded): %s: %s",
                 run_id, type(exc).__name__, exc,
             )
-            _yamls = {}
         if _yamls:
             config["_metric_view_yaml"] = _yamls
             _ps = config.get("_parsed_space")
             if isinstance(_ps, dict):
                 _ps["_metric_view_yaml"] = _yamls
-            logger.info(
-                "Catalog metric-view detection: %d MV(s) detected via DESCRIBE",
-                len(_yamls),
-            )
+
+        # PR 23 — Always emit a one-line outcome summary, even when
+        # zero MVs were detected, so log readers can distinguish
+        # "no MVs in this space" from "DESCRIBE silently failed on
+        # every ref". Counts are stable column-by-column so an alert
+        # rule keyed on ``describe_error`` rising will fire correctly.
+        if table_refs:
+            try:
+                _counts = summarize_outcomes(_outcomes)
+                logger.info(
+                    "Catalog metric-view detection summary for %s: "
+                    "refs=%d, detected=%d, describe_error=%d, empty_result=%d, "
+                    "no_envelope=%d, no_view_text=%d, yaml_parse_error=%d, "
+                    "not_mv_shape=%d",
+                    run_id, len(table_refs),
+                    _counts["detected"],
+                    _counts["describe_error"],
+                    _counts["empty_result"],
+                    _counts["no_envelope"],
+                    _counts["no_view_text"],
+                    _counts["yaml_parse_error"],
+                    _counts["not_mv_shape"],
+                )
+            except Exception:
+                logger.debug(
+                    "MV detection summary aggregation failed", exc_info=True,
+                )
 
     # ── 3. Print detailed inventory diagnostic ───────────────────────
     _parsed = config.get("_parsed_space", {})
@@ -10386,7 +10436,9 @@ def _run_finalize(
                         run_label=f"final_{rep_run_idx}",
                         reference_result_hashes=reference_result_hashes,
                         run_name=_finalize_run_name_rep(
-                            run_id, detail=f"repeat_pass_{rep_run_idx}",
+                            run_id,
+                            detail=f"repeat_pass_{rep_run_idx}",
+                            iteration=iteration_counter,
                         ),
                         extra_tags=_v2_tags_rep(
                             run_id, space_id=space_id, stage="finalize_repeatability",
@@ -10490,7 +10542,9 @@ def _run_finalize(
                     ho_predict_fn, ho_scorers,
                     spark=spark, w=w, catalog=catalog, gold_schema=schema,
                     uc_schema=f"{catalog}.{schema}",
-                    run_name=_finalize_run_name_ho(run_id, detail="held_out"),
+                    run_name=_finalize_run_name_ho(
+                        run_id, detail="held_out", iteration=iteration_counter,
+                    ),
                     extra_tags=_v2_tags_ho(
                         run_id, space_id=space_id, stage="finalize_held_out",
                         iteration=iteration_counter,

@@ -1563,3 +1563,82 @@ class TestPR22SubBucketParity:
             _print_summary(result)
         out = buf.getvalue()
         assert "execute sub-buckets" not in out
+
+
+class TestPR23DetectionVsRejectionHint:
+    """When 0 MVs are detected but mv_* sub-buckets fired, surface a hint."""
+
+    def _capture_banner(self, *, config, rejection_counters):
+        import io
+        import contextlib
+
+        from genie_space_optimizer.optimization.harness import (
+            _print_unified_example_summary,
+        )
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            _print_unified_example_summary(
+                run_id="r1", target=20, existing=0,
+                applied_examples=[],
+                rejection_counters=rejection_counters,
+                config=config,
+            )
+        return buf.getvalue()
+
+    def test_hint_when_zero_mvs_but_mv_rejection(self):
+        """0 MVs detected + at least one mv_* sub-bucket → hint appears."""
+        out = self._capture_banner(
+            config={
+                "_parsed_space": {
+                    "data_sources": {"tables": [], "metric_views": []},
+                },
+            },
+            rejection_counters={
+                "explain_or_execute": 5,
+                "explain_or_execute_subbuckets": {
+                    "mv_missing_measure_function": 5,
+                },
+            },
+        )
+        assert "0 MVs detected" in out
+        assert "mv_* rejections present" in out
+
+    def test_no_hint_when_mvs_detected(self):
+        """MVs detected → hint suppressed even when mv_* sub-buckets present."""
+        out = self._capture_banner(
+            config={
+                "_parsed_space": {
+                    "data_sources": {
+                        "tables": [],
+                        "metric_views": [
+                            {"identifier": "cat.sch.mv_x"},
+                        ],
+                    },
+                },
+            },
+            rejection_counters={
+                "explain_or_execute": 1,
+                "explain_or_execute_subbuckets": {
+                    "mv_missing_measure_function": 1,
+                },
+            },
+        )
+        assert "0 MVs detected but mv_* rejections present" not in out
+
+    def test_no_hint_when_no_mv_rejections(self):
+        """No mv_* sub-buckets → hint suppressed even with zero MVs."""
+        out = self._capture_banner(
+            config={
+                "_parsed_space": {
+                    "data_sources": {"tables": [], "metric_views": []},
+                },
+            },
+            rejection_counters={
+                "explain_or_execute": 2,
+                "explain_or_execute_subbuckets": {
+                    "unknown_column": 2,
+                },
+            },
+        )
+        assert "0 MVs detected but mv_* rejections present" not in out
