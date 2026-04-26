@@ -628,22 +628,25 @@ def _run_preflight(
 # ── Stage 2: BASELINE EVAL ──────────────────────────────────────────
 
 
-def baseline_setup_scorers(
+def _build_predict_and_scorers(
     w: WorkspaceClient,
     spark: SparkSession,
     space_id: str,
-    run_id: str,
     catalog: str,
     schema: str,
     exp_name: str,
     model_id: str | None,
     domain: str = "",
+    *,
+    banner_title: str = "BASELINE — EVALUATION SETUP",
 ) -> dict:
-    """Sub-step 2a: Create predict function and scorers. Writes STARTED stage."""
-    write_stage(
-        spark, run_id, "BASELINE_EVAL_STARTED", "STARTED",
-        task_key="baseline_eval", catalog=catalog, schema=schema,
-    )
+    """Build predict_fn + scorers for a Genie space evaluation.
+
+    No side effects on ``genie_opt_stages`` — callers own stage lifecycle.
+    Returns the same dict shape that ``baseline_setup_scorers`` returns so
+    downstream code (``run_evaluation`` / ``baseline_run_evaluation``) is
+    unchanged.
+    """
     _ensure_sql_context(spark, catalog, schema)
 
     _instr_prompt = format_mlflow_template(
@@ -666,7 +669,7 @@ def baseline_setup_scorers(
         _bl_instr_text = ""
     scorers = make_all_scorers(w, spark, catalog, schema, instruction_context=_bl_instr_text)
 
-    _lines = [_section("BASELINE — EVALUATION SETUP", "-")]
+    _lines = [_section(banner_title, "-")]
     _lines.append(_kv("Space ID", space_id))
     _lines.append(_kv("Model ID", model_id))
     _lines.append(_kv("Experiment", exp_name))
@@ -683,6 +686,34 @@ def baseline_setup_scorers(
         "space_id": space_id,
         "domain": domain,
     }
+
+
+def baseline_setup_scorers(
+    w: WorkspaceClient,
+    spark: SparkSession,
+    space_id: str,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    exp_name: str,
+    model_id: str | None,
+    domain: str = "",
+) -> dict:
+    """Sub-step 2a: Create predict function and scorers. Writes STARTED stage.
+
+    Thin wrapper: emits ``BASELINE_EVAL_STARTED / STARTED`` and delegates
+    the actual setup to :func:`_build_predict_and_scorers`. Callers running
+    a non-baseline eval (e.g. post-enrichment) should call the helper
+    directly and own their own stage lifecycle so they don't leak an
+    unclosed ``BASELINE_EVAL_STARTED`` row that pins Step 2 to "Running".
+    """
+    write_stage(
+        spark, run_id, "BASELINE_EVAL_STARTED", "STARTED",
+        task_key="baseline_eval", catalog=catalog, schema=schema,
+    )
+    return _build_predict_and_scorers(
+        w, spark, space_id, catalog, schema, exp_name, model_id, domain,
+    )
 
 
 def baseline_run_evaluation(
@@ -4637,10 +4668,19 @@ def _run_enrichment(
         post_enrichment_evaluated_count: int | None = None
         post_enrichment_thresholds_met: bool = False
         if not enrichment_skipped and enrichment_model_id:
+            # Own stage lifecycle here under POST_ENRICHMENT_EVAL_* so we
+            # don't reuse BASELINE_EVAL_STARTED (which would leak an
+            # unclosed STARTED row and pin Step 2 to "Running" until the
+            # whole run goes terminal).
+            write_stage(
+                spark, run_id, "POST_ENRICHMENT_EVAL_STARTED", "STARTED",
+                task_key="enrichment", catalog=catalog, schema=schema,
+            )
             try:
-                _pe_setup = baseline_setup_scorers(
-                    w, spark, space_id, run_id, catalog, schema, exp_name,
+                _pe_setup = _build_predict_and_scorers(
+                    w, spark, space_id, catalog, schema, exp_name,
                     enrichment_model_id, domain,
+                    banner_title="ENRICHMENT — POST-ENRICHMENT EVAL SETUP",
                 )
                 # Tier 4: v2 name — ``<run_short>/enrichment/post_eval``.
                 from genie_space_optimizer.common.mlflow_names import (
@@ -4687,12 +4727,42 @@ def _run_enrichment(
                 )
                 _pe_lines.append(_bar("-"))
                 print("\n".join(_pe_lines))
-            except Exception:
+                try:
+                    write_stage(
+                        spark, run_id, "POST_ENRICHMENT_EVAL_STARTED", "COMPLETE",
+                        task_key="enrichment", catalog=catalog, schema=schema,
+                        detail={
+                            "accuracy": post_enrichment_accuracy,
+                            "evaluated_count": post_enrichment_evaluated_count,
+                            "thresholds_met": post_enrichment_thresholds_met,
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to write POST_ENRICHMENT_EVAL_STARTED COMPLETE "
+                        "for run %s",
+                        run_id,
+                        exc_info=True,
+                    )
+            except Exception as _pe_exc:
                 logger.warning(
                     "Post-enrichment eval failed — Task 4 will fall back to "
                     "baseline accuracy",
                     exc_info=True,
                 )
+                try:
+                    write_stage(
+                        spark, run_id, "POST_ENRICHMENT_EVAL_STARTED", "FAILED",
+                        task_key="enrichment", catalog=catalog, schema=schema,
+                        error_message=f"{type(_pe_exc).__name__}: {_pe_exc}"[:500],
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to write POST_ENRICHMENT_EVAL_STARTED FAILED "
+                        "for run %s",
+                        run_id,
+                        exc_info=True,
+                    )
 
         write_stage(
             spark, run_id, "ENRICHMENT_COMPLETE", "COMPLETE",

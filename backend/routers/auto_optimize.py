@@ -1096,7 +1096,7 @@ async def trigger(body: TriggerRequest, request: Request):
 _STEP_DEFINITIONS = [
     {"stepNumber": 1, "name": "Preflight",             "stage_prefixes": ["PREFLIGHT"]},
     {"stepNumber": 2, "name": "Baseline Evaluation",   "stage_prefixes": ["BASELINE_EVAL"]},
-    {"stepNumber": 3, "name": "Proactive Enrichment",  "stage_prefixes": ["ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL"]},
+    {"stepNumber": 3, "name": "Proactive Enrichment",  "stage_prefixes": ["ENRICHMENT", "PROMPT_MATCH", "DESCRIPTION_ENRICHMENT", "JOIN_DISCOVERY", "SPACE_METADATA", "INSTRUCTION_SEED", "PROACTIVE_INSTRUCTION", "EXAMPLE_SQL", "POST_ENRICHMENT_EVAL"]},
     {"stepNumber": 4, "name": "Adaptive Optimization", "stage_prefixes": ["LEVER_", "AG_"]},
     {"stepNumber": 5, "name": "Finalization",          "stage_prefixes": ["FINALIZE", "REPEATABILITY", "HELD_OUT", "COMPLETE"]},
     {"stepNumber": 6, "name": "Deploy",                "stage_prefixes": ["DEPLOY", "UC_OBO_WRITE"]},
