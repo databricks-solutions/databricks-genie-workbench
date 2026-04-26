@@ -39,6 +39,12 @@ TABLE_LEVER_LOOP_DECISIONS = "genie_eval_lever_loop_decisions"
 # to fail rolls back regardless of aggregate direction.
 TABLE_QUESTION_REGRESSIONS = "genie_eval_question_regressions"
 
+# Task 8: Human-required escalation queue. After a cluster's signature
+# accumulates ``HUMAN_REQUIRED_CONTENT_ROLLBACK_THRESHOLD`` content
+# regressions in the same run, the optimizer stops proposing patches
+# for it and parks an evidence record here for human review.
+TABLE_HUMAN_REQUIRED = "genie_eval_human_required"
+
 # ── DDL Constants ────────────────────────────────────────────────────────
 
 _GENIE_OPT_RUNS_DDL = """\
@@ -375,6 +381,34 @@ TBLPROPERTIES (
     'delta.enableChangeDataFeed' = 'true'
 )"""
 
+# Task 8: human-required escalation queue. Persisted record of the
+# cluster signatures the optimizer is giving up on within a run. The
+# associated qids are excluded from future strategist input until a
+# reviewer either fixes the underlying GT or instruction gap. Each
+# row carries the typed evidence (recent rollback reasons,
+# attempt_count, root_cause) needed for the reviewer to act on the
+# case without scrolling stdout.
+_GENIE_EVAL_HUMAN_REQUIRED_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_eval_human_required (
+    run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
+    cluster_signature   STRING        NOT NULL COMMENT 'sha1-derived cluster identity (Task 2.1)',
+    question_id         STRING                 COMMENT 'Affected qid (one row per qid)',
+    root_cause          STRING                 COMMENT 'Dominant root cause from the cluster',
+    attempt_count       INT                    COMMENT 'Distinct content-regression rollbacks observed',
+    last_iteration      INT                    COMMENT 'Iteration of the most recent rollback',
+    reason_code         STRING                 COMMENT 'persistent_content_rollback | stuck_convergence',
+    evidence_json       STRING                 COMMENT 'Compact JSON evidence: rollback reasons, levers tried, score deltas',
+    created_at          TIMESTAMP     NOT NULL COMMENT 'When the escalation was filed'
+)
+USING DELTA
+PARTITIONED BY (run_id)
+COMMENT 'Cluster signatures the optimizer escalated to human review within a run (Task 8)'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
 # Task 1: ground-truth correction queue. ``status`` is the four-state
 # review machine documented in ``ground_truth_corrections``:
 #   pending_review        — initial; reviewer has not looked.
@@ -420,4 +454,5 @@ _ALL_DDL: dict[str, str] = {
     TABLE_GT_CORRECTION_CANDIDATES: _GENIE_EVAL_GT_CORRECTION_CANDIDATES_DDL,
     TABLE_LEVER_LOOP_DECISIONS: _GENIE_EVAL_LEVER_LOOP_DECISIONS_DDL,
     TABLE_QUESTION_REGRESSIONS: _GENIE_EVAL_QUESTION_REGRESSIONS_DDL,
+    TABLE_HUMAN_REQUIRED: _GENIE_EVAL_HUMAN_REQUIRED_DDL,
 }

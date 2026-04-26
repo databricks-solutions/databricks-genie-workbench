@@ -8621,6 +8621,13 @@ def _run_lever_loop(
     skill_exemplars: list[dict] = resume_state.get("skill_exemplars", [])
     tried_patches: set[tuple[str, str]] = resume_state.get("tried_patches", set())
     tried_root_causes: set[tuple[str, str]] = resume_state.get("tried_root_causes", set())
+    # Task 8: cluster signatures escalated to human review within this
+    # run. Accumulated across iterations and excluded from clustering
+    # so the strategist never sees a signature it has already failed
+    # to address twice.
+    human_required_signatures: set[str] = set(
+        resume_state.get("human_required_signatures", set()) or set()
+    )
     prev_failure_qids: set[str] = set()
     _verdict_history: dict[str, list] = {}
     _last_full_mlflow_run_id: str = baseline_iter.get("mlflow_run_id", "") if baseline_iter else ""
@@ -8769,6 +8776,114 @@ def _run_lever_loop(
             )
         except Exception:
             logger.debug("Failed to write GT correction candidates", exc_info=True)
+
+        # Task 8: detect cluster signatures that have hit the
+        # persistent-failure threshold across this run's reflection
+        # buffer, persist them, and exclude them from the strategist's
+        # input. Pure helper — fail-open on any error so escalation
+        # bookkeeping never blocks the loop.
+        try:
+            from genie_space_optimizer.optimization.persistent_failure_escalation import (
+                case_to_delta_row as _t8_to_row,
+                compute_human_required_escalations as _t8_compute,
+            )
+
+            _t8_cases, _t8_new_sigs = _t8_compute(
+                reflection_buffer,
+                run_id=run_id,
+                already_escalated_signatures=human_required_signatures,
+            )
+            if _t8_cases:
+                # Persist + emit a per-case audit row (Task 3 stage O).
+                try:
+                    from genie_space_optimizer.optimization.state import (
+                        write_human_required_escalations as _t8_write,
+                        write_lever_loop_decisions as _t8_audit,
+                    )
+                    _t8_write(
+                        spark,
+                        [_t8_to_row(c) for c in _t8_cases],
+                        catalog=catalog,
+                        schema=schema,
+                    )
+                    _t8_audit_rows = []
+                    for _idx, _c in enumerate(_t8_cases, start=1):
+                        _t8_audit_rows.append({
+                            "run_id": run_id,
+                            "iteration": iteration_counter,
+                            "ag_id": None,
+                            "decision_order": _idx,
+                            "stage_letter": "O",
+                            "gate_name": "persistent_failure_escalation",
+                            "decision": "escalated",
+                            "reason_code": _c.reason_code,
+                            "reason_detail": (
+                                f"signature={_c.cluster_signature} "
+                                f"attempts={_c.attempt_count} "
+                                f"qid={_c.question_id or '(sentinel)'}"
+                            )[:2000],
+                            "affected_qids": (
+                                [_c.question_id] if _c.question_id else []
+                            ),
+                            "source_cluster_ids": [_c.cluster_signature],
+                            "metrics": {
+                                "attempt_count": _c.attempt_count,
+                                "last_iteration": _c.last_iteration,
+                                "root_cause": _c.root_cause,
+                                **(_c.evidence or {}),
+                            },
+                        })
+                    if _t8_audit_rows:
+                        _t8_audit(
+                            spark, _t8_audit_rows,
+                            catalog=catalog, schema=schema,
+                        )
+                except Exception:
+                    logger.debug(
+                        "Task 8 persistence failed (non-fatal)",
+                        exc_info=True,
+                    )
+                logger.info(
+                    "Task 8: escalated %d cluster signature(s) to "
+                    "human review: %s",
+                    len(_t8_new_sigs),
+                    ", ".join(sorted(_t8_new_sigs)),
+                )
+            human_required_signatures |= _t8_new_sigs
+        except Exception:
+            logger.debug(
+                "Task 8 escalation computation failed (non-fatal)",
+                exc_info=True,
+            )
+
+        # Drop clusters whose signature is in the human-required set
+        # so the strategist does not see them. Symmetric to the
+        # ``_filter_tried_clusters`` exclusion.
+        if human_required_signatures:
+            _pre_hard = len(clusters)
+            _pre_soft = len(soft_signal_clusters)
+            clusters = [
+                c for c in clusters
+                if not (
+                    c.get("cluster_signature")
+                    and c["cluster_signature"] in human_required_signatures
+                )
+            ]
+            soft_signal_clusters = [
+                c for c in soft_signal_clusters
+                if not (
+                    c.get("cluster_signature")
+                    and c["cluster_signature"] in human_required_signatures
+                )
+            ]
+            _dropped_hard = _pre_hard - len(clusters)
+            _dropped_soft = _pre_soft - len(soft_signal_clusters)
+            if _dropped_hard or _dropped_soft:
+                logger.info(
+                    "Task 8: dropped %d hard + %d soft cluster(s) whose "
+                    "signature is in the human-required set",
+                    _dropped_hard, _dropped_soft,
+                )
 
         clusters = _filter_tried_clusters(clusters, tried_root_causes)
         if not clusters and not soft_signal_clusters:

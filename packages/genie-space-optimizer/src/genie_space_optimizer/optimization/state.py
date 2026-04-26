@@ -38,6 +38,7 @@ from genie_space_optimizer.common.delta_helpers import (
 from genie_space_optimizer.optimization.ddl import (
     TABLE_DATA_ACCESS_GRANTS,
     TABLE_GT_CORRECTION_CANDIDATES,
+    TABLE_HUMAN_REQUIRED,
     TABLE_LEVER_LOOP_DECISIONS,
     TABLE_QUESTION_REGRESSIONS,
     _ALL_DDL,
@@ -1018,6 +1019,71 @@ def write_question_regressions(
     if written:
         logger.info(
             "Wrote %d question regression row(s) for run %s",
+            written,
+            rows[0].get("run_id", "?"),
+        )
+
+
+def write_human_required_escalations(
+    spark: SparkSession,
+    rows: list[dict],
+    *,
+    catalog: str,
+    schema: str,
+) -> None:
+    """Persist Task 8 escalation records to ``genie_eval_human_required``.
+
+    Each input row may carry plain Python lists/dicts under
+    ``evidence`` / ``evidence_json``; we JSON-serialize defensively.
+    Empty list is a no-op. Skips rows missing run_id or
+    cluster_signature so orphan rows do not pollute the queue.
+    """
+    if not rows:
+        return
+
+    def _as_json(val: Any) -> Any:
+        if val is None:
+            return None
+        if isinstance(val, str):
+            return val
+        try:
+            return json.dumps(val, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            return None
+
+    now = datetime.now(timezone.utc).isoformat()
+    written = 0
+    for r in rows:
+        sig = str(r.get("cluster_signature") or "").strip()
+        run_id = str(r.get("run_id") or "").strip()
+        if not sig or not run_id:
+            continue
+        payload: dict[str, Any] = {
+            "run_id": run_id,
+            "cluster_signature": sig,
+            "question_id": r.get("question_id") or "",
+            "root_cause": r.get("root_cause"),
+            "attempt_count": int(r.get("attempt_count") or 0),
+            "last_iteration": int(r.get("last_iteration") or 0),
+            "reason_code": r.get("reason_code"),
+            "evidence_json": _as_json(r.get("evidence_json", r.get("evidence"))),
+            "created_at": now,
+        }
+        try:
+            insert_row(
+                spark, catalog, schema, TABLE_HUMAN_REQUIRED, payload,
+            )
+            written += 1
+        except Exception:
+            logger.debug(
+                "Failed to write human-required row for sig=%s qid=%s",
+                sig,
+                payload["question_id"],
+                exc_info=True,
+            )
+    if written:
+        logger.info(
+            "Wrote %d human-required escalation row(s) for run %s",
             written,
             rows[0].get("run_id", "?"),
         )
