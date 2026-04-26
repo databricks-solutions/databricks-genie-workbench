@@ -2460,26 +2460,32 @@ def _signal_class_rank(cluster: dict) -> int:
 def cluster_impact(cluster: dict) -> float:
     """Score a failure cluster by estimated optimisation impact.
 
-    ``impact = question_count × causal_weight × severity × fixability × soft_dampen``
+    ``impact = question_count × causal_weight × severity × fixability × signal_quality_dampen``
 
     Higher is more impactful.  Used to rank clusters before the adaptive
     strategist call so the LLM receives a suggested priority order.
 
-    Tier 2.3: soft-signal clusters (where arbiter said rows were correct but
-    individual judges flagged suboptimal patterns) are dampened by 0.5 so
-    hard clusters still dominate at equal question counts, while a large
-    soft cluster can still out-rank a tiny hard one. Without this, a 12-Q
-    soft cluster with ``response_quality = 63%`` systematically lost to a
-    2-Q hard cluster with a clean ``result_correctness`` pass.
+    Task 11 (lever-loop improvement plan): the 0.5× soft-cluster
+    damping multiplier was retired. With Task 6 stamping typed
+    ``SqlDiff`` on every confirmed failure and Task 7's ranking
+    tiebreaker preferring SQL_SHAPE > NL_TEXT and ``hard > soft`` at
+    equal impact, damping no longer earns its keep — it just
+    creates a class of clusters that can never win the rank without
+    external help. Soft-cluster precedence over hard at equal raw
+    impact is now expressed in :func:`rank_clusters` tiebreakers,
+    not in the impact score itself, so impact scores are directly
+    comparable across signal classes.
 
-    T1.12: when a soft cluster's ``mean_judge_failure_ratio`` (failing
-    non-info judges / total non-info judges, averaged across its
-    questions) is at or above
-    ``SOFT_CLUSTER_REELEVATION_THRESHOLD`` — AND the cluster has already
-    been marked ``reelevated=True`` (see :func:`rank_clusters`) — the
-    0.5 dampening multiplier is skipped. This prevents multi-judge soft
-    clusters (e.g. 6-of-7 judges failing with arbiter verdict
-    ``genie_correct``) from being ranked below a small hard cluster.
+    The legacy ``reelevated`` field is kept as a no-op pass-through
+    so reflection-buffer entries from older runs still deserialize
+    cleanly; it has no behavioral effect after Task 11.
+
+    T1.3 signal-quality dampen is retained: clusters built mostly
+    from heuristic sql_diff attribution (no trace ASI, no fetched
+    results) are still less trusted, and a 0.6–1.0× linear interp
+    over ``signal_quality.combined`` keeps low-confidence clusters
+    in the ranking without letting them dominate a trusted same-size
+    cluster.
     """
     from genie_space_optimizer.common.config import (
         CAUSAL_WEIGHT,
@@ -2498,27 +2504,12 @@ def cluster_impact(cluster: dict) -> float:
     has_cf = bool(cluster.get("asi_counterfactual_fixes"))
     fixability = FIXABILITY_WITH_COUNTERFACTUAL if has_cf else FIXABILITY_WITHOUT_COUNTERFACTUAL
 
-    is_soft = cluster.get("signal_type") == "soft"
-    reelevated = bool(cluster.get("reelevated"))
-    soft_dampen = 0.5 if (is_soft and not reelevated) else 1.0
-
-    # T1.3: signal-quality dampen. Clusters built mostly from heuristic
-    # sql_diff attribution (no trace ASI, no fetched results) are less
-    # trusted — their "root cause" is a label, not evidence. Linearly
-    # interpolate between 0.6× (no trusted signals) and 1.0× (all
-    # trusted) so a low-confidence cluster still contributes but
-    # doesn't dominate a trusted cluster with a smaller question count.
-    # The floor is 0.6 so a cluster with no ASI and no results still
-    # participates in ranking (it's the only signal we have) but a
-    # trusted same-size cluster wins the tiebreak.
+    # T1.3: signal-quality dampen retained — see docstring.
     _sq = cluster.get("signal_quality") or {}
     _combined = float(_sq.get("combined", 1.0))
     signal_quality_dampen = 0.6 + 0.4 * max(0.0, min(1.0, _combined))
 
-    return (
-        q_count * causal * severity * fixability
-        * soft_dampen * signal_quality_dampen
-    )
+    return q_count * causal * severity * fixability * signal_quality_dampen
 
 
 _RANK_TIEBREAK_THRESHOLD = 1.0
