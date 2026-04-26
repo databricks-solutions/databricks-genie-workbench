@@ -43,6 +43,7 @@ from genie_space_optimizer.common.config import (
     COVERAGE_GAP_SOFT_CAP_FACTOR,
     DEFAULT_THRESHOLDS,
     FAILURE_TAXONOMY,
+    INFO_ONLY_JUDGES,
     INSTRUCTION_PROMPT_ALIAS,
     INSTRUCTION_PROMPT_NAME_TEMPLATE,
     JUDGE_PROMPTS,
@@ -85,6 +86,200 @@ LLM_SOURCE = AssessmentSource(
     source_type="LLM_JUDGE",
     source_id=format_mlflow_template(LLM_SOURCE_ID_TEMPLATE, endpoint=LLM_ENDPOINT),
 )
+
+
+# ── Judge-failure predicates ──────────────────────────────────────────
+#
+# These were previously defined in ``harness.py`` but live next to
+# ``run_evaluation`` because they are pure over a row dict and downstream
+# modules (``ground_truth_corrections``) need to import them without
+# pulling in ``harness``. ``harness`` retains thin re-exports under their
+# legacy names so existing call sites are unaffected.
+
+_NON_JUDGE_VALUE_SUFFIXES = ("/rationale", "/source", "/metadata", "/error")
+
+
+def get_failed_judges(row: dict) -> list[str]:
+    """Return scorer judge names whose ``value`` field contains ``"no"``.
+
+    Tier 3.6: ``INFO_ONLY_JUDGES`` (e.g. ``repeatability``, ``previous_sql``)
+    are excluded — they are diagnostic signals tracked separately, not
+    drivers of clustering or soft-signal detection.
+    """
+    failed: list[str] = []
+    for col, val in row.items():
+        is_judge = False
+        if col.startswith("feedback/") and col.endswith("/value"):
+            is_judge = True
+        elif col.startswith("feedback/") and not any(
+            col.endswith(s) for s in _NON_JUDGE_VALUE_SUFFIXES
+        ):
+            if "/" not in col.removeprefix("feedback/"):
+                is_judge = True
+        elif col.endswith("/value") and not col.startswith("feedback/"):
+            is_judge = True
+        if is_judge and "no" in str(val).lower():
+            judge_name = col.replace("feedback/", "").replace("/value", "")
+            if judge_name in INFO_ONLY_JUDGES:
+                continue
+            failed.append(judge_name)
+    return failed
+
+
+def has_individual_judge_failure(row: dict) -> bool:
+    """Return ``True`` when at least one non-info-only scorer judge failed.
+
+    Used to detect rows where the arbiter rescued the row (or
+    ``result_correctness=yes``) but individual judges still flagged
+    suboptimal patterns worth learning from in the soft-signal pathway.
+    """
+    return len(get_failed_judges(row)) > 0
+
+
+# ── ASI source telemetry (Task 0 Step 2) ─────────────────────────────────
+#
+# Each row that flows through the eval gets an ``_asi_source`` stamp from
+# ``_merge_judge_assessments_into_row`` describing where its judge
+# rationale/metadata came from. The retail run logged ``0`` recovered
+# trace IDs across every eval pass — meaning ASI was running in row/UC
+# fallback the entire run — but the pipeline had no structured telemetry
+# to distinguish that from a healthy run. The dataclass + helpers below
+# turn the per-row ``_asi_source`` strings into a per-iteration summary
+# so the Task 3 decision-audit table can record it and downstream stages
+# can dampen ``signal_quality.combined`` when ASI evidence is missing.
+
+_ASI_SOURCE_TRACE_VALUES: frozenset[str] = frozenset({"trace", "recovered_trace"})
+_ASI_SOURCE_ROW_PAYLOAD_VALUES: frozenset[str] = frozenset({"cache", "row_payload"})
+_ASI_SOURCE_UC_VALUES: frozenset[str] = frozenset({"uc_metadata", "uc_cache"})
+_ASI_SOURCE_KEY = "_asi_source"
+
+
+@dataclass(frozen=True)
+class AsiSourceCounts:
+    """Per-iteration aggregate of where each row's ASI evidence came from.
+
+    The four categories are disjoint; their sum equals the total
+    classified rows. ``none`` counts rows where neither MLflow trace nor
+    row payload nor UC metadata supplied ASI — those are the rows that
+    silently slipped through the retail run.
+    """
+
+    trace: int = 0
+    row_payload: int = 0
+    uc_metadata: int = 0
+    none: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.trace + self.row_payload + self.uc_metadata + self.none
+
+    @property
+    def coverage_ratio(self) -> float:
+        """Fraction of rows that had any ASI evidence (trace ∪ payload ∪ UC)."""
+        denom = self.total
+        if denom == 0:
+            return 0.0
+        return (self.trace + self.row_payload + self.uc_metadata) / denom
+
+
+def _classify_asi_source(row: dict[str, Any]) -> str:
+    """Map a single row's ``_asi_source`` (or its absence) to a typed bucket.
+
+    Returns one of ``"trace"``, ``"row_payload"``, ``"uc_metadata"``,
+    ``"none"``. Pure over the row dict; no I/O.
+    """
+    raw = row.get(_ASI_SOURCE_KEY)
+    if isinstance(raw, str) and raw:
+        if raw in _ASI_SOURCE_TRACE_VALUES:
+            return "trace"
+        if raw in _ASI_SOURCE_ROW_PAYLOAD_VALUES:
+            return "row_payload"
+        if raw in _ASI_SOURCE_UC_VALUES:
+            return "uc_metadata"
+        # Unknown stamp — surface as a payload classification rather than
+        # silently dropping the row from the summary.
+        return "row_payload"
+    # No stamp — check whether the row carries any judge metadata at all.
+    for col in row:
+        if isinstance(col, str) and col.startswith("feedback/") and col.endswith("/metadata"):
+            val = row.get(col)
+            if val:
+                return "row_payload"
+    return "none"
+
+
+def compute_asi_source_summary(rows: list[dict[str, Any]]) -> AsiSourceCounts:
+    """Aggregate per-row ASI source classifications into typed counts."""
+    trace = row_payload = uc_metadata = none = 0
+    for row in rows or []:
+        bucket = _classify_asi_source(row)
+        if bucket == "trace":
+            trace += 1
+        elif bucket == "row_payload":
+            row_payload += 1
+        elif bucket == "uc_metadata":
+            uc_metadata += 1
+        else:
+            none += 1
+    return AsiSourceCounts(
+        trace=trace,
+        row_payload=row_payload,
+        uc_metadata=uc_metadata,
+        none=none,
+    )
+
+
+def build_asi_extraction_audit_row(
+    *,
+    run_id: str,
+    iteration: int,
+    summary: AsiSourceCounts,
+    trace_id_count: int | None = None,
+    expected_trace_count: int | None = None,
+) -> dict[str, Any]:
+    """Build a Task-3 decision-audit row for ASI extraction telemetry.
+
+    ``reason_code`` is one of:
+
+    * ``asi_source_complete`` — every row had ASI evidence and at least one
+      came from a trace.
+    * ``asi_source_no_traces`` — no row sourced ASI from a trace, but every
+      row was covered by row payload or UC metadata.
+    * ``asi_source_partial`` — at least one row had no ASI evidence.
+
+    The row is intentionally Delta-friendly: scalar fields plus a single
+    JSON column (``metrics_json``) carrying the typed counts.
+    """
+    if summary.none > 0:
+        reason_code = "asi_source_partial"
+    elif summary.trace == 0 and summary.total > 0:
+        reason_code = "asi_source_no_traces"
+    else:
+        reason_code = "asi_source_complete"
+
+    metrics: dict[str, Any] = {
+        "trace": summary.trace,
+        "row_payload": summary.row_payload,
+        "uc_metadata": summary.uc_metadata,
+        "none": summary.none,
+        "total": summary.total,
+        "coverage_ratio": round(summary.coverage_ratio, 4),
+    }
+    if trace_id_count is not None:
+        metrics["trace_id_count"] = int(trace_id_count)
+    if expected_trace_count is not None:
+        metrics["expected_trace_count"] = int(expected_trace_count)
+
+    return {
+        "run_id": run_id,
+        "iteration": int(iteration),
+        "stage_letter": "C",
+        "gate_name": "asi_extraction",
+        "decision": "ok" if reason_code == "asi_source_complete" else "degraded",
+        "reason_code": reason_code,
+        "metrics_json": json.dumps(metrics, sort_keys=True),
+    }
+
 
 class _ScorerFeedbackCache:
     """Run-scoped cache for scorer rationale/metadata.
@@ -6947,6 +7142,20 @@ def run_evaluation(
                     "question": _qb.get("question") or _qb.get("question_text") or "",
                 })
 
+        # Task 0 Step 4: ASI extraction telemetry. Aggregate the per-row
+        # ``_asi_source`` stamps that ``_merge_judge_assessments_into_row``
+        # set into a typed summary plus a Task-3-shaped audit row. This
+        # makes a "no traces, all-row-payload" eval pass visible in Delta
+        # rather than silent (the retail run state we are correcting).
+        _asi_summary = compute_asi_source_summary(rows_for_output)
+        _asi_audit = build_asi_extraction_audit_row(
+            run_id=str(optimization_run_id or run.info.run_id or ""),
+            iteration=int(iteration or 0),
+            summary=_asi_summary,
+            trace_id_count=len(trace_map),
+            expected_trace_count=len(rows_for_output),
+        )
+
         output: dict[str, Any] = {
             "run_id": run.info.run_id,
             "mlflow_run_id": run.info.run_id,
@@ -7003,6 +7212,16 @@ def run_evaluation(
             ],
             "arbiter_overridden_qids": _arbiter_overridden_qids,
             "soft_signal_qids": _soft_signal_qids,
+            "asi_source_summary": {
+                "trace": _asi_summary.trace,
+                "row_payload": _asi_summary.row_payload,
+                "uc_metadata": _asi_summary.uc_metadata,
+                "none": _asi_summary.none,
+                "total": _asi_summary.total,
+                "coverage_ratio": round(_asi_summary.coverage_ratio, 4),
+            },
+            "asi_extraction_audit": _asi_audit,
+            "trace_id_count": len(trace_map),
         }
 
         # Must be inside the `with mlflow.start_run(...)` block: log_metric

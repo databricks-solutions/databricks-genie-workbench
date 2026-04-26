@@ -11548,42 +11548,14 @@ def _build_patch_record(entry: dict, lever: int, apply_mode: str) -> dict:
     }
 
 
-def _get_failed_judges(row: dict) -> list[str]:
-    """Return list of individual scorer judge names that failed (value contains 'no').
-
-    Tier 3.6: ``INFO_ONLY_JUDGES`` (``repeatability``, ``previous_sql``)
-    are excluded — they're diagnostic signals tracked separately, not
-    drivers of clustering or soft-signal detection. Operators who need
-    the full list can call this with ``include_info_only=True``.
-    """
-    from genie_space_optimizer.common.config import INFO_ONLY_JUDGES
-
-    _NON_JUDGE_SUFFIXES = ("/rationale", "/source", "/metadata", "/error")
-    failed: list[str] = []
-    for col, val in row.items():
-        is_judge = False
-        if col.startswith("feedback/") and col.endswith("/value"):
-            is_judge = True
-        elif col.startswith("feedback/") and not any(col.endswith(s) for s in _NON_JUDGE_SUFFIXES):
-            if "/" not in col.removeprefix("feedback/"):
-                is_judge = True
-        elif col.endswith("/value") and not col.startswith("feedback/"):
-            is_judge = True
-        if is_judge and "no" in str(val).lower():
-            judge_name = col.replace("feedback/", "").replace("/value", "")
-            if judge_name in INFO_ONLY_JUDGES:
-                continue
-            failed.append(judge_name)
-    return failed
-
-
-def _has_individual_judge_failure(row: dict) -> bool:
-    """Return True if at least one individual scorer judge failed (value contains 'no').
-
-    Used to detect rows where the arbiter said 'both_correct' or 'genie_correct'
-    but individual judges flagged suboptimal patterns worth learning from.
-    """
-    return len(_get_failed_judges(row)) > 0
+# The judge-failure predicates moved to ``evaluation.py`` so the
+# ``ground_truth_corrections`` module (Task 1) can import them without
+# pulling in ``harness``. The aliases below preserve the legacy
+# underscore-prefixed names for existing call sites in this module.
+from genie_space_optimizer.optimization.evaluation import (
+    get_failed_judges as _get_failed_judges,
+    has_individual_judge_failure as _has_individual_judge_failure,
+)
 
 
 def _get_failure_rows(
