@@ -224,14 +224,59 @@ compare against ``best_accuracy``. Unknown values fall back to
 ``post_arbiter`` with a warning."""
 
 OPTIMIZATION_OBJECTIVE_POST_ARBITER_GUARDRAIL_PP: float = 5.0
-"""T0.3: when ``OPTIMIZATION_OBJECTIVE='pre_arbiter'`` the post-arbiter
-accuracy is still allowed to move downward, but no more than this many
-percentage points below the previous best. Protects against pathological
-patches that improve pre-arbiter by one question while silently
-regressing two others that the arbiter used to rescue.
+"""T0.3 (legacy): when ``OPTIMIZATION_OBJECTIVE='pre_arbiter'`` the
+post-arbiter accuracy is still allowed to move downward, but no more
+than this many percentage points below the previous best.
+
+DEPRECATED for new acceptance decisions: Task 2 of the lever-loop
+improvement plan replaced this with
+``acceptance_policy.decide_full_eval_acceptance``, which reads
+``MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS`` (default ``2.0``) instead.
+This constant is retained for back-compat — some older code paths and
+dashboards still read it — but new acceptance code should not.
 
 Set to ``math.inf`` to disable the guardrail entirely (accept any
 pre-arbiter improvement regardless of post-arbiter impact)."""
+
+# ── Task 2: strict acceptance ────────────────────────────────────────
+
+ENABLE_LEGACY_SLICE_P0_GATES: bool = (
+    os.getenv("GSO_ENABLE_LEGACY_SLICE_P0_GATES", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""When True, ``harness._run_gate_checks`` runs the slice and P0
+evaluation gates before the full eval. When False (the default after
+Task 2 of the lever-loop improvement plan), the loop runs only
+``apply patches → full eval (run 1) → full eval (run 2 confirm)`` and
+acceptance is decided by ``acceptance_policy.decide_full_eval_acceptance``.
+
+The decoded retail run showed both gates passing on AG2 while the
+full-eval rejection was the only honest signal; both gates also each
+add a Genie round-trip per AG. Keep the flag for one release so any
+operator who wants the old behaviour can opt in via
+``GSO_ENABLE_LEGACY_SLICE_P0_GATES=true``."""
+
+MIN_PRIMARY_GAIN_PP: float = float(os.getenv("GSO_MIN_PRIMARY_GAIN_PP", "0.0"))
+"""Per-confirmation-run minimum primary improvement. K-of-N strict:
+every confirmation run must clear ``previous_primary +
+MIN_PRIMARY_GAIN_PP`` to accept. ``0.0`` means "any improvement is
+enough", but real spaces should bump this above the corpus's typical
+single-question weight to avoid accepting noise."""
+
+MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS: float = float(
+    os.getenv("GSO_MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS", "2.0")
+)
+"""Hard guardrail on raw post-arbiter accuracy drop, applied per
+confirmation run. The retail run accepted AG2's -4.6pp post-arbiter
+regression because the previous 5.0pp guardrail was looser than
+typical run-to-run variance. ``2.0`` is the default for ≤30-question
+corpora; larger corpora can keep this tight without risking noise
+flap.
+
+Composes with ``harness._compute_eval_variance``: the effective
+guardrail is ``min(MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS,
+variance_widened_tol_pp)``. Variance can only TIGHTEN the guardrail,
+never loosen it."""
 
 SHADOW_APPLY: bool = False
 """T3.3: when True, clone the Genie space to a shadow, apply patches

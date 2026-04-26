@@ -60,7 +60,6 @@ from genie_space_optimizer.common.config import (
     NEITHER_CORRECT_QUARANTINE_THRESHOLD,
     NEITHER_CORRECT_REPAIR_THRESHOLD,
     OPTIMIZATION_OBJECTIVE,
-    OPTIMIZATION_OBJECTIVE_POST_ARBITER_GUARDRAIL_PP,
     PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS,
     PROPAGATION_WAIT_SECONDS,
     REGRESSION_THRESHOLD,
@@ -6842,7 +6841,22 @@ def _run_gate_checks(
         pass
 
     _run_slice = False
-    if ENABLE_SLICE_GATE:
+    # Task 2: slice gate is a legacy approval gate. By default, the new
+    # strict full-eval acceptance policy supersedes it. Operators who
+    # want the old behaviour set ``GSO_ENABLE_LEGACY_SLICE_P0_GATES=true``.
+    from genie_space_optimizer.common.config import ENABLE_LEGACY_SLICE_P0_GATES
+    if not ENABLE_LEGACY_SLICE_P0_GATES:
+        print(
+            _section(f"SLICE GATE [{ag_id}]: SKIPPED (Task 2)", "-") + "\n"
+            + _kv(
+                "Reason",
+                "ENABLE_LEGACY_SLICE_P0_GATES=False — strict full-eval "
+                "acceptance is the only gate; opt back in via "
+                "GSO_ENABLE_LEGACY_SLICE_P0_GATES=true",
+            ) + "\n"
+            + _bar("-")
+        )
+    elif ENABLE_SLICE_GATE:
         affected_qids: set[str] = affected_question_ids or set()
         # Phase 5.1: stratified slice. Compute the set of
         # baseline-passing qids (benchmarks minus prior-iteration
@@ -7013,7 +7027,24 @@ def _run_gate_checks(
         mlflow.end_run()
     except Exception:
         pass
-    p0_benchmarks = filter_benchmarks_by_scope(benchmarks, "p0")
+    # Task 2: P0 gate is a legacy approval gate alongside the slice gate.
+    # The new strict full-eval acceptance policy supersedes both. P0
+    # only runs when ENABLE_LEGACY_SLICE_P0_GATES=True.
+    p0_benchmarks = (
+        filter_benchmarks_by_scope(benchmarks, "p0")
+        if ENABLE_LEGACY_SLICE_P0_GATES
+        else []
+    )
+    if not ENABLE_LEGACY_SLICE_P0_GATES:
+        print(
+            _section(f"P0 GATE [{ag_id}]: SKIPPED (Task 2)", "-") + "\n"
+            + _kv(
+                "Reason",
+                "ENABLE_LEGACY_SLICE_P0_GATES=False — full-eval acceptance "
+                "is the only gate",
+            ) + "\n"
+            + _bar("-")
+        )
     if p0_benchmarks:
         _ensure_sql_context(spark, catalog, schema)
         # Tier 4: v2 run name — ``<run_short>/iter_NN_p0_eval``.
@@ -7348,26 +7379,70 @@ def _run_gate_checks(
             "drop": accuracy_drop,
         })
 
-    # T0.3 guardrail: when optimising for pre_arbiter, a patch that
-    # improves pre-arbiter by 1 question can still silently regress
-    # post-arbiter by multiple questions (arbiter used to rescue them,
-    # now it doesn't). Cap post-arbiter downside to the configured
-    # guardrail value. For ``post_arbiter`` objective this is a no-op.
-    if _objective == "pre_arbiter":
-        _guardrail_cap = float(OPTIMIZATION_OBJECTIVE_POST_ARBITER_GUARDRAIL_PP)
-        _secondary_drop = _secondary_prev - _secondary_cur
-        if _secondary_drop >= _guardrail_cap:
-            regressions.append({
-                "judge": f"post_arbiter_guardrail ({_secondary_label})",
-                "previous": _secondary_prev,
-                "current": _secondary_cur,
-                "drop": _secondary_drop,
-            })
-            logger.info(
-                "Post-arbiter guardrail TRIPPED: %s dropped %.1fpp (cap=%.1fpp). "
-                "Rolling back despite pre-arbiter improvement.",
-                _secondary_label, _secondary_drop, _guardrail_cap,
-            )
+    # Task 2: strict full-eval acceptance. Replaces the legacy
+    # ``OPTIMIZATION_OBJECTIVE_POST_ARBITER_GUARDRAIL_PP`` guardrail
+    # (which let AG2 through with a -4.6pp post-arbiter regression).
+    # The new policy:
+    #   - is K-of-N strict: every confirmation run must clear the
+    #     primary-gain floor and the post-arbiter guardrail,
+    #   - composes with variance widening as a one-sided protection
+    #     (variance can only TIGHTEN the guardrail, never relax it),
+    #   - applies the post-arbiter guardrail in all three objective
+    #     modes, including ``blended``.
+    # Per-judge regressions detected above are still in ``regressions``;
+    # the new policy adds the typed acceptance verdict on top.
+    from genie_space_optimizer.common.config import (
+        MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS,
+        MIN_PRIMARY_GAIN_PP,
+    )
+    from genie_space_optimizer.optimization.acceptance_policy import (
+        decide_full_eval_acceptance,
+    )
+
+    _run_pre_arbiter = [pre_arbiter_accuracy_1]
+    _run_post_arbiter = [accuracy_1]
+    if locals().get("full_result_2") is not None:
+        _run_pre_arbiter.append(pre_arbiter_accuracy_2)
+        _run_post_arbiter.append(accuracy_2)
+
+    _strict_decision = decide_full_eval_acceptance(
+        objective=_objective,
+        previous_pre_arbiter=_best_pre_arbiter,
+        previous_post_arbiter=best_accuracy,
+        run_pre_arbiter=_run_pre_arbiter,
+        run_post_arbiter=_run_post_arbiter,
+        min_primary_gain_pp=MIN_PRIMARY_GAIN_PP,
+        max_post_arbiter_drop_pp=MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS,
+        variance_widened_tol_pp=effective_regression_tol,
+    )
+    logger.info(
+        "STRICT ACCEPTANCE [%s]: accepted=%s reason=%s "
+        "primary_Δ=%+.1fpp secondary_Δ=%+.1fpp "
+        "min_run_primary=%.1f min_run_post=%.1f guardrail=%.2fpp",
+        ag_id, _strict_decision.accepted, _strict_decision.reason_code,
+        _strict_decision.primary_delta_pp, _strict_decision.secondary_delta_pp,
+        _strict_decision.min_run_primary, _strict_decision.min_run_post_arbiter,
+        _strict_decision.effective_guardrail_pp,
+    )
+    if not _strict_decision.accepted:
+        # Map the typed reason to a regression entry the rest of the
+        # gate already knows how to roll back on.
+        if _strict_decision.reason_code == "post_arbiter_guardrail":
+            _judge_label = f"post_arbiter_guardrail ({_secondary_label})"
+            _prev = _secondary_prev
+            _cur = _strict_decision.min_run_post_arbiter
+            _drop = _prev - _cur
+        else:  # primary_not_improved_in_every_run / missing_confirmation_runs
+            _judge_label = f"strict_acceptance ({_strict_decision.reason_code})"
+            _prev = _primary_prev
+            _cur = _strict_decision.min_run_primary
+            _drop = _prev - _cur
+        regressions.append({
+            "judge": _judge_label,
+            "previous": _prev,
+            "current": _cur,
+            "drop": _drop,
+        })
 
     # ── Per-question noise filtering ──────────────────────────────
     # If all detected regressions are within a single question's weight,
