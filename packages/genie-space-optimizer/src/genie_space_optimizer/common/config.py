@@ -315,6 +315,21 @@ after Task 2 disabled slice/P0 gates by default."""
 
 MIN_PROPOSAL_RELEVANCE = float(os.getenv("GSO_MIN_PROPOSAL_RELEVANCE", "0.1"))
 
+ENABLE_PROACTIVE_FEATURE_MINING: bool = (
+    os.getenv("GSO_ENABLE_PROACTIVE_FEATURE_MINING", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""Task 9: when True, after the post-enrichment baseline eval the
+harness aggregates a typed corpus profile from the passing rows and
+emits enrichment patches (column descriptions, join specs, sql
+snippets) gated by the same dedup contract as Task 6 reactive
+mining.
+
+Default is ``False`` because proactive mining changes pre-loop
+enrichment behavior and the plan rollout (§7) ships it with its own
+release flag. Set ``GSO_ENABLE_PROACTIVE_FEATURE_MINING=true`` to
+opt in once Task 6 reactive mining is stable on a space."""
+
 ENFORCE_REFLECTION_REVALIDATION: bool = (
     os.getenv("GSO_ENFORCE_REFLECTION_REVALIDATION", "true").lower()
     in {"1", "true", "yes", "on"}

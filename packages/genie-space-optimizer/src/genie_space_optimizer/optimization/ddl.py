@@ -45,6 +45,13 @@ TABLE_QUESTION_REGRESSIONS = "genie_eval_question_regressions"
 # for it and parks an evidence record here for human review.
 TABLE_HUMAN_REQUIRED = "genie_eval_human_required"
 
+# Task 9: proactive feature-mining artifacts. Persisted per run so a
+# reviewer can inspect "what did the proactive miner find on the
+# passing corpus, and what enrichments did it propose?" without
+# replaying the run.
+TABLE_PROACTIVE_CORPUS_PROFILE = "genie_eval_proactive_corpus_profile"
+TABLE_PROACTIVE_PATCHES = "genie_eval_proactive_patches"
+
 # ── DDL Constants ────────────────────────────────────────────────────────
 
 _GENIE_OPT_RUNS_DDL = """\
@@ -409,6 +416,56 @@ TBLPROPERTIES (
     'delta.enableChangeDataFeed' = 'true'
 )"""
 
+# Task 9: proactive feature-mining persistence. Two tables —
+# ``genie_eval_proactive_corpus_profile`` records the aggregate
+# profile per run (what frequencies the miner observed across the
+# passing corpus); ``genie_eval_proactive_patches`` records the
+# emitted enrichment patches with their ``source_signal`` (what
+# observation drove the proposal) and ``frequency`` (how strong the
+# evidence was). Together they let a reviewer audit the proactive
+# pipeline without replaying the run.
+_GENIE_EVAL_PROACTIVE_CORPUS_PROFILE_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_eval_proactive_corpus_profile (
+    run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
+    iteration           INT           NOT NULL COMMENT 'Iteration index where the profile was computed (typically 0)',
+    table_id            STRING                 COMMENT 'Asset id the profile is scoped to',
+    profile_blob        STRING                 COMMENT 'JSON-serialized CorpusProfile counters',
+    eligible_row_count  INT                    COMMENT 'Passing rows that contributed to the profile',
+    created_at          TIMESTAMP     NOT NULL COMMENT 'When the profile was persisted'
+)
+USING DELTA
+PARTITIONED BY (run_id)
+COMMENT 'Aggregate corpus feature profiles from Task 9 proactive mining'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
+_GENIE_EVAL_PROACTIVE_PATCHES_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_eval_proactive_patches (
+    run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
+    iteration           INT           NOT NULL COMMENT 'Iteration index where the patch was generated',
+    patch_id            STRING        NOT NULL COMMENT 'Stable id within (run_id, iteration)',
+    patch_type          STRING                 COMMENT 'update_column_description | add_join_spec | add_sql_snippet_expression | ...',
+    target              STRING                 COMMENT 'Table.column or join target',
+    table_id            STRING                 COMMENT 'Asset id the patch enriches',
+    source_signal       STRING                 COMMENT 'What observation drove the proposal (e.g. co_occurs_with:dim, frequent_tvf)',
+    frequency           INT                    COMMENT 'Observed frequency of the source signal',
+    dedup_route         STRING                 COMMENT 'metric_view_measure_enrich when the candidate was rewritten by the dedup contract',
+    dedup_dropped_reason STRING                COMMENT 'Reason code when the dedup contract dropped the candidate',
+    applied             BOOLEAN                COMMENT 'True when the patch was applied to the space',
+    created_at          TIMESTAMP     NOT NULL COMMENT 'When the patch was generated'
+)
+USING DELTA
+PARTITIONED BY (run_id)
+COMMENT 'Enrichment patches emitted by Task 9 proactive mining (one row per candidate)'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
 # Task 1: ground-truth correction queue. ``status`` is the four-state
 # review machine documented in ``ground_truth_corrections``:
 #   pending_review        — initial; reviewer has not looked.
@@ -455,4 +512,6 @@ _ALL_DDL: dict[str, str] = {
     TABLE_LEVER_LOOP_DECISIONS: _GENIE_EVAL_LEVER_LOOP_DECISIONS_DDL,
     TABLE_QUESTION_REGRESSIONS: _GENIE_EVAL_QUESTION_REGRESSIONS_DDL,
     TABLE_HUMAN_REQUIRED: _GENIE_EVAL_HUMAN_REQUIRED_DDL,
+    TABLE_PROACTIVE_CORPUS_PROFILE: _GENIE_EVAL_PROACTIVE_CORPUS_PROFILE_DDL,
+    TABLE_PROACTIVE_PATCHES: _GENIE_EVAL_PROACTIVE_PATCHES_DDL,
 }

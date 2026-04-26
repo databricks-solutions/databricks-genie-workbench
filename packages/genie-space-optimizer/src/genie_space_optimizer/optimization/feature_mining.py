@@ -704,6 +704,336 @@ def apply_dedup_contract(
 # ── small helpers ────────────────────────────────────────────
 
 
+# ── Task 9: proactive mining ────────────────────────────────────
+
+
+# Per-table budgets for proactive enrichment patches. These caps are
+# conservative on purpose: proactive mining is opt-in, and a small
+# enrichment budget per table is enough to lift the floor without
+# overwriting hand-tuned descriptions.
+PROACTIVE_PATCH_BUDGET: dict[str, int] = {
+    "column_description": 5,
+    "join_spec": 3,
+    "sql_snippet": 3,
+    "example_sql": 3,
+}
+
+
+@dataclass(frozen=True)
+class CorpusProfile:
+    """Frequency-weighted aggregate of features across passing rows.
+
+    Counters are public so callers can write them straight to Delta;
+    consumers are responsible for not mutating the counters in place.
+    """
+
+    measure_dim_pairs: dict[tuple[str, str], int] = field(default_factory=dict)
+    join_clauses: dict[tuple[str, str, str], int] = field(default_factory=dict)
+    tvf_calls: dict[str, int] = field(default_factory=dict)
+    aggregation_funcs: dict[str, int] = field(default_factory=dict)
+
+
+def is_eligible_passing_row(
+    row: dict, gt_corrections: dict[str, str] | None = None,
+) -> bool:
+    """True iff ``row`` is safe to mine as a passing-corpus example.
+
+    Eligibility rules (Task 1 + Task 9 contract):
+      * ``result_correctness == "yes"`` OR ``arbiter == "both_correct"``
+        — a passing row whose GT and Genie agreed.
+      * ``arbiter == "genie_correct"`` AND the corpus reviewer has
+        marked the GT-correction queue entry ``accepted_corpus_fix``.
+        This is the closed loop: a corpus-defective row only enters
+        proactive mining once the GT has actually been fixed.
+
+    Anything else (failures, pending corpus reviews, etc.) is excluded.
+    Pure: never raises.
+    """
+    gt_corrections = gt_corrections or {}
+    rc = str(row.get("feedback/result_correctness/value") or "").lower()
+    arb = str(row.get("feedback/arbiter/value") or "").lower()
+    qid = str(row.get("inputs.question_id") or "")
+    if rc in {"yes", "true", "1", "1.0"} or arb == "both_correct":
+        return True
+    if arb == "genie_correct" and gt_corrections.get(qid) == "accepted_corpus_fix":
+        return True
+    return False
+
+
+def aggregate_corpus_profile(
+    rows: list[dict],
+    *,
+    gt_corrections: dict[str, str] | None = None,
+) -> CorpusProfile:
+    """Walk eligible passing rows and build a typed corpus profile.
+
+    Mining source per row, in priority order:
+      1. ``inputs.expected_sql`` (the GT) — preferred because a GT
+         row was once curated even if it was synthetic.
+      2. ``outputs.predictions.sql`` (Genie's output) — used when GT
+         is missing (some rows store only Genie SQL).
+    Mining failures (parse errors etc.) are skipped silently.
+    """
+    pairs: dict[tuple[str, str], int] = {}
+    joins: dict[tuple[str, str, str], int] = {}
+    tvfs: dict[str, int] = {}
+    aggs: dict[str, int] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if not is_eligible_passing_row(row, gt_corrections):
+            continue
+        sql = (
+            row.get("inputs.expected_sql")
+            or row.get("outputs.predictions.sql")
+            or row.get("expected_sql")
+            or row.get("generated_sql")
+            or ""
+        )
+        if not sql:
+            continue
+        try:
+            feat = mine_sql_features(sql)
+        except Exception:
+            continue
+        for m in feat.measures:
+            for d in feat.group_by_cols:
+                key = (m, d)
+                pairs[key] = pairs.get(key, 0) + 1
+        for j in feat.join_specs:
+            joins[j] = joins.get(j, 0) + 1
+        for t in feat.tvf_calls:
+            tvfs[t] = tvfs.get(t, 0) + 1
+        for a in feat.aggregation_funcs:
+            aggs[a] = aggs.get(a, 0) + 1
+    return CorpusProfile(
+        measure_dim_pairs=pairs,
+        join_clauses=joins,
+        tvf_calls=tvfs,
+        aggregation_funcs=aggs,
+    )
+
+
+def _wraps_metric_view_measure(
+    tvf: str | None, metadata_snapshot: dict,
+) -> bool:
+    """Best-effort heuristic: does ``tvf`` wrap a metric-view measure?
+
+    The proactive mining path observes a TVF call frequency. If the
+    snapshot's metric_view definitions reference the TVF in any
+    measure expression / definition, treat the TVF as wrapping a
+    metric-view measure and route enrichment to the measure rather
+    than emitting a duplicate snippet.
+    """
+    if not tvf:
+        return False
+    target = tvf.lower().strip()
+    for mv_name, _measure in _iter_metric_view_measures(metadata_snapshot):
+        # If the metric view declares the TVF anywhere in its measure
+        # expressions, treat as a wrap. Schemas vary, so we accept
+        # any string field that contains the TVF name.
+        for mv in metadata_snapshot.get("metric_views") or []:
+            if not isinstance(mv, dict):
+                continue
+            if str(mv.get("name") or "").lower() != mv_name.lower():
+                continue
+            for m in mv.get("measures") or []:
+                if not isinstance(m, dict):
+                    continue
+                for fld in ("expression", "definition", "sql", "formula"):
+                    val = m.get(fld)
+                    if isinstance(val, str) and target in val.lower():
+                        return True
+    return False
+
+
+def _wrapped_measure_name(
+    tvf: str | None, metadata_snapshot: dict,
+) -> str | None:
+    """Return the metric-view measure name a ``tvf`` wraps, or None."""
+    if not tvf:
+        return None
+    target = tvf.lower().strip()
+    for mv in metadata_snapshot.get("metric_views") or []:
+        if not isinstance(mv, dict):
+            continue
+        for m in mv.get("measures") or []:
+            if not isinstance(m, dict):
+                continue
+            mn = str(m.get("name") or "")
+            if not mn:
+                continue
+            for fld in ("expression", "definition", "sql", "formula"):
+                val = m.get(fld)
+                if isinstance(val, str) and target in val.lower():
+                    return mn
+    return None
+
+
+def synthesize_proactive_patches(
+    profile: CorpusProfile,
+    *,
+    table_id: str,
+    metadata_snapshot: dict | None = None,
+    leakage_oracle: Any | None = None,
+    budget: dict[str, int] | None = None,
+) -> list[dict]:
+    """Generate bounded proactive enrichment patches honoring the
+    Semantic Consistency Rule 6 dedup contract.
+
+    Routing decisions:
+      * Measure-dim co-occurrence → ``update_column_description`` on
+        the measure. If the measure lives in a metric view, the
+        description is targeted at that metric view's measure column
+        (Rule 6.1) rather than the base table.
+      * Frequent join clauses → ``add_join_spec`` unless an
+        equivalent ``instructions.join_specs`` entry already exists
+        (Rule 6.3).
+      * Frequent TVF calls → ``add_sql_snippet_expression`` unless
+        the TVF wraps a metric-view measure (route to enrichment,
+        Rule 6.1) or its name collides with an existing snippet
+        (Rule 6.2).
+
+    Returns the kept patch list. Dropped candidates carry
+    ``dedup_dropped_reason`` so the harness can emit
+    ``proposal_grounding`` audit rows.
+    """
+    snap = metadata_snapshot or {}
+    bud = {**PROACTIVE_PATCH_BUDGET, **(budget or {})}
+    candidates: list[dict] = []
+
+    # Measure-dim co-occurrence — route to owning metric view when present.
+    pairs_sorted = sorted(
+        profile.measure_dim_pairs.items(),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+    for (measure, dim), freq in pairs_sorted[: bud["column_description"]]:
+        target_table = (
+            _owning_metric_view(measure, snap) or table_id
+        )
+        candidates.append({
+            "type": "update_column_description",
+            "column": measure,
+            "table_id": target_table,
+            "source_signal": f"co_occurs_with:{dim}",
+            "frequency": freq,
+        })
+
+    # Join clauses — drop when an equivalent join_spec already exists.
+    joins_sorted = sorted(
+        profile.join_clauses.items(),
+        key=lambda kv: (-kv[1], kv[0]),
+    )
+    for spec, freq in joins_sorted[: bud["join_spec"]]:
+        left, kind, right = spec
+        candidates.append({
+            "type": "add_join_spec",
+            "left_table": left,
+            "right_table": right,
+            "join_kind": kind,
+            "source_signal": "frequent_join",
+            "frequency": freq,
+            "table_id": table_id,
+        })
+
+    # TVF invocations — route metric-view-wrapping TVFs to measure
+    # enrichment; everything else to a snippet.
+    tvfs_sorted = sorted(
+        profile.tvf_calls.items(), key=lambda kv: (-kv[1], kv[0]),
+    )
+    for tvf, freq in tvfs_sorted[: bud["sql_snippet"]]:
+        if _wraps_metric_view_measure(tvf, snap):
+            wrapped = _wrapped_measure_name(tvf, snap) or tvf
+            candidates.append({
+                "type": "update_column_description",
+                "column": wrapped,
+                "lever": 1,
+                "source_signal": f"frequent_tvf:{tvf}",
+                "frequency": freq,
+                "dedup_route": "metric_view_measure_enrich",
+            })
+            continue
+        candidates.append({
+            "type": "add_sql_snippet_expression",
+            "snippet_name": tvf,
+            "source_signal": "frequent_tvf",
+            "frequency": freq,
+            "table_id": table_id,
+        })
+
+    # Run the dedup contract (snippet collisions, join_spec collisions,
+    # description-already-conveys, etc.). Reuses the same helper as
+    # the reactive path so behavior is consistent across the two
+    # mining phases.
+    return apply_dedup_contract(candidates, snap, leakage_oracle)
+
+
+def run_proactive_feature_mining(
+    *,
+    eval_rows: list[dict],
+    metadata_snapshot: dict,
+    table_ids: list[str] | None = None,
+    gt_corrections: dict[str, str] | None = None,
+    leakage_oracle: Any | None = None,
+    budget: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """End-to-end proactive feature-mining helper.
+
+    Aggregates a corpus profile from eligible passing rows, then
+    synthesizes enrichment patches per table id (when ``table_ids``
+    supplied) or once for the union (when not). Returns a dict the
+    harness can persist via state writers:
+
+    ::
+
+        {
+          "profile": {"measure_dim_pairs": {...}, "join_clauses": {...}, ...},
+          "eligible_row_count": int,
+          "patches": [<patch dict>, ...],
+        }
+
+    Pure: never raises. Empty inputs return an empty result.
+    """
+    profile = aggregate_corpus_profile(eval_rows, gt_corrections=gt_corrections)
+    eligible_count = sum(
+        1 for r in (eval_rows or [])
+        if isinstance(r, dict) and is_eligible_passing_row(r, gt_corrections)
+    )
+    profile_blob: dict[str, Any] = {
+        # Counters serialized as lists of (key, count) so JSON survives
+        # the tuple keys.
+        "measure_dim_pairs": [
+            list(k) + [v] for k, v in profile.measure_dim_pairs.items()
+        ],
+        "join_clauses": [
+            list(k) + [v] for k, v in profile.join_clauses.items()
+        ],
+        "tvf_calls": profile.tvf_calls,
+        "aggregation_funcs": profile.aggregation_funcs,
+    }
+
+    patches: list[dict] = []
+    targets = list(table_ids or []) or [""]
+    for tid in targets:
+        for p in synthesize_proactive_patches(
+            profile,
+            table_id=tid,
+            metadata_snapshot=metadata_snapshot,
+            leakage_oracle=leakage_oracle,
+            budget=budget,
+        ):
+            # Tag the source so persistence rows are queryable
+            # alongside reactive proposals.
+            p.setdefault("phase", "proactive")
+            patches.append(p)
+
+    return {
+        "profile": profile_blob,
+        "eligible_row_count": eligible_count,
+        "patches": patches,
+    }
+
+
 def _short_identifier(raw: str) -> str:
     """Strip surrounding parentheses/whitespace and return the
     deepest dotted identifier component.

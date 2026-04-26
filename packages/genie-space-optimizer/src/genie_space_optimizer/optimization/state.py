@@ -40,6 +40,8 @@ from genie_space_optimizer.optimization.ddl import (
     TABLE_GT_CORRECTION_CANDIDATES,
     TABLE_HUMAN_REQUIRED,
     TABLE_LEVER_LOOP_DECISIONS,
+    TABLE_PROACTIVE_CORPUS_PROFILE,
+    TABLE_PROACTIVE_PATCHES,
     TABLE_QUESTION_REGRESSIONS,
     _ALL_DDL,
 )
@@ -1021,6 +1023,114 @@ def write_question_regressions(
             "Wrote %d question regression row(s) for run %s",
             written,
             rows[0].get("run_id", "?"),
+        )
+
+
+def write_proactive_corpus_profile(
+    spark: SparkSession,
+    *,
+    run_id: str,
+    iteration: int,
+    table_id: str | None,
+    profile_blob: dict | str | None,
+    eligible_row_count: int,
+    catalog: str,
+    schema: str,
+) -> None:
+    """Persist a Task 9 proactive corpus profile snapshot.
+
+    ``profile_blob`` may be a Python dict (will be JSON-serialized) or
+    a pre-serialized string. No-op when both ``profile_blob`` and
+    ``eligible_row_count`` are empty.
+    """
+    if not profile_blob and not eligible_row_count:
+        return
+    if isinstance(profile_blob, dict):
+        try:
+            profile_blob_str = json.dumps(profile_blob, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            profile_blob_str = None
+    else:
+        profile_blob_str = profile_blob
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "iteration": int(iteration),
+        "table_id": table_id,
+        "profile_blob": profile_blob_str,
+        "eligible_row_count": int(eligible_row_count or 0),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        insert_row(
+            spark, catalog, schema, TABLE_PROACTIVE_CORPUS_PROFILE, payload,
+        )
+    except Exception:
+        logger.debug(
+            "Failed to write proactive corpus profile row for run %s iter %d",
+            run_id, iteration, exc_info=True,
+        )
+
+
+def write_proactive_patches(
+    spark: SparkSession,
+    rows: list[dict],
+    *,
+    catalog: str,
+    schema: str,
+) -> None:
+    """Persist Task 9 proactive enrichment patches.
+
+    Each input row is the patch dict emitted by
+    ``feature_mining.synthesize_proactive_patches`` plus an
+    ``applied`` boolean and optional ``patch_id`` / ``run_id`` /
+    ``iteration``. No-op when ``rows`` is empty.
+    """
+    if not rows:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    written = 0
+    for r in rows:
+        run_id = str(r.get("run_id") or "")
+        if not run_id:
+            continue
+        target = (
+            r.get("target")
+            or r.get("column")
+            or r.get("snippet_name")
+            or (
+                f"{r.get('left_table', '')}|{r.get('join_kind', '')}|"
+                f"{r.get('right_table', '')}"
+                if r.get("type") == "add_join_spec" else None
+            )
+        )
+        payload: dict[str, Any] = {
+            "run_id": run_id,
+            "iteration": int(r.get("iteration") or 0),
+            "patch_id": str(r.get("patch_id") or f"proactive_{written + 1}"),
+            "patch_type": r.get("type"),
+            "target": str(target) if target is not None else None,
+            "table_id": r.get("table_id"),
+            "source_signal": r.get("source_signal"),
+            "frequency": int(r.get("frequency") or 0),
+            "dedup_route": r.get("dedup_route"),
+            "dedup_dropped_reason": r.get("dedup_dropped_reason"),
+            "applied": bool(r.get("applied", False)),
+            "created_at": now,
+        }
+        try:
+            insert_row(
+                spark, catalog, schema, TABLE_PROACTIVE_PATCHES, payload,
+            )
+            written += 1
+        except Exception:
+            logger.debug(
+                "Failed to write proactive patch row for run %s",
+                run_id, exc_info=True,
+            )
+    if written:
+        logger.info(
+            "Wrote %d proactive patch row(s) for run %s",
+            written, rows[0].get("run_id", "?"),
         )
 
 
