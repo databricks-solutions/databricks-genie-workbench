@@ -224,10 +224,20 @@ class TestPhase2IdentifierQualificationGate:
     def test_gate_runs_before_execute_in_validator(self):
         """Ordering guarantee: qualification failure short-circuits the
         execute gate so the warehouse is never touched for an obviously
-        unqualified proposal."""
+        unqualified proposal that the deterministic repair pipeline
+        cannot fix.
+
+        PR 31 introduced a shared pre-execute repair pass that runs
+        BEFORE qualification — when the bare stem has a unique match in
+        the allowlist the repair promotes it (``FROM dim_date`` →
+        ``FROM cat.sch.mv_esr_dim_date``) and qualification passes. To
+        keep the original ordering invariant testable we use a stem
+        with NO match in the allowlist; the repair becomes a no-op
+        and qualification rejects before execute runs.
+        """
         proposal = {
             "example_question": "show days",
-            "example_sql": "SELECT x FROM dim_date",
+            "example_sql": "SELECT x FROM totally_unknown_table",
         }
         archetype = next(a for a in ARCHETYPES if a.name == "simple_enumerate")
 
@@ -251,6 +261,44 @@ class TestPhase2IdentifierQualificationGate:
         assert any(
             r.gate == "identifier_qualification" and not r.passed for r in results
         )
+
+    def test_pre_execute_repair_promotes_unique_stem_then_qualifies(self):
+        """PR 31 contract: when the proposal SQL has a bare stem with
+        exactly one canonical match in the allowlist, the shared
+        pre-execute repair promotes the stem to its canonical form,
+        qualification then passes, and execute runs on the repaired
+        SQL. This avoids burning an LLM retry round on a class of
+        failures the deterministic repair can fix outright.
+        """
+        proposal = {
+            "example_question": "show days",
+            "example_sql": "SELECT x FROM dim_date",
+        }
+        archetype = next(a for a in ARCHETYPES if a.name == "simple_enumerate")
+
+        execute_called = {"count": 0, "sql": None}
+
+        def _fake_execute(proposal, **_kw):
+            execute_called["count"] += 1
+            execute_called["sql"] = proposal.get("example_sql")
+            return GateResult(True, "execute")
+
+        with patch(
+            "genie_space_optimizer.optimization.synthesis._gate_execute",
+            side_effect=_fake_execute,
+        ):
+            passed, results = validate_synthesis_proposal(
+                proposal,
+                archetype=archetype, benchmark_corpus=None,
+                identifier_allowlist={"cat.sch.mv_esr_dim_date"},
+            )
+        # Execute must have been called on the REPAIRED SQL — the
+        # deterministic stem-repair fixes ``FROM dim_date`` →
+        # ``FROM cat.sch.mv_esr_dim_date`` before qualification runs.
+        assert execute_called["count"] == 1
+        assert execute_called["sql"] is not None
+        assert "cat.sch.mv_esr_dim_date" in execute_called["sql"].lower()
+        assert "from dim_date" not in execute_called["sql"].lower()
 
 
 # ═══════════════════════════════════════════════════════════════════════

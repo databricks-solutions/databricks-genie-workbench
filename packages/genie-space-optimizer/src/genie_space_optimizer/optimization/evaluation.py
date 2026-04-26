@@ -1586,6 +1586,379 @@ def _strip_outer_agg_around_measure(sql: str) -> tuple[str, int]:
     return new_sql, n
 
 
+def _repair_order_by_measure_alias(sql: str) -> tuple[str, int]:
+    """PR 31 — Strip ``MEASURE()`` around a SELECT alias in ``ORDER BY``.
+
+    Spark accepts ``ORDER BY MEASURE(<measure_col>)`` only when the
+    operand resolves to an MV measure column on a FROM-side metric
+    view. When the LLM emits ``ORDER BY MEASURE(<select_alias>)``
+    where the alias is itself a SELECT projection that already
+    contains a ``MEASURE(...)`` call, Spark rejects the outer
+    ``MEASURE()`` because the alias resolves to an aggregate
+    expression, not a measure column.
+
+    The deterministic fix is to replace ``MEASURE(<alias>)`` in the
+    ORDER BY clause with the bare ``<alias>``. Conservative: returns
+    ``(sql, 0)`` unchanged when sqlglot is unavailable, parsing
+    fails, the SQL has no SELECT-list MEASURE-aliased projections,
+    or the ORDER BY does not reference any such alias.
+
+    Returns ``(new_sql, count)`` — ``count`` is the number of
+    ORDER BY MEASURE-of-alias substitutions applied. Used by the
+    shared pre-execute repair hook so unified, preflight, and
+    cluster synthesis paths apply the same repair before warehouse
+    EXPLAIN/execute.
+    """
+    if not sql or "ORDER BY" not in sql.upper() or "MEASURE" not in sql.upper():
+        return sql, 0
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+    except Exception:
+        return sql, 0
+    try:
+        tree = sqlglot.parse_one(sql, read="databricks")
+    except Exception:
+        return sql, 0
+    if not isinstance(tree, exp.Select):
+        return sql, 0
+
+    # Collect SELECT-list aliases that are MEASURE(...) projections.
+    measure_aliases: set[str] = set()
+    for proj in tree.expressions or []:
+        if not isinstance(proj, exp.Alias):
+            continue
+        alias_id = proj.args.get("alias")
+        if alias_id is None or not alias_id.name:
+            continue
+        inner = proj.this
+        if (
+            isinstance(inner, exp.Anonymous)
+            and str(inner.name or "").upper() == "MEASURE"
+        ):
+            measure_aliases.add(str(alias_id.name).lower())
+    if not measure_aliases:
+        return sql, 0
+
+    order = tree.args.get("order")
+    if order is None:
+        return sql, 0
+
+    count = 0
+    for ob in order.find_all(exp.Ordered):
+        inner = ob.this
+        if not (
+            isinstance(inner, exp.Anonymous)
+            and str(inner.name or "").upper() == "MEASURE"
+        ):
+            continue
+        # MEASURE() arity is exactly 1 (a column reference). Only
+        # rewrite when the single arg is a bare column whose lower
+        # name matches a SELECT alias we identified above.
+        args = inner.args.get("expressions") or []
+        if len(args) != 1:
+            continue
+        arg = args[0]
+        if not isinstance(arg, exp.Column) or arg.table:
+            continue
+        if (arg.name or "").lower() not in measure_aliases:
+            continue
+        ob.set("this", exp.Column(this=exp.to_identifier(arg.name)))
+        count += 1
+
+    if not count:
+        return sql, 0
+    try:
+        return tree.sql(dialect="databricks"), count
+    except Exception:
+        return sql, 0
+
+
+_NUMERIC_CAST_TYPES: frozenset[str] = frozenset({
+    "int", "integer", "bigint", "smallint", "tinyint", "long", "short",
+    "float", "double", "decimal", "numeric", "real",
+})
+
+
+def _is_numeric_value(s: Any) -> bool:
+    """Return True when *s* parses as a numeric literal.
+
+    Used by the categorical-cast guardrail to decide whether sampled
+    values for a column would survive a numeric cast at execute time.
+    Tolerates leading/trailing whitespace, signs, decimals, and
+    scientific notation. Booleans, dates, and free-text values
+    (``"Y"`` / ``"yes"`` / etc.) all return ``False``.
+    """
+    if s is None:
+        return False
+    text = str(s).strip()
+    if not text:
+        return False
+    try:
+        float(text)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _profile_lookup(
+    data_profile: dict | None,
+    column_name: str,
+    *,
+    table_hint: str | None = None,
+) -> dict | None:
+    """Find the per-column profile entry for *column_name* in
+    *data_profile*.
+
+    The data profile is keyed by fully-qualified table identifier;
+    column names are case-insensitive. When *table_hint* is provided
+    we look there first; otherwise we scan every table and return
+    the first hit. Returns ``None`` when no profile entry exists for
+    the column.
+    """
+    if not isinstance(data_profile, dict) or not column_name:
+        return None
+    cn = column_name.strip().lower()
+    if not cn:
+        return None
+    if table_hint:
+        tinfo = data_profile.get(table_hint)
+        if not isinstance(tinfo, dict):
+            tinfo = data_profile.get(table_hint.lower())
+        if isinstance(tinfo, dict):
+            cols = tinfo.get("columns") or {}
+            for k, v in cols.items():
+                if isinstance(v, dict) and str(k).lower() == cn:
+                    return v
+    for tinfo in data_profile.values():
+        if not isinstance(tinfo, dict):
+            continue
+        cols = tinfo.get("columns") or {}
+        for k, v in cols.items():
+            if isinstance(v, dict) and str(k).lower() == cn:
+                return v
+    return None
+
+
+def check_categorical_cast_violations(
+    sql: str,
+    data_profile: dict | None,
+) -> list[tuple[str, str, list[str]]]:
+    """PR 32 — Detect ``CAST(<col> AS <numeric_type>)`` whose argument
+    is a categorical string column with non-numeric sample values.
+
+    Returns a list of ``(column_name, target_type, sample_values)``
+    tuples for each offending cast. Empty list means the SQL has no
+    such violation (no casts at all, every cast is on a numeric or
+    unknown column, or every cast's column has all-numeric sampled
+    values).
+
+    Conservative: returns ``[]`` when *sql* is empty, ``data_profile``
+    is empty, or sqlglot is unavailable / fails to parse.
+    Cast targets that aren't recognised numeric SQL types (e.g.
+    ``CAST(col AS DATE)``) are skipped — only numeric casts are
+    guarded because that's the failure class observed in production
+    (categorical Y/N flags being cast to BIGINT).
+    """
+    if not sql or not isinstance(data_profile, dict) or not data_profile:
+        return []
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+    except Exception:
+        return []
+    try:
+        tree = sqlglot.parse_one(sql, read="databricks")
+    except Exception:
+        return []
+
+    out: list[tuple[str, str, list[str]]] = []
+    seen: set[tuple[str, str]] = set()
+    for cast in tree.find_all(exp.Cast):
+        target = cast.args.get("to")
+        if target is None:
+            continue
+        try:
+            target_sql = target.sql(dialect="databricks").strip().lower()
+        except Exception:
+            continue
+        # Strip arity/precision (``DECIMAL(38,2)`` → ``decimal``).
+        target_kind = target_sql.split("(")[0].strip()
+        if target_kind not in _NUMERIC_CAST_TYPES:
+            continue
+        operand = cast.this
+        if not isinstance(operand, exp.Column):
+            continue
+        col_name = (operand.name or "").strip()
+        if not col_name:
+            continue
+        table_hint = (operand.table or "").strip() or None
+        cinfo = _profile_lookup(data_profile, col_name, table_hint=table_hint)
+        if not isinstance(cinfo, dict):
+            continue
+        vals = cinfo.get("distinct_values")
+        if not isinstance(vals, (list, tuple)) or not vals:
+            continue
+        non_numeric = [str(v) for v in vals if not _is_numeric_value(v)]
+        if not non_numeric:
+            continue
+        key = (col_name.lower(), target_kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((col_name, target_kind, list(non_numeric)[:5]))
+    return out
+
+
+def apply_pre_execute_repairs(
+    sql: str,
+    *,
+    mv_measures: dict[str, set[str]] | None = None,
+    mv_short_set: set[str] | None = None,
+    canonical_assets: list[str] | dict | None = None,
+    counters: dict[str, int] | None = None,
+) -> str:
+    """PR 31 — Apply the deterministic repair pipeline before execute.
+
+    Runs the same MV/CTE rewrites used by the unified-correction
+    pipeline so the unified, preflight, and cluster-synthesis paths
+    all converge on the same SQL shape before paying for a warehouse
+    EXPLAIN/execute. Each repair is conservative: when its
+    pre-conditions don't apply (no MEASURE refs, no MV in JOIN,
+    sqlglot parse failure), the repair is a no-op.
+
+    Order matters and matches the unified correction sequence:
+
+    1. ``repair_stemmed_identifiers_in_sql`` — promote bare table
+       stems to fully-qualified identifiers (so the qualification
+       gate doesn't reject SQL that the deterministic repair could
+       fix).
+    2. ``_rewrite_measure_refs`` — wrap bare measure columns in
+       ``MEASURE()`` in SELECT / ORDER BY positions.
+    3. ``_strip_outer_agg_around_measure`` — collapse
+       ``SUM(MEASURE(x))`` to ``MEASURE(x)``.
+    4. ``_repair_measure_alias_collisions`` — rename
+       ``MEASURE(x) AS x`` to ``MEASURE(x) AS x_value``.
+    5. ``_repair_order_by_measure_alias`` — strip ``MEASURE()`` in
+       ORDER BY when the operand is itself a SELECT alias that was
+       defined as a MEASURE(...) projection.
+    6. ``_repair_measure_in_where`` — lift measure refs from WHERE
+       into a CTE-first pattern.
+    7. ``_repair_metric_view_join`` — wrap each metric view in a
+       JOIN with a CTE so Spark doesn't raise
+       ``METRIC_VIEW_JOIN_NOT_SUPPORTED``.
+
+    ``counters`` (when supplied) is mutated in place with a per-step
+    increment using the same key names the existing call-sites
+    already log:
+
+      - ``repaired_stemmed_identifiers``
+      - ``repaired_measure_refs``
+      - ``stripped_outer_aggregate_around_measure``
+      - ``repaired_measure_alias_collisions``
+      - ``repaired_order_by_measure_alias``
+      - ``repaired_measure_in_where``
+      - ``repaired_metric_view_join``
+
+    Returns the repaired SQL (or *sql* unchanged when no repair
+    fired).
+    """
+    if not sql or not sql.strip():
+        return sql
+
+    new_sql = sql
+
+    if canonical_assets:
+        try:
+            from genie_space_optimizer.optimization.preflight_synthesis import (
+                repair_stemmed_identifiers_in_sql,
+            )
+            repaired, stem_subs = repair_stemmed_identifiers_in_sql(
+                new_sql, canonical_assets,
+            )
+            if stem_subs:
+                new_sql = repaired
+                if counters is not None:
+                    counters["repaired_stemmed_identifiers"] = (
+                        counters.get("repaired_stemmed_identifiers", 0)
+                        + len(stem_subs)
+                    )
+        except Exception:
+            pass
+
+    if mv_measures:
+        try:
+            wrapped = _rewrite_measure_refs(new_sql, mv_measures)
+            if wrapped != new_sql:
+                before = len(re.findall(r"\bMEASURE\s*\(", new_sql, re.IGNORECASE))
+                after = len(re.findall(r"\bMEASURE\s*\(", wrapped, re.IGNORECASE))
+                new_sql = wrapped
+                if counters is not None and after > before:
+                    counters["repaired_measure_refs"] = (
+                        counters.get("repaired_measure_refs", 0) + (after - before)
+                    )
+        except Exception:
+            pass
+
+        try:
+            stripped, strip_count = _strip_outer_agg_around_measure(new_sql)
+            if strip_count:
+                new_sql = stripped
+                if counters is not None:
+                    counters["stripped_outer_aggregate_around_measure"] = (
+                        counters.get("stripped_outer_aggregate_around_measure", 0)
+                        + strip_count
+                    )
+        except Exception:
+            pass
+
+    try:
+        new_sql, alias_fixes = _repair_measure_alias_collisions(new_sql)
+        if alias_fixes and counters is not None:
+            counters["repaired_measure_alias_collisions"] = (
+                counters.get("repaired_measure_alias_collisions", 0) + alias_fixes
+            )
+    except Exception:
+        pass
+
+    try:
+        new_sql, ob_fixes = _repair_order_by_measure_alias(new_sql)
+        if ob_fixes and counters is not None:
+            counters["repaired_order_by_measure_alias"] = (
+                counters.get("repaired_order_by_measure_alias", 0) + ob_fixes
+            )
+    except Exception:
+        pass
+
+    if mv_measures:
+        try:
+            new_sql, where_lifts = _repair_measure_in_where(new_sql, mv_measures)
+            if where_lifts and counters is not None:
+                counters["repaired_measure_in_where"] = (
+                    counters.get("repaired_measure_in_where", 0) + where_lifts
+                )
+        except Exception:
+            pass
+
+    if mv_short_set:
+        try:
+            join_reason = _check_metric_view_join_pre(new_sql, mv_short_set)
+            if join_reason:
+                repaired_join, join_wraps = _repair_metric_view_join(
+                    new_sql, mv_short_set, mv_measures,
+                )
+                if join_wraps:
+                    new_sql = repaired_join
+                    if counters is not None:
+                        counters["repaired_metric_view_join"] = (
+                            counters.get("repaired_metric_view_join", 0) + join_wraps
+                        )
+        except Exception:
+            pass
+
+    return new_sql
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Centralized metric-view error matchers
 # ─────────────────────────────────────────────────────────────────────
@@ -1760,10 +2133,31 @@ def effective_metric_view_identifiers_with_catalog(config: dict) -> set[str]:
     data-profile skip-list. Without the catalog union we miss MVs that
     Genie serialized under ``data_sources.tables`` without measure
     column configs (the actual failure mode that motivated the helper).
+
+    PR 30 — When ``config["_asset_semantics"]`` is populated, the
+    semantics map is the primary source of truth and the legacy union
+    is folded in as a safety net for callers that pre-date the
+    contract.
     """
+    out: set[str] = set()
+    base_lower: set[str] = set()
+
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            metric_view_identifiers as _sem_mv_idents,
+        )
+        for ident in _sem_mv_idents(config):
+            if ident:
+                out.add(ident)
+                base_lower.add(ident.lower())
+    except Exception:
+        pass
+
     base = effective_metric_view_identifiers(config)
-    out: set[str] = set(base)
-    base_lower = {ident.lower() for ident in base}
+    for ident in base:
+        if ident and ident.lower() not in base_lower:
+            out.add(ident)
+            base_lower.add(ident.lower())
 
     cache = config.get("_metric_view_yaml")
     if not isinstance(cache, dict):
@@ -1818,8 +2212,27 @@ def build_metric_view_measures(config: dict) -> dict[str, set[str]]:
     rewriter — keeping detection here ensures the unified pipeline, the
     preflight pipeline, and the benchmark/example correction loops all
     rewrite the same set of columns.
+
+    PR 30 — When ``config["_asset_semantics"]`` is populated, the
+    semantics map is consulted first and its measures are unioned with
+    the legacy paths. This keeps the rewriter consistent across every
+    detection ladder while preserving back-compat for snapshots that
+    pre-date the contract.
     """
     result: dict[str, set[str]] = {}
+
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            metric_view_measures_by_short_name as _sem_measures,
+        )
+        for short, ms in _sem_measures(config).items():
+            if not short or not ms:
+                continue
+            existing = result.setdefault(short, set())
+            existing.update(ms)
+    except Exception:
+        pass
+
     for mv in _iter_effective_metric_view_entries(config):
         identifier = mv.get("identifier", "")
         short_name = identifier.split(".")[-1].lower() if identifier else ""
@@ -1925,6 +2338,26 @@ def _count_mv_detection_sources(config: dict) -> dict[str, int]:
             ident = str(fq).strip().lower()
             if ident and ident not in config_ids and ident not in flag_ids:
                 catalog_ids.add(ident)
+
+    # PR 30 — also fold any semantics-only MVs (e.g. Genie ``metric_views``
+    # entries reclassified via profiling that never made it into
+    # ``_metric_view_yaml``) into the catalog bucket so the banner
+    # diagnostic count is never lower than the semantics count.
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            metric_view_identifiers as _sem_mv_idents,
+        )
+        for ident in _sem_mv_idents(config):
+            il = (ident or "").strip().lower()
+            if (
+                il
+                and il not in config_ids
+                and il not in flag_ids
+                and il not in catalog_ids
+            ):
+                catalog_ids.add(il)
+    except Exception:
+        pass
 
     return {
         "config": len(config_ids),
@@ -2062,6 +2495,76 @@ def _strip_from_join_clauses(sql: str) -> str:
     return pattern.sub(" ", sql)
 
 
+def _extract_cte_names(sql: str) -> set[str]:
+    """PR 31 — Extract top-level CTE names declared in a ``WITH`` clause.
+
+    Recognizes the CTE-first pattern produced by the metric-view
+    repair path::
+
+        WITH __mv_1 AS (SELECT ... FROM cat.sch.mv1),
+             base   AS (SELECT ... FROM cat.sch.fact)
+        SELECT base.col, __mv_1.measure_value FROM base ...
+
+    Without this, the dangling-qualifier check rejects every CTE
+    alias as unresolved because ``base`` and ``__mv_1`` never appear
+    on a FROM/JOIN clause's *table* slot — only as references later
+    in the query body.
+
+    Implementation is regex-based and bounded by the AS-paren depth
+    to avoid scanning into subqueries. ``RECURSIVE`` is honored.
+    """
+    out: set[str] = set()
+    if not sql:
+        return out
+
+    # Find the first WITH (case-insensitive) at the top level. We don't
+    # try to recover from arbitrary leading whitespace/comments — both
+    # are tolerated by the simple regex.
+    with_match = re.search(
+        r"\bWITH\s+(?:RECURSIVE\s+)?",
+        sql,
+        re.IGNORECASE,
+    )
+    if not with_match:
+        return out
+
+    # CTE names are followed by ``AS`` (with optional column list in
+    # parens). We parse depth-aware to locate each CTE definition's
+    # closing paren before grabbing the next name.
+    pos = with_match.end()
+    n = len(sql)
+    cte_pattern = re.compile(
+        r"\s*`?([A-Za-z_]\w*)`?\s*(?:\([^()]*\))?\s*AS\s*\(",
+        re.IGNORECASE,
+    )
+    while pos < n:
+        m = cte_pattern.match(sql, pos)
+        if not m:
+            break
+        cte_name = m.group(1).lower()
+        if cte_name and cte_name not in _SQL_RESERVED_BEFORE_DOT:
+            out.add(cte_name)
+        # Walk past the CTE body — count parens starting at the opening one.
+        depth = 1
+        i = m.end()
+        while i < n and depth > 0:
+            ch = sql[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            i += 1
+        # After the body, expect either ``,`` (next CTE) or end of WITH.
+        # Skip whitespace.
+        while i < n and sql[i].isspace():
+            i += 1
+        if i < n and sql[i] == ",":
+            pos = i + 1
+            continue
+        break
+    return out
+
+
 def _extract_from_join_aliases(sql: str) -> set[str]:
     """Return the set of effective qualifiers visible in FROM/JOIN clauses.
 
@@ -2069,6 +2572,9 @@ def _extract_from_join_aliases(sql: str) -> set[str]:
       - The table's short name (last dot component) — covers unaliased
         references like ``mv_x.col``.
       - The alias when present — covers ``mv_x AS x`` / ``mv_x x``.
+      - PR 31 — CTE names declared in any ``WITH`` clause, so
+        ``FROM base`` and ``base.col`` references resolve when ``base``
+        is a top-level CTE rather than an actual table.
 
     Implementation is regex-based to avoid a hard sqlglot dependency in
     the hot repair path. Handles backticks and ``AS`` keyword. The alias
@@ -2094,6 +2600,8 @@ def _extract_from_join_aliases(sql: str) -> set[str]:
                 out.add(short.lower())
         if alias and alias.lower() not in _SQL_RESERVED_BEFORE_DOT:
             out.add(alias.lower())
+    # PR 31 — also accept CTE names declared in a ``WITH`` clause.
+    out.update(_extract_cte_names(sql))
     return out
 
 
@@ -3511,6 +4019,13 @@ def _classify_sql_validation_error(message: str) -> str:
         return "mv_alias_collision"
     if "metric_view_join_not_supported" in lowered:
         return "metric_view_join"
+    # PR 32 — categorical string cast to numeric.
+    if (
+        "cast_invalid_input" in lowered
+        or "cannot be cast to" in lowered
+        or "cannot be parsed as" in lowered
+    ):
+        return "cast_invalid_input"
     if "insufficient_permissions" in lowered or "permission denied" in lowered:
         return "permission_blocked"
     if "does not have execute on routine" in lowered:
@@ -3570,6 +4085,16 @@ _REPAIR_HINTS_BY_REASON: dict[str, str] = {
         "METRIC_VIEW_JOIN_NOT_SUPPORTED. Use the CTE-first pattern: "
         "materialize the metric view query in a WITH clause, then "
         "JOIN the CTE result to the dimension table."
+    ),
+    "cast_invalid_input": (
+        "FIX: A CAST to a numeric type failed because the column's "
+        "actual values are categorical strings (e.g. 'Y'/'N', "
+        "'true'/'false'). Do NOT cast categorical flag columns to "
+        "BIGINT/INT/DOUBLE. Instead, compare directly to the "
+        "string literal (``WHERE flag_col = 'Y'``) or use a CASE "
+        "expression to map categories to 0/1 (``CASE WHEN col = 'Y' "
+        "THEN 1 ELSE 0 END``). The Column value profile section "
+        "above lists the actual sampled values."
     ),
     "bad_join_key": (
         "FIX: The JOIN ON clause references a column that doesn't "

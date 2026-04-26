@@ -1419,6 +1419,7 @@ def preflight_collect_uc_metadata(
     # before the UC Refs split / Coverage display so those lines reflect
     # the *effective* MV count, not the raw config count.
     _catalog_outcomes: dict[str, str] = {}
+    _catalog_diagnostic_samples: dict[str, str] = {}
     try:
         from genie_space_optimizer.common.metric_view_catalog import (
             detect_metric_views_via_catalog_with_outcomes,
@@ -1429,6 +1430,7 @@ def preflight_collect_uc_metadata(
                 spark, list(genie_table_refs),
                 w=w, warehouse_id=warehouse_id,
                 catalog=catalog, schema=schema,
+                diagnostic_samples=_catalog_diagnostic_samples,
             )
         )
     except Exception:
@@ -1467,6 +1469,33 @@ def preflight_collect_uc_metadata(
             logger.debug(
                 "MV detection summary aggregation failed", exc_info=True,
             )
+
+    # PR 27 — Stamp the unified ``_asset_semantics`` contract right after
+    # catalog detection so every downstream consumer (join discovery,
+    # unified synthesis, preflight synthesis, validation/repair) reads
+    # the same source of truth instead of re-deriving MV identity from
+    # ``_metric_view_yaml`` / column flags / data_sources.metric_views
+    # independently. Print a visible banner block via ``print()`` so the
+    # block survives even when package INFO logs are filtered.
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            build_and_stamp_from_run,
+            format_semantics_block,
+        )
+        _semantics = build_and_stamp_from_run(
+            config,
+            table_refs=_refs_seen,
+            catalog_yamls=_catalog_mv_yamls if isinstance(_catalog_mv_yamls, dict) else {},
+            catalog_outcomes=_catalog_outcomes,
+            catalog_diagnostic_samples=_catalog_diagnostic_samples,
+            uc_columns=uc_columns_dicts if isinstance(uc_columns_dicts, list) else None,
+        )
+        for _line in format_semantics_block(_semantics):
+            print(f"  [SEMANTICS] {_line}")
+    except Exception:
+        logger.debug(
+            "Asset semantics stamping failed (non-fatal)", exc_info=True,
+        )
 
     from genie_space_optimizer.optimization.evaluation import (
         effective_metric_view_identifiers,

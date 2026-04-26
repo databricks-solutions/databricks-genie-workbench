@@ -160,6 +160,20 @@ def schema_traits(metadata_snapshot: dict) -> set[str]:
         cache = metadata_snapshot.get("_metric_view_yaml") or {}
         if isinstance(cache, dict) and cache:
             traits.add("has_metric_view")
+
+    # PR 30 — final fallback: consult the unified ``_asset_semantics``
+    # contract. Catches MVs where every legacy signal was reclassified
+    # in profiling but the semantics builder still produced a metric_view
+    # entry from structural catalog signals.
+    if "has_metric_view" not in traits:
+        try:
+            from genie_space_optimizer.common.asset_semantics import (
+                metric_view_identifiers as _sem_mv_idents,
+            )
+            if _sem_mv_idents(metadata_snapshot):
+                traits.add("has_metric_view")
+        except Exception:
+            pass
     return traits
 
 

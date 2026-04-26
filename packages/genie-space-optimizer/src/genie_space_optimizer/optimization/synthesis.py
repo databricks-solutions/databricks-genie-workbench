@@ -342,7 +342,24 @@ def _gate_identifier_qualification(
     if not targets:
         return GateResult(True, "identifier_qualification", "skipped_no_targets")
     allowlist_lower = {a.strip().lower() for a in allowlist}
-    bad = [t for t in targets if t not in allowlist_lower]
+    # PR 31 — also accept top-level CTE names declared in the SQL's
+    # ``WITH`` clause. The CTE-first MV-join repair emits
+    # ``WITH __mv_1 AS (...), base AS (...) SELECT ... FROM base ...``;
+    # without this exception the qualification gate rejects every
+    # ``FROM base`` / ``JOIN __mv_1`` reference because CTE aliases are
+    # not in the slice's identifier allowlist (which only enumerates
+    # real tables/MVs).
+    try:
+        from genie_space_optimizer.optimization.evaluation import (
+            _extract_cte_names,
+        )
+        cte_names = _extract_cte_names(sql)
+    except Exception:
+        cte_names = set()
+    bad = [
+        t for t in targets
+        if t not in allowlist_lower and t.split(".")[-1] not in cte_names
+    ]
     if bad:
         preview = sorted(allowlist_lower)[:5]
         return GateResult(
@@ -662,10 +679,119 @@ def validate_synthesis_proposal(
 
     Any gate failure short-circuits the rest.
     """
+    # PR 32 — Categorical-cast guardrail. Runs after parse and before
+    # execute, and rejects ``CAST(col AS BIGINT)`` when the column's
+    # sampled distinct values are non-numeric (typical Y/N flag
+    # column). The deterministic repair has no clean way to flip
+    # cast types without changing semantics, so we hard-fail here
+    # and let the LLM correction loop pick a non-cast comparison
+    # shape (string equality, CASE expression).
+    def _gate_categorical_cast() -> GateResult:
+        try:
+            from genie_space_optimizer.optimization.evaluation import (
+                check_categorical_cast_violations,
+            )
+        except Exception:
+            return GateResult(True, "categorical_cast", "skipped_no_helper")
+        sql = str(proposal.get("example_sql") or "")
+        if not sql.strip():
+            return GateResult(True, "categorical_cast", "skipped_empty_sql")
+        data_profile = (
+            (metadata_snapshot or {}).get("_data_profile")
+            if isinstance(metadata_snapshot, dict)
+            else None
+        )
+        if not isinstance(data_profile, dict) or not data_profile:
+            return GateResult(True, "categorical_cast", "skipped_no_profile")
+        try:
+            violations = check_categorical_cast_violations(sql, data_profile)
+        except Exception:
+            return GateResult(True, "categorical_cast", "skipped_check_error")
+        if not violations:
+            return GateResult(True, "categorical_cast")
+        col, target, samples = violations[0]
+        sample_repr = ", ".join(repr(s) for s in samples)
+        return GateResult(
+            False,
+            "categorical_cast",
+            f"cast_invalid_input: CAST({col} AS {target.upper()}) "
+            f"would fail — column values are categorical strings "
+            f"({sample_repr}). Use string equality or CASE WHEN.",
+        )
+
+    # PR 31 — Apply the shared pre-execute repair pipeline once the
+    # SQL has parsed and qualified. Same deterministic repairs the
+    # unified correction pipeline runs (MEASURE wrap, alias
+    # collisions, ORDER BY MEASURE-of-alias strip, measure-in-WHERE
+    # CTE lift, MV direct-join CTE lift, stem qualification) so the
+    # cluster-synthesis path doesn't burn an EXPLAIN on a SQL the
+    # repair pipeline would have fixed deterministically.
+    def _apply_pre_execute_repairs() -> GateResult:
+        try:
+            from genie_space_optimizer.optimization.evaluation import (
+                apply_pre_execute_repairs,
+                build_metric_view_measures,
+                effective_metric_view_identifiers_with_catalog,
+            )
+        except Exception:
+            return GateResult(True, "pre_execute_repairs", "skipped_no_helpers")
+        sql = str(proposal.get("example_sql") or "")
+        if not sql.strip():
+            return GateResult(True, "pre_execute_repairs", "skipped_empty_sql")
+        cfg = {"_parsed_space": metadata_snapshot} if metadata_snapshot else {}
+        try:
+            mv_measures = build_metric_view_measures(cfg) if cfg else {}
+        except Exception:
+            mv_measures = {}
+        try:
+            mv_ids = (
+                effective_metric_view_identifiers_with_catalog(cfg) if cfg else set()
+            )
+        except Exception:
+            mv_ids = set()
+        mv_short_set = {
+            str(n).split(".")[-1].lower() for n in (mv_ids or set()) if n
+        }
+        mv_short_set.update(k.lower() for k in (mv_measures or {}).keys() if k)
+        canonical_assets = (
+            sorted(identifier_allowlist) if identifier_allowlist else []
+        )
+        counters: dict[str, int] = {}
+        try:
+            new_sql = apply_pre_execute_repairs(
+                sql,
+                mv_measures=mv_measures,
+                mv_short_set=mv_short_set,
+                canonical_assets=canonical_assets or None,
+                counters=counters,
+            )
+        except Exception:
+            return GateResult(True, "pre_execute_repairs", "skipped_repair_error")
+        if new_sql != sql:
+            proposal["example_sql"] = new_sql
+            applied = ",".join(
+                f"{k}={v}" for k, v in sorted(counters.items()) if v
+            )
+            return GateResult(
+                True, "pre_execute_repairs", f"applied:{applied}" if applied else "applied",
+            )
+        return GateResult(True, "pre_execute_repairs", "no_repair_needed")
+
     results: list[GateResult] = []
     for gate_fn in (
         lambda: _gate_parse(proposal),
+        # PR 31 — repairs run BEFORE qualification so deterministic
+        # stem promotion can fix ``FROM dim_date`` →
+        # ``FROM cat.sch.mv_esr_dim_date`` before the qualification
+        # gate rejects the bare stem (the unified correction pipeline
+        # has the same ordering — see `evaluation.py` ~line 8410).
+        _apply_pre_execute_repairs,
         lambda: _gate_identifier_qualification(proposal, identifier_allowlist),
+        # PR 32 — categorical-cast guardrail runs AFTER qualification
+        # (so we have a parsed, qualified SQL) but BEFORE execute (so
+        # we don't pay for a warehouse round-trip on a SQL we know
+        # will fail with ``CAST_INVALID_INPUT``).
+        _gate_categorical_cast,
         lambda: _gate_execute(
             proposal,
             spark=spark, catalog=catalog, gold_schema=gold_schema,

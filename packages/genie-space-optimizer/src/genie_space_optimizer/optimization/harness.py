@@ -2133,6 +2133,25 @@ def _print_unified_example_summary(
             "|  hint: 0 MVs detected but mv_* rejections present — "
             "see catalog-detection summary log line",
         )
+    # PR 27 — surface the unified asset-semantics block plus an
+    # invariant warning when zero MVs are stamped despite mv_*
+    # rejections. The block survives package INFO-log filtering because
+    # the banner is rendered with ``print()`` at the call site.
+    if isinstance(config, dict):
+        try:
+            from genie_space_optimizer.common.asset_semantics import (
+                format_semantics_block,
+                get_asset_semantics,
+                invariant_warning_lines,
+            )
+            _sem = get_asset_semantics(config)
+            if _sem:
+                for _sl in format_semantics_block(_sem):
+                    _lines.append(f"|  {_sl}")
+            for _wl in invariant_warning_lines(_sem, rejection_counters):
+                _lines.append(f"|  {_wl}")
+        except Exception:
+            pass
     _lines.append("|")
     rc = rejection_counters or {}
     _lines.append(_kv("Metadata rejected", rc.get("metadata", 0)))
@@ -4043,12 +4062,13 @@ def _prepare_lever_loop(
     # downstream stage sees the same answer without re-running DESCRIBE.
     # Idempotent: skipped when the cache is already populated (e.g. the
     # snapshot was warmed by a prior preflight run).
+    _yamls: dict[str, dict] = {}
+    _outcomes: dict[str, str] = {}
+    _diag_samples: dict[str, str] = {}
     if not (
         isinstance(config.get("_metric_view_yaml"), dict)
         and config["_metric_view_yaml"]
     ):
-        _yamls: dict[str, dict] = {}
-        _outcomes: dict[str, str] = {}
         try:
             from genie_space_optimizer.common.metric_view_catalog import (
                 detect_metric_views_via_catalog_with_outcomes,
@@ -4062,6 +4082,7 @@ def _prepare_lever_loop(
                 warehouse_id=_warehouse_id,
                 catalog=catalog,
                 schema=schema,
+                diagnostic_samples=_diag_samples,
             )
         except Exception as exc:
             logger.warning(
@@ -4101,6 +4122,39 @@ def _prepare_lever_loop(
                 logger.debug(
                     "MV detection summary aggregation failed", exc_info=True,
                 )
+
+    # PR 27 — Stamp the unified asset-semantics contract right after
+    # catalog detection so the lever loop's downstream stages
+    # (join discovery, unified synthesis, validation/repair) all
+    # read the same answer about each ref's kind. Use ``print()``
+    # in addition to logger.info so the block stays visible when
+    # package INFO logs are suppressed in the run host. Run
+    # unconditionally — even when the catalog cache was pre-populated
+    # from the snapshot we still want a freshly-built semantics map so
+    # the stamp survives across runs that pre-date this PR.
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            build_and_stamp_from_run,
+            format_semantics_block,
+        )
+        _yaml_cache = config.get("_metric_view_yaml") or {}
+        if not isinstance(_yaml_cache, dict):
+            _yaml_cache = {}
+        _semantics = build_and_stamp_from_run(
+            config,
+            table_refs=list(table_refs) if table_refs else [],
+            catalog_yamls=_yaml_cache,
+            catalog_outcomes=_outcomes if isinstance(_outcomes, dict) else {},
+            catalog_diagnostic_samples=_diag_samples,
+            uc_columns=uc_columns if isinstance(uc_columns, list) else None,
+        )
+        for _line in format_semantics_block(_semantics):
+            print(f"  [SEMANTICS] {_line}")
+    except Exception:
+        logger.debug(
+            "Asset semantics stamping failed for %s (non-fatal)",
+            run_id, exc_info=True,
+        )
 
     # ── 3. Print detailed inventory diagnostic ───────────────────────
     _parsed = config.get("_parsed_space", {})

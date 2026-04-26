@@ -452,6 +452,7 @@ def test_run_enrichment_invokes_catalog_detection(monkeypatch):
 
     def fake_detect_with_outcomes(
         spark, refs, *, w, warehouse_id, catalog, schema,
+        diagnostic_samples=None, exec_sql=None,
     ):
         called["args"] = (refs, catalog, schema)
         outcomes = {fq: "detected" for fq in yaml_payload}
@@ -1058,6 +1059,7 @@ class TestPR23HarnessSummaryLine:
         # Stub catalog detector: both refs hit ``no_view_text`` (regular tables).
         def fake_detect_with_outcomes(
             spark, refs, *, w, warehouse_id, catalog, schema,
+            diagnostic_samples=None, exec_sql=None,
         ):
             outcomes = {
                 f"{c}.{s}.{n}".lower(): "no_view_text"
@@ -1358,3 +1360,221 @@ class TestPR25NonAsJsonFallback:
             catalog="cat", schema="sch", exec_sql=fail,
         )
         assert envelope is None
+
+
+class TestPR28DetectionLadderAndDiagnostics:
+    """PR 28 — locks structural-signal retry and diagnostic-sample
+    capture for non-detect outcomes.
+
+    Three contracts:
+
+    1. ``diagnostic_samples`` is populated with one short, actionable
+       text snippet for every non-detect outcome (``describe_error``,
+       ``no_envelope``, ``no_view_text``, ``yaml_parse_error``,
+       ``not_mv_shape``, ``empty_result``).
+    2. When the JSON envelope parses but provides *no* classification
+       signal AND the ref's name pattern (or envelope language) hints
+       at an MV, the helper retries via legacy ``DESCRIBE EXTENDED``
+       and may classify based on the legacy-path signals.
+    3. The retry path *never* classifies by name alone — a name like
+       ``mv_*`` without any structural signal stays non-MV.
+    """
+
+    @staticmethod
+    def _empty_envelope_df():
+        """JSON envelope with no MV-classification signals."""
+        import pandas as pd
+        envelope = json.dumps({
+            "table_name": "cat.sch.regular_view",
+            "table_type": "VIEW",
+            "columns": [
+                {"name": "region", "data_type": "string"},
+                {"name": "store_id", "data_type": "string"},
+            ],
+        })
+        return pd.DataFrame([{"json_metadata": envelope}])
+
+    def test_diagnostic_samples_describe_error(self):
+        from genie_space_optimizer.common.metric_view_catalog import (
+            OUTCOME_DESCRIBE_ERROR,
+            detect_metric_views_via_catalog_with_outcomes,
+        )
+
+        spark = MagicMock()
+        refs = [("cat", "sch", "blocked")]
+        diag: dict[str, str] = {}
+
+        def fail(*a, **k):
+            raise PermissionError("user lacks SELECT")
+
+        _, _, outcomes = detect_metric_views_via_catalog_with_outcomes(
+            spark, refs,
+            w=None, warehouse_id="", catalog="cat", schema="sch",
+            exec_sql=fail, diagnostic_samples=diag,
+        )
+
+        assert outcomes["cat.sch.blocked"] == OUTCOME_DESCRIBE_ERROR
+        sample = diag.get("cat.sch.blocked", "")
+        assert "PermissionError" in sample
+        assert "user lacks SELECT" in sample
+
+    def test_diagnostic_samples_no_envelope(self):
+        from genie_space_optimizer.common.metric_view_catalog import (
+            OUTCOME_NO_ENVELOPE,
+            detect_metric_views_via_catalog_with_outcomes,
+        )
+        import pandas as pd
+
+        spark = MagicMock()
+        refs = [("cat", "sch", "weird_table")]
+        diag: dict[str, str] = {}
+
+        # Return a row whose only string cell is *not* parseable JSON.
+        df = pd.DataFrame([{"col0": "this is not json at all"}])
+
+        _, _, outcomes = detect_metric_views_via_catalog_with_outcomes(
+            spark, refs,
+            w=None, warehouse_id="", catalog="cat", schema="sch",
+            exec_sql=lambda *a, **k: df,
+            diagnostic_samples=diag,
+        )
+
+        assert outcomes["cat.sch.weird_table"] == OUTCOME_NO_ENVELOPE
+        sample = diag.get("cat.sch.weird_table", "")
+        assert "this is not json" in sample
+
+    def test_diagnostic_samples_yaml_parse_error(self):
+        from genie_space_optimizer.common.metric_view_catalog import (
+            OUTCOME_YAML_PARSE_ERROR,
+            detect_metric_views_via_catalog_with_outcomes,
+        )
+        import pandas as pd
+
+        spark = MagicMock()
+        refs = [("cat", "sch", "broken_yaml")]
+        diag: dict[str, str] = {}
+
+        envelope = json.dumps({
+            "table_name": "cat.sch.broken_yaml",
+            "view_text": "this: is: not: valid: yaml: at: all: [unclosed",
+        })
+        df = pd.DataFrame([{"json_metadata": envelope}])
+
+        _, _, outcomes = detect_metric_views_via_catalog_with_outcomes(
+            spark, refs,
+            w=None, warehouse_id="", catalog="cat", schema="sch",
+            exec_sql=lambda *a, **k: df,
+            diagnostic_samples=diag,
+        )
+
+        assert outcomes["cat.sch.broken_yaml"] == OUTCOME_YAML_PARSE_ERROR
+        sample = diag.get("cat.sch.broken_yaml", "")
+        assert "view_text" in sample
+
+    def test_structural_retry_classifies_via_legacy_describe(self):
+        """JSON envelope returns no signal but ref name is ``mv_*``.
+        Legacy DESCRIBE EXTENDED returns Type=METRIC_VIEW; ref must
+        be classified accordingly."""
+        from genie_space_optimizer.common.metric_view_catalog import (
+            OUTCOME_DETECTED_VIA_TYPE,
+            detect_metric_views_via_catalog_with_outcomes,
+        )
+
+        spark = MagicMock()
+        refs = [("cat", "sch", "mv_sales")]
+
+        def fake_exec_sql(sql, *a, **k):
+            sql_lower = sql.lower()
+            if "as json" in sql_lower:
+                return TestPR28DetectionLadderAndDiagnostics._empty_envelope_df()
+            # Legacy DESCRIBE EXTENDED path
+            return TestPR25NonAsJsonFallback._legacy_describe_rows(
+                view_text=None,
+                type_str="METRIC_VIEW",
+                language_str=None,
+                measure_cols=["region", "total_revenue"],
+            )
+
+        detected, _yamls, outcomes = (
+            detect_metric_views_via_catalog_with_outcomes(
+                spark, refs,
+                w=None, warehouse_id="", catalog="cat", schema="sch",
+                exec_sql=fake_exec_sql,
+            )
+        )
+
+        assert "cat.sch.mv_sales" in detected
+        assert outcomes["cat.sch.mv_sales"] == OUTCOME_DETECTED_VIA_TYPE
+
+    def test_name_only_mv_prefix_does_not_classify_without_signal(self):
+        """Ref named ``mv_*`` with no signal anywhere stays non-MV."""
+        from genie_space_optimizer.common.metric_view_catalog import (
+            detect_metric_views_via_catalog_with_outcomes,
+        )
+
+        spark = MagicMock()
+        refs = [("cat", "sch", "mv_just_a_view")]
+
+        def fake_exec_sql(sql, *a, **k):
+            sql_lower = sql.lower()
+            if "as json" in sql_lower:
+                return TestPR28DetectionLadderAndDiagnostics._empty_envelope_df()
+            # Legacy DESCRIBE returns no MV signals — plain view.
+            return TestPR25NonAsJsonFallback._legacy_describe_rows(
+                view_text="SELECT * FROM cat.sch.fact_sales",
+                type_str=None,
+                language_str=None,
+            )
+
+        detected, _, outcomes = (
+            detect_metric_views_via_catalog_with_outcomes(
+                spark, refs,
+                w=None, warehouse_id="", catalog="cat", schema="sch",
+                exec_sql=fake_exec_sql,
+            )
+        )
+
+        assert "cat.sch.mv_just_a_view" not in detected
+        # Some non-detect outcome (not_mv_shape / no_view_text) is
+        # acceptable — the *important* contract is no detection.
+        assert outcomes["cat.sch.mv_just_a_view"] not in (
+            "detected_via_type",
+            "detected_via_language",
+            "detected_via_yaml",
+            "detected_via_is_measure",
+        )
+
+    def test_non_suspicious_name_no_retry(self):
+        """Ref with no MV signal AND no suspicious name pattern should
+        not trigger the retry path; one DESCRIBE call total (the JSON one)."""
+        from genie_space_optimizer.common.metric_view_catalog import (
+            detect_metric_views_via_catalog_with_outcomes,
+        )
+
+        spark = MagicMock()
+        refs = [("cat", "sch", "fact_sales")]
+        call_count = {"n": 0}
+
+        def fake_exec_sql(sql, *a, **k):
+            call_count["n"] += 1
+            if "as json" in sql.lower():
+                return TestPR28DetectionLadderAndDiagnostics._empty_envelope_df()
+            # Should not be reached.
+            return TestPR25NonAsJsonFallback._legacy_describe_rows(
+                view_text=None, type_str="METRIC_VIEW",
+            )
+
+        _, _, outcomes = detect_metric_views_via_catalog_with_outcomes(
+            spark, refs,
+            w=None, warehouse_id="", catalog="cat", schema="sch",
+            exec_sql=fake_exec_sql,
+        )
+
+        assert "cat.sch.fact_sales" not in outcomes or outcomes[
+            "cat.sch.fact_sales"
+        ] not in (
+            "detected_via_type", "detected_via_language",
+            "detected_via_yaml", "detected_via_is_measure",
+        )
+        # No structural retry: only the JSON call.
+        assert call_count["n"] == 1

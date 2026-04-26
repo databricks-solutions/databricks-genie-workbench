@@ -452,15 +452,38 @@ def _effective_data_source_split(
     lowered identifier so a snapshot already pre-classified can't
     double-count). The original snapshot dict is *not* mutated — the
     planner uses the returned lists locally.
+
+    PR 30 — Also lifts entries that asset semantics classifies as
+    ``kind=metric_view`` (e.g. catalog-detected MVs whose Genie payload
+    has neither ``data_sources.metric_views`` nor measure-typed column
+    configs). This guarantees the preflight planner emits MV-aware
+    archetypes for every asset semantics has identified as an MV,
+    regardless of which detection signal fired first.
     """
     ds = metadata_snapshot.get("data_sources", {}) or {}
     raw_tables = [t for t in (ds.get("tables", []) or []) if isinstance(t, dict)]
     raw_mvs = [mv for mv in (ds.get("metric_views", []) or []) if isinstance(mv, dict)]
 
+    semantics_mv_lower: set[str] = set()
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            metric_view_identifiers as _sem_mv_idents,
+        )
+        for ident in _sem_mv_idents(metadata_snapshot):
+            il = (ident or "").strip().lower()
+            if il:
+                semantics_mv_lower.add(il)
+    except Exception:
+        pass
+
     promoted: list[dict] = []
     real_tables: list[dict] = []
     for tbl in raw_tables:
-        if _entry_is_effective_metric_view(tbl):
+        ident_lower = (tbl.get("identifier") or "").strip().lower()
+        if (
+            _entry_is_effective_metric_view(tbl)
+            or (ident_lower and ident_lower in semantics_mv_lower)
+        ):
             promoted.append(tbl)
         else:
             real_tables.append(tbl)

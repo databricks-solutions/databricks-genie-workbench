@@ -68,6 +68,7 @@ def detect_metric_views_via_catalog_with_outcomes(
     catalog: str = "",
     schema: str = "",
     exec_sql: Any = None,
+    diagnostic_samples: dict[str, str] | None = None,
 ) -> tuple[set[str], dict[str, dict], dict[str, str]]:
     """Catalog-level metric-view detection with per-ref outcomes (PR 23).
 
@@ -83,6 +84,27 @@ def detect_metric_views_via_catalog_with_outcomes(
     the offending payload (``view_text`` for YAML failures, the
     ``repr()`` of the exception for DESCRIBE failures) so the cause is
     actionable from the run log alone.
+
+    PR 28 — when ``diagnostic_samples`` is supplied, the helper populates
+    it in-place with one short text sample per non-detect ref
+    (``describe_error`` ⇒ exception repr; ``no_envelope`` ⇒ first-cell
+    snippet; ``yaml_parse_error`` ⇒ first 120 chars of view_text) so
+    upstream callers can surface an actionable example in their banner
+    without re-querying the catalog. The dict is keyed by the same
+    ``fq_lower`` strings as ``outcomes`` and is *additive* — entries
+    overwrite without consulting any prior contents so callers can
+    reuse the same dict across multiple invocations.
+
+    PR 28 — also adds a structural-signal retry: when the JSON envelope
+    parses but produces no classification signal, and the ref's name
+    pattern (or its envelope's ``language`` field) flags it as
+    suspicious, the helper falls through to the legacy
+    ``DESCRIBE EXTENDED`` path. The fallback may surface ``Type:
+    METRIC_VIEW`` from a Spark connection that opted into the
+    metricview metadata flag but did not return it in the JSON envelope.
+    Name patterns are *only* used to gate the retry — a hit there
+    without a structural signal still records ``not_mv_shape`` /
+    ``no_view_text`` rather than classifying by name alone.
     """
     import json as _json
 
@@ -138,6 +160,10 @@ def detect_metric_views_via_catalog_with_outcomes(
                 )
             else:
                 outcomes[fq_lower] = OUTCOME_DESCRIBE_ERROR
+                if diagnostic_samples is not None:
+                    diagnostic_samples[fq_lower] = (
+                        f"{type(exc).__name__}: {str(exc)[:200]}"
+                    )
                 logger.info(
                     "MV catalog detection: DESCRIBE failed for %s "
                     "(treating as non-MV) — %s: %s",
@@ -151,6 +177,8 @@ def detect_metric_views_via_catalog_with_outcomes(
         else:
             if describe_df is None or describe_df.empty:
                 outcomes[fq_lower] = OUTCOME_EMPTY_RESULT
+                if diagnostic_samples is not None:
+                    diagnostic_samples[fq_lower] = "empty result from DESCRIBE"
                 logger.info(
                     "MV catalog detection: empty DESCRIBE result for %s "
                     "(treating as non-MV)",
@@ -162,9 +190,12 @@ def detect_metric_views_via_catalog_with_outcomes(
             # on whether the warehouse path or the Spark path returned the
             # row; search the row's values for the first parseable JSON
             # envelope.
+            first_cell_sample: str = ""
             for value in describe_df.iloc[0].tolist():
                 if not isinstance(value, str):
                     continue
+                if not first_cell_sample:
+                    first_cell_sample = value[:200]
                 try:
                     parsed = _json.loads(value)
                 except (ValueError, TypeError):
@@ -174,6 +205,12 @@ def detect_metric_views_via_catalog_with_outcomes(
                     break
             if envelope is None:
                 outcomes[fq_lower] = OUTCOME_NO_ENVELOPE
+                if diagnostic_samples is not None:
+                    diagnostic_samples[fq_lower] = (
+                        f"row[0]={first_cell_sample!r}"
+                        if first_cell_sample
+                        else "no parseable JSON envelope in DESCRIBE row"
+                    )
                 logger.info(
                     "MV catalog detection: no JSON envelope in DESCRIBE row "
                     "for %s (treating as non-MV)",
@@ -255,11 +292,70 @@ def detect_metric_views_via_catalog_with_outcomes(
             outcome_code = OUTCOME_DETECTED_VIA_IS_MEASURE
 
         if outcome_code is None:
+            # PR 28 — structural-signal retry. JSON returned a parseable
+            # envelope but no classification signal. If the ref's name
+            # pattern or the envelope's ``language`` field flags it as
+            # an MV-suspect, re-probe via ``DESCRIBE EXTENDED`` (with
+            # ``spark.databricks.metadata.metricview.enabled=true``)
+            # because some Spark configurations expose ``Type:
+            # METRIC_VIEW`` only on the legacy path. Name patterns
+            # gate the *retry only* — a name hit without a structural
+            # signal still records a non-detect outcome rather than
+            # classifying by name alone (avoiding false positives for
+            # ordinary views named ``mv_*``).
+            short_lower = name.lower()
+            name_suspicious = (
+                short_lower.startswith("mv_")
+                or short_lower.endswith("_mv")
+                or "_mv_" in short_lower
+            )
+            if name_suspicious or sig_language:
+                retry_envelope = _describe_metric_view_fallback(
+                    fq_quoted, fq_lower,
+                    spark=spark, w=w, warehouse_id=warehouse_id,
+                    catalog=catalog, schema=schema, exec_sql=_exec,
+                )
+                if isinstance(retry_envelope, dict):
+                    rt_type = str(retry_envelope.get("type") or "").strip().upper()
+                    rt_lang = str(retry_envelope.get("language") or "").strip().upper()
+                    rt_view_text = str(retry_envelope.get("view_text") or "")
+                    rt_cols = retry_envelope.get("columns") or []
+                    if not isinstance(rt_cols, list):
+                        rt_cols = []
+                    rt_is_measure = any(
+                        isinstance(c, dict) and bool(c.get("is_measure"))
+                        for c in rt_cols
+                    )
+                    if rt_type == "METRIC_VIEW":
+                        outcome_code = OUTCOME_DETECTED_VIA_TYPE
+                    elif rt_lang == "YAML" and rt_view_text.strip():
+                        outcome_code = OUTCOME_DETECTED_VIA_LANGUAGE
+                    elif rt_is_measure:
+                        outcome_code = OUTCOME_DETECTED_VIA_IS_MEASURE
+                    if outcome_code is not None:
+                        # Adopt the retry envelope's column / view_text
+                        # signals so the YAML synthesizer below can
+                        # populate measures/dimensions from the
+                        # legacy DESCRIBE.
+                        envelope = retry_envelope
+                        cols = rt_cols
+                        view_text = rt_view_text
+                        logger.info(
+                            "MV catalog detection: structural-signal retry "
+                            "via legacy DESCRIBE classified %s as %s",
+                            fq_lower, outcome_code,
+                        )
+
+        if outcome_code is None:
             # No structural signal — fall through to the same
             # non-detect outcomes as before so existing diagnostics keep
             # working. Order matters: the *first* missing input wins.
             if not view_text.strip():
                 outcomes[fq_lower] = OUTCOME_NO_VIEW_TEXT
+                if diagnostic_samples is not None:
+                    diagnostic_samples[fq_lower] = (
+                        "no view_text and no structural MV signal in envelope"
+                    )
                 # Regular tables and non-view objects always land here,
                 # so this is the *expected* outcome for the majority of
                 # refs. Keep at DEBUG to avoid log spam on table-heavy
@@ -272,8 +368,16 @@ def detect_metric_views_via_catalog_with_outcomes(
                 )
             elif yaml_parse_failed:
                 outcomes[fq_lower] = OUTCOME_YAML_PARSE_ERROR
+                if diagnostic_samples is not None:
+                    diagnostic_samples[fq_lower] = (
+                        f"view_text[:120]={view_text[:120]!r}"
+                    )
             else:
                 outcomes[fq_lower] = OUTCOME_NOT_MV_SHAPE
+                if diagnostic_samples is not None:
+                    diagnostic_samples[fq_lower] = (
+                        f"view_text[:120]={view_text[:120]!r}"
+                    )
                 logger.debug(
                     "MV catalog detection: YAML present but not metric-view "
                     "shape for %s (treating as non-MV)",

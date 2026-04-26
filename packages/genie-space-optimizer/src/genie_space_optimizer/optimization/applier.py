@@ -267,7 +267,7 @@ def _canonicalize_and_dedup_instructions(config: dict) -> bool:
     preamble: list[str] = []
     current: str | None = None
 
-    _legacy_re = re.compile(r"^\s*([A-Z][A-Z0-9 _/]{2,40})\s*:\s*$")
+    _legacy_re = re.compile(r"^\s*([A-Z][A-Z0-9 _/]{2,80})\s*:\s*$")
     _markdown_re = re.compile(r"^\s*##\s+([^\n]+?)\s*$")
 
     def _start_section(name: str) -> None:
@@ -299,6 +299,23 @@ def _canonicalize_and_dedup_instructions(config: dict) -> bool:
                 continue
             section_seen_bullets[current].add(stripped)
         section_lines[current].append(raw_line)
+
+    # Enforce CANONICAL_SECTION_HEADERS order on canonical sections.
+    # Non-canonical sections (e.g. customer-authored "MARKET DEFINITIONS:")
+    # keep their first-appearance order and follow the canonical block.
+    _canonical_keys = {
+        h.removeprefix("## ").upper() for h in CANONICAL_SECTION_HEADERS
+    }
+    _canonical_index = {
+        h.removeprefix("## ").upper(): i
+        for i, h in enumerate(CANONICAL_SECTION_HEADERS)
+    }
+    canonical_in_doc = sorted(
+        (s for s in section_order if s in _canonical_keys),
+        key=lambda s: _canonical_index[s],
+    )
+    non_canonical = [s for s in section_order if s not in _canonical_keys]
+    section_order = canonical_in_doc + non_canonical
 
     rebuilt_parts: list[str] = []
     if any(_l.strip() for _l in preamble):
@@ -632,7 +649,7 @@ def _set_general_instructions(
 _CANONICAL_HEADER_LINE_RE = re.compile(r"^\s*##\s+(?P<title>[^\n]+?)\s*$")
 # Legacy ALL-CAPS section header like `PURPOSE:` or `ASSET ROUTING:`. Used by
 # the miner to read pre-#178 spaces; never emitted by the rewrite step.
-_LEGACY_HEADER_LINE_RE = re.compile(r"^\s*(?P<title>[A-Z][A-Z0-9 _/]{2,40})\s*:\s*$")
+_LEGACY_HEADER_LINE_RE = re.compile(r"^\s*(?P<title>[A-Z][A-Z0-9 _/]{2,80})\s*:\s*$")
 # `### Sub-heading` — forbidden in strict mode (subheaders belong to
 # structured targets like sql_snippets, not prose).
 _H3_HEADER_LINE_RE = re.compile(r"^\s*###\s+\S")

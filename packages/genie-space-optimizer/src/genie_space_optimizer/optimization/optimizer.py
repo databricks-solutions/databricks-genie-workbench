@@ -3953,6 +3953,86 @@ def _extract_table_pairs_from_clusters(clusters: list[dict]) -> set[tuple[str, s
     return pairs
 
 
+def _semantics_is_metric_view_id(metadata_snapshot: dict, identifier: str) -> bool:
+    """PR 29 — Return True when ``identifier`` resolves to a metric view in
+    ``metadata_snapshot["_asset_semantics"]``.
+
+    Falls back to ``False`` (treat as non-MV) when the snapshot has no
+    semantics map yet, when the identifier is empty, or when any error
+    occurs during the lookup. The caller is responsible for fanning the
+    legacy ``_metric_view_yaml`` cache into ``_asset_semantics`` upstream
+    so this lookup is consistent for every consumer.
+    """
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            is_metric_view as _sem_is_mv,
+        )
+    except Exception:
+        return False
+    if not identifier:
+        return False
+    try:
+        return bool(_sem_is_mv(metadata_snapshot, identifier))
+    except Exception:
+        return False
+
+
+def filter_join_specs_by_semantics(
+    metadata_snapshot: dict,
+    join_specs: list[dict],
+    *,
+    counters: dict[str, int] | None = None,
+    skipped_examples: list[tuple[str, str]] | None = None,
+) -> list[dict]:
+    """PR 29 — Drop join specs whose left or right identifier is a
+    metric view per ``_asset_semantics``. Direct joins on metric views
+    raise ``METRIC_VIEW_JOIN_NOT_SUPPORTED`` at execute time; gating
+    them at discovery prevents the cascade entirely.
+
+    ``counters`` is mutated in place (when supplied) with two keys:
+    ``joins_skipped_metric_view_left`` and
+    ``joins_skipped_metric_view_right``. ``skipped_examples`` (if
+    supplied) is appended with ``(left_id, right_id)`` tuples for the
+    first few skipped pairs so the call site can log a sample.
+    """
+    if not isinstance(join_specs, list) or not join_specs:
+        return list(join_specs) if isinstance(join_specs, list) else []
+
+    kept: list[dict] = []
+    for spec in join_specs:
+        if not isinstance(spec, dict):
+            kept.append(spec)
+            continue
+        left_obj = spec.get("left") or {}
+        right_obj = spec.get("right") or {}
+        if isinstance(left_obj, dict):
+            left_id = left_obj.get("identifier", "") or ""
+        else:
+            left_id = spec.get("left_table_name", "") or ""
+        if isinstance(right_obj, dict):
+            right_id = right_obj.get("identifier", "") or ""
+        else:
+            right_id = spec.get("right_table_name", "") or ""
+
+        left_is_mv = _semantics_is_metric_view_id(metadata_snapshot, left_id)
+        right_is_mv = _semantics_is_metric_view_id(metadata_snapshot, right_id)
+        if left_is_mv or right_is_mv:
+            if counters is not None:
+                if left_is_mv:
+                    counters["joins_skipped_metric_view_left"] = (
+                        counters.get("joins_skipped_metric_view_left", 0) + 1
+                    )
+                if right_is_mv:
+                    counters["joins_skipped_metric_view_right"] = (
+                        counters.get("joins_skipped_metric_view_right", 0) + 1
+                    )
+            if skipped_examples is not None and len(skipped_examples) < 5:
+                skipped_examples.append((left_id, right_id))
+            continue
+        kept.append(spec)
+    return kept
+
+
 def discover_join_candidates(
     metadata_snapshot: dict,
     soft_signal_clusters: list[dict] | None = None,
@@ -3968,6 +4048,13 @@ def discover_join_candidates(
 
     Existing join specs are excluded.  Returns a list of hint dicts
     (not final join specs) that feed into the LLM discovery prompt.
+
+    PR 29 — Pairs whose left or right identifier resolves to
+    ``kind=metric_view`` in ``metadata_snapshot["_asset_semantics"]``
+    are also dropped because direct joins on a metric view raise
+    ``METRIC_VIEW_JOIN_NOT_SUPPORTED``. The shared CTE-first repair in
+    PR 31 still rewrites genuine MV-side queries; this filter prevents
+    the LLM from ever proposing a *new* join spec that touches an MV.
 
     Each hint has the shape::
 
@@ -4143,6 +4230,40 @@ def discover_join_candidates(
         logger.info(
             "Join discovery: %d feedback pairs from %d soft signal clusters",
             len(feedback_pairs), len(soft_signal_clusters),
+        )
+
+    # PR 29 — drop hint pairs whose either side is a known metric view.
+    # ``_semantics_is_metric_view_id`` returns False when semantics are
+    # unavailable, so this is a no-op for snapshots that pre-date the
+    # asset-semantics contract. We also count and log skipped pairs so
+    # the join-discovery banner explains *why* the count dropped.
+    pre_filter = len(hints)
+    skipped_left = 0
+    skipped_right = 0
+    skipped_examples: list[tuple[str, str]] = []
+    filtered_hints: list[dict] = []
+    for h in hints:
+        lt = h.get("left_table", "") if isinstance(h, dict) else ""
+        rt = h.get("right_table", "") if isinstance(h, dict) else ""
+        l_mv = _semantics_is_metric_view_id(metadata_snapshot, lt)
+        r_mv = _semantics_is_metric_view_id(metadata_snapshot, rt)
+        if l_mv or r_mv:
+            if l_mv:
+                skipped_left += 1
+            if r_mv:
+                skipped_right += 1
+            if len(skipped_examples) < 5:
+                skipped_examples.append((lt, rt))
+            continue
+        filtered_hints.append(h)
+    hints = filtered_hints
+
+    if pre_filter != len(hints):
+        logger.info(
+            "Join discovery: dropped %d MV-touching hint pair(s) "
+            "(left=%d, right=%d); examples=%s",
+            pre_filter - len(hints), skipped_left, skipped_right,
+            skipped_examples,
         )
 
     logger.info(
@@ -7873,7 +7994,13 @@ def _format_soft_signal_summary(soft_clusters: list[dict]) -> str:
 
 
 def _format_join_specs_context(metadata_snapshot: dict) -> str:
-    """Format current join specs for the strategist prompt."""
+    """Format current join specs for the strategist prompt.
+
+    PR 29 — Specs whose left or right identifier resolves to a metric
+    view in ``_asset_semantics`` are flagged inline as MV-incompatible
+    so the strategist never proposes synthesis SQL that joins them
+    directly.
+    """
     ds = metadata_snapshot.get("data_sources", {})
     if not isinstance(ds, dict):
         ds = {}
@@ -7892,7 +8019,24 @@ def _format_join_specs_context(metadata_snapshot: dict) -> str:
         left = js.get("left", {})
         right = js.get("right", {})
         sql = js.get("sql", "")
-        lines.append(f"- {left.get('identifier','?')} <-> {right.get('identifier','?')}: {sql[:200]}")
+        left_id = left.get("identifier", "?") if isinstance(left, dict) else "?"
+        right_id = right.get("identifier", "?") if isinstance(right, dict) else "?"
+        l_mv = _semantics_is_metric_view_id(metadata_snapshot, left_id)
+        r_mv = _semantics_is_metric_view_id(metadata_snapshot, right_id)
+        suffix = ""
+        if l_mv or r_mv:
+            mv_sides = []
+            if l_mv:
+                mv_sides.append("left")
+            if r_mv:
+                mv_sides.append("right")
+            suffix = (
+                f"  [SKIP: METRIC_VIEW on {'+'.join(mv_sides)}; "
+                "use CTE-first pattern instead of direct JOIN]"
+            )
+        lines.append(
+            f"- {left_id} <-> {right_id}: {str(sql)[:200]}{suffix}"
+        )
     return "\n".join(lines)
 
 
@@ -10117,7 +10261,12 @@ _MINER_TARGETS: tuple[str, ...] = (
 
 
 def _format_existing_join_specs_brief(metadata_snapshot: dict) -> str:
-    """Return a terse dedup-hint list of existing join specs for the miner."""
+    """Return a terse dedup-hint list of existing join specs for the miner.
+
+    PR 29 — Specs that touch a metric view per ``_asset_semantics`` are
+    annotated with ``[METRIC_VIEW: skip]`` so the miner treats them as
+    stale rather than valid join hints.
+    """
     instr = metadata_snapshot.get("instructions", {})
     specs = instr.get("join_specs", []) if isinstance(instr, dict) else []
     lines: list[str] = []
@@ -10128,7 +10277,17 @@ def _format_existing_join_specs_brief(metadata_snapshot: dict) -> str:
         right = spec.get("right", {}) if isinstance(spec.get("right"), dict) else {}
         cond = spec.get("sql", [])
         cond_str = cond[0] if isinstance(cond, list) and cond else str(cond or "")
-        lines.append(f"- {left.get('identifier', '?')} ↔ {right.get('identifier', '?')} :: {cond_str[:120]}")
+        left_id = left.get("identifier", "?") if isinstance(left, dict) else "?"
+        right_id = right.get("identifier", "?") if isinstance(right, dict) else "?"
+        suffix = ""
+        if (
+            _semantics_is_metric_view_id(metadata_snapshot, left_id)
+            or _semantics_is_metric_view_id(metadata_snapshot, right_id)
+        ):
+            suffix = " [METRIC_VIEW: skip; CTE-first only]"
+        lines.append(
+            f"- {left_id} ↔ {right_id} :: {cond_str[:120]}{suffix}"
+        )
     return "\n".join(lines) if lines else "(none)"
 
 
