@@ -19,7 +19,7 @@ import { useIterations } from "@/lib/transparency-api";
 import type { IterationSummary } from "@/lib/transparency-api";
 
 const chartConfig = {
-  accuracy: { label: "Accuracy", color: "var(--chart-1)" },
+  accuracy: { label: "Accuracy (arbiter-adjusted)", color: "var(--chart-1)" },
 } satisfies ChartConfig;
 
 type ChartPoint = {
@@ -148,7 +148,7 @@ export function IterationChart({ runId }: { runId: string }) {
                         </div>
                         <div>
                           <span className="text-muted">
-                            Accuracy:
+                            Accuracy (arbiter-adjusted):
                           </span>{" "}
                           {typeof value === "number"
                             ? `${value.toFixed(1)}%`

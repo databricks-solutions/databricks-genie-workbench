@@ -862,10 +862,10 @@ export const GATE_DEFINITIONS: GateDefinition[] = [
     name: "Full Gate",
     questionSelection: "All benchmarks",
     passCriteria:
-      "No per-judge regression > threshold AND overall accuracy maintained",
-    tolerance: "max(REGRESSION_THRESHOLD=5%, noise_floor)",
+      "Post-arbiter (arbiter-adjusted) accuracy improved by at least MIN_POST_ARBITER_GAIN_PP",
+    tolerance: "MIN_POST_ARBITER_GAIN_PP (default 2.0pp)",
     description:
-      "The authoritative evaluation. If accuracy did NOT improve, a confirmation eval (2nd pass) is run and scores are averaged to reduce variance. Even with no per-judge regressions, if overall accuracy decreased, the iteration can be rolled back (accuracy guard).",
+      "The authoritative evaluation. A single full eval per iteration. Acceptance is decided on one number: does the new post-arbiter accuracy beat the carried baseline by at least MIN_POST_ARBITER_GAIN_PP? Per-judge deltas are surfaced as diagnostics but no longer drive rollback. A post-hoc baseline-drift diagnostic flags accepted iterations that look like outliers in retrospect.",
   },
 ];
 

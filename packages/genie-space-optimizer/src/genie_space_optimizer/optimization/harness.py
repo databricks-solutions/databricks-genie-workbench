@@ -59,7 +59,6 @@ from genie_space_optimizer.common.config import (
     MAX_NOISE_FLOOR,
     NEITHER_CORRECT_QUARANTINE_THRESHOLD,
     NEITHER_CORRECT_REPAIR_THRESHOLD,
-    OPTIMIZATION_OBJECTIVE,
     PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS,
     PROPAGATION_WAIT_SECONDS,
     REGRESSION_THRESHOLD,
@@ -6856,8 +6855,17 @@ def _run_gate_checks(
     lever_keys: list[str] | None = None,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
     prev_failure_qids: set[str] | None = None,
+    prev_iter_pre_accept_baseline: float | None = None,
 ) -> dict:
     """Run slice → P0 → full eval gate sequence for an action group.
+
+    ``prev_iter_pre_accept_baseline`` is the carried post-arbiter
+    baseline at the start of the *previous* iteration (before that
+    iteration's gate ran). Used by the post-hoc baseline-drift
+    diagnostic — when the current iteration's post-arbiter has fallen
+    below this snapshot by ``BASELINE_DRIFT_DIAGNOSTIC_PP`` or more,
+    the gate logs a ``suspected_stale_baseline`` decision-audit row.
+    Diagnostic only — does not auto-roll back. ``None`` on iteration 0.
 
     Returns a dict with:
       - ``passed``: bool
@@ -7374,146 +7382,32 @@ def _run_gate_checks(
     if _bcr_1 is not None:
         scores_1["_both_correct_rate"] = float(_bcr_1)
 
-    # T0.3: pick the gate's primary and guardrail signals based on the
-    # configured objective. ``primary_*`` is what the paired test / delta
-    # compares; ``guardrail_*`` is a separate check that prevents a
-    # pathological pre-arbiter win from regressing post-arbiter
-    # accuracy by more than OPTIMIZATION_OBJECTIVE_POST_ARBITER_GUARDRAIL_PP.
-    _objective = str(OPTIMIZATION_OBJECTIVE or "post_arbiter").lower()
-    if _objective not in ("pre_arbiter", "post_arbiter", "blended"):
-        logger.warning(
-            "OPTIMIZATION_OBJECTIVE=%r is not recognised; falling back to "
-            "'post_arbiter'.",
-            OPTIMIZATION_OBJECTIVE,
-        )
-        _objective = "post_arbiter"
+    # ── Single-criterion acceptance ──
+    # The lever loop now decides accept / reject on a single number:
+    # post-arbiter delta against the carried baseline. Confirmation
+    # eval, run-to-run variance widening, K-of-N composition, and the
+    # ``OPTIMIZATION_OBJECTIVE`` pre/post/blended switch are all gone.
+    # See acceptance_policy.decide_acceptance and the
+    # simplify-acceptance-and-ui-labels plan for rationale.
+    full_scores = scores_1
+    full_accuracy = accuracy_1
+    full_result = full_result_1
+    full_pre_arbiter_accuracy = pre_arbiter_accuracy_1
 
-    # ── Confirmation eval (2nd run) to smooth Genie non-determinism ──
-    # T0.3: decide whether to skip the confirm pass based on the chosen
-    # objective (pre-arbiter vs post-arbiter accuracy). Under the default
-    # ``pre_arbiter`` objective we compare ``pre_arbiter_accuracy_1`` to
-    # baseline; a clean pre-arbiter improvement is strong enough signal
-    # to skip the confirmation pass.
-    if _objective == "pre_arbiter":
-        _accuracy_for_skip = pre_arbiter_accuracy_1
-    else:
-        _accuracy_for_skip = accuracy_1
-
-    if _accuracy_for_skip > best_accuracy:
-        print(
-            _kv(
-                "Confirmation eval",
-                f"SKIPPED ({_objective} accuracy improved "
-                f"{best_accuracy:.1f}% -> {_accuracy_for_skip:.1f}%)",
-            )
+    print(
+        _kv("Eval accuracy (post-arbiter)", f"{full_accuracy:.1f}%") + "\n"
+        + _kv(
+            "Pre-arbiter accuracy (diagnostic)",
+            f"{full_pre_arbiter_accuracy:.1f}%",
         )
-        full_scores = scores_1
-        full_accuracy = accuracy_1
-        full_result = full_result_1
-        full_pre_arbiter_accuracy = pre_arbiter_accuracy_1
-    else:
-        try:
-            mlflow.end_run()
-        except Exception:
-            pass
-        print(_kv("Confirmation eval", "running 2nd evaluation to average out variance"))
-        _ensure_sql_context(spark, catalog, schema)
-        # Tier 4: v2 name — ``<run_short>/iter_NN_full_eval/run_2_confirm``.
-        full_result_2 = run_evaluation(
-            space_id, exp_name, iteration_counter, benchmarks,
-            domain, new_model_id, "full_confirm",
-            predict_fn, scorers,
-            spark=spark, w=w, catalog=catalog, gold_schema=schema, uc_schema=uc_schema,
-            reference_sqls=reference_sqls if reference_sqls else None,
-            max_benchmark_count=max_benchmark_count,
-            run_name=full_eval_run_name(run_id, iteration_counter, pass_index=2),
-            extra_tags=_v2_tags_full(
-                run_id, space_id=space_id, stage="full_eval_confirm",
-                iteration=iteration_counter, ag_id=ag_id,
-            ),
-        )
-        # Forward run 2's ASI extraction audit too.
-        _asi_audit_2 = full_result_2.get("asi_extraction_audit")
-        if isinstance(_asi_audit_2, dict):
-            _asi_metrics2 = _asi_audit_2.get("metrics_json")
-            if isinstance(_asi_metrics2, str):
-                try:
-                    _asi_metrics2 = json.loads(_asi_metrics2)
-                except (TypeError, ValueError):
-                    _asi_metrics2 = None
-            _audit_emit(
-                stage_letter=_asi_audit_2.get("stage_letter") or "C",
-                gate_name=_asi_audit_2.get("gate_name") or "asi_extraction",
-                decision=_asi_audit_2.get("decision") or "ok",
-                reason_code=_asi_audit_2.get("reason_code"),
-                reason_detail="confirmation_run",
-                metrics=_asi_metrics2 if isinstance(_asi_metrics2, dict) else None,
-            )
-
-        scores_2 = dict(full_result_2.get("scores", {}))
-        accuracy_2 = full_result_2.get("overall_accuracy", 0.0)
-        pre_arbiter_accuracy_2 = float(
-            full_result_2.get("pre_arbiter_accuracy", accuracy_2)
-        )
-        _bcr_2 = full_result_2.get("both_correct_rate")
-        if _bcr_2 is not None:
-            scores_2["_both_correct_rate"] = float(_bcr_2)
-
-        all_judge_keys = set(scores_1) | set(scores_2)
-        full_scores = {
-            j: (scores_1.get(j, 0.0) + scores_2.get(j, 0.0)) / 2.0
-            for j in all_judge_keys
-        }
-        full_accuracy = (accuracy_1 + accuracy_2) / 2.0
-        full_pre_arbiter_accuracy = (
-            pre_arbiter_accuracy_1 + pre_arbiter_accuracy_2
-        ) / 2.0
-        full_result = full_result_1
-
-        print(
-            _kv("Eval run 1 accuracy", f"{accuracy_1:.1f}%") + "\n"
-            + _kv("Eval run 2 accuracy", f"{accuracy_2:.1f}%") + "\n"
-            + _kv("Averaged accuracy", f"{full_accuracy:.1f}%") + "\n"
-            + _kv(
-                "Pre-arbiter accuracy",
-                f"run1={pre_arbiter_accuracy_1:.1f}%  "
-                f"run2={pre_arbiter_accuracy_2:.1f}%  "
-                f"avg={full_pre_arbiter_accuracy:.1f}%",
-            )
-        )
+    )
 
     full_result = _merge_bug4_counters(full_result)
-    # T0.3: stamp the pre-arbiter accuracy on full_scores so gate code
-    # below can reference it through the standard ``full_scores`` dict
-    # without an extra parameter plumbing pass.
+    # Stamp pre-arbiter accuracy on ``full_scores`` so downstream
+    # diagnostics (audit rows, MLflow) can read it via the standard
+    # scores dict without parameter plumbing. It is no longer a
+    # gating signal.
     full_scores["_pre_arbiter/overall_accuracy"] = float(full_pre_arbiter_accuracy)
-
-    # T0.2: compute run-to-run variance on the two confirmation passes.
-    # When variance exceeds the baseline regression threshold, the
-    # gate's effective tolerance is widened so noise-only flips don't
-    # spuriously trigger rollback. The variance number is also logged
-    # and stamped on full_scores so downstream readers can tell apart
-    # "Genie is deterministic here" from "Genie oscillates; demand a
-    # larger effect before accepting or rejecting".
-    _variance_full_result_2 = locals().get("full_result_2", None)
-    _variance_info = _compute_eval_variance(full_result_1, _variance_full_result_2)
-    full_scores["_eval_variance_ratio"] = float(_variance_info["disagreement_ratio"])
-    if _variance_info["total_scored"] > 0:
-        print(
-            _section(f"EVAL VARIANCE [{ag_id}]", "-") + "\n"
-            + _kv(
-                "Disagreed between runs",
-                f"{len(_variance_info['disagreed_qids'])}/"
-                f"{_variance_info['total_scored']} "
-                f"({_variance_info['disagreement_ratio'] * 100:.1f}%)",
-            ) + "\n"
-            + _kv(
-                "Disagreed qids (sample)",
-                ", ".join(_variance_info["disagreed_qids"][:6])
-                or "(none)",
-            ) + "\n"
-            + _bar("-")
-        )
 
     write_iteration(
         spark, run_id, iteration_counter, full_result,
@@ -7522,155 +7416,116 @@ def _run_gate_checks(
         eval_scope="full", model_id=new_model_id,
     )
 
-    # T0.2: widen the regression tolerance when run-to-run variance
-    # exceeds the baseline threshold. Formula: effective_tol =
-    # max(REGRESSION_THRESHOLD, noise_floor, 100 * variance_ratio).
-    # For a 22-row corpus with 3 questions disagreeing between runs
-    # (13.6% variance), tolerance becomes max(5, noise_floor, 13.6) =
-    # 13.6pp, preventing noise-only rollbacks.
-    _variance_tol_bump = float(_variance_info["disagreement_ratio"]) * 100.0
-    effective_regression_tol = max(
-        REGRESSION_THRESHOLD, noise_floor, _variance_tol_bump,
+    # Soft baseline-drift diagnostic. Compares the current iteration's
+    # post-arbiter against the *pre-acceptance* carried baseline at
+    # the start of the previous iteration; if it has slipped by
+    # ``BASELINE_DRIFT_DIAGNOSTIC_PP`` or more, we suspect the prior
+    # accept may have been a noise-driven outlier. Logged + audited;
+    # does NOT auto-roll back. None on the first iteration.
+    from genie_space_optimizer.common.config import (
+        BASELINE_DRIFT_DIAGNOSTIC_PP,
+        MIN_POST_ARBITER_GAIN_PP,
     )
-    if _variance_tol_bump > REGRESSION_THRESHOLD:
+    from genie_space_optimizer.optimization.acceptance_policy import (
+        decide_baseline_drift,
+    )
+    _drift = decide_baseline_drift(
+        post_arbiter_current=float(full_accuracy),
+        prev_iter_pre_accept_baseline=prev_iter_pre_accept_baseline,
+        threshold_pp=float(BASELINE_DRIFT_DIAGNOSTIC_PP),
+    )
+    if _drift.triggered:
         logger.info(
-            "GATE [%s]: regression threshold widened from %.1fpp -> %.1fpp "
-            "due to run-to-run variance (%.1f%% disagreement).",
-            ag_id, REGRESSION_THRESHOLD, effective_regression_tol,
-            _variance_info["disagreement_ratio"] * 100.0,
+            "BASELINE DRIFT [%s]: iter %d post-arbiter %.1f%% is %.1fpp "
+            "below the previous iteration's pre-acceptance baseline "
+            "(%.1f%%). Logging suspected_stale_baseline diagnostic; "
+            "iteration continues normally.",
+            ag_id, iteration_counter, full_accuracy, _drift.delta_pp,
+            float(_drift.prev_iter_pre_accept_baseline or 0.0),
         )
-    # T0.3: pick the primary accuracy for gate comparison. Under
-    # ``pre_arbiter`` we compare ``full_pre_arbiter_accuracy`` against
-    # ``best_pre_arbiter_accuracy`` (pulled from ``best_scores`` if
-    # present, falling back to ``best_accuracy`` for back-compat when
-    # best_scores was produced by a pre-T0.3 run). Post-arbiter accuracy
-    # is still checked as a catastrophic-regression guardrail.
+        _audit_emit(
+            stage_letter="N",
+            gate_name="baseline_drift_diagnostic",
+            decision="diagnostic",
+            reason_code=_drift.reason_code,
+            metrics={
+                "post_arbiter_candidate": _drift.post_arbiter_current,
+                "prev_iter_pre_accept_baseline": _drift.prev_iter_pre_accept_baseline,
+                "delta_pp": _drift.delta_pp,
+                "threshold_pp": _drift.threshold_pp,
+            },
+        )
+
+    # Per-judge regression detection — DIAGNOSTIC only. Logged into
+    # the decision_audit row for transparency, never rolls back.
+    # Acceptance is decided solely by ``decide_acceptance`` below.
     _best_pre_arbiter = float(
         best_scores.get("_pre_arbiter/overall_accuracy", best_accuracy)
     )
-    if _objective == "pre_arbiter":
-        _primary_prev = _best_pre_arbiter
-        _primary_cur = full_pre_arbiter_accuracy
-        _primary_label = "pre-arbiter result_correctness"
-        _secondary_prev = best_accuracy
-        _secondary_cur = full_accuracy
-        _secondary_label = "post-arbiter overall accuracy"
-    else:
-        _primary_prev = best_accuracy
-        _primary_cur = full_accuracy
-        _primary_label = "post-arbiter overall accuracy"
-        _secondary_prev = _best_pre_arbiter
-        _secondary_cur = full_pre_arbiter_accuracy
-        _secondary_label = "pre-arbiter result_correctness"
-
-    logger.info(
-        "GATE OBJECTIVE [%s]: mode=%s  primary=%s %.1f%% -> %.1f%% (Δ=%+.1fpp)  "
-        "secondary=%s %.1f%% -> %.1f%% (Δ=%+.1fpp)",
-        ag_id, _objective, _primary_label, _primary_prev, _primary_cur,
-        _primary_cur - _primary_prev,
-        _secondary_label, _secondary_prev, _secondary_cur,
-        _secondary_cur - _secondary_prev,
-    )
+    _diagnostic_regression_tol = max(REGRESSION_THRESHOLD, noise_floor)
     _informational_judges = {j for j, t in DEFAULT_THRESHOLDS.items() if t == 0.0}
     if full_accuracy >= best_accuracy - 2 * noise_floor:
         _informational_judges.add("asset_routing")
-    regressions = detect_regressions(
-        full_scores, best_scores, threshold=effective_regression_tol,
+    _diagnostic_regressions = detect_regressions(
+        full_scores, best_scores, threshold=_diagnostic_regression_tol,
         skip_judges=_informational_judges,
     )
+    if _diagnostic_regressions:
+        logger.info(
+            "PER-JUDGE REGRESSIONS (diagnostic, non-blocking) [%s]: %s",
+            ag_id,
+            ", ".join(
+                f"{r.get('judge')}: {r.get('previous'):.1f} → "
+                f"{r.get('current'):.1f} (Δ-{r.get('drop'):.1f}pp)"
+                for r in _diagnostic_regressions
+            ),
+        )
 
-    # Tier 1.8: if result_correctness regressed but the arbiter-adjusted
-    # both_correct_rate stayed flat or improved, the drop is hash-noise
-    # (column reordering, row reordering, alias renames) rather than a
-    # semantic regression. Drop that specific regression entry so the
-    # iteration isn't rolled back for an equivalence-class difference.
-    _prev_bcr = best_scores.get("_both_correct_rate")
-    _full_bcr = full_scores.get("_both_correct_rate")
-    if _prev_bcr is not None and _full_bcr is not None:
-        _bcr_held = _full_bcr >= _prev_bcr - effective_regression_tol
-        if _bcr_held:
-            _filtered_regressions = [
-                r for r in regressions if r.get("judge") != "result_correctness"
-            ]
-            if len(_filtered_regressions) != len(regressions):
-                logger.info(
-                    "result_correctness regression suppressed: both_correct_rate held "
-                    "(prev=%.1f, current=%.1f, tol=%.1fpp). Likely hash-noise, not "
-                    "semantic regression.",
-                    _prev_bcr, _full_bcr, effective_regression_tol,
-                )
-                regressions = _filtered_regressions
+    # Variables retained for the print blocks further down — under the
+    # single-criterion model, "primary" == post-arbiter, "secondary"
+    # == pre-arbiter (diagnostic). _objective is pinned for log
+    # compatibility but is no longer read for decisions.
+    _objective = "post_arbiter"
+    _primary_prev = best_accuracy
+    _primary_cur = full_accuracy
+    _primary_label = "post-arbiter overall accuracy"
+    _secondary_prev = _best_pre_arbiter
+    _secondary_cur = full_pre_arbiter_accuracy
+    _secondary_label = "pre-arbiter result_correctness (diagnostic)"
 
-    # T0.3: run the overall-accuracy regression check against the
-    # *primary* signal (pre-arbiter under the default objective). The
-    # post-arbiter accuracy is checked separately below as a guardrail.
-    #
-    # B0.3 — use the FULL variance-widened tolerance, not tol/2. The
-    # halving was a vestige from the legacy per-judge code path that
-    # made the gate undershoot run-to-run noise by 2x and rolled back
-    # legitimate iterations whose drop fit comfortably inside the
-    # variance band T0.2 already widened. The other two arms
-    # (noise_floor, question_weight + 0.5) remain as floors so we
-    # never go below the per-question discreteness guard.
-    accuracy_drop = _primary_prev - _primary_cur
-    question_weight = 100.0 / max(len(benchmarks), 1)
-    accuracy_threshold = max(
-        effective_regression_tol,
-        noise_floor,
-        question_weight + 0.5,
+    logger.info(
+        "GATE [%s]: post-arbiter %.1f%% -> %.1f%% (Δ=%+.1fpp)  "
+        "pre-arbiter (diagnostic) %.1f%% -> %.1f%% (Δ=%+.1fpp)",
+        ag_id, _primary_prev, _primary_cur,
+        _primary_cur - _primary_prev,
+        _secondary_prev, _secondary_cur,
+        _secondary_cur - _secondary_prev,
     )
-    if accuracy_drop >= accuracy_threshold:
-        regressions.append({
-            "judge": f"overall_accuracy ({_primary_label})",
-            "previous": _primary_prev,
-            "current": _primary_cur,
-            "drop": accuracy_drop,
-        })
 
-    # Task 2: strict full-eval acceptance. Replaces the legacy
-    # ``OPTIMIZATION_OBJECTIVE_POST_ARBITER_GUARDRAIL_PP`` guardrail
-    # (which let AG2 through with a -4.6pp post-arbiter regression).
-    # The new policy:
-    #   - is K-of-N strict: every confirmation run must clear the
-    #     primary-gain floor and the post-arbiter guardrail,
-    #   - composes with variance widening as a one-sided protection
-    #     (variance can only TIGHTEN the guardrail, never relax it),
-    #   - applies the post-arbiter guardrail in all three objective
-    #     modes, including ``blended``.
-    # Per-judge regressions detected above are still in ``regressions``;
-    # the new policy adds the typed acceptance verdict on top.
-    from genie_space_optimizer.common.config import (
-        MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS,
-        MIN_PRIMARY_GAIN_PP,
-    )
+    # ``regressions`` is the rollback driver — populated only by:
+    #   1. decide_acceptance rejection (synthetic entry below), and
+    #   2. Task 4 per-question pass→fail blocking_qids (further down).
+    # Per-judge diagnostics live in ``_diagnostic_regressions`` and
+    # are not appended here.
+    regressions: list[dict] = []
+
     from genie_space_optimizer.optimization.acceptance_policy import (
-        decide_full_eval_acceptance,
+        decide_acceptance,
     )
 
-    _run_pre_arbiter = [pre_arbiter_accuracy_1]
-    _run_post_arbiter = [accuracy_1]
-    if locals().get("full_result_2") is not None:
-        _run_pre_arbiter.append(pre_arbiter_accuracy_2)
-        _run_post_arbiter.append(accuracy_2)
-
-    _strict_decision = decide_full_eval_acceptance(
-        objective=_objective,
-        previous_pre_arbiter=_best_pre_arbiter,
-        previous_post_arbiter=best_accuracy,
-        run_pre_arbiter=_run_pre_arbiter,
-        run_post_arbiter=_run_post_arbiter,
-        min_primary_gain_pp=MIN_PRIMARY_GAIN_PP,
-        max_post_arbiter_drop_pp=MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS,
-        variance_widened_tol_pp=effective_regression_tol,
+    _strict_decision = decide_acceptance(
+        post_arbiter_candidate=float(full_accuracy),
+        post_arbiter_baseline=float(best_accuracy),
+        min_gain_pp=float(MIN_POST_ARBITER_GAIN_PP),
     )
     logger.info(
-        "STRICT ACCEPTANCE [%s]: accepted=%s reason=%s "
-        "primary_Δ=%+.1fpp secondary_Δ=%+.1fpp "
-        "min_run_primary=%.1f min_run_post=%.1f guardrail=%.2fpp",
+        "ACCEPTANCE [%s]: accepted=%s reason=%s post-arbiter Δ=%+.1fpp "
+        "(candidate=%.1f%%, baseline=%.1f%%, min_gain=%.1fpp)",
         ag_id, _strict_decision.accepted, _strict_decision.reason_code,
-        _strict_decision.primary_delta_pp, _strict_decision.secondary_delta_pp,
-        _strict_decision.min_run_primary, _strict_decision.min_run_post_arbiter,
-        _strict_decision.effective_guardrail_pp,
+        _strict_decision.delta_pp,
+        _strict_decision.post_arbiter_candidate,
+        _strict_decision.post_arbiter_baseline,
+        _strict_decision.min_gain_pp,
     )
     # Task 3: emit a typed audit row for the strict acceptance verdict
     # regardless of pass/fail. Reason_code lets a single SQL query
@@ -7723,16 +7578,10 @@ def _run_gate_checks(
             m[str(_qid)] = not _row_is_hard_failure(_row)
         return m
 
-    # Build "after" pass map from the worst-by-accuracy confirmation
-    # run so a flapping qid is treated as failing whenever it actually
-    # failed in any run. Without _run_2 we use _run_1.
+    # Build "after" pass map from the single full-eval pass. The
+    # confirmation run is gone, so there's nothing to "worst-by-
+    # accuracy" pick across.
     _after_rows = full_result_1.get("rows") or []
-    if locals().get("full_result_2") is not None:
-        try:
-            if accuracy_2 < accuracy_1:
-                _after_rows = full_result_2.get("rows") or _after_rows
-        except Exception:
-            pass
     _pass_after = _build_pass_map(_after_rows)
 
     # Build "before" pass map from the latest full iteration in Delta
@@ -7836,88 +7685,21 @@ def _run_gate_checks(
         )
 
     if not _strict_decision.accepted:
-        # Map the typed reason to a regression entry the rest of the
-        # gate already knows how to roll back on.
-        if _strict_decision.reason_code == "post_arbiter_guardrail":
-            _judge_label = f"post_arbiter_guardrail ({_secondary_label})"
-            _prev = _secondary_prev
-            _cur = _strict_decision.min_run_post_arbiter
-            _drop = _prev - _cur
-        else:  # primary_not_improved_in_every_run / missing_confirmation_runs
-            _judge_label = f"strict_acceptance ({_strict_decision.reason_code})"
-            _prev = _primary_prev
-            _cur = _strict_decision.min_run_primary
-            _drop = _prev - _cur
+        # Translate the typed acceptance reason into a regression entry
+        # so the existing rejection block downstream rolls back the AG
+        # without needing a parallel code path.
         regressions.append({
-            "judge": _judge_label,
-            "previous": _prev,
-            "current": _cur,
-            "drop": _drop,
+            "judge": f"acceptance_gate ({_strict_decision.reason_code})",
+            "previous": _strict_decision.post_arbiter_baseline,
+            "current": _strict_decision.post_arbiter_candidate,
+            "drop": -_strict_decision.delta_pp,
         })
 
-    # ── Per-question noise filtering ──────────────────────────────
-    # If all detected regressions are within a single question's weight,
-    # they are likely Genie non-determinism, not a true patch-caused
-    # regression.  Downgrade them to warnings and proceed.
-    if regressions and patched_objects:
-        _noise_limit = question_weight * 1.5
-        _noise_regs = [r for r in regressions if r["drop"] <= _noise_limit]
-        if len(_noise_regs) == len(regressions):
-            _noise_details = ", ".join(
-                f"{r['judge']} drop={r['drop']:.1f} (limit={_noise_limit:.1f})"
-                for r in _noise_regs
-            )
-            logger.info(
-                "Noise filter: %d regression(s) within single-question noise band — treating as pass: %s",
-                len(_noise_regs), _noise_details,
-            )
-            print(
-                _kv("Noise filter", f"APPLIED — {len(_noise_regs)} regression(s) within ±{_noise_limit:.1f}pp noise band") + "\n"
-                + _kv("Details", _noise_details)
-            )
-            regressions = []
-
-    # ── Hard guard: never accept an iteration that reduced overall accuracy ─
-    # The noise filter above may have cleared per-judge regressions that
-    # individually fall within one question's weight, but if accuracy
-    # actually dropped more than the noise floor, the iteration introduced
-    # a genuine regression on a previously-passing question.
-    #
-    # Tier 1.5: the previous strict ``<`` check made any drop below baseline
-    # unacceptable — including Genie non-determinism of < 1 pp. Against a
-    # 100% baseline this is catastrophic (every iteration rolls back). The
-    # tolerance-aware version mirrors the per-judge threshold arithmetic so
-    # small drops are classed as noise not regressions.
-    # B0.3 — hard guard uses the same variance-widened tolerance as
-    # the primary regression check above. Anything tighter than the
-    # variance estimate defeats the purpose of T0.2 (we'd reject
-    # iterations whose drop sits inside the run-to-run noise band).
-    # ``noise_floor`` remains as a lower bound for deterministic
-    # corpora where ``effective_regression_tol`` collapses to zero.
-    _guard_tolerance = max(noise_floor, effective_regression_tol)
-    # T0.3: run the hard-guard on the *primary* signal (pre-arbiter under
-    # the default objective). Post-arbiter noise shouldn't block a real
-    # pre-arbiter improvement.
-    if not regressions and _primary_cur < _primary_prev - _guard_tolerance:
-        regressions.append({
-            "judge": f"overall_accuracy_guard ({_primary_label})",
-            "previous": _primary_prev,
-            "current": _primary_cur,
-            "drop": _primary_prev - _primary_cur,
-        })
-        logger.info(
-            "Accuracy guard: noise filter cleared per-judge regressions but "
-            "%s dropped %.1f%% -> %.1f%% (tolerance %.1fpp) — "
-            "rejecting iteration",
-            _primary_label, _primary_prev, _primary_cur, _guard_tolerance,
-        )
-        print(
-            _kv(
-                "Accuracy guard",
-                f"TRIGGERED — {_primary_label} dropped {_primary_prev:.1f}% -> {_primary_cur:.1f}% "
-                f"(drop > tolerance {_guard_tolerance:.1f}pp, despite noise filter pass)",
-            )
-        )
+    # Under the single-criterion model the legacy noise filter and
+    # hard accuracy guard are no longer needed: ``regressions`` is
+    # only populated by (1) ``decide_acceptance`` rejection or (2)
+    # Task 4 per-question pass→fail blocking. Both are real
+    # rejection signals; there's nothing to filter or guard against.
 
     if regressions:
         # Tier 3.2: prefer r['previous']/r['current'] (populated by
@@ -7984,8 +7766,15 @@ def _run_gate_checks(
             reason_detail=f"full_eval: {regressions[0]['judge']}",
             metrics={
                 "regression_count": len(regressions),
-                "primary_delta_pp": _primary_cur - _primary_prev,
-                "secondary_delta_pp": _secondary_cur - _secondary_prev,
+                "post_arbiter_candidate": _strict_decision.post_arbiter_candidate,
+                "post_arbiter_baseline": _strict_decision.post_arbiter_baseline,
+                "delta_pp": _strict_decision.delta_pp,
+                "min_gain_pp": _strict_decision.min_gain_pp,
+                "pre_arbiter_candidate": float(full_pre_arbiter_accuracy),
+                "pre_arbiter_baseline": float(_best_pre_arbiter),
+                "diagnostic_regressions": [
+                    r.get("judge") for r in _diagnostic_regressions
+                ],
             },
         )
         _audit_persist()
@@ -8034,12 +7823,17 @@ def _run_gate_checks(
         stage_letter="N",
         gate_name="full_eval_acceptance",
         decision="accepted",
-        reason_code="accepted",
+        reason_code=_strict_decision.reason_code,
         metrics={
-            "primary_delta_pp": _primary_cur - _primary_prev,
-            "secondary_delta_pp": _secondary_cur - _secondary_prev,
-            "min_run_post_arbiter": _strict_decision.min_run_post_arbiter,
-            "effective_guardrail_pp": _strict_decision.effective_guardrail_pp,
+            "post_arbiter_candidate": _strict_decision.post_arbiter_candidate,
+            "post_arbiter_baseline": _strict_decision.post_arbiter_baseline,
+            "delta_pp": _strict_decision.delta_pp,
+            "min_gain_pp": _strict_decision.min_gain_pp,
+            "pre_arbiter_candidate": float(full_pre_arbiter_accuracy),
+            "pre_arbiter_baseline": float(_best_pre_arbiter),
+            "diagnostic_regressions": [
+                r.get("judge") for r in _diagnostic_regressions
+            ],
         },
     )
     _audit_persist()
@@ -8147,6 +7941,12 @@ def _run_lever_loop(
     best_accuracy = prev_accuracy
     best_model_id = prev_model_id
     best_iteration = iteration_counter
+    # Tracks ``best_accuracy`` as carried into the *previous* iteration
+    # (i.e. before that iteration's gate ran). Used by the post-hoc
+    # baseline-drift diagnostic in ``_run_gate_checks`` to detect
+    # iterations where the accepted baseline now appears to have been
+    # an outlier. ``None`` means no previous iteration has run yet.
+    _prev_iter_pre_accept_baseline: float | None = None
 
     levers_attempted: list[int] = []
     levers_accepted: list[int] = []
@@ -10495,6 +10295,10 @@ def _run_lever_loop(
             print("\n".join(_dp_lines))
 
         # ── 3B.6: Three-gate eval ───────────────────────────────────
+        # Snapshot the carried baseline at the start of *this* iteration
+        # so the next iteration's drift diagnostic has something to
+        # compare against.
+        _baseline_at_start_of_this_iter = float(best_accuracy)
         gate_result = _run_gate_checks(
             spark=spark,
             w=w,
@@ -10523,7 +10327,12 @@ def _run_lever_loop(
             lever_keys=lever_keys,
             max_benchmark_count=max_benchmark_count,
             prev_failure_qids=prev_failure_qids,
+            prev_iter_pre_accept_baseline=_prev_iter_pre_accept_baseline,
         )
+        # After the gate finishes, this iteration's pre-acceptance
+        # baseline becomes the reference for the next iteration's
+        # drift diagnostic.
+        _prev_iter_pre_accept_baseline = _baseline_at_start_of_this_iter
 
         # ── 3B.7: Accept or rollback ────────────────────────────────
         _target_objects = [

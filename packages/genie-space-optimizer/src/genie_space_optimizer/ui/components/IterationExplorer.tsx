@@ -210,7 +210,7 @@ function IterationView({
         <Card>
           <CardHeader className="pb-1">
             <CardTitle className="text-xs uppercase tracking-wide text-muted">
-              Accuracy
+              Accuracy (arbiter-adjusted)
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -558,7 +558,7 @@ function BaselineView({
         <Card>
           <CardHeader className="pb-1">
             <CardTitle className="text-xs uppercase tracking-wide text-muted">
-              Accuracy
+              Accuracy (arbiter-adjusted)
             </CardTitle>
           </CardHeader>
           <CardContent>

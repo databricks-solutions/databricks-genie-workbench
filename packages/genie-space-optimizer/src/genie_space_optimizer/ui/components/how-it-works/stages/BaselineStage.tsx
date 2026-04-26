@@ -125,7 +125,7 @@ export function BaselineStage() {
             </div>
             <ScoreGauge
               value={72}
-              label="Overall accuracy"
+              label="Accuracy (arbiter-adjusted)"
               threshold={72}
               color={baselineColors.dot}
             />

@@ -200,43 +200,34 @@ soft clusters (e.g. 6-of-7 judges failing with arbiter verdict
 `genie_correct`) from being ranked below a small hard cluster."""
 
 OPTIMIZATION_OBJECTIVE: str = "pre_arbiter"
-"""T0.3: which accuracy metric the gate optimizes.
+"""DEPRECATED — read but no longer honoured by the gate code.
 
-Values:
-  - ``"pre_arbiter"`` (default): the gate's primary signal is the
-    pre-arbiter ``result_correctness`` rate (raw ``yes/no`` without any
-    arbiter rescue). Post-arbiter accuracy is still checked as a
-    *guardrail* (no catastrophic regression), but a patch that improves
-    the underlying SQL without changing the arbiter verdict is ACCEPTED.
-  - ``"post_arbiter"``: legacy — the gate compares arbiter-adjusted
-    ``result_correctness`` and per-judge scores. This is what caused
-    iter-1..iter-3 of the retail_store_sales_analytics run to flap: the
-    pre-arbiter rate was stuck at 40–43% while the post-arbiter rate
-    swung 62–73% on noise, and the loop optimised against the noisy
-    signal.
-  - ``"blended"``: accept iff the pre-arbiter paired test passes AND
-    post-arbiter does not regress by more than the regression threshold.
-    Strictest; useful once both signals are trustworthy.
+Historical: selected which accuracy metric the lever-loop gate
+optimised (``pre_arbiter`` / ``post_arbiter`` / ``blended``). The
+``pre_arbiter`` default is what allowed the retail run to accept AG2
+with a -4.6pp post-arbiter regression: pre-arbiter improvement masked
+the arbiter-adjusted loss.
 
-The gate implementation lives in ``harness.py:_run_gate_checks`` /
-``_run_full_eval``; it reads this flag to choose which numerator to
-compare against ``best_accuracy``. Unknown values fall back to
-``post_arbiter`` with a warning."""
+Replaced by the single-criterion model in
+``acceptance_policy.decide_acceptance``. Post-arbiter accuracy is now
+the only signal that drives acceptance. Pre-arbiter accuracy is still
+emitted as a diagnostic in the eval payload and decision-audit rows
+but does not gate.
+
+The constant is kept for one release so importers don't break. Will
+be removed in a follow-up cleanup PR."""
 
 OPTIMIZATION_OBJECTIVE_POST_ARBITER_GUARDRAIL_PP: float = 5.0
-"""T0.3 (legacy): when ``OPTIMIZATION_OBJECTIVE='pre_arbiter'`` the
-post-arbiter accuracy is still allowed to move downward, but no more
-than this many percentage points below the previous best.
+"""DEPRECATED — no longer read by the gate code.
 
-DEPRECATED for new acceptance decisions: Task 2 of the lever-loop
-improvement plan replaced this with
-``acceptance_policy.decide_full_eval_acceptance``, which reads
-``MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS`` (default ``2.0``) instead.
-This constant is retained for back-compat — some older code paths and
-dashboards still read it — but new acceptance code should not.
+Historical: capped how far post-arbiter could regress when
+``OPTIMIZATION_OBJECTIVE='pre_arbiter'``. The 5.0pp default was looser
+than typical run-to-run variance, which is how the retail AG2
+acceptance slipped through.
 
-Set to ``math.inf`` to disable the guardrail entirely (accept any
-pre-arbiter improvement regardless of post-arbiter impact)."""
+Replaced by ``MIN_POST_ARBITER_GAIN_PP`` (the gain floor itself acts
+as the guardrail — any drop or sub-threshold gain rejects). Kept for
+one release for back-compat."""
 
 # ── Task 2: strict acceptance ────────────────────────────────────────
 
@@ -246,9 +237,9 @@ ENABLE_LEGACY_SLICE_P0_GATES: bool = (
 )
 """When True, ``harness._run_gate_checks`` runs the slice and P0
 evaluation gates before the full eval. When False (the default after
-Task 2 of the lever-loop improvement plan), the loop runs only
-``apply patches → full eval (run 1) → full eval (run 2 confirm)`` and
-acceptance is decided by ``acceptance_policy.decide_full_eval_acceptance``.
+Task 2 of the lever-loop improvement plan), only the single full eval
+runs and acceptance is decided by
+``acceptance_policy.decide_acceptance``.
 
 The decoded retail run showed both gates passing on AG2 while the
 full-eval rejection was the only honest signal; both gates also each
@@ -256,27 +247,56 @@ add a Genie round-trip per AG. Keep the flag for one release so any
 operator who wants the old behaviour can opt in via
 ``GSO_ENABLE_LEGACY_SLICE_P0_GATES=true``."""
 
+MIN_POST_ARBITER_GAIN_PP: float = float(
+    os.getenv("GSO_MIN_POST_ARBITER_GAIN_PP", "2.0")
+)
+"""Single-criterion acceptance gain floor.
+
+The candidate iteration's post-arbiter (arbiter-adjusted) accuracy
+must exceed the carried baseline by at least this many percentage
+points. ``2.0`` is the default and serves as both the gain floor and
+the implicit regression guardrail: any drop or sub-2.0pp gain
+rejects.
+
+Replaces the legacy combination of ``MIN_PRIMARY_GAIN_PP`` (per-run
+floor on the primary objective),
+``MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS`` (regression cap), and the
+variance-widened tolerance computed from a second confirmation eval.
+Override via the ``GSO_MIN_POST_ARBITER_GAIN_PP`` environment
+variable on a per-space basis."""
+
+BASELINE_DRIFT_DIAGNOSTIC_PP: float = float(
+    os.getenv("GSO_BASELINE_DRIFT_DIAGNOSTIC_PP", "4.0")
+)
+"""Threshold for the post-hoc baseline-drift diagnostic.
+
+At iteration N+1 entry, the harness compares the candidate's
+post-arbiter accuracy against iteration N's *pre-acceptance* baseline
+(the carried baseline before iter N's gate ran). If the candidate has
+fallen below that snapshot by ``BASELINE_DRIFT_DIAGNOSTIC_PP`` or
+more, a ``suspected_stale_baseline`` decision-audit row is written to
+flag a possibly-lucky iter-N acceptance.
+
+Diagnostic only — no auto-rollback. The acceptance gate at iter N+1
+runs as usual and may reject on its own merit."""
+
 MIN_PRIMARY_GAIN_PP: float = float(os.getenv("GSO_MIN_PRIMARY_GAIN_PP", "0.0"))
-"""Per-confirmation-run minimum primary improvement. K-of-N strict:
-every confirmation run must clear ``previous_primary +
-MIN_PRIMARY_GAIN_PP`` to accept. ``0.0`` means "any improvement is
-enough", but real spaces should bump this above the corpus's typical
-single-question weight to avoid accepting noise."""
+"""DEPRECATED — no longer read by the gate code.
+
+Historical: per-confirmation-run primary-gain floor under the K-of-N
+strict acceptance policy. Replaced by ``MIN_POST_ARBITER_GAIN_PP``
+which applies once per iteration to a single eval. Kept for one
+release for back-compat."""
 
 MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS: float = float(
     os.getenv("GSO_MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS", "2.0")
 )
-"""Hard guardrail on raw post-arbiter accuracy drop, applied per
-confirmation run. The retail run accepted AG2's -4.6pp post-arbiter
-regression because the previous 5.0pp guardrail was looser than
-typical run-to-run variance. ``2.0`` is the default for ≤30-question
-corpora; larger corpora can keep this tight without risking noise
-flap.
+"""DEPRECATED — no longer read by the gate code.
 
-Composes with ``harness._compute_eval_variance``: the effective
-guardrail is ``min(MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS,
-variance_widened_tol_pp)``. Variance can only TIGHTEN the guardrail,
-never loosen it."""
+Historical: hard guardrail on raw post-arbiter accuracy drop, applied
+per confirmation run. Replaced by ``MIN_POST_ARBITER_GAIN_PP`` (a
+positive gain floor; any drop or sub-floor gain rejects). Kept for
+one release for back-compat."""
 
 SHADOW_APPLY: bool = False
 """T3.3: when True, clone the Genie space to a shadow, apply patches

@@ -989,7 +989,7 @@ function StepInsights({
         </div>
         {baselineAccuracy != null && bestAccuracy != null && (
           <p className="text-muted">
-            Score: {baselineAccuracy.toFixed(1)}% → {bestAccuracy.toFixed(1)}%
+            Accuracy (arbiter-adjusted): {baselineAccuracy.toFixed(1)}% → {bestAccuracy.toFixed(1)}%
             <span className={bestAccuracy > baselineAccuracy ? "ml-1 text-green-600" : "ml-1"}>
               ({bestAccuracy > baselineAccuracy ? "+" : ""}{(bestAccuracy - baselineAccuracy).toFixed(1)}%)
             </span>
@@ -1013,7 +1013,7 @@ function StepInsights({
     return (
       <div className="space-y-2 text-xs">
         <div className="flex flex-wrap gap-2">
-          {bestAccuracy != null && <Badge variant="secondary">Best accuracy: {bestAccuracy.toFixed(1)}%</Badge>}
+          {bestAccuracy != null && <Badge variant="secondary">Best accuracy (arbiter-adjusted): {bestAccuracy.toFixed(1)}%</Badge>}
           {repeatability != null && <Badge variant="secondary">Repeatability: {repeatability.toFixed(1)}%</Badge>}
           {heldOutAccuracy != null && (
             <Badge

@@ -955,7 +955,7 @@ function JudgesTab({
                 const accDelta = bAcc != null && fAcc != null ? fAcc - bAcc : null;
                 return (
                   <TableRow className="border-b-2 font-semibold">
-                    <TableCell className="text-xs font-semibold">Overall Accuracy</TableCell>
+                    <TableCell className="text-xs font-semibold">Accuracy (arbiter-adjusted)</TableCell>
                     <TableCell className="text-center text-xs font-semibold">
                       {bAcc != null ? `${bAcc.toFixed(1)}%` : "—"}
                     </TableCell>

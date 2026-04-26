@@ -33,7 +33,7 @@ export function ScoreCard({
         <Card className="border-db-gray-border bg-white">
           <CardHeader className="pb-1">
             <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted">
-              Baseline Score
+              Baseline accuracy (arbiter-adjusted)
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -46,7 +46,7 @@ export function ScoreCard({
         <Card className="border-db-blue/30 bg-white">
           <CardHeader className="pb-1">
             <CardTitle className="text-xs font-medium uppercase tracking-wide text-db-blue">
-              Optimized Score
+              Optimized accuracy (arbiter-adjusted)
             </CardTitle>
           </CardHeader>
           <CardContent>

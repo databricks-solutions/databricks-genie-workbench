@@ -1,153 +1,172 @@
-"""Strict K-of-N acceptance policy for full-eval gate decisions.
+"""Single-criterion lever-loop acceptance.
 
 Background
 ----------
-The decoded retail run accepted AG2 because pre-arbiter accuracy
-improved (50→68%) while post-arbiter accuracy dropped (-4.6pp), staying
-just inside the previous 5.0pp guardrail. The slice and P0 gates also
-passed silently. The acceptance policy below replaces the
-average-with-soft-cap approach with a strict per-run check that:
+The previous acceptance gate ran two full evaluations per iteration,
+estimated run-to-run variance, widened the regression tolerance,
+switched between pre-arbiter / post-arbiter / blended objectives, and
+applied a K-of-N strict check. The retail run still accepted a
+``-4.6pp`` post-arbiter regression on AG2 because pre-arbiter
+improvement (under ``OPTIMIZATION_OBJECTIVE='pre_arbiter'``) masked the
+post-arbiter loss.
 
-* Treats post-arbiter as a hard guardrail in every objective mode,
-  including ``blended`` — a pre-arbiter-driven blend cannot mask a
-  post-arbiter regression.
-* Composes with ``harness._compute_eval_variance`` /
-  ``effective_regression_tol`` widening: variance can only TIGHTEN the
-  guardrail (protecting against noise on small corpora), never loosen
-  it. ``effective_guardrail_pp = min(max_post_arbiter_drop_pp,
-  variance_widened_tol_pp)``.
-* Requires *every* confirmation run — not just the average — to clear
-  the primary-gain floor. This is K-of-N strict, where a single bad
-  run rejects the bundle.
+After re-deriving the model with the user, we replaced all of that with
+a single criterion: **post-arbiter accuracy must improve by at least
+``min_gain_pp`` percentage points over the carried baseline**. Variance
+is no longer estimated. There is no second confirmation eval. There is
+no objective switch — the arbiter's adjudication is the headline metric
+end-to-end.
 
-The function is pure over its inputs so the gate sequence in
-``harness.py::_run_gate_checks`` can call it directly and unit tests
-can replay AG1/AG2 metrics without a Databricks cluster.
+Safety net (Option D)
+---------------------
+The gain floor itself acts as a guardrail: setting
+``MIN_POST_ARBITER_GAIN_PP=2.0`` means any iteration that lands within
+``±2pp`` of the baseline is rejected, removing the noise band entirely.
+Cross-iteration drift (a "lucky" accept whose true position regresses
+later) is caught by a separate post-hoc diagnostic in
+``harness.py`` — it logs a ``suspected_stale_baseline`` decision-audit
+row but never auto-rolls back. Operator review.
+
+The function is pure over its inputs so unit tests can replay AG1/AG2
+metrics without a Databricks cluster.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
-Objective = Literal["pre_arbiter", "post_arbiter", "blended"]
+ACCEPTED = "accepted"
+REJECTED_INSUFFICIENT_GAIN = "rejected_insufficient_gain"
+REJECTED_REGRESSION = "rejected_regression"
+SUSPECTED_STALE_BASELINE = "suspected_stale_baseline"
 
 
 @dataclass(frozen=True)
 class AcceptanceDecision:
-    """Outcome of a full-eval acceptance gate.
+    """Outcome of the single-criterion full-eval acceptance gate.
 
     ``reason_code`` is one of:
 
-    * ``accepted``                          — every run cleared both gates.
-    * ``primary_not_improved_in_every_run`` — at least one run failed the
-      per-run primary-gain floor.
-    * ``post_arbiter_guardrail``            — at least one run dropped
-      raw post-arbiter beyond the effective guardrail.
-    * ``missing_confirmation_runs``         — no confirmation runs supplied.
+    * ``accepted`` — candidate exceeded baseline by at least
+      ``min_gain_pp``.
+    * ``rejected_insufficient_gain`` — candidate did not regress, but
+      the gain was below ``min_gain_pp``.
+    * ``rejected_regression`` — candidate is strictly below baseline.
     """
 
     accepted: bool
+    post_arbiter_candidate: float
+    post_arbiter_baseline: float
+    delta_pp: float
+    min_gain_pp: float
     reason_code: str
-    primary_delta_pp: float
-    secondary_delta_pp: float
-    min_run_primary: float
-    min_run_post_arbiter: float
-    effective_guardrail_pp: float
 
 
-def _primary_value(pre: float, post: float, objective: Objective) -> float:
-    if objective == "pre_arbiter":
-        return pre
-    if objective == "post_arbiter":
-        return post
-    # blended: simple mean. Higher-leverage modes can be added later via
-    # config; the contract that matters is that ``post_arbiter`` is
-    # ALSO checked as a guardrail regardless of the objective.
-    return 0.5 * pre + 0.5 * post
-
-
-def decide_full_eval_acceptance(
+def decide_acceptance(
     *,
-    objective: Objective,
-    previous_pre_arbiter: float,
-    previous_post_arbiter: float,
-    run_pre_arbiter: list[float],
-    run_post_arbiter: list[float],
-    min_primary_gain_pp: float,
-    max_post_arbiter_drop_pp: float,
-    variance_widened_tol_pp: float,
+    post_arbiter_candidate: float,
+    post_arbiter_baseline: float,
+    min_gain_pp: float,
 ) -> AcceptanceDecision:
-    """Strict K-of-N acceptance.
+    """Decide whether to accept the candidate state for this iteration.
 
-    Returns an :class:`AcceptanceDecision`. Pure: no I/O, no globals.
+    Single criterion: ``candidate >= baseline + min_gain_pp``. Pure
+    function — no I/O, no globals, no side effects.
 
-    Composition with variance widening:
-        effective_guardrail_pp = min(max_post_arbiter_drop_pp,
-                                     variance_widened_tol_pp)
-
-    Variance can only tighten the guardrail. A noisy small corpus can
-    never reproduce the AG2 false-accept condition because variance
-    widening cannot relax the post-arbiter cap.
+    Returns
+    -------
+    :class:`AcceptanceDecision`
+        ``accepted=True`` only when the candidate strictly cleared the
+        gain floor. ``delta_pp`` is candidate minus baseline, rounded to
+        one decimal so audit rows are comparable across iterations.
     """
-    if not run_pre_arbiter or not run_post_arbiter:
-        return AcceptanceDecision(
-            accepted=False,
-            reason_code="missing_confirmation_runs",
-            primary_delta_pp=0.0,
-            secondary_delta_pp=0.0,
-            min_run_primary=0.0,
-            min_run_post_arbiter=0.0,
-            effective_guardrail_pp=0.0,
-        )
+    delta = round(float(post_arbiter_candidate) - float(post_arbiter_baseline), 1)
+    min_gain = float(min_gain_pp)
 
-    primary_runs = [
-        _primary_value(pre, post, objective)
-        for pre, post in zip(run_pre_arbiter, run_post_arbiter)
-    ]
-    previous_primary = _primary_value(
-        previous_pre_arbiter, previous_post_arbiter, objective,
-    )
-    avg_primary = sum(primary_runs) / len(primary_runs)
-    avg_post = sum(run_post_arbiter) / len(run_post_arbiter)
-    primary_delta = round(avg_primary - previous_primary, 1)
-    secondary_delta = round(avg_post - previous_post_arbiter, 1)
-    min_primary = min(primary_runs)
-    min_post = min(run_post_arbiter)
-
-    # Variance widens the guardrail only as a *floor* against
-    # variance-driven false rejections. It can never make the cap
-    # looser than the configured maximum drop.
-    effective_guardrail = min(max_post_arbiter_drop_pp, variance_widened_tol_pp)
-
-    if min_primary < previous_primary + min_primary_gain_pp:
-        return AcceptanceDecision(
-            accepted=False,
-            reason_code="primary_not_improved_in_every_run",
-            primary_delta_pp=primary_delta,
-            secondary_delta_pp=secondary_delta,
-            min_run_primary=round(min_primary, 1),
-            min_run_post_arbiter=round(min_post, 1),
-            effective_guardrail_pp=round(effective_guardrail, 2),
-        )
-
-    if min_post < previous_post_arbiter - effective_guardrail:
-        return AcceptanceDecision(
-            accepted=False,
-            reason_code="post_arbiter_guardrail",
-            primary_delta_pp=primary_delta,
-            secondary_delta_pp=secondary_delta,
-            min_run_primary=round(min_primary, 1),
-            min_run_post_arbiter=round(min_post, 1),
-            effective_guardrail_pp=round(effective_guardrail, 2),
-        )
+    if delta >= min_gain:
+        reason = ACCEPTED
+        accepted = True
+    elif delta < 0:
+        reason = REJECTED_REGRESSION
+        accepted = False
+    else:
+        reason = REJECTED_INSUFFICIENT_GAIN
+        accepted = False
 
     return AcceptanceDecision(
-        accepted=True,
-        reason_code="accepted",
-        primary_delta_pp=primary_delta,
-        secondary_delta_pp=secondary_delta,
-        min_run_primary=round(min_primary, 1),
-        min_run_post_arbiter=round(min_post, 1),
-        effective_guardrail_pp=round(effective_guardrail, 2),
+        accepted=accepted,
+        post_arbiter_candidate=round(float(post_arbiter_candidate), 1),
+        post_arbiter_baseline=round(float(post_arbiter_baseline), 1),
+        delta_pp=delta,
+        min_gain_pp=round(min_gain, 1),
+        reason_code=reason,
+    )
+
+
+@dataclass(frozen=True)
+class BaselineDriftDiagnostic:
+    """Outcome of the post-hoc baseline drift check.
+
+    The previous iteration's accept may have ridden noise. If the
+    *current* iteration's post-arbiter accuracy lands materially below
+    the *pre-acceptance* baseline that was carried into the previous
+    iteration, we mark the prior accept as a suspected stale baseline
+    so a human can review.
+
+    No auto-rollback. ``triggered=True`` only writes a decision-audit
+    row.
+    """
+
+    triggered: bool
+    post_arbiter_current: float
+    prev_iter_pre_accept_baseline: float | None
+    delta_pp: float | None
+    threshold_pp: float
+    reason_code: str | None
+
+
+def decide_baseline_drift(
+    *,
+    post_arbiter_current: float,
+    prev_iter_pre_accept_baseline: float | None,
+    threshold_pp: float,
+) -> BaselineDriftDiagnostic:
+    """Compute whether the post-hoc baseline drift diagnostic fires.
+
+    Pure function. Called at iteration ``N+1`` entry, where
+    ``prev_iter_pre_accept_baseline`` is the carried baseline that was
+    in force at the *start* of iteration ``N`` (i.e. before iter N's
+    accept). On the very first iteration there is no prior baseline,
+    so we return an inert decision (``triggered=False``,
+    ``reason_code=None``).
+
+    The threshold is treated as a magnitude: any negative delta whose
+    absolute value meets or exceeds ``threshold_pp`` triggers.
+    """
+    if prev_iter_pre_accept_baseline is None:
+        return BaselineDriftDiagnostic(
+            triggered=False,
+            post_arbiter_current=round(float(post_arbiter_current), 1),
+            prev_iter_pre_accept_baseline=None,
+            delta_pp=None,
+            threshold_pp=round(float(threshold_pp), 1),
+            reason_code=None,
+        )
+
+    delta = round(
+        float(post_arbiter_current) - float(prev_iter_pre_accept_baseline),
+        1,
+    )
+    threshold = float(threshold_pp)
+    triggered = delta <= -threshold
+
+    return BaselineDriftDiagnostic(
+        triggered=triggered,
+        post_arbiter_current=round(float(post_arbiter_current), 1),
+        prev_iter_pre_accept_baseline=round(
+            float(prev_iter_pre_accept_baseline), 1,
+        ),
+        delta_pp=delta,
+        threshold_pp=round(threshold, 1),
+        reason_code=SUSPECTED_STALE_BASELINE if triggered else None,
     )

@@ -113,7 +113,7 @@ export function FinalizeDeployStage() {
       title: "Champion Promotion",
       content: (
         <div className="space-y-2 text-sm">
-          <p><code className="rounded bg-db-gray-bg px-1.5 py-0.5">promote_best_model()</code> selects the iteration with highest overall_accuracy. Sets MLflow alias <code className="rounded bg-db-gray-bg px-1.5 py-0.5">champion</code>.</p>
+          <p><code className="rounded bg-db-gray-bg px-1.5 py-0.5">promote_best_model()</code> selects the iteration with the highest <code className="rounded bg-db-gray-bg px-1.5 py-0.5">overall_accuracy</code> — the post-arbiter (arbiter-adjusted) accuracy that the lever loop accepts on. Sets MLflow alias <code className="rounded bg-db-gray-bg px-1.5 py-0.5">champion</code>.</p>
         </div>
       ),
     },
