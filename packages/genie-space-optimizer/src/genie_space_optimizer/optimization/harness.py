@@ -7580,6 +7580,144 @@ def _run_gate_checks(
         },
     )
 
+    # Task 4: per-question pass/fail transition tracker. Aggregate
+    # averages on the retail run hid AG2 flipping previously-passing
+    # qids to failing. Compute pre/post pass maps, classify each qid,
+    # and roll back when any non-suppressed qid went pass_to_fail.
+    from genie_space_optimizer.optimization.evaluation import (
+        row_is_hard_failure as _row_is_hard_failure,
+    )
+    from genie_space_optimizer.optimization.per_question_regression import (
+        build_question_regression_rows,
+        compute_question_transitions,
+    )
+
+    def _build_pass_map(rows_iter: list[dict]) -> dict[str, bool]:
+        m: dict[str, bool] = {}
+        for _row in rows_iter or []:
+            _qid = (
+                _row.get("inputs.question_id")
+                or _row.get("inputs/question_id")
+                or _row.get("question_id")
+                or (_row.get("inputs") or {}).get("question_id", "")
+            )
+            if not _qid:
+                continue
+            m[str(_qid)] = not _row_is_hard_failure(_row)
+        return m
+
+    # Build "after" pass map from the worst-by-accuracy confirmation
+    # run so a flapping qid is treated as failing whenever it actually
+    # failed in any run. Without _run_2 we use _run_1.
+    _after_rows = full_result_1.get("rows") or []
+    if locals().get("full_result_2") is not None:
+        try:
+            if accuracy_2 < accuracy_1:
+                _after_rows = full_result_2.get("rows") or _after_rows
+        except Exception:
+            pass
+    _pass_after = _build_pass_map(_after_rows)
+
+    # Build "before" pass map from the latest full iteration in Delta
+    # (the previous best). On iteration 0 / no prior baseline this is
+    # an empty dict, which yields fail_to_pass / hold_fail labels for
+    # every qid — non-blocking by definition.
+    _pass_before: dict[str, bool] = {}
+    try:
+        _baseline_iter = load_latest_full_iteration(spark, run_id, catalog, schema)
+        if _baseline_iter:
+            _baseline_rows_json = _baseline_iter.get("rows_json")
+            if isinstance(_baseline_rows_json, str):
+                try:
+                    _baseline_rows_json = json.loads(_baseline_rows_json)
+                except Exception:
+                    _baseline_rows_json = []
+            if isinstance(_baseline_rows_json, list):
+                _pass_before = _build_pass_map(_baseline_rows_json)
+    except Exception:
+        logger.debug("Failed to load prior pass map for Task 4 check", exc_info=True)
+
+    # Suppressed qids: quarantine + GT correction queue. Those qids
+    # legitimately can flip pass_to_fail without rolling back the AG.
+    _suppressed_qids: set[str] = set()
+    try:
+        _suppressed_qids |= set(full_result_1.get("quarantined_benchmarks_qids") or [])
+    except Exception:
+        pass
+    try:
+        for _r in full_result_1.get("rows") or []:
+            _av = (_r.get("feedback/arbiter/value") or _r.get("arbiter/value") or "")
+            _rc = (_r.get("feedback/result_correctness/value") or _r.get("result_correctness/value") or "")
+            if str(_av).strip().lower() == "genie_correct" and str(_rc).strip().lower() in {"no", "false", "0", "0.0"}:
+                _qid = (
+                    _r.get("inputs.question_id")
+                    or _r.get("inputs/question_id")
+                    or _r.get("question_id")
+                    or (_r.get("inputs") or {}).get("question_id", "")
+                )
+                if _qid:
+                    _suppressed_qids.add(str(_qid))
+    except Exception:
+        pass
+
+    _t4_verdict = compute_question_transitions(
+        pass_map_before=_pass_before,
+        pass_map_after=_pass_after,
+        suppressed_qids=_suppressed_qids,
+    )
+
+    # Persist non-hold_pass transitions and emit per-qid audit rows.
+    try:
+        _t4_rows = build_question_regression_rows(
+            run_id=run_id,
+            iteration=iteration_counter,
+            ag_id=ag_id,
+            verdict=_t4_verdict,
+            suppressed_qids=_suppressed_qids,
+        )
+        if _t4_rows:
+            from genie_space_optimizer.optimization.state import (
+                write_question_regressions,
+            )
+            write_question_regressions(spark, _t4_rows, catalog=catalog, schema=schema)
+        for _row in _t4_rows:
+            _audit_emit(
+                stage_letter="M",
+                gate_name="per_question_regression",
+                decision=(
+                    "fail" if _row["transition"] == "pass_to_fail" and not _row["suppressed"]
+                    else "pass"
+                ),
+                reason_code=_row["transition"],
+                affected_qids=[_row["question_id"]],
+                metrics={
+                    "transition": _row["transition"],
+                    "was_passing": _row["was_passing"],
+                    "is_passing": _row["is_passing"],
+                    "suppressed": _row["suppressed"],
+                },
+            )
+    except Exception:
+        logger.debug("Failed to persist per-question regression rows", exc_info=True)
+
+    if _t4_verdict.blocking_qids:
+        regressions.append({
+            "judge": (
+                "per_question_regression "
+                f"({len(_t4_verdict.blocking_qids)} blocking qid(s))"
+            ),
+            "previous": float(len(_t4_verdict.blocking_qids)),
+            "current": 0.0,
+            "drop": float(len(_t4_verdict.blocking_qids)),
+            "blocking_qids": _t4_verdict.blocking_qids[:10],
+        })
+        logger.info(
+            "Per-question regression check rolled back AG %s: %d blocking qid(s): %s",
+            ag_id,
+            len(_t4_verdict.blocking_qids),
+            ", ".join(_t4_verdict.blocking_qids[:10]),
+        )
+
     if not _strict_decision.accepted:
         # Map the typed reason to a regression entry the rest of the
         # gate already knows how to roll back on.
