@@ -27,6 +27,18 @@ TABLE_DATA_ACCESS_GRANTS = "genie_opt_data_access_grants"
 # rather than driving the lever loop.
 TABLE_GT_CORRECTION_CANDIDATES = "genie_eval_gt_correction_candidates"
 
+# Task 3: Decision audit. Single Delta surface for every gate decision
+# (acceptance, proposal grounding, reflection drops, AFS / leakage
+# rejections, etc.). Carries source_cluster_ids_json and
+# proposal_to_patch_map_json so a single SQL query reconstructs
+# cluster -> proposal -> patch -> applied -> accepted/rolled_back.
+TABLE_LEVER_LOOP_DECISIONS = "genie_eval_lever_loop_decisions"
+
+# Task 4: Per-question pass/fail transition tracker. Persisted full-eval
+# transitions so a bundle that flips a previously-passing qid from pass
+# to fail rolls back regardless of aggregate direction.
+TABLE_QUESTION_REGRESSIONS = "genie_eval_question_regressions"
+
 # ── DDL Constants ────────────────────────────────────────────────────────
 
 _GENIE_OPT_RUNS_DDL = """\
@@ -298,6 +310,71 @@ TBLPROPERTIES (
     'delta.enableChangeDataFeed' = 'true'
 )"""
 
+# Task 3: lever-loop decision audit. ``stage_letter`` follows the
+# Pipeline Hand-off Contract (A..O) so a single query joins every
+# decision back to its eval pass. ``proposal_to_patch_map_json`` is
+# non-null on apply / acceptance rows; the attribution invariant lives
+# in ``test_decision_audit.py``.
+_GENIE_EVAL_LEVER_LOOP_DECISIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_eval_lever_loop_decisions (
+    run_id                       STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
+    iteration                    INT           NOT NULL COMMENT 'Iteration index',
+    ag_id                        STRING                 COMMENT 'Action group id; NULL for pre-AG rows',
+    decision_order               INT           NOT NULL COMMENT 'Monotonic order within an AG; ties broken by created_at',
+    stage_letter                 STRING                 COMMENT 'Pipeline Hand-off Contract letter (A..O)',
+    gate_name                    STRING        NOT NULL COMMENT 'Logical gate name: full_eval_acceptance, post_arbiter_guardrail, asi_extraction, proposal_grounding, ...',
+    decision                     STRING        NOT NULL COMMENT 'accepted | rolled_back | dropped | pass | fail | ok | degraded',
+    reason_code                  STRING                 COMMENT 'Stable code for the decision (e.g. post_arbiter_guardrail, primary_not_improved_in_every_run)',
+    reason_detail                STRING                 COMMENT 'Free-text detail; size-bounded to 2000 chars',
+    affected_qids_json           STRING                 COMMENT 'JSON array of question ids the decision affected',
+    source_cluster_ids_json      STRING                 COMMENT 'JSON array of cluster ids producing the inputs to this decision',
+    proposal_ids_json            STRING                 COMMENT 'JSON array of proposal ids the decision evaluated',
+    proposal_to_patch_map_json   STRING                 COMMENT 'JSON object {proposal_id: applied_patch_id}; non-null on apply / acceptance rows',
+    metrics_json                 STRING                 COMMENT 'JSON object with typed metrics (deltas, counts, scores)',
+    created_at                   TIMESTAMP     NOT NULL COMMENT 'When the decision was emitted'
+)
+USING DELTA
+PARTITIONED BY (run_id)
+COMMENT 'Lever-loop decision audit trail — every gate decision lands here for queryable attribution'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
+# Task 4: per-question pass/fail transitions on full eval.
+# ``transition`` is one of: hold_pass | hold_fail | pass_to_fail |
+# fail_to_pass. ``suppressed`` is True when the qid was in the
+# GT-correction queue or quarantined; non-suppressed pass_to_fail
+# blocks acceptance.
+_GENIE_EVAL_QUESTION_REGRESSIONS_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_eval_question_regressions (
+    run_id                       STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
+    iteration                    INT           NOT NULL COMMENT 'Iteration index',
+    ag_id                        STRING        NOT NULL COMMENT 'Action group id',
+    question_id                  STRING        NOT NULL COMMENT 'Benchmark question id',
+    was_passing                  BOOLEAN                COMMENT 'Pass state on the previous-best eval',
+    is_passing                   BOOLEAN                COMMENT 'Pass state on the post-AG eval',
+    transition                   STRING                 COMMENT 'hold_pass | hold_fail | pass_to_fail | fail_to_pass',
+    pre_arbiter_before           BOOLEAN                COMMENT 'Pre-arbiter pass on previous-best',
+    pre_arbiter_after            BOOLEAN                COMMENT 'Pre-arbiter pass post-AG',
+    post_arbiter_before          BOOLEAN                COMMENT 'Post-arbiter pass on previous-best',
+    post_arbiter_after           BOOLEAN                COMMENT 'Post-arbiter pass post-AG',
+    source_cluster_ids_json      STRING                 COMMENT 'Clusters this qid contributed to in the current iteration',
+    source_proposal_ids_json     STRING                 COMMENT 'Proposals targeted at those clusters',
+    applied_patch_ids_json       STRING                 COMMENT 'Patches applied this iteration',
+    suppressed                   BOOLEAN                COMMENT 'True if qid was in GT-correction queue or quarantined',
+    created_at                   TIMESTAMP     NOT NULL COMMENT 'When the transition was recorded'
+)
+USING DELTA
+PARTITIONED BY (run_id)
+COMMENT 'Per-question pass/fail transition tracker — a non-suppressed pass_to_fail rolls back the AG'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
 # Task 1: ground-truth correction queue. ``status`` is the four-state
 # review machine documented in ``ground_truth_corrections``:
 #   pending_review        — initial; reviewer has not looked.
@@ -341,4 +418,6 @@ _ALL_DDL: dict[str, str] = {
     TABLE_SUGGESTIONS: _GENIE_OPT_SUGGESTIONS_DDL,
     TABLE_FINALIZE_ATTESTATION: _GENIE_OPT_FINALIZE_ATTESTATION_DDL,
     TABLE_GT_CORRECTION_CANDIDATES: _GENIE_EVAL_GT_CORRECTION_CANDIDATES_DDL,
+    TABLE_LEVER_LOOP_DECISIONS: _GENIE_EVAL_LEVER_LOOP_DECISIONS_DDL,
+    TABLE_QUESTION_REGRESSIONS: _GENIE_EVAL_QUESTION_REGRESSIONS_DDL,
 }

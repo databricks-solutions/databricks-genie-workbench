@@ -6755,6 +6755,59 @@ def _run_gate_checks(
     uc_schema = f"{catalog}.{schema}"
     _primary_lever = int(lever_keys[0]) if lever_keys else 0
 
+    # Task 3: collect decision audit rows as the gates run, persist them
+    # in one shot before every return so the audit trail survives even
+    # an early rollback. ``_audit_emit`` accepts plain Python lists/dicts;
+    # the state writer JSON-serializes.
+    _decision_rows: list[dict] = []
+    _decision_order = [0]
+
+    def _audit_emit(
+        *,
+        gate_name: str,
+        decision: str,
+        stage_letter: str | None = None,
+        reason_code: str | None = None,
+        reason_detail: str | None = None,
+        affected_qids: list[str] | None = None,
+        source_cluster_ids: list[str] | None = None,
+        proposal_ids: list[str] | None = None,
+        proposal_to_patch_map: dict[str, str] | None = None,
+        metrics: dict | None = None,
+    ) -> None:
+        _decision_order[0] += 1
+        _decision_rows.append({
+            "run_id": run_id,
+            "iteration": iteration_counter,
+            "ag_id": ag_id,
+            "decision_order": _decision_order[0],
+            "stage_letter": stage_letter,
+            "gate_name": gate_name,
+            "decision": decision,
+            "reason_code": reason_code,
+            "reason_detail": reason_detail,
+            "affected_qids": affected_qids,
+            "source_cluster_ids": source_cluster_ids,
+            "proposal_ids": proposal_ids,
+            "proposal_to_patch_map": proposal_to_patch_map,
+            "metrics": metrics,
+        })
+
+    def _audit_persist() -> None:
+        if not _decision_rows:
+            return
+        try:
+            from genie_space_optimizer.optimization.state import (
+                write_lever_loop_decisions,
+            )
+            write_lever_loop_decisions(
+                spark, list(_decision_rows), catalog=catalog, schema=schema,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to persist lever-loop decision rows", exc_info=True,
+            )
+
     has_dict_changes = any(
         (entry.get("patch", {}) or {}).get("enable_entity_matching")
         or (entry.get("action", {}) or {}).get("type") in (
@@ -6825,6 +6878,16 @@ def _run_gate_checks(
             "Propagation confirmed after %.1fs (< max %ds) for AG %s",
             _elapsed, wait_time, ag_id,
         )
+        _audit_emit(
+            stage_letter="K",
+            gate_name="propagation_wait",
+            decision="confirmed",
+            metrics={
+                "elapsed_seconds": round(_elapsed, 1),
+                "max_wait_seconds": int(wait_time),
+                "patches_applied": len(_applied_entries),
+            },
+        )
     else:
         remaining = max(0.0, float(wait_time) - _elapsed)
         if remaining > 0:
@@ -6833,6 +6896,20 @@ def _run_gate_checks(
                 "Propagation not confirmed for AG %s — waited full %ds budget",
                 ag_id, wait_time,
             )
+        _audit_emit(
+            stage_letter="K",
+            gate_name="propagation_wait",
+            decision="waited_full_budget",
+            reason_code=(
+                "no_verifiable_snippet" if not _expected_snippets
+                else "snippet_not_observed"
+            ),
+            metrics={
+                "elapsed_seconds": round(_elapsed, 1),
+                "max_wait_seconds": int(wait_time),
+                "patches_applied": len(_applied_entries),
+            },
+        )
 
     # ── Slice gate ────────────────────────────────────────────────────
     try:
@@ -7006,6 +7083,14 @@ def _run_gate_checks(
                 )
             except Exception:
                 logger.debug("Failed to log gate feedback", exc_info=True)
+            _audit_emit(
+                stage_letter="K",
+                gate_name="slice_gate",
+                decision="rolled_back",
+                reason_detail=f"slice_gate: {slice_drops[0]['judge']}",
+                metrics={"regressions": len(slice_drops)},
+            )
+            _audit_persist()
             return {"passed": False, "rollback_reason": f"slice_gate: {slice_drops[0]['judge']}", "failed_eval_result": slice_result}
         else:
             _sc = ", ".join(
@@ -7083,6 +7168,14 @@ def _run_gate_checks(
                 + _kv("Action", "ROLLBACK") + "\n"
                 + _bar("-")
             )
+            _audit_emit(
+                stage_letter="K",
+                gate_name="p0_gate",
+                decision="rolled_back",
+                reason_detail=f"p0_gate: {len(p0_failures)} failures",
+                metrics={"p0_failures": len(p0_failures)},
+            )
+            _audit_persist()
             return {"passed": False, "rollback_reason": f"p0_gate: {len(p0_failures)} failures", "failed_eval_result": p0_result}
         else:
             print(
@@ -7130,6 +7223,26 @@ def _run_gate_checks(
         ),
     )
     new_model_id = full_result_1.get("model_id", "")
+
+    # Task 0 → Task 3: forward the ASI extraction audit row that
+    # ``run_evaluation`` stamped on the result dict. This makes a
+    # zero-trace eval visible in the lever-loop decision audit instead
+    # of silent.
+    _asi_audit_1 = full_result_1.get("asi_extraction_audit")
+    if isinstance(_asi_audit_1, dict):
+        _asi_metrics = _asi_audit_1.get("metrics_json")
+        if isinstance(_asi_metrics, str):
+            try:
+                _asi_metrics = json.loads(_asi_metrics)
+            except (TypeError, ValueError):
+                _asi_metrics = None
+        _audit_emit(
+            stage_letter=_asi_audit_1.get("stage_letter") or "C",
+            gate_name=_asi_audit_1.get("gate_name") or "asi_extraction",
+            decision=_asi_audit_1.get("decision") or "ok",
+            reason_code=_asi_audit_1.get("reason_code"),
+            metrics=_asi_metrics if isinstance(_asi_metrics, dict) else None,
+        )
 
     scores_1 = dict(full_result_1.get("scores", {}))
     accuracy_1 = full_result_1.get("overall_accuracy", 0.0)
@@ -7202,6 +7315,24 @@ def _run_gate_checks(
                 iteration=iteration_counter, ag_id=ag_id,
             ),
         )
+        # Forward run 2's ASI extraction audit too.
+        _asi_audit_2 = full_result_2.get("asi_extraction_audit")
+        if isinstance(_asi_audit_2, dict):
+            _asi_metrics2 = _asi_audit_2.get("metrics_json")
+            if isinstance(_asi_metrics2, str):
+                try:
+                    _asi_metrics2 = json.loads(_asi_metrics2)
+                except (TypeError, ValueError):
+                    _asi_metrics2 = None
+            _audit_emit(
+                stage_letter=_asi_audit_2.get("stage_letter") or "C",
+                gate_name=_asi_audit_2.get("gate_name") or "asi_extraction",
+                decision=_asi_audit_2.get("decision") or "ok",
+                reason_code=_asi_audit_2.get("reason_code"),
+                reason_detail="confirmation_run",
+                metrics=_asi_metrics2 if isinstance(_asi_metrics2, dict) else None,
+            )
+
         scores_2 = dict(full_result_2.get("scores", {}))
         accuracy_2 = full_result_2.get("overall_accuracy", 0.0)
         pre_arbiter_accuracy_2 = float(
@@ -7424,6 +7555,31 @@ def _run_gate_checks(
         _strict_decision.min_run_primary, _strict_decision.min_run_post_arbiter,
         _strict_decision.effective_guardrail_pp,
     )
+    # Task 3: emit a typed audit row for the strict acceptance verdict
+    # regardless of pass/fail. Reason_code lets a single SQL query
+    # answer "did we get rejected because primary didn't improve, or
+    # because post-arbiter dropped too far?" without parsing logs.
+    _audit_emit(
+        stage_letter="N",
+        gate_name=(
+            "post_arbiter_guardrail"
+            if _strict_decision.reason_code == "post_arbiter_guardrail"
+            else "full_eval_acceptance"
+        ),
+        decision=("pass" if _strict_decision.accepted else "fail"),
+        reason_code=_strict_decision.reason_code,
+        metrics={
+            "primary_delta_pp": _strict_decision.primary_delta_pp,
+            "secondary_delta_pp": _strict_decision.secondary_delta_pp,
+            "min_run_primary": _strict_decision.min_run_primary,
+            "min_run_post_arbiter": _strict_decision.min_run_post_arbiter,
+            "effective_guardrail_pp": _strict_decision.effective_guardrail_pp,
+            "previous_pre_arbiter": _best_pre_arbiter,
+            "previous_post_arbiter": best_accuracy,
+            "objective": _objective,
+        },
+    )
+
     if not _strict_decision.accepted:
         # Map the typed reason to a regression entry the rest of the
         # gate already knows how to roll back on.
@@ -7565,6 +7721,19 @@ def _run_gate_checks(
             )
         except Exception:
             logger.debug("Failed to log full eval gate feedback", exc_info=True)
+        _audit_emit(
+            stage_letter="N",
+            gate_name="full_eval_acceptance",
+            decision="rolled_back",
+            reason_code=_strict_decision.reason_code,
+            reason_detail=f"full_eval: {regressions[0]['judge']}",
+            metrics={
+                "regression_count": len(regressions),
+                "primary_delta_pp": _primary_cur - _primary_prev,
+                "secondary_delta_pp": _secondary_cur - _secondary_prev,
+            },
+        )
+        _audit_persist()
         return {"passed": False, "rollback_reason": f"full_eval: {regressions[0]['judge']}", "failed_eval_result": full_result, "regressions": regressions}
 
     # ── PASSED ────────────────────────────────────────────────────────
@@ -7606,6 +7775,19 @@ def _run_gate_checks(
     except Exception:
         logger.debug("Failed to log full eval gate feedback", exc_info=True)
 
+    _audit_emit(
+        stage_letter="N",
+        gate_name="full_eval_acceptance",
+        decision="accepted",
+        reason_code="accepted",
+        metrics={
+            "primary_delta_pp": _primary_cur - _primary_prev,
+            "secondary_delta_pp": _secondary_cur - _secondary_prev,
+            "min_run_post_arbiter": _strict_decision.min_run_post_arbiter,
+            "effective_guardrail_pp": _strict_decision.effective_guardrail_pp,
+        },
+    )
+    _audit_persist()
     return {
         "passed": True,
         "full_scores": full_scores,
