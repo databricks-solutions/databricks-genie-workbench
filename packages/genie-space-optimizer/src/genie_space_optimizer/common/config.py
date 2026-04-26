@@ -297,13 +297,31 @@ CONSECUTIVE_ROLLBACK_LIMIT = 3
 the optimizer is stuck and further iterations are unlikely to help.
 Root causes are only marked as tried when the limit is about to be hit,
 giving the strategist a chance to retry with a different lever."""
-MAX_AG_PATCHES = 8
-"""Tier 2.6: hard cap on the number of patches applied in a single action
-group. Rationale: a single bad patch in a 27-patch AG (iteration 2 of the
-lever-loop regression case) takes down the other 26 when the iteration
-rolls back. Keeping the batch small keeps the rollback blast radius small
-and enables lever-boundary batch-apply with slice-gate checks between
-batches for AGs that genuinely need more."""
+MAX_AG_PATCHES = int(os.getenv("GSO_MAX_AG_PATCHES", "3"))
+"""Hard cap on the number of patches applied in a single action group.
+
+Task 5 of the lever-loop improvement plan lowered the default from 8
+to 3. Rationale: AG2 in the retail run shipped 8-patch bundles whose
+patches did not all target the failing questions, and a single bad
+patch took down 7 others when the AG rolled back. Smaller bundles
+keep rollback blast radius small and let per-question regression
+attribution (Task 4) actually point at the patch responsible.
+
+Override via ``GSO_MAX_AG_PATCHES`` for spaces that legitimately need
+broader bundles (e.g. very large corpora where 3 patches cannot move
+the metric). The original Tier 2.6 design — lever-boundary batch
+apply with intra-AG slice gates — is no longer in the gate sequence
+after Task 2 disabled slice/P0 gates by default."""
+
+MIN_PROPOSAL_RELEVANCE = float(os.getenv("GSO_MIN_PROPOSAL_RELEVANCE", "0.1"))
+"""Minimum fraction of a proposal's identifier targets that must
+appear in some failing question's surface for the proposal to be kept
+by ``proposal_grounding.select_patch_bundle``. Default ``0.1`` keeps
+the bar low (one matching identifier among ten suffices) but still
+catches the AG2 failure mode where ``zone_combination`` patches
+shipped against Q011/Q009 failures that never reference the column.
+
+Set to ``0.0`` to disable grounding entirely (legacy behavior)."""
 INFRA_RETRY_BUDGET = 3
 """Stop the lever loop after this many consecutive INFRA_FAILURE
 rollbacks. Infra rollbacks do not count toward

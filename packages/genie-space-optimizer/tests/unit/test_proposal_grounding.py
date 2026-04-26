@@ -1,0 +1,262 @@
+"""Tests for Task 5: proposal grounding + small-AG selection.
+
+The retail run shipped 8-patch bundles whose targets did not always
+appear in the failing question's SQL or NL. AG2 in particular pushed
+``update_column_description`` patches on ``zone_combination`` /
+``market_combination`` even though the actual failures (Q011 missing
+GROUP BY YEAR, Q009 wrong customer-count measure) had nothing to do
+with those columns. These tests pin the contract that:
+
+* A patch whose targets do not appear anywhere in the failing
+  question's surface scores 0.0 and gets dropped.
+* The bundle selector keeps at most ``MAX_AG_PATCHES`` and orders by
+  relevance score after risk_level (the existing diversity sort still
+  drives intra-relevance ordering elsewhere; here we just enforce the
+  upper bound).
+* When a proposal already carries a ``relevance_score`` field, the
+  selector trusts it (avoids re-parsing).
+* The grounding check is purely local — it never sends benchmark text
+  to an LLM (the plan's Bug #4 contract). All comparisons run on
+  schema identifiers + tokenized NL.
+"""
+
+from __future__ import annotations
+
+from genie_space_optimizer.optimization.proposal_grounding import (
+    extract_failure_surface,
+    extract_patch_targets,
+    relevance_score,
+    select_patch_bundle,
+)
+
+
+# ── extract_patch_targets ─────────────────────────────────────────
+
+
+def test_extracts_column_and_target_keys():
+    patch = {"type": "update_column_description", "column": "zone_combination"}
+
+    targets = extract_patch_targets(patch)
+
+    assert "zone_combination" in targets
+
+
+def test_normalizes_to_lowercase():
+    patch = {"type": "add_instruction", "target": "TIME GROUPING"}
+
+    targets = extract_patch_targets(patch)
+
+    # Comparison is case-insensitive — surface normalizes too.
+    assert "time grouping" in targets
+
+
+def test_collects_multiple_target_fields():
+    patch = {
+        "type": "add_sql_snippet_expression",
+        "target": "month_year",
+        "metric": "AVG_EXCHANGE_RATE",
+        "instruction_section": "TIME_GROUPING",
+    }
+
+    targets = extract_patch_targets(patch)
+
+    assert {"month_year", "avg_exchange_rate", "time_grouping"}.issubset(targets)
+
+
+def test_returns_empty_set_when_no_target_keys():
+    patch = {"type": "rewrite_instruction"}
+
+    assert extract_patch_targets(patch) == set()
+
+
+# ── extract_failure_surface ────────────────────────────────────
+
+
+def test_extracts_columns_and_functions_from_sql():
+    row = {
+        "generated_sql": "SELECT MONTH(date_key_2), AVG(exchange_rate) FROM mv_esr_fact_sales GROUP BY MONTH(date_key_2)",
+        "expected_sql": "SELECT YEAR(date_key_2), MONTH(date_key_2), AVG(exchange_rate) FROM mv_esr_fact_sales GROUP BY YEAR(date_key_2), MONTH(date_key_2)",
+        "nl_response": "Average exchange rate by month.",
+    }
+
+    surface = extract_failure_surface(row)
+
+    # Columns
+    assert "date_key_2" in surface
+    assert "exchange_rate" in surface
+    # Function tokens (regex fallback picks them up regardless of sqlglot).
+    assert "month" in surface
+    assert "year" in surface
+    assert "avg" in surface
+    # Table identifier
+    assert "mv_esr_fact_sales" in surface
+
+
+def test_extracts_nl_tokens_too():
+    row = {"nl_response": "Show me the average exchange rate per month."}
+
+    surface = extract_failure_surface(row)
+
+    assert "exchange" in surface
+    assert "rate" in surface
+    assert "month" in surface
+
+
+def test_handles_missing_sql_keys():
+    surface = extract_failure_surface({"nl_response": "anything"})
+
+    assert "anything" in surface
+
+
+def test_handles_unparseable_sql_via_regex_fallback():
+    """Even if sqlglot can't parse, identifiers should still be picked
+    up by the regex fallback."""
+    row = {"generated_sql": "this is not valid SQL but has identifier zone_combination"}
+
+    surface = extract_failure_surface(row)
+
+    assert "zone_combination" in surface
+
+
+# ── relevance_score ────────────────────────────────────────────
+
+
+def test_drops_patch_with_no_overlap_with_failed_question_surface():
+    """The exact AG2 failure mode from the retail run: patch on
+    zone_combination, but failing question (Q011) is about exchange
+    rate by month — no overlap."""
+    patch = {"type": "update_column_description", "column": "zone_combination"}
+    failing = {
+        "generated_sql": "SELECT MONTH(date_key_2), AVG(exchange_rate) FROM mv_esr_fact_sales GROUP BY MONTH(date_key_2)",
+        "expected_sql": "SELECT YEAR(date_key_2), MONTH(date_key_2), AVG(exchange_rate) FROM mv_esr_fact_sales GROUP BY YEAR(date_key_2), MONTH(date_key_2)",
+        "nl_response": "Average exchange rate by month.",
+    }
+
+    assert relevance_score(patch, [failing]) == 0.0
+
+
+def test_full_overlap_scores_one():
+    patch = {"type": "update_column_description", "column": "date_key_2"}
+    failing = {
+        "generated_sql": "SELECT MONTH(date_key_2) FROM t",
+        "expected_sql": "SELECT YEAR(date_key_2) FROM t",
+        "nl_response": "monthly trend",
+    }
+
+    assert relevance_score(patch, [failing]) == 1.0
+
+
+def test_partial_overlap_scores_fraction():
+    patch = {
+        "type": "add_instruction",
+        "target": "month_year",        # not in surface
+        "instruction_section": "date_key_2",  # in surface
+    }
+    failing = {
+        "generated_sql": "SELECT MONTH(date_key_2) FROM t",
+        "expected_sql": "SELECT YEAR(date_key_2) FROM t",
+    }
+
+    score = relevance_score(patch, [failing])
+
+    # 1 of 2 targets overlaps → 0.5
+    assert score == 0.5
+
+
+def test_zero_when_no_targets():
+    patch = {"type": "rewrite_instruction"}
+
+    assert relevance_score(patch, [{"generated_sql": "SELECT 1"}]) == 0.0
+
+
+def test_zero_when_no_failing_rows():
+    patch = {"type": "update_column_description", "column": "anything"}
+
+    assert relevance_score(patch, []) == 0.0
+
+
+# ── select_patch_bundle ────────────────────────────────────────
+
+
+def test_drops_below_min_relevance():
+    proposals = [
+        {"id": "p_grounded", "type": "update_column_description", "column": "date_key_2", "relevance_score": 1.0, "risk_level": "low"},
+        {"id": "p_unrelated", "type": "update_column_description", "column": "zone_combination", "relevance_score": 0.0, "risk_level": "low"},
+    ]
+
+    selected = select_patch_bundle(proposals, max_patches=8, min_relevance=0.1)
+
+    ids = [p["id"] for p in selected]
+    assert "p_grounded" in ids
+    assert "p_unrelated" not in ids
+
+
+def test_caps_to_max_patches_after_grounding():
+    proposals = [
+        {"id": f"p{i}", "type": "update_column_description", "column": "date_key_2", "relevance_score": 1.0, "risk_level": "low"}
+        for i in range(10)
+    ]
+
+    selected = select_patch_bundle(proposals, max_patches=3)
+
+    assert len(selected) == 3
+
+
+def test_preserves_input_order_within_relevance_ties():
+    """Stable sort: equal-relevance proposals keep their incoming
+    order. Diversity selection happens upstream of grounding in the
+    harness."""
+    proposals = [
+        {"id": "p1", "type": "x", "column": "date_key_2", "relevance_score": 1.0, "risk_level": "low"},
+        {"id": "p2", "type": "x", "column": "date_key_2", "relevance_score": 1.0, "risk_level": "high"},
+        {"id": "p3", "type": "x", "column": "date_key_2", "relevance_score": 1.0, "risk_level": "low"},
+    ]
+
+    selected = select_patch_bundle(proposals, max_patches=3)
+
+    assert [p["id"] for p in selected] == ["p1", "p2", "p3"]
+
+
+def test_higher_relevance_beats_lower():
+    proposals = [
+        {"id": "low_rel", "type": "x", "column": "zone_combination", "relevance_score": 0.2, "risk_level": "low"},
+        {"id": "high_rel", "type": "x", "column": "date_key_2", "relevance_score": 1.0, "risk_level": "low"},
+    ]
+
+    selected = select_patch_bundle(proposals, max_patches=1)
+
+    assert [p["id"] for p in selected] == ["high_rel"]
+
+
+def test_computes_relevance_when_field_missing(monkeypatch=None):
+    """If a proposal does not carry a precomputed relevance_score,
+    the selector computes one from failing_rows_by_proposal."""
+    proposals = [
+        {"id": "p_grounded", "type": "x", "column": "date_key_2", "risk_level": "low"},
+        {"id": "p_unrelated", "type": "x", "column": "zone_combination", "risk_level": "low"},
+    ]
+    failing_rows_by_proposal = {
+        "p_grounded": [
+            {"generated_sql": "SELECT MONTH(date_key_2) FROM t",
+             "expected_sql": "SELECT YEAR(date_key_2), MONTH(date_key_2) FROM t"},
+        ],
+        "p_unrelated": [
+            {"generated_sql": "SELECT MONTH(date_key_2) FROM t",
+             "expected_sql": "SELECT YEAR(date_key_2), MONTH(date_key_2) FROM t"},
+        ],
+    }
+
+    selected = select_patch_bundle(
+        proposals,
+        max_patches=8,
+        min_relevance=0.1,
+        failing_rows_by_proposal=failing_rows_by_proposal,
+    )
+
+    ids = [p["id"] for p in selected]
+    assert "p_grounded" in ids
+    assert "p_unrelated" not in ids
+
+
+def test_empty_input_returns_empty():
+    assert select_patch_bundle([], max_patches=3) == []

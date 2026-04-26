@@ -1,0 +1,190 @@
+"""Proposal grounding: drop patches whose targets do not appear in any
+failing question's surface, then keep small auditable bundles.
+
+The retail run shipped 8-patch bundles whose targets did not match the
+failures the strategist claimed to be addressing. AG2 in particular
+patched ``zone_combination`` / ``market_combination`` column
+descriptions even though the failing benchmarks (Q011's missing
+``YEAR(date_key_2)`` GROUP BY, Q009's wrong customer-count measure)
+had nothing to do with those columns. This module enforces a
+deterministic relevance check before apply:
+
+* Every patch declares its targets via standard fields (``column``,
+  ``target``, ``metric``, ``join_target``, ``instruction_section``,
+  ``table``, ``section_name``, ``snippet_name``).
+* Every failing eval row exposes its surface — column names from
+  generated/expected SQL plus tokenized NL response.
+* A patch's relevance is the fraction of its targets that overlap
+  the union of failing-row surfaces.
+
+Crucially, the comparison is purely local — schema identifiers and
+tokenized NL only. No benchmark text is sent to an LLM or a remote
+service, so the leakage firewall (Bug #4) stays intact.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import Iterable
+
+logger = logging.getLogger(__name__)
+
+# Identifier-like tokens. We're deliberately permissive on what counts
+# as an identifier to keep regex parity with sqlglot for unparseable
+# SQL (the AG2 `GROUP BY ALL` case).
+_IDENT_RE = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b")
+
+# Common patch fields that name an identifier the patch claims to
+# influence. Order does not matter; the union goes into the targets
+# set.
+_PATCH_TARGET_KEYS: tuple[str, ...] = (
+    "column",
+    "target",
+    "metric",
+    "join_target",
+    "instruction_section",
+    "table",
+    "section_name",
+    "snippet_name",
+)
+
+
+def _normalize(token: str) -> str:
+    return str(token).strip().lower()
+
+
+def extract_patch_targets(patch: dict) -> set[str]:
+    """Return identifiers a patch claims to influence.
+
+    Each value is split on whitespace to handle multi-word ``target``
+    entries (e.g. ``"TIME GROUPING"`` becomes ``{"time grouping",
+    "time", "grouping"}``) — we keep the joined form for exact-phrase
+    matches and the parts for fuzzy ones.
+    """
+    targets: set[str] = set()
+    for key in _PATCH_TARGET_KEYS:
+        val = patch.get(key)
+        if not isinstance(val, str) or not val.strip():
+            continue
+        joined = _normalize(val)
+        targets.add(joined)
+        for part in _IDENT_RE.findall(joined):
+            if part:
+                targets.add(part)
+    return targets
+
+
+def extract_failure_surface(row: dict) -> set[str]:
+    """Return identifiers + NL tokens visible in a failing eval row.
+
+    Tries sqlglot first to recover columns, functions, and tables;
+    falls back to regex on the raw SQL string when sqlglot can't
+    parse. The NL response is always tokenized via regex.
+    """
+    surface: set[str] = set()
+    try:
+        import sqlglot
+        from sqlglot import exp as _exp  # noqa: N812
+    except Exception:
+        sqlglot = None  # type: ignore[assignment]
+
+    for sql_key in ("generated_sql", "expected_sql"):
+        sql = row.get(sql_key) or ""
+        if not isinstance(sql, str) or not sql.strip():
+            continue
+
+        if sqlglot is not None:
+            try:
+                parsed = sqlglot.parse_one(sql, read="databricks")
+                if parsed is not None:
+                    for col in parsed.find_all(_exp.Column):
+                        if getattr(col, "name", None):
+                            surface.add(_normalize(col.name))
+                    for fn in parsed.find_all(_exp.Func):
+                        try:
+                            name = fn.sql_name()
+                            if name:
+                                surface.add(_normalize(name))
+                        except Exception:
+                            continue
+                    for tbl in parsed.find_all(_exp.Table):
+                        if getattr(tbl, "name", None):
+                            surface.add(_normalize(tbl.name))
+            except Exception:
+                logger.debug(
+                    "sqlglot parse failed for %s; using regex fallback",
+                    sql_key,
+                    exc_info=True,
+                )
+
+        # Regex fallback always runs — it costs nothing and catches
+        # tokens sqlglot may miss (e.g. metric_view aliases inside
+        # ``MEASURE(...)``).
+        for tok in _IDENT_RE.findall(sql):
+            if tok:
+                surface.add(_normalize(tok))
+
+    nl = row.get("nl_response") or ""
+    if isinstance(nl, str):
+        for tok in _IDENT_RE.findall(nl):
+            if tok:
+                surface.add(_normalize(tok))
+
+    return surface
+
+
+def relevance_score(patch: dict, failing_rows: Iterable[dict]) -> float:
+    """Fraction of patch targets that appear in any failing row's surface.
+
+    Returns ``0.0`` when the patch has no targets or no failing rows
+    are supplied. Always in ``[0.0, 1.0]``.
+    """
+    targets = extract_patch_targets(patch)
+    if not targets:
+        return 0.0
+    rows = list(failing_rows or [])
+    if not rows:
+        return 0.0
+    union_surface: set[str] = set()
+    for row in rows:
+        union_surface |= extract_failure_surface(row)
+    if not union_surface:
+        return 0.0
+    overlap = targets & union_surface
+    return len(overlap) / len(targets)
+
+
+def select_patch_bundle(
+    proposals: list[dict],
+    *,
+    max_patches: int,
+    min_relevance: float = 0.0,
+    failing_rows_by_proposal: dict[str, list[dict]] | None = None,
+) -> list[dict]:
+    """Drop ungrounded proposals; keep up to ``max_patches`` survivors.
+
+    Order: by relevance score DESC (stable within a tie). The harness
+    is responsible for any upstream diversity sorting; this function
+    only enforces the relevance floor + size cap.
+
+    When a proposal does not carry a precomputed ``relevance_score``,
+    we compute it from ``failing_rows_by_proposal[proposal['id']]``.
+    Empty input is a no-op.
+    """
+    if not proposals:
+        return []
+    rows_by_proposal = failing_rows_by_proposal or {}
+    scored: list[tuple[dict, float]] = []
+    for p in proposals:
+        score = p.get("relevance_score")
+        if score is None:
+            failing = rows_by_proposal.get(str(p.get("id", "")), [])
+            score = relevance_score(p, failing)
+        scored.append((p, float(score)))
+
+    grounded = [(p, s) for p, s in scored if s >= min_relevance]
+    # Stable sort: Python's sort is stable, so equal-relevance
+    # proposals retain their incoming order.
+    grounded.sort(key=lambda ps: -ps[1])
+    return [p for p, _s in grounded[:max_patches]]

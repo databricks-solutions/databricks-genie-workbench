@@ -9737,6 +9737,122 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
+        # Task 5: ground proposals against failing-question surfaces.
+        # AG2 in the retail run shipped 8-patch bundles whose targets
+        # (e.g. ``zone_combination``) did not appear in the failing
+        # questions' SQL or NL surface. Drop patches that cannot
+        # plausibly affect any failing question before the diversity
+        # cap so the resulting bundle is causally auditable.
+        try:
+            from genie_space_optimizer.common.config import (
+                MIN_PROPOSAL_RELEVANCE,
+            )
+            from genie_space_optimizer.optimization.proposal_grounding import (
+                relevance_score as _patch_relevance,
+            )
+
+            _failing_rows_for_grounding = _get_failure_rows(
+                spark, run_id, catalog, schema,
+            )
+            _audit_decisions_grounding: list[tuple[dict, float, str]] = []
+            _grounded: list[dict] = []
+            for _patch in patches:
+                _score = _patch_relevance(_patch, _failing_rows_for_grounding)
+                _patch["relevance_score"] = round(float(_score), 3)
+                if _score >= MIN_PROPOSAL_RELEVANCE:
+                    _grounded.append(_patch)
+                    _audit_decisions_grounding.append((_patch, _score, "kept"))
+                else:
+                    _audit_decisions_grounding.append((_patch, _score, "dropped"))
+
+            _dropped = [d for d in _audit_decisions_grounding if d[2] == "dropped"]
+            if _dropped:
+                logger.info(
+                    "Task 5 grounding [%s]: dropped %d/%d ungrounded patches "
+                    "(min_relevance=%.2f)",
+                    ag_id, len(_dropped), len(patches), MIN_PROPOSAL_RELEVANCE,
+                )
+                print(
+                    _section(
+                        f"PROPOSAL GROUNDING [{ag_id}]: kept {len(_grounded)} of "
+                        f"{len(patches)}", "-",
+                    ) + "\n"
+                    + _kv(
+                        "Dropped (ungrounded)",
+                        ", ".join(
+                            f"{p.get('type', '?')}:{p.get('column', p.get('target', '?'))}"
+                            f" (rel={s:.2f})"
+                            for p, s, _d in _dropped[:5]
+                        ) + (
+                            f" (+{len(_dropped) - 5} more)" if len(_dropped) > 5 else ""
+                        ),
+                    ) + "\n"
+                    + _bar("-")
+                )
+            patches = _grounded
+
+            # Emit a per-patch ``proposal_grounding`` decision row for
+            # each kept/dropped decision so the Task-3 audit chain
+            # ``cluster -> proposal -> grounding -> apply -> accept``
+            # is queryable end-to-end.
+            try:
+                from genie_space_optimizer.optimization.state import (
+                    write_lever_loop_decisions as _write_decisions,
+                )
+                _grounding_rows: list[dict] = []
+                for _idx, (_patch, _score, _dec) in enumerate(
+                    _audit_decisions_grounding, start=1,
+                ):
+                    _grounding_rows.append({
+                        "run_id": run_id,
+                        "iteration": iteration_counter,
+                        "ag_id": ag_id,
+                        "decision_order": _idx,
+                        "stage_letter": "H",
+                        "gate_name": "proposal_grounding",
+                        "decision": (
+                            "accepted" if _dec == "kept" else "dropped"
+                        ),
+                        "reason_code": (
+                            None if _dec == "kept" else "below_min_relevance"
+                        ),
+                        "metrics": {
+                            "relevance_score": round(float(_score), 3),
+                            "min_relevance": MIN_PROPOSAL_RELEVANCE,
+                            "patch_type": _patch.get("type"),
+                            "target": (
+                                _patch.get("column")
+                                or _patch.get("target")
+                                or _patch.get("metric")
+                                or _patch.get("instruction_section")
+                            ),
+                            "lever": _patch.get("lever"),
+                        },
+                        "proposal_ids": (
+                            [_patch.get("proposal_id")]
+                            if _patch.get("proposal_id") else []
+                        ),
+                        "source_cluster_ids": (
+                            [_patch.get("cluster_id")]
+                            if _patch.get("cluster_id") else []
+                        ),
+                    })
+                if _grounding_rows:
+                    _write_decisions(
+                        spark, _grounding_rows, catalog=catalog, schema=schema,
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to persist proposal_grounding decision rows",
+                    exc_info=True,
+                )
+        except Exception:
+            logger.debug(
+                "Task 5 proposal grounding failed (non-fatal); proceeding with "
+                "all patches.",
+                exc_info=True,
+            )
+
         # Tier 2.6: cap AG patch-set size. A single failing patch in a
         # large batch rolls back everything — including the patches that
         # would have helped. If the cap is exceeded, keep the highest-
