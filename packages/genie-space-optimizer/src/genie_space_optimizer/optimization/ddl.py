@@ -20,6 +20,13 @@ from genie_space_optimizer.common.config import (
 
 TABLE_DATA_ACCESS_GRANTS = "genie_opt_data_access_grants"
 
+# Task 1: Ground-truth correction queue.
+# When the arbiter rules ``genie_correct`` on a row whose
+# ``result_correctness`` is ``no``, the GT itself is wrong or
+# under-specified; the row is parked here for human/automated review
+# rather than driving the lever loop.
+TABLE_GT_CORRECTION_CANDIDATES = "genie_eval_gt_correction_candidates"
+
 # ── DDL Constants ────────────────────────────────────────────────────────
 
 _GENIE_OPT_RUNS_DDL = """\
@@ -291,6 +298,36 @@ TBLPROPERTIES (
     'delta.enableChangeDataFeed' = 'true'
 )"""
 
+# Task 1: ground-truth correction queue. ``status`` is the four-state
+# review machine documented in ``ground_truth_corrections``:
+#   pending_review        — initial; reviewer has not looked.
+#   accepted_corpus_fix   — GT was updated; qid eligible for proactive
+#                           mining (Task 9 reads this status).
+#   rejected_keep_gt      — reviewer disagreed; treat as confirmed Genie
+#                           failure on next iteration.
+#   superseded            — replaced by a later iteration's row.
+_GENIE_EVAL_GT_CORRECTION_CANDIDATES_DDL = """\
+CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_eval_gt_correction_candidates (
+    run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
+    iteration           INT           NOT NULL COMMENT 'Iteration that produced this candidate',
+    question_id         STRING        NOT NULL COMMENT 'Benchmark question id',
+    question            STRING                 COMMENT 'Question text (frozen at capture time)',
+    expected_sql        STRING                 COMMENT 'Ground-truth SQL believed wrong by the arbiter',
+    genie_sql           STRING                 COMMENT 'Genie-produced SQL the arbiter ruled correct',
+    arbiter_verdict     STRING                 COMMENT 'Arbiter verdict; expected genie_correct',
+    arbiter_rationale   STRING                 COMMENT 'Arbiter explanation for the genie_correct verdict',
+    status              STRING        NOT NULL COMMENT 'pending_review | accepted_corpus_fix | rejected_keep_gt | superseded',
+    created_at          TIMESTAMP     NOT NULL COMMENT 'When the candidate was queued'
+)
+USING DELTA
+PARTITIONED BY (run_id)
+COMMENT 'Corpus-review queue for benchmark rows where the arbiter ruled Genie correct against a defective GT'
+TBLPROPERTIES (
+    'delta.autoOptimize.optimizeWrite' = 'true',
+    'delta.autoOptimize.autoCompact' = 'true',
+    'delta.enableChangeDataFeed' = 'true'
+)"""
+
 # ── Combined DDL dict ────────────────────────────────────────────────────
 
 _ALL_DDL: dict[str, str] = {
@@ -303,4 +340,5 @@ _ALL_DDL: dict[str, str] = {
     TABLE_PROVENANCE: _GENIE_OPT_PROVENANCE_DDL,
     TABLE_SUGGESTIONS: _GENIE_OPT_SUGGESTIONS_DDL,
     TABLE_FINALIZE_ATTESTATION: _GENIE_OPT_FINALIZE_ATTESTATION_DDL,
+    TABLE_GT_CORRECTION_CANDIDATES: _GENIE_EVAL_GT_CORRECTION_CANDIDATES_DDL,
 }

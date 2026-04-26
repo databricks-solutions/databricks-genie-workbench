@@ -129,6 +129,7 @@ from genie_space_optimizer.optimization.state import (
     update_provenance_proposals,
     update_run_status,
     write_asi_results,
+    write_gt_correction_candidates,
     write_iteration,
     write_patch,
     write_provenance,
@@ -6350,6 +6351,10 @@ def _analyze_and_distribute(
       - ``prov_rows``: provenance rows for Delta
     """
     from genie_space_optimizer.optimization.evaluation import row_is_hard_failure
+    from genie_space_optimizer.optimization.ground_truth_corrections import (
+        build_gt_correction_candidate,
+        is_gt_correction_candidate,
+    )
     from genie_space_optimizer.optimization.optimizer import (
         _map_to_lever,
         cluster_failures,
@@ -6372,6 +6377,7 @@ def _analyze_and_distribute(
     soft_signal_qids: list[str] = []
     filtered_failure_rows: list[dict] = []
     soft_signal_rows: list[dict] = []
+    gt_correction_candidates: list[dict] = []
     for row in failure_rows:
         av = _get_arbiter_verdict(row)
         qid = _get_question_id(row)
@@ -6386,6 +6392,22 @@ def _analyze_and_distribute(
             continue
 
         if qid in _exclude:
+            continue
+
+        # Task 1: divert ``arbiter=genie_correct`` rows to the corpus-
+        # review queue BEFORE either clustering branch. These are
+        # corpus-quality signals (the GT itself is wrong or under-
+        # specified), not Genie failures, and must not drive patch
+        # generation. The queue persists them for reviewer triage; the
+        # state machine then governs whether the qid re-enters the loop
+        # (rejected_keep_gt) or feeds Task 9's proactive mining
+        # (accepted_corpus_fix).
+        if is_gt_correction_candidate(row):
+            gt_correction_candidates.append(
+                build_gt_correction_candidate(
+                    row, run_id=run_id, iteration=iteration_counter
+                )
+            )
             continue
 
         if row_is_hard_failure(row):
@@ -6419,6 +6441,14 @@ def _analyze_and_distribute(
             "Quarantined (excluded)",
             f"{len(quarantine_excluded)} row(s) across {_qu_unique} unique "
             f"question(s): {', '.join(list(dict.fromkeys(quarantine_excluded))[:5])}",
+        ))
+    if gt_correction_candidates:
+        _gtc_qids = [c.get("question_id", "") for c in gt_correction_candidates]
+        _gtc_unique = len({q for q in _gtc_qids if q})
+        _fa_lines.append(_kv(
+            "GT correction candidates (genie_correct → corpus review)",
+            f"{len(gt_correction_candidates)} row(s) across {_gtc_unique} unique "
+            f"question(s): {', '.join([q for q in _gtc_qids if q][:5])}",
         ))
     if arbiter_excluded:
         _ae_unique = len(set(arbiter_excluded))
@@ -6675,6 +6705,9 @@ def _analyze_and_distribute(
         "asi_rows": _asi_rows,
         "prov_rows": _prov_rows,
         "lever_counter": dict(_lever_counter),
+        # Task 1: corpus-review queue payloads (Delta-shaped). The caller
+        # is responsible for persisting via state.write_gt_correction_candidates.
+        "gt_correction_candidates": gt_correction_candidates,
     }
 
 
@@ -8267,6 +8300,17 @@ def _run_lever_loop(
             write_provenance(spark, run_id, iteration_counter - 1, 0, _analysis["prov_rows"], catalog, schema)
         except Exception:
             logger.debug("Failed to write provenance rows", exc_info=True)
+        try:
+            # Task 1: persist GT correction queue payloads. Empty list
+            # is a no-op inside the helper.
+            write_gt_correction_candidates(
+                spark,
+                _analysis.get("gt_correction_candidates") or [],
+                catalog=catalog,
+                schema=schema,
+            )
+        except Exception:
+            logger.debug("Failed to write GT correction candidates", exc_info=True)
 
         clusters = _filter_tried_clusters(clusters, tried_root_causes)
         if not clusters and not soft_signal_clusters:

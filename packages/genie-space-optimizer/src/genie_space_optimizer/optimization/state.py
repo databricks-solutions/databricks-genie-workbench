@@ -37,6 +37,7 @@ from genie_space_optimizer.common.delta_helpers import (
 )
 from genie_space_optimizer.optimization.ddl import (
     TABLE_DATA_ACCESS_GRANTS,
+    TABLE_GT_CORRECTION_CANDIDATES,
     _ALL_DDL,
 )
 
@@ -861,6 +862,61 @@ def write_provenance(
         except Exception:
             logger.debug("Failed to write provenance row for %s/%s", p.get("question_id"), p.get("judge"), exc_info=True)
     logger.info("Wrote %d provenance rows for run %s iter %d lever %d", len(provenance_rows), run_id, iteration, lever)
+
+
+def write_gt_correction_candidates(
+    spark: SparkSession,
+    rows: list[dict],
+    *,
+    catalog: str,
+    schema: str,
+) -> None:
+    """Persist GT correction queue payloads from Task 1.
+
+    Each row already carries the Delta-shaped fields built by
+    ``ground_truth_corrections.build_gt_correction_candidate``. Status
+    starts at ``pending_review``; the four-state machine
+    (``pending_review`` / ``accepted_corpus_fix`` / ``rejected_keep_gt``
+    / ``superseded``) is documented in the helper module. No-op when
+    ``rows`` is empty.
+    """
+    if not rows:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    written = 0
+    for r in rows:
+        payload: dict[str, Any] = {
+            "run_id": r.get("run_id", ""),
+            "iteration": int(r.get("iteration") or 0),
+            "question_id": r.get("question_id", ""),
+            "question": (r.get("question") or "")[:5000],
+            "expected_sql": (r.get("expected_sql") or "")[:5000],
+            "genie_sql": (r.get("genie_sql") or "")[:5000],
+            "arbiter_verdict": r.get("arbiter_verdict", ""),
+            "arbiter_rationale": (r.get("arbiter_rationale") or "")[:2000],
+            "status": r.get("status") or "pending_review",
+            "created_at": now,
+        }
+        if not payload["question_id"]:
+            # Skip orphan rows; downstream consumers key on question_id.
+            continue
+        try:
+            insert_row(
+                spark, catalog, schema, TABLE_GT_CORRECTION_CANDIDATES, payload,
+            )
+            written += 1
+        except Exception:
+            logger.debug(
+                "Failed to write GT correction candidate for %s",
+                payload["question_id"],
+                exc_info=True,
+            )
+    if written:
+        logger.info(
+            "Wrote %d GT correction candidate(s) for run %s",
+            written,
+            rows[0].get("run_id", "?"),
+        )
 
 
 def update_provenance_proposals(
