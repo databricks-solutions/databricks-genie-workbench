@@ -41,6 +41,8 @@ _IDENT_RE = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b")
 _PATCH_TARGET_KEYS: tuple[str, ...] = (
     "column",
     "target",
+    "target_object",
+    "target_table",
     "metric",
     "join_target",
     "instruction_section",
@@ -88,6 +90,11 @@ def extract_patch_targets(patch: dict) -> set[str]:
             continue
         joined = _normalize(val)
         targets.add(joined)
+        if "." in joined:
+            for dotted_part in joined.split("."):
+                dotted_part = dotted_part.strip()
+                if dotted_part:
+                    targets.add(dotted_part)
         for part in _IDENT_RE.findall(joined):
             if part:
                 targets.add(part)
@@ -174,6 +181,30 @@ def relevance_score(patch: dict, failing_rows: Iterable[dict]) -> float:
         return 0.0
     overlap = targets & union_surface
     return len(overlap) / len(targets)
+
+
+def explain_relevance(patch: dict, failing_rows: Iterable[dict]) -> dict:
+    """Return debug details for why a patch did or did not ground.
+
+    This mirrors :func:`relevance_score` while preserving the target,
+    surface, overlap, and missing-target sets for audit rows and local
+    troubleshooting.
+    """
+    targets = extract_patch_targets(patch)
+    rows = list(failing_rows or [])
+    union_surface: set[str] = set()
+    for row in rows:
+        union_surface |= extract_failure_surface(row)
+    overlap = targets & union_surface
+    missing = targets - union_surface
+    score = (len(overlap) / len(targets)) if targets and rows and union_surface else 0.0
+    return {
+        "score": score,
+        "targets": sorted(targets),
+        "surface": sorted(union_surface),
+        "overlap": sorted(overlap),
+        "missing_targets": sorted(missing),
+    }
 
 
 def select_patch_bundle(

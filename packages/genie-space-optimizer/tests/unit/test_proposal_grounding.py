@@ -23,6 +23,7 @@ with those columns. These tests pin the contract that:
 from __future__ import annotations
 
 from genie_space_optimizer.optimization.proposal_grounding import (
+    explain_relevance,
     extract_failure_surface,
     extract_patch_targets,
     relevance_score,
@@ -61,6 +62,20 @@ def test_collects_multiple_target_fields():
     targets = extract_patch_targets(patch)
 
     assert {"month_year", "avg_exchange_rate", "time_grouping"}.issubset(targets)
+
+
+def test_collects_rca_target_fields_and_dotted_identifier_parts():
+    patch = {
+        "type": "update_measure_description",
+        "target_object": "sales_mv.avg_txn_day",
+        "target_table": "sales_mv",
+    }
+
+    targets = extract_patch_targets(patch)
+
+    assert "sales_mv.avg_txn_day" in targets
+    assert "sales_mv" in targets
+    assert "avg_txn_day" in targets
 
 
 def test_returns_empty_set_when_no_target_keys():
@@ -220,6 +235,40 @@ def test_extract_failure_surface_with_mlflow_flattened_keys():
     assert "month" in surface
     assert "mv_t" in surface
     assert "yearly" in surface
+
+
+def test_metric_view_measure_expression_keeps_measure_name_grounded():
+    row = {
+        "inputs.expected_sql": (
+            "SELECT MEASURE(avg_txn_day) FROM sales_mv GROUP BY region"
+        ),
+    }
+    patch = {
+        "type": "update_measure_description",
+        "target_object": "sales_mv.avg_txn_day",
+        "target_table": "sales_mv",
+    }
+
+    surface = extract_failure_surface(row)
+
+    assert "avg_txn_day" in surface
+    assert relevance_score(patch, [row]) > 0.0
+
+
+def test_explain_relevance_reports_overlap_and_missing_targets():
+    row = {"expected_sql": "SELECT MEASURE(avg_txn_day) FROM sales_mv"}
+    patch = {
+        "type": "update_measure_description",
+        "target_object": "sales_mv.avg_txn_day",
+        "target_table": "sales_mv",
+        "column": "unrelated_column",
+    }
+
+    explanation = explain_relevance(patch, [row])
+
+    assert explanation["score"] > 0.0
+    assert "avg_txn_day" in explanation["overlap"]
+    assert "unrelated_column" in explanation["missing_targets"]
 
 
 # ── select_patch_bundle ────────────────────────────────────────
