@@ -247,3 +247,24 @@ def test_prepare_lever_loop_uses_resolved_warehouse_id_for_catalog_detection(mon
     monkeypatch.setenv("GSO_WAREHOUSE_ID", "gso-wh-123")
 
     assert resolve_warehouse_id("") == "gso-wh-123"
+
+
+def test_apply_pre_execute_repairs_handles_alias_shape_used_by_benchmark_precheck():
+    from genie_space_optimizer.optimization.evaluation import apply_pre_execute_repairs
+
+    sql = (
+        "SELECT zone_combination, "
+        "MEASURE(orders_diff) AS orders_diff "
+        "FROM cat.sch.mv_sales "
+        "GROUP BY zone_combination "
+        "ORDER BY MEASURE(orders_diff) DESC"
+    )
+    repaired = apply_pre_execute_repairs(
+        sql,
+        mv_measures={"mv_sales": {"orders_diff"}},
+        mv_short_set={"mv_sales"},
+        canonical_assets=["cat.sch.mv_sales"],
+    )
+
+    assert "orders_diff_value" in repaired
+    assert "ORDER BY MEASURE(orders_diff)" not in repaired

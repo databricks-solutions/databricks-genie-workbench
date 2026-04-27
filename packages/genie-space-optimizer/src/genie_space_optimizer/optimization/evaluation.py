@@ -2056,6 +2056,26 @@ def apply_pre_execute_repairs(
         except Exception:
             pass
 
+    # Compute the alias-collision rename map BEFORE either the measure
+    # rewrite or the alias-collision repair runs. The rewrite would
+    # otherwise wrap a bare ``orders_diff`` alias as ``MEASURE(orders_diff)``
+    # and the collision regex would no longer recognize the shape.
+    alias_collision_map = _measure_alias_collision_rename_map(new_sql)
+
+    # Task 8: alias-collision repair MUST run before _rewrite_measure_refs
+    # so a bare-identifier alias that matches the underlying measure
+    # name (``MEASURE(orders_diff) AS orders_diff``) gets renamed to
+    # ``MEASURE(orders_diff) AS orders_diff_value`` before the
+    # measure-wrap pass sees the bare alias and wraps it.
+    try:
+        new_sql, alias_fixes = _repair_measure_alias_collisions(new_sql)
+        if alias_fixes and counters is not None:
+            counters["repaired_measure_alias_collisions"] = (
+                counters.get("repaired_measure_alias_collisions", 0) + alias_fixes
+            )
+    except Exception:
+        pass
+
     if mv_measures:
         try:
             wrapped = _rewrite_measure_refs(new_sql, mv_measures)
@@ -2081,21 +2101,6 @@ def apply_pre_execute_repairs(
                     )
         except Exception:
             pass
-
-    # Compute the alias-collision rename map BEFORE running the
-    # collision repair so the Task 6 ORDER-BY rewrite below has the
-    # original-measure → renamed-alias mapping it needs. Without this
-    # snapshot the rename info is lost once the repair mutates new_sql.
-    alias_collision_map = _measure_alias_collision_rename_map(new_sql)
-
-    try:
-        new_sql, alias_fixes = _repair_measure_alias_collisions(new_sql)
-        if alias_fixes and counters is not None:
-            counters["repaired_measure_alias_collisions"] = (
-                counters.get("repaired_measure_alias_collisions", 0) + alias_fixes
-            )
-    except Exception:
-        pass
 
     try:
         new_sql, ob_fixes = _repair_order_by_measure_alias(new_sql)
@@ -4365,13 +4370,17 @@ def _precheck_benchmarks_for_eval(
             continue
 
         resolved_sql = resolve_sql(sql, catalog=catalog, gold_schema=gold_schema)
-        if _mv_measures:
-            resolved_sql = _rewrite_measure_refs(resolved_sql, _mv_measures)
-            resolved_sql, _ = _repair_measure_alias_collisions(resolved_sql)
-            # PR 20: lift measure-column references out of WHERE into a
-            # CTE-first pattern. Returns unchanged when no measure
-            # appears in WHERE.
-            resolved_sql, _ = _repair_measure_in_where(resolved_sql, _mv_measures)
+        # Task 8 — route benchmark precheck through the same shared
+        # ``apply_pre_execute_repairs`` pipeline used by unified and
+        # preflight generation, so an alias-collision shape that
+        # passes the unified path doesn't get rejected here.
+        canonical_assets = sorted(metric_view_names or [])
+        resolved_sql = apply_pre_execute_repairs(
+            resolved_sql,
+            mv_measures=_mv_measures,
+            mv_short_set=mv_names_lower,
+            canonical_assets=canonical_assets or None,
+        )
 
         _found_params = _extract_sql_params(resolved_sql)
         if _found_params:
