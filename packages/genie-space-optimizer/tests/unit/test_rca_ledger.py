@@ -106,3 +106,26 @@ def test_extracts_extra_defensive_filter_for_not_null_guards():
     findings = extract_rca_findings_from_row(row, metadata_snapshot={})
 
     assert any(f.rca_kind is RcaKind.EXTRA_DEFENSIVE_FILTER for f in findings)
+
+
+def test_build_rca_ledger_from_failure_rows_compiles_themes():
+    from genie_space_optimizer.optimization.rca import build_rca_ledger
+
+    rows = [{
+        "inputs.question_id": "retail_003",
+        "inputs.expected_sql": (
+            "SELECT d.calendar_month FROM mv_esr_dim_date d "
+            "GROUP BY d.calendar_month"
+        ),
+        "outputs.predictions.sql": (
+            "SELECT MONTH(d.full_date) AS calendar_month "
+            "FROM mv_esr_dim_date d GROUP BY MONTH(d.full_date)"
+        ),
+        "feedback/arbiter/value": "ground_truth_correct",
+    }]
+
+    ledger = build_rca_ledger(rows, metadata_snapshot={})
+
+    assert ledger["finding_count"] == 1
+    assert ledger["theme_count"] == 1
+    assert ledger["themes"][0].patch_family == "canonical_dimension_guidance"

@@ -6982,6 +6982,39 @@ def _format_iq_scan_findings(scan_summary: dict | None) -> str:
     return "\n".join(lines)
 
 
+def _field(obj: Any, name: str, default: Any = "") -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _format_rca_themes_for_strategy(
+    rca_themes: list[Any],
+    conflicts: list[Any],
+) -> str:
+    if not rca_themes:
+        return "(No typed RCA themes available.)"
+    lines = ["## Typed RCA Themes"]
+    for idx, theme in enumerate(rca_themes[:8], 1):
+        rca_id = _field(theme, "rca_id", "")
+        patch_family = _field(theme, "patch_family", "")
+        target_qids = _field(theme, "target_qids", ())
+        touched = _field(theme, "touched_objects", ())
+        lines.append(
+            f"{idx}. {rca_id} family={patch_family} "
+            f"targets={list(target_qids)} touched={list(touched)[:8]}"
+        )
+    if conflicts:
+        lines.append("\n## RCA Theme Conflict Matrix")
+        for conflict in conflicts[:8]:
+            left = _field(conflict, "left_rca_id", "")
+            right = _field(conflict, "right_rca_id", "")
+            obj = _field(conflict, "object_id", "")
+            reason = _field(conflict, "reason", "")
+            lines.append(f"- {left} -> {right} on `{obj}`: {reason}")
+    return "\n".join(lines)
+
+
 def _build_context_data(
     *,
     clusters: list[dict],
@@ -6996,6 +7029,7 @@ def _build_context_data(
     proven_patterns_text: str,
     suggestions_text: str,
     iq_scan_text: str = "",
+    rca_theme_context: str = "",
 ) -> dict:
     """Assemble all context sections as a single Python dict for JSON serialization."""
     from genie_space_optimizer.optimization.applier import _get_general_instructions
@@ -7020,6 +7054,7 @@ def _build_context_data(
         "persistent_failures": persistence_text,
         "human_suggestions": suggestions_text or None,
         "iq_scan_findings": iq_scan_text or None,
+        "rca_theme_context": rca_theme_context or None,
         "schema": _build_schema_data(metadata_snapshot, filter_tables=relevant_tables),
         "failure_clusters": _build_cluster_data(clusters),
         "soft_signal_clusters": _build_soft_signal_data(soft_signal_clusters),
@@ -8765,6 +8800,10 @@ def _call_llm_for_adaptive_strategy(
         suggestions_text = "\n".join(lines_hs)
 
     iq_scan_text = _format_iq_scan_findings(iq_scan_summary)
+    rca_theme_context = _format_rca_themes_for_strategy(
+        metadata_snapshot.get("_rca_themes") or [],
+        metadata_snapshot.get("_rca_theme_conflicts") or [],
+    )
 
     # ── Build structured context ────────────────────────────────────
     context_data = _build_context_data(
@@ -8780,6 +8819,7 @@ def _call_llm_for_adaptive_strategy(
         proven_patterns_text=proven_patterns_text,
         suggestions_text=suggestions_text,
         iq_scan_text=iq_scan_text,
+        rca_theme_context=rca_theme_context,
     )
     context_data = _truncate_context_to_budget(context_data, PROMPT_TOKEN_BUDGET)
     context_json = json.dumps(context_data, indent=2, default=str)

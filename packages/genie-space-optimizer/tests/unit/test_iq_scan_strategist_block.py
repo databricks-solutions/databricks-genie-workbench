@@ -139,3 +139,31 @@ class TestContextDataIntegration:
         ctx = _build_context_data(**self._minimal_kwargs())
         assert "iq_scan_findings" in ctx
         assert ctx["iq_scan_findings"] is None
+
+    def test_strategist_prompt_includes_typed_rca_themes(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _build_context_data,
+            _format_rca_themes_for_strategy,
+        )
+        from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+
+        block = _format_rca_themes_for_strategy([
+            RcaPatchTheme(
+                rca_id="rca_avg_txn",
+                rca_kind=RcaKind.METRIC_VIEW_ROUTING_CONFUSION,
+                patch_family="contrastive_metric_routing",
+                patches=(),
+                target_qids=("retail_010", "retail_027"),
+                touched_objects=("mv_esr_store_sales", "mv_7now_store_sales"),
+            )
+        ], [])
+
+        assert "Typed RCA Themes" in block
+        assert "contrastive_metric_routing" in block
+        assert "retail_010" in block
+
+        ctx = _build_context_data(
+            **self._minimal_kwargs(),
+            rca_theme_context=block,
+        )
+        assert ctx["rca_theme_context"] == block

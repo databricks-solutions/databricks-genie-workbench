@@ -7149,6 +7149,24 @@ def _analyze_and_distribute(
             exc_info=True,
         )
 
+    _rca_ledger: dict = {
+        "findings": [],
+        "themes": [],
+        "conflicts": [],
+        "finding_count": 0,
+        "theme_count": 0,
+        "conflict_count": 0,
+    }
+    try:
+        from genie_space_optimizer.optimization.rca import build_rca_ledger
+
+        _rca_ledger = build_rca_ledger(
+            filtered_failure_rows,
+            metadata_snapshot=metadata_snapshot,
+        )
+    except Exception:
+        logger.debug("RCA ledger construction failed (non-fatal)", exc_info=True)
+
     return {
         "lever_assignments": lever_assignments,
         "all_clusters": clusters,
@@ -7164,6 +7182,7 @@ def _analyze_and_distribute(
         # that received a feature diff stamp.
         "feature_diff_histogram": _feature_diff_histogram,
         "feature_diff_count": _feature_diff_count,
+        "rca_ledger": _rca_ledger,
     }
 
 
@@ -8946,6 +8965,11 @@ def _run_lever_loop(
         )
         clusters = _analysis["all_clusters"]
         soft_signal_clusters = _analysis["soft_signal_clusters"]
+        rca_ledger = _analysis.get("rca_ledger") or {}
+        metadata_snapshot["_rca_themes"] = rca_ledger.get("themes") or []
+        metadata_snapshot["_rca_theme_conflicts"] = (
+            rca_ledger.get("conflicts") or []
+        )
 
         try:
             write_asi_results(spark, run_id, iteration_counter - 1, _analysis["asi_rows"], catalog, schema, mlflow_run_id=_last_full_mlflow_run_id)

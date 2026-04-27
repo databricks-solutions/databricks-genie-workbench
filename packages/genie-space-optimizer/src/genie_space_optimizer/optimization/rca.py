@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable
+from typing import Any, Iterable
 
 
 class RcaKind(str, Enum):
@@ -460,3 +460,30 @@ def detect_theme_conflicts(themes: list[RcaPatchTheme]) -> list[ThemeConflict]:
             else:
                 owner[key] = theme.rca_id
     return conflicts
+
+
+def build_rca_ledger(
+    rows: list[dict],
+    *,
+    metadata_snapshot: dict | None = None,
+) -> dict[str, Any]:
+    findings: list[RcaFinding] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        findings.extend(
+            extract_rca_findings_from_row(
+                row,
+                metadata_snapshot=metadata_snapshot,
+            )
+        )
+    themes = compile_patch_themes(findings, metadata_snapshot=metadata_snapshot)
+    conflicts = detect_theme_conflicts(themes)
+    return {
+        "findings": findings,
+        "themes": themes,
+        "conflicts": conflicts,
+        "finding_count": len(findings),
+        "theme_count": len(themes),
+        "conflict_count": len(conflicts),
+    }
