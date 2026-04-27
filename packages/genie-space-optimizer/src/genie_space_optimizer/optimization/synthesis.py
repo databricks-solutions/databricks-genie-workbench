@@ -689,7 +689,7 @@ def validate_synthesis_proposal(
     def _gate_categorical_cast() -> GateResult:
         try:
             from genie_space_optimizer.optimization.evaluation import (
-                check_categorical_cast_violations,
+                check_categorical_type_coercion_violations,
             )
         except Exception:
             return GateResult(True, "categorical_cast", "skipped_no_helper")
@@ -704,19 +704,20 @@ def validate_synthesis_proposal(
         if not isinstance(data_profile, dict) or not data_profile:
             return GateResult(True, "categorical_cast", "skipped_no_profile")
         try:
-            violations = check_categorical_cast_violations(sql, data_profile)
+            violations = check_categorical_type_coercion_violations(sql, data_profile)
         except Exception:
             return GateResult(True, "categorical_cast", "skipped_check_error")
         if not violations:
             return GateResult(True, "categorical_cast")
-        col, target, samples = violations[0]
+        col, violation_kind, samples = violations[0]
         sample_repr = ", ".join(repr(s) for s in samples)
         return GateResult(
             False,
             "categorical_cast",
-            f"cast_invalid_input: CAST({col} AS {target.upper()}) "
-            f"would fail — column values are categorical strings "
-            f"({sample_repr}). Use string equality or CASE WHEN.",
+            f"cast_invalid_input: {col} used in {violation_kind} "
+            f"would fail or trigger implicit numeric coercion — column "
+            f"values are categorical strings ({sample_repr}). Use string "
+            f"equality or CASE WHEN.",
         )
 
     # PR 31 — Apply the shared pre-execute repair pipeline once the

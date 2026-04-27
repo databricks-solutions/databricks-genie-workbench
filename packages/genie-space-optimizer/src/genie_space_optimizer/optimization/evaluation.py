@@ -1886,6 +1886,100 @@ def check_categorical_cast_violations(
     return out
 
 
+def check_categorical_type_coercion_violations(
+    sql: str,
+    data_profile: dict | None,
+) -> list[tuple[str, str, list[str]]]:
+    """Task 7 — Detect implicit numeric coercion of categorical strings.
+
+    Wraps :func:`check_categorical_cast_violations` (explicit casts)
+    and additionally surfaces ``WHERE col = 1`` / ``WHERE col IN (0, 1)``
+    shapes against columns whose data profile records non-numeric
+    distinct values (e.g. ``["Y", "N"]``). Databricks SQL injects an
+    implicit cast at planning time which fails as ``CAST_INVALID_INPUT``.
+
+    Returns a list of ``(column, "numeric_comparison" | "<numeric_type>", samples)``
+    tuples. The ``numeric_comparison`` kind is new — explicit-cast
+    violations keep the legacy kind from
+    :func:`check_categorical_cast_violations` so callers that switch
+    over still see the same shape.
+    """
+    out = list(check_categorical_cast_violations(sql, data_profile))
+    if not sql or not isinstance(data_profile, dict) or not data_profile:
+        return out
+    try:
+        import sqlglot
+        from sqlglot import expressions as exp
+    except Exception:
+        return out
+    try:
+        tree = sqlglot.parse_one(sql, read="databricks")
+    except Exception:
+        return out
+
+    seen = {(col.lower(), kind) for col, kind, _samples in out}
+
+    def _column_non_numeric_samples(col):
+        col_name = (getattr(col, "name", "") or "").strip()
+        if not col_name:
+            return None
+        cinfo = _profile_lookup(
+            data_profile,
+            col_name,
+            table_hint=(getattr(col, "table", "") or "").strip() or None,
+        )
+        if not isinstance(cinfo, dict):
+            return None
+        vals = cinfo.get("distinct_values")
+        if not isinstance(vals, (list, tuple)) or not vals:
+            return None
+        non_numeric = [str(v) for v in vals if not _is_numeric_value(v)]
+        if not non_numeric:
+            return None
+        return col_name, non_numeric[:5]
+
+    def _is_numeric_literal(expr):
+        if isinstance(expr, exp.Literal):
+            if expr.is_number:
+                return True
+            if expr.is_string:
+                return _is_numeric_value(expr.this)
+        return False
+
+    comparison_types = (exp.EQ, exp.NEQ, exp.GT, exp.GTE, exp.LT, exp.LTE)
+    for comp in tree.find_all(*comparison_types):
+        left = comp.left
+        right = comp.right
+        for maybe_col, maybe_lit in ((left, right), (right, left)):
+            if isinstance(maybe_col, exp.Column) and _is_numeric_literal(maybe_lit):
+                col_samples = _column_non_numeric_samples(maybe_col)
+                if col_samples is None:
+                    continue
+                col_name, samples = col_samples
+                key = (col_name.lower(), "numeric_comparison")
+                if key not in seen:
+                    seen.add(key)
+                    out.append((col_name, "numeric_comparison", samples))
+
+    for in_expr in tree.find_all(exp.In):
+        col = in_expr.this
+        if not isinstance(col, exp.Column):
+            continue
+        expressions = in_expr.args.get("expressions") or []
+        if not any(_is_numeric_literal(e) for e in expressions):
+            continue
+        col_samples = _column_non_numeric_samples(col)
+        if col_samples is None:
+            continue
+        col_name, samples = col_samples
+        key = (col_name.lower(), "numeric_comparison")
+        if key not in seen:
+            seen.add(key)
+            out.append((col_name, "numeric_comparison", samples))
+
+    return out
+
+
 def apply_pre_execute_repairs(
     sql: str,
     *,

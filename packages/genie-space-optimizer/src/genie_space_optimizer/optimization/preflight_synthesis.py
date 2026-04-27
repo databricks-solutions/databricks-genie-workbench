@@ -2564,6 +2564,42 @@ def run_preflight_example_synthesis(
                         break
                     current_fail = next_fail
 
+            elif (
+                first_fail is not None
+                and first_fail.gate == "categorical_cast"
+            ):
+                # Task 7: a categorical-cast / implicit-coercion
+                # failure is recoverable — surface the data-profile
+                # samples shown in the gate reason, and ask the LLM
+                # to use string equality or CASE WHEN instead. One
+                # retry round; subsequent failures fall through to
+                # the standard rejection path.
+                feedback = (
+                    "Your previous SQL coerced a categorical string column "
+                    "to a numeric type. Use the sampled values shown in "
+                    "the Column value profile. For Y/N flags, compare to "
+                    "string literals such as flag_col = 'Y', or use "
+                    "CASE WHEN flag_col = 'Y' THEN 1 ELSE 0 END."
+                )
+                retry_proposal = synthesize_preflight_candidate(
+                    archetype, slice_, anti_dup_questions,
+                    w=w, llm_caller=llm_caller,
+                    data_profile=data_profile,
+                    retry_feedback=feedback,
+                )
+                if retry_proposal is not None:
+                    proposal = retry_proposal
+                    passed, gate_results = validate_synthesis_proposal(
+                        retry_proposal,
+                        archetype=archetype,
+                        benchmark_corpus=benchmark_corpus,
+                        metadata_snapshot=metadata_snapshot,
+                        blame_set=None,
+                        spark=spark, catalog=catalog, gold_schema=schema,
+                        w=w, warehouse_id=warehouse_id,
+                        identifier_allowlist=slice_allowlist,
+                    )
+
         # Per-gate counters — passed_*  and rejected_by_gate reflect
         # the same ordering as the pipeline so operators can see where
         # the bottleneck is.
