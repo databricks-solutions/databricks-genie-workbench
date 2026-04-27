@@ -19,6 +19,12 @@ class RcaKind(str, Enum):
     CANONICAL_DIMENSION_MISSED = "canonical_dimension_missed"
     MISSING_REQUIRED_DIMENSION = "missing_required_dimension"
     EXTRA_DEFENSIVE_FILTER = "extra_defensive_filter"
+    JOIN_SPEC_MISSING_OR_WRONG = "join_spec_missing_or_wrong"
+    FILTER_LOGIC_MISMATCH = "filter_logic_mismatch"
+    GRAIN_OR_GROUPING_MISMATCH = "grain_or_grouping_mismatch"
+    SYNONYM_OR_ENTITY_MATCH_MISSING = "synonym_or_entity_match_missing"
+    SQL_EXPRESSION_MISSING = "sql_expression_missing"
+    EXAMPLE_SQL_SHAPE_NEEDED = "example_sql_shape_needed"
     UNKNOWN = "unknown"
 
 
@@ -76,17 +82,43 @@ class ThemeAttribution:
 
 
 _RCA_KIND_TO_LEVERS: dict[RcaKind, tuple[int, ...]] = {
-    RcaKind.METRIC_VIEW_ROUTING_CONFUSION: (1, 5),
-    RcaKind.MEASURE_SWAP: (1, 5),
-    RcaKind.CANONICAL_DIMENSION_MISSED: (1, 5),
-    RcaKind.MISSING_REQUIRED_DIMENSION: (1, 5),
+    RcaKind.METRIC_VIEW_ROUTING_CONFUSION: (1, 2, 5),
+    RcaKind.MEASURE_SWAP: (1, 2, 5, 6),
+    RcaKind.CANONICAL_DIMENSION_MISSED: (1, 2, 5, 6),
+    RcaKind.MISSING_REQUIRED_DIMENSION: (1, 5, 6),
     RcaKind.EXTRA_DEFENSIVE_FILTER: (5,),
+    RcaKind.JOIN_SPEC_MISSING_OR_WRONG: (4, 5),
+    RcaKind.FILTER_LOGIC_MISMATCH: (2, 5, 6),
+    RcaKind.GRAIN_OR_GROUPING_MISMATCH: (1, 5, 6),
+    RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING: (1,),
+    RcaKind.SQL_EXPRESSION_MISSING: (6,),
+    RcaKind.EXAMPLE_SQL_SHAPE_NEEDED: (5,),
     RcaKind.UNKNOWN: (5,),
 }
 
 
 def recommended_levers_for_rca_kind(kind: RcaKind) -> tuple[int, ...]:
     return _RCA_KIND_TO_LEVERS.get(kind, (5,))
+
+
+_RCA_KIND_TO_PATCH_FAMILY: dict[RcaKind, str] = {
+    RcaKind.METRIC_VIEW_ROUTING_CONFUSION: "contrastive_metric_routing",
+    RcaKind.MEASURE_SWAP: "contrastive_measure_disambiguation",
+    RcaKind.CANONICAL_DIMENSION_MISSED: "canonical_dimension_guidance",
+    RcaKind.MISSING_REQUIRED_DIMENSION: "required_dimension_guidance",
+    RcaKind.EXTRA_DEFENSIVE_FILTER: "avoid_unrequested_defensive_filters",
+    RcaKind.JOIN_SPEC_MISSING_OR_WRONG: "join_spec_guidance",
+    RcaKind.FILTER_LOGIC_MISMATCH: "filter_logic_guidance",
+    RcaKind.GRAIN_OR_GROUPING_MISMATCH: "grain_grouping_guidance",
+    RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING: "synonym_entity_matching_guidance",
+    RcaKind.SQL_EXPRESSION_MISSING: "sql_expression_guidance",
+    RcaKind.EXAMPLE_SQL_SHAPE_NEEDED: "example_sql_shape_guidance",
+    RcaKind.UNKNOWN: "generic_judge_guidance",
+}
+
+
+def patch_family_for_rca_kind(kind: RcaKind) -> str:
+    return _RCA_KIND_TO_PATCH_FAMILY.get(kind, "generic_judge_guidance")
 
 
 _MEASURE_RE = re.compile(
@@ -139,6 +171,94 @@ def _generated_sql(row: dict) -> str:
     )
 
 
+def _iter_asi_metadata(row: dict) -> Iterable[tuple[str, dict]]:
+    """Yield judge ASI metadata dicts from flat MLflow eval rows."""
+    for key, value in (row or {}).items():
+        if not isinstance(value, dict):
+            continue
+        if not isinstance(key, str):
+            continue
+        if key.endswith("/metadata") or key.endswith(".metadata"):
+            judge_name = key.rsplit("/", 1)[0].rsplit(".", 1)[0]
+            yield judge_name, value
+
+
+def _tuple_of_str(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,) if value.strip() else ()
+    if isinstance(value, Iterable):
+        return tuple(str(v).strip() for v in value if str(v).strip())
+    return ()
+
+
+def _safe_rca_kind(value: Any, failure_type: str = "") -> RcaKind:
+    raw = str(value or "").strip()
+    if raw:
+        try:
+            return RcaKind(raw)
+        except ValueError:
+            pass
+    failure = str(failure_type or "").strip().lower()
+    if failure in {"different_metric", "wrong_measure", "wrong_aggregation"}:
+        return RcaKind.MEASURE_SWAP
+    if failure in {"missing_join", "missing_join_spec", "wrong_join", "wrong_join_spec"}:
+        return RcaKind.JOIN_SPEC_MISSING_OR_WRONG
+    if failure in {"missing_filter", "wrong_filter", "wrong_filter_condition"}:
+        return RcaKind.FILTER_LOGIC_MISMATCH
+    if failure in {"missing_dimension", "wrong_grouping", "different_grain"}:
+        return RcaKind.GRAIN_OR_GROUPING_MISMATCH
+    return RcaKind.UNKNOWN
+
+
+def _asi_finding_from_metadata(
+    qid: str,
+    judge_name: str,
+    metadata: dict,
+) -> RcaFinding | None:
+    failure_type = str(metadata.get("failure_type") or "").strip()
+    if not qid or not failure_type:
+        return None
+    kind = _safe_rca_kind(metadata.get("rca_kind"), failure_type)
+    expected_objects = _tuple_of_str(metadata.get("expected_objects"))
+    actual_objects = _tuple_of_str(metadata.get("actual_objects"))
+    if not expected_objects:
+        expected_objects = _tuple_of_str(metadata.get("blame_set"))
+    detail_parts = [
+        f"judge={judge_name}",
+        f"failure_type={failure_type}",
+    ]
+    if metadata.get("wrong_clause"):
+        detail_parts.append(f"wrong_clause={metadata['wrong_clause']}")
+    if metadata.get("counterfactual_fix"):
+        detail_parts.append(str(metadata["counterfactual_fix"]))
+    recommended = metadata.get("recommended_levers")
+    if isinstance(recommended, Iterable) and not isinstance(recommended, str):
+        levers = tuple(sorted({int(x) for x in recommended if str(x).isdigit()}))
+    else:
+        levers = recommended_levers_for_rca_kind(kind)
+    return RcaFinding(
+        rca_id=_mk_id(qid, kind),
+        question_id=qid,
+        rca_kind=kind,
+        confidence=float(metadata.get("confidence") or 0.75),
+        expected_objects=expected_objects,
+        actual_objects=actual_objects,
+        evidence=(
+            RcaEvidence(
+                source="judge_asi",
+                detail="; ".join(detail_parts),
+                confidence=float(metadata.get("confidence") or 0.75),
+            ),
+        ),
+        recommended_levers=levers or recommended_levers_for_rca_kind(kind),
+        patch_family=str(
+            metadata.get("patch_family")
+            or patch_family_for_rca_kind(kind)
+        ),
+        target_qids=(qid,),
+    )
+
+
 def _measures(sql: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(m.lower() for m in _MEASURE_RE.findall(sql or "")))
 
@@ -181,10 +301,20 @@ def extract_rca_findings_from_row(
     qid = _qid(row)
     expected = _expected_sql(row)
     generated = _generated_sql(row)
-    if not qid or not expected or not generated:
-        return []
 
     findings: list[RcaFinding] = []
+
+    # Judge ASI metadata is always considered first — judges can fire
+    # even when SQL is missing (NL-only failures, planner errors).
+    if qid:
+        for judge_name, metadata in _iter_asi_metadata(row):
+            asi_finding = _asi_finding_from_metadata(qid, judge_name, metadata)
+            if asi_finding is not None:
+                findings.append(asi_finding)
+
+    if not qid or not expected or not generated:
+        return findings
+
     exp_measures = _measures(expected)
     gen_measures = _measures(generated)
     exp_tables = _tables(expected)

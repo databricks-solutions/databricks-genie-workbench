@@ -155,6 +155,69 @@ def test_regression_insight_converts_to_rca_finding():
     assert findings[0].patch_family == "contrastive_measure_disambiguation"
 
 
+def test_extract_rca_findings_uses_judge_asi_metadata() -> None:
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        extract_rca_findings_from_row,
+    )
+
+    row = {
+        "question_id": "q_metric",
+        "expected_sql": "SELECT MEASURE(avg_txn_day) FROM mv_esr_store_sales",
+        "generated_sql": "SELECT MEASURE(avg_txn_cy_day) FROM mv_7now_store_sales",
+        "semantic_equivalence/metadata": {
+            "failure_type": "different_metric",
+            "wrong_clause": "SELECT",
+            "blame_set": ["avg_txn_cy_day"],
+            "counterfactual_fix": (
+                "Use avg_txn_day from mv_esr_store_sales instead of "
+                "avg_txn_cy_day from mv_7now_store_sales."
+            ),
+            "expected_objects": ["mv_esr_store_sales", "avg_txn_day"],
+            "actual_objects": ["mv_7now_store_sales", "avg_txn_cy_day"],
+            "rca_kind": "metric_view_routing_confusion",
+            "patch_family": "contrastive_metric_routing",
+            "recommended_levers": [1, 2, 5],
+            "confidence": 0.92,
+        },
+    }
+
+    findings = extract_rca_findings_from_row(row, metadata_snapshot={})
+
+    assert any(f.rca_kind is RcaKind.METRIC_VIEW_ROUTING_CONFUSION for f in findings)
+    finding = next(f for f in findings if f.rca_kind is RcaKind.METRIC_VIEW_ROUTING_CONFUSION)
+    assert finding.confidence == 0.92
+    assert "mv_esr_store_sales" in finding.expected_objects
+    assert "avg_txn_cy_day" in finding.actual_objects
+    assert finding.recommended_levers == (1, 2, 5)
+    assert any(e.source == "judge_asi" for e in finding.evidence)
+    assert any("Use avg_txn_day" in e.detail for e in finding.evidence)
+
+
+def test_extract_rca_findings_reads_any_judge_metadata_column() -> None:
+    from genie_space_optimizer.optimization.rca import extract_rca_findings_from_row
+
+    row = {
+        "question_id": "q_join",
+        "generated_sql": "SELECT * FROM orders",
+        "expected_sql": "SELECT * FROM orders JOIN customers USING (customer_id)",
+        "join_correctness/metadata": {
+            "failure_type": "missing_join_spec",
+            "wrong_clause": "FROM",
+            "blame_set": ["orders.customer_id", "customers.customer_id"],
+            "counterfactual_fix": "Add join spec between orders and customers on customer_id.",
+            "expected_objects": ["orders.customer_id", "customers.customer_id"],
+            "actual_objects": [],
+            "confidence": 0.81,
+        },
+    }
+
+    findings = extract_rca_findings_from_row(row, metadata_snapshot={})
+
+    assert any(f.patch_family == "join_spec_guidance" for f in findings)
+    assert any(4 in f.recommended_levers for f in findings)
+
+
 def test_build_rca_ledger_dedupes_sql_and_regression_findings_for_same_rca():
     from genie_space_optimizer.optimization.rca import build_rca_ledger
 
