@@ -273,6 +273,24 @@ def test_clean_proposals_pass(
     )
 
 
+def test_rca_driven_example_sql_still_rejected_when_it_matches_benchmark(corpus) -> None:
+    proposal = {
+        "patch_type": "add_example_sql",
+        "example_question": "Original RCA-generated prompt",
+        "example_sql": (
+            "SELECT category, SUM(revenue) FROM sales "
+            "WHERE quarter = 'Q3' GROUP BY category"
+        ),
+        "source": "rca_theme",
+        "rca_id": "rca_shape",
+    }
+
+    is_leak, reason = is_benchmark_leak(proposal, "add_example_sql", corpus)
+
+    assert is_leak is True
+    assert reason
+
+
 def test_unknown_patch_type_does_not_trigger() -> None:
     # New patch types that don't persist inference-visible content must not
     # be checked (false positives are costly). The owner adds them to

@@ -1024,3 +1024,129 @@ def synthesize_example_sqls(
     if budget is not None:
         budget.record_success(afs.get("cluster_id", "?"), archetype.name)
     return proposal
+
+
+def _rca_theme_field(theme: Any, key: str, default: Any = "") -> Any:
+    if isinstance(theme, dict):
+        return theme.get(key, default)
+    return getattr(theme, key, default)
+
+
+def afs_from_rca_theme(theme: Any) -> dict:
+    """Build an AFS-like synthesis request from an RCA theme.
+
+    This intentionally excludes benchmark question IDs, expected SQL,
+    generated SQL, and raw evidence text. The synthesis prompt may use
+    RCA shape and blamed objects, but never benchmark answers.
+    """
+    patches = list(_rca_theme_field(theme, "patches", ()) or ())
+    synth_patch = next(
+        (
+            p for p in patches
+            if isinstance(p, dict) and p.get("type") == "request_example_sql_synthesis"
+        ),
+        {},
+    )
+    blame = (
+        synth_patch.get("blame_set")
+        or list(_rca_theme_field(theme, "touched_objects", ()) or ())
+    )
+    return {
+        "cluster_id": str(_rca_theme_field(theme, "rca_id", "rca_theme")),
+        "failure_type": str(
+            synth_patch.get("root_cause") or "example_sql_shape_needed"
+        ),
+        "blame_set": [str(x) for x in blame if str(x).strip()][:8],
+        "suggested_fix_summary": str(
+            synth_patch.get("intent")
+            or "Generate an original example SQL for this RCA shape."
+        ),
+        "source": "rca_theme",
+    }
+
+
+def synthesize_example_sqls_for_rca(
+    theme: Any,
+    metadata_snapshot: dict,
+    benchmark_corpus: Any,
+    *,
+    archetype: Any | None = None,
+    budget: SynthesisBudget | None = None,
+    existing_example_sql_count: int = 0,
+    w: Any = None,
+    spark: Any = None,
+    catalog: str = "",
+    gold_schema: str = "",
+    warehouse_id: str = "",
+    llm_caller: Callable[[str], str] | None = None,
+) -> dict | None:
+    """Synthesize an original example SQL from an RCA theme.
+
+    Uses the same validator as normal synthesis. This is only a request
+    bridge; it does not persist anything and does not bypass leakage
+    checks.
+    """
+    afs = afs_from_rca_theme(theme)
+    from genie_space_optimizer.optimization.archetypes import pick_archetype
+
+    if archetype is None:
+        archetype = pick_archetype(afs, metadata_snapshot)
+    if archetype is None:
+        return None
+
+    try:
+        from genie_space_optimizer.optimization.optimizer import (
+            _build_identifier_allowlist,
+            _format_identifier_allowlist,
+        )
+        allowlist = _format_identifier_allowlist(
+            _build_identifier_allowlist(metadata_snapshot),
+        )
+    except Exception:
+        allowlist = "(identifier allowlist unavailable)"
+
+    prompt = render_synthesis_prompt(afs, archetype, allowlist)
+    if llm_caller is not None:
+        raw = llm_caller(prompt)
+    else:
+        from genie_space_optimizer.optimization.optimizer import _traced_llm_call
+        try:
+            raw, _ = _traced_llm_call(
+                w,
+                "You are a SQL example author.",
+                prompt,
+                span_name="synthesize_example_sql_for_rca",
+            )
+        except Exception:
+            logger.warning("RCA example SQL synthesis LLM call failed", exc_info=True)
+            return None
+
+    proposal = _extract_json_proposal(raw) or {}
+    proposal.setdefault("patch_type", archetype.patch_type)
+    passed, gate_results = validate_synthesis_proposal(
+        proposal,
+        archetype=archetype,
+        benchmark_corpus=benchmark_corpus,
+        metadata_snapshot=metadata_snapshot,
+        blame_set=afs.get("blame_set"),
+        spark=spark,
+        catalog=catalog,
+        gold_schema=gold_schema,
+        w=w,
+        warehouse_id=warehouse_id,
+    )
+    if not passed:
+        if budget is not None:
+            budget.record_failure()
+        return None
+    proposal["rca_id"] = str(_rca_theme_field(theme, "rca_id", ""))
+    proposal["patch_family"] = str(_rca_theme_field(theme, "patch_family", ""))
+    proposal["target_qids"] = list(_rca_theme_field(theme, "target_qids", ()) or ())
+    proposal["source"] = "rca_theme"
+    proposal["provenance"] = {
+        "source": "rca_theme_synthesis",
+        "rca_id": proposal["rca_id"],
+        "patch_family": proposal["patch_family"],
+        "archetype": archetype.name,
+    }
+    return proposal
