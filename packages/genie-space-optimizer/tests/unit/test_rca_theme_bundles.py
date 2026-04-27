@@ -435,4 +435,6 @@ def test_rca_theme_selector_flag_off_returns_empty_strategy_context():
         _format_rca_themes_for_strategy,
     )
 
-    assert _format_rca_themes_for_strategy([], []) == "(No typed RCA themes available.)"
+    text = _format_rca_themes_for_strategy([], [])
+    assert "## Typed RCA Themes" in text
+    assert "(No typed RCA themes available.)" in text

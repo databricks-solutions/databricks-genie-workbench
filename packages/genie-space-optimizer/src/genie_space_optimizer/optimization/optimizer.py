@@ -4280,6 +4280,25 @@ def _semantics_is_metric_view_id(metadata_snapshot: dict, identifier: str) -> bo
         return False
 
 
+def _semantics_direct_join_block_reason(
+    metadata_snapshot: dict,
+    identifier: str,
+) -> str | None:
+    """Return why direct joins are blocked for ``identifier``, if known."""
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            direct_join_block_reason as _block_reason,
+        )
+    except Exception:
+        return None
+    if not identifier:
+        return None
+    try:
+        return _block_reason(metadata_snapshot, identifier)
+    except Exception:
+        return None
+
+
 def filter_join_specs_by_semantics(
     metadata_snapshot: dict,
     join_specs: list[dict],
@@ -4317,18 +4336,28 @@ def filter_join_specs_by_semantics(
         else:
             right_id = spec.get("right_table_name", "") or ""
 
-        left_is_mv = _semantics_is_metric_view_id(metadata_snapshot, left_id)
-        right_is_mv = _semantics_is_metric_view_id(metadata_snapshot, right_id)
-        if left_is_mv or right_is_mv:
+        left_block_reason = _semantics_direct_join_block_reason(
+            metadata_snapshot, left_id,
+        )
+        right_block_reason = _semantics_direct_join_block_reason(
+            metadata_snapshot, right_id,
+        )
+        if left_block_reason or right_block_reason:
             if counters is not None:
-                if left_is_mv:
-                    counters["joins_skipped_metric_view_left"] = (
-                        counters.get("joins_skipped_metric_view_left", 0) + 1
+                if left_block_reason:
+                    key = (
+                        "joins_skipped_metric_view_left"
+                        if left_block_reason == "metric_view"
+                        else "joins_skipped_unresolved_asset_left"
                     )
-                if right_is_mv:
-                    counters["joins_skipped_metric_view_right"] = (
-                        counters.get("joins_skipped_metric_view_right", 0) + 1
+                    counters[key] = counters.get(key, 0) + 1
+                if right_block_reason:
+                    key = (
+                        "joins_skipped_metric_view_right"
+                        if right_block_reason == "metric_view"
+                        else "joins_skipped_unresolved_asset_right"
                     )
+                    counters[key] = counters.get(key, 0) + 1
             if skipped_examples is not None and len(skipped_examples) < 5:
                 skipped_examples.append((left_id, right_id))
             continue
@@ -4535,26 +4564,30 @@ def discover_join_candidates(
             len(feedback_pairs), len(soft_signal_clusters),
         )
 
-    # PR 29 — drop hint pairs whose either side is a known metric view.
-    # ``_semantics_is_metric_view_id`` returns False when semantics are
-    # unavailable, so this is a no-op for snapshots that pre-date the
-    # asset-semantics contract. We also count and log skipped pairs so
-    # the join-discovery banner explains *why* the count dropped.
+    # Drop hint pairs whose either side is unsafe for a direct join. The
+    # semantics helper returns no block reason when semantics are unavailable,
+    # so this remains a no-op for snapshots that pre-date the contract.
     pre_filter = len(hints)
     skipped_left = 0
     skipped_right = 0
+    skipped_unresolved_left = 0
+    skipped_unresolved_right = 0
     skipped_examples: list[tuple[str, str]] = []
     filtered_hints: list[dict] = []
     for h in hints:
         lt = h.get("left_table", "") if isinstance(h, dict) else ""
         rt = h.get("right_table", "") if isinstance(h, dict) else ""
-        l_mv = _semantics_is_metric_view_id(metadata_snapshot, lt)
-        r_mv = _semantics_is_metric_view_id(metadata_snapshot, rt)
-        if l_mv or r_mv:
-            if l_mv:
+        l_reason = _semantics_direct_join_block_reason(metadata_snapshot, lt)
+        r_reason = _semantics_direct_join_block_reason(metadata_snapshot, rt)
+        if l_reason or r_reason:
+            if l_reason == "metric_view":
                 skipped_left += 1
-            if r_mv:
+            elif l_reason:
+                skipped_unresolved_left += 1
+            if r_reason == "metric_view":
                 skipped_right += 1
+            elif r_reason:
+                skipped_unresolved_right += 1
             if len(skipped_examples) < 5:
                 skipped_examples.append((lt, rt))
             continue
@@ -4563,9 +4596,11 @@ def discover_join_candidates(
 
     if pre_filter != len(hints):
         logger.info(
-            "Join discovery: dropped %d MV-touching hint pair(s) "
-            "(left=%d, right=%d); examples=%s",
+            "Join discovery: dropped %d direct-join-unsafe hint pair(s) "
+            "(mv_left=%d, mv_right=%d, unresolved_left=%d, unresolved_right=%d); "
+            "examples=%s",
             pre_filter - len(hints), skipped_left, skipped_right,
+            skipped_unresolved_left, skipped_unresolved_right,
             skipped_examples,
         )
 
@@ -6995,18 +7030,50 @@ def _format_rca_themes_for_strategy(
     rca_themes: list[Any],
     conflicts: list[Any],
 ) -> str:
+    lines: list[str] = ["## Typed RCA Themes"]
     if not rca_themes:
-        return "(No typed RCA themes available.)"
-    lines = ["## Typed RCA Themes"]
-    for idx, theme in enumerate(rca_themes[:8], 1):
+        lines.append("(No typed RCA themes available.)")
+    for idx, theme in enumerate((rca_themes or [])[:8], 1):
         rca_id = _field(theme, "rca_id", "")
+        rca_kind = _field(theme, "rca_kind", "")
+        if hasattr(rca_kind, "value"):
+            rca_kind = rca_kind.value
         patch_family = _field(theme, "patch_family", "")
         target_qids = _field(theme, "target_qids", ())
         touched = _field(theme, "touched_objects", ())
+        confidence = _field(theme, "confidence", 0.0)
+        evidence = str(_field(theme, "evidence_summary", "") or "")
+        patches = list(_field(theme, "patches", ()) or ())
+        levers = sorted({
+            int(p.get("lever"))
+            for p in patches
+            if isinstance(p, dict) and str(p.get("lever", "")).isdigit()
+        })
         lines.append(
-            f"{idx}. {rca_id} family={patch_family} "
+            f"{idx}. {rca_id} kind={rca_kind} family={patch_family} "
+            f"confidence={float(confidence):.2f} recommended_levers={levers} "
             f"targets={list(target_qids)} touched={list(touched)[:8]}"
         )
+        if evidence:
+            lines.append(f"   evidence={evidence[:500]}")
+        for patch in patches[:6]:
+            if not isinstance(patch, dict):
+                continue
+            ptype = patch.get("type", "")
+            lever = patch.get("lever", "")
+            intent = patch.get("intent", "")
+            target = (
+                patch.get("target")
+                or patch.get("target_object")
+                or patch.get("column")
+                or patch.get("table")
+                or patch.get("root_cause")
+                or ""
+            )
+            lines.append(
+                f"   - lever={lever} patch_type={ptype} target={target} "
+                f"intent={str(intent)[:240]}"
+            )
     if conflicts:
         lines.append("\n## RCA Theme Conflict Matrix")
         for conflict in conflicts[:8]:
