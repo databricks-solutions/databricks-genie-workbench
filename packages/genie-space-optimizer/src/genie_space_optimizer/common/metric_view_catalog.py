@@ -42,6 +42,7 @@ OUTCOME_NO_ENVELOPE = "no_envelope"
 OUTCOME_NO_VIEW_TEXT = "no_view_text"
 OUTCOME_YAML_PARSE_ERROR = "yaml_parse_error"
 OUTCOME_NOT_MV_SHAPE = "not_mv_shape"
+OUTCOME_NO_WAREHOUSE = "no_warehouse"
 
 # PR 24 — multi-signal classification. ``OUTCOME_DETECTED`` is kept as a
 # legacy umbrella alias (= ``detected_via_yaml``) so older test fixtures
@@ -127,6 +128,26 @@ def detect_metric_views_via_catalog_with_outcomes(
             continue
         fq_lower = f"{cat}.{sch}.{name}".lower()
         fq_quoted = ".".join(f"`{p}`" for p in (cat, sch, name))
+
+        # Task 3 — strict no-warehouse branch. Without a SQL warehouse
+        # the only metadata path is Spark Connect, which on this
+        # runtime cannot expose metric-view metadata. Recording the
+        # outcome explicitly prevents a silent ``MVs detected: 0``
+        # masking a missing warehouse id. Tests inject ``exec_sql``
+        # directly and bypass this branch.
+        if exec_sql is None and not (w and warehouse_id):
+            outcomes[fq_lower] = OUTCOME_NO_WAREHOUSE
+            if diagnostic_samples is not None:
+                diagnostic_samples[fq_lower] = (
+                    "warehouse_id missing; metric-view catalog detection "
+                    "requires SQL warehouse DESCRIBE TABLE EXTENDED AS JSON"
+                )
+            logger.info(
+                "MV catalog detection: no SQL warehouse for %s "
+                "(treating as non-MV; Spark metadata fallback disabled)",
+                fq_lower,
+            )
+            continue
 
         envelope: dict[str, Any] | None = None
         try:
@@ -528,6 +549,7 @@ def summarize_outcomes(outcomes: dict[str, str]) -> dict[str, int]:
         OUTCOME_NO_VIEW_TEXT,
         OUTCOME_YAML_PARSE_ERROR,
         OUTCOME_NOT_MV_SHAPE,
+        OUTCOME_NO_WAREHOUSE,
     )
     counts: dict[str, int] = {k: 0 for k in detected_signal_keys}
     counts.update({k: 0 for k in other_keys})
@@ -591,35 +613,18 @@ def _describe_metric_view_fallback(
     schema: str,
     exec_sql: Any,
 ) -> dict[str, Any] | None:
-    """Run ``DESCRIBE EXTENDED <fq>`` (no ``AS JSON``) and return an
-    envelope-shaped dict compatible with the JSON path.
+    """Run ``DESCRIBE TABLE EXTENDED <fq>`` and parse legacy key-value rows.
 
-    Best-effort — sets ``spark.databricks.metadata.metricview.enabled``
-    so MV-aware columns (``Type``, ``Language``, ``View Text``) are
-    surfaced when the engine honours that flag, then parses the standard
-    three-column ``[col_name, data_type, comment]`` result. Anything we
-    can't parse degrades gracefully: the caller treats a ``None`` return
-    as a fallback failure and falls through to the regular
-    ``describe_error`` path.
+    This fallback intentionally does not set
+    ``spark.databricks.metadata.metricview.enabled``. Spark Connect
+    environments can reject that config with CONFIG_NOT_AVAILABLE,
+    which pollutes run logs and still leaves detection blind. Metric-view
+    metadata must come from ``DESCRIBE ... AS JSON`` through the SQL
+    warehouse whenever possible.
 
     Returns the envelope dict on success, or ``None`` when the fallback
     DESCRIBE itself fails or yields nothing actionable.
     """
-    # Best-effort metric-view metadata flag. Swallow on failure — the
-    # fallback DESCRIBE itself will still return the standard structural
-    # rows even without it (just minus ``Type`` / ``Language``).
-    try:
-        if spark is not None and hasattr(spark, "conf"):
-            spark.conf.set(
-                "spark.databricks.metadata.metricview.enabled", "true",
-            )
-    except Exception:  # noqa: BLE001 — best-effort knob, never fatal
-        logger.debug(
-            "MV catalog detection: could not set "
-            "spark.databricks.metadata.metricview.enabled (non-fatal)",
-            exc_info=True,
-        )
-
     try:
         df = exec_sql(
             f"DESCRIBE EXTENDED {fq_quoted}",
