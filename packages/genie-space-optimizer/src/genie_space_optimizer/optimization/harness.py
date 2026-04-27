@@ -5225,6 +5225,8 @@ def _attach_rca_theme_attribution(
                 "target_qids": list(a.target_qids),
                 "fixed_qids": list(a.fixed_qids),
                 "still_failing_qids": list(a.still_failing_qids),
+                "target_regressed_qids": list(a.target_regressed_qids),
+                "global_regressed_qids": list(a.global_regressed_qids),
                 "regressed_qids": list(a.regressed_qids),
             }
             for a in attributions

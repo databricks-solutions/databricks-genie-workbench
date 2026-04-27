@@ -108,7 +108,38 @@ def test_attribute_theme_outcome_partitions_fixed_still_failing_and_regressed_qi
 
     assert out[0].fixed_qids == ("retail_010",)
     assert out[0].still_failing_qids == ("retail_027",)
-    assert out[0].regressed_qids == ("retail_003",)
+    assert out[0].target_regressed_qids == ()
+    assert out[0].global_regressed_qids == ("retail_003",)
+    assert out[0].regressed_qids == ()
+
+
+def test_attribute_theme_outcome_separates_target_and_global_regressions():
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        RcaPatchTheme,
+        attribute_theme_outcomes,
+    )
+
+    themes = [
+        RcaPatchTheme(
+            rca_id="rca_q1",
+            rca_kind=RcaKind.MEASURE_SWAP,
+            patch_family="contrastive_measure_disambiguation",
+            patches=(),
+            target_qids=("q1",),
+            touched_objects=("m1",),
+        )
+    ]
+
+    out = attribute_theme_outcomes(
+        themes,
+        prev_failure_qids={"q1"},
+        new_failure_qids={"q3"},
+    )
+
+    assert out[0].fixed_qids == ("q1",)
+    assert out[0].target_regressed_qids == ()
+    assert out[0].global_regressed_qids == ("q3",)
 
 
 def test_metric_view_routing_confusion_does_not_recommend_lever6():

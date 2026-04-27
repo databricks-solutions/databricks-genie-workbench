@@ -70,6 +70,8 @@ class ThemeAttribution:
     target_qids: tuple[str, ...]
     fixed_qids: tuple[str, ...] = ()
     still_failing_qids: tuple[str, ...] = ()
+    target_regressed_qids: tuple[str, ...] = ()
+    global_regressed_qids: tuple[str, ...] = ()
     regressed_qids: tuple[str, ...] = ()
 
 
@@ -491,17 +493,20 @@ def attribute_theme_outcomes(
     out: list[ThemeAttribution] = []
     prev_failures = {str(q) for q in (prev_failure_qids or set())}
     new_failures = {str(q) for q in (new_failure_qids or set())}
-    regressions = sorted(new_failures - prev_failures)
+    global_regressions = sorted(new_failures - prev_failures)
     for theme in themes or []:
         targets = {str(q) for q in (_theme_field(theme, "target_qids", ()) or ())}
         fixed = sorted(targets & prev_failures - new_failures)
         still = sorted(targets & new_failures)
+        target_regressions = sorted(targets & (new_failures - prev_failures))
         out.append(ThemeAttribution(
             rca_id=str(_theme_field(theme, "rca_id", "")),
             target_qids=tuple(sorted(targets)),
             fixed_qids=tuple(fixed),
             still_failing_qids=tuple(still),
-            regressed_qids=tuple(regressions),
+            target_regressed_qids=tuple(target_regressions),
+            global_regressed_qids=tuple(global_regressions),
+            regressed_qids=tuple(target_regressions),
         ))
     return out
 
