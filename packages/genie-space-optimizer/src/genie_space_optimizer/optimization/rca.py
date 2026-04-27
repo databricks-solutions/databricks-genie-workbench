@@ -445,6 +445,34 @@ def extract_rca_findings_from_row(
     return findings
 
 
+def _patch_intent(base: dict, *, ptype: str, lever: int, intent: str, **fields: Any) -> dict:
+    return {
+        **base,
+        "type": ptype,
+        "lever": lever,
+        "intent": intent,
+        **{k: v for k, v in fields.items() if v not in (None, "", [], {})},
+    }
+
+
+def _split_table_column(obj: str) -> tuple[str, str]:
+    parts = str(obj or "").split(".")
+    if len(parts) >= 2:
+        return parts[-2], parts[-1]
+    return "", str(obj or "")
+
+
+def _example_synthesis_intent(base: dict, finding: "RcaFinding", root_cause: str) -> dict:
+    return _patch_intent(
+        base,
+        ptype="request_example_sql_synthesis",
+        lever=5,
+        intent="synthesize original non-benchmark example SQL for this RCA shape",
+        root_cause=root_cause,
+        blame_set=list(finding.expected_objects or finding.actual_objects),
+    )
+
+
 def _theme_patch_base(f: RcaFinding) -> dict:
     return {
         "rca_id": f.rca_id,
@@ -530,15 +558,36 @@ def compile_patch_themes(
 
         elif f.rca_kind is RcaKind.MEASURE_SWAP:
             for obj in f.expected_objects:
-                patches.append({
-                    **base,
-                    "type": "update_column_description",
-                    "column": obj,
-                    "lever": 1,
-                    "intent": (
-                        "strengthen intended measure description and synonyms"
-                    ),
-                })
+                table, column = _split_table_column(obj)
+                patches.append(_patch_intent(
+                    base,
+                    ptype="update_column_description",
+                    lever=1,
+                    intent="strengthen intended measure description and contrast it with confused measures",
+                    table=table,
+                    column=column or obj,
+                ))
+                patches.append(_patch_intent(
+                    base,
+                    ptype="add_column_synonym",
+                    lever=1,
+                    intent="add business aliases that route users to the intended measure",
+                    table=table,
+                    column=column or obj,
+                ))
+                patches.append(_patch_intent(
+                    base,
+                    ptype="add_sql_snippet_measure",
+                    lever=6,
+                    intent="define reusable measure expression for the intended metric",
+                    target_object=obj,
+                    snippet_type="measure",
+                ))
+            patches.append(_example_synthesis_intent(
+                base,
+                f,
+                root_cause="wrong_measure",
+            ))
 
         elif f.rca_kind is RcaKind.CANONICAL_DIMENSION_MISSED:
             for obj in f.expected_objects:
@@ -573,6 +622,85 @@ def compile_patch_themes(
                 "lever": 5,
                 "intent": "do not add IS NOT NULL filters unless requested",
             })
+
+        elif f.rca_kind is RcaKind.JOIN_SPEC_MISSING_OR_WRONG:
+            patches.append(_patch_intent(
+                base,
+                ptype="add_join_spec",
+                lever=4,
+                intent="add or repair join relationship required by the failed question pattern",
+                expected_objects=list(f.expected_objects),
+            ))
+            patches.append(_example_synthesis_intent(
+                base,
+                f,
+                root_cause="missing_join_spec",
+            ))
+
+        elif f.rca_kind is RcaKind.FILTER_LOGIC_MISMATCH:
+            patches.append(_patch_intent(
+                base,
+                ptype="add_sql_snippet_filter",
+                lever=6,
+                intent="define reusable filter expression for the corrected condition",
+                expected_objects=list(f.expected_objects),
+                snippet_type="filter",
+            ))
+            patches.append(_patch_intent(
+                base,
+                ptype="add_instruction",
+                lever=5,
+                target="QUERY CONSTRUCTION",
+                instruction_section="QUERY CONSTRUCTION",
+                intent="clarify when this filter should and should not be applied",
+            ))
+            patches.append(_example_synthesis_intent(base, f, root_cause="missing_filter"))
+
+        elif f.rca_kind is RcaKind.GRAIN_OR_GROUPING_MISMATCH:
+            for obj in f.expected_objects:
+                table, column = _split_table_column(obj)
+                patches.append(_patch_intent(
+                    base,
+                    ptype="update_column_description",
+                    lever=1,
+                    intent="clarify required grain and grouping semantics",
+                    table=table,
+                    column=column or obj,
+                ))
+            patches.append(_patch_intent(
+                base,
+                ptype="add_sql_snippet_expression",
+                lever=6,
+                intent="define reusable grouping expression or projection pattern",
+                expected_objects=list(f.expected_objects),
+                snippet_type="expression",
+            ))
+            patches.append(_example_synthesis_intent(base, f, root_cause="wrong_grouping"))
+
+        elif f.rca_kind is RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING:
+            for obj in f.expected_objects:
+                table, column = _split_table_column(obj)
+                patches.append(_patch_intent(
+                    base,
+                    ptype="add_column_synonym",
+                    lever=1,
+                    intent="add missing business synonym or entity-match hint",
+                    table=table,
+                    column=column or obj,
+                ))
+
+        elif f.rca_kind is RcaKind.SQL_EXPRESSION_MISSING:
+            patches.append(_patch_intent(
+                base,
+                ptype="add_sql_snippet_expression",
+                lever=6,
+                intent="define reusable SQL expression primitive for this RCA",
+                expected_objects=list(f.expected_objects),
+                snippet_type="expression",
+            ))
+
+        elif f.rca_kind is RcaKind.EXAMPLE_SQL_SHAPE_NEEDED:
+            patches.append(_example_synthesis_intent(base, f, root_cause="wide_vs_long_shape"))
 
         if not patches:
             continue

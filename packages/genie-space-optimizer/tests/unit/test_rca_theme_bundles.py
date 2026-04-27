@@ -234,6 +234,91 @@ def test_rca_theme_levers_override_wrong_aggregation_coarse_route():
     assert {p["lever"] for p in theme.patches} == {1}
 
 
+def test_compile_measure_swap_theme_emits_metadata_synonym_sql_and_example_intents():
+    from genie_space_optimizer.optimization.rca import (
+        RcaFinding,
+        RcaKind,
+        compile_patch_themes,
+        recommended_levers_for_rca_kind,
+    )
+
+    finding = RcaFinding(
+        rca_id="rca_measure_swap",
+        question_id="q_measure",
+        rca_kind=RcaKind.MEASURE_SWAP,
+        confidence=0.86,
+        expected_objects=("gross_sales",),
+        actual_objects=("net_sales",),
+        evidence=(),
+        recommended_levers=recommended_levers_for_rca_kind(RcaKind.MEASURE_SWAP),
+        patch_family="contrastive_measure_disambiguation",
+        target_qids=("q_measure",),
+    )
+
+    theme = compile_patch_themes([finding], metadata_snapshot={})[0]
+    patch_types = {p["type"] for p in theme.patches}
+
+    assert "update_column_description" in patch_types
+    assert "add_column_synonym" in patch_types
+    assert "add_sql_snippet_measure" in patch_types
+    assert "request_example_sql_synthesis" in patch_types
+    assert {1, 5, 6}.issubset({p["lever"] for p in theme.patches})
+
+
+def test_compile_join_theme_emits_join_spec_and_example_intents():
+    from genie_space_optimizer.optimization.rca import (
+        RcaFinding,
+        RcaKind,
+        compile_patch_themes,
+        recommended_levers_for_rca_kind,
+    )
+
+    finding = RcaFinding(
+        rca_id="rca_join",
+        question_id="q_join",
+        rca_kind=RcaKind.JOIN_SPEC_MISSING_OR_WRONG,
+        confidence=0.83,
+        expected_objects=("orders.customer_id", "customers.customer_id"),
+        actual_objects=(),
+        recommended_levers=recommended_levers_for_rca_kind(
+            RcaKind.JOIN_SPEC_MISSING_OR_WRONG
+        ),
+        patch_family="join_spec_guidance",
+        target_qids=("q_join",),
+    )
+
+    theme = compile_patch_themes([finding], metadata_snapshot={})[0]
+    patch_types = {p["type"] for p in theme.patches}
+
+    assert "add_join_spec" in patch_types
+    assert "request_example_sql_synthesis" in patch_types
+    assert {4, 5}.issubset({p["lever"] for p in theme.patches})
+
+
+def test_compile_extra_defensive_filter_stays_instruction_only():
+    from genie_space_optimizer.optimization.rca import (
+        RcaFinding,
+        RcaKind,
+        compile_patch_themes,
+    )
+
+    finding = RcaFinding(
+        rca_id="rca_defensive_filter",
+        question_id="q_filter",
+        rca_kind=RcaKind.EXTRA_DEFENSIVE_FILTER,
+        confidence=0.8,
+        actual_objects=("IS NOT NULL",),
+        recommended_levers=(5,),
+        patch_family="avoid_unrequested_defensive_filters",
+        target_qids=("q_filter",),
+    )
+
+    theme = compile_patch_themes([finding], metadata_snapshot={})[0]
+
+    assert [p["type"] for p in theme.patches] == ["add_instruction"]
+    assert [p["lever"] for p in theme.patches] == [5]
+
+
 def test_select_compatible_themes_keeps_non_conflicting_high_confidence_themes():
     from genie_space_optimizer.optimization.rca import (
         RcaKind,
