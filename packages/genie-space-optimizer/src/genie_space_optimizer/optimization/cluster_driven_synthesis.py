@@ -164,6 +164,12 @@ class ClusterContext:
     # section the pre-flight path now enjoys. Optional so legacy call
     # sites without a profile continue to render ``(no profile available)``.
     data_profile: dict | None = None
+    # Regression-mining lane: optional pre-rendered hint block (output
+    # of ``render_strategist_hint_block``). When set, prepended ahead of
+    # the AFS block by ``render_cluster_driven_prompt``. Empty string is
+    # treated as absent so the existing byte-equivalence contract for
+    # the no-AFS / no-hints path is preserved.
+    regression_mining_hints: str = ""
 
     def to_identifier_allowlist(self) -> str:
         return self.asset_slice.to_identifier_allowlist()
@@ -209,13 +215,23 @@ def render_cluster_driven_prompt(
         retry_feedback=retry_feedback,
     )
     afs_block = render_afs_block(context.afs)
-    if not afs_block:
+    hints = (context.regression_mining_hints or "").strip()
+    # Byte-equivalence contract: with neither AFS nor hints, the
+    # pre-flight prompt renders verbatim. Hints are placed AFTER the
+    # AFS block so the existing AFS test fixtures stay valid; the
+    # strategist sees AFS first (cluster-specific) then mining
+    # cross-iteration lessons.
+    prefix_parts: list[str] = []
+    if afs_block:
+        prefix_parts.append(
+            "## Failure signature (AFS) — this example must address this failure\n"
+            f"{afs_block}"
+        )
+    if hints:
+        prefix_parts.append(hints)
+    if not prefix_parts:
         return base
-    return (
-        "## Failure signature (AFS) — this example must address this failure\n"
-        f"{afs_block}\n\n"
-        + base
-    )
+    return "\n\n".join(prefix_parts) + "\n\n" + base
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -583,11 +599,17 @@ def run_cluster_driven_synthesis_for_single_cluster(
         )
         return None
     slice_, archetype = derived
+    # Regression-mining hints are a leak-safe pre-rendered string that
+    # the harness threads through the snapshot when the
+    # ``GSO_ENABLE_REGRESSION_MINING_STRATEGIST`` flag is on. Default
+    # ("") reproduces the legacy byte-equivalent prompt path.
+    _rm_hints = metadata_snapshot.get("_regression_mining_hints") or ""
     context = ClusterContext(
         afs=afs,
         asset_slice=slice_,
         cluster_id=cluster_id,
         data_profile=metadata_snapshot.get("_data_profile") or None,
+        regression_mining_hints=str(_rm_hints) if isinstance(_rm_hints, str) else "",
     )
 
     # Bump budget counter — we're about to issue an LLM call.

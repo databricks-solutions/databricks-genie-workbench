@@ -466,6 +466,53 @@ class TestLeakSafety:
         )
         assert via_cluster == pre
 
+    def test_regression_mining_hints_prepended_when_provided(self):
+        """When the harness threads non-empty mining hints through
+        ``ClusterContext.regression_mining_hints``, the rendered prompt
+        must include them above the pre-flight prompt body. Empty
+        hints preserve byte-equivalence (covered by the test above)."""
+        from genie_space_optimizer.optimization.archetypes import ARCHETYPES
+        slice_ = AssetSlice(tables=[_mk_table("cat.sch.fact_sales")])
+        hints = (
+            "## Lessons from rolled-back iterations (regression mining)\n"
+            "- column_confusion in WHERE: prefer `is_month_to_date` over "
+            "`use_mtdate_flag`; contrastive fix → update_column_description."
+        )
+        ctx = ClusterContext(
+            afs={}, asset_slice=slice_,
+            regression_mining_hints=hints,
+        )
+        rendered = render_cluster_driven_prompt(
+            ARCHETYPES[0], ctx, ["existing Q?"],
+        )
+        assert "Lessons from rolled-back iterations" in rendered
+        assert "is_month_to_date" in rendered
+        assert "use_mtdate_flag" in rendered
+
+    def test_regression_mining_hints_default_empty_preserves_legacy_path(self):
+        """The default ``regression_mining_hints=""`` MUST yield the same
+        bytes as a freshly-constructed context without the field. Guards
+        against accidental regressions when the strategist input flag is
+        off (the default)."""
+        from genie_space_optimizer.optimization.preflight_synthesis import (
+            render_preflight_prompt,
+        )
+        from genie_space_optimizer.optimization.archetypes import ARCHETYPES
+        slice_ = AssetSlice(tables=[_mk_table("cat.sch.fact_sales")])
+        pre = render_preflight_prompt(ARCHETYPES[0], slice_, ["existing Q?"])
+
+        ctx_default = ClusterContext(afs={}, asset_slice=slice_)
+        ctx_empty = ClusterContext(
+            afs={}, asset_slice=slice_, regression_mining_hints="",
+        )
+        ctx_whitespace = ClusterContext(
+            afs={}, asset_slice=slice_, regression_mining_hints="   \n   ",
+        )
+        for ctx in (ctx_default, ctx_empty, ctx_whitespace):
+            assert render_cluster_driven_prompt(
+                ARCHETYPES[0], ctx, ["existing Q?"],
+            ) == pre
+
     def test_afs_leak_validation_rejects_pass_through(self):
         """validate_afs must reject AFS fields that echo benchmark text."""
         from genie_space_optimizer.optimization.afs import (

@@ -9042,6 +9042,53 @@ def _run_lever_loop(
         metadata_snapshot["_cluster_synthesis_count"] = 0
         metadata_snapshot["_space_id"] = space_id
 
+        # Regression-mining strategist input path (feature-flagged).
+        # When ``GSO_ENABLE_REGRESSION_MINING_STRATEGIST`` is on, gather
+        # high-confidence column-confusion insights from prior rolled-
+        # back iterations of THIS run, render a leak-safe hint block,
+        # and stash it on the snapshot for cluster-driven synthesis to
+        # pick up. Soft-fail by design — if any step throws, the legacy
+        # byte-equivalent prompt path runs.
+        try:
+            from genie_space_optimizer.common.config import (
+                ENABLE_REGRESSION_MINING_STRATEGIST,
+                REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE,
+            )
+            from genie_space_optimizer.optimization.regression_mining import (
+                collect_insights_from_reflection_buffer,
+                render_strategist_hint_block,
+                select_strategist_visible_insights,
+            )
+            if ENABLE_REGRESSION_MINING_STRATEGIST and reflection_buffer:
+                _all_mined = collect_insights_from_reflection_buffer(
+                    reflection_buffer,
+                )
+                _visible = select_strategist_visible_insights(
+                    _all_mined,
+                    min_confidence=REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE,
+                    enabled=True,
+                )
+                metadata_snapshot["_regression_mining_hints"] = (
+                    render_strategist_hint_block(_visible)
+                )
+                if _visible:
+                    logger.info(
+                        "Regression-mining strategist hints active for iter %d "
+                        "(%d insight(s) above %.2f confidence)",
+                        iteration_counter,
+                        len(_visible),
+                        REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE,
+                    )
+            else:
+                metadata_snapshot["_regression_mining_hints"] = ""
+        except Exception:
+            logger.debug(
+                "Failed to assemble regression-mining strategist hints "
+                "for iter %d; continuing with empty hints",
+                iteration_counter, exc_info=True,
+            )
+            metadata_snapshot["_regression_mining_hints"] = ""
+
         # ── 3B.3: Priority scoring ───────────────────────────────────
         _scan_levers = (
             set(iq_scan_recommended_levers)
@@ -10720,6 +10767,60 @@ def _run_lever_loop(
                 **_ag_identity_kwargs,
             )
             reflection_buffer.append(reflection)
+
+            # Regression-mining lane (audit-only, soft-fail). Mines
+            # ``column_confusion`` insights from failed candidate eval
+            # rows for newly-regressed questions. Acceptance, rollback,
+            # and state loaders are unchanged; the insights live in
+            # the decision-audit table and on the reflection JSON for
+            # later inspection. A feature flag controls whether the
+            # next strategist call sees them as compact hints.
+            _mined_insights: list = []
+            try:
+                from genie_space_optimizer.optimization.regression_mining import (
+                    mine_regression_insights,
+                    summarize_insights_for_reflection,
+                )
+                _regressed_qids: set[str] = set()
+                for _r in gate_result.get("regressions") or []:
+                    for _q in _r.get("blocking_qids") or []:
+                        if _q:
+                            _regressed_qids.add(str(_q))
+                # Fallback: if no per-question regression fired (e.g.
+                # the gate failed for raw acceptance reasons), mine the
+                # set of qids that flipped from passing to failing.
+                if not _regressed_qids and prev_failure_qids is not None:
+                    _flipped = {
+                        str(q) for q in (_rb_fail_qids or set())
+                        if q not in prev_failure_qids
+                    }
+                    _regressed_qids = _flipped
+                _failed_rows = (
+                    gate_result.get("failed_eval_result", {}).get("rows") or []
+                )
+                _mined_insights = mine_regression_insights(
+                    failed_eval_rows=_failed_rows,
+                    regressed_qids=_regressed_qids,
+                    metadata_snapshot=metadata_snapshot,
+                )
+                if _mined_insights:
+                    reflection["regression_mining"] = (
+                        summarize_insights_for_reflection(_mined_insights)
+                    )
+                    logger.info(
+                        "Regression mining produced %d insight(s) for iter %d "
+                        "(qids: %s)",
+                        len(_mined_insights),
+                        iteration_counter,
+                        ", ".join(sorted({i.question_id for i in _mined_insights})[:5]),
+                    )
+            except Exception:
+                logger.debug(
+                    "Regression mining failed for rollback iter %d",
+                    iteration_counter,
+                    exc_info=True,
+                )
+
             try:
                 update_iteration_reflection(
                     spark, run_id, iteration_counter, reflection,
@@ -10727,6 +10828,35 @@ def _run_lever_loop(
                 )
             except Exception:
                 logger.debug("Failed to persist reflection for rollback iter %d", iteration_counter, exc_info=True)
+
+            # Persist the mined insights as typed decision-audit rows.
+            # ``gate_name="regression_mining"`` lets a single SQL query
+            # answer "what did we learn from rollbacks on this run?"
+            # without parsing reflection JSON. Soft-fail by design —
+            # the audit table is non-authoritative.
+            if _mined_insights:
+                try:
+                    from genie_space_optimizer.optimization.regression_mining import (
+                        build_decision_audit_rows,
+                    )
+                    from genie_space_optimizer.optimization.state import (
+                        write_lever_loop_decisions as _write_mining_decisions,
+                    )
+                    _mining_rows = build_decision_audit_rows(
+                        _mined_insights,
+                        run_id=run_id,
+                        iteration=iteration_counter,
+                        ag_id=ag_id,
+                    )
+                    _write_mining_decisions(
+                        spark, _mining_rows, catalog=catalog, schema=schema,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to persist regression-mining audit rows for iter %d",
+                        iteration_counter,
+                        exc_info=True,
+                    )
             for p in patches:
                 # B1.2 — converted patches use ``type`` / ``target``;
                 # the legacy fields ``patch_type`` / ``target_object``

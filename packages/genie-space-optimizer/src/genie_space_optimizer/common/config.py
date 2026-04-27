@@ -350,6 +350,32 @@ enrichment behavior and the plan rollout (§7) ships it with its own
 release flag. Set ``GSO_ENABLE_PROACTIVE_FEATURE_MINING=true`` to
 opt in once Task 6 reactive mining is stable on a space."""
 
+ENABLE_REGRESSION_MINING_STRATEGIST: bool = (
+    os.getenv("GSO_ENABLE_REGRESSION_MINING_STRATEGIST", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""Regression-mining lane: when True, high-confidence
+``column_confusion`` insights mined from rolled-back iterations are
+appended to the next strategist call as compact, non-benchmark-verbatim
+hints (e.g. "Prefer contrastive metadata for is_month_to_date vs
+use_mtdate_flag").
+
+Default is ``False`` so the lane ships audit-only first. Mining itself
+runs unconditionally — the flag only gates the strategist input path.
+Insights below
+:data:`REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE` are never fed to
+the strategist regardless of this flag."""
+
+REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE: float = float(
+    os.getenv("GSO_REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE", "0.7")
+)
+"""Minimum confidence required for a mined insight to influence the
+strategist when
+:data:`ENABLE_REGRESSION_MINING_STRATEGIST` is on. Tightens the
+default analyzer floor (~0.6) for the strategist input path so only
+high-evidence insights leak into proposal generation; the audit lane
+keeps everything for offline review."""
+
 ENFORCE_REFLECTION_REVALIDATION: bool = (
     os.getenv("GSO_ENFORCE_REFLECTION_REVALIDATION", "true").lower()
     in {"1", "true", "yes", "on"}

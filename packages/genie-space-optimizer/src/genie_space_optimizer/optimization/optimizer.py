@@ -14,6 +14,7 @@ import logging
 import os
 import re
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from databricks.sdk import WorkspaceClient
@@ -995,6 +996,305 @@ def _common_prefix_len(a: str, b: str) -> int:
     while i < n and a[i].lower() == b[i].lower():
         i += 1
     return i
+
+
+# ── Column-confusion analyzer (regression-mining loop) ───────────────
+#
+# The legacy ``column_disambiguation`` detector inside
+# ``_detect_failure_pattern`` keys off a >=5-char shared prefix and
+# only inspects projected columns. That misses real-world abbreviation
+# pairs (``is_month_to_date`` vs ``use_mtdate_flag`` — tokens
+# ``[month, to, date]`` collapse into a single subtoken ``mtdate``)
+# and swaps inside ``WHERE`` / ``GROUP BY`` / ``MEASURE(...)``.
+#
+# ``detect_column_confusion`` is a pure helper used by the regression-
+# mining lane: it returns structured ``ColumnConfusion`` evidence
+# without classifying the failure or routing it to a lever. Acceptance
+# semantics are unchanged; mining consumes these insights only after
+# the candidate has already been rolled back.
+
+_WHERE_BLOCK_RE = re.compile(
+    r"\bwhere\b(.+?)(?=\bgroup\s+by\b|\border\s+by\b|\bhaving\b|"
+    r"\blimit\b|\bwindow\b|\bqualify\b|\bunion\b|\bexcept\b|"
+    r"\bintersect\b|;|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+_MEASURE_CALL_RE = re.compile(
+    r"measure\s*\(\s*`?([A-Za-z_][A-Za-z0-9_]*)`?\s*\)",
+    re.IGNORECASE,
+)
+_FROM_TABLE_RE = re.compile(
+    r"\bfrom\s+([A-Za-z_][A-Za-z0-9_\.]*)",
+    re.IGNORECASE,
+)
+_BACKTICK_IDENT_RE = re.compile(r"`([^`]+)`")
+
+
+@dataclass(frozen=True)
+class ColumnConfusion:
+    """Evidence that a generated SQL substituted a similar-looking column.
+
+    ``intended_column`` is the column referenced by the expected SQL
+    that does not appear in the generated SQL. ``confused_column`` is
+    the column the generated SQL used in its place. ``sql_clause`` is
+    one of ``select`` / ``where`` / ``group_by`` / ``measure``.
+    ``confidence`` is a coarse 0-1 score (0.85 for shared-prefix +
+    metadata corroboration, 0.7 for prefix-only or token overlap).
+    ``rationale`` is a short human-readable explanation.
+    """
+
+    intended_column: str
+    confused_column: str
+    table: str | None
+    sql_clause: str
+    confidence: float
+    rationale: str
+
+
+_MIN_ABBREV_LEN = 3
+
+
+def _abbrev_candidates(name: str) -> set[str]:
+    """Generate normalized abbreviation forms for a column name.
+
+    For each contiguous subsequence of underscore tokens, emits:
+
+    * the full concatenation (``month_to_date`` -> ``monthtodate``);
+    * the pure initials (``month_to_date`` -> ``mtd``);
+    * the "abbreviate prefix, keep suffix whole" forms — e.g. with
+      one whole tail token, ``month_to_date`` -> ``mtdate``;
+    * the "keep prefix whole, abbreviate suffix" forms — e.g.
+      ``month_to_date`` -> ``monthtd``.
+
+    All candidates shorter than :data:`_MIN_ABBREV_LEN` are dropped so
+    common prepositional tokens (``is``, ``to``, ``in``) cannot
+    spuriously match across unrelated columns. Used by
+    :func:`_columns_overlap_by_token` to find pairs like
+    ``is_month_to_date`` vs ``use_mtdate_flag`` where the legacy
+    shared-prefix detector returns no match.
+    """
+    if not name:
+        return set()
+    parts = [p for p in re.split(r"[_\W]+", str(name).lower()) if p]
+    if not parts:
+        return set()
+    out: set[str] = set()
+    # Full standalone tokens (>= min length) so single-token columns
+    # match against any subsequence containing them.
+    for p in parts:
+        if len(p) >= _MIN_ABBREV_LEN:
+            out.add(p)
+    n = len(parts)
+    for i in range(n):
+        for j in range(i + 2, n + 1):
+            sub = parts[i:j]
+            full = "".join(sub)
+            if len(full) >= _MIN_ABBREV_LEN:
+                out.add(full)
+            initials = "".join(p[0] for p in sub if p)
+            if len(initials) >= _MIN_ABBREV_LEN:
+                out.add(initials)
+            for k in range(1, len(sub)):
+                # Abbreviate prefix to initials, keep last k tokens whole.
+                cand = (
+                    "".join(p[0] for p in sub[:-k] if p)
+                    + "".join(sub[-k:])
+                )
+                if len(cand) >= _MIN_ABBREV_LEN:
+                    out.add(cand)
+                # Keep first k tokens whole, abbreviate suffix.
+                cand = (
+                    "".join(sub[:k])
+                    + "".join(p[0] for p in sub[k:] if p)
+                )
+                if len(cand) >= _MIN_ABBREV_LEN:
+                    out.add(cand)
+    return out
+
+
+def _columns_overlap_by_token(a: str, b: str) -> tuple[bool, str]:
+    """Return ``(matches, rationale)`` for token/abbrev overlap of two
+    column names.
+
+    The match is symmetric and uses :func:`_abbrev_candidates` on both
+    sides, so e.g. ``mtdate`` (B's token) can match against the
+    abbreviation ``mtdate`` derived from A's ``[month, to, date]``
+    subsequence. The rationale is a short string explaining why the
+    columns matched so callers can persist it without re-deriving.
+    """
+    if not a or not b or a == b:
+        return False, ""
+    cand_a = _abbrev_candidates(a)
+    cand_b = _abbrev_candidates(b)
+    if not cand_a or not cand_b:
+        return False, ""
+    shared = cand_a & cand_b
+    if shared:
+        return True, f"shared/abbreviated subtokens: {sorted(shared)[:5]}"
+    return False, ""
+
+
+def _columns_for_clause(sql: str, clause: str) -> set[str]:
+    """Return columns referenced under *clause* in *sql*.
+
+    *clause* is one of ``select`` / ``where`` / ``group_by`` /
+    ``measure``. Returns lowercase identifiers; deliberately permissive
+    on syntax to keep parity with the existing ``_detect_failure_pattern``
+    helpers (regex over sqlglot for unparseable SQL).
+    """
+    if not sql:
+        return set()
+    if clause == "select":
+        m = _SELECT_BLOCK_RE.search(sql)
+        return _extract_columns_from_block(m.group(1)) if m else set()
+    if clause == "where":
+        m = _WHERE_BLOCK_RE.search(sql)
+        return _extract_columns_from_block(m.group(1)) if m else set()
+    if clause == "group_by":
+        m = _GROUP_BY_BLOCK_RE.search(sql)
+        return _extract_columns_from_block(m.group(1)) if m else set()
+    if clause == "measure":
+        return {m.group(1).lower() for m in _MEASURE_CALL_RE.finditer(sql)}
+    return set()
+
+
+def _extract_table_hint(sql: str) -> str | None:
+    """Best-effort table extraction from the first FROM clause."""
+    if not sql:
+        return None
+    m = _FROM_TABLE_RE.search(sql)
+    if not m:
+        return None
+    raw = m.group(1).strip().rstrip(";").rstrip(",")
+    return raw or None
+
+
+def detect_column_confusion(
+    expected_sql: str,
+    generated_sql: str,
+    *,
+    metadata_snapshot: dict | None = None,
+    min_prefix_len: int = 5,
+) -> list[ColumnConfusion]:
+    """Return structured column-confusion evidence between two SQLs.
+
+    Compares expected vs generated SQL across the SELECT, WHERE,
+    GROUP BY, and MEASURE(...) surfaces. For each clause, finds
+    expected-only columns and generated-only columns, then pairs them
+    when one of the following matches:
+
+    * shared lowercase prefix >= ``min_prefix_len`` (legacy disambig
+      pattern), OR
+    * shared subtokens of length >= 3, OR
+    * initial-letter abbreviation of one side appears as a substring
+      of the other side.
+
+    *metadata_snapshot* is consulted only to bump confidence when both
+    columns belong to the same table with the same data type. The
+    function does not require it; absent metadata the result is still
+    valid (lower confidence).
+
+    Pure: no I/O, no LLM, no Genie SDK. Safe to call from anywhere in
+    the optimizer.
+    """
+    if not (expected_sql or "").strip() or not (generated_sql or "").strip():
+        return []
+
+    table_hint = (
+        _extract_table_hint(expected_sql)
+        or _extract_table_hint(generated_sql)
+    )
+
+    insights: list[ColumnConfusion] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for clause in ("select", "where", "group_by", "measure"):
+        exp_cols = _columns_for_clause(expected_sql, clause)
+        gen_cols = _columns_for_clause(generated_sql, clause)
+        exp_only = exp_cols - gen_cols
+        gen_only = gen_cols - exp_cols
+        if not exp_only or not gen_only:
+            continue
+        for exp_c in sorted(exp_only):
+            best: tuple[ColumnConfusion, float] | None = None
+            for gen_c in sorted(gen_only):
+                if exp_c == gen_c:
+                    continue
+                prefix = _common_prefix_len(exp_c, gen_c)
+                token_match, token_reason = _columns_overlap_by_token(
+                    exp_c, gen_c,
+                )
+                if prefix < min_prefix_len and not token_match:
+                    continue
+                # Confidence: prefix dominates (cheaper, well-tested).
+                # Token-only matches start lower and bump on metadata.
+                if prefix >= min_prefix_len:
+                    conf = 0.7
+                    rationale = (
+                        f"columns share {prefix}-char prefix"
+                    )
+                else:
+                    conf = 0.6
+                    rationale = token_reason or "subtoken overlap"
+                same_type = _same_data_type(
+                    metadata_snapshot, exp_c, gen_c,
+                )
+                if same_type:
+                    conf = min(0.9, conf + 0.15)
+                    rationale = f"{rationale}; metadata confirms same data type"
+                key = (exp_c, gen_c, clause)
+                if key in seen:
+                    continue
+                seen.add(key)
+                cand = ColumnConfusion(
+                    intended_column=exp_c,
+                    confused_column=gen_c,
+                    table=table_hint,
+                    sql_clause=clause,
+                    confidence=conf,
+                    rationale=(
+                        f"GT {clause} uses {exp_c!r}; "
+                        f"Genie {clause} uses {gen_c!r}; {rationale}."
+                    ),
+                )
+                if best is None or cand.confidence > best[1]:
+                    best = (cand, cand.confidence)
+            if best is not None:
+                insights.append(best[0])
+
+    return insights
+
+
+def _same_data_type(
+    metadata_snapshot: dict | None,
+    col_a: str,
+    col_b: str,
+) -> bool:
+    """Return True iff *col_a* and *col_b* live on the same table with
+    the same data type, per *metadata_snapshot*. Defensive: any shape
+    mismatch returns False."""
+    if not isinstance(metadata_snapshot, dict):
+        return False
+    tables = metadata_snapshot.get("tables")
+    if not isinstance(tables, dict):
+        return False
+    a = (col_a or "").lower()
+    b = (col_b or "").lower()
+    for _t_meta in tables.values():
+        cols = _t_meta.get("columns") if isinstance(_t_meta, dict) else None
+        if not isinstance(cols, dict):
+            continue
+        if a not in cols or b not in cols:
+            continue
+        ta = cols.get(a) or {}
+        tb = cols.get(b) or {}
+        if not isinstance(ta, dict) or not isinstance(tb, dict):
+            continue
+        ta_t = str(ta.get("data_type", "")).lower()
+        tb_t = str(tb.get("data_type", "")).lower()
+        if ta_t and tb_t and ta_t == tb_t:
+            return True
+    return False
 
 
 def _detect_failure_pattern(ctx: dict) -> tuple[str | None, float, str]:
