@@ -98,6 +98,8 @@ interface BuildProgress {
   tables: string[]
   inspectionDone: boolean
   inspectionSummary: { qualityIssues: number; lineageCount: number; columnsProfiled: number }
+  profilingDone: boolean
+  profilingSummary: { overall: string; questionsAssessed: number; lowConfidence: number }
   planReady: boolean
   planSummary: PlanSummary
   configReady: boolean
@@ -118,6 +120,8 @@ const EMPTY_PROGRESS: BuildProgress = {
   tables: [],
   inspectionDone: false,
   inspectionSummary: { qualityIssues: 0, lineageCount: 0, columnsProfiled: 0 },
+  profilingDone: false,
+  profilingSummary: { overall: "", questionsAssessed: 0, lowConfidence: 0 },
   planReady: false,
   planSummary: { ...EMPTY_PLAN_SUMMARY },
   configReady: false,
@@ -132,6 +136,7 @@ const STEPS = [
   { key: "discovery", label: "Discovery", Icon: Database, backtrackMsg: "Let's go back to data selection. I want to change which tables to use." },
   { key: "feasibility", label: "Feasibility", Icon: ShieldCheck, backtrackMsg: "Let's re-assess data feasibility." },
   { key: "inspection", label: "Inspection", Icon: Search, backtrackMsg: "Let's re-inspect the data. I want to review quality or profiles again." },
+  { key: "profiling", label: "Profiling", Icon: BarChart3, backtrackMsg: "Let's re-assess data readiness against my business questions." },
   { key: "plan", label: "Plan", Icon: ListChecks, backtrackMsg: "Let's go back to the plan. I want to adjust questions, instructions, or benchmarks." },
   { key: "config", label: "Configuration", Icon: Settings, backtrackMsg: "Let's revisit the configuration before creating the space." },
   { key: "create", label: "Create Space", Icon: Rocket, backtrackMsg: "" },
@@ -144,9 +149,10 @@ const FIX_STEPS = [
 ] as const
 
 function currentStep(p: BuildProgress): number {
-  if (p.spaceId) return 6
-  if (p.configReady) return 5
-  if (p.planReady) return 4
+  if (p.spaceId) return 7
+  if (p.configReady) return 6
+  if (p.planReady) return 5
+  if (p.profilingDone) return 4
   if (p.inspectionDone) return 3
   if (p.tables?.length) return 2  // feasibility (tables selected)
   if (p.catalog || p.schemas?.length) return 1  // discovery
@@ -249,6 +255,11 @@ function loadState(): PersistedState | null {
       delete p.sampleQuestions
       delete p.instructionCounts
       delete p.benchmarks
+    }
+    // Migrate: add profilingDone/profilingSummary for sessions created before the profiling step
+    if (p && !("profilingDone" in p)) {
+      p.profilingDone = false
+      p.profilingSummary = { overall: "", questionsAssessed: 0, lowConfidence: 0 }
     }
     // Migrate editedPlan: ensure benchmarks array exists
     if (parsed.editedPlan && !Array.isArray(parsed.editedPlan.benchmarks)) {
@@ -599,6 +610,20 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
               }
               return updated
             })
+          }
+          if (tool === "assess_readiness" && !result.error) {
+            const r = result as Record<string, unknown>
+            const qr = r.question_readiness as Record<string, { band: string }> | undefined
+            const lowCount = qr ? Object.values(qr).filter((v) => v.band === "Low").length : 0
+            setProgress((p) => ({
+              ...p,
+              profilingDone: true,
+              profilingSummary: {
+                overall: (r.overall_readiness as string) || "",
+                questionsAssessed: qr ? Object.keys(qr).length : 0,
+                lowConfidence: lowCount,
+              },
+            }))
           }
           if ((tool === "present_plan" || tool === "generate_plan") && !result.error) {
             if (resolvedId) setExpandedTools((et) => new Set(et).add(resolvedId))
@@ -2739,6 +2764,23 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                         <p className="text-[10px] text-muted">{parts.join(" · ")}</p>
                       ) : (
                         <p className="text-[10px] text-muted">Inspection complete</p>
+                      )
+                    })()}
+                  </div>
+                )}
+
+                {s.key === "profiling" && progress.profilingDone && (
+                  <div className="mt-1">
+                    {(() => {
+                      const ps = progress.profilingSummary
+                      const parts: string[] = []
+                      if (ps.overall) parts.push(`Overall: ${ps.overall}`)
+                      if (ps.questionsAssessed > 0) parts.push(`${ps.questionsAssessed} question${ps.questionsAssessed !== 1 ? "s" : ""} assessed`)
+                      if (ps.lowConfidence > 0) parts.push(`${ps.lowConfidence} low confidence`)
+                      return parts.length > 0 ? (
+                        <p className="text-[10px] text-muted">{parts.join(" · ")}</p>
+                      ) : (
+                        <p className="text-[10px] text-muted">Profiling complete</p>
                       )
                     })()}
                   </div>
