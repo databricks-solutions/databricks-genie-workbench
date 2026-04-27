@@ -2559,6 +2559,32 @@ must have:
 - explicit target qids,
 - preserved `rca_id` and `patch_family` through apply and audit.
 
+### RCA Control Plane
+
+The lever loop now treats RCA as the control plane between evaluation and
+proposal generation:
+
+1. Failed evaluation rows carry SQL diffs plus judge ASI metadata
+   (`failure_type`, `wrong_clause`, `blame_set`, `counterfactual_fix`,
+   `expected_objects`, `actual_objects`, `rca_kind`, `patch_family`, and
+   `recommended_levers`).
+2. `optimization.rca.build_rca_ledger` combines SQL-derived, judge-derived,
+   and regression-mined findings, then dedupes them by stable `rca_id`.
+3. `compile_patch_themes` converts typed findings into patch intents across
+   the six lever families: metadata, synonyms/entity matching, SQL snippets,
+   join specs, instructions, and example SQL synthesis requests.
+4. `themes_for_strategy_context` selects a compatible high-confidence subset
+   for the strategist prompt.
+5. `_format_rca_themes_for_strategy` exposes RCA kind, evidence, recommended
+   levers, patch intents, target questions, touched objects, and conflicts.
+6. RCA-driven example SQL generation is gated by
+   `GSO_ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS` and uses the same synthesis validator
+   and leakage firewall as the existing example SQL path.
+
+RCA themes are still advisory strategist context. They do not bypass proposal
+grounding, validation, leakage checks, application safety, rollback, or
+theme-level attribution.
+
 ### RCA Rollout Flags
 
 | Flag | Default | Effect |
@@ -2568,6 +2594,7 @@ must have:
 | `GSO_ENABLE_RCA_THEMES_STRATEGIST` | `false` | Include RCA themes in strategist prompt context. |
 | `GSO_ENABLE_RCA_THEME_SELECTION` | `false` | Prune RCA strategist context to a compatible selected subset. Does not constrain patch apply. |
 | `GSO_ENABLE_RCA_THEME_BUNDLES` | `false` | Deprecated compatibility alias for `GSO_ENABLE_RCA_THEME_SELECTION`; not hard bundle enforcement. |
+| `GSO_ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS` | `false` | Allows selected RCA themes to request original, leakage-safe example SQL synthesis through the existing synthesis validator and firewall. |
 
 Future hard theme enforcement should use a separate flag and design. That
 future mode would need to constrain proposal generation and/or patch apply
