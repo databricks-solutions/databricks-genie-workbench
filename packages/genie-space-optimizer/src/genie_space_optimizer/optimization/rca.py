@@ -542,6 +542,27 @@ def select_compatible_themes(
     return selected
 
 
+def themes_for_strategy_context(
+    themes: list[RcaPatchTheme],
+    *,
+    enable_selection: bool,
+    max_themes: int,
+    max_patches: int,
+) -> list[RcaPatchTheme]:
+    """Return all themes or a compatible subset for strategist context.
+
+    This is prompt-context selection only. It does not mechanically
+    constrain proposal generation, grounding, or apply.
+    """
+    if not enable_selection:
+        return list(themes or [])
+    return select_compatible_themes(
+        themes,
+        max_themes=max_themes,
+        max_patches=max_patches,
+    )
+
+
 def rca_findings_from_regression_insights(
     insights: Iterable[Any],
 ) -> list[RcaFinding]:

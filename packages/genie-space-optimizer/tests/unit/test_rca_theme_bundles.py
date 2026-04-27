@@ -219,6 +219,51 @@ def test_select_compatible_themes_drops_lower_confidence_conflict():
     assert [t.rca_id for t in selected] == ["rca_high"]
 
 
+def test_strategy_context_theme_selection_flag_controls_pruning():
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        RcaPatchTheme,
+        themes_for_strategy_context,
+    )
+
+    themes = [
+        RcaPatchTheme(
+            rca_id="rca_high",
+            rca_kind=RcaKind.EXTRA_DEFENSIVE_FILTER,
+            patch_family="avoid_unrequested_defensive_filters",
+            patches=({"type": "add_instruction", "instruction_section": "QUERY CONSTRUCTION"},),
+            target_qids=("q1",),
+            touched_objects=("QUERY CONSTRUCTION",),
+            confidence=0.9,
+        ),
+        RcaPatchTheme(
+            rca_id="rca_low",
+            rca_kind=RcaKind.EXTRA_DEFENSIVE_FILTER,
+            patch_family="avoid_unrequested_defensive_filters",
+            patches=({"type": "add_instruction", "instruction_section": "QUERY CONSTRUCTION"},),
+            target_qids=("q2",),
+            touched_objects=("QUERY CONSTRUCTION",),
+            confidence=0.6,
+        ),
+    ]
+
+    all_themes = themes_for_strategy_context(
+        themes,
+        enable_selection=False,
+        max_themes=3,
+        max_patches=5,
+    )
+    selected = themes_for_strategy_context(
+        themes,
+        enable_selection=True,
+        max_themes=3,
+        max_patches=5,
+    )
+
+    assert [t.rca_id for t in all_themes] == ["rca_high", "rca_low"]
+    assert [t.rca_id for t in selected] == ["rca_high"]
+
+
 def test_rca_theme_selector_flag_off_returns_empty_strategy_context():
     from genie_space_optimizer.optimization.optimizer import (
         _format_rca_themes_for_strategy,

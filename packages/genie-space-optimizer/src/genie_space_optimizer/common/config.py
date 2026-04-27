@@ -392,13 +392,21 @@ ENABLE_RCA_THEMES_STRATEGIST: bool = (
 """When true, include selected RCA themes and conflict matrix in the
 strategist prompt."""
 
-ENABLE_RCA_THEME_BUNDLES: bool = (
-    os.getenv("GSO_ENABLE_RCA_THEME_BUNDLES", "false").lower()
+ENABLE_RCA_THEME_SELECTION: bool = (
+    os.getenv(
+        "GSO_ENABLE_RCA_THEME_SELECTION",
+        os.getenv("GSO_ENABLE_RCA_THEME_BUNDLES", "false"),
+    ).lower()
     in {"1", "true", "yes", "on"}
 )
-"""When true, allow RCA themes to constrain or seed patch bundles.
+"""When true, prune RCA themes to a compatible subset for strategist context.
 
-Keep false until audit data shows accurate themes."""
+This does not mechanically constrain proposal generation, grounding, or
+apply. ``GSO_ENABLE_RCA_THEME_BUNDLES`` is accepted as a deprecated
+compatibility alias."""
+
+ENABLE_RCA_THEME_BUNDLES: bool = ENABLE_RCA_THEME_SELECTION
+"""Deprecated compatibility alias for :data:`ENABLE_RCA_THEME_SELECTION`."""
 
 RCA_MAX_THEMES_PER_ITERATION: int = int(
     os.getenv("GSO_RCA_MAX_THEMES_PER_ITERATION", "3")

@@ -43,7 +43,7 @@ from genie_space_optimizer.common.config import (
     DIMINISHING_RETURNS_EPSILON,
     DIMINISHING_RETURNS_LOOKBACK,
     ENABLE_RCA_LEDGER,
-    ENABLE_RCA_THEME_BUNDLES,
+    ENABLE_RCA_THEME_SELECTION,
     ENABLE_PREFLIGHT_EXAMPLE_SQL_SYNTHESIS,
     ENABLE_PROMPT_MATCHING_AUTO_APPLY,
     ENABLE_SLICE_GATE,
@@ -9078,17 +9078,15 @@ def _run_lever_loop(
         metadata_snapshot["_rca_ledger"] = rca_ledger
         try:
             from genie_space_optimizer.optimization.rca import (
-                select_compatible_themes,
+                themes_for_strategy_context,
             )
 
-            if ENABLE_RCA_THEME_BUNDLES:
-                metadata_snapshot["_rca_themes"] = select_compatible_themes(
-                    list(rca_ledger.get("themes") or []),
-                    max_themes=RCA_MAX_THEMES_PER_ITERATION,
-                    max_patches=RCA_MAX_THEME_PATCHES_PER_ITERATION,
-                )
-            else:
-                metadata_snapshot["_rca_themes"] = rca_ledger.get("themes") or []
+            metadata_snapshot["_rca_themes"] = themes_for_strategy_context(
+                list(rca_ledger.get("themes") or []),
+                enable_selection=ENABLE_RCA_THEME_SELECTION,
+                max_themes=RCA_MAX_THEMES_PER_ITERATION,
+                max_patches=RCA_MAX_THEME_PATCHES_PER_ITERATION,
+            )
         except Exception:
             logger.debug(
                 "RCA theme selection failed; falling back to all themes",
