@@ -80,7 +80,7 @@ _RCA_KIND_TO_LEVERS: dict[RcaKind, tuple[int, ...]] = {
     RcaKind.MEASURE_SWAP: (1, 5),
     RcaKind.CANONICAL_DIMENSION_MISSED: (1, 5),
     RcaKind.MISSING_REQUIRED_DIMENSION: (1, 5),
-    RcaKind.EXTRA_DEFENSIVE_FILTER: (3, 5),
+    RcaKind.EXTRA_DEFENSIVE_FILTER: (5,),
     RcaKind.UNKNOWN: (5,),
 }
 

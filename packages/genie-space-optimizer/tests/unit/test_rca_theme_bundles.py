@@ -157,7 +157,33 @@ def test_extra_defensive_filter_routes_to_instruction_not_sql_snippet():
         recommended_levers_for_rca_kind,
     )
 
-    assert recommended_levers_for_rca_kind(RcaKind.EXTRA_DEFENSIVE_FILTER) == (3, 5)
+    assert recommended_levers_for_rca_kind(RcaKind.EXTRA_DEFENSIVE_FILTER) == (5,)
+
+
+def test_extra_defensive_filter_recommendations_match_theme_patch_levers():
+    from genie_space_optimizer.optimization.rca import (
+        RcaFinding,
+        RcaKind,
+        compile_patch_themes,
+        recommended_levers_for_rca_kind,
+    )
+
+    finding = RcaFinding(
+        rca_id="rca_filter",
+        question_id="q_filter",
+        rca_kind=RcaKind.EXTRA_DEFENSIVE_FILTER,
+        confidence=0.8,
+        actual_objects=("cy_cust_count IS NOT NULL",),
+        recommended_levers=recommended_levers_for_rca_kind(
+            RcaKind.EXTRA_DEFENSIVE_FILTER,
+        ),
+        patch_family="avoid_unrequested_defensive_filters",
+        target_qids=("q_filter",),
+    )
+
+    theme = compile_patch_themes([finding], metadata_snapshot={})[0]
+
+    assert set(finding.recommended_levers) == {p["lever"] for p in theme.patches}
 
 
 def test_rca_theme_levers_override_wrong_aggregation_coarse_route():
