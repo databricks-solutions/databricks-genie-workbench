@@ -219,6 +219,59 @@ def test_strategist_visible_drops_insights_below_min_confidence():
     assert [v.question_id for v in visible] == ["q-mtd"]
 
 
+def test_regression_mining_rca_context_enabled_without_strategist_hints():
+    from genie_space_optimizer.optimization.harness import (
+        _collect_regression_mining_iteration_context,
+    )
+    from genie_space_optimizer.optimization.regression_mining import (
+        summarize_insights_for_reflection,
+    )
+
+    reflection_buffer = [{
+        "iteration": 1,
+        "regression_mining": summarize_insights_for_reflection(
+            _high_confidence_insights(),
+        ),
+    }]
+
+    context = _collect_regression_mining_iteration_context(
+        reflection_buffer,
+        enable_rca_ledger=True,
+        enable_strategist_hints=False,
+        min_confidence=0.7,
+    )
+
+    assert context["strategist_hints"] == ""
+    assert [f.question_id for f in context["rca_findings"]] == ["q-mtd"]
+
+
+def test_regression_mining_context_empty_when_rca_and_hints_disabled():
+    from genie_space_optimizer.optimization.harness import (
+        _collect_regression_mining_iteration_context,
+    )
+    from genie_space_optimizer.optimization.regression_mining import (
+        summarize_insights_for_reflection,
+    )
+
+    reflection_buffer = [{
+        "iteration": 1,
+        "regression_mining": summarize_insights_for_reflection(
+            _high_confidence_insights(),
+        ),
+    }]
+
+    context = _collect_regression_mining_iteration_context(
+        reflection_buffer,
+        enable_rca_ledger=False,
+        enable_strategist_hints=False,
+        min_confidence=0.7,
+    )
+
+    assert context["visible_insights"] == []
+    assert context["rca_findings"] == []
+    assert context["strategist_hints"] == ""
+
+
 def test_collect_from_empty_buffer_yields_no_insights():
     """A run with no prior rollbacks (or with rollbacks that produced
     no mining summary) must round-trip to ``[]``. Prevents the
@@ -236,19 +289,17 @@ def test_collect_from_empty_buffer_yields_no_insights():
 
 def test_strategist_input_path_is_feature_flagged_in_harness():
     """The harness must consult ``ENABLE_REGRESSION_MINING_STRATEGIST``
-    *and* gate the hint write on its truthiness, so flipping the env
-    var off is sufficient to disable the strategist input path
-    entirely."""
+    when collecting the shared mining context, so flipping the env var
+    off disables strategist hints without disabling RCA ledger feed."""
     src = _harness_source()
     assert "ENABLE_REGRESSION_MINING_STRATEGIST" in src, (
         "Harness must import the regression-mining strategist flag"
     )
-    # The hint render call must sit inside an `if` that includes the flag.
-    flag_idx = src.find("if ENABLE_REGRESSION_MINING_STRATEGIST")
-    render_idx = src.find("render_strategist_hint_block(")
-    assert flag_idx != -1 and render_idx != -1
-    assert flag_idx < render_idx, (
-        "Hint rendering must be downstream of the feature-flag check"
+    assert (
+        "enable_strategist_hints=ENABLE_REGRESSION_MINING_STRATEGIST" in src
+    ), (
+        "Harness must pass the strategist flag into the shared mining "
+        "context collector"
     )
 
 
@@ -263,10 +314,10 @@ def test_strategist_hints_default_to_empty_string_when_flag_off():
         r'metadata_snapshot\["_regression_mining_hints"\]\s*=\s*""',
         src,
     )
-    assert len(matches) >= 2, (
-        "Harness must clear `_regression_mining_hints` to '' on every "
-        "flag-off path so cluster-driven synthesis can rely on empty "
-        "hints meaning 'legacy prompt path'."
+    assert matches, (
+        "Harness must initialize `_regression_mining_hints` to '' before "
+        "calling the shared collector so flag-off paths keep the legacy "
+        "prompt path."
     )
 
 

@@ -376,6 +376,16 @@ default analyzer floor (~0.6) for the strategist input path so only
 high-evidence insights leak into proposal generation; the audit lane
 keeps everything for offline review."""
 
+ENABLE_REGRESSION_MINING_RCA_LEDGER: bool = (
+    os.getenv("GSO_ENABLE_REGRESSION_MINING_RCA_LEDGER", "true").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""When true, visible regression-mining lessons feed the audit-only RCA ledger.
+
+This is intentionally independent of
+:data:`ENABLE_REGRESSION_MINING_STRATEGIST`, which only controls prompt
+exposure."""
+
 ENABLE_RCA_LEDGER: bool = (
     os.getenv("GSO_ENABLE_RCA_LEDGER", "true").lower()
     in {"1", "true", "yes", "on"}

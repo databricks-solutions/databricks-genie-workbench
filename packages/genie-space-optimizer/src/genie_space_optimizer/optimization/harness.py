@@ -42,6 +42,8 @@ from genie_space_optimizer.common.config import (
     DEFAULT_THRESHOLDS,
     DIMINISHING_RETURNS_EPSILON,
     DIMINISHING_RETURNS_LOOKBACK,
+    ENABLE_REGRESSION_MINING_RCA_LEDGER,
+    ENABLE_REGRESSION_MINING_STRATEGIST,
     ENABLE_RCA_LEDGER,
     ENABLE_RCA_THEME_SELECTION,
     ENABLE_PREFLIGHT_EXAMPLE_SQL_SYNTHESIS,
@@ -65,6 +67,7 @@ from genie_space_optimizer.common.config import (
     PROPAGATION_WAIT_SECONDS,
     RCA_MAX_THEME_PATCHES_PER_ITERATION,
     RCA_MAX_THEMES_PER_ITERATION,
+    REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE,
     REGRESSION_THRESHOLD,
     SHADOW_APPLY,
     SLICE_GATE_MIN_REDUCTION,
@@ -5260,6 +5263,51 @@ def _attach_rca_theme_attribution(
         )
 
 
+def _collect_regression_mining_iteration_context(
+    reflection_buffer: list[dict],
+    *,
+    enable_rca_ledger: bool,
+    enable_strategist_hints: bool,
+    min_confidence: float,
+) -> dict:
+    """Collect rollback-mining context once for RCA ledger and hints."""
+    if not (enable_rca_ledger or enable_strategist_hints):
+        return {
+            "all_insights": [],
+            "visible_insights": [],
+            "rca_findings": [],
+            "strategist_hints": "",
+        }
+
+    from genie_space_optimizer.optimization.rca import (
+        rca_findings_from_regression_insights,
+    )
+    from genie_space_optimizer.optimization.regression_mining import (
+        collect_insights_from_reflection_buffer,
+        render_strategist_hint_block,
+        select_strategist_visible_insights,
+    )
+
+    all_insights = collect_insights_from_reflection_buffer(reflection_buffer)
+    visible = select_strategist_visible_insights(
+        all_insights,
+        min_confidence=min_confidence,
+        enabled=True,
+    )
+    return {
+        "all_insights": all_insights,
+        "visible_insights": visible,
+        "rca_findings": (
+            rca_findings_from_regression_insights(visible)
+            if enable_rca_ledger else []
+        ),
+        "strategist_hints": (
+            render_strategist_hint_block(visible)
+            if enable_strategist_hints else ""
+        ),
+    }
+
+
 # Phase C1 retired the earlier ``_is_schema_fatal_patch_error`` shim in
 # favour of :class:`RollbackClass` and :func:`classify_rollback_reason`
 # from ``optimization/rollback_class``. A deterministic schema rejection
@@ -9034,30 +9082,20 @@ def _run_lever_loop(
         _correction_state["quarantined_qids"] = _iter_corr["quarantined_qids"]
 
         metadata_snapshot["_regression_rca_findings"] = []
+        metadata_snapshot["_regression_mining_hints"] = ""
         try:
-            from genie_space_optimizer.common.config import (
-                ENABLE_REGRESSION_MINING_STRATEGIST,
-                REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE,
-            )
-            from genie_space_optimizer.optimization.rca import (
-                rca_findings_from_regression_insights,
-            )
-            from genie_space_optimizer.optimization.regression_mining import (
-                collect_insights_from_reflection_buffer,
-                select_strategist_visible_insights,
-            )
-
-            if ENABLE_REGRESSION_MINING_STRATEGIST and reflection_buffer:
-                _all_mined_for_rca = collect_insights_from_reflection_buffer(
+            if reflection_buffer:
+                _mining_context = _collect_regression_mining_iteration_context(
                     reflection_buffer,
-                )
-                _visible_for_rca = select_strategist_visible_insights(
-                    _all_mined_for_rca,
+                    enable_rca_ledger=ENABLE_REGRESSION_MINING_RCA_LEDGER,
+                    enable_strategist_hints=ENABLE_REGRESSION_MINING_STRATEGIST,
                     min_confidence=REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE,
-                    enabled=True,
                 )
                 metadata_snapshot["_regression_rca_findings"] = (
-                    rca_findings_from_regression_insights(_visible_for_rca)
+                    _mining_context["rca_findings"]
+                )
+                metadata_snapshot["_regression_mining_hints"] = (
+                    _mining_context["strategist_hints"]
                 )
         except Exception:
             logger.debug(
@@ -9241,52 +9279,11 @@ def _run_lever_loop(
         metadata_snapshot["_cluster_synthesis_count"] = 0
         metadata_snapshot["_space_id"] = space_id
 
-        # Regression-mining strategist input path (feature-flagged).
-        # When ``GSO_ENABLE_REGRESSION_MINING_STRATEGIST`` is on, gather
-        # high-confidence column-confusion insights from prior rolled-
-        # back iterations of THIS run, render a leak-safe hint block,
-        # and stash it on the snapshot for cluster-driven synthesis to
-        # pick up. Soft-fail by design — if any step throws, the legacy
-        # byte-equivalent prompt path runs.
-        try:
-            from genie_space_optimizer.common.config import (
-                ENABLE_REGRESSION_MINING_STRATEGIST,
-                REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE,
+        if metadata_snapshot.get("_regression_mining_hints"):
+            logger.info(
+                "Regression-mining strategist hints active for iter %d",
+                iteration_counter,
             )
-            from genie_space_optimizer.optimization.regression_mining import (
-                collect_insights_from_reflection_buffer,
-                render_strategist_hint_block,
-                select_strategist_visible_insights,
-            )
-            if ENABLE_REGRESSION_MINING_STRATEGIST and reflection_buffer:
-                _all_mined = collect_insights_from_reflection_buffer(
-                    reflection_buffer,
-                )
-                _visible = select_strategist_visible_insights(
-                    _all_mined,
-                    min_confidence=REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE,
-                    enabled=True,
-                )
-                metadata_snapshot["_regression_mining_hints"] = (
-                    render_strategist_hint_block(_visible)
-                )
-                if _visible:
-                    logger.info(
-                        "Regression-mining strategist hints active for iter %d "
-                        "(%d insight(s) above %.2f confidence)",
-                        iteration_counter,
-                        len(_visible),
-                        REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE,
-                    )
-            else:
-                metadata_snapshot["_regression_mining_hints"] = ""
-        except Exception:
-            logger.debug(
-                "Failed to assemble regression-mining strategist hints "
-                "for iter %d; continuing with empty hints",
-                iteration_counter, exc_info=True,
-            )
-            metadata_snapshot["_regression_mining_hints"] = ""
 
         # ── 3B.3: Priority scoring ───────────────────────────────────
         _scan_levers = (
