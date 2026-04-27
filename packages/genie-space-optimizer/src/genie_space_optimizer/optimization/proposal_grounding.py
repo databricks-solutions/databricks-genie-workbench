@@ -75,6 +75,71 @@ def _normalize(token: str) -> str:
     return str(token).strip().lower()
 
 
+_IGNORED_METADATA_PREFIXES = frozenset({"response_quality"})
+
+
+def _nested_get(row: dict, path: tuple[str, ...]) -> object:
+    cur: object = row
+    for part in path:
+        if not isinstance(cur, dict):
+            return ""
+        cur = cur.get(part, "")
+    return cur
+
+
+def _row_qid(row: dict) -> str:
+    inputs = row.get("inputs")
+    nested_qid = inputs.get("question_id") if isinstance(inputs, dict) else ""
+    return str(
+        row.get("inputs.question_id")
+        or row.get("question_id")
+        or row.get("qid")
+        or row.get("id")
+        or nested_qid
+        or ""
+    )
+
+
+def _iter_text_values(value: object) -> Iterable[str]:
+    if isinstance(value, str):
+        if value.strip():
+            yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _iter_text_values(child)
+    elif isinstance(value, (list, tuple, set)):
+        for child in value:
+            yield from _iter_text_values(child)
+
+
+def _asi_metadata_surface(row: dict) -> set[str]:
+    surface: set[str] = set()
+    for key, value in (row or {}).items():
+        if not isinstance(value, dict):
+            continue
+        if not isinstance(key, str):
+            continue
+        if not (key.endswith("/metadata") or key.endswith(".metadata")):
+            continue
+        judge = key.rsplit("/", 1)[0].rsplit(".", 1)[0]
+        if judge in _IGNORED_METADATA_PREFIXES:
+            continue
+        for meta_key in (
+            "failure_type",
+            "wrong_clause",
+            "blame_set",
+            "counterfactual_fix",
+            "expected_objects",
+            "actual_objects",
+            "rca_kind",
+            "patch_family",
+        ):
+            for text in _iter_text_values(value.get(meta_key)):
+                for tok in _IDENT_RE.findall(text):
+                    surface.add(_normalize(tok))
+    return surface
+
+
 def extract_patch_targets(patch: dict) -> set[str]:
     """Return identifiers a patch claims to influence.
 
@@ -151,6 +216,39 @@ def extract_failure_surface(row: dict) -> set[str]:
             if tok:
                 surface.add(_normalize(tok))
 
+    nested_sqls = (
+        _nested_get(row, ("inputs", "expected_sql")),
+        _nested_get(row, ("request", "expected_sql")),
+        _nested_get(row, ("outputs", "predictions", "sql")),
+        _nested_get(row, ("outputs", "predictions", "query")),
+        _nested_get(row, ("response", "sql")),
+    )
+    for sql in nested_sqls:
+        if not isinstance(sql, str) or not sql.strip():
+            continue
+        if sqlglot is not None:
+            try:
+                parsed = sqlglot.parse_one(sql, read="databricks")
+                if parsed is not None:
+                    for col in parsed.find_all(_exp.Column):
+                        if getattr(col, "name", None):
+                            surface.add(_normalize(col.name))
+                    for tbl in parsed.find_all(_exp.Table):
+                        if getattr(tbl, "name", None):
+                            surface.add(_normalize(tbl.name))
+                    for fn in parsed.find_all(_exp.Func):
+                        try:
+                            name = fn.sql_name()
+                            if name:
+                                surface.add(_normalize(name))
+                        except Exception:
+                            continue
+            except Exception:
+                logger.debug("sqlglot parse failed for nested SQL", exc_info=True)
+        for tok in _IDENT_RE.findall(sql):
+            if tok:
+                surface.add(_normalize(tok))
+
     for nl_key in _FAILURE_SURFACE_NL_KEYS:
         nl = row.get(nl_key) or ""
         if not isinstance(nl, str) or not nl.strip():
@@ -158,6 +256,17 @@ def extract_failure_surface(row: dict) -> set[str]:
         for tok in _IDENT_RE.findall(nl):
             if tok:
                 surface.add(_normalize(tok))
+
+    nested_nl_values = (
+        _nested_get(row, ("inputs", "question")),
+        _nested_get(row, ("outputs", "predictions", "response_text")),
+    )
+    for nl in nested_nl_values:
+        if isinstance(nl, str):
+            for tok in _IDENT_RE.findall(nl):
+                surface.add(_normalize(tok))
+
+    surface |= _asi_metadata_surface(row)
 
     return surface
 
@@ -205,6 +314,46 @@ def explain_relevance(patch: dict, failing_rows: Iterable[dict]) -> dict:
         "overlap": sorted(overlap),
         "missing_targets": sorted(missing),
     }
+
+
+def _filter_rows_for_qids(rows: Iterable[dict], qids: Iterable[str] | None) -> list[dict]:
+    wanted = {str(q) for q in (qids or []) if str(q)}
+    if not wanted:
+        return [r for r in rows or [] if isinstance(r, dict)]
+    out: list[dict] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if _row_qid(row) in wanted:
+            out.append(row)
+    return out
+
+
+def causal_relevance_score(
+    patch: dict,
+    failure_rows: Iterable[dict],
+    *,
+    target_qids: Iterable[str] | None = None,
+) -> float:
+    """Score patch relevance against its causal target rows and ASI surface."""
+    qids = tuple(target_qids or patch.get("target_qids") or ())
+    scoped_rows = _filter_rows_for_qids(failure_rows, qids)
+    return relevance_score(patch, scoped_rows)
+
+
+def explain_causal_relevance(
+    patch: dict,
+    failure_rows: Iterable[dict],
+    *,
+    target_qids: Iterable[str] | None = None,
+) -> dict:
+    """Debug causal grounding with qid scope and ASI-enriched surfaces."""
+    qids = tuple(target_qids or patch.get("target_qids") or ())
+    scoped_rows = _filter_rows_for_qids(failure_rows, qids)
+    details = explain_relevance(patch, scoped_rows)
+    details["target_qids"] = list(qids)
+    details["scoped_row_count"] = len(scoped_rows)
+    return details
 
 
 def select_patch_bundle(

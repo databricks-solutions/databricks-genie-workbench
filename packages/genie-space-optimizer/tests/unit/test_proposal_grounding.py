@@ -356,3 +356,97 @@ def test_computes_relevance_when_field_missing(monkeypatch=None):
 
 def test_empty_input_returns_empty():
     assert select_patch_bundle([], max_patches=3) == []
+
+
+def test_extract_failure_surface_reads_nested_inputs_outputs() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        extract_failure_surface,
+    )
+
+    row = {
+        "inputs": {
+            "expected_sql": (
+                "SELECT region_combination FROM mv_esr_store_sales "
+                "GROUP BY region_combination"
+            ),
+            "question_id": "q_region",
+        },
+        "outputs": {
+            "predictions": {
+                "sql": (
+                    "SELECT region_name FROM mv_esr_store_sales "
+                    "GROUP BY region_name"
+                ),
+                "response_text": "Sales by region",
+            }
+        },
+    }
+
+    surface = extract_failure_surface(row)
+
+    assert "region_combination" in surface
+    assert "region_name" in surface
+    assert "mv_esr_store_sales" in surface
+
+
+def test_extract_failure_surface_reads_asi_metadata_except_response_quality() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        extract_failure_surface,
+    )
+
+    row = {
+        "question_id": "q_region",
+        "schema_accuracy/metadata": {
+            "failure_type": "wrong_column",
+            "blame_set": ["region_name", "region_combination"],
+            "wrong_clause": "GROUP BY region_name",
+            "counterfactual_fix": "Use region_combination for region grouping.",
+        },
+        "response_quality/metadata": {
+            "failure_type": "other",
+            "blame_set": ["friendly wording"],
+            "counterfactual_fix": "Write a nicer sentence.",
+        },
+    }
+
+    surface = extract_failure_surface(row)
+
+    assert "region_combination" in surface
+    assert "region_name" in surface
+    assert "friendly" not in surface
+    assert "wording" not in surface
+
+
+def test_causal_relevance_uses_target_qids_and_rca_metadata() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        causal_relevance_score,
+        explain_causal_relevance,
+    )
+
+    patch = {
+        "type": "update_column_description",
+        "column": "region_combination",
+        "target_qids": ["q_region"],
+        "rca_id": "rca_region",
+    }
+    rows = [
+        {
+            "question_id": "q_region",
+            "schema_accuracy/metadata": {
+                "failure_type": "wrong_column",
+                "blame_set": ["region_name", "region_combination"],
+                "counterfactual_fix": "Use region_combination for region grouping.",
+            },
+        },
+        {
+            "question_id": "q_other",
+            "inputs.expected_sql": "SELECT sales_amount FROM mv_sales",
+        },
+    ]
+
+    score = causal_relevance_score(patch, rows, target_qids=("q_region",))
+    details = explain_causal_relevance(patch, rows, target_qids=("q_region",))
+
+    assert score == 1.0
+    assert details["target_qids"] == ["q_region"]
+    assert "region_combination" in details["overlap"]
