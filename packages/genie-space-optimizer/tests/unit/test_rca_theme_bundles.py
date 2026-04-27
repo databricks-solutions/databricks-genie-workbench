@@ -217,3 +217,11 @@ def test_select_compatible_themes_drops_lower_confidence_conflict():
     selected = select_compatible_themes(themes, max_themes=3, max_patches=5)
 
     assert [t.rca_id for t in selected] == ["rca_high"]
+
+
+def test_rca_theme_selector_flag_off_returns_empty_strategy_context():
+    from genie_space_optimizer.optimization.optimizer import (
+        _format_rca_themes_for_strategy,
+    )
+
+    assert _format_rca_themes_for_strategy([], []) == "(No typed RCA themes available.)"

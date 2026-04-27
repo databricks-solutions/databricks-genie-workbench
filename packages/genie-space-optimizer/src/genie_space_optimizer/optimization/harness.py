@@ -42,6 +42,8 @@ from genie_space_optimizer.common.config import (
     DEFAULT_THRESHOLDS,
     DIMINISHING_RETURNS_EPSILON,
     DIMINISHING_RETURNS_LOOKBACK,
+    ENABLE_RCA_LEDGER,
+    ENABLE_RCA_THEME_BUNDLES,
     ENABLE_PREFLIGHT_EXAMPLE_SQL_SYNTHESIS,
     ENABLE_PROMPT_MATCHING_AUTO_APPLY,
     ENABLE_SLICE_GATE,
@@ -61,6 +63,8 @@ from genie_space_optimizer.common.config import (
     NEITHER_CORRECT_REPAIR_THRESHOLD,
     PROPAGATION_WAIT_ENTITY_MATCHING_SECONDS,
     PROPAGATION_WAIT_SECONDS,
+    RCA_MAX_THEME_PATCHES_PER_ITERATION,
+    RCA_MAX_THEMES_PER_ITERATION,
     REGRESSION_THRESHOLD,
     SHADOW_APPLY,
     SLICE_GATE_MIN_REDUCTION,
@@ -7228,16 +7232,17 @@ def _analyze_and_distribute(
         "theme_count": 0,
         "conflict_count": 0,
     }
-    try:
-        from genie_space_optimizer.optimization.rca import build_rca_ledger
+    if ENABLE_RCA_LEDGER:
+        try:
+            from genie_space_optimizer.optimization.rca import build_rca_ledger
 
-        _rca_ledger = build_rca_ledger(
-            filtered_failure_rows,
-            metadata_snapshot=metadata_snapshot,
-            extra_findings=metadata_snapshot.get("_regression_rca_findings") or [],
-        )
-    except Exception:
-        logger.debug("RCA ledger construction failed (non-fatal)", exc_info=True)
+            _rca_ledger = build_rca_ledger(
+                filtered_failure_rows,
+                metadata_snapshot=metadata_snapshot,
+                extra_findings=metadata_snapshot.get("_regression_rca_findings") or [],
+            )
+        except Exception:
+            logger.debug("RCA ledger construction failed (non-fatal)", exc_info=True)
 
     return {
         "lever_assignments": lever_assignments,
@@ -9076,11 +9081,14 @@ def _run_lever_loop(
                 select_compatible_themes,
             )
 
-            metadata_snapshot["_rca_themes"] = select_compatible_themes(
-                list(rca_ledger.get("themes") or []),
-                max_themes=int(os.getenv("GSO_RCA_MAX_THEMES_PER_ITERATION", "3")),
-                max_patches=int(os.getenv("GSO_RCA_MAX_THEME_PATCHES_PER_ITERATION", "8")),
-            )
+            if ENABLE_RCA_THEME_BUNDLES:
+                metadata_snapshot["_rca_themes"] = select_compatible_themes(
+                    list(rca_ledger.get("themes") or []),
+                    max_themes=RCA_MAX_THEMES_PER_ITERATION,
+                    max_patches=RCA_MAX_THEME_PATCHES_PER_ITERATION,
+                )
+            else:
+                metadata_snapshot["_rca_themes"] = rca_ledger.get("themes") or []
         except Exception:
             logger.debug(
                 "RCA theme selection failed; falling back to all themes",

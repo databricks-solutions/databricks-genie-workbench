@@ -376,6 +376,37 @@ default analyzer floor (~0.6) for the strategist input path so only
 high-evidence insights leak into proposal generation; the audit lane
 keeps everything for offline review."""
 
+ENABLE_RCA_LEDGER: bool = (
+    os.getenv("GSO_ENABLE_RCA_LEDGER", "true").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""When true, build typed RCA findings from failed eval rows for audit.
+
+Default true because audit-only ledger construction does not change
+optimizer behavior."""
+
+ENABLE_RCA_THEMES_STRATEGIST: bool = (
+    os.getenv("GSO_ENABLE_RCA_THEMES_STRATEGIST", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""When true, include selected RCA themes and conflict matrix in the
+strategist prompt."""
+
+ENABLE_RCA_THEME_BUNDLES: bool = (
+    os.getenv("GSO_ENABLE_RCA_THEME_BUNDLES", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""When true, allow RCA themes to constrain or seed patch bundles.
+
+Keep false until audit data shows accurate themes."""
+
+RCA_MAX_THEMES_PER_ITERATION: int = int(
+    os.getenv("GSO_RCA_MAX_THEMES_PER_ITERATION", "3")
+)
+RCA_MAX_THEME_PATCHES_PER_ITERATION: int = int(
+    os.getenv("GSO_RCA_MAX_THEME_PATCHES_PER_ITERATION", "8")
+)
+
 ENFORCE_REFLECTION_REVALIDATION: bool = (
     os.getenv("GSO_ENFORCE_REFLECTION_REVALIDATION", "true").lower()
     in {"1", "true", "yes", "on"}

@@ -32,6 +32,7 @@ from genie_space_optimizer.common.config import (
     CONFLICT_RULES,
     DEFAULT_THRESHOLDS,
     DESCRIPTION_ENRICHMENT_PROMPT,
+    ENABLE_RCA_THEMES_STRATEGIST,
     FAILURE_TAXONOMY,
     GENERIC_FIX_PREFIXES,
     INSTRUCTION_SECTION_ORDER,
@@ -8802,10 +8803,12 @@ def _call_llm_for_adaptive_strategy(
         suggestions_text = "\n".join(lines_hs)
 
     iq_scan_text = _format_iq_scan_findings(iq_scan_summary)
-    rca_theme_context = _format_rca_themes_for_strategy(
-        metadata_snapshot.get("_rca_themes") or [],
-        metadata_snapshot.get("_rca_theme_conflicts") or [],
-    )
+    rca_theme_context = ""
+    if ENABLE_RCA_THEMES_STRATEGIST:
+        rca_theme_context = _format_rca_themes_for_strategy(
+            metadata_snapshot.get("_rca_themes") or [],
+            metadata_snapshot.get("_rca_theme_conflicts") or [],
+        )
 
     # ── Build structured context ────────────────────────────────────
     context_data = _build_context_data(
