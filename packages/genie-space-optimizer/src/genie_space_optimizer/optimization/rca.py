@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Iterable
 
 
 class RcaKind(str, Enum):
@@ -297,3 +297,166 @@ def extract_rca_findings_from_row(
         ))
 
     return findings
+
+
+def _theme_patch_base(f: RcaFinding) -> dict:
+    return {
+        "rca_id": f.rca_id,
+        "patch_family": f.patch_family,
+        "target_qids": list(f.target_qids),
+        "source": "rca_theme",
+        "confidence": f.confidence,
+    }
+
+
+def _objects_for_theme(patches: Iterable[dict]) -> tuple[str, ...]:
+    touched: list[str] = []
+    for p in patches:
+        for key in (
+            "target",
+            "target_object",
+            "table",
+            "table_id",
+            "column",
+            "instruction_section",
+        ):
+            val = p.get(key)
+            if isinstance(val, str) and val:
+                touched.append(val)
+    return tuple(dict.fromkeys(touched))
+
+
+def compile_patch_themes(
+    findings: list[RcaFinding],
+    *,
+    metadata_snapshot: dict | None = None,
+) -> list[RcaPatchTheme]:
+    """Compile RCA findings into coherent patch themes.
+
+    This function proposes patch intent only. Existing validators,
+    grounding, leakage checks, and appliers still decide what persists.
+    """
+    del metadata_snapshot  # Reserved for catalog-aware patch shaping.
+    themes: list[RcaPatchTheme] = []
+    for f in findings:
+        base = _theme_patch_base(f)
+        patches: list[dict] = []
+
+        if f.rca_kind is RcaKind.METRIC_VIEW_ROUTING_CONFUSION:
+            for obj in f.expected_objects:
+                if obj.startswith("mv_"):
+                    patches.append({
+                        **base,
+                        "type": "update_description",
+                        "target": obj,
+                        "lever": 1,
+                        "intent": (
+                            "mark as default asset for unqualified business term"
+                        ),
+                    })
+                elif obj:
+                    patches.append({
+                        **base,
+                        "type": "update_column_description",
+                        "column": obj,
+                        "lever": 1,
+                        "intent": "strengthen intended measure semantics",
+                    })
+            for obj in f.actual_objects:
+                if obj.startswith("mv_"):
+                    patches.append({
+                        **base,
+                        "type": "update_description",
+                        "target": obj,
+                        "lever": 1,
+                        "intent": "clarify narrower channel-specific use",
+                    })
+                elif obj:
+                    patches.append({
+                        **base,
+                        "type": "update_column_description",
+                        "column": obj,
+                        "lever": 1,
+                        "intent": (
+                            "clarify do-not-use-unless-explicit semantics"
+                        ),
+                    })
+
+        elif f.rca_kind is RcaKind.MEASURE_SWAP:
+            for obj in f.expected_objects:
+                patches.append({
+                    **base,
+                    "type": "update_column_description",
+                    "column": obj,
+                    "lever": 1,
+                    "intent": (
+                        "strengthen intended measure description and synonyms"
+                    ),
+                })
+
+        elif f.rca_kind is RcaKind.CANONICAL_DIMENSION_MISSED:
+            for obj in f.expected_objects:
+                patches.append({
+                    **base,
+                    "type": "update_column_description",
+                    "column": obj,
+                    "lever": 1,
+                    "intent": (
+                        "use canonical dimension instead of derived expression"
+                    ),
+                })
+
+        elif f.rca_kind is RcaKind.MISSING_REQUIRED_DIMENSION:
+            for obj in f.expected_objects:
+                patches.append({
+                    **base,
+                    "type": "update_column_description",
+                    "column": obj,
+                    "lever": 1,
+                    "intent": (
+                        "required grouping dimension for comparison questions"
+                    ),
+                })
+
+        elif f.rca_kind is RcaKind.EXTRA_DEFENSIVE_FILTER:
+            patches.append({
+                **base,
+                "type": "add_instruction",
+                "target": "QUERY CONSTRUCTION",
+                "instruction_section": "QUERY CONSTRUCTION",
+                "lever": 5,
+                "intent": "do not add IS NOT NULL filters unless requested",
+            })
+
+        if not patches:
+            continue
+        themes.append(RcaPatchTheme(
+            rca_id=f.rca_id,
+            rca_kind=f.rca_kind,
+            patch_family=f.patch_family,
+            patches=tuple(patches),
+            target_qids=f.target_qids,
+            touched_objects=_objects_for_theme(patches),
+            risk_level="medium",
+            confidence=f.confidence,
+            evidence_summary="; ".join(e.detail for e in f.evidence[:3]),
+        ))
+    return themes
+
+
+def detect_theme_conflicts(themes: list[RcaPatchTheme]) -> list[ThemeConflict]:
+    conflicts: list[ThemeConflict] = []
+    owner: dict[str, str] = {}
+    for theme in themes:
+        for obj in theme.touched_objects:
+            key = obj.lower()
+            if key in owner and owner[key] != theme.rca_id:
+                conflicts.append(ThemeConflict(
+                    left_rca_id=owner[key],
+                    right_rca_id=theme.rca_id,
+                    object_id=obj,
+                    reason="multiple RCA themes touch the same object",
+                ))
+            else:
+                owner[key] = theme.rca_id
+    return conflicts
