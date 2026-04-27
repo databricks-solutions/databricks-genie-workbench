@@ -1455,7 +1455,8 @@ def preflight_collect_uc_metadata(
             logger.info(
                 "MV catalog detection summary: refs=%d, detected=%d, "
                 "describe_error=%d, empty_result=%d, no_envelope=%d, "
-                "no_view_text=%d, yaml_parse_error=%d, not_mv_shape=%d",
+                "no_view_text=%d, yaml_parse_error=%d, not_mv_shape=%d, "
+                "no_warehouse=%d",
                 len(_refs_seen),
                 _counts["detected"],
                 _counts["describe_error"],
@@ -1464,6 +1465,7 @@ def preflight_collect_uc_metadata(
                 _counts["no_view_text"],
                 _counts["yaml_parse_error"],
                 _counts["not_mv_shape"],
+                _counts.get("no_warehouse", 0),
             )
         except Exception:
             logger.debug(

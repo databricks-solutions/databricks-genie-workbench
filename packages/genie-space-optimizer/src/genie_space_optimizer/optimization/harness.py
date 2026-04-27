@@ -4106,6 +4106,16 @@ def _prepare_lever_loop(
                 summarize_outcomes,
             )
             _warehouse_id = resolve_warehouse_id("")
+            # Task 9: surface the warehouse id resolution result up
+            # front so a missing warehouse is immediately
+            # distinguishable from a DESCRIBE that returned no MV
+            # signals — the two outcomes look identical in the
+            # downstream "MVs detected: 0" line otherwise.
+            print(
+                f"  [SEMANTICS] SQL warehouse for MV detection: "
+                f"{_warehouse_id or '(missing)'}",
+                flush=True,
+            )
             _, _yamls, _outcomes = detect_metric_views_via_catalog_with_outcomes(
                 spark,
                 table_refs,
@@ -4139,7 +4149,7 @@ def _prepare_lever_loop(
                     "Catalog metric-view detection summary for %s: "
                     "refs=%d, detected=%d, describe_error=%d, empty_result=%d, "
                     "no_envelope=%d, no_view_text=%d, yaml_parse_error=%d, "
-                    "not_mv_shape=%d",
+                    "not_mv_shape=%d, no_warehouse=%d",
                     run_id, len(table_refs),
                     _counts["detected"],
                     _counts["describe_error"],
@@ -4148,6 +4158,7 @@ def _prepare_lever_loop(
                     _counts["no_view_text"],
                     _counts["yaml_parse_error"],
                     _counts["not_mv_shape"],
+                    _counts.get("no_warehouse", 0),
                 )
             except Exception:
                 logger.debug(
