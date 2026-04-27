@@ -9635,6 +9635,44 @@ def generate_validated_sql_examples(
         # update reflects all rounds (not just the last one).
         invalid_carry.extend(invalid)
 
+        # ── Task 5: planner-error MV recovery ──────────────────────
+        # Before the adaptive overdraw short-circuit fires on
+        # ``no_mv_measures``, mine planner errors from the round's
+        # invalid candidates for ``MetricView `cat`.`sch`.`name``` /
+        # bare-FQN shapes. If the planner has proven any asset is an
+        # MV, stamp semantics with provenance ``planner_error`` and
+        # rebuild ``mv_measures`` so the next loop iteration has a
+        # chance to wrap measures correctly. This does not invent
+        # measures — it only prevents a permanent zero-MV state when
+        # ``DESCRIBE`` missed the metadata but the planner confirmed it.
+        if not mv_measures and invalid:
+            try:
+                from genie_space_optimizer.common.asset_semantics import (
+                    stamp_metric_views_from_planner_errors,
+                )
+                planner_errors = [
+                    str(c.get("validation_error") or "")
+                    for c in invalid
+                    if str(c.get("validation_error") or "")
+                ]
+                stamped_mvs = stamp_metric_views_from_planner_errors(
+                    config, planner_errors,
+                )
+                if stamped_mvs:
+                    metric_view_names = effective_metric_view_identifiers_with_catalog(
+                        config,
+                    )
+                    mv_measures = build_metric_view_measures(config)
+                    logger.info(
+                        "gvse planner-error MV recovery: stamped %d metric "
+                        "view(s) from planner errors: %s",
+                        len(stamped_mvs), sorted(stamped_mvs),
+                    )
+            except Exception:
+                logger.debug(
+                    "gvse planner-error MV recovery failed", exc_info=True,
+                )
+
         # ── PR 21: adaptive overdraw short-circuit ──────────────────
         # When ``mv_measures`` is empty AND the dominant rejection
         # bucket from this round is ``mv_missing_measure_function``,

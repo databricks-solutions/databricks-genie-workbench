@@ -57,6 +57,7 @@ the existing detection paths.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -86,6 +87,9 @@ PROVENANCE_CATALOG = "catalog"
 PROVENANCE_PROFILE_RECLASSIFIED = "profile_reclassified"
 PROVENANCE_GENIE_TABLES = "genie_tables"
 PROVENANCE_GENIE_VIEWS = "genie_views"
+PROVENANCE_PLANNER_ERROR = "planner_error"
+
+OUTCOME_PLANNER_ERROR_METRIC_VIEW = "planner_error_metric_view"
 
 
 @dataclass
@@ -544,6 +548,95 @@ def asset_kind(config: dict, identifier: str) -> str:
 def is_metric_view(config: dict, identifier: str) -> bool:
     """Convenience: True iff ``identifier`` resolves to ``kind=metric_view``."""
     return asset_kind(config, identifier) == KIND_METRIC_VIEW
+
+
+_PLANNER_METRIC_VIEW_BACKTICK_RE = re.compile(
+    r"MetricView\s+`([^`]+)`\.`([^`]+)`\.`([^`]+)`",
+    re.IGNORECASE,
+)
+
+_PLANNER_METRIC_VIEW_FQN_RE = re.compile(
+    r"MetricView\s+([A-Za-z_][\w-]*)\.([A-Za-z_][\w-]*)\.([A-Za-z_][\w-]*)",
+    re.IGNORECASE,
+)
+
+
+def extract_metric_view_identifiers_from_error(message: str) -> set[str]:
+    """Extract metric-view FQNs from Spark/warehouse planner messages.
+
+    The planner stamps two shapes for a metric-view reference:
+    backtick-quoted (``MetricView `cat`.`sch`.`name```) and bare-FQN
+    (``MetricView cat.sch.name``). This helper returns the union as
+    lower-case FQNs so the caller can match against
+    ``get_asset_semantics`` keys without case-fold churn.
+    """
+    text = str(message or "")
+    out: set[str] = set()
+    for cat, sch, name in _PLANNER_METRIC_VIEW_BACKTICK_RE.findall(text):
+        if cat and sch and name:
+            out.add(f"{cat}.{sch}.{name}".lower())
+    for cat, sch, name in _PLANNER_METRIC_VIEW_FQN_RE.findall(text):
+        if cat and sch and name:
+            out.add(f"{cat}.{sch}.{name}".lower())
+    return out
+
+
+def stamp_metric_views_from_planner_errors(
+    config: dict,
+    errors: list[str],
+) -> set[str]:
+    """Upgrade semantics entries when the planner proves an asset is an MV.
+
+    When ``DESCRIBE TABLE EXTENDED ... AS JSON`` did not surface
+    metric-view metadata (no warehouse, mis-permissioned, runtime
+    quirk) but the planner subsequently emitted an error containing
+    ``MetricView `cat`.`sch`.`name```, we use that as authoritative
+    evidence and stamp the asset as ``KIND_METRIC_VIEW`` with
+    provenance ``planner_error`` so downstream stages stop treating
+    it as a plain table.
+
+    Returns the set of identifiers that were upgraded. Empty input or
+    a config without ``_asset_semantics`` is a no-op.
+    """
+    if not isinstance(config, dict):
+        return set()
+
+    discovered: set[str] = set()
+    for err in errors or []:
+        discovered.update(extract_metric_view_identifiers_from_error(err))
+    if not discovered:
+        return set()
+
+    semantics = dict(get_asset_semantics(config))
+    for ident in sorted(discovered):
+        short = _short_name(ident)
+        entry = semantics.get(ident)
+        if not isinstance(entry, dict):
+            entry = AssetSemantics(
+                identifier=ident,
+                short_name=short,
+                kind=KIND_METRIC_VIEW,
+                provenance=[PROVENANCE_PLANNER_ERROR],
+                outcome=OUTCOME_PLANNER_ERROR_METRIC_VIEW,
+                detection_errors=["planner identified this asset as MetricView"],
+            ).to_dict()
+        else:
+            entry = dict(entry)
+            entry["kind"] = KIND_METRIC_VIEW
+            entry["short_name"] = entry.get("short_name") or short
+            entry["provenance"] = _dedup_lower(
+                list(entry.get("provenance") or []) + [PROVENANCE_PLANNER_ERROR]
+            )
+            entry["outcome"] = OUTCOME_PLANNER_ERROR_METRIC_VIEW
+            errs = list(entry.get("detection_errors") or [])
+            marker = "planner identified this asset as MetricView"
+            if marker not in errs:
+                errs.append(marker)
+            entry["detection_errors"] = errs
+        semantics[ident] = entry
+
+    stamp_asset_semantics(config, semantics, mirror_parsed=True)
+    return discovered
 
 
 def metric_view_identifiers(config: dict) -> set[str]:
