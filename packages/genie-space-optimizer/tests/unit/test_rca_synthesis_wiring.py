@@ -125,3 +125,167 @@ def test_rca_synthesis_requests_are_collected_from_selected_themes() -> None:
     selected = _rca_themes_requesting_synthesis(themes)
 
     assert [t.rca_id for t in selected] == ["rca_synth"]
+
+
+def test_rca_themes_requesting_sql_snippets_filters_correctly() -> None:
+    from genie_space_optimizer.optimization.optimizer import (
+        _rca_themes_requesting_sql_snippets,
+    )
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+
+    themes = [
+        RcaPatchTheme(
+            rca_id="rca_no_snippet",
+            rca_kind=RcaKind.EXTRA_DEFENSIVE_FILTER,
+            patch_family="avoid_unrequested_defensive_filters",
+            patches=({"type": "add_instruction", "lever": 5},),
+            target_qids=("q1",),
+            touched_objects=("QUERY CONSTRUCTION",),
+        ),
+        RcaPatchTheme(
+            rca_id="rca_measure",
+            rca_kind=RcaKind.MEASURE_SWAP,
+            patch_family="contrastive_measure_disambiguation",
+            patches=(
+                {"type": "update_column_description", "lever": 1},
+                {"type": "add_sql_snippet_measure", "lever": 6,
+                 "snippet_type": "measure", "target_object": "gross_sales"},
+            ),
+            target_qids=("q2",),
+            touched_objects=("gross_sales",),
+        ),
+        RcaPatchTheme(
+            rca_id="rca_filter",
+            rca_kind=RcaKind.FILTER_LOGIC_MISMATCH,
+            patch_family="filter_logic_guidance",
+            patches=({"type": "add_sql_snippet_filter", "lever": 6,
+                      "snippet_type": "filter"},),
+            target_qids=("q3",),
+            touched_objects=("date_window",),
+        ),
+    ]
+
+    selected = _rca_themes_requesting_sql_snippets(themes)
+
+    assert [t.rca_id for t in selected] == ["rca_measure", "rca_filter"]
+
+
+def test_rca_sql_snippet_bridge_flag_is_imported_by_optimizer() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import optimizer
+
+    src = inspect.getsource(optimizer)
+
+    assert "ENABLE_RCA_SQL_SNIPPET_BRIDGE" in src
+    assert "_rca_themes_requesting_sql_snippets" in src
+
+
+def test_rca_sql_snippet_bridge_produces_lever6_proposal_when_flag_on(
+    monkeypatch,
+) -> None:
+    """End-to-end bridge test with mocked LLM and validation gates."""
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+
+    monkeypatch.setattr(optimizer, "ENABLE_RCA_SQL_SNIPPET_BRIDGE", True)
+
+    def fake_generate(cluster, metadata_snapshot, **kwargs):
+        # Distinguish strategist-driven vs RCA-bridge path so dedup
+        # doesn't silently merge them. In production, two distinct
+        # cluster contexts would naturally produce different SQL.
+        is_rca = cluster.get("cluster_id", "").startswith("rca_")
+        return {
+            "patch_type": "add_sql_snippet_measure",
+            "lever": 6,
+            "snippet_type": "measure",
+            "display_name": "Gross Sales (RCA)" if is_rca else "Gross Sales",
+            "alias": "gross_sales_rca" if is_rca else "gross_sales_total",
+            "sql": "SUM(gross_sales) -- rca" if is_rca else "SUM(gross_sales)",
+            "synonyms": ["sales before returns"],
+            "instruction": "Use for revenue before returns.",
+            "target_table": "orders",
+            "rationale": "RCA-derived" if is_rca else "strategist",
+            "affected_questions": cluster.get("question_ids", []),
+            "confidence": 0.7,
+            "questions_fixed": len(cluster.get("question_traces", [])),
+            "validation_passed": True,
+        }
+
+    monkeypatch.setattr(optimizer, "_generate_lever6_proposal", fake_generate)
+
+    theme = RcaPatchTheme(
+        rca_id="rca_measure",
+        rca_kind=RcaKind.MEASURE_SWAP,
+        patch_family="contrastive_measure_disambiguation",
+        patches=(
+            {
+                "type": "add_sql_snippet_measure",
+                "lever": 6,
+                "snippet_type": "measure",
+                "target_object": "orders.gross_sales",
+                "intent": "define reusable measure",
+            },
+        ),
+        target_qids=("q_measure",),
+        touched_objects=("gross_sales",),
+    )
+
+    metadata_snapshot = {"_rca_themes": [theme]}
+    proposals = optimizer.generate_proposals_from_strategy(
+        strategy={"action_groups": []},
+        action_group={
+            "id": "AG1",
+            "lever_directives": {"6": {}},
+            "source_cluster_ids": [],
+            "affected_questions": [],
+            "root_cause_summary": "test",
+        },
+        metadata_snapshot=metadata_snapshot,
+        target_lever=6,
+        apply_mode="apply",
+        benchmarks=[],
+    )
+
+    p = next((x for x in proposals if x.get("source") == "rca_theme_lever6"), None)
+    assert p is not None, f"bridge produced no rca_theme_lever6 proposal; got {proposals}"
+    assert p["lever"] == 6
+    assert p["rca_id"] == "rca_measure"
+    assert p["patch_family"] == "contrastive_measure_disambiguation"
+    assert p["target_qids"] == ["q_measure"]
+    assert p["provenance"]["synthesis_source"] == "rca_theme_lever6"
+    assert p["patch_type"] == "add_sql_snippet_measure"
+
+
+def test_rca_sql_snippet_bridge_no_op_when_flag_off(monkeypatch) -> None:
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+
+    monkeypatch.setattr(optimizer, "ENABLE_RCA_SQL_SNIPPET_BRIDGE", False)
+
+    theme = RcaPatchTheme(
+        rca_id="rca_measure",
+        rca_kind=RcaKind.MEASURE_SWAP,
+        patch_family="contrastive_measure_disambiguation",
+        patches=({"type": "add_sql_snippet_measure", "lever": 6,
+                  "snippet_type": "measure"},),
+        target_qids=("q_measure",),
+        touched_objects=("gross_sales",),
+    )
+
+    proposals = optimizer.generate_proposals_from_strategy(
+        strategy={"action_groups": []},
+        action_group={
+            "id": "AG1",
+            "lever_directives": {"6": {}},
+            "source_cluster_ids": [],
+            "affected_questions": [],
+            "root_cause_summary": "test",
+        },
+        metadata_snapshot={"_rca_themes": [theme]},
+        target_lever=6,
+        apply_mode="apply",
+        benchmarks=[],
+    )
+
+    assert not [p for p in proposals if p.get("source") == "rca_theme_lever6"]

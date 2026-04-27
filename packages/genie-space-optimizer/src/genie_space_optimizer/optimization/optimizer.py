@@ -33,6 +33,7 @@ from genie_space_optimizer.common.config import (
     DEFAULT_THRESHOLDS,
     DESCRIPTION_ENRICHMENT_PROMPT,
     ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS,
+    ENABLE_RCA_SQL_SNIPPET_BRIDGE,
     ENABLE_RCA_THEMES_STRATEGIST,
     FAILURE_TAXONOMY,
     GENERIC_FIX_PREFIXES,
@@ -7040,6 +7041,26 @@ def _rca_themes_requesting_synthesis(themes: list[Any]) -> list[Any]:
     return out
 
 
+_RCA_SQL_SNIPPET_PATCH_TYPES: frozenset[str] = frozenset({
+    "add_sql_snippet_measure",
+    "add_sql_snippet_filter",
+    "add_sql_snippet_expression",
+})
+
+
+def _rca_themes_requesting_sql_snippets(themes: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    for theme in themes or []:
+        patches = getattr(theme, "patches", None)
+        if isinstance(theme, dict):
+            patches = theme.get("patches")
+        for patch in patches or ():
+            if isinstance(patch, dict) and patch.get("type") in _RCA_SQL_SNIPPET_PATCH_TYPES:
+                out.append(theme)
+                break
+    return out
+
+
 def _format_rca_themes_for_strategy(
     rca_themes: list[Any],
     conflicts: list[Any],
@@ -13000,6 +13021,112 @@ def generate_proposals_from_strategy(
                     }
                     proposal["provenance"] = {**provenance_base, "patch_type": proposal["patch_type"]}
                     proposals.append(proposal)
+
+            if ENABLE_RCA_SQL_SNIPPET_BRIDGE:
+                _bridged_themes = _rca_themes_requesting_sql_snippets(
+                    metadata_snapshot.get("_rca_themes") or []
+                )
+                for _theme in _bridged_themes:
+                    _theme_patches = list(getattr(_theme, "patches", ()) or ())
+                    _snippet_patches = [
+                        p for p in _theme_patches
+                        if isinstance(p, dict)
+                        and p.get("type") in _RCA_SQL_SNIPPET_PATCH_TYPES
+                    ]
+                    if not _snippet_patches:
+                        continue
+                    _theme_kind = getattr(_theme, "rca_kind", None)
+                    _kind_value = (
+                        _theme_kind.value
+                        if hasattr(_theme_kind, "value")
+                        else str(_theme_kind or "unknown")
+                    )
+                    _theme_qids = list(getattr(_theme, "target_qids", ()) or ())
+                    _theme_touched = list(
+                        getattr(_theme, "touched_objects", ()) or ()
+                    )
+                    _synthetic_cluster = {
+                        "cluster_id": str(getattr(_theme, "rca_id", ag_id)),
+                        "root_cause": _kind_value,
+                        "asi_failure_type": _kind_value,
+                        "question_traces": _theme_qids,
+                        "question_ids": _theme_qids,
+                        "asi_blame_set": _theme_touched,
+                    }
+                    _hints: list[dict] = []
+                    for _p in _snippet_patches:
+                        _target_obj = str(_p.get("target_object") or "")
+                        _target_table = ""
+                        if "." in _target_obj:
+                            _parts = _target_obj.split(".")
+                            if len(_parts) >= 2:
+                                _target_table = _parts[-2]
+                        _hints.append({
+                            "snippet_type": str(_p.get("snippet_type") or ""),
+                            "target_table": _target_table,
+                            "target_object": _target_obj,
+                            "intent": _p.get("intent") or "",
+                            "expected_objects": _p.get("expected_objects") or [],
+                            "rca_kind": _kind_value,
+                            "affected_questions": _theme_qids,
+                        })
+                    try:
+                        _proposal = _generate_lever6_proposal(
+                            _synthetic_cluster, metadata_snapshot,
+                            strategist_hints=_hints,
+                            w=w, spark=spark, catalog=catalog,
+                            gold_schema=gold_schema, warehouse_id=warehouse_id,
+                            benchmarks=benchmarks,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "RCA SQL snippet bridge failed for theme %s",
+                            getattr(_theme, "rca_id", "?"), exc_info=True,
+                        )
+                        _proposal = None
+                    if not _proposal:
+                        continue
+                    _proposal["proposal_id"] = f"P{len(proposals) + 1:03d}"
+                    _proposal["cluster_id"] = _synthetic_cluster["cluster_id"]
+                    _proposal["scope"] = "genie_config"
+                    _proposal["change_description"] = (
+                        f"[{ag_id}] RCA SQL Expression: "
+                        f"{_proposal.get('display_name', 'unnamed')} "
+                        f"({_proposal.get('snippet_type', '?')})"
+                    )
+                    _proposal["proposed_value"] = _proposal.get("sql", "")
+                    _proposal["rationale"] = (
+                        _proposal.get("rationale")
+                        or f"RCA-driven snippet for {_kind_value}"
+                    )
+                    _proposal["dual_persistence"] = DUAL_PERSIST_PATHS.get(
+                        6, DUAL_PERSIST_PATHS[5],
+                    )
+                    _proposal["questions_at_risk"] = 0
+                    _proposal["net_impact"] = max(
+                        _proposal.get("questions_fixed", 0) * 0.7, 1.0,
+                    )
+                    _proposal["asi"] = {
+                        "failure_type": _kind_value,
+                        "blame_set": _theme_touched,
+                        "severity": "major",
+                        "counterfactual_fixes": [],
+                        "ambiguity_detected": False,
+                    }
+                    _proposal["rca_id"] = str(getattr(_theme, "rca_id", ""))
+                    _proposal["patch_family"] = str(
+                        getattr(_theme, "patch_family", "")
+                    )
+                    _proposal["target_qids"] = _theme_qids
+                    _proposal["source"] = "rca_theme_lever6"
+                    _proposal["provenance"] = {
+                        **provenance_base,
+                        "patch_type": _proposal["patch_type"],
+                        "synthesis_source": "rca_theme_lever6",
+                        "rca_id": _proposal["rca_id"],
+                        "patch_family": _proposal["patch_family"],
+                    }
+                    proposals.append(_proposal)
 
         # ── Example SQL from any lever ────────────────────────────────────
         # Preserve the originating lever so patches are attributed correctly

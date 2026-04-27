@@ -436,6 +436,20 @@ It does not bypass synthesis validation, benchmark-leakage checks, proposal
 grounding, or post-iteration rollback.
 """
 
+ENABLE_RCA_SQL_SNIPPET_BRIDGE: bool = (
+    os.getenv("GSO_ENABLE_RCA_SQL_SNIPPET_BRIDGE", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""When true, RCA themes whose patches request SQL snippets
+(``add_sql_snippet_measure`` / ``add_sql_snippet_filter`` /
+``add_sql_snippet_expression``) deterministically trigger
+``_generate_lever6_proposal`` even when the strategist did not route the
+action group to Lever 6.
+
+This does not bypass identifier validation, SQL execution checks, or
+benchmark-leakage firewall in ``_generate_lever6_proposal``.
+"""
+
 ENFORCE_REFLECTION_REVALIDATION: bool = (
     os.getenv("GSO_ENFORCE_REFLECTION_REVALIDATION", "true").lower()
     in {"1", "true", "yes", "on"}

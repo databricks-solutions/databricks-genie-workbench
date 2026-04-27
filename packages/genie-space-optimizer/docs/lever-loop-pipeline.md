@@ -2580,6 +2580,13 @@ proposal generation:
 6. RCA-driven example SQL generation is gated by
    `GSO_ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS` and uses the same synthesis validator
    and leakage firewall as the existing example SQL path.
+7. RCA-driven SQL snippet generation is gated by
+   `GSO_ENABLE_RCA_SQL_SNIPPET_BRIDGE` and routes RCA themes whose patches
+   request `add_sql_snippet_measure`, `add_sql_snippet_filter`, or
+   `add_sql_snippet_expression` directly into `_generate_lever6_proposal`
+   even when the strategist did not route the action group to Lever 6.
+   Identifier validation, SQL execution checks, and benchmark-leakage
+   firewall still run.
 
 RCA themes are still advisory strategist context. They do not bypass proposal
 grounding, validation, leakage checks, application safety, rollback, or
@@ -2595,6 +2602,7 @@ theme-level attribution.
 | `GSO_ENABLE_RCA_THEME_SELECTION` | `false` | Prune RCA strategist context to a compatible selected subset. Does not constrain patch apply. |
 | `GSO_ENABLE_RCA_THEME_BUNDLES` | `false` | Deprecated compatibility alias for `GSO_ENABLE_RCA_THEME_SELECTION`; not hard bundle enforcement. |
 | `GSO_ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS` | `true` | Allows selected RCA themes to request original, leakage-safe example SQL synthesis through the existing synthesis validator and firewall. |
+| `GSO_ENABLE_RCA_SQL_SNIPPET_BRIDGE` | `false` | Allows RCA themes that recommend SQL snippets to deterministically trigger `_generate_lever6_proposal` even when the strategist routed the action group elsewhere. |
 
 Future hard theme enforcement should use a separate flag and design. That
 future mode would need to constrain proposal generation and/or patch apply
