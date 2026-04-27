@@ -6887,23 +6887,36 @@ def _print_eval_summary(
         f"|   result_correctness (pre-arbiter): {rc_pre_arbiter_pct:.1f}%  "
         f"(arbiter-adjusted: {rc_adjusted_pct:.1f}%)"
     )
-    # Phase 5.2: bound arbiter rescue rate. When the arbiter rescues
-    # more than 30% of rows that judges flagged as failures, the
-    # arbiter-adjusted overall accuracy is masking widespread judge
-    # dissent (e.g. iter-1 retail run: 45.8% rescued, 12.5% all-judge
-    # pass). Surface a SEVERITY:HIGH banner so operators can't miss
-    # it.
-    if total_questions:
-        _rescue_rate = (
-            (arbiter_counts.get("both_correct", 0) - _all_judge_pass_count)
-            / total_questions
-        )
-        if _rescue_rate > 0.30:
+    # Diagnostic: rows where non-info judges emitted a failure signal but
+    # the arbiter oracle still marks Genie as correct. This is not a
+    # "rescue" quality metric; it is a judge/oracle disagreement rate that
+    # tells operators to inspect RCA evidence before over-weighting judge
+    # failures.
+    _disagreement_count = 0
+    for _row in rows:
+        _sig = _extract_row_signals(_row)
+        if _sig["rc"] == "excluded" or _sig["err_type"] in (
+            "both_empty",
+            "genie_result_unavailable",
+        ):
+            continue
+        _arbiter_val = str(
+            _row.get("arbiter/value", _row.get("arbiter", ""))
+        ).lower()
+        if (
+            has_individual_judge_failure(_row)
+            and _arbiter_val in _ARBITER_CORRECT_VERDICTS
+        ):
+            _disagreement_count += 1
+    if _adj_result.evaluated_count:
+        _disagreement_rate = _disagreement_count / _adj_result.evaluated_count
+        if _disagreement_rate > 0.30:
             lines.append(
-                f"|   [SEVERITY:HIGH] Arbiter rescue rate "
-                f"{_rescue_rate*100:.1f}% > 30% — overall accuracy is "
-                f"masking judge dissent. Consider pre-arbiter accuracy "
-                f"({rc_pre_arbiter_pct:.1f}%) as the truthful signal."
+                f"|   [DIAGNOSTIC] Judge-oracle disagreement rate "
+                f"{_disagreement_rate*100:.1f}% > 30% "
+                f"({_disagreement_count}/{_adj_result.evaluated_count}) — "
+                f"arbiter marked Genie correct despite one or more judge "
+                f"failures; inspect RCA evidence."
             )
     if adj_excluded:
         lines.append(f"|   Excluded (GT infra / both-empty / unavailable): {adj_excluded}")

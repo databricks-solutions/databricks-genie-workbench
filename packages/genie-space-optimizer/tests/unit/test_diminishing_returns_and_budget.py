@@ -118,6 +118,31 @@ def test_diminishing_returns_resets_on_accepted_content() -> None:
     assert _diminishing_returns(buf, epsilon=2.0, lookback=2) is False
 
 
+def test_diminishing_returns_uses_acceptance_delta_not_mean_score_delta() -> None:
+    """Plateauing should follow the same post-arbiter acceptance delta
+    used by the accept gate, not the average movement across judge scores."""
+    accepted = _build_reflection_entry(
+        iteration=1,
+        ag_id="AG",
+        accepted=True,
+        levers=[5],
+        target_objects=[],
+        prev_scores={"result_correctness": 90.0, "schema_accuracy": 70.0},
+        new_scores={"result_correctness": 90.5, "schema_accuracy": 99.0},
+        rollback_reason=None,
+        patches=[],
+        root_cause="missing_filter",
+        blame_set=[],
+        source_cluster_ids=["C001"],
+        acceptance_delta_pp=0.5,
+    )
+    buf = [accepted, _rb("slice_gate: result_correctness", iteration=2)]
+
+    assert accepted["accuracy_delta"] > 2.0
+    assert accepted["acceptance_delta_pp"] == 0.5
+    assert _diminishing_returns(buf, epsilon=2.0, lookback=2) is True
+
+
 def test_diminishing_returns_skips_mixed_class_entries() -> None:
     """Mixed buffer: infra, then content. ``_diminishing_returns`` with
     lookback=2 and content-only filter should see only the single

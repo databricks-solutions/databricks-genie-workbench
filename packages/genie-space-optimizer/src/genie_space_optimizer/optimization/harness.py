@@ -5067,6 +5067,7 @@ def _build_reflection_entry(
     blame_set: Any = None,
     source_cluster_ids: list[str] | None = None,
     source_cluster_signatures: list[str] | None = None,
+    acceptance_delta_pp: float | None = None,
 ) -> dict:
     """Build a structured reflection dict for the adaptive loop memory.
 
@@ -5094,6 +5095,12 @@ def _build_reflection_entry(
     }
     prev_acc = sum(prev_scores.values()) / max(len(prev_scores), 1)
     new_acc = sum(new_scores.values()) / max(len(new_scores), 1)
+    _mean_accuracy_delta = new_acc - prev_acc
+    _acceptance_delta_pp = (
+        float(acceptance_delta_pp)
+        if acceptance_delta_pp is not None
+        else _mean_accuracy_delta
+    )
 
     patch_summary_parts: list[str] = []
     do_not_retry: list[str] = []
@@ -5151,7 +5158,8 @@ def _build_reflection_entry(
         "levers": levers,
         "target_objects": target_objects[:15],
         "score_deltas": score_deltas,
-        "accuracy_delta": new_acc - prev_acc,
+        "accuracy_delta": _mean_accuracy_delta,
+        "acceptance_delta_pp": _acceptance_delta_pp,
         "new_failures": new_failures,
         "rollback_reason": rollback_reason,
         "rollback_class": classify_rollback_reason(rollback_reason).value,
@@ -5277,7 +5285,11 @@ def _diminishing_returns(
         return False
 
     for r in recent:
-        if r.get("accepted") and r.get("accuracy_delta", 0.0) >= epsilon:
+        progress_delta = r.get(
+            "acceptance_delta_pp",
+            r.get("accuracy_delta", 0.0),
+        )
+        if r.get("accepted") and progress_delta >= epsilon:
             return False
     return True
 
@@ -8164,6 +8176,7 @@ def _run_gate_checks(
         "passed": True,
         "full_scores": full_scores,
         "full_accuracy": full_accuracy,
+        "acceptance_delta_pp": _strict_decision.delta_pp,
         "new_model_id": new_model_id,
         "full_result": full_result,
     }
@@ -11114,6 +11127,9 @@ def _run_lever_loop(
             prev_failure_qids=prev_failure_qids,
             new_failure_qids=_accepted_fail_qids,
             reflection_text=_acc_reflection,
+            acceptance_delta_pp=float(
+                gate_result.get("acceptance_delta_pp", _acc_delta)
+            ),
             **_ag_identity_kwargs,
         )
         reflection_buffer.append(reflection)

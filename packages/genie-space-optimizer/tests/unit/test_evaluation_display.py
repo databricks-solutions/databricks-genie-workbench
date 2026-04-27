@@ -558,3 +558,46 @@ class TestAllJudgePassPercent:
         out = capsys.readouterr().out
 
         assert "All-judge-pass (no arbiter rescue): 0.0% (0/0)" in out
+
+    def test_judge_oracle_disagreement_rate_replaces_rescue_language(self, capsys):
+        """18 rows with failed judges but arbiter-correct verdicts out of
+        22 total should render as 81.8%, never as an unbounded rescue rate."""
+        from genie_space_optimizer.optimization.evaluation import (
+            _print_eval_summary,
+        )
+
+        all_pass = [
+            _base_row(
+                question_id=f"p{i}",
+                arbiter="both_correct",
+                verdicts={
+                    "syntax_validity": "yes", "schema_accuracy": "yes",
+                    "logical_accuracy": "yes", "semantic_equivalence": "yes",
+                    "completeness": "yes", "response_quality": "yes",
+                    "asset_routing": "yes", "result_correctness": "yes",
+                },
+            )
+            for i in range(4)
+        ]
+        disagreement = [
+            _base_row(
+                question_id=f"x{i}",
+                arbiter="genie_correct",
+                verdicts={"result_correctness": "no"},
+            )
+            for i in range(18)
+        ]
+
+        _print_eval_summary(
+            rows=all_pass + disagreement,
+            scores_100=_scores_100_all_100(),
+            thresholds_passed=True,
+            iteration=0,
+            eval_scope="full",
+            total_questions=22,
+        )
+        out = capsys.readouterr().out
+
+        assert "Judge-oracle disagreement rate 81.8%" in out
+        assert "Arbiter rescue rate" not in out
+        assert "truthful signal" not in out
