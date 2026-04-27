@@ -506,6 +506,42 @@ def attribute_theme_outcomes(
     return out
 
 
+def select_compatible_themes(
+    themes: list[RcaPatchTheme],
+    *,
+    max_themes: int,
+    max_patches: int,
+) -> list[RcaPatchTheme]:
+    """Select a high-confidence non-conflicting set of RCA themes."""
+    ordered = sorted(
+        themes or [],
+        key=lambda t: (
+            -float(_theme_field(t, "confidence", 0.0) or 0.0),
+            -len(_theme_field(t, "target_qids", ()) or ()),
+            str(_theme_field(t, "rca_id", "")),
+        ),
+    )
+    selected: list[RcaPatchTheme] = []
+    touched: set[str] = set()
+    patch_count = 0
+    for theme in ordered:
+        if len(selected) >= max_themes:
+            break
+        patches = _theme_field(theme, "patches", ()) or ()
+        if patch_count + len(patches) > max_patches:
+            continue
+        theme_touched = {
+            str(obj).lower()
+            for obj in (_theme_field(theme, "touched_objects", ()) or ())
+        }
+        if touched & theme_touched:
+            continue
+        selected.append(theme)
+        touched |= theme_touched
+        patch_count += len(patches)
+    return selected
+
+
 def build_rca_ledger(
     rows: list[dict],
     *,

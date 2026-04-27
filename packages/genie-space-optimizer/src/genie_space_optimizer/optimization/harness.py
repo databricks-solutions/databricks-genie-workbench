@@ -9037,7 +9037,23 @@ def _run_lever_loop(
         clusters = _analysis["all_clusters"]
         soft_signal_clusters = _analysis["soft_signal_clusters"]
         rca_ledger = _analysis.get("rca_ledger") or {}
-        metadata_snapshot["_rca_themes"] = rca_ledger.get("themes") or []
+        metadata_snapshot["_rca_ledger"] = rca_ledger
+        try:
+            from genie_space_optimizer.optimization.rca import (
+                select_compatible_themes,
+            )
+
+            metadata_snapshot["_rca_themes"] = select_compatible_themes(
+                list(rca_ledger.get("themes") or []),
+                max_themes=int(os.getenv("GSO_RCA_MAX_THEMES_PER_ITERATION", "3")),
+                max_patches=int(os.getenv("GSO_RCA_MAX_THEME_PATCHES_PER_ITERATION", "8")),
+            )
+        except Exception:
+            logger.debug(
+                "RCA theme selection failed; falling back to all themes",
+                exc_info=True,
+            )
+            metadata_snapshot["_rca_themes"] = rca_ledger.get("themes") or []
         metadata_snapshot["_rca_theme_conflicts"] = (
             rca_ledger.get("conflicts") or []
         )

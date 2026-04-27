@@ -151,3 +151,69 @@ def test_rca_theme_levers_override_wrong_aggregation_coarse_route():
     theme = compile_patch_themes([finding], metadata_snapshot={})[0]
 
     assert {p["lever"] for p in theme.patches} == {1}
+
+
+def test_select_compatible_themes_keeps_non_conflicting_high_confidence_themes():
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        RcaPatchTheme,
+        select_compatible_themes,
+    )
+
+    themes = [
+        RcaPatchTheme(
+            rca_id="rca_avg_txn",
+            rca_kind=RcaKind.METRIC_VIEW_ROUTING_CONFUSION,
+            patch_family="contrastive_metric_routing",
+            patches=({"type": "update_column_description", "column": "avg_txn_day"},),
+            target_qids=("retail_010",),
+            touched_objects=("avg_txn_day",),
+            confidence=0.9,
+        ),
+        RcaPatchTheme(
+            rca_id="rca_calendar_month",
+            rca_kind=RcaKind.CANONICAL_DIMENSION_MISSED,
+            patch_family="canonical_dimension_guidance",
+            patches=({"type": "update_column_description", "column": "calendar_month"},),
+            target_qids=("retail_003",),
+            touched_objects=("calendar_month",),
+            confidence=0.85,
+        ),
+    ]
+
+    selected = select_compatible_themes(themes, max_themes=3, max_patches=5)
+
+    assert [t.rca_id for t in selected] == ["rca_avg_txn", "rca_calendar_month"]
+
+
+def test_select_compatible_themes_drops_lower_confidence_conflict():
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        RcaPatchTheme,
+        select_compatible_themes,
+    )
+
+    themes = [
+        RcaPatchTheme(
+            rca_id="rca_high",
+            rca_kind=RcaKind.EXTRA_DEFENSIVE_FILTER,
+            patch_family="avoid_unrequested_defensive_filters",
+            patches=({"type": "add_instruction", "instruction_section": "QUERY CONSTRUCTION"},),
+            target_qids=("q1",),
+            touched_objects=("QUERY CONSTRUCTION",),
+            confidence=0.9,
+        ),
+        RcaPatchTheme(
+            rca_id="rca_low",
+            rca_kind=RcaKind.EXTRA_DEFENSIVE_FILTER,
+            patch_family="avoid_unrequested_defensive_filters",
+            patches=({"type": "add_instruction", "instruction_section": "QUERY CONSTRUCTION"},),
+            target_qids=("q2",),
+            touched_objects=("QUERY CONSTRUCTION",),
+            confidence=0.6,
+        ),
+    ]
+
+    selected = select_compatible_themes(themes, max_themes=3, max_patches=5)
+
+    assert [t.rca_id for t in selected] == ["rca_high"]
