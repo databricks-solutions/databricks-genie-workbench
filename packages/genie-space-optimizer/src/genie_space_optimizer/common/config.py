@@ -466,7 +466,7 @@ existing or already-proposed joins.
 """
 
 ENABLE_RCA_LEVER1_BRIDGE: bool = (
-    os.getenv("GSO_ENABLE_RCA_LEVER1_BRIDGE", "false").lower()
+    os.getenv("GSO_ENABLE_RCA_LEVER1_BRIDGE", "true").lower()
     in {"1", "true", "yes", "on"}
 )
 """When true, RCA themes whose patches request L1 metadata changes
