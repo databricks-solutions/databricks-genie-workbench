@@ -435,6 +435,8 @@ def _map_to_lever(
         bs = str(blame_set).upper() if blame_set else ""
         return 5 if "TVF" in bs else 1
 
+    # RCA-themed planning may override this coarse map. This fallback is
+    # only for clusters that have no typed RCA findings.
     mapping = {
         "wrong_column": 1,
         "wrong_table": 1,

@@ -109,3 +109,45 @@ def test_attribute_theme_outcome_partitions_fixed_still_failing_and_regressed_qi
     assert out[0].fixed_qids == ("retail_010",)
     assert out[0].still_failing_qids == ("retail_027",)
     assert out[0].regressed_qids == ("retail_003",)
+
+
+def test_metric_view_routing_confusion_does_not_recommend_lever6():
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        recommended_levers_for_rca_kind,
+    )
+
+    assert recommended_levers_for_rca_kind(RcaKind.METRIC_VIEW_ROUTING_CONFUSION) == (1, 5)
+
+
+def test_extra_defensive_filter_routes_to_instruction_not_sql_snippet():
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        recommended_levers_for_rca_kind,
+    )
+
+    assert recommended_levers_for_rca_kind(RcaKind.EXTRA_DEFENSIVE_FILTER) == (3, 5)
+
+
+def test_rca_theme_levers_override_wrong_aggregation_coarse_route():
+    from genie_space_optimizer.optimization.rca import (
+        RcaFinding,
+        RcaKind,
+        compile_patch_themes,
+    )
+
+    finding = RcaFinding(
+        rca_id="rca_avg_txn",
+        question_id="retail_010",
+        rca_kind=RcaKind.METRIC_VIEW_ROUTING_CONFUSION,
+        confidence=0.9,
+        expected_objects=("mv_esr_store_sales", "avg_txn_day"),
+        actual_objects=("mv_7now_store_sales", "7now_avg_txn_cy_day"),
+        recommended_levers=(1, 5),
+        patch_family="contrastive_metric_routing",
+        target_qids=("retail_010",),
+    )
+
+    theme = compile_patch_themes([finding], metadata_snapshot={})[0]
+
+    assert {p["lever"] for p in theme.patches} == {1}

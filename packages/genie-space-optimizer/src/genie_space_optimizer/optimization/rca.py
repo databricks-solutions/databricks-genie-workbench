@@ -73,6 +73,20 @@ class ThemeAttribution:
     regressed_qids: tuple[str, ...] = ()
 
 
+_RCA_KIND_TO_LEVERS: dict[RcaKind, tuple[int, ...]] = {
+    RcaKind.METRIC_VIEW_ROUTING_CONFUSION: (1, 5),
+    RcaKind.MEASURE_SWAP: (1, 5),
+    RcaKind.CANONICAL_DIMENSION_MISSED: (1, 5),
+    RcaKind.MISSING_REQUIRED_DIMENSION: (1, 5),
+    RcaKind.EXTRA_DEFENSIVE_FILTER: (3, 5),
+    RcaKind.UNKNOWN: (5,),
+}
+
+
+def recommended_levers_for_rca_kind(kind: RcaKind) -> tuple[int, ...]:
+    return _RCA_KIND_TO_LEVERS.get(kind, (5,))
+
+
 _MEASURE_RE = re.compile(
     r"MEASURE\s*\(\s*`?([a-zA-Z_][a-zA-Z0-9_]*)`?\s*\)",
     re.IGNORECASE,
@@ -194,7 +208,7 @@ def extract_rca_findings_from_row(
                         confidence=0.85,
                     ),
                 ),
-                recommended_levers=(1, 5),
+                recommended_levers=recommended_levers_for_rca_kind(kind),
                 patch_family="contrastive_metric_routing",
                 target_qids=(qid,),
             ))
@@ -215,7 +229,7 @@ def extract_rca_findings_from_row(
                     confidence=0.8,
                 ),
             ),
-            recommended_levers=(1, 5),
+            recommended_levers=recommended_levers_for_rca_kind(kind),
             patch_family="contrastive_measure_disambiguation",
             target_qids=(qid,),
         ))
@@ -239,7 +253,7 @@ def extract_rca_findings_from_row(
                     confidence=0.9,
                 ),
             ),
-            recommended_levers=(1, 5),
+            recommended_levers=recommended_levers_for_rca_kind(kind),
             patch_family="canonical_dimension_guidance",
             target_qids=(qid,),
         ))
@@ -265,7 +279,7 @@ def extract_rca_findings_from_row(
                     confidence=0.85,
                 ),
             ),
-            recommended_levers=(1, 5),
+            recommended_levers=recommended_levers_for_rca_kind(kind),
             patch_family="required_dimension_guidance",
             target_qids=(qid,),
         ))
@@ -291,7 +305,7 @@ def extract_rca_findings_from_row(
                     confidence=0.8,
                 ),
             ),
-            recommended_levers=(3, 5),
+            recommended_levers=recommended_levers_for_rca_kind(kind),
             patch_family="avoid_unrequested_defensive_filters",
             target_qids=(qid,),
         ))
