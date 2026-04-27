@@ -1407,6 +1407,52 @@ def load_latest_full_iteration(
     return row
 
 
+def load_latest_state_iteration(
+    spark: SparkSession, run_id: str, catalog: str, schema: str,
+    *, include_rolled_back: bool = False,
+) -> dict | None:
+    """Latest iteration row reflecting current Genie Space state.
+
+    Includes ``eval_scope IN ('full', 'enrichment')`` so post-enrichment
+    evals (which mutate the space without an intervening lever-loop
+    iteration) are visible as the current state to clustering and
+    proposal grounding. Without this, callers reading
+    ``load_latest_full_iteration`` get the pre-enrichment baseline_eval
+    row even though enrichment has already mutated the space — the
+    cause of the AG1 zero-relevance regression.
+
+    Ordered by ``iteration DESC, timestamp DESC`` so:
+
+    * Cold start with both Task 2 ``full`` and Task 3 ``enrichment``
+      rows at iteration 0 → enrichment wins (newer timestamp).
+    * Mid-loop retry with iteration > 0 ``full`` rows → most recent
+      lever iteration wins (higher iteration).
+    """
+    fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
+    rollback_filter = (
+        "" if include_rolled_back
+        else " AND (rolled_back IS NULL OR rolled_back = false)"
+    )
+    df = run_query(
+        spark,
+        f"SELECT * FROM {fqn} WHERE run_id = '{run_id}' "
+        f"AND eval_scope IN ('full', 'enrichment')"
+        f"{rollback_filter} "
+        f"ORDER BY iteration DESC, timestamp DESC LIMIT 1",
+    )
+    if df.empty:
+        return None
+    row = df.iloc[0].to_dict()
+    for col in ("scores_json", "failures_json", "remaining_failures", "arbiter_actions_json",
+                "repeatability_json", "rows_json"):
+        if row.get(col) and isinstance(row[col], str):
+            try:
+                row[col] = json.loads(row[col])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return row
+
+
 def load_all_full_iterations(
     spark: SparkSession, run_id: str, catalog: str, schema: str
 ) -> list[dict]:

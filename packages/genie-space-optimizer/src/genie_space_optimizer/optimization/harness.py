@@ -120,6 +120,7 @@ from genie_space_optimizer.optimization.state import (
     ensure_optimization_tables,
     load_all_full_iterations,
     load_latest_full_iteration,
+    load_latest_state_iteration,
     load_run,
     load_stages,
     mark_patches_rolled_back,
@@ -7819,28 +7820,22 @@ def _run_gate_checks(
         _strict_decision.post_arbiter_baseline,
         _strict_decision.min_gain_pp,
     )
-    # Task 3: emit a typed audit row for the strict acceptance verdict
-    # regardless of pass/fail. Reason_code lets a single SQL query
-    # answer "did we get rejected because primary didn't improve, or
-    # because post-arbiter dropped too far?" without parsing logs.
+    # Emit a typed audit row for the single-criterion acceptance verdict
+    # regardless of pass/fail. ``reason_code`` lets a single SQL query
+    # answer "did we accept, regress, or fall short of the gain floor?"
+    # without parsing logs.
     _audit_emit(
         stage_letter="N",
-        gate_name=(
-            "post_arbiter_guardrail"
-            if _strict_decision.reason_code == "post_arbiter_guardrail"
-            else "full_eval_acceptance"
-        ),
+        gate_name="full_eval_acceptance",
         decision=("pass" if _strict_decision.accepted else "fail"),
         reason_code=_strict_decision.reason_code,
         metrics={
-            "primary_delta_pp": _strict_decision.primary_delta_pp,
-            "secondary_delta_pp": _strict_decision.secondary_delta_pp,
-            "min_run_primary": _strict_decision.min_run_primary,
-            "min_run_post_arbiter": _strict_decision.min_run_post_arbiter,
-            "effective_guardrail_pp": _strict_decision.effective_guardrail_pp,
+            "delta_pp": _strict_decision.delta_pp,
+            "min_gain_pp": _strict_decision.min_gain_pp,
+            "post_arbiter_candidate": _strict_decision.post_arbiter_candidate,
+            "post_arbiter_baseline": _strict_decision.post_arbiter_baseline,
             "previous_pre_arbiter": _best_pre_arbiter,
             "previous_post_arbiter": best_accuracy,
-            "objective": _objective,
         },
     )
 
@@ -12071,8 +12066,18 @@ def _resume_lever_loop(
 
     Returns: resume_from_lever, iteration_counter, prev_scores, prev_model_id,
     reflection_buffer, tried_patches, tried_root_causes, skill_exemplars.
+
+    Uses :func:`load_latest_state_iteration` so cold-start runs that
+    have a Task 3 ``eval_scope='enrichment'`` row see the post-
+    enrichment scores/accuracy rather than the stale Task 2
+    ``eval_scope='full'`` baseline. Without this, the unconditional
+    overrides further down in ``_run_lever_loop`` (``if
+    resume_state.get("prev_accuracy"): prev_accuracy = ...``) clobber
+    the orchestrator-resolved post-enrichment value with the pre-
+    enrichment baseline — producing a 81.8% baseline display when
+    enrichment had already lifted the space to 86.4%.
     """
-    latest_iter = load_latest_full_iteration(spark, run_id, catalog, schema)
+    latest_iter = load_latest_state_iteration(spark, run_id, catalog, schema)
     if not latest_iter:
         # S10 — ``None`` signals "no prior lever". Previously we returned
         # ``0`` which collides with a legitimate "loop starts at index 0"
@@ -12681,8 +12686,16 @@ def _get_failure_rows(
     catalog: str,
     schema: str,
 ) -> list[dict]:
-    """Load the latest iteration's per-question rows for failure clustering."""
-    latest = load_latest_full_iteration(spark, run_id, catalog, schema)
+    """Load the latest iteration's per-question rows for failure clustering.
+
+    Uses :func:`load_latest_state_iteration` so post-enrichment evals
+    (``eval_scope='enrichment'``) are visible to clustering and proposal
+    grounding immediately after Task 3 mutates the space — without
+    this, callers see the pre-enrichment baseline_eval row and proposal
+    grounding can't surface columns referenced only by the post-
+    enrichment failures.
+    """
+    latest = load_latest_state_iteration(spark, run_id, catalog, schema)
     if not latest:
         return []
     rows_json = latest.get("rows_json")

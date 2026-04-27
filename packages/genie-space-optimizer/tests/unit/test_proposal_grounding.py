@@ -175,6 +175,53 @@ def test_zero_when_no_failing_rows():
     assert relevance_score(patch, []) == 0.0
 
 
+def test_relevance_score_with_mlflow_flattened_keys():
+    """Persisted MLflow eval rows in ``iterations.rows_json`` use dotted
+    keys (``outputs.predictions.sql`` / ``inputs.expected_sql`` /
+    ``outputs.predictions.response_text``). Without dotted-key support,
+    every patch in the AG1 retail run scored 0.0 because the surface
+    set was empty for every row.
+
+    This regression test pins the dotted-key contract using a row shape
+    that contains *only* dotted keys — no flat fallbacks — to ensure
+    the MLflow path is exercised independently of the legacy flat
+    fixtures elsewhere in this file.
+    """
+    row = {
+        "outputs.predictions.sql":
+            "SELECT region_name, SUM(sales) FROM mv_sales GROUP BY region_name",
+        "inputs.expected_sql":
+            "SELECT region_combination, SUM(sales) FROM mv_sales "
+            "GROUP BY region_combination",
+        "outputs.predictions.response_text": "Sales by region.",
+    }
+    patch = {
+        "type": "update_column_description",
+        "column": "region_combination",
+    }
+
+    assert relevance_score(patch, [row]) == 1.0
+
+
+def test_extract_failure_surface_with_mlflow_flattened_keys():
+    """Companion lower-level test: the surface extractor must resolve
+    SQL identifiers and NL tokens from the dotted-key shape directly.
+    """
+    row = {
+        "outputs.predictions.sql": "SELECT MONTH(date_key_2) FROM mv_t",
+        "inputs.expected_sql": "SELECT YEAR(date_key_2) FROM mv_t",
+        "outputs.predictions.response_text": "yearly trend",
+    }
+
+    surface = extract_failure_surface(row)
+
+    assert "date_key_2" in surface
+    assert "year" in surface
+    assert "month" in surface
+    assert "mv_t" in surface
+    assert "yearly" in surface
+
+
 # ── select_patch_bundle ────────────────────────────────────────
 
 

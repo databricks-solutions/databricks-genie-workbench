@@ -49,6 +49,25 @@ _PATCH_TARGET_KEYS: tuple[str, ...] = (
     "snippet_name",
 )
 
+# Persisted MLflow eval rows use dotted keys (``outputs.predictions.sql``,
+# ``inputs.expected_sql``); ad-hoc test fixtures and a few in-memory
+# call sites use the flat ``generated_sql`` / ``expected_sql`` shape. We
+# look up both — flat names stay in the chain so existing fixture-based
+# tests remain valid, dotted names match what ``_get_failure_rows``
+# loads from ``iterations.rows_json``.
+_FAILURE_SURFACE_SQL_KEYS: tuple[str, ...] = (
+    "outputs.predictions.sql",
+    "inputs.expected_sql",
+    "generated_sql",
+    "expected_sql",
+    "genie_sql",
+)
+
+_FAILURE_SURFACE_NL_KEYS: tuple[str, ...] = (
+    "outputs.predictions.response_text",
+    "nl_response",
+)
+
 
 def _normalize(token: str) -> str:
     return str(token).strip().lower()
@@ -89,7 +108,7 @@ def extract_failure_surface(row: dict) -> set[str]:
     except Exception:
         sqlglot = None  # type: ignore[assignment]
 
-    for sql_key in ("generated_sql", "expected_sql"):
+    for sql_key in _FAILURE_SURFACE_SQL_KEYS:
         sql = row.get(sql_key) or ""
         if not isinstance(sql, str) or not sql.strip():
             continue
@@ -125,8 +144,10 @@ def extract_failure_surface(row: dict) -> set[str]:
             if tok:
                 surface.add(_normalize(tok))
 
-    nl = row.get("nl_response") or ""
-    if isinstance(nl, str):
+    for nl_key in _FAILURE_SURFACE_NL_KEYS:
+        nl = row.get(nl_key) or ""
+        if not isinstance(nl, str) or not nl.strip():
+            continue
         for tok in _IDENT_RE.findall(nl):
             if tok:
                 surface.add(_normalize(tok))
