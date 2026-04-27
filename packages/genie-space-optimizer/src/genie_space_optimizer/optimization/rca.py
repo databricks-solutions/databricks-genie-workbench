@@ -542,10 +542,45 @@ def select_compatible_themes(
     return selected
 
 
+def rca_findings_from_regression_insights(
+    insights: Iterable[Any],
+) -> list[RcaFinding]:
+    findings: list[RcaFinding] = []
+    for ins in insights or []:
+        if getattr(ins, "insight_type", "") != "column_confusion":
+            continue
+        qid = str(getattr(ins, "question_id", "") or "")
+        intended = str(getattr(ins, "intended_column", "") or "")
+        confused = str(getattr(ins, "confused_column", "") or "")
+        if not qid or not intended or not confused:
+            continue
+        kind = RcaKind.MEASURE_SWAP
+        findings.append(RcaFinding(
+            rca_id=_mk_id(qid, kind),
+            question_id=qid,
+            rca_kind=kind,
+            confidence=float(getattr(ins, "confidence", 0.0) or 0.0),
+            expected_objects=(intended,),
+            actual_objects=(confused,),
+            evidence=(
+                RcaEvidence(
+                    "regression_mining",
+                    str(getattr(ins, "rationale", "") or "column confusion"),
+                    0.8,
+                ),
+            ),
+            recommended_levers=recommended_levers_for_rca_kind(kind),
+            patch_family="contrastive_measure_disambiguation",
+            target_qids=(qid,),
+        ))
+    return findings
+
+
 def build_rca_ledger(
     rows: list[dict],
     *,
     metadata_snapshot: dict | None = None,
+    extra_findings: Iterable[RcaFinding] | None = None,
 ) -> dict[str, Any]:
     findings: list[RcaFinding] = []
     for row in rows or []:
@@ -557,6 +592,7 @@ def build_rca_ledger(
                 metadata_snapshot=metadata_snapshot,
             )
         )
+    findings.extend(f for f in (extra_findings or []) if isinstance(f, RcaFinding))
     themes = compile_patch_themes(findings, metadata_snapshot=metadata_snapshot)
     conflicts = detect_theme_conflicts(themes)
     return {

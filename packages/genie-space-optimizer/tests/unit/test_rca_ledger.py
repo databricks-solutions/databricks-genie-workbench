@@ -129,3 +129,27 @@ def test_build_rca_ledger_from_failure_rows_compiles_themes():
     assert ledger["finding_count"] == 1
     assert ledger["theme_count"] == 1
     assert ledger["themes"][0].patch_family == "canonical_dimension_guidance"
+
+
+def test_regression_insight_converts_to_rca_finding():
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        rca_findings_from_regression_insights,
+    )
+    from genie_space_optimizer.optimization.regression_mining import RegressionInsight
+
+    insight = RegressionInsight(
+        insight_type="column_confusion",
+        question_id="retail_017",
+        intended_column="is_month_to_date",
+        confused_column="use_mtdate_flag",
+        sql_clause="WHERE",
+        confidence=0.85,
+        recommended_patch_types=("update_column_description", "add_column_synonym"),
+    )
+
+    findings = rca_findings_from_regression_insights([insight])
+
+    assert len(findings) == 1
+    assert findings[0].rca_kind is RcaKind.MEASURE_SWAP
+    assert findings[0].patch_family == "contrastive_measure_disambiguation"

@@ -7234,6 +7234,7 @@ def _analyze_and_distribute(
         _rca_ledger = build_rca_ledger(
             filtered_failure_rows,
             metadata_snapshot=metadata_snapshot,
+            extra_findings=metadata_snapshot.get("_regression_rca_findings") or [],
         )
     except Exception:
         logger.debug("RCA ledger construction failed (non-fatal)", exc_info=True)
@@ -9026,6 +9027,38 @@ def _run_lever_loop(
         )
         _correction_state["corrected_qids"] = _iter_corr["corrected_qids"]
         _correction_state["quarantined_qids"] = _iter_corr["quarantined_qids"]
+
+        metadata_snapshot["_regression_rca_findings"] = []
+        try:
+            from genie_space_optimizer.common.config import (
+                ENABLE_REGRESSION_MINING_STRATEGIST,
+                REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE,
+            )
+            from genie_space_optimizer.optimization.rca import (
+                rca_findings_from_regression_insights,
+            )
+            from genie_space_optimizer.optimization.regression_mining import (
+                collect_insights_from_reflection_buffer,
+                select_strategist_visible_insights,
+            )
+
+            if ENABLE_REGRESSION_MINING_STRATEGIST and reflection_buffer:
+                _all_mined_for_rca = collect_insights_from_reflection_buffer(
+                    reflection_buffer,
+                )
+                _visible_for_rca = select_strategist_visible_insights(
+                    _all_mined_for_rca,
+                    min_confidence=REGRESSION_MINING_STRATEGIST_MIN_CONFIDENCE,
+                    enabled=True,
+                )
+                metadata_snapshot["_regression_rca_findings"] = (
+                    rca_findings_from_regression_insights(_visible_for_rca)
+                )
+        except Exception:
+            logger.debug(
+                "Failed to convert regression-mining insights to RCA findings",
+                exc_info=True,
+            )
 
         # ── 3B.2: Re-cluster from latest eval ────────────────────────
         _analysis = _analyze_and_distribute(
