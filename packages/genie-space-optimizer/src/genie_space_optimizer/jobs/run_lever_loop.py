@@ -385,16 +385,30 @@ _log(
 # COMMAND ----------
 
 if thresholds_met:
-    _banner("Baseline Gate: SKIP Lever Loop")
-    _log("Skip reason", reason="baseline_meets_thresholds", baseline_accuracy=prev_accuracy)
+    _banner("Starting Point Gate: SKIP Lever Loop")
+    # PR 34: ``prev_scores`` is the resolved current state (baseline OR
+    # post-enrichment) — publishing the raw baseline ``scores_json`` here
+    # would leak stale values whenever Task 3 produced a fresh
+    # post-enrichment evaluation.
+    _skip_reason = (
+        "post_enrichment_meets_thresholds"
+        if _accuracy_source == "enrichment.post_enrichment_accuracy"
+        else "baseline_meets_thresholds"
+    )
+    _log(
+        "Skip reason",
+        reason=_skip_reason,
+        accuracy_source=_accuracy_source,
+        accuracy=prev_accuracy,
+    )
     effective_model_id = enrichment_model_id if not enrichment_skipped else prev_model_id
     _log("Effective model ID", effective_model_id=effective_model_id, enrichment_model_id=enrichment_model_id, baseline_model_id=prev_model_id)
-    dbutils.jobs.taskValues.set(key="scores", value=scores_json)
+    dbutils.jobs.taskValues.set(key="scores", value=json.dumps(prev_scores))
     dbutils.jobs.taskValues.set(key="accuracy", value=prev_accuracy)
     dbutils.jobs.taskValues.set(key="model_id", value=effective_model_id)
     dbutils.jobs.taskValues.set(key="iteration_counter", value=0)
     dbutils.jobs.taskValues.set(key="skipped", value=True)
-    dbutils.notebook.exit("SKIPPED: baseline meets thresholds")
+    dbutils.notebook.exit(f"SKIPPED: {_skip_reason} (source={_accuracy_source})")
 
 # COMMAND ----------
 

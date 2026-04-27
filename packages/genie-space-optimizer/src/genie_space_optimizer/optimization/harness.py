@@ -1516,6 +1516,29 @@ def _run_proactive_join_discovery(
         # 6. Build join specs
         new_specs = _build_join_specs_from_proven(new_candidates, metadata_snapshot)
 
+        # PR 33 — drop joins where either side is a metric view per
+        # ``_asset_semantics``. Direct joins on MVs raise
+        # ``METRIC_VIEW_JOIN_NOT_SUPPORTED`` at execute time and surface
+        # in benchmark eval as gate.execute rejections; gating at
+        # discovery prevents the bad join from ever being PATCHed onto
+        # the Genie space.
+        from genie_space_optimizer.optimization.optimizer import (
+            filter_join_specs_by_semantics,
+        )
+        _mv_skip_counters: dict[str, int] = {}
+        _mv_skip_examples: list[tuple[str, str]] = []
+        _specs_before_mv_filter = len(new_specs) if isinstance(new_specs, list) else 0
+        new_specs = filter_join_specs_by_semantics(
+            metadata_snapshot,
+            new_specs,
+            counters=_mv_skip_counters,
+            skipped_examples=_mv_skip_examples,
+        )
+        _specs_after_mv_filter = len(new_specs) if isinstance(new_specs, list) else 0
+        result["joins_skipped_metric_view"] = (
+            _specs_before_mv_filter - _specs_after_mv_filter
+        )
+
         # 7. Gate: nothing to apply
         if not new_specs:
             _jd_lines = [_section("JOIN DISCOVERY", "-")]
@@ -1532,6 +1555,10 @@ def _run_proactive_join_discovery(
             _jd_lines.append(_kv("Merged candidates", result['candidates_found']))
             _jd_lines.append(_kv("Already defined", result['already_defined']))
             _jd_lines.append(_kv("Type-incompatible", result['type_incompatible']))
+            if result.get("joins_skipped_metric_view"):
+                _jd_lines.append(_kv(
+                    "Skipped (metric_view)", result["joins_skipped_metric_view"],
+                ))
             _jd_lines.append(_kv("New joins to apply", 0))
             _jd_lines.append(_bar("-"))
             print("\n".join(_jd_lines))
@@ -1599,6 +1626,10 @@ def _run_proactive_join_discovery(
         _jd_lines.append(_kv("Merged candidates", result['candidates_found']))
         _jd_lines.append(_kv("Already defined", result['already_defined']))
         _jd_lines.append(_kv("Type-incompatible", result['type_incompatible']))
+        if result.get("joins_skipped_metric_view"):
+            _jd_lines.append(_kv(
+                "Skipped (metric_view)", result["joins_skipped_metric_view"],
+            ))
         _jd_lines.append(_kv("New joins applied", result['total_applied']))
         if applied_lines:
             _jd_lines.append("|")
@@ -1699,6 +1730,25 @@ def _mine_and_apply_proven_joins(
         return result
 
     new_specs = _build_join_specs_from_proven(new_candidates, metadata_snapshot)
+
+    # PR 33 — Drop join specs touching metric views before validation
+    # / PATCH. Iterative join mining inherits the same guard as
+    # ``_run_proactive_join_discovery`` so MV-MV joins never reach the
+    # Genie space regardless of which path produced them.
+    from genie_space_optimizer.optimization.optimizer import (
+        filter_join_specs_by_semantics,
+    )
+    _mv_skip_counters: dict[str, int] = {}
+    _specs_before_mv_filter = len(new_specs) if isinstance(new_specs, list) else 0
+    new_specs = filter_join_specs_by_semantics(
+        metadata_snapshot,
+        new_specs,
+        counters=_mv_skip_counters,
+    )
+    _specs_after_mv_filter = len(new_specs) if isinstance(new_specs, list) else 0
+    result["joins_skipped_metric_view"] = (
+        _specs_before_mv_filter - _specs_after_mv_filter
+    )
     if not new_specs:
         return result
 
@@ -2164,6 +2214,27 @@ def _print_unified_example_summary(
             "|  hint: 0 MVs detected but mv_* rejections present — "
             "see catalog-detection summary log line",
         )
+    # PR 33 — invariant: when the semantics map has metric views but
+    # zero MVs are surfaced through the detection sources, the only
+    # known root cause is a config refresh that clobbered the
+    # ``_metric_view_yaml`` / ``_asset_semantics`` caches mid-run.
+    # ``_refresh_config_preserving_mv_state`` exists specifically to
+    # prevent that; if this warning ever fires the helper has been
+    # bypassed and the recurring ``MVs detected: 0`` cluster is back.
+    if _mv_total_for_hint == 0 and isinstance(config, dict):
+        try:
+            from genie_space_optimizer.common.asset_semantics import (
+                metric_view_identifiers as _sem_mv_ids,
+            )
+            _sem_mv_count = len(_sem_mv_ids(config))
+            if _sem_mv_count > 0:
+                _lines.append(
+                    "|  WARNING: 0 MVs in detection sources but "
+                    f"_asset_semantics has {_sem_mv_count} — "
+                    "config-refresh dropped the MV cache",
+                )
+        except Exception:
+            pass
     # PR 27 — surface the unified asset-semantics block plus an
     # invariant warning when zero MVs are stamped despite mv_*
     # rejections. The block survives package INFO-log filtering because
@@ -4333,6 +4404,75 @@ def _prepare_lever_loop(
     return config
 
 
+def _refresh_config_preserving_mv_state(
+    w: "WorkspaceClient",
+    space_id: str,
+    *,
+    uc_columns: list,
+    data_profile: dict,
+    yaml_cache: dict,
+    table_refs: list,
+) -> tuple[dict, dict]:
+    """Re-fetch the Genie space config without losing MV detection state.
+
+    ``fetch_space_config`` rebuilds the config from the Genie REST
+    response and has no awareness of catalog-detection caches. Eight
+    refresh sites in :func:`_run_enrichment` previously dropped
+    ``_metric_view_yaml`` and ``_asset_semantics`` mid-run, which is
+    the root cause of the recurring ``MVs detected: 0`` /
+    ``METRIC_VIEW_JOIN_NOT_SUPPORTED`` /
+    ``METRIC_VIEW_MISSING_MEASURE_FUNCTION`` cluster.
+
+    Returns ``(config, metadata_snapshot)`` so callers can replace
+    both in one expression and stay in lock-step with the existing
+    refresh-block contract (``config["_uc_columns"]`` populated,
+    ``metadata_snapshot["_data_profile"]`` populated, UC types enriched).
+
+    The caller is responsible for capturing ``yaml_cache`` and
+    ``table_refs`` once after the initial ``_prepare_lever_loop`` —
+    they are immutable for the lifetime of an enrichment run because
+    catalog-level MV detection only runs once.
+    """
+    from genie_space_optimizer.common.genie_client import fetch_space_config
+
+    config = fetch_space_config(w, space_id)
+    config["_uc_columns"] = uc_columns
+    if isinstance(yaml_cache, dict) and yaml_cache:
+        config["_metric_view_yaml"] = dict(yaml_cache)
+    metadata_snapshot = config.get("_parsed_space", config)
+    if isinstance(metadata_snapshot, dict):
+        metadata_snapshot["_data_profile"] = data_profile
+        if isinstance(yaml_cache, dict) and yaml_cache:
+            metadata_snapshot["_metric_view_yaml"] = dict(yaml_cache)
+    if uc_columns:
+        enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+
+    # Re-stamp ``_asset_semantics`` from the preserved YAML cache so
+    # the post-refresh config matches the pre-refresh contract. We do
+    # not round-trip ``catalog_outcomes`` / ``catalog_diagnostic_samples``
+    # here — they are debug-only and not consulted on the hot path.
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            build_and_stamp_from_run,
+        )
+
+        build_and_stamp_from_run(
+            config,
+            table_refs=list(table_refs or []),
+            catalog_yamls=yaml_cache if isinstance(yaml_cache, dict) else {},
+            catalog_outcomes={},
+            catalog_diagnostic_samples={},
+            uc_columns=uc_columns if isinstance(uc_columns, list) else None,
+        )
+    except Exception:
+        logger.debug(
+            "asset semantics re-stamp during refresh failed (non-fatal)",
+            exc_info=True,
+        )
+
+    return config, metadata_snapshot
+
+
 def _run_enrichment(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -4386,6 +4526,23 @@ def _run_enrichment(
         if uc_columns:
             enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
 
+        # PR 33 — Capture the MV-state caches once. ``_metric_view_yaml``
+        # is populated by catalog-level detection inside
+        # ``_prepare_lever_loop`` and is immutable for the lifetime of an
+        # enrichment run. Subsequent ``fetch_space_config`` calls would
+        # otherwise drop these caches and silently break every MV-aware
+        # downstream stage. ``table_refs`` is captured here too so the
+        # asset-semantics re-stamp inside the helper sees every ref the
+        # run knows about, matching the contract that
+        # ``_prepare_lever_loop`` first established.
+        from genie_space_optimizer.common.uc_metadata import (
+            extract_genie_space_table_refs,
+        )
+        _yaml_cache_for_refresh: dict = dict(
+            config.get("_metric_view_yaml") or {},
+        )
+        _table_refs_for_refresh = extract_genie_space_table_refs(config) or []
+
         # ── 2. Proactive Enrichment sub-steps ─────────────────────────────
         import mlflow as _mlflow_enr
 
@@ -4420,34 +4577,34 @@ def _run_enrichment(
                 w, spark, run_id, space_id, config, metadata_snapshot, catalog, schema,
             )
             if enrichment_result.get("total_enriched", 0) > 0 or enrichment_result.get("tables_enriched", 0) > 0:
-                config = fetch_space_config(w, space_id)
-                config["_uc_columns"] = uc_columns
-                metadata_snapshot = config.get("_parsed_space", config)
-                metadata_snapshot["_data_profile"] = data_profile
-                if uc_columns:
-                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                config, metadata_snapshot = _refresh_config_preserving_mv_state(
+                    w, space_id,
+                    uc_columns=uc_columns, data_profile=data_profile,
+                    yaml_cache=_yaml_cache_for_refresh,
+                    table_refs=_table_refs_for_refresh,
+                )
 
             join_result = _run_proactive_join_discovery(
                 w, spark, run_id, space_id, config, metadata_snapshot, catalog, schema,
             )
             if join_result.get("total_applied", 0) > 0:
-                config = fetch_space_config(w, space_id)
-                config["_uc_columns"] = uc_columns
-                metadata_snapshot = config.get("_parsed_space", config)
-                metadata_snapshot["_data_profile"] = data_profile
-                if uc_columns:
-                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                config, metadata_snapshot = _refresh_config_preserving_mv_state(
+                    w, space_id,
+                    uc_columns=uc_columns, data_profile=data_profile,
+                    yaml_cache=_yaml_cache_for_refresh,
+                    table_refs=_table_refs_for_refresh,
+                )
 
             meta_result = _run_space_metadata_enrichment(
                 w, spark, run_id, space_id, config, metadata_snapshot, catalog, schema,
             )
             if meta_result.get("description_generated") or meta_result.get("questions_generated"):
-                config = fetch_space_config(w, space_id)
-                config["_uc_columns"] = uc_columns
-                metadata_snapshot = config.get("_parsed_space", config)
-                metadata_snapshot["_data_profile"] = data_profile
-                if uc_columns:
-                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                config, metadata_snapshot = _refresh_config_preserving_mv_state(
+                    w, space_id,
+                    uc_columns=uc_columns, data_profile=data_profile,
+                    yaml_cache=_yaml_cache_for_refresh,
+                    table_refs=_table_refs_for_refresh,
+                )
 
             # ── 5a. Instruction prose mining & promotion (miner-first) ────
             # Runs BEFORE proactive seed/expand (per Task C.5 ordering) so
@@ -4465,12 +4622,12 @@ def _run_enrichment(
                 benchmarks=list(benchmarks) + list(held_out_benchmarks or []),
             )
             if _miner_out["total_applied"] or _miner_out["keep_in_prose_count"]:
-                config = fetch_space_config(w, space_id)
-                config["_uc_columns"] = uc_columns
-                metadata_snapshot = config.get("_parsed_space", config)
-                metadata_snapshot["_data_profile"] = data_profile
-                if uc_columns:
-                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                config, metadata_snapshot = _refresh_config_preserving_mv_state(
+                    w, space_id,
+                    uc_columns=uc_columns, data_profile=data_profile,
+                    yaml_cache=_yaml_cache_for_refresh,
+                    table_refs=_table_refs_for_refresh,
+                )
 
             # ── 5b. Proactive instruction seeding + expand ────────────────
             instruction_result = _run_proactive_instruction_seeding(
@@ -4480,12 +4637,12 @@ def _run_enrichment(
                 instruction_result.get("instructions_seeded")
                 or instruction_result.get("instructions_expanded")
             ):
-                config = fetch_space_config(w, space_id)
-                config["_uc_columns"] = uc_columns
-                metadata_snapshot = config.get("_parsed_space", config)
-                metadata_snapshot["_data_profile"] = data_profile
-                if uc_columns:
-                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                config, metadata_snapshot = _refresh_config_preserving_mv_state(
+                    w, space_id,
+                    uc_columns=uc_columns, data_profile=data_profile,
+                    yaml_cache=_yaml_cache_for_refresh,
+                    table_refs=_table_refs_for_refresh,
+                )
 
             # ── 5c. Pre-flight example_sql synthesis (fills to 20) ────────
             # Two paths behind GSO_UNIFIED_EXAMPLE_SQL_GENERATION (default ON):
@@ -4526,12 +4683,12 @@ def _run_enrichment(
                         data_profile=data_profile,
                     )
                     if unified_example_result.get("applied", 0) > 0:
-                        config = fetch_space_config(w, space_id)
-                        config["_uc_columns"] = uc_columns
-                        metadata_snapshot = config.get("_parsed_space", config)
-                        metadata_snapshot["_data_profile"] = data_profile
-                        if uc_columns:
-                            enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                        config, metadata_snapshot = _refresh_config_preserving_mv_state(
+                            w, space_id,
+                            uc_columns=uc_columns, data_profile=data_profile,
+                            yaml_cache=_yaml_cache_for_refresh,
+                            table_refs=_table_refs_for_refresh,
+                        )
 
                 # Archetype fallback (Option A) OR legacy path.
                 _need_fallback = (
@@ -4557,12 +4714,12 @@ def _run_enrichment(
                             warehouse_id=resolve_warehouse_id(""),
                         )
                         if preflight_example_result.get("applied", 0) > 0:
-                            config = fetch_space_config(w, space_id)
-                            config["_uc_columns"] = uc_columns
-                            metadata_snapshot = config.get("_parsed_space", config)
-                            metadata_snapshot["_data_profile"] = data_profile
-                            if uc_columns:
-                                enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                            config, metadata_snapshot = _refresh_config_preserving_mv_state(
+                                w, space_id,
+                                uc_columns=uc_columns, data_profile=data_profile,
+                                yaml_cache=_yaml_cache_for_refresh,
+                                table_refs=_table_refs_for_refresh,
+                            )
                     except Exception:
                         logger.warning(
                             "preflight example synthesis (fallback) raised; "
@@ -4601,12 +4758,12 @@ def _run_enrichment(
                 sql_expr_result.get("total_candidates", 0) > 0
                 or sql_expr_result.get("repair", {}).get("rewritten", 0) > 0
             ):
-                config = fetch_space_config(w, space_id)
-                config["_uc_columns"] = uc_columns
-                metadata_snapshot = config.get("_parsed_space", config)
-                metadata_snapshot["_data_profile"] = data_profile
-                if uc_columns:
-                    enrich_metadata_with_uc_types(metadata_snapshot, uc_columns)
+                config, metadata_snapshot = _refresh_config_preserving_mv_state(
+                    w, space_id,
+                    uc_columns=uc_columns, data_profile=data_profile,
+                    yaml_cache=_yaml_cache_for_refresh,
+                    table_refs=_table_refs_for_refresh,
+                )
 
             # Bug #4 — benchmark verbatim mining removed. Proposals for
             # example_sqls now come exclusively from AFS-gated structural
@@ -12062,6 +12219,100 @@ def run_evaluation_via_job(
 # ── Convenience Function ─────────────────────────────────────────────
 
 
+def _resolve_effective_starting_point(
+    *,
+    baseline_scores: dict[str, float],
+    baseline_accuracy: float,
+    baseline_thresholds_met: bool,
+    baseline_model_id: str,
+    enrichment_out: dict | None,
+) -> dict[str, Any]:
+    """Resolve the *current* starting state for the lever-loop gate.
+
+    Enrichment may mutate the Genie Space and re-evaluate it. When that
+    happens the post-enrichment evaluation is the authoritative current
+    state of the space — the baseline numbers are stale. This helper
+    centralises the choice between baseline and post-enrichment values
+    so both the in-process orchestration (``optimize_genie_space``) and
+    the Databricks Jobs notebook task (``jobs/run_lever_loop.py``) gate
+    on the same data.
+
+    Parameters
+    ----------
+    baseline_scores, baseline_accuracy, baseline_thresholds_met,
+    baseline_model_id
+        Values captured immediately after Stage 2 (baseline eval).
+    enrichment_out
+        Return value of ``_run_enrichment`` (or ``None`` if enrichment
+        raised). When ``enrichment_skipped`` is true, or
+        ``post_enrichment_accuracy`` is missing, baseline state is kept.
+
+    Returns
+    -------
+    dict
+        ``{"scores", "accuracy", "thresholds_met", "model_id", "source"}``
+        where ``source`` is one of:
+
+        * ``"baseline_eval"`` — enrichment skipped or absent.
+        * ``"baseline_eval_post_enrichment_missing"`` — enrichment ran
+          but did not produce a post-enrichment accuracy (failure /
+          early-exit). State stays baseline; the source is logged so
+          operators can spot the silent fallback.
+        * ``"enrichment.post_enrichment_accuracy"`` — post-enrichment
+          evaluation produced a number; that becomes the current state.
+
+    Notes
+    -----
+    Pure function. No Spark / Workspace dependencies. ``scores`` is
+    always returned as an independent dict so callers can mutate it
+    without leaking back into ``enrichment_out``.
+    """
+
+    resolved: dict[str, Any] = {
+        "scores": dict(baseline_scores or {}),
+        "accuracy": float(baseline_accuracy),
+        "thresholds_met": bool(baseline_thresholds_met),
+        "model_id": str(baseline_model_id) if baseline_model_id is not None else "",
+        "source": "baseline_eval",
+    }
+
+    if not isinstance(enrichment_out, dict):
+        return resolved
+    if enrichment_out.get("enrichment_skipped"):
+        return resolved
+
+    post_acc = enrichment_out.get("post_enrichment_accuracy")
+    if post_acc is None:
+        # Enrichment ran but did not (re)evaluate — keep baseline state
+        # but flag the source so the gate decision is auditable.
+        resolved["source"] = "baseline_eval_post_enrichment_missing"
+        return resolved
+
+    post_scores = enrichment_out.get("post_enrichment_scores") or {}
+    if isinstance(post_scores, dict) and post_scores:
+        resolved["scores"] = {
+            str(k): float(v) for k, v in post_scores.items() if v is not None
+        }
+
+    try:
+        resolved["accuracy"] = float(post_acc)
+    except (TypeError, ValueError):
+        resolved["source"] = "baseline_eval_post_enrichment_missing"
+        return resolved
+
+    resolved["thresholds_met"] = bool(
+        enrichment_out.get("post_enrichment_thresholds_met", False)
+    )
+    resolved["model_id"] = str(
+        enrichment_out.get("post_enrichment_model_id")
+        or enrichment_out.get("enrichment_model_id")
+        or baseline_model_id
+        or ""
+    )
+    resolved["source"] = "enrichment.post_enrichment_accuracy"
+    return resolved
+
+
 def optimize_genie_space(
     space_id: str,
     catalog: str,
@@ -12175,9 +12426,38 @@ def optimize_genie_space(
                 run_id_str,
             )
 
+        # PR 34: gate the lever loop on the *current* evaluated state of
+        # the Genie Space, not the stale pre-enrichment baseline. When
+        # enrichment mutates the space and post-enrichment eval regresses
+        # below thresholds, the run must enter the lever loop instead of
+        # silently converging as ``baseline_meets_thresholds``.
+        _start = _resolve_effective_starting_point(
+            baseline_scores=prev_scores,
+            baseline_accuracy=prev_accuracy,
+            baseline_thresholds_met=thresholds_met,
+            baseline_model_id=model_id,
+            enrichment_out=_enrichment_out,
+        )
+        prev_scores = cast(dict[str, float], _start["scores"])
+        prev_accuracy = float(_start["accuracy"])
+        thresholds_met = bool(_start["thresholds_met"])
+        _accuracy_source = str(_start["source"])
+        if _accuracy_source == "enrichment.post_enrichment_accuracy":
+            _effective_model_id = str(_start["model_id"]) or _effective_model_id
+        logger.info(
+            "Lever-loop gate: accuracy_source=%s accuracy=%.2f thresholds_met=%s "
+            "effective_model_id=%s",
+            _accuracy_source, prev_accuracy, thresholds_met, _effective_model_id,
+        )
+
         if thresholds_met:
+            _convergence_reason = (
+                "post_enrichment_meets_thresholds"
+                if _accuracy_source == "enrichment.post_enrichment_accuracy"
+                else "baseline_meets_thresholds"
+            )
             result.status = "CONVERGED"
-            result.convergence_reason = "baseline_meets_thresholds"
+            result.convergence_reason = _convergence_reason
             result.best_accuracy = prev_accuracy
             result.best_model_id = _effective_model_id
             result.final_scores = prev_scores
@@ -12197,7 +12477,7 @@ def optimize_genie_space(
             update_run_status(
                 spark, run_id_str, catalog, schema,
                 status="CONVERGED",
-                convergence_reason="baseline_meets_thresholds",
+                convergence_reason=_convergence_reason,
             )
         elif prev_accuracy >= 99.0 and not thresholds_met:
             _ao_qids = baseline_out.get("arbiter_overridden_qids", [])
@@ -12291,7 +12571,7 @@ def optimize_genie_space(
             # Stage 3: Lever Loop (enrichment already done)
             loop_out = _run_lever_loop(
                 w, spark, run_id_str, space_id, domain, train_benchmarks, exp_name,
-                prev_scores, prev_accuracy, model_id,
+                prev_scores, prev_accuracy, _effective_model_id,
                 _enrichment_out["config"] if _enrichment_out else {},
                 catalog, schema, levers, max_iterations, thresholds, apply_mode,
                 triggered_by=triggered_by or "",
