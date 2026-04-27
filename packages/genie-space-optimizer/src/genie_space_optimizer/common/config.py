@@ -465,6 +465,21 @@ This does not bypass ``ensure_join_spec_fields`` normalization,
 existing or already-proposed joins.
 """
 
+ENABLE_RCA_LEVER1_BRIDGE: bool = (
+    os.getenv("GSO_ENABLE_RCA_LEVER1_BRIDGE", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""When true, RCA themes whose patches request L1 metadata changes
+(``update_column_description`` / ``add_column_synonym`` /
+``update_description``) trigger ``_generate_lever1_rca_proposal``,
+which calls the LLM to produce description text and high-quality
+synonyms from the failing questions' NL phrasing + RCA evidence.
+
+Existing column proposals from the strategist path are augmented with
+RCA-derived synonyms (additive merge) rather than overwritten. The
+benchmark-leakage firewall still applies via the AFS projection.
+"""
+
 ENFORCE_REFLECTION_REVALIDATION: bool = (
     os.getenv("GSO_ENFORCE_REFLECTION_REVALIDATION", "true").lower()
     in {"1", "true", "yes", "on"}

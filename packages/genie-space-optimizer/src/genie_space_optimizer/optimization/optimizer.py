@@ -34,6 +34,7 @@ from genie_space_optimizer.common.config import (
     DESCRIPTION_ENRICHMENT_PROMPT,
     ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS,
     ENABLE_RCA_JOIN_SPEC_BRIDGE,
+    ENABLE_RCA_LEVER1_BRIDGE,
     ENABLE_RCA_SQL_SNIPPET_BRIDGE,
     ENABLE_RCA_THEMES_STRATEGIST,
     FAILURE_TAXONOMY,
@@ -7075,6 +7076,26 @@ def _rca_themes_requesting_join_specs(themes: list[Any]) -> list[Any]:
     return out
 
 
+_RCA_LEVER1_PATCH_TYPES: frozenset[str] = frozenset({
+    "update_column_description",
+    "add_column_synonym",
+    "update_description",
+})
+
+
+def _rca_themes_requesting_lever1(themes: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    for theme in themes or []:
+        patches = getattr(theme, "patches", None)
+        if isinstance(theme, dict):
+            patches = theme.get("patches")
+        for patch in patches or ():
+            if isinstance(patch, dict) and patch.get("type") in _RCA_LEVER1_PATCH_TYPES:
+                out.append(theme)
+                break
+    return out
+
+
 def _format_rca_themes_for_strategy(
     rca_themes: list[Any],
     conflicts: list[Any],
@@ -10374,6 +10395,180 @@ def _format_existing_sql_snippets(metadata_snapshot: dict) -> str:
     return "\n".join(lines) if lines else "(No existing SQL expressions.)"
 
 
+def _filter_rca_synonyms(
+    candidates: list[Any], existing: list[str],
+) -> list[str]:
+    """Drop low-quality synonym candidates and dedupe against existing list."""
+    existing_lower = {str(s).strip().lower() for s in existing}
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in candidates:
+        s = str(raw).strip().lower()
+        if len(s) < 2:
+            continue
+        if s in existing_lower or s in seen:
+            continue
+        # Drop SQL-shaped tokens (snake_case without spaces)
+        if "_" in s and " " not in s:
+            continue
+        if s.isupper():
+            continue
+        out.append(s)
+        seen.add(s)
+        if len(out) >= 5:
+            break
+    return out
+
+
+def _generate_lever1_rca_proposal(
+    theme: Any,
+    patch: dict,
+    metadata_snapshot: dict,
+    *,
+    w: "WorkspaceClient | None" = None,
+    benchmarks: list[dict] | None = None,
+) -> dict | None:
+    """Generate a Lever-1 column/table proposal from an RCA theme patch.
+
+    Calls the LLM to produce a description and (for column patches) a
+    synonyms list. Uses the AFS projection of source clusters for
+    leakage safety: only sanitized failure_type, blame_set, and the
+    target_qids' question phrases reach the LLM.
+    """
+    import json as _json
+    from genie_space_optimizer.optimization.afs import format_afs
+    from genie_space_optimizer.optimization.leakage import is_benchmark_leak
+
+    ptype = str(patch.get("type") or "")
+    intent = str(patch.get("intent") or "").strip()
+    rca_id = str(getattr(theme, "rca_id", ""))
+    target_qids = list(getattr(theme, "target_qids", ()) or ())
+
+    if ptype == "update_description":
+        target = str(patch.get("target") or "")
+        if not target:
+            return None
+        is_table_level = True
+        table, column = target, ""
+    else:
+        table = str(patch.get("table") or "")
+        column = str(patch.get("column") or "")
+        if not column:
+            return None
+        is_table_level = False
+
+    failure_clusters = (
+        metadata_snapshot.get("_failure_clusters")
+        or metadata_snapshot.get("failure_clusters")
+        or []
+    )
+    qid_set = set(target_qids)
+    relevant_clusters = [
+        c for c in failure_clusters
+        if isinstance(c, dict)
+        and qid_set & set(c.get("question_ids", []) or [])
+    ]
+    afs_projections = [format_afs(c) for c in relevant_clusters[:3]]
+
+    expected_objects = list(patch.get("expected_objects") or [])
+    actual_objects = list(patch.get("actual_objects") or [])
+
+    existing_synonyms: list[str] = []
+    existing_description = ""
+    tables = metadata_snapshot.get("tables") or []
+    for t in tables:
+        if not isinstance(t, dict):
+            continue
+        if t.get("identifier") == table or t.get("name") == table:
+            if is_table_level:
+                existing_description = str(t.get("description", "") or "")
+            else:
+                for col in t.get("columns") or []:
+                    if isinstance(col, dict) and col.get("name") == column:
+                        existing_description = str(col.get("description", "") or "")
+                        existing_synonyms = list(col.get("synonyms") or [])
+                        break
+
+    prompt = (
+        "You are a metadata curator for a Genie SQL space. "
+        "An RCA theme has identified that the following column/table needs "
+        "metadata improvements based on a class of failed eval rows.\n\n"
+        f"TARGET: {'table ' + table if is_table_level else table + '.' + column}\n"
+        f"INTENT: {intent}\n"
+        f"EXPECTED (correct) objects: {expected_objects}\n"
+        f"ACTUAL (wrongly chosen) objects: {actual_objects}\n"
+        f"FAILURE CONTEXT (sanitized): {_json.dumps(afs_projections, default=str)}\n"
+        f"EXISTING DESCRIPTION: {existing_description[:300]}\n"
+        f"EXISTING SYNONYMS: {existing_synonyms}\n\n"
+        "Produce a JSON object with these keys:\n"
+        '  "description": a 1-3 sentence description that strengthens the '
+        "intended semantics and (if relevant) contrasts with the wrongly "
+        "chosen objects. Do not contradict the existing description; "
+        "extend it.\n"
+        + ("" if is_table_level else
+           '  "synonyms": a list of 2-5 lowercase NL phrases users might '
+           "say that should route to this column. Derive from FAILURE "
+           "CONTEXT phrases and EXPECTED/ACTUAL identifiers. Do not include "
+           "phrases already in EXISTING SYNONYMS. Avoid SQL identifiers "
+           "(snake_case, ALL_CAPS).\n")
+        + "Return ONLY the JSON object, no prose."
+    )
+
+    try:
+        raw_text, _ = _traced_llm_call(
+            w, "You are a metadata curator.", prompt,
+            span_name="lever1_rca_proposal",
+        )
+    except Exception:
+        logger.warning(
+            "Lever-1 RCA bridge LLM call failed for %s", rca_id, exc_info=True,
+        )
+        return None
+
+    from genie_space_optimizer.optimization.evaluation import _extract_json
+    parsed = _extract_json(raw_text)
+    if not isinstance(parsed, dict):
+        return None
+    description = str(parsed.get("description") or "").strip()
+    synonyms_raw = parsed.get("synonyms") or []
+    if not isinstance(synonyms_raw, list):
+        synonyms_raw = []
+    synonyms = _filter_rca_synonyms(synonyms_raw, existing_synonyms)
+
+    if benchmarks:
+        is_leak, _reason = is_benchmark_leak(
+            {"description": description, "patch_type": ptype},
+            ptype, benchmarks,
+        )
+        if is_leak:
+            logger.info("Lever-1 RCA proposal rejected (leakage)")
+            return None
+
+    if not description and not synonyms:
+        return None
+
+    if is_table_level:
+        return {
+            "patch_type": "update_description",
+            "table": table,
+            "table_sections": {"description": description} if description else {},
+            "table_entity_type": "table",
+        }
+    sections: dict[str, Any] = {}
+    if description:
+        sections["description"] = description
+    if synonyms:
+        sections["synonyms"] = synonyms
+    return {
+        "patch_type": ptype,
+        "table": table,
+        "column": column,
+        "column_sections": sections,
+        "column_entity_type": "",
+        "_rca_synonyms": synonyms,
+    }
+
+
 def _generate_lever6_proposal(
     cluster: dict,
     metadata_snapshot: dict,
@@ -12215,6 +12410,131 @@ def generate_proposals_from_strategy(
                         "column_sections": col_sections,
                         "column_entity_type": col_etype,
                     })
+
+            if target_lever == 1 and ENABLE_RCA_LEVER1_BRIDGE:
+                _bridged_themes = _rca_themes_requesting_lever1(
+                    metadata_snapshot.get("_rca_themes") or []
+                )
+                _l1_index: dict[tuple[str, str], dict] = {
+                    (
+                        str(p.get("table", "") or ""),
+                        str(p.get("column", "") or ""),
+                    ): p
+                    for p in proposals
+                    if p.get("patch_type") in _RCA_LEVER1_PATCH_TYPES
+                }
+                for _theme in _bridged_themes:
+                    _theme_patches = list(getattr(_theme, "patches", ()) or ())
+                    _l1_patches = [
+                        p for p in _theme_patches
+                        if isinstance(p, dict)
+                        and p.get("type") in _RCA_LEVER1_PATCH_TYPES
+                    ]
+                    if not _l1_patches:
+                        continue
+                    _theme_id = str(getattr(_theme, "rca_id", ag_id))
+                    _theme_qids = list(getattr(_theme, "target_qids", ()) or ())
+                    _theme_family = str(getattr(_theme, "patch_family", ""))
+                    _theme_kind = getattr(_theme, "rca_kind", None)
+                    _kind_value = (
+                        _theme_kind.value
+                        if hasattr(_theme_kind, "value")
+                        else str(_theme_kind or "unknown")
+                    )
+                    for _p in _l1_patches:
+                        try:
+                            _gen = _generate_lever1_rca_proposal(
+                                _theme, _p, metadata_snapshot,
+                                w=w, benchmarks=benchmarks,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "[%s] Lever-1 RCA bridge failed for theme %s",
+                                ag_id, _theme_id, exc_info=True,
+                            )
+                            _gen = None
+                        if not _gen:
+                            continue
+                        _tbl = str(_gen.get("table") or "")
+                        _col = str(_gen.get("column") or "")
+                        _key = (_tbl, _col)
+                        if _key in _l1_index:
+                            existing = _l1_index[_key]
+                            existing_sections = existing.get(
+                                "column_sections", {},
+                            ) or {}
+                            new_synonyms = _gen.get("_rca_synonyms") or []
+                            if new_synonyms:
+                                merged = list(
+                                    existing_sections.get("synonyms") or []
+                                )
+                                for s in new_synonyms:
+                                    if s not in merged:
+                                        merged.append(s)
+                                existing_sections["synonyms"] = merged
+                                existing["column_sections"] = existing_sections
+                                _existing_prov = existing.setdefault(
+                                    "provenance", {},
+                                )
+                                _existing_prov.setdefault(
+                                    "rca_synonym_themes", [],
+                                ).append(_theme_id)
+                            continue
+                        _proposal = {
+                            "proposal_id": f"P{len(proposals) + 1:03d}",
+                            "cluster_id": _theme_id,
+                            "lever": 1,
+                            "scope": scope,
+                            "patch_type": _gen["patch_type"],
+                            "change_description": (
+                                f"[{ag_id}] RCA L1: "
+                                f"{_tbl}.{_col} ({_kind_value})"
+                                if _col else
+                                f"[{ag_id}] RCA L1: {_tbl} ({_kind_value})"
+                            ),
+                            "proposed_value": "",
+                            "rationale": (
+                                f"RCA-driven Lever-1 from theme {_theme_id} "
+                                f"(intent: {_p.get('intent', '')})"
+                            ),
+                            "table": _tbl,
+                            "column": _col,
+                            "column_sections": _gen.get("column_sections", {}),
+                            "column_entity_type": _gen.get(
+                                "column_entity_type", "",
+                            ),
+                            "table_sections": _gen.get("table_sections", {}),
+                            "table_entity_type": _gen.get(
+                                "table_entity_type", "",
+                            ),
+                            "dual_persistence": DUAL_PERSIST_PATHS.get(
+                                1, DUAL_PERSIST_PATHS[5],
+                            ),
+                            "confidence": 0.78,
+                            "questions_fixed": len(_theme_qids),
+                            "questions_at_risk": 0,
+                            "net_impact": max(len(_theme_qids) * 0.78, 1.0),
+                            "asi": {
+                                "failure_type": _kind_value,
+                                "blame_set": [_tbl, _col] if _col else [_tbl],
+                                "severity": "major",
+                                "counterfactual_fixes": [],
+                                "ambiguity_detected": False,
+                            },
+                            "rca_id": _theme_id,
+                            "patch_family": _theme_family,
+                            "target_qids": _theme_qids,
+                            "source": "rca_theme_lever1",
+                            "provenance": {
+                                **provenance_base,
+                                "patch_type": _gen["patch_type"],
+                                "synthesis_source": "rca_theme_lever1",
+                                "rca_id": _theme_id,
+                                "patch_family": _theme_family,
+                            },
+                        }
+                        proposals.append(_proposal)
+                        _l1_index[_key] = _proposal
 
         # ── Lever 3: functions ───────────────────────────────────────────
         elif target_lever == 3:

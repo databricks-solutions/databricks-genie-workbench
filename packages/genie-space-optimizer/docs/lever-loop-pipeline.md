@@ -2593,6 +2593,14 @@ proposal generation:
    the theme's `expected_objects`. No LLM call;
    `ensure_join_spec_fields`, `validate_join_spec_types`, and pair dedup
    against existing/proposed joins still run.
+9. RCA-driven Lever-1 metadata generation is gated by
+   `GSO_ENABLE_RCA_LEVER1_BRIDGE`. The bridge calls the LLM with an
+   AFS-projected prompt to produce column descriptions and high-quality
+   synonyms (NL phrases, not SQL identifiers) from the failing
+   questions' phrasing + RCA evidence. Synonym lists merge additively
+   into existing strategist-driven L1 proposals; description-only
+   proposals dedupe by (table, column). Benchmark-leakage firewall
+   still runs on the description text.
 
 RCA themes are still advisory strategist context. They do not bypass proposal
 grounding, validation, leakage checks, application safety, rollback, or
@@ -2610,6 +2618,7 @@ theme-level attribution.
 | `GSO_ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS` | `true` | Allows selected RCA themes to request original, leakage-safe example SQL synthesis through the existing synthesis validator and firewall. |
 | `GSO_ENABLE_RCA_SQL_SNIPPET_BRIDGE` | `true` | Allows RCA themes that recommend SQL snippets to deterministically trigger `_generate_lever6_proposal` even when the strategist routed the action group elsewhere. |
 | `GSO_ENABLE_RCA_JOIN_SPEC_BRIDGE` | `true` | Allows RCA themes that recommend joins to deterministically build an `add_join_spec` proposal from the theme's `expected_objects`, bypassing strategist-prompt indirection. |
+| `GSO_ENABLE_RCA_LEVER1_BRIDGE` | `false` | Allows RCA themes that recommend column/table description or synonym updates to produce Lever-1 proposals via an LLM call seeded by AFS-projected failure context. Synonyms merge into existing strategist proposals additively. |
 
 Future hard theme enforcement should use a separate flag and design. That
 future mode would need to constrain proposal generation and/or patch apply
