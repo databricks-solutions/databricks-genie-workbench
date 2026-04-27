@@ -9302,8 +9302,16 @@ def _run_lever_loop(
         for _sc in soft_signal_clusters or []:
             if isinstance(_sc, dict):
                 _sc.setdefault("signal_type", "soft")
+        from genie_space_optimizer.optimization.control_plane import (
+            clusters_for_strategy,
+        )
+
+        _strategy_hard_clusters, _strategy_soft_clusters = clusters_for_strategy(
+            list(clusters or []),
+            list(soft_signal_clusters or []),
+        )
         ranked = rank_clusters(
-            list(clusters) + list(soft_signal_clusters or []),
+            list(_strategy_hard_clusters) + list(_strategy_soft_clusters),
             recommended_levers=_scan_levers,
             # T2.1: pass reflection buffer so each cluster gains a
             # ``history`` block with prior attempts against its
@@ -9512,8 +9520,8 @@ def _run_lever_loop(
 
             if ag is None:
                 strategy = _call_llm_for_adaptive_strategy(
-                    clusters=clusters,
-                    soft_signal_clusters=soft_signal_clusters,
+                    clusters=_strategy_hard_clusters,
+                    soft_signal_clusters=_strategy_soft_clusters,
                     metadata_snapshot=metadata_snapshot,
                     reflection_buffer=reflection_buffer,
                     priority_ranking=ranked,
@@ -9528,7 +9536,9 @@ def _run_lever_loop(
                         iq_scan_summary if _iq_scan_strategist_enabled() else None
                     ),
                 )
-                strategy["_source_clusters"] = clusters + soft_signal_clusters
+                strategy["_source_clusters"] = (
+                    list(_strategy_hard_clusters) + list(_strategy_soft_clusters)
+                )
                 action_groups = strategy.get("action_groups", [])
                 # Sort by priority (lower = higher priority); fall back
                 # to source-cluster impact_score when priority is

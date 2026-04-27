@@ -340,3 +340,17 @@ def test_audit_writer_is_independently_try_excepted():
         "Audit writer must catch broad exceptions so a Spark/Delta "
         "error never cascades into rollback handling."
     )
+
+
+def test_harness_uses_hard_first_control_plane_clusters_for_strategy() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness)
+
+    assert "clusters_for_strategy" in src
+    assert "_strategy_hard_clusters" in src
+    assert "_strategy_soft_clusters" in src
+    assert "clusters=_strategy_hard_clusters" in src
+    assert "soft_signal_clusters=_strategy_soft_clusters" in src

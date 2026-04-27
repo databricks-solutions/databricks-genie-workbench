@@ -118,6 +118,44 @@ def target_qids_from_action_group(
     return tuple(dict.fromkeys(qids))
 
 
+def _cluster_judges(cluster: dict) -> tuple[str, ...]:
+    raw = (
+        cluster.get("affected_judges")
+        or cluster.get("dominant_failed_judges")
+        or [cluster.get("affected_judge")]
+        or []
+    )
+    if isinstance(raw, str):
+        raw = [raw]
+    return tuple(str(j) for j in raw if str(j))
+
+
+def _is_response_quality_only_cluster(cluster: dict) -> bool:
+    judges = tuple(j for j in _cluster_judges(cluster) if j)
+    return bool(judges) and all(j in IGNORED_OPTIMIZATION_JUDGES for j in judges)
+
+
+def clusters_for_strategy(
+    hard_clusters: list[dict],
+    soft_clusters: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Return clusters that may drive the strategist.
+
+    Hard failures are the optimization target. When any hard cluster exists,
+    soft clusters are withheld from action-group generation so the strategist
+    cannot spend the iteration on soft text-quality work. When no hard
+    cluster remains, only non-response-quality soft clusters are eligible.
+    """
+    hard = list(hard_clusters or [])
+    soft = [
+        c for c in (soft_clusters or [])
+        if isinstance(c, dict) and not _is_response_quality_only_cluster(c)
+    ]
+    if hard:
+        return hard, []
+    return [], soft
+
+
 def hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
     """Return qids whose rows are hard failures under the shared predicate."""
     qids: list[str] = []

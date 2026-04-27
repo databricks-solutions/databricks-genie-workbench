@@ -247,6 +247,18 @@ add a Genie round-trip per AG. Keep the flag for one release so any
 operator who wants the old behaviour can opt in via
 ``GSO_ENABLE_LEGACY_SLICE_P0_GATES=true``."""
 
+OPTIMIZATION_TARGET_POST_ARBITER_ACCURACY: float = float(
+    os.getenv("GSO_OPTIMIZATION_TARGET_POST_ARBITER_ACCURACY", "100.0")
+)
+"""Target post-arbiter / arbiter-adjusted accuracy for lever-loop convergence."""
+
+IGNORED_OPTIMIZATION_JUDGES: tuple[str, ...] = tuple(
+    j.strip()
+    for j in os.getenv("GSO_IGNORED_OPTIMIZATION_JUDGES", "response_quality").split(",")
+    if j.strip()
+)
+"""Judges visible in diagnostics but excluded from optimization targeting."""
+
 MIN_POST_ARBITER_GAIN_PP: float = float(
     os.getenv("GSO_MIN_POST_ARBITER_GAIN_PP", "2.0")
 )

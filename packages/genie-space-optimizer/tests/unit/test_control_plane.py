@@ -82,3 +82,41 @@ def test_target_qids_from_action_group_falls_back_to_source_clusters() -> None:
     ]
 
     assert target_qids_from_action_group(ag, clusters) == ("q1", "q2", "q3")
+
+
+def test_strategy_clusters_hard_first_ignores_soft_while_hard_remain() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        clusters_for_strategy,
+    )
+
+    hard = [{"cluster_id": "H001", "question_ids": ["q_hard"]}]
+    soft = [{"cluster_id": "S001", "question_ids": ["q_soft"]}]
+
+    selected_hard, selected_soft = clusters_for_strategy(hard, soft)
+
+    assert selected_hard == hard
+    assert selected_soft == []
+
+
+def test_strategy_clusters_can_return_actionable_soft_when_no_hard_remain() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        clusters_for_strategy,
+    )
+
+    soft = [
+        {
+            "cluster_id": "S001",
+            "question_ids": ["q_soft"],
+            "affected_judges": ["schema_accuracy"],
+        },
+        {
+            "cluster_id": "S002",
+            "question_ids": ["q_text"],
+            "affected_judges": ["response_quality"],
+        },
+    ]
+
+    selected_hard, selected_soft = clusters_for_strategy([], soft)
+
+    assert selected_hard == []
+    assert [c["cluster_id"] for c in selected_soft] == ["S001"]
