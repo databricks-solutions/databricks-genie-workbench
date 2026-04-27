@@ -94,6 +94,7 @@ class SqlDiff:
     missing_in_genie: DiffSet = field(default_factory=DiffSet)
     extra_in_genie: DiffSet = field(default_factory=DiffSet)
     candidate_levers: tuple[int, ...] = ()
+    finding_kinds: tuple[DiffKind, ...] = ()
 
 
 # ── mine_sql_features ────────────────────────────────────────
@@ -273,6 +274,20 @@ def compute_diff(*, genie: SqlFeatures, ground_truth: SqlFeatures) -> SqlDiff:
     missing_m, extra_m = _diff(genie.measures, ground_truth.measures)
     missing_a, extra_a = _diff(genie.aggregation_funcs, ground_truth.aggregation_funcs)
 
+    finding_kinds: list[DiffKind] = []
+    if missing_m and extra_m:
+        finding_kinds.append(DiffKind.MEASURE_SWAP)
+    if missing_gb and not extra_gb:
+        finding_kinds.append(DiffKind.MISSING_GROUPBY_COL)
+    if extra_gb and not missing_gb:
+        finding_kinds.append(DiffKind.EXTRA_GROUPBY_COL)
+    if missing_f and not extra_f:
+        finding_kinds.append(DiffKind.MISSING_FILTER)
+    if extra_f and not missing_f:
+        finding_kinds.append(DiffKind.EXTRA_FILTER)
+    if missing_a or extra_a:
+        finding_kinds.append(DiffKind.WRONG_AGGREGATION_FUNCTION)
+
     if missing_m and extra_m:
         kind = DiffKind.MEASURE_SWAP
         levers: tuple[int, ...] = (1,)
@@ -295,6 +310,9 @@ def compute_diff(*, genie: SqlFeatures, ground_truth: SqlFeatures) -> SqlDiff:
         kind = DiffKind.UNKNOWN
         levers = ()
 
+    if not finding_kinds:
+        finding_kinds.append(DiffKind.UNKNOWN)
+
     return SqlDiff(
         primary_kind=kind,
         missing_in_genie=DiffSet(
@@ -312,6 +330,7 @@ def compute_diff(*, genie: SqlFeatures, ground_truth: SqlFeatures) -> SqlDiff:
             aggregation_funcs=extra_a,
         ),
         candidate_levers=levers,
+        finding_kinds=tuple(dict.fromkeys(finding_kinds)),
     )
 
 

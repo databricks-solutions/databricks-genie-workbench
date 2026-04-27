@@ -144,6 +144,23 @@ def test_unknown_diff_when_features_are_identical():
     assert diff.primary_kind == DiffKind.UNKNOWN
 
 
+def test_compute_diff_records_multiple_findings_while_preserving_primary_kind():
+    genie = mine_sql_features(
+        "SELECT MEASURE(`7now_avg_txn_cy_day`) FROM mv_7now_store_sales "
+        "WHERE cy_cust_count IS NOT NULL GROUP BY ALL"
+    )
+    gt = mine_sql_features(
+        "SELECT zone_combination, MEASURE(avg_txn_day) "
+        "FROM mv_esr_store_sales GROUP BY zone_combination"
+    )
+
+    diff = compute_diff(genie=genie, ground_truth=gt)
+
+    assert diff.primary_kind is DiffKind.MEASURE_SWAP
+    assert DiffKind.MEASURE_SWAP in diff.finding_kinds
+    assert DiffKind.EXTRA_FILTER in diff.finding_kinds
+
+
 # ── reactive_patches_from_diff ──────────────────────────────
 
 
