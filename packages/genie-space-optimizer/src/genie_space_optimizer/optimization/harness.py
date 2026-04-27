@@ -5202,6 +5202,42 @@ def _is_schema_fatal_patch_error(error: Any) -> bool:
     return classify_rollback_reason(str(error)) == RollbackClass.SCHEMA_FAILURE
 
 
+@dataclass(frozen=True)
+class PatchBundleEvalSkip:
+    skip: bool
+    reason_code: str = ""
+    reason_detail: str = ""
+
+
+def _should_skip_eval_for_patch_bundle(
+    *,
+    patches: list[dict],
+    apply_log: dict | None,
+    stage: str,
+) -> PatchBundleEvalSkip:
+    """Return whether a patch bundle is ineligible for acceptance eval.
+
+    The lever loop must not run a full eval for acceptance when the
+    candidate made no space mutation. A zero-patch evaluation measures
+    Genie/judge variance, not optimizer progress.
+    """
+    if stage == "post_grounding" and not patches:
+        return PatchBundleEvalSkip(
+            True,
+            "no_grounded_patches",
+            "Proposal grounding dropped every patch; no candidate state exists.",
+        )
+    if stage == "post_apply":
+        applied = (apply_log or {}).get("applied") or []
+        if not applied:
+            return PatchBundleEvalSkip(
+                True,
+                "no_applied_patches",
+                "Patch application produced no applied entries; no candidate state exists.",
+            )
+    return PatchBundleEvalSkip(False)
+
+
 def _diminishing_returns(
     reflection_buffer: list[dict],
     epsilon: float | None = None,
@@ -10325,6 +10361,50 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
+        _grounding_skip = _should_skip_eval_for_patch_bundle(
+            patches=patches,
+            apply_log=None,
+            stage="post_grounding",
+        )
+        if _grounding_skip.skip:
+            logger.warning(
+                "[%s] Skipping acceptance eval: %s",
+                ag_id,
+                _grounding_skip.reason_detail,
+            )
+            print(
+                _section(f"[{ag_id}] SKIP EVAL: NO GROUNDED PATCHES", "!") + "\n"
+                + _kv("Reason", _grounding_skip.reason_detail) + "\n"
+                + _bar("!")
+            )
+            write_stage(
+                spark,
+                run_id,
+                f"AG_{ag_id}_NO_GROUNDED_PATCHES",
+                "SKIPPED",
+                task_key="lever_loop",
+                iteration=iteration_counter,
+                detail={"reason_code": _grounding_skip.reason_code},
+                catalog=catalog,
+                schema=schema,
+            )
+            reflection_buffer.append(_build_reflection_entry(
+                iteration=iteration_counter,
+                ag_id=ag_id,
+                accepted=False,
+                levers=[int(lk) for lk in lever_keys],
+                target_objects=[],
+                prev_scores=best_scores,
+                new_scores=best_scores,
+                rollback_reason=_grounding_skip.reason_code,
+                patches=[],
+                affected_question_ids=ag.get("affected_questions", []),
+                prev_failure_qids=prev_failure_qids,
+                new_failure_qids=prev_failure_qids,
+                **_ag_identity_kwargs,
+            ))
+            continue
+
         # Tier 2.6: cap AG patch-set size. A single failing patch in a
         # large batch rolls back everything — including the patches that
         # would have helped. If the cap is exceeded, keep the highest-
@@ -10474,6 +10554,50 @@ def _run_lever_loop(
         apply_log = apply_patch_set(
             w, space_id, patches, metadata_snapshot, apply_mode=apply_mode,
         )
+
+        _apply_skip = _should_skip_eval_for_patch_bundle(
+            patches=patches,
+            apply_log=apply_log,
+            stage="post_apply",
+        )
+        if _apply_skip.skip:
+            logger.warning(
+                "[%s] Skipping acceptance eval: %s",
+                ag_id,
+                _apply_skip.reason_detail,
+            )
+            print(
+                _section(f"[{ag_id}] SKIP EVAL: NO APPLIED PATCHES", "!") + "\n"
+                + _kv("Reason", _apply_skip.reason_detail) + "\n"
+                + _bar("!")
+            )
+            write_stage(
+                spark,
+                run_id,
+                f"AG_{ag_id}_NO_APPLIED_PATCHES",
+                "SKIPPED",
+                task_key="lever_loop",
+                iteration=iteration_counter,
+                detail={"reason_code": _apply_skip.reason_code},
+                catalog=catalog,
+                schema=schema,
+            )
+            reflection_buffer.append(_build_reflection_entry(
+                iteration=iteration_counter,
+                ag_id=ag_id,
+                accepted=False,
+                levers=[int(lk) for lk in lever_keys],
+                target_objects=[],
+                prev_scores=best_scores,
+                new_scores=best_scores,
+                rollback_reason=_apply_skip.reason_code,
+                patches=patches,
+                affected_question_ids=ag.get("affected_questions", []),
+                prev_failure_qids=prev_failure_qids,
+                new_failure_qids=prev_failure_qids,
+                **_ag_identity_kwargs,
+            ))
+            continue
 
         _fallback_lever = int(lever_keys[0]) if lever_keys else 0
         for idx, entry in enumerate(apply_log.get("applied", [])):

@@ -32,6 +32,37 @@ def _rb(rollback_reason: str, **overrides) -> dict:
     )
 
 
+def test_zero_grounded_patch_bundle_is_not_evaluable():
+    from genie_space_optimizer.optimization.harness import (
+        _should_skip_eval_for_patch_bundle,
+    )
+
+    decision = _should_skip_eval_for_patch_bundle(
+        patches=[],
+        apply_log=None,
+        stage="post_grounding",
+    )
+
+    assert decision.skip is True
+    assert decision.reason_code == "no_grounded_patches"
+    assert "grounding" in decision.reason_detail
+
+
+def test_zero_applied_patch_bundle_is_not_evaluable():
+    from genie_space_optimizer.optimization.harness import (
+        _should_skip_eval_for_patch_bundle,
+    )
+
+    decision = _should_skip_eval_for_patch_bundle(
+        patches=[{"type": "update_column_description", "column": "avg_txn_day"}],
+        apply_log={"applied": [], "patch_deployed": False},
+        stage="post_apply",
+    )
+
+    assert decision.skip is True
+    assert decision.reason_code == "no_applied_patches"
+
+
 def test_diminishing_returns_ignores_infra_rollbacks() -> None:
     buf = [
         _rb("patch_deploy_failed: 500 Internal Server Error", iteration=1),
