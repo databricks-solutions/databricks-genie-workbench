@@ -179,8 +179,13 @@ def test_mixed_refs_only_mv_failures_reclassified():
 def test_caller_merges_reclassified_into_metric_view_yaml():
     """End-to-end: when ``_collect_data_profile`` returns reclassified
     refs, ``preflight_collect_uc_metadata`` merges them into
-    ``config["_metric_view_yaml"]`` so downstream gates see them as MVs."""
+    ``config["_metric_view_yaml"]`` and re-stamps ``_asset_semantics``
+    so downstream gates see them as MVs."""
     from genie_space_optimizer.optimization import preflight
+    from genie_space_optimizer.common.asset_semantics import (
+        KIND_METRIC_VIEW,
+        PROVENANCE_PROFILE_RECLASSIFIED,
+    )
 
     config: dict = {
         "_tables": ["cat.sch.mv_in_disguise"],
@@ -228,3 +233,13 @@ def test_caller_merges_reclassified_into_metric_view_yaml():
         f"Expected reclassified MV to be merged into _metric_view_yaml; "
         f"got {list(yaml_cache.keys())!r}"
     )
+    semantics = config.get("_asset_semantics") or {}
+    entry = semantics.get("cat.sch.mv_in_disguise")
+    assert entry is not None
+    assert entry["kind"] == KIND_METRIC_VIEW
+    assert PROVENANCE_PROFILE_RECLASSIFIED in entry["provenance"]
+
+    parsed_semantics = (
+        (config.get("_parsed_space") or {}).get("_asset_semantics") or {}
+    )
+    assert parsed_semantics.get("cat.sch.mv_in_disguise") == entry

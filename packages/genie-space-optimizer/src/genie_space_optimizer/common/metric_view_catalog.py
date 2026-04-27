@@ -12,8 +12,8 @@ module into harness's import graph.
 
 Detection is *permissive* — false negatives only, never false positives.
 A failed DESCRIBE, a non-JSON envelope, or a YAML that doesn't match the
-metric-view shape silently treats the ref as a non-MV so the regular
-table-profile path remains correct for real tables.
+metric-view shape records an unresolved/non-detect outcome so callers can
+avoid silently treating unknown refs as table-safe.
 
 PR 23 — Detection is also *observable*. Every per-ref outcome is recorded
 in a small ``outcomes`` dict (``describe_error``, ``empty_result``,
@@ -144,7 +144,7 @@ def detect_metric_views_via_catalog_with_outcomes(
                 )
             logger.info(
                 "MV catalog detection: no SQL warehouse for %s "
-                "(treating as non-MV; Spark metadata fallback disabled)",
+                "(MV detection unresolved; Spark metadata fallback disabled)",
                 fq_lower,
             )
             continue
@@ -187,7 +187,7 @@ def detect_metric_views_via_catalog_with_outcomes(
                     )
                 logger.info(
                     "MV catalog detection: DESCRIBE failed for %s "
-                    "(treating as non-MV) — %s: %s",
+                    "(MV detection unresolved) — %s: %s",
                     fq_lower, type(exc).__name__, str(exc)[:200],
                 )
                 logger.debug(
@@ -202,7 +202,7 @@ def detect_metric_views_via_catalog_with_outcomes(
                     diagnostic_samples[fq_lower] = "empty result from DESCRIBE"
                 logger.info(
                     "MV catalog detection: empty DESCRIBE result for %s "
-                    "(treating as non-MV)",
+                    "(MV detection unresolved)",
                     fq_lower,
                 )
                 continue
@@ -234,7 +234,7 @@ def detect_metric_views_via_catalog_with_outcomes(
                     )
                 logger.info(
                     "MV catalog detection: no JSON envelope in DESCRIBE row "
-                    "for %s (treating as non-MV)",
+                    "for %s (MV detection unresolved)",
                     fq_lower,
                 )
                 continue
@@ -384,7 +384,7 @@ def detect_metric_views_via_catalog_with_outcomes(
                 # still surfaces the count.
                 logger.debug(
                     "MV catalog detection: no view_text for %s "
-                    "(treating as non-MV)",
+                    "(confirmed no MV definition text)",
                     fq_lower,
                 )
             elif yaml_parse_failed:
@@ -401,7 +401,7 @@ def detect_metric_views_via_catalog_with_outcomes(
                     )
                 logger.debug(
                     "MV catalog detection: YAML present but not metric-view "
-                    "shape for %s (treating as non-MV)",
+                    "shape for %s (confirmed not metric-view shape)",
                     fq_lower,
                 )
             continue

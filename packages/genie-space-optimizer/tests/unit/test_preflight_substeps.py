@@ -514,3 +514,67 @@ class TestPreflightWrapperEquivalence:
         assert isinstance(config, dict)
         assert isinstance(benchmarks, list)
         assert isinstance(corrections, list)
+
+    @patch("genie_space_optimizer.optimization.preflight.preflight_setup_experiment")
+    @patch("genie_space_optimizer.optimization.preflight.preflight_load_human_feedback")
+    @patch("genie_space_optimizer.optimization.preflight.preflight_validate_benchmarks")
+    @patch("genie_space_optimizer.optimization.preflight.preflight_generate_benchmarks")
+    @patch("genie_space_optimizer.optimization.preflight.preflight_collect_uc_metadata")
+    @patch("genie_space_optimizer.optimization.preflight.preflight_fetch_config")
+    def test_wrapper_forwards_warehouse_id_to_warehouse_aware_substeps(
+        self, mock_cfg, mock_uc, mock_gen, mock_val, mock_fb, mock_exp
+    ):
+        from genie_space_optimizer.optimization.preflight import run_preflight
+
+        mock_cfg.return_value = {
+            "config": {}, "snapshot": {}, "genie_table_refs": [],
+            "domain": "default", "apply_mode": "genie_config", "configured_cols": 0,
+        }
+        mock_uc.return_value = {"uc_columns": [], "uc_tags": [], "uc_routines": [], "uc_fk": []}
+        mock_gen.return_value = {"benchmarks": [{"q": "test"}], "regenerated": False}
+        mock_val.return_value = {"benchmarks": [{"q": "test"}], "pre_count": 1, "invalid_errors": []}
+        mock_fb.return_value = {"human_corrections": []}
+        mock_exp.return_value = {
+            "model_id": "mv-1", "experiment_name": "/exp",
+            "experiment_id": "exp-1", "prompt_registrations": [],
+        }
+
+        run_preflight(
+            MagicMock(), MagicMock(), "run-1", "space-1", "cat", "gold", "revenue",
+            warehouse_id="wh-test",
+        )
+
+        assert mock_uc.call_args.kwargs["warehouse_id"] == "wh-test"
+        assert mock_gen.call_args.kwargs["warehouse_id"] == "wh-test"
+        assert mock_val.call_args.kwargs["warehouse_id"] == "wh-test"
+
+
+class TestHarnessPreflightWarehouseID:
+    @patch("genie_space_optimizer.optimization.harness.update_run_status")
+    @patch("genie_space_optimizer.optimization.harness.resolve_warehouse_id", return_value="wh-env")
+    @patch("genie_space_optimizer.optimization.harness._safe_stage")
+    def test_run_preflight_resolves_and_forwards_warehouse_id(
+        self, mock_safe_stage, mock_resolve, mock_update, mock_spark
+    ):
+        from genie_space_optimizer.optimization import harness
+
+        mock_safe_stage.return_value = (
+            {"_gso_iq_scan_recommended_levers": [], "_gso_iq_scan_summary": None},
+            [],
+            "model-1",
+            "/exp",
+            [],
+        )
+
+        with patch.object(harness, "mlflow", create=True) as mock_mlflow:
+            mock_mlflow.get_experiment_by_name.return_value = MagicMock(
+                experiment_id="exp-1",
+            )
+            out = harness._run_preflight(
+                MagicMock(), mock_spark, "run-1", "space-1",
+                "cat", "gold", "revenue",
+            )
+
+        mock_resolve.assert_called_once_with("")
+        assert mock_safe_stage.call_args.args[-1] == "wh-env"
+        assert out["model_id"] == "model-1"

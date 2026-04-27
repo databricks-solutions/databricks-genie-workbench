@@ -590,16 +590,18 @@ def _run_preflight(
     domain: str,
     experiment_name: str | None = None,
     apply_mode: str = "genie_config",
+    warehouse_id: str = "",
 ) -> dict:
     """Stage 1: Fetch config, UC metadata, generate/load benchmarks, create experiment.
 
     Returns a dict of task values to pass downstream.
     """
+    warehouse_id = resolve_warehouse_id(warehouse_id)
     config, benchmarks, model_id, exp_name, human_corrections = _safe_stage(
         spark, run_id, "PREFLIGHT", run_preflight,
         catalog, schema,
         w, spark, run_id, space_id, catalog, schema, domain, experiment_name,
-        apply_mode,
+        apply_mode, warehouse_id,
     )
 
     import mlflow
@@ -12779,6 +12781,7 @@ def optimize_genie_space(
     deploy_target: str | None = None,
     run_repeat: bool = True,
     triggered_by: str | None = None,
+    warehouse_id: str = "",
 ) -> OptimizationResult:
     """Run all 6 stages in a single process.
 
@@ -12832,8 +12835,10 @@ def optimize_genie_space(
 
     try:
         # Stage 1: Preflight
+        warehouse_id = resolve_warehouse_id(warehouse_id)
         preflight_out = _run_preflight(
             w, spark, run_id_str, space_id, catalog, schema, domain, experiment_name,
+            warehouse_id=warehouse_id,
         )
         config = cast(dict[str, Any], preflight_out["config"])
         benchmarks = cast(list[dict], preflight_out["benchmarks"])

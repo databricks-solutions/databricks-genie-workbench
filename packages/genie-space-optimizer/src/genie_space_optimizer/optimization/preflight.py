@@ -266,6 +266,7 @@ def _ensure_experiment_parent_dir(ws: WorkspaceClient, experiment_path: str) -> 
 from genie_space_optimizer.common.metric_view_catalog import (  # noqa: E402
     detect_metric_views_via_catalog as _detect_metric_views_via_catalog,
 )
+from genie_space_optimizer.common.warehouse import resolve_warehouse_id  # noqa: E402
 
 
 def _profile_metric_view(
@@ -1275,6 +1276,7 @@ def preflight_collect_uc_metadata(
 
     Returns a dict with keys: uc_columns, uc_tags, uc_routines, uc_fk.
     """
+    warehouse_id = resolve_warehouse_id(warehouse_id)
     _validate_core_access(w, spark, genie_table_refs)
 
     if apply_mode in ("both", "uc_artifact"):
@@ -1678,6 +1680,37 @@ def preflight_collect_uc_metadata(
                 _ps_for_mirror = config.get("_parsed_space")
                 if isinstance(_ps_for_mirror, dict):
                     _ps_for_mirror["_metric_view_yaml"] = dict(_yaml_cache)
+                try:
+                    from genie_space_optimizer.common.asset_semantics import (
+                        build_and_stamp_from_run as _restamp_asset_semantics,
+                    )
+
+                    _restamp_asset_semantics(
+                        config,
+                        table_refs=_refs_seen,
+                        catalog_yamls=dict(_yaml_cache),
+                        catalog_outcomes=(
+                            _catalog_outcomes
+                            if isinstance(_catalog_outcomes, dict)
+                            else {}
+                        ),
+                        catalog_diagnostic_samples=(
+                            _catalog_diagnostic_samples
+                            if isinstance(_catalog_diagnostic_samples, dict)
+                            else {}
+                        ),
+                        profile_reclassified_mvs=reclassified_mvs,
+                        uc_columns=(
+                            uc_columns_dicts
+                            if isinstance(uc_columns_dicts, list)
+                            else None
+                        ),
+                    )
+                except Exception:
+                    logger.debug(
+                        "Asset semantics re-stamp after MV reclassification failed",
+                        exc_info=True,
+                    )
                 # Refresh the local effective-MV set so the Coverage line
                 # below sees the runtime reclassifications.
                 _eff_mvs = effective_metric_view_identifiers_with_catalog(config)
@@ -2645,6 +2678,7 @@ def run_preflight(
     domain: str,
     experiment_name: str | None = None,
     apply_mode: str = "genie_config",
+    warehouse_id: str = "",
 ) -> tuple[dict, list[dict], str | None, str, list[dict]]:
     """Execute the full preflight sequence (Stage 1).
 
@@ -2681,6 +2715,7 @@ def run_preflight(
         w, spark, run_id, catalog, schema, config, snapshot,
         genie_table_refs, apply_mode=apply_mode,
         configured_cols=ctx1.get("configured_cols", 0),
+        warehouse_id=warehouse_id,
     )
 
     # C3: advisory calendar-drift check. Never blocks preflight; log-only.
@@ -2694,6 +2729,7 @@ def run_preflight(
         w, spark, run_id, catalog, schema, config,
         ctx2["uc_columns"], ctx2["uc_tags"], ctx2["uc_routines"],
         domain,
+        warehouse_id=warehouse_id,
     )
     benchmarks = ctx3["benchmarks"]
 
@@ -2701,6 +2737,7 @@ def run_preflight(
         w, spark, run_id, catalog, schema, config, benchmarks,
         ctx2["uc_columns"], ctx2["uc_tags"], ctx2["uc_routines"],
         domain,
+        warehouse_id=warehouse_id,
     )
     benchmarks = ctx4["benchmarks"]
 

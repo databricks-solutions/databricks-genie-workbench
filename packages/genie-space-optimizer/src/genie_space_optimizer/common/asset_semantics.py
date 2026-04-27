@@ -91,6 +91,14 @@ PROVENANCE_PLANNER_ERROR = "planner_error"
 
 OUTCOME_PLANNER_ERROR_METRIC_VIEW = "planner_error_metric_view"
 
+UNRESOLVED_CATALOG_OUTCOMES: frozenset[str] = frozenset({
+    "no_warehouse",
+    "describe_error",
+    "empty_result",
+    "no_envelope",
+    "yaml_parse_error",
+})
+
 
 @dataclass
 class AssetSemantics:
@@ -217,6 +225,7 @@ def build_asset_semantics(
     catalog_yamls: dict[str, dict] | None = None,
     catalog_outcomes: dict[str, str] | None = None,
     catalog_diagnostic_samples: dict[str, str] | None = None,
+    profile_reclassified_mvs: Iterable[str] | None = None,
     uc_columns: list[dict] | None = None,
 ) -> dict[str, dict]:
     """Build the unified asset-semantics map.
@@ -231,12 +240,15 @@ def build_asset_semantics(
     3. ``catalog_yamls`` — runtime catalog detection cache (or a fresh
        result passed in by preflight/harness). Picks up MVs missing from
        (1) and (2) via DESCRIBE.
-    4. ``catalog_outcomes`` — non-detect outcomes per ref; preserved on
+    4. ``profile_reclassified_mvs`` — runtime planner errors observed during
+       profiling. Spark has proven these refs are MVs even when catalog
+       detection was unresolved.
+    5. ``catalog_outcomes`` — non-detect outcomes per ref; preserved on
        the entry so banner diagnostics don't lose them.
-    5. ``table_refs`` — every ref the run knows about. Refs missing from
+    6. ``table_refs`` — every ref the run knows about. Refs missing from
        (1)-(3) are stamped with ``kind="unknown"`` so downstream
        consumers see all refs even when no signal classified them.
-    6. ``uc_columns`` — surfaces the asset's column list when the entry
+    7. ``uc_columns`` — surfaces the asset's column list when the entry
        lacks ``column_configs``; populates ``dimensions`` for non-MVs.
 
     The returned mapping is keyed by lower-cased fully-qualified
@@ -310,8 +322,14 @@ def build_asset_semantics(
             provenance=[PROVENANCE_GENIE_METRIC_VIEWS],
         ))
 
+    catalog_outcomes_by_key = (
+        catalog_outcomes if isinstance(catalog_outcomes, dict) else {}
+    )
+
     # 2. Tables shelf — column-flag heuristic for MVs misfiled as tables,
-    # else stamp as kind=table.
+    # else stamp as kind=table only when catalog detection has not failed
+    # unresolved. Genie may serialize MVs under tables, so a failed
+    # catalog probe is not proof that the asset is table-safe.
     for tbl in ds.get("tables", []) or []:
         if not isinstance(tbl, dict):
             continue
@@ -329,10 +347,16 @@ def build_asset_semantics(
                 provenance=[PROVENANCE_COLUMN_FLAGS],
             ))
         else:
+            outcome = str(catalog_outcomes_by_key.get(ident.lower()) or "")
+            kind = (
+                KIND_UNKNOWN
+                if outcome in UNRESOLVED_CATALOG_OUTCOMES
+                else KIND_TABLE
+            )
             _stamp_entry(AssetSemantics(
                 identifier=ident,
                 short_name=_short_name(ident),
-                kind=KIND_TABLE,
+                kind=kind,
                 measures=[],
                 dimensions=dims,
                 provenance=[PROVENANCE_GENIE_TABLES],
@@ -368,11 +392,26 @@ def build_asset_semantics(
                 ),
             ))
 
+    # 3b. Profile-time reclassifications from Spark planner errors.
+    if profile_reclassified_mvs:
+        for fq in profile_reclassified_mvs:
+            ident = _norm_identifier(fq)
+            if not ident:
+                continue
+            _stamp_entry(AssetSemantics(
+                identifier=ident,
+                short_name=_short_name(ident),
+                kind=KIND_METRIC_VIEW,
+                measures=[],
+                dimensions=[],
+                provenance=[PROVENANCE_PROFILE_RECLASSIFIED],
+            ))
+
     # 4. Catalog outcomes — record per-ref outcome diagnostics even on
     # non-detected refs so the banner block can show why a ref is
     # classified the way it is.
-    if isinstance(catalog_outcomes, dict):
-        for fq_lower, code in catalog_outcomes.items():
+    if isinstance(catalog_outcomes_by_key, dict):
+        for fq_lower, code in catalog_outcomes_by_key.items():
             key = str(fq_lower or "").strip().lower()
             if not key:
                 continue
@@ -548,6 +587,45 @@ def asset_kind(config: dict, identifier: str) -> str:
 def is_metric_view(config: dict, identifier: str) -> bool:
     """Convenience: True iff ``identifier`` resolves to ``kind=metric_view``."""
     return asset_kind(config, identifier) == KIND_METRIC_VIEW
+
+
+def asset_semantics_entry(config: dict, identifier: str) -> dict | None:
+    """Return the raw semantics entry for ``identifier`` when present."""
+    sem = get_asset_semantics(config)
+    key = (identifier or "").strip().lower()
+    if not key:
+        return None
+    entry = sem.get(key)
+    if isinstance(entry, dict):
+        return entry
+    if "." not in key:
+        for ent in sem.values():
+            if not isinstance(ent, dict):
+                continue
+            if str(ent.get("short_name") or "").lower() == key:
+                return ent
+    return None
+
+
+def direct_join_block_reason(config: dict, identifier: str) -> str | None:
+    """Return why ``identifier`` is unsafe for direct joins, if blocked."""
+    entry = asset_semantics_entry(config, identifier)
+    if not entry:
+        return None
+    kind = str(entry.get("kind") or KIND_UNKNOWN)
+    if kind == KIND_METRIC_VIEW:
+        return "metric_view"
+    if (
+        kind == KIND_UNKNOWN
+        and str(entry.get("outcome") or "") in UNRESOLVED_CATALOG_OUTCOMES
+    ):
+        return "unresolved_asset"
+    return None
+
+
+def is_direct_join_safe(config: dict, identifier: str) -> bool:
+    """True when semantics allows a direct join on ``identifier``."""
+    return direct_join_block_reason(config, identifier) is None
 
 
 _PLANNER_METRIC_VIEW_BACKTICK_RE = re.compile(
@@ -807,6 +885,7 @@ def build_and_stamp_from_run(
     catalog_yamls: dict[str, dict] | None = None,
     catalog_outcomes: dict[str, str] | None = None,
     catalog_diagnostic_samples: dict[str, str] | None = None,
+    profile_reclassified_mvs: Iterable[str] | None = None,
     uc_columns: list[dict] | None = None,
     mirror_parsed: bool = True,
 ) -> dict[str, dict]:
@@ -821,6 +900,7 @@ def build_and_stamp_from_run(
         catalog_yamls=catalog_yamls,
         catalog_outcomes=catalog_outcomes,
         catalog_diagnostic_samples=catalog_diagnostic_samples,
+        profile_reclassified_mvs=profile_reclassified_mvs,
         uc_columns=uc_columns,
     )
     stamp_asset_semantics(config, semantics, mirror_parsed=mirror_parsed)

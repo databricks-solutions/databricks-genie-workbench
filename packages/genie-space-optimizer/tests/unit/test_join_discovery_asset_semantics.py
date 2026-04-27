@@ -17,6 +17,7 @@ from __future__ import annotations
 from genie_space_optimizer.common.asset_semantics import (
     KIND_METRIC_VIEW,
     KIND_TABLE,
+    KIND_UNKNOWN,
     KIND_VIEW,
     stamp_asset_semantics,
 )
@@ -160,6 +161,44 @@ def test_discover_keeps_mv_named_view_when_kind_is_view():
     )
 
 
+def test_discover_drops_unresolved_catalog_failure_pair():
+    metadata = {
+        "data_sources": {
+            "tables": [
+                _make_table("cat.sch.mv_maybe", [
+                    ("store_id", "STRING"),
+                    ("revenue", "DOUBLE"),
+                ]),
+                _make_table("cat.sch.fact_sales", [
+                    ("store_id", "STRING"),
+                    ("sale_date", "DATE"),
+                ]),
+            ],
+        },
+    }
+    metadata["tables"] = metadata["data_sources"]["tables"]
+
+    _stamp(metadata, {
+        "cat.sch.mv_maybe": {
+            "identifier": "cat.sch.mv_maybe",
+            "short_name": "mv_maybe",
+            "kind": KIND_UNKNOWN,
+            "outcome": "no_warehouse",
+        },
+        "cat.sch.fact_sales": {
+            "identifier": "cat.sch.fact_sales",
+            "short_name": "fact_sales",
+            "kind": KIND_TABLE,
+        },
+    })
+
+    hints = discover_join_candidates(metadata)
+    assert not any(
+        {h["left_table"], h["right_table"]} == {"cat.sch.mv_maybe", "cat.sch.fact_sales"}
+        for h in hints
+    )
+
+
 def test_filter_join_specs_drops_mv_left_with_counters():
     metadata: dict = {}
     _stamp(metadata, {
@@ -231,6 +270,51 @@ def test_filter_join_specs_drops_mv_right():
     )
     assert kept == []
     assert counters.get("joins_skipped_metric_view_right") == 1
+
+
+def test_filter_join_specs_drops_unresolved_catalog_failure():
+    metadata: dict = {}
+    _stamp(metadata, {
+        "cat.sch.mv_maybe": {
+            "identifier": "cat.sch.mv_maybe",
+            "short_name": "mv_maybe",
+            "kind": KIND_UNKNOWN,
+            "outcome": "no_warehouse",
+        },
+        "cat.sch.fact_sales": {
+            "identifier": "cat.sch.fact_sales",
+            "short_name": "fact_sales",
+            "kind": KIND_TABLE,
+        },
+        "cat.sch.dim_store": {
+            "identifier": "cat.sch.dim_store",
+            "short_name": "dim_store",
+            "kind": KIND_TABLE,
+        },
+    })
+    specs = [
+        {
+            "left": {"identifier": "cat.sch.mv_maybe"},
+            "right": {"identifier": "cat.sch.fact_sales"},
+            "sql": ["mv_maybe.store_id = fact_sales.store_id"],
+        },
+        {
+            "left": {"identifier": "cat.sch.fact_sales"},
+            "right": {"identifier": "cat.sch.dim_store"},
+            "sql": ["fact_sales.store_id = dim_store.store_id"],
+        },
+    ]
+    counters: dict[str, int] = {}
+    skipped: list[tuple[str, str]] = []
+
+    kept = filter_join_specs_by_semantics(
+        metadata, specs, counters=counters, skipped_examples=skipped,
+    )
+
+    assert len(kept) == 1
+    assert kept[0]["right"]["identifier"] == "cat.sch.dim_store"
+    assert counters.get("joins_skipped_unresolved_asset_left") == 1
+    assert ("cat.sch.mv_maybe", "cat.sch.fact_sales") in skipped
 
 
 def test_filter_join_specs_no_semantics_keeps_all():

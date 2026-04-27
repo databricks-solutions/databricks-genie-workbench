@@ -156,6 +156,78 @@ def test_table_without_measure_columns_classified_as_table():
     assert "store_id" in entry["dimensions"]
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "no_warehouse",
+        "describe_error",
+        "empty_result",
+        "no_envelope",
+        "yaml_parse_error",
+    ],
+)
+def test_table_shelf_with_unresolved_catalog_detection_stays_unknown(outcome):
+    """Failed MV detection must not become confident table classification."""
+    from genie_space_optimizer.common.asset_semantics import (
+        KIND_UNKNOWN,
+        PROVENANCE_GENIE_TABLES,
+        build_asset_semantics,
+    )
+
+    config = {
+        "_parsed_space": {
+            "data_sources": {
+                "metric_views": [],
+                "tables": [
+                    {
+                        "identifier": "cat.sch.mv_like_sales",
+                        "column_configs": [{"column_name": "store_id"}],
+                    }
+                ],
+            },
+        },
+    }
+
+    sem = build_asset_semantics(
+        config,
+        catalog_outcomes={"cat.sch.mv_like_sales": outcome},
+    )
+    entry = sem["cat.sch.mv_like_sales"]
+    assert entry["kind"] == KIND_UNKNOWN
+    assert entry["outcome"] == outcome
+    assert PROVENANCE_GENIE_TABLES in entry["provenance"]
+
+
+@pytest.mark.parametrize("outcome", ["not_mv_shape", "no_view_text"])
+def test_table_shelf_with_confirmed_non_mv_catalog_outcome_stays_table(outcome):
+    from genie_space_optimizer.common.asset_semantics import (
+        KIND_TABLE,
+        build_asset_semantics,
+    )
+
+    config = {
+        "_parsed_space": {
+            "data_sources": {
+                "metric_views": [],
+                "tables": [
+                    {
+                        "identifier": "cat.sch.dim_store",
+                        "column_configs": [{"column_name": "store_id"}],
+                    }
+                ],
+            },
+        },
+    }
+
+    sem = build_asset_semantics(
+        config,
+        catalog_outcomes={"cat.sch.dim_store": outcome},
+    )
+    entry = sem["cat.sch.dim_store"]
+    assert entry["kind"] == KIND_TABLE
+    assert entry["outcome"] == outcome
+
+
 def test_multi_signal_provenance_merges_when_signals_agree():
     """When both column flags and catalog signal MV, both contribute provenance."""
     from genie_space_optimizer.common.asset_semantics import (
