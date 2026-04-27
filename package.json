@@ -2,8 +2,8 @@
   "name": "genie-workbench",
   "private": true,
   "scripts": {
-    "postinstall": "echo 'Frontend dependencies managed by deploy.sh — skipping platform npm ci'",
-    "build": "test -f frontend/dist/index.html && echo 'Frontend pre-built by deploy.sh' || (cd frontend && npm run build)",
+    "postinstall": "echo 'Root postinstall complete'",
+    "build": "test -f frontend/dist/index.html && echo 'Frontend pre-built by deploy.sh' || (cd frontend && npm ci && npm run build)",
     "start": "uvicorn backend.main:app --host 0.0.0.0 --port 8000"
   }
 }

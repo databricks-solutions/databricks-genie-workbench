@@ -171,6 +171,7 @@ echo ""
 echo "▸ Step 1/$TOTAL_STEPS: Pre-flight checks..."
 _preflight_check_tools
 _preflight_check_venv
+_preflight_check_npm_lockfiles
 _preflight_check_npm_registry
 _preflight_check_profile "$PROFILE"
 
@@ -193,11 +194,12 @@ if ! (cd "$PROJECT_DIR/frontend" && npm ci && npm run build); then
     echo ""
     echo "  See npm's error output above for the root cause."
     echo "  Common causes:"
-    echo "    - Internal npm mirror missing a package or hash-mismatching"
-    echo "      (npm config set registry https://registry.npmjs.org/)"
+    echo "    - npm registry unreachable from this network"
+    echo "      Databricks internal: npm config set registry https://npm-proxy.dev.databricks.com/"
+    echo "      External/customer:  npm config set registry https://registry.npmjs.org/"
     echo "    - Rollup platform binary missing after npm ci"
     echo "      (rm -rf frontend/node_modules && cd frontend && npm ci)"
-    echo "    - Node version too old (require >= 18)"
+    echo "    - Node version too old or unsupported (require ^20.19.0 or >=22.12.0)"
     exit 1
 fi
 if [ ! -f "$PROJECT_DIR/frontend/dist/index.html" ]; then
@@ -334,6 +336,14 @@ if [ "$BUNDLE_EXIT" -ne 0 ]; then
     echo "       - Auth issue with profile '$PROFILE'"
     echo "       - GSO wheel build failure (missing 'build' package)"
     echo "       - Terraform state conflict (try: databricks bundle deploy -t app --force-lock)"
+    if [[ "$BUNDLE_OUTPUT" == *"run_as service principal does not exist"* ]]; then
+        echo ""
+        echo "  Detected stale install state:"
+        echo "    The bundle references a run_as service principal that no longer exists."
+        echo "    This usually means a previous app/job installation still has workspace state."
+        echo "    Clean it up with: ./scripts/deploy.sh --destroy"
+        echo "    Then re-run the installer or deploy command."
+    fi
     echo "    3. Fix the issue and re-run: ./scripts/deploy.sh --update"
     exit 1
 fi
@@ -746,8 +756,7 @@ else
     echo "  The app may need a minute to finish starting."
 fi
 echo ""
-echo "  NOTE: If you see 'Failed to list spaces' in the app, attach a"
-echo "  Lakebase PostgreSQL resource named 'postgres' in the Apps UI"
-echo "  with CAN_CONNECT_AND_CREATE permission. The app will auto-retry"
-echo "  schema creation — no redeploy needed."
+echo "  NOTE: If you see 'Failed to list spaces' in the app and need"
+echo "  persistent storage, set GENIE_LAKEBASE_INSTANCE and rerun"
+echo "  ./scripts/deploy.sh --update to provision and attach Lakebase."
 echo "═══════════════════════════════════════════════════════════════"
