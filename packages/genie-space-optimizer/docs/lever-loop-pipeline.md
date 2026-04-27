@@ -2542,10 +2542,13 @@ regression-mining lessons, and result-shape signals as `RcaFinding`
 records. Findings compile into `RcaPatchTheme` candidates with explicit
 target qids, touched objects, recommended levers, and patch family.
 
-The strategist may see multiple compatible RCA themes in a single
-iteration. This is intentional: one full eval can validate several
-non-conflicting RCA themes while post-eval attribution records which
-theme fixed which qids and whether any theme correlated with regressions.
+The strategist may see multiple RCA themes in a single iteration when
+RCA strategist context is enabled. If theme selection is also enabled,
+that context is pruned to a compatible subset before prompt rendering.
+This is prompt context only: it does not mechanically constrain proposal
+generation, grounding, or apply. One full eval can still validate several
+non-conflicting RCA themes while post-eval attribution records target-scoped
+fixes, target-scoped regressions, and global new failures separately.
 
 Broad action groups are still discouraged. A valid multi-theme bundle
 must have:
@@ -2560,7 +2563,14 @@ must have:
 
 | Flag | Default | Effect |
 |---|---:|---|
-| `GSO_ENABLE_RCA_LEDGER` | `true` | Build and audit typed RCA findings. |
-| `GSO_ENABLE_RCA_THEMES_STRATEGIST` | `false` | Include RCA themes in strategist context. |
-| `GSO_ENABLE_RCA_THEME_BUNDLES` | `false` | Let RCA themes constrain/seed patch bundles. |
+| `GSO_ENABLE_RCA_LEDGER` | `true` | Build and audit typed RCA findings and themes. Audit-only by default. |
+| `GSO_ENABLE_REGRESSION_MINING_RCA_LEDGER` | `true` | Feed visible regression-mining lessons into the RCA ledger. Independent of strategist prompt exposure. |
+| `GSO_ENABLE_RCA_THEMES_STRATEGIST` | `false` | Include RCA themes in strategist prompt context. |
+| `GSO_ENABLE_RCA_THEME_SELECTION` | `false` | Prune RCA strategist context to a compatible selected subset. Does not constrain patch apply. |
+| `GSO_ENABLE_RCA_THEME_BUNDLES` | `false` | Deprecated compatibility alias for `GSO_ENABLE_RCA_THEME_SELECTION`; not hard bundle enforcement. |
+
+Future hard theme enforcement should use a separate flag and design. That
+future mode would need to constrain proposal generation and/or patch apply
+around selected `rca_id` values; the current implementation deliberately
+stops at audit, prompt context, and attribution.
 
