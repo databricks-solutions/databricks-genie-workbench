@@ -725,10 +725,44 @@ def _call_llm_for_scoring(
     raise last_err  # type: ignore[misc]
 
 
+# Allow backtick-quoted identifiers to start with a digit (e.g.
+# Databricks measure names like ``7now_orders_diff_mtd``). When the
+# column or alias is wrapped in backticks the leading digit is legal;
+# unquoted identifiers still must start with a letter or underscore.
 _MEASURE_ALIAS_COLLISION_PATTERN = re.compile(
-    r"MEASURE\s*\(\s*`?([A-Za-z_][\w]*)`?\s*\)\s+AS\s+`?([A-Za-z_][\w]*)`?",
+    r"MEASURE\s*\(\s*(?:`(\w+)`|([A-Za-z_]\w*))\s*\)"
+    r"\s+AS\s+(?:`(\w+)`|([A-Za-z_]\w*))",
     re.IGNORECASE,
 )
+
+
+def _alias_collision_match_groups(m: re.Match) -> tuple[str, str]:
+    """Return ``(measure_col, alias)`` for a collision-pattern match.
+
+    Each side is matched in two alternatives — backtick-quoted (group
+    1 / 3) or bare (group 2 / 4). Exactly one of each pair will be
+    non-empty.
+    """
+    col = m.group(1) or m.group(2) or ""
+    alias = m.group(3) or m.group(4) or ""
+    return col, alias
+
+
+def _measure_alias_collision_rename_map(sql: str) -> dict[str, str]:
+    """Return lower-case measure name -> safe alias for MEASURE(m) AS m.
+
+    Task 6 helper: lets ``apply_pre_execute_repairs`` know which
+    measures the alias-collision repair will rename so it can rewrite
+    ``ORDER BY MEASURE(<original_measure>)`` to the renamed alias.
+    """
+    rename_map: dict[str, str] = {}
+    for m in _MEASURE_ALIAS_COLLISION_PATTERN.finditer(sql or ""):
+        col, alias = _alias_collision_match_groups(m)
+        if not col or not alias:
+            continue
+        if col.lower() == alias.lower() and col.lower() not in rename_map:
+            rename_map[col.lower()] = f"{col}_value"
+    return rename_map
 
 
 def _repair_measure_alias_collisions(sql: str) -> tuple[str, int]:
@@ -760,21 +794,22 @@ def _repair_measure_alias_collisions(sql: str) -> tuple[str, int]:
         return sql, 0
 
     # First pass: identify collisions, build alias-rename map.
-    rename_map: dict[str, str] = {}
-    for m in _MEASURE_ALIAS_COLLISION_PATTERN.finditer(sql):
-        col, alias = m.group(1), m.group(2)
-        if col.lower() == alias.lower() and col.lower() not in rename_map:
-            rename_map[col.lower()] = f"{col}_value"
+    rename_map = _measure_alias_collision_rename_map(sql)
     if not rename_map:
         return sql, 0
 
     # Second pass: replace each collision-style alias with the safe one.
     def _replace(m: re.Match) -> str:
-        col, alias = m.group(1), m.group(2)
-        if col.lower() != alias.lower():
+        col, alias = _alias_collision_match_groups(m)
+        if not col or not alias or col.lower() != alias.lower():
             return m.group(0)
         new_alias = rename_map[col.lower()]
-        return f"MEASURE({col}) AS {new_alias}"
+        # Preserve backticks on the rendered output when the original
+        # column was backtick-quoted (Databricks measure names that
+        # start with a digit must stay backticked).
+        col_quoted = f"`{col}`" if not col[:1].isalpha() and col[:1] != "_" else col
+        alias_quoted = f"`{new_alias}`" if not new_alias[:1].isalpha() and new_alias[:1] != "_" else new_alias
+        return f"MEASURE({col_quoted}) AS {alias_quoted}"
 
     new_sql = _MEASURE_ALIAS_COLLISION_PATTERN.sub(_replace, sql)
 
@@ -1740,6 +1775,47 @@ def _profile_lookup(
     return None
 
 
+def _repair_order_by_measure_renamed_collision(
+    sql: str,
+    rename_map: dict[str, str],
+) -> tuple[str, int]:
+    """Task 6 — Rewrite ``ORDER BY MEASURE(<original>)`` to the renamed alias.
+
+    The alias-collision repair (``_repair_measure_alias_collisions``)
+    renames ``MEASURE(m) AS m`` to ``MEASURE(m) AS m_value``. If the
+    same SQL also contains ``ORDER BY MEASURE(m) DESC``, Spark's
+    planner re-resolves ``MEASURE(m)`` against the SELECT alias
+    output rather than the underlying measure column and rejects
+    with the same MISSING_ATTRIBUTES error class. The deterministic
+    fix is to rewrite the ORDER BY to reference the renamed alias.
+
+    Returns ``(new_sql, count)``.
+    """
+    if not sql or not rename_map or "ORDER BY" not in sql.upper():
+        return sql, 0
+
+    new_sql = sql
+    count = 0
+    for old_measure, new_alias in rename_map.items():
+        pattern = re.compile(
+            rf"ORDER\s+BY(?P<body>.*?)(?P<measure>MEASURE\s*\(\s*`?{re.escape(old_measure)}`?\s*\))",
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        def _sub(match: re.Match) -> str:
+            nonlocal count
+            count += 1
+            return (
+                "ORDER BY"
+                + match.group("body")
+                + new_alias
+            )
+
+        new_sql = pattern.sub(_sub, new_sql)
+
+    return new_sql, count
+
+
 def check_categorical_cast_violations(
     sql: str,
     data_profile: dict | None,
@@ -1912,6 +1988,12 @@ def apply_pre_execute_repairs(
         except Exception:
             pass
 
+    # Compute the alias-collision rename map BEFORE running the
+    # collision repair so the Task 6 ORDER-BY rewrite below has the
+    # original-measure → renamed-alias mapping it needs. Without this
+    # snapshot the rename info is lost once the repair mutates new_sql.
+    alias_collision_map = _measure_alias_collision_rename_map(new_sql)
+
     try:
         new_sql, alias_fixes = _repair_measure_alias_collisions(new_sql)
         if alias_fixes and counters is not None:
@@ -1926,6 +2008,22 @@ def apply_pre_execute_repairs(
         if ob_fixes and counters is not None:
             counters["repaired_order_by_measure_alias"] = (
                 counters.get("repaired_order_by_measure_alias", 0) + ob_fixes
+            )
+    except Exception:
+        pass
+
+    # Task 6: rewrite ``ORDER BY MEASURE(<original_measure>)`` to the
+    # renamed alias when the alias-collision repair fired. Same
+    # counter as the alias-strip path so existing diagnostics keep
+    # tracking the same ORDER BY signal.
+    try:
+        new_sql, renamed_ob_fixes = _repair_order_by_measure_renamed_collision(
+            new_sql, alias_collision_map,
+        )
+        if renamed_ob_fixes and counters is not None:
+            counters["repaired_order_by_measure_alias"] = (
+                counters.get("repaired_order_by_measure_alias", 0)
+                + renamed_ob_fixes
             )
     except Exception:
         pass
