@@ -602,6 +602,47 @@ def rca_findings_from_regression_insights(
     return findings
 
 
+def _unique_tuple(values: Iterable[Any]) -> tuple:
+    out: list[Any] = []
+    seen: set[Any] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return tuple(out)
+
+
+def _dedupe_rca_findings(findings: Iterable[RcaFinding]) -> list[RcaFinding]:
+    by_id: dict[str, RcaFinding] = {}
+    for finding in findings or []:
+        if not isinstance(finding, RcaFinding):
+            continue
+        existing = by_id.get(finding.rca_id)
+        if existing is None:
+            by_id[finding.rca_id] = finding
+            continue
+        by_id[finding.rca_id] = RcaFinding(
+            rca_id=existing.rca_id,
+            question_id=existing.question_id or finding.question_id,
+            rca_kind=existing.rca_kind,
+            confidence=max(float(existing.confidence), float(finding.confidence)),
+            expected_objects=_unique_tuple(
+                (*existing.expected_objects, *finding.expected_objects),
+            ),
+            actual_objects=_unique_tuple(
+                (*existing.actual_objects, *finding.actual_objects),
+            ),
+            evidence=_unique_tuple((*existing.evidence, *finding.evidence)),
+            recommended_levers=tuple(sorted(set(
+                (*existing.recommended_levers, *finding.recommended_levers),
+            ))),
+            patch_family=existing.patch_family or finding.patch_family,
+            target_qids=_unique_tuple((*existing.target_qids, *finding.target_qids)),
+        )
+    return list(by_id.values())
+
+
 def build_rca_ledger(
     rows: list[dict],
     *,
@@ -619,6 +660,7 @@ def build_rca_ledger(
             )
         )
     findings.extend(f for f in (extra_findings or []) if isinstance(f, RcaFinding))
+    findings = _dedupe_rca_findings(findings)
     themes = compile_patch_themes(findings, metadata_snapshot=metadata_snapshot)
     conflicts = detect_theme_conflicts(themes)
     return {

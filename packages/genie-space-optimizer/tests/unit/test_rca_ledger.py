@@ -153,3 +153,34 @@ def test_regression_insight_converts_to_rca_finding():
     assert len(findings) == 1
     assert findings[0].rca_kind is RcaKind.MEASURE_SWAP
     assert findings[0].patch_family == "contrastive_measure_disambiguation"
+
+
+def test_build_rca_ledger_dedupes_sql_and_regression_findings_for_same_rca():
+    from genie_space_optimizer.optimization.rca import build_rca_ledger
+
+    rows = [{
+        "inputs.question_id": "q_dup",
+        "inputs.expected_sql": "SELECT MEASURE(expected_measure) FROM mv_sales",
+        "outputs.predictions.sql": "SELECT MEASURE(actual_measure) FROM mv_sales",
+        "feedback/arbiter/value": "ground_truth_correct",
+    }]
+    extra = RcaFinding(
+        rca_id="rca_q_dup_measure_swap",
+        question_id="q_dup",
+        rca_kind=RcaKind.MEASURE_SWAP,
+        confidence=0.95,
+        expected_objects=("expected_measure",),
+        actual_objects=("actual_measure",),
+        evidence=(RcaEvidence("regression_mining", "rollback showed swap", 0.95),),
+        recommended_levers=(1, 5),
+        patch_family="contrastive_measure_disambiguation",
+        target_qids=("q_dup",),
+    )
+
+    ledger = build_rca_ledger(rows, metadata_snapshot={}, extra_findings=[extra])
+
+    assert ledger["finding_count"] == 1
+    assert ledger["theme_count"] == 1
+    finding = ledger["findings"][0]
+    assert finding.confidence == 0.95
+    assert {e.source for e in finding.evidence} == {"sql_diff", "regression_mining"}
