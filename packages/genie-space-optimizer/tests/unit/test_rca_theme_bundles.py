@@ -148,7 +148,31 @@ def test_metric_view_routing_confusion_does_not_recommend_lever6():
         recommended_levers_for_rca_kind,
     )
 
-    assert recommended_levers_for_rca_kind(RcaKind.METRIC_VIEW_ROUTING_CONFUSION) == (1, 5)
+    assert 6 not in recommended_levers_for_rca_kind(RcaKind.METRIC_VIEW_ROUTING_CONFUSION)
+
+
+def test_recommended_levers_cover_metadata_synonyms_sql_joins_instructions_and_examples():
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        recommended_levers_for_rca_kind,
+    )
+
+    expected = {
+        RcaKind.METRIC_VIEW_ROUTING_CONFUSION: (1, 2, 5),
+        RcaKind.MEASURE_SWAP: (1, 2, 5, 6),
+        RcaKind.CANONICAL_DIMENSION_MISSED: (1, 2, 5, 6),
+        RcaKind.MISSING_REQUIRED_DIMENSION: (1, 5, 6),
+        RcaKind.EXTRA_DEFENSIVE_FILTER: (5,),
+        RcaKind.JOIN_SPEC_MISSING_OR_WRONG: (4, 5),
+        RcaKind.FILTER_LOGIC_MISMATCH: (2, 5, 6),
+        RcaKind.GRAIN_OR_GROUPING_MISMATCH: (1, 5, 6),
+        RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING: (1,),
+        RcaKind.SQL_EXPRESSION_MISSING: (6,),
+        RcaKind.EXAMPLE_SQL_SHAPE_NEEDED: (5,),
+    }
+
+    for kind, levers in expected.items():
+        assert recommended_levers_for_rca_kind(kind) == levers
 
 
 def test_extra_defensive_filter_routes_to_instruction_not_sql_snippet():
