@@ -9879,7 +9879,13 @@ def _ngram_similarity(a: str, b: str, n: int = 3) -> float:
 
 
 def _format_existing_sql_snippets(metadata_snapshot: dict) -> str:
-    """Format existing SQL snippets for the Lever 6 prompt context."""
+    """Format existing SQL snippets for the Lever 6 prompt context.
+
+    Each row includes the source table parsed from the snippet's SQL
+    so the LLM has explicit disambiguation context. Without this hint
+    the model can produce generic names like ``Month-to-Date Filter``
+    even when the space already has one for a different fact table.
+    """
     snippets = metadata_snapshot.get("sql_snippets", {})
     if not isinstance(snippets, dict):
         return "(No existing SQL expressions.)"
@@ -9895,7 +9901,12 @@ def _format_existing_sql_snippets(metadata_snapshot: dict) -> str:
             sql = item.get("sql", [])
             sql_str = sql[0] if isinstance(sql, list) and sql else str(sql)
             syns = item.get("synonyms", [])
-            lines.append(f"  - {name}: `{sql_str}`")
+            primary_table = _extract_primary_table_identifier(sql_str)
+            short_table = (
+                primary_table.rsplit(".", 1)[-1] if primary_table else ""
+            )
+            tag = f" [{short_table}]" if short_table else ""
+            lines.append(f"  - {name}{tag}: `{sql_str}`")
             if syns:
                 lines.append(f"    Synonyms: {', '.join(syns)}")
 
@@ -10067,23 +10078,41 @@ def _generate_lever6_proposal(
 
         span.set_outputs({"snippet_type": snippet_type, "sql": sql_raw[:200]})
 
+        # Run the deterministic naming policy over the LLM result before
+        # building the proposal. The qualifier is derived from
+        # ``target_table`` (preferred — it is what the LLM was asked to
+        # name) with a fallback to parsing the validated SQL. This step
+        # is unconditional so prompt drift cannot reintroduce ambiguous
+        # ``Month-to-Date Filter``-style names on domain-specific
+        # tables.
+        _qualified = _qualify_sql_snippet_metadata(
+            {
+                "snippet_type": snippet_type,
+                "sql": sql_raw,
+                "display_name": llm_result.get("display_name", ""),
+                "instruction": llm_result.get("instruction", ""),
+                "target_table": llm_result.get("target_table", ""),
+            },
+            target_table=str(llm_result.get("target_table", "") or ""),
+        )
+
         proposal = {
             "patch_type": patch_type_map[snippet_type],
             "lever": 6,
             "snippet_type": snippet_type,
-            "display_name": llm_result.get("display_name", ""),
+            "display_name": _qualified.get("display_name", ""),
             "alias": llm_result.get("alias", ""),
             "sql": sql_raw,
             "synonyms": llm_result.get("synonyms", []),
-            "instruction": llm_result.get("instruction", ""),
+            "instruction": _qualified.get("instruction", ""),
             "target_table": llm_result.get("target_table", ""),
             "rationale": llm_result.get("rationale", ""),
             "affected_questions": llm_result.get("affected_questions", []),
             "confidence": 0.7,
-            "questions_fixed": len(cluster.get("question_traces", [])),
             # Tier 2.8: validation_passed tracks whether validate_sql_snippet
             # returned a clean EXPLAIN+execute result. The applier refuses
             # to persist add_sql_snippet_* patches without this stamp.
+            "questions_fixed": len(cluster.get("question_traces", [])),
             "validation_passed": _validation_passed,
         }
 
@@ -10610,7 +10639,11 @@ def _convert_instructions_to_sql_expressions(
                 snippet_type,
             )
             prefixed_sql = valid[2] if len(valid) > 2 else sql
-            buckets["sql_snippet"].append({
+            # Apply the deterministic naming policy. The prose miner
+            # asks the LLM for ``display_name`` + ``description``; the
+            # qualifier prefixes domain-specific tables and backfills
+            # an instruction hint when neither was supplied.
+            _candidate = _qualify_sql_snippet_metadata({
                 "snippet_type": snippet_type,
                 "sql": prefixed_sql,
                 "display_name": payload.get("display_name", ""),
@@ -10623,6 +10656,7 @@ def _convert_instructions_to_sql_expressions(
                 "source_span": span,
                 "confidence": confidence,
             })
+            buckets["sql_snippet"].append(_candidate)
 
         elif target == "join_spec":
             left = payload.get("left", {}) if isinstance(payload.get("left"), dict) else {}
@@ -10887,7 +10921,11 @@ def _mine_sql_expression_candidates(
         seen.add(key)
         deduped.append(c)
 
-    return deduped
+    # Apply the deterministic naming policy. Benchmark candidates have
+    # no explicit ``target_table`` (the miner extracts patterns rather
+    # than scanning schema), so the helper falls back to parsing the
+    # first FQ identifier out of ``sql``.
+    return [_qualify_sql_snippet_metadata(c) for c in deduped]
 
 
 def _auto_display_name(sql: str, snippet_type: str) -> str:
@@ -10916,6 +10954,163 @@ def _auto_display_name(sql: str, snippet_type: str) -> str:
         return f"Expression: {sql_clean[:40]}"
 
     return sql_clean[:50]
+
+
+# ── SQL Expression naming disambiguation policy ────────────────────────
+#
+# Three SQL Expression population paths (proactive seeding, reactive
+# Lever 6 proposals, and prose mining) all produce ``display_name`` /
+# ``instruction`` metadata. Without a deterministic post-processing
+# step, names like ``Month-to-Date Filter`` end up applied to multiple
+# domain-specific tables in the same Genie Space (e.g. 7NOW vs ESR
+# fact tables), which makes Genie's snippet selection ambiguous.
+#
+# The helpers below are the enforcement layer. Prompts can drift, but
+# this code runs unconditionally after enrichment.
+
+# Regex that finds three-or-more-part fully-qualified identifiers (e.g.
+# ``catalog.schema.table``). Anchored on word boundaries so it doesn't
+# also match plain column references that happen to share a word
+# segment with a table name.
+_FQ_IDENTIFIER_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){2,})\b"
+)
+
+# Pattern that pulls the compact domain qualifier out of an
+# unqualified table name like ``mv_7now_fact_sales`` →
+# ``7now`` / ``mv_esr_dim_date`` → ``esr``. The heuristic is
+# intentionally conservative — it only fires for ``mv_<domain>_*``
+# names because that's the convention used by the metric views in
+# our Genie Spaces.
+_MV_DOMAIN_PREFIX_RE = re.compile(
+    r"^mv_(?P<domain>[A-Za-z0-9]+)_", re.IGNORECASE
+)
+
+
+def _extract_primary_table_identifier(sql: str) -> str:
+    """Return the first three-part identifier referenced by ``sql``.
+
+    The benchmark miner does not attach explicit ``target_table``
+    metadata to its candidates, so the qualifier helper falls back to
+    parsing the SQL text itself. We pick the first occurrence to keep
+    the rule predictable; ties are exceptionally rare for a single
+    SQL Expression because they typically reference one fact table.
+    """
+    if not sql:
+        return ""
+    match = _FQ_IDENTIFIER_RE.search(sql)
+    if not match:
+        return ""
+    full = match.group(1)
+    # ``catalog.schema.table.column`` → drop the trailing column part
+    # so callers see only the table identifier.
+    parts = full.split(".")
+    if len(parts) >= 4:
+        return ".".join(parts[:3])
+    return full
+
+
+def _domain_qualifier_from_identifier(identifier: str) -> str:
+    """Return the compact source qualifier for ``identifier``.
+
+    Recognises ``mv_<domain>_*`` metric-view names and emits the
+    ``<domain>`` token in upper-case (``mv_7now_fact_sales`` →
+    ``7NOW``, ``mv_esr_dim_date`` → ``ESR``). Generic table names
+    receive no qualifier so we don't add noisy artificial prefixes
+    like ``T `` to a ``Total Revenue`` measure on a plain table.
+    """
+    ident = (identifier or "").strip()
+    if not ident:
+        return ""
+    short = ident.rsplit(".", 1)[-1].lower()
+    match = _MV_DOMAIN_PREFIX_RE.match(short)
+    if not match:
+        return ""
+    return match.group("domain").upper()
+
+
+def _qualify_sql_snippet_metadata(
+    candidate: dict,
+    *,
+    target_table: str = "",
+) -> dict:
+    """Return a copy of ``candidate`` with qualified naming metadata.
+
+    Applies the SQL Expression naming disambiguation policy:
+
+    - Adds the compact domain qualifier (e.g. ``7NOW``) to
+      ``display_name`` when the candidate references a domain-specific
+      table and the name does not already start with the qualifier.
+    - Backfills an empty / blank ``instruction`` so Genie picks up the
+      "when to use this" hint with source-aware text.
+    - Returns a new dict so callers can safely substitute the
+      qualified copy without mutating shared candidate state.
+
+    The helper is path-agnostic: it works for benchmark-mined,
+    schema-discovered, LLM-enriched, prose-mined, and Lever 6
+    proposals. The only inputs it needs are ``sql``, ``display_name``,
+    optionally ``target_table`` (or one passed explicitly), and
+    ``instruction`` (read from either ``instruction`` or
+    ``description`` so the prose mining payload shape is supported).
+    """
+    if not isinstance(candidate, dict):
+        return candidate
+
+    out = dict(candidate)
+
+    sql_field = out.get("sql", "")
+    if isinstance(sql_field, list):
+        sql_text = sql_field[0] if sql_field else ""
+    else:
+        sql_text = str(sql_field or "")
+
+    table = (
+        target_table
+        or str(out.get("target_table", "") or "")
+        or _extract_primary_table_identifier(sql_text)
+    )
+    qualifier = _domain_qualifier_from_identifier(table)
+
+    if qualifier:
+        display_name = str(out.get("display_name", "") or "").strip()
+        if display_name and not display_name.upper().startswith(
+            qualifier.upper() + " "
+        ):
+            out["display_name"] = f"{qualifier} {display_name}"
+        elif not display_name:
+            out["display_name"] = qualifier
+
+    instruction_value = out.get("instruction", out.get("description", ""))
+    instruction_text = ""
+    if isinstance(instruction_value, list):
+        instruction_text = " ".join(
+            str(item).strip() for item in instruction_value if item
+        ).strip()
+    else:
+        instruction_text = str(instruction_value or "").strip()
+
+    if not instruction_text and (qualifier or table):
+        # Backfill so Genie has a "when to use this" hint that mentions
+        # the source domain. Keep it short and source-aware — this is
+        # only a fallback when neither the LLM nor the prose miner
+        # produced explicit instruction text.
+        snippet_type = str(out.get("snippet_type", "")).strip().lower()
+        kind = {
+            "measure": "measure",
+            "filter": "filter",
+            "expression": "expression",
+        }.get(snippet_type, "SQL expression")
+        if qualifier:
+            out["instruction"] = (
+                f"Use this {kind} when answering questions about "
+                f"{qualifier} ({table})."
+            )
+        else:
+            out["instruction"] = (
+                f"Use this {kind} when answering questions about {table}."
+            )
+
+    return out
 
 
 def _discover_schema_sql_expressions(
@@ -11001,6 +11196,7 @@ def _discover_schema_sql_expressions(
                         "display_name": f"Total {col_name.replace('_', ' ').title()}",
                         "alias": alias,
                         "source_count": 0,
+                        "target_table": table_id,
                     })
 
             if _DATE_PATTERNS.search(col_name) and ("date" in base_type or "timestamp" in base_type):
@@ -11018,9 +11214,14 @@ def _discover_schema_sql_expressions(
                             "display_name": f"{col_name.replace('_', ' ').title()} {label}",
                             "alias": alias,
                             "source_count": 0,
+                            "target_table": table_id,
                         })
 
-    return candidates
+    # Apply the deterministic naming policy now that ``target_table``
+    # is attached. For domain-specific tables (``mv_7now_*``,
+    # ``mv_esr_*``, …) this prefixes the display name with the
+    # qualifier; generic tables are left untouched.
+    return [_qualify_sql_snippet_metadata(c) for c in candidates]
 
 
 def _enrich_candidates_with_llm(
@@ -11082,7 +11283,11 @@ def _enrich_candidates_with_llm(
         c.setdefault("synonyms", [])
         c.setdefault("instruction", "")
 
-    return candidates
+    # Run the deterministic qualifier as a post-processing pass, so a
+    # generic LLM-supplied ``display_name`` (e.g. ``Month-to-Date
+    # Filter``) for a 7NOW SQL still ends up qualified. This is the
+    # safety net for prompt drift / failures and is cheap to run.
+    return [_qualify_sql_snippet_metadata(c) for c in candidates]
 
 
 def _filter_no_op_proposals(proposals: list[dict], metadata_snapshot: dict) -> list[dict]:

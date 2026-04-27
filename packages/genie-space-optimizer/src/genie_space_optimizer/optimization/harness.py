@@ -2753,6 +2753,18 @@ def _apply_instruction_sql_expressions(
         if c.get("synonyms"):
             entry["synonyms"] = c["synonyms"]
 
+        # Persist the LLM-supplied "when to use this" hint. The prose
+        # miner emits it as ``description``; ``instruction`` wins if
+        # both are present (e.g. when the deterministic qualifier
+        # backfilled instruction text upstream). Genie expects
+        # ``instruction`` as a list of strings.
+        instruction_value = c.get("instruction") or c.get("description") or ""
+        if instruction_value:
+            if isinstance(instruction_value, str):
+                entry["instruction"] = [instruction_value]
+            else:
+                entry["instruction"] = list(instruction_value)
+
         working_snippets[category].append(entry)
         applied += 1
 

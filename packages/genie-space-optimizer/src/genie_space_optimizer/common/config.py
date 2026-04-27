@@ -4372,6 +4372,21 @@ NOT bare `revenue`). The Genie API rejects bare column names.
 - Do NOT wrap in SELECT or WHERE — provide the raw expression only.
 - Do NOT duplicate an existing SQL Expression.
 - Prefer concise, reusable definitions over question-specific hacks.
+
+Naming policy (REQUIRED — be specific, never generic):
+- ``display_name`` MUST be specific enough to disambiguate the table or \
+business domain inside this space. If two fact tables or metric views \
+in the schema could plausibly share a concept, the name MUST encode \
+which one it applies to.
+- When the SQL references a domain-specific table such as \
+``mv_7now_fact_sales`` or ``mv_esr_dim_date``, include the compact \
+qualifier (``7NOW``, ``ESR``, …) at the start of ``display_name`` — \
+e.g. ``7NOW Month-to-Date Filter``, NOT ``Month-to-Date Filter``.
+- ``instruction`` MUST state when to use the expression and which \
+table or domain it applies to.
+- Avoid generic names like ``Month-to-Date Filter``, ``Total Revenue``, \
+or ``Active Filter`` when more than one fact table or metric view in \
+the schema could host that concept.
 """
 
 # ── 24. Prose Rule Mining (multi-target; prose → structured) ──────────
@@ -4446,6 +4461,15 @@ Bare columns are rejected by the Genie serving path.
 - ``is_default=true`` means the rule says "apply by default"; \
 ``omit_when`` describes when the filter should NOT be applied.
 - Drop anything the Existing SQL Expressions list already covers.
+- ``display_name`` MUST be specific enough to disambiguate the source \
+table or business domain inside this space. When the SQL references a \
+domain-specific table such as ``mv_7now_fact_sales`` or \
+``mv_esr_dim_date``, prefix ``display_name`` with the compact qualifier \
+(e.g. ``7NOW Month-to-Date Filter``, ``ESR Total Sales Amount``). Avoid \
+generic names like ``Month-to-Date Filter`` when multiple fact tables \
+or metric views in this space could plausibly share that concept.
+- ``description`` MUST mention when to use the snippet AND which \
+table or domain it applies to.
 
 ### join_spec
 - Both ``left`` and ``right`` carry a fully-qualified ``identifier`` and \
@@ -4605,10 +4629,20 @@ Schema context:
 {{ schema }}
 
 For each candidate, provide:
-- display_name: A concise business-friendly name
-- synonyms: 2-3 alternative terms users might use
-- instruction: One sentence on when Genie should use this expression
-- alias: A snake_case identifier (for measures and expressions only)
+- display_name: A concise business-friendly name. MUST be specific \
+enough to disambiguate the source table or business domain inside \
+this space. When the SQL references a domain-specific table such as \
+``mv_7now_fact_sales`` or ``mv_esr_dim_date``, prefix the name with \
+the compact qualifier (e.g. ``7NOW Month-to-Date Filter``, \
+``ESR Total Sales Amount``). Avoid generic names like \
+``Month-to-Date Filter`` or ``Total Revenue`` when multiple fact \
+tables or metric views in this space could plausibly share that \
+concept.
+- synonyms: 2-3 alternative terms users might use.
+- instruction: One sentence on when Genie should use this expression. \
+MUST mention the source table or business domain so Genie can pick \
+the correct snippet when several tables expose similar concepts.
+- alias: A snake_case identifier (for measures and expressions only).
 
 Output strict JSON array matching the input order. Each element:
 {{"display_name": "...", "synonyms": [...], "instruction": "...", "alias": "..."}}

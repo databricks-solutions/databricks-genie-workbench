@@ -2072,3 +2072,397 @@ class TestDiscoverSchemaSqlExpressions:
             },
         }
         assert _discover_schema_sql_expressions(snapshot) == []
+
+
+# ─────────────────────────────────────────────────────────────────────
+# SQL Expression naming disambiguation — deterministic qualifier policy
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestDomainQualifierExtraction:
+    """``_domain_qualifier_from_identifier`` extracts a compact source
+    qualifier (e.g. ``7NOW``, ``ESR``) from a fully-qualified or short
+    table identifier so SQL Expression names can be disambiguated when
+    multiple fact tables / metric views could plausibly share a generic
+    concept like a "Month-to-Date Filter".
+    """
+
+    def test_recognizes_mv_seven_now_prefix(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _domain_qualifier_from_identifier,
+        )
+        assert (
+            _domain_qualifier_from_identifier(
+                "catalog.schema.mv_7now_fact_sales"
+            )
+            == "7NOW"
+        )
+
+    def test_recognizes_mv_esr_prefix(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _domain_qualifier_from_identifier,
+        )
+        assert (
+            _domain_qualifier_from_identifier(
+                "catalog.schema.mv_esr_dim_date"
+            )
+            == "ESR"
+        )
+
+    def test_short_identifier_without_catalog_still_works(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _domain_qualifier_from_identifier,
+        )
+        assert _domain_qualifier_from_identifier("mv_7now_fact_sales") == "7NOW"
+
+    def test_returns_empty_for_generic_table_name(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _domain_qualifier_from_identifier,
+        )
+        assert _domain_qualifier_from_identifier("cat.sch.fact_orders") == ""
+
+    def test_returns_empty_for_blank(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _domain_qualifier_from_identifier,
+        )
+        assert _domain_qualifier_from_identifier("") == ""
+        assert _domain_qualifier_from_identifier("   ") == ""
+
+
+class TestExtractPrimaryTableIdentifier:
+    """``_extract_primary_table_identifier`` finds a table-like
+    identifier inside a SQL fragment so the qualifier helper can run
+    even when the candidate has no ``target_table`` set (the current
+    benchmark miner doesn't attach one)."""
+
+    def test_extracts_from_aggregation_call(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _extract_primary_table_identifier,
+        )
+        sql = "SUM(catalog.schema.mv_7now_fact_sales.amount)"
+        assert (
+            _extract_primary_table_identifier(sql)
+            == "catalog.schema.mv_7now_fact_sales"
+        )
+
+    def test_extracts_from_filter_predicate(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _extract_primary_table_identifier,
+        )
+        sql = (
+            "catalog.schema.mv_7now_fact_sales.sales_date "
+            ">= DATE_TRUNC('MONTH', CURRENT_DATE())"
+        )
+        assert (
+            _extract_primary_table_identifier(sql)
+            == "catalog.schema.mv_7now_fact_sales"
+        )
+
+    def test_extracts_from_date_function(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _extract_primary_table_identifier,
+        )
+        sql = "MONTH(catalog.schema.mv_esr_dim_date.order_date)"
+        assert (
+            _extract_primary_table_identifier(sql)
+            == "catalog.schema.mv_esr_dim_date"
+        )
+
+    def test_returns_empty_when_no_qualified_identifier(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _extract_primary_table_identifier,
+        )
+        assert _extract_primary_table_identifier("amount > 0") == ""
+        assert _extract_primary_table_identifier("") == ""
+
+
+class TestQualifySqlSnippetMetadata:
+    """``_qualify_sql_snippet_metadata`` is the single deterministic
+    enforcement layer. It runs after every LLM enrichment / heuristic
+    naming step in all three SQL Expression population paths
+    (proactive seeding, reactive Lever 6, prose mining). It must:
+
+    - Add a domain qualifier to ``display_name`` when the SQL or
+      ``target_table`` references a domain-specific table such as
+      ``mv_7now_fact_sales``.
+    - Not double-prefix names that already carry the qualifier.
+    - Leave generic / unqualified candidates alone so we don't add
+      noisy artificial prefixes like ``CATSCH `` or ``T `` to a
+      ``Total Revenue`` measure on a plain ``cat.sch.t`` table.
+    - Backfill an empty / generic ``instruction`` with text that
+      mentions the source domain or table.
+    """
+
+    def _candidate(self, **kwargs) -> dict:
+        base = {
+            "snippet_type": "filter",
+            "sql": (
+                "catalog.schema.mv_7now_fact_sales.sales_date "
+                ">= DATE_TRUNC('MONTH', CURRENT_DATE())"
+            ),
+            "display_name": "Month-to-Date Filter",
+            "alias": "",
+            "synonyms": [],
+            "instruction": "",
+        }
+        base.update(kwargs)
+        return base
+
+    def test_prefixes_display_name_with_domain_from_sql(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _qualify_sql_snippet_metadata,
+        )
+        out = _qualify_sql_snippet_metadata(self._candidate())
+        assert out["display_name"] == "7NOW Month-to-Date Filter"
+
+    def test_prefixes_display_name_using_target_table_argument(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _qualify_sql_snippet_metadata,
+        )
+        cand = self._candidate(
+            sql="amount > 0",
+            display_name="High-Value Filter",
+        )
+        out = _qualify_sql_snippet_metadata(
+            cand,
+            target_table="catalog.schema.mv_esr_fact_sales",
+        )
+        assert out["display_name"] == "ESR High-Value Filter"
+
+    def test_does_not_double_prefix_already_qualified_name(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _qualify_sql_snippet_metadata,
+        )
+        cand = self._candidate(display_name="7NOW Month-to-Date Filter")
+        out = _qualify_sql_snippet_metadata(cand)
+        assert out["display_name"] == "7NOW Month-to-Date Filter"
+
+    def test_leaves_generic_table_alone(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _qualify_sql_snippet_metadata,
+        )
+        cand = self._candidate(
+            sql="SUM(cat.sch.t.revenue_amount)",
+            display_name="Total Revenue Amount",
+            snippet_type="measure",
+        )
+        out = _qualify_sql_snippet_metadata(cand)
+        assert out["display_name"] == "Total Revenue Amount"
+
+    def test_backfills_empty_instruction_with_source_table_hint(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _qualify_sql_snippet_metadata,
+        )
+        out = _qualify_sql_snippet_metadata(self._candidate())
+        instr = out.get("instruction", "")
+        assert isinstance(instr, str)
+        assert instr, "expected a non-empty instruction backfill"
+        assert "7NOW" in instr or "mv_7now_fact_sales" in instr
+
+    def test_preserves_existing_instruction(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _qualify_sql_snippet_metadata,
+        )
+        cand = self._candidate(
+            instruction=(
+                "Use this when answering questions about the current "
+                "month sales for 7NOW."
+            ),
+        )
+        out = _qualify_sql_snippet_metadata(cand)
+        assert out["instruction"].startswith(
+            "Use this when answering questions"
+        )
+
+    def test_returns_a_distinct_dict_from_input(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _qualify_sql_snippet_metadata,
+        )
+        cand = self._candidate()
+        out = _qualify_sql_snippet_metadata(cand)
+        assert out is not cand
+
+
+class TestSchemaDiscoveryQualification:
+    """``_discover_schema_sql_expressions`` should produce qualified
+    ``display_name``s for domain-specific tables/MVs."""
+
+    def _snapshot(self) -> dict:
+        return {
+            "data_sources": {
+                "tables": [],
+                "metric_views": [
+                    {
+                        "identifier": "catalog.schema.mv_7now_fact_sales",
+                        "column_configs": [
+                            {
+                                "column_name": "revenue_amount",
+                                "data_type": "double",
+                            },
+                            {
+                                "column_name": "sales_date",
+                                "data_type": "date",
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+
+    def test_seven_now_measure_is_domain_qualified(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _discover_schema_sql_expressions,
+        )
+        cands = _discover_schema_sql_expressions(self._snapshot())
+        measures = [c for c in cands if c["snippet_type"] == "measure"]
+        assert measures, f"expected a measure candidate; got {cands}"
+        assert any(
+            c["display_name"].startswith("7NOW ")
+            for c in measures
+        ), (
+            f"expected 7NOW-qualified measure name; got "
+            f"{[c['display_name'] for c in measures]}"
+        )
+
+    def test_seven_now_expression_is_domain_qualified(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _discover_schema_sql_expressions,
+        )
+        cands = _discover_schema_sql_expressions(self._snapshot())
+        exprs = [c for c in cands if c["snippet_type"] == "expression"]
+        assert exprs, f"expected an expression candidate; got {cands}"
+        assert any(
+            c["display_name"].startswith("7NOW ")
+            for c in exprs
+        ), (
+            f"expected 7NOW-qualified expression name; got "
+            f"{[c['display_name'] for c in exprs]}"
+        )
+
+
+class TestLever6ProposalQualification:
+    """The reactive Lever 6 path runs an LLM and then constructs a
+    ``proposal`` dict. After the deterministic qualifier hook runs,
+    a generic LLM-supplied ``display_name`` for a 7NOW SQL must come
+    out qualified."""
+
+    def _cluster(self) -> dict:
+        return {
+            "cluster_id": "c1",
+            "root_cause": "missing_filter",
+            "question_traces": [{"q": "x"}],
+        }
+
+    def _snapshot(self) -> dict:
+        return {
+            "data_sources": {
+                "tables": [],
+                "metric_views": [
+                    {
+                        "identifier": "catalog.schema.mv_7now_fact_sales",
+                        "column_configs": [
+                            {
+                                "column_name": "sales_date",
+                                "data_type": "date",
+                            },
+                        ],
+                    },
+                ],
+            },
+            "sql_snippets": {},
+        }
+
+    def test_lever6_qualifies_generic_display_name(self, monkeypatch):
+        from genie_space_optimizer.optimization import optimizer as opt
+
+        llm_payload = (
+            '{"snippet_type": "filter", '
+            '"display_name": "Month-to-Date Filter", '
+            '"alias": "mtd_filter", '
+            '"sql": "catalog.schema.mv_7now_fact_sales.sales_date '
+            ">= DATE_TRUNC(\\\"MONTH\\\", CURRENT_DATE())\", "
+            '"synonyms": ["MTD"], '
+            '"instruction": "", '
+            '"target_table": "catalog.schema.mv_7now_fact_sales", '
+            '"rationale": "x", '
+            '"affected_questions": []}'
+        )
+
+        def _fake_llm(_w, _system, _prompt, *, span_name="", **kwargs):
+            return llm_payload, None
+
+        monkeypatch.setattr(opt, "_traced_llm_call", _fake_llm)
+        monkeypatch.setattr(
+            opt, "_validate_sql_identifiers",
+            lambda *_a, **_k: (True, []),
+        )
+
+        proposal = opt._generate_lever6_proposal(
+            self._cluster(),
+            self._snapshot(),
+            w=MagicMock(),
+            spark=None,
+            warehouse_id="",
+        )
+        assert proposal is not None
+        assert proposal["display_name"] == "7NOW Month-to-Date Filter"
+
+
+class TestProseMiningInstructionPersistence:
+    """Prose-mined SQL snippets carry a ``description`` from the LLM —
+    the applier must persist it as ``instruction`` so Genie keeps the
+    "when to use this" hint."""
+
+    def test_apply_persists_description_as_instruction(self, monkeypatch):
+        from genie_space_optimizer.optimization import harness
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.common.genie_client.patch_space_config",
+            lambda *_a, **_k: None,
+        )
+        monkeypatch.setattr(
+            "genie_space_optimizer.common.genie_schema.generate_genie_id",
+            lambda: "test-id",
+        )
+        monkeypatch.setattr(
+            harness, "write_stage", lambda *_a, **_k: None,
+        )
+
+        candidates = [
+            {
+                "snippet_type": "filter",
+                "sql": (
+                    "catalog.schema.mv_7now_fact_sales.sales_date "
+                    ">= DATE_TRUNC('MONTH', CURRENT_DATE())"
+                ),
+                "display_name": "7NOW Month-to-Date Filter",
+                "description": (
+                    "Use this filter for 7NOW current month sales."
+                ),
+                "synonyms": ["MTD"],
+                "alias": "",
+            },
+        ]
+        metadata_snapshot: dict = {"instructions": {}}
+
+        applied = harness._apply_instruction_sql_expressions(
+            w=MagicMock(),
+            spark=MagicMock(),
+            run_id="r1",
+            space_id="s1",
+            candidates=candidates,
+            metadata_snapshot=metadata_snapshot,
+            catalog="cat",
+            schema="sch",
+        )
+        assert applied == 1
+        snippets = (
+            metadata_snapshot["instructions"]["sql_snippets"]["filters"]
+        )
+        assert len(snippets) == 1
+        instr = snippets[0].get("instruction")
+        assert instr, f"expected instruction to be set; got entry={snippets[0]}"
+        if isinstance(instr, list):
+            assert any("7NOW current month sales" in s for s in instr)
+        else:
+            assert "7NOW current month sales" in instr
