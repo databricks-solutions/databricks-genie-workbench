@@ -1,0 +1,84 @@
+from __future__ import annotations
+
+
+def test_response_quality_only_row_is_not_actionable_soft_signal() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        actionable_failed_judges,
+        is_actionable_soft_signal_row,
+    )
+
+    row = {
+        "feedback/arbiter/value": "both_correct",
+        "feedback/result_correctness/value": "yes",
+        "feedback/response_quality/value": "no",
+        "response_quality/metadata": {
+            "failure_type": "other",
+            "blame_set": ["wording"],
+        },
+    }
+
+    assert actionable_failed_judges(row) == ()
+    assert is_actionable_soft_signal_row(row) is False
+
+
+def test_schema_soft_row_is_actionable_but_not_hard() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        actionable_failed_judges,
+        is_actionable_soft_signal_row,
+    )
+
+    row = {
+        "feedback/arbiter/value": "both_correct",
+        "feedback/result_correctness/value": "yes",
+        "feedback/schema_accuracy/value": "no",
+        "schema_accuracy/metadata": {
+            "failure_type": "wrong_column",
+            "blame_set": ["region_name", "region_combination"],
+        },
+    }
+
+    assert actionable_failed_judges(row) == ("schema_accuracy",)
+    assert is_actionable_soft_signal_row(row) is True
+
+
+def test_target_qids_from_action_group_prefers_explicit_affected_questions() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        target_qids_from_action_group,
+    )
+
+    ag = {
+        "action_group_id": "AG1",
+        "affected_questions": [
+            "q_hard_1",
+            {"question_id": "q_hard_2"},
+            {"id": "q_hard_3"},
+        ],
+        "source_cluster_ids": ["H001"],
+    }
+    clusters = [
+        {"cluster_id": "H001", "question_ids": ["q_from_cluster"]},
+    ]
+
+    assert target_qids_from_action_group(ag, clusters) == (
+        "q_hard_1",
+        "q_hard_2",
+        "q_hard_3",
+    )
+
+
+def test_target_qids_from_action_group_falls_back_to_source_clusters() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        target_qids_from_action_group,
+    )
+
+    ag = {
+        "action_group_id": "AG1",
+        "source_cluster_ids": ["H001", "H002"],
+    }
+    clusters = [
+        {"cluster_id": "H001", "question_ids": ["q1", "q2"]},
+        {"cluster_id": "H002", "question_ids": ["q2", "q3"]},
+        {"cluster_id": "S001", "question_ids": ["soft_only"]},
+    ]
+
+    assert target_qids_from_action_group(ag, clusters) == ("q1", "q2", "q3")
