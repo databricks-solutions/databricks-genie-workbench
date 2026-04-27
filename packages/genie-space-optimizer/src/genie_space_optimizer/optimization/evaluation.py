@@ -3103,6 +3103,12 @@ def build_asi_metadata(
     counterfactual_fix: str | None = None,
     affected_question_pattern: str | None = None,
     join_assessment: dict | None = None,
+    expected_objects: list[str] | None = None,
+    actual_objects: list[str] | None = None,
+    rca_kind: str | None = None,
+    patch_family: str | None = None,
+    recommended_levers: list[int] | None = None,
+    **extra: Any,
 ) -> dict:
     """Build an ASI metadata dict conforming to ASI_SCHEMA."""
     md: dict = {
@@ -3121,6 +3127,19 @@ def build_asi_metadata(
     }
     if join_assessment and isinstance(join_assessment, dict):
         md["join_assessment"] = join_assessment
+    if expected_objects:
+        md["expected_objects"] = expected_objects
+    if actual_objects:
+        md["actual_objects"] = actual_objects
+    if rca_kind:
+        md["rca_kind"] = rca_kind
+    if patch_family:
+        md["patch_family"] = patch_family
+    if recommended_levers:
+        md["recommended_levers"] = recommended_levers
+    for key, value in extra.items():
+        if value not in (None, "", [], {}):
+            md[key] = value
     return md
 
 

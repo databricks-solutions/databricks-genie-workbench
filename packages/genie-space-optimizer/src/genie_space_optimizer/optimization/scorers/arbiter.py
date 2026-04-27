@@ -247,6 +247,11 @@ def _make_arbiter_scorer(
             'Respond with JSON only: {"verdict": "<genie_correct|ground_truth_correct|both_correct|neither_correct>", '
             '"failure_type": "<wrong_aggregation|wrong_filter|wrong_table|other>", '
             '"blame_set": ["<blamed_object>"], '
+            '"rca_kind": "<metric_view_routing_confusion|measure_swap|canonical_dimension_missed|missing_required_dimension|extra_defensive_filter|unknown>", '
+            '"expected_objects": ["<table_or_column_or_measure_expected>"], '
+            '"actual_objects": ["<table_or_column_or_measure_generated>"], '
+            '"patch_family": "<contrastive_metric_routing|contrastive_measure_disambiguation|canonical_dimension_guidance|required_dimension_guidance|avoid_unrequested_defensive_filters|unknown>", '
+            '"recommended_levers": [1, 5], '
             '"rationale": "<brief explanation>"}'
         )
 
@@ -304,6 +309,11 @@ def _make_arbiter_scorer(
                     confidence=0.85,
                     blame_set=result.get("blame_set", []),
                     counterfactual_fix=result.get("rationale", ""),
+                    expected_objects=result.get("expected_objects") or [],
+                    actual_objects=result.get("actual_objects") or [],
+                    rca_kind=result.get("rca_kind") or "",
+                    patch_family=result.get("patch_family") or "",
+                    recommended_levers=result.get("recommended_levers") or [],
                 )
             return Feedback(
                 name="arbiter",

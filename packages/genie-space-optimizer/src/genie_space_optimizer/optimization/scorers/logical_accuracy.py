@@ -62,6 +62,11 @@ def _make_logical_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
             'Respond with JSON only: {"correct": true/false, "failure_type": "<wrong_aggregation|wrong_filter|wrong_groupby|wrong_orderby>", '
             '"wrong_clause": "<the problematic SQL clause>", "blame_set": ["<column_or_function>"], '
             '"counterfactual_fix": "<specific Genie Space metadata change that would fix this, referencing exact table/column names>", '
+            '"rca_kind": "<metric_view_routing_confusion|measure_swap|canonical_dimension_missed|missing_required_dimension|extra_defensive_filter|unknown>", '
+            '"expected_objects": ["<table_or_column_or_measure_expected>"], '
+            '"actual_objects": ["<table_or_column_or_measure_generated>"], '
+            '"patch_family": "<contrastive_metric_routing|contrastive_measure_disambiguation|canonical_dimension_guidance|required_dimension_guidance|avoid_unrequested_defensive_filters|unknown>", '
+            '"recommended_levers": [1, 5], '
             '"rationale": "<brief explanation>"}\n'
             'If correct, set failure_type to "", blame_set to [], and counterfactual_fix to "".'
         )
@@ -187,6 +192,11 @@ def _make_logical_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
                 f"Fix {result.get('failure_type', 'logic issue')} "
                 f"involving {', '.join(result.get('blame_set', ['unknown']))}"
             ),
+            expected_objects=result.get("expected_objects") or [],
+            actual_objects=result.get("actual_objects") or [],
+            rca_kind=result.get("rca_kind") or "",
+            patch_family=result.get("patch_family") or "",
+            recommended_levers=result.get("recommended_levers") or [],
         )
         return Feedback(
             name="logical_accuracy",
