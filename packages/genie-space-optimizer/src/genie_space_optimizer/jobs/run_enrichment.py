@@ -96,10 +96,16 @@ catalog = dbutils.jobs.taskValues.get(taskKey="preflight", key="catalog")
 schema = dbutils.jobs.taskValues.get(taskKey="preflight", key="schema")
 exp_name = dbutils.jobs.taskValues.get(taskKey="preflight", key="experiment_name")
 
-import os as _os
-_warehouse_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="warehouse_id", default="")
+from genie_space_optimizer.common.warehouse import (
+    export_warehouse_id,
+    resolve_warehouse_id,
+)
+
+_warehouse_id = resolve_warehouse_id(
+    dbutils.jobs.taskValues.get(taskKey="preflight", key="warehouse_id", default="")
+)
 if _warehouse_id:
-    _os.environ["GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID"] = _warehouse_id
+    export_warehouse_id(_warehouse_id)
 
 thresholds_met_raw = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="thresholds_met")
 thresholds_met = str(thresholds_met_raw).lower() in ("true", "1")
@@ -120,6 +126,7 @@ _log(
     experiment_name=exp_name,
     baseline_model_id=baseline_model_id,
     thresholds_met=thresholds_met,
+    warehouse_id=_warehouse_id or "(not set — detection will run without warehouse)",
 )
 
 # COMMAND ----------

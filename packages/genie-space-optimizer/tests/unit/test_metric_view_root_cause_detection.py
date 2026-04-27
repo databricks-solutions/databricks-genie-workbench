@@ -207,3 +207,34 @@ def test_pre_execute_repair_order_by_measure_original_name_after_alias_collision
     assert "ORDER BY MEASURE(`7now_orders_diff_mtd`)" not in repaired
     assert counters["repaired_measure_alias_collisions"] == 1
     assert counters["repaired_order_by_measure_alias"] == 1
+
+
+def test_resolve_warehouse_id_precedence(monkeypatch):
+    from genie_space_optimizer.common.warehouse import resolve_warehouse_id
+
+    monkeypatch.setenv("SQL_WAREHOUSE_ID", "sql-wh")
+    monkeypatch.setenv("GSO_WAREHOUSE_ID", "gso-wh")
+    monkeypatch.setenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "legacy-wh")
+
+    assert resolve_warehouse_id("explicit-wh") == "explicit-wh"
+    assert resolve_warehouse_id("") == "legacy-wh"
+
+    monkeypatch.delenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID")
+    assert resolve_warehouse_id("") == "gso-wh"
+
+    monkeypatch.delenv("GSO_WAREHOUSE_ID")
+    assert resolve_warehouse_id("") == "sql-wh"
+
+    monkeypatch.delenv("SQL_WAREHOUSE_ID")
+    assert resolve_warehouse_id("") == ""
+
+
+def test_export_warehouse_id_sets_all_runtime_names(monkeypatch):
+    import os
+
+    from genie_space_optimizer.common.warehouse import export_warehouse_id
+
+    export_warehouse_id("wh-abc")
+
+    assert os.environ["GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID"] == "wh-abc"
+    assert os.environ["GSO_WAREHOUSE_ID"] == "wh-abc"

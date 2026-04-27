@@ -223,3 +223,55 @@ def wh_reconcile_active_runs(
             changed = True
 
     return changed
+
+
+# ── Warehouse ID resolution ──────────────────────────────────────────
+#
+# The optimization pipeline historically read only
+# ``GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID`` at each call site. In deployed
+# Databricks Apps the resource is usually named ``SQL_WAREHOUSE_ID`` or
+# ``GSO_WAREHOUSE_ID`` first, then job notebooks copy it into the legacy
+# name. A single resolver prevents enrichment subtasks from silently
+# falling back to Spark Connect when that copy is missing.
+
+import os as _os
+
+
+WAREHOUSE_ENV_KEYS: tuple[str, ...] = (
+    "GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID",
+    "GSO_WAREHOUSE_ID",
+    "SQL_WAREHOUSE_ID",
+)
+
+
+def resolve_warehouse_id(explicit: str | None = None) -> str:
+    """Return the first non-empty SQL warehouse ID.
+
+    Precedence:
+    1. Explicit function argument.
+    2. Legacy optimizer env var ``GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID``.
+    3. GSO app env var ``GSO_WAREHOUSE_ID``.
+    4. Databricks Apps SQL warehouse resource env var ``SQL_WAREHOUSE_ID``.
+    """
+    explicit_s = str(explicit or "").strip()
+    if explicit_s:
+        return explicit_s
+    for key in WAREHOUSE_ENV_KEYS:
+        val = _os.getenv(key, "").strip()
+        if val:
+            return val
+    return ""
+
+
+def export_warehouse_id(warehouse_id: str | None) -> str:
+    """Export a resolved warehouse ID under every runtime env key.
+
+    Returns the resolved value so job notebooks can log it directly.
+    Empty input leaves the environment unchanged and returns ``""``.
+    """
+    resolved = str(warehouse_id or "").strip()
+    if not resolved:
+        return ""
+    for key in WAREHOUSE_ENV_KEYS:
+        _os.environ[key] = resolved
+    return resolved

@@ -274,13 +274,14 @@ from genie_space_optimizer.common.config import CONNECTION_POOL_SIZE
 configure_connection_pool(w, CONNECTION_POOL_SIZE)
 configure_mlflow_connection_pool(CONNECTION_POOL_SIZE)
 
-import os as _os
-warehouse_id = (
-    dbutils.widgets.get("warehouse_id").strip()
-    or _os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "")
+from genie_space_optimizer.common.warehouse import (
+    export_warehouse_id,
+    resolve_warehouse_id,
 )
+
+warehouse_id = resolve_warehouse_id(dbutils.widgets.get("warehouse_id").strip())
 if warehouse_id:
-    _os.environ["GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID"] = warehouse_id
+    export_warehouse_id(warehouse_id)
 _log("SQL warehouse", warehouse_id=warehouse_id or "(not set — using Spark SQL)")
 
 _banner("Ensuring Delta State Tables")
