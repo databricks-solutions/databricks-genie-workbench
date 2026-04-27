@@ -2609,7 +2609,7 @@ theme-level attribution.
 | `GSO_ENABLE_RCA_THEME_BUNDLES` | `false` | Deprecated compatibility alias for `GSO_ENABLE_RCA_THEME_SELECTION`; not hard bundle enforcement. |
 | `GSO_ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS` | `true` | Allows selected RCA themes to request original, leakage-safe example SQL synthesis through the existing synthesis validator and firewall. |
 | `GSO_ENABLE_RCA_SQL_SNIPPET_BRIDGE` | `true` | Allows RCA themes that recommend SQL snippets to deterministically trigger `_generate_lever6_proposal` even when the strategist routed the action group elsewhere. |
-| `GSO_ENABLE_RCA_JOIN_SPEC_BRIDGE` | `false` | Allows RCA themes that recommend joins to deterministically build an `add_join_spec` proposal from the theme's `expected_objects`, bypassing strategist-prompt indirection. |
+| `GSO_ENABLE_RCA_JOIN_SPEC_BRIDGE` | `true` | Allows RCA themes that recommend joins to deterministically build an `add_join_spec` proposal from the theme's `expected_objects`, bypassing strategist-prompt indirection. |
 
 Future hard theme enforcement should use a separate flag and design. That
 future mode would need to constrain proposal generation and/or patch apply

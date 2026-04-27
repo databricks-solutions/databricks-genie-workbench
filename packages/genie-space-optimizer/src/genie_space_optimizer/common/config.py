@@ -451,7 +451,7 @@ benchmark-leakage firewall in ``_generate_lever6_proposal``.
 """
 
 ENABLE_RCA_JOIN_SPEC_BRIDGE: bool = (
-    os.getenv("GSO_ENABLE_RCA_JOIN_SPEC_BRIDGE", "false").lower()
+    os.getenv("GSO_ENABLE_RCA_JOIN_SPEC_BRIDGE", "true").lower()
     in {"1", "true", "yes", "on"}
 )
 """When true, RCA themes whose patches request ``add_join_spec``
