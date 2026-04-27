@@ -238,3 +238,12 @@ def test_export_warehouse_id_sets_all_runtime_names(monkeypatch):
 
     assert os.environ["GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID"] == "wh-abc"
     assert os.environ["GSO_WAREHOUSE_ID"] == "wh-abc"
+
+
+def test_prepare_lever_loop_uses_resolved_warehouse_id_for_catalog_detection(monkeypatch):
+    from genie_space_optimizer.common.warehouse import resolve_warehouse_id
+
+    monkeypatch.delenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", raising=False)
+    monkeypatch.setenv("GSO_WAREHOUSE_ID", "gso-wh-123")
+
+    assert resolve_warehouse_id("") == "gso-wh-123"

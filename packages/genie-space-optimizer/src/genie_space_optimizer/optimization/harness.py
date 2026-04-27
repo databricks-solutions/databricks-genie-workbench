@@ -67,6 +67,7 @@ from genie_space_optimizer.common.config import (
     SLICE_GATE_TOLERANCE,
     format_mlflow_template,
 )
+from genie_space_optimizer.common.warehouse import resolve_warehouse_id
 from genie_space_optimizer.optimization.applier import (
     _get_general_instructions,
     apply_patch_set,
@@ -655,7 +656,7 @@ def _build_predict_and_scorers(
     )
     predict_fn = make_predict_fn(
         w, space_id, spark, catalog, schema,
-        warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+        warehouse_id=resolve_warehouse_id(""),
         instruction_prompt_name=_instr_prompt,
     )
 
@@ -1710,7 +1711,7 @@ def _mine_and_apply_proven_joins(
     # fires. Keeping it here for symmetry with
     # :func:`_apply_instruction_join_specs` and to catch corner cases
     # (FQ-resolution drift, column renames between eval and PATCH).
-    warehouse_id = os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "")
+    warehouse_id = resolve_warehouse_id("")
     validated_specs: list[dict] = []
     explain_rejected = 0
     for spec in new_specs:
@@ -2026,7 +2027,7 @@ def _run_unified_example_sql_generation(
             config=config, uc_columns=uc_columns,
             uc_tags=[], uc_routines=[],
             domain=domain, catalog=catalog, schema=schema,
-            warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+            warehouse_id=resolve_warehouse_id(""),
             target_count=PREFLIGHT_EXAMPLE_SQL_TARGET,
             existing_example_sqls=existing_sqls,
             leakage_oracle=oracle,
@@ -4104,7 +4105,7 @@ def _prepare_lever_loop(
                 detect_metric_views_via_catalog_with_outcomes,
                 summarize_outcomes,
             )
-            _warehouse_id = os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "")
+            _warehouse_id = resolve_warehouse_id("")
             _, _yamls, _outcomes = detect_metric_views_via_catalog_with_outcomes(
                 spark,
                 table_refs,
@@ -4238,7 +4239,7 @@ def _prepare_lever_loop(
         config["_rls_audit"] = collect_rls_audit(
             space_tables,
             spark=spark, w=w,
-            warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+            warehouse_id=resolve_warehouse_id(""),
         )
         _tainted_count = sum(
             1 for v in config["_rls_audit"].values()
@@ -4437,7 +4438,7 @@ def _run_enrichment(
             _miner_out = _run_instruction_prose_mining(
                 w, spark, run_id, space_id, config, metadata_snapshot,
                 catalog, schema,
-                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                warehouse_id=resolve_warehouse_id(""),
                 benchmarks=list(benchmarks) + list(held_out_benchmarks or []),
             )
             if _miner_out["total_applied"] or _miner_out["keep_in_prose_count"]:
@@ -4530,7 +4531,7 @@ def _run_enrichment(
                             w, spark, run_id, space_id, config, metadata_snapshot,
                             benchmarks=_full_firewall_corpus,
                             catalog=catalog, schema=schema,
-                            warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                            warehouse_id=resolve_warehouse_id(""),
                         )
                         if preflight_example_result.get("applied", 0) > 0:
                             config = fetch_space_config(w, space_id)
@@ -4571,7 +4572,7 @@ def _run_enrichment(
                 metadata_snapshot=metadata_snapshot,
                 benchmarks=approved_benchmarks,
                 catalog=catalog, schema=schema,
-                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                warehouse_id=resolve_warehouse_id(""),
             )
             if (
                 sql_expr_result.get("total_candidates", 0) > 0
@@ -6415,7 +6416,7 @@ def _run_arbiter_corrections(
                 )
                 repaired_sql = _attempt_gt_repair(
                     w, cand, spark,
-                    warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                    warehouse_id=resolve_warehouse_id(""),
                 )
                 if repaired_sql:
                     repair_actions = [{
@@ -8093,7 +8094,7 @@ def _run_lever_loop(
             w, spark, run_id, space_id, config=config,
             metadata_snapshot=_parsed_pre_repair,
             catalog=catalog, schema=schema,
-            warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+            warehouse_id=resolve_warehouse_id(""),
         )
         if _snippet_repair_result.get("rewritten", 0) > 0:
             from genie_space_optimizer.common.genie_client import fetch_space_config
@@ -8113,7 +8114,7 @@ def _run_lever_loop(
     predict_fn = make_predict_fn(
         w, space_id, spark, catalog, schema,
         metric_view_measures=_mv_measures,
-        warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+        warehouse_id=resolve_warehouse_id(""),
         optimization_run_id=run_id,
         triggered_by=triggered_by,
         instruction_prompt_name=_instr_prompt,
@@ -8205,7 +8206,7 @@ def _run_lever_loop(
             _legacy_miner_out = _run_instruction_prose_mining(
                 w, spark, run_id, space_id, config, metadata_snapshot,
                 catalog, schema,
-                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                warehouse_id=resolve_warehouse_id(""),
                 benchmarks=benchmarks,
             )
             if _legacy_miner_out["total_applied"] or _legacy_miner_out["keep_in_prose_count"]:
@@ -8243,7 +8244,7 @@ def _run_lever_loop(
                         w, spark, run_id, space_id, config, metadata_snapshot,
                         benchmarks=benchmarks,
                         catalog=catalog, schema=schema,
-                        warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                        warehouse_id=resolve_warehouse_id(""),
                     )
                     if legacy_preflight_result.get("applied", 0) > 0:
                         from genie_space_optimizer.common.genie_client import fetch_space_config
@@ -8277,7 +8278,7 @@ def _run_lever_loop(
                 metadata_snapshot=metadata_snapshot,
                 benchmarks=_legacy_approved,
                 catalog=catalog, schema=schema,
-                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                warehouse_id=resolve_warehouse_id(""),
             )
             if (
                 sql_expr_result.get("total_seeded", 0) > 0
@@ -9499,7 +9500,7 @@ def _run_lever_loop(
                 spark=spark,
                 catalog=catalog,
                 gold_schema=schema,
-                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                warehouse_id=resolve_warehouse_id(""),
                 benchmarks=benchmarks,
             )
             all_proposals.extend(lever_proposals)
@@ -11175,7 +11176,7 @@ def _run_finalize(
             _ensure_sql_context(spark, catalog, schema)
             predict_fn = make_predict_fn(
                 w, space_id, spark, catalog, schema,
-                warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                warehouse_id=resolve_warehouse_id(""),
             )
 
             rep_pcts: list[float] = []
@@ -11291,7 +11292,7 @@ def _run_finalize(
                 _ensure_sql_context(spark, catalog, schema)
                 ho_predict_fn = make_predict_fn(
                     w, space_id, spark, catalog, schema,
-                    warehouse_id=os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", ""),
+                    warehouse_id=resolve_warehouse_id(""),
                 )
                 try:
                     from genie_space_optimizer.common.genie_client import fetch_space_config as _ho_fetch
