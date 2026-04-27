@@ -426,7 +426,7 @@ RCA_MAX_THEME_PATCHES_PER_ITERATION: int = int(
 )
 
 ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS: bool = (
-    os.getenv("GSO_ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS", "false").lower()
+    os.getenv("GSO_ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS", "true").lower()
     in {"1", "true", "yes", "on"}
 )
 """When true, selected RCA themes may request leakage-safe example SQL synthesis.

@@ -2594,7 +2594,7 @@ theme-level attribution.
 | `GSO_ENABLE_RCA_THEMES_STRATEGIST` | `false` | Include RCA themes in strategist prompt context. |
 | `GSO_ENABLE_RCA_THEME_SELECTION` | `false` | Prune RCA strategist context to a compatible selected subset. Does not constrain patch apply. |
 | `GSO_ENABLE_RCA_THEME_BUNDLES` | `false` | Deprecated compatibility alias for `GSO_ENABLE_RCA_THEME_SELECTION`; not hard bundle enforcement. |
-| `GSO_ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS` | `false` | Allows selected RCA themes to request original, leakage-safe example SQL synthesis through the existing synthesis validator and firewall. |
+| `GSO_ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS` | `true` | Allows selected RCA themes to request original, leakage-safe example SQL synthesis through the existing synthesis validator and firewall. |
 
 Future hard theme enforcement should use a separate flag and design. That
 future mode would need to constrain proposal generation and/or patch apply
