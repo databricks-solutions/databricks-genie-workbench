@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_iterations (
     run_id              STRING        NOT NULL COMMENT 'FK to genie_opt_runs.run_id',
     iteration           INT           NOT NULL COMMENT 'Evaluation iteration number (0 = baseline)',
     lever               INT                    COMMENT 'Which lever was applied before this eval (null for baseline)',
-    eval_scope          STRING        NOT NULL COMMENT 'full|slice|p0|held_out',
+    eval_scope          STRING        NOT NULL COMMENT 'full|slice|p0|held_out|enrichment',
     timestamp           TIMESTAMP     NOT NULL COMMENT 'When this evaluation completed',
     mlflow_run_id       STRING                 COMMENT 'MLflow run ID for this evaluation',
     model_id            STRING                 COMMENT 'LoggedModel ID used for this evaluation',

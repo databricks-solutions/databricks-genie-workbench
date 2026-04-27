@@ -235,6 +235,13 @@ export interface IterationDetailResponse {
   // or optimization is still running). ``N > 0`` is the iteration that
   // actually achieved ``optimizedScore``.
   bestIteration: number | null;
+  // Disambiguates the ``bestIteration === 0`` case:
+  // - ``"full"`` + ``bestIteration === 0`` → baseline retained / mid-run.
+  // - ``"enrichment"`` + ``bestIteration === 0`` → enrichment drove the
+  //   improvement (lever loop short-circuited because thresholds met).
+  // - ``"full"`` + ``bestIteration > 0`` → lever-loop iteration N drove
+  //   the improvement.
+  bestEvalScope?: string | null;
   totalIterations: number;
   iterations: IterationDetail[];
   flaggedQuestions: Record<string, unknown>[];

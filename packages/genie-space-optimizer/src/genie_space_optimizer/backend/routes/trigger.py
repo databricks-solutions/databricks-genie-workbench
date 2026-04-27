@@ -113,6 +113,7 @@ def get_trigger_status(
         baselineScore=run_scores.baseline,
         optimizedScore=run_scores.optimized,
         bestIteration=run_scores.best_iteration,
+        bestEvalScope=run_scores.best_eval_scope,
         convergenceReason=run_data.get("convergence_reason"),
     )
 

@@ -4742,6 +4742,47 @@ def _run_enrichment(
                 post_enrichment_thresholds_met = bool(
                     _pe_eval.get("thresholds_met", False)
                 )
+
+                # Persist the post-enrichment eval as iter 0 with
+                # ``eval_scope="enrichment"`` so the UI's
+                # ``compute_run_scores`` can surface it as the optimized
+                # candidate when the lever loop is short-circuited (the
+                # "baseline 91.7 → optimized 96.2 driven by enrichment"
+                # headline). Best-effort: a write failure must not
+                # prevent the existing task-value flow downstream. We
+                # deliberately skip ``_merge_bug4_counters`` here so the
+                # first lever-loop full write keeps absorbing leakage
+                # counters as today.
+                try:
+                    write_iteration(
+                        spark, run_id, 0, _pe_eval,
+                        catalog=catalog, schema=schema,
+                        eval_scope="enrichment",
+                        model_id=enrichment_model_id,
+                    )
+                    _pe_both_correct_rate = _pe_eval.get("both_correct_rate")
+                    if _pe_both_correct_rate is not None:
+                        _pe_anchored_best = min(
+                            post_enrichment_accuracy,
+                            float(_pe_both_correct_rate),
+                        )
+                    else:
+                        _pe_anchored_best = post_enrichment_accuracy
+                    update_run_status(
+                        spark, run_id, catalog, schema,
+                        best_iteration=0,
+                        best_accuracy=_pe_anchored_best,
+                        best_model_id=enrichment_model_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist post-enrichment iteration row "
+                        "for run %s — UI headline will fall back to "
+                        "baseline only",
+                        run_id,
+                        exc_info=True,
+                    )
+
                 _pe_lines = [_section("ENRICHMENT — POST-ENRICHMENT EVAL", "-")]
                 _pe_lines.append(
                     _kv("Accuracy", f"{post_enrichment_accuracy:.1f}%")

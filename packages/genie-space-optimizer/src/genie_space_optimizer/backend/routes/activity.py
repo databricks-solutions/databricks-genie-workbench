@@ -123,6 +123,7 @@ def get_activity(
                 baselineScore=scores.baseline,
                 optimizedScore=scores.optimized,
                 bestIteration=scores.best_iteration,
+                bestEvalScope=scores.best_eval_scope,
                 timestamp=ensure_utc_iso(row.get("started_at")) or "",
             )
         )

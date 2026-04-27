@@ -167,3 +167,42 @@ def test_write_iteration_escapes_quotes_in_quarantine_payload(mock_spark_iter) -
     # Positive confirmation: the original single quote was preserved as an
     # escaped pair, so the user-supplied text is still recoverable.
     assert "''amount''" in payload or r"\u0027amount\u0027" in payload
+
+
+def test_write_iteration_accepts_enrichment_eval_scope(mock_spark_iter) -> None:
+    """Lock down ``eval_scope='enrichment'`` as a valid value.
+
+    The post-enrichment iter-0 row uses this scope so the UI can surface
+    "baseline 91.7 → optimized 96.2" when the lever loop short-circuits.
+    The DDL declares ``eval_scope`` as a free STRING, so this is a
+    behavioral lock-down rather than a schema-level enforcement.
+    """
+    eval_result = {
+        "overall_accuracy": 96.15,
+        "total_questions": 26,
+        "evaluated_count": 26,
+        "correct_count": 25,
+        "scores": {"judge_a": 96.0},
+        "thresholds_met": True,
+    }
+
+    write_iteration(
+        mock_spark_iter,
+        run_id="run-enrich",
+        iteration=0,
+        eval_result=eval_result,
+        catalog="cat",
+        schema="sch",
+        eval_scope="enrichment",
+        model_id="m-enrichment-test",
+    )
+
+    sql = _extract_insert_sql(mock_spark_iter)
+    assert "'enrichment'" in sql, (
+        f"eval_scope='enrichment' not present in INSERT: {sql[:500]}"
+    )
+    assert "m-enrichment-test" in sql
+    # Iteration must still be 0 — enrichment row anchors at the
+    # baseline iteration so ``compute_run_scores`` matches it
+    # against the iter-0 baseline.
+    assert "0," in sql

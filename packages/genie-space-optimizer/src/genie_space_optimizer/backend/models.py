@@ -142,6 +142,7 @@ class RunSummary(SafeModel):
     baselineScore: ScorePct = None
     optimizedScore: ScorePct = None
     bestIteration: int | None = None
+    bestEvalScope: str | None = None
     timestamp: str
 
 
@@ -198,6 +199,7 @@ class RunStatusResponse(SafeModel):
     baselineScore: ScorePct = None
     optimizedScore: ScorePct = None
     bestIteration: int | None = None
+    bestEvalScope: str | None = None
     convergenceReason: str | None = None
 
 
@@ -244,6 +246,7 @@ class PipelineRun(SafeModel):
     baselineScore: ScorePct = None
     optimizedScore: ScorePct = None
     bestIteration: int | None = None
+    bestEvalScope: str | None = None
     steps: list[PipelineStep]
     levers: list[LeverStatus] = []
     convergenceReason: str | None = None
@@ -284,6 +287,7 @@ class ComparisonData(SafeModel):
     original: SpaceConfiguration
     optimized: SpaceConfiguration
     bestIteration: int | None = None
+    bestEvalScope: str | None = None
 
 
 # ── Action Models ───────────────────────────────────────────────────────
@@ -307,6 +311,7 @@ class ActivityItem(SafeModel):
     baselineScore: ScorePct = None
     optimizedScore: ScorePct = None
     bestIteration: int | None = None
+    bestEvalScope: str | None = None
     timestamp: str
 
 
@@ -597,6 +602,7 @@ class IterationDetailResponse(SafeModel):
     baselineScore: ScorePct = None
     optimizedScore: ScorePct = None
     bestIteration: int | None = None
+    bestEvalScope: str | None = None
     totalIterations: int
     iterations: list[IterationDetail]
     flaggedQuestions: list[dict] = []

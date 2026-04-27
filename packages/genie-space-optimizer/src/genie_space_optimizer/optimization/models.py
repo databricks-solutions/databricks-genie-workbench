@@ -164,25 +164,37 @@ def promote_best_model(
         logger.warning("No iterations found for run %s", run_id)
         return None
 
-    full_evals = iterations_df[iterations_df["eval_scope"] == "full"]
+    # Allow the post-enrichment iter-0 row (``eval_scope == "enrichment"``)
+    # to be a candidate for champion promotion alongside lever-loop
+    # iterations. ``compute_run_scores`` already treats both as candidates
+    # for the UI headline; promoting the matching ``model_id`` keeps the
+    # registered champion consistent with the displayed ``optimizedScore``.
+    full_evals = iterations_df[
+        iterations_df["eval_scope"].isin(["full", "enrichment"])
+    ]
     if full_evals.empty:
         full_evals = iterations_df
 
     # Tier 1.2: exclude rolled-back iterations from champion selection so
     # the run's stored ``best_accuracy`` reflects accepted state only.
-    # Baseline (iteration 0) is never rolled back and remains the floor.
+    # Baseline (iteration 0 full) is never rolled back and remains the floor.
     if "rolled_back" in full_evals.columns:
         _rb_mask = full_evals["rolled_back"].fillna(False).astype(bool)
-        _is_baseline = full_evals["iteration"].astype(int) == 0
+        _is_baseline = (
+            (full_evals["iteration"].astype(int) == 0)
+            & (full_evals["eval_scope"] == "full")
+        )
         full_evals = full_evals[(~_rb_mask) | _is_baseline]
 
     if full_evals.empty:
         logger.warning(
-            "No non-rolled-back full iterations for run %s — "
-            "falling back to all full iterations",
+            "No non-rolled-back full/enrichment iterations for run %s — "
+            "falling back to all full/enrichment iterations",
             run_id,
         )
-        full_evals = iterations_df[iterations_df["eval_scope"] == "full"]
+        full_evals = iterations_df[
+            iterations_df["eval_scope"].isin(["full", "enrichment"])
+        ]
         if full_evals.empty:
             full_evals = iterations_df
 
@@ -478,9 +490,14 @@ def register_uc_model(
         return None
 
     iterations_df = load_iterations(spark, run_id, catalog, schema)
+    # The best iter row may be ``eval_scope == "enrichment"`` when the
+    # post-enrichment eval drove the headline (lever loop short-circuited).
+    # ``_promote_best_model`` already accounts for that and writes the
+    # matching ``best_model_id`` / ``best_iteration`` onto the run row, so
+    # we just need to widen the lookup here to find the same row.
     best_iter_rows = iterations_df[
         (iterations_df["iteration"] == best_iteration)
-        & (iterations_df["eval_scope"] == "full")
+        & (iterations_df["eval_scope"].isin(["full", "enrichment"]))
     ]
     source_run_id = ""
     if not best_iter_rows.empty:
@@ -489,6 +506,9 @@ def register_uc_model(
         logger.warning("No mlflow_run_id for best iteration %d, skipping UC registration", best_iteration)
         return None
 
+    # Baseline lookup stays pinned to ``eval_scope == "full"`` so the
+    # registered model's ``baseline_accuracy`` parameter always reflects
+    # the pre-enrichment baseline (the natural pre/post comparison).
     baseline_rows = iterations_df[
         (iterations_df["iteration"] == 0) & (iterations_df["eval_scope"] == "full")
     ]

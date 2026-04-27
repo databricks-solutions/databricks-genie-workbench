@@ -307,3 +307,100 @@ def test_optimized_is_never_below_baseline_invariant() -> None:
         assert scores.optimized >= scores.baseline, (
             f"Floor-at-baseline broken by rows={rows} → scores={scores}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Enrichment as iter-0 candidate (post-enrichment row drives the headline)
+# ---------------------------------------------------------------------------
+
+
+def test_enrichment_row_drives_optimized_when_lever_loop_skipped() -> None:
+    """Lever loop short-circuited: enrichment alone cleared thresholds.
+
+    Persistent state: iter 0 baseline (full=91.7) + iter 0 post-enrichment
+    (enrichment=96.2). No iter > 0 rows. Headline must reflect the
+    enrichment delta.
+    """
+    rows = [
+        _row(0, overall_accuracy=80.0, correct_count=16, evaluated_count=20),
+        _row(0, overall_accuracy=95.0, correct_count=19, evaluated_count=20,
+             eval_scope="enrichment"),
+    ]
+    scores = compute_run_scores(rows)
+    assert scores.baseline == 80.0
+    assert scores.optimized == 95.0
+    assert scores.baseline_iteration == 0
+    assert scores.best_iteration == 0
+    assert scores.best_eval_scope == "enrichment"
+
+
+def test_lever_iter_beats_enrichment() -> None:
+    """If a full-scope iter > 0 strictly exceeds the enrichment row, it wins.
+
+    Tie-break preserves the existing earliest-plateau preference.
+    """
+    rows = [
+        _row(0, overall_accuracy=80.0, correct_count=16, evaluated_count=20),
+        _row(0, overall_accuracy=95.0, correct_count=19, evaluated_count=20,
+             eval_scope="enrichment"),
+        _row(1, overall_accuracy=97.0, correct_count=97, evaluated_count=100),
+    ]
+    scores = compute_run_scores(rows)
+    assert scores.baseline == 80.0
+    assert scores.optimized == 97.0
+    assert scores.best_iteration == 1
+    assert scores.best_eval_scope == "full"
+
+
+def test_enrichment_below_baseline_does_not_pull_optimized_down() -> None:
+    """An enrichment row that ends up below baseline must not regress the
+    headline. Floor-at-baseline applies to enrichment candidates too.
+    """
+    rows = [
+        _row(0, overall_accuracy=85.0, correct_count=17, evaluated_count=20),
+        _row(0, overall_accuracy=70.0, correct_count=14, evaluated_count=20,
+             eval_scope="enrichment"),
+    ]
+    scores = compute_run_scores(rows)
+    assert scores.baseline == 85.0
+    assert scores.optimized == 85.0
+    assert scores.best_iteration == 0
+    assert scores.best_eval_scope == "full"
+
+
+def test_rolled_back_enrichment_row_ignored() -> None:
+    """Defensive: a stamped ``rolled_back=true`` on the enrichment row drops
+    it from the candidate pool just like any other rolled-back iteration.
+    """
+    rows = [
+        _row(0, overall_accuracy=80.0, correct_count=16, evaluated_count=20),
+        _row(0, overall_accuracy=95.0, correct_count=19, evaluated_count=20,
+             eval_scope="enrichment", rolled_back=True),
+    ]
+    scores = compute_run_scores(rows)
+    assert scores.baseline == 80.0
+    assert scores.optimized == 80.0
+    assert scores.best_iteration == 0
+    assert scores.best_eval_scope == "full"
+
+
+def test_default_best_eval_scope_is_full_for_existing_callers() -> None:
+    """Backward-compat: ``RunScores(...)`` constructed without
+    ``best_eval_scope`` defaults to ``"full"`` so existing callers remain
+    correct.
+    """
+    rs = RunScores(baseline=80.0, optimized=90.0,
+                   baseline_iteration=0, best_iteration=1)
+    assert rs.best_eval_scope == "full"
+
+
+def test_enrichment_row_alone_without_baseline_returns_none() -> None:
+    """An enrichment row without an iter-0 ``full`` baseline cannot drive
+    the headline — there's nothing to floor against.
+    """
+    rows = [
+        _row(0, overall_accuracy=95.0, correct_count=19, evaluated_count=20,
+             eval_scope="enrichment"),
+    ]
+    scores = compute_run_scores(rows)
+    assert scores == RunScores(None, None, None, None)

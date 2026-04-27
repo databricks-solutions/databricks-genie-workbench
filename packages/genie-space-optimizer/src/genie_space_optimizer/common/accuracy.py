@@ -124,21 +124,36 @@ class RunScores:
     * ``baseline`` is iteration 0's full-scope arbiter-adjusted accuracy.
       ``None`` only before iteration 0 has been written (i.e. before the
       Baseline Evaluation step completes).
-    * ``optimized`` is ``max(baseline, best_non_rolled_back_full_scope_iter_>0)``.
+    * ``optimized`` is ``max(baseline, best_non_rolled_back_candidate)``
+      where candidates are:
+      - any iter > 0 row with ``eval_scope == "full"``, AND
+      - the iter 0 row with ``eval_scope == "enrichment"`` (post-enrichment
+        eval), if present. This lets the headline reflect the
+        "baseline 91.7 → optimized 96.2 driven by enrichment" delta even
+        when the lever loop short-circuits because enrichment alone met
+        thresholds.
+
       Two important consequences:
       - Optimized is NEVER less than baseline. Regressions don't get
         deployed, so they don't count as the Optimized headline either.
-      - When no iter > 0 has been written yet (mid-run after Baseline
+      - When no candidate has been written yet (mid-run after Baseline
         Evaluation), Optimized equals Baseline. The frontend interprets the
-        ``best_iteration == 0`` signal to render "—" with an
-        "Optimization in progress" tooltip and to wire the existing
-        convergence-reason copy with "Baseline retained" once the run is
-        terminal.
+        ``best_iteration == 0 AND best_eval_scope == "full"`` signal to
+        render "—" with an "Optimization in progress" tooltip and to wire
+        the existing convergence-reason copy with "Baseline retained" once
+        the run is terminal.
     * ``baseline_iteration`` is ``0`` when baseline exists, else ``None``.
     * ``best_iteration`` is the iteration whose accuracy ``optimized`` came
       from. Tie goes to baseline (returns ``0``) — we only credit a later
-      iteration when it strictly exceeds baseline. ``None`` only when
+      candidate when it strictly exceeds baseline. ``None`` only when
       baseline itself is ``None``.
+    * ``best_eval_scope`` disambiguates the ``best_iteration == 0`` case:
+      - ``"full"`` and ``best_iteration == 0`` → baseline retained / mid-run.
+      - ``"enrichment"`` and ``best_iteration == 0`` → enrichment drove the
+        improvement (lever loop may have skipped).
+      - ``"full"`` and ``best_iteration > 0`` → lever-loop iteration N drove
+        the improvement.
+      Defaults to ``"full"`` so existing callers stay compatible.
 
     Wire format: callers MUST send floats on the 0–100 scale. Pydantic
     validators in ``backend/models.py`` enforce this (PR 2).
@@ -148,6 +163,7 @@ class RunScores:
     optimized: float | None
     baseline_iteration: int | None
     best_iteration: int | None
+    best_eval_scope: str = "full"
 
 
 def _is_rolled_back(row: dict[str, Any]) -> bool:
@@ -190,21 +206,30 @@ def compute_run_scores(
 
     The selection algorithm:
 
-    1. Filter to ``eval_scope == "full"`` rows only. Slice/p0/held-out probes
-       evaluate on a tiny subset and routinely show 100% — they MUST NOT
-       contribute to the headline.
-    2. Iteration 0 is always retained, even if some bug stamped
+    1. Filter to ``eval_scope == "full"`` rows for baseline derivation.
+       Slice/p0/held-out probes evaluate on a tiny subset and routinely
+       show 100% — they MUST NOT contribute to the headline.
+    2. Iteration 0 (full scope) is always retained, even if some bug stamped
        ``rolled_back=true`` on it. Baseline is the floor.
-    3. For iter > 0, drop ``rolled_back == true`` rows. They were rejected by
-       the regression detector and never deployed.
+    3. Candidates for ``optimized`` are:
+       - rows with ``eval_scope == "full"`` AND ``iteration > 0``, plus
+       - the iter 0 row with ``eval_scope == "enrichment"`` (post-enrichment
+         eval). It can win because enrichment may have already mutated the
+         space enough to clear thresholds before the lever loop runs.
+       Drop ``rolled_back == true`` rows from this candidate pool — they
+       were rejected by the regression detector and never deployed.
     4. Baseline = ``derived_accuracy(iter_0_full_row)``.
-    5. Best-iter accuracy = max over remaining (iter > 0) rows. If the max
-       row's accuracy strictly exceeds baseline, ``best_iteration`` is that
-       row's iteration number. Otherwise ``best_iteration == 0`` (baseline
-       retained).
-    6. ``optimized = max(baseline, best_iter_accuracy)`` so the headline is
+    5. Best candidate = max over the candidate pool. If its accuracy
+       strictly exceeds baseline, that row drives ``optimized``.
+       Tie-break: lowest iteration number, then full scope before
+       enrichment scope (matches the existing ``promote_best_model``
+       earliest-plateau preference).
+    6. ``optimized = max(baseline, best_candidate)`` so the headline is
        never below baseline. (PR description: "regressions don't get posted —
        they should either stay as baseline or an improvement.")
+    7. ``best_eval_scope`` reports the scope of the winning candidate
+       (``"full"`` or ``"enrichment"``). When baseline is retained the
+       value is ``"full"``.
     """
     if not iter_rows:
         return RunScores(None, None, None, None)
@@ -227,7 +252,11 @@ def compute_run_scores(
         # either. The frontend renders "—" with a tooltip in this state.
         return RunScores(None, None, None, None)
 
-    candidates: list[tuple[int, float]] = []
+    # Candidate pool: scope -> list of (iteration, accuracy).
+    # ``"full"`` covers iter > 0; ``"enrichment"`` covers the iter-0
+    # post-enrichment row (if persisted). Both pools share the
+    # rolled-back filter.
+    candidates: list[tuple[int, float, str]] = []
     for row in full_rows:
         it = safe_int(row.get("iteration"))
         if it is None or it <= 0:
@@ -239,26 +268,46 @@ def compute_run_scores(
         )
         if acc is None:
             continue
-        candidates.append((it, acc))
+        candidates.append((it, acc, "full"))
+
+    for row in iter_rows:
+        if str(row.get("eval_scope") or "").lower() != "enrichment":
+            continue
+        it = safe_int(row.get("iteration"))
+        if it != 0:
+            continue
+        if _is_rolled_back(row):
+            continue
+        acc = derived_accuracy(
+            row, run_id=run_id, iteration=0, logger=logger,
+        )
+        if acc is None:
+            continue
+        candidates.append((0, acc, "enrichment"))
 
     if not candidates:
-        # Mid-run: Baseline Evaluation finished but no iter > 0 has been
+        # Mid-run: Baseline Evaluation finished but no candidate has been
         # accepted yet. Optimized == baseline, best_iteration == 0. The
-        # frontend uses ``best_iteration == 0`` to render
-        # "—" / "Optimization in progress" while the run is active and
-        # "Baseline retained" once the run is terminal.
+        # frontend uses ``(best_iteration == 0, best_eval_scope == "full")``
+        # to render "—" / "Optimization in progress" while the run is
+        # active and "Baseline retained" once the run is terminal.
         return RunScores(
             baseline=baseline,
             optimized=baseline,
             baseline_iteration=0,
             best_iteration=0,
+            best_eval_scope="full",
         )
 
-    # Pick the highest accuracy; tie-break on the lowest iteration number so
-    # the earliest accepted plateau gets the credit (matches the existing
-    # ``promote_best_model`` behavior in optimization/models.py).
-    candidates.sort(key=lambda pair: (-pair[1], pair[0]))
-    best_it, best_acc = candidates[0]
+    # Pick the highest accuracy; tie-break on lowest iteration number, then
+    # prefer ``"full"`` before ``"enrichment"`` so an iter > 0 lever win
+    # always wins over a tied iter-0 enrichment candidate. Matches
+    # ``promote_best_model``'s earliest-plateau preference.
+    _scope_rank = {"full": 0, "enrichment": 1}
+    candidates.sort(
+        key=lambda triple: (-triple[1], triple[0], _scope_rank.get(triple[2], 99)),
+    )
+    best_it, best_acc, best_scope = candidates[0]
 
     if best_acc > baseline:
         return RunScores(
@@ -266,14 +315,16 @@ def compute_run_scores(
             optimized=best_acc,
             baseline_iteration=0,
             best_iteration=best_it,
+            best_eval_scope=best_scope,
         )
 
-    # Best iter > 0 didn't exceed baseline — baseline retained.
+    # Best candidate didn't exceed baseline — baseline retained.
     return RunScores(
         baseline=baseline,
         optimized=baseline,
         baseline_iteration=0,
         best_iteration=0,
+        best_eval_scope="full",
     )
 
 

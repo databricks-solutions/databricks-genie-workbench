@@ -697,6 +697,16 @@ def _build_step_io(
                 "totalEnrichments": detail.get("total_enrichments", 0),
                 "totalConfigChanges": lever_0_count,
                 "enrichmentSkipped": detail.get("enrichment_skipped", False),
+                # Surface the post-enrichment eval delta on the Proactive
+                # Enrichment step card so the per-step view matches the
+                # headline tile when enrichment short-circuits the lever
+                # loop. ``None`` when post-enrichment eval was skipped.
+                "postEnrichmentAccuracy": _safe_float(
+                    detail.get("post_enrichment_accuracy"),
+                ),
+                "postEnrichmentThresholdsMet": detail.get(
+                    "post_enrichment_thresholds_met",
+                ),
                 "stageEvents": timeline,
             },
         )
@@ -1643,6 +1653,7 @@ def get_run(
         baselineScore=baseline_accuracy,
         optimizedScore=optimized_score,
         bestIteration=best_iteration,
+        bestEvalScope=run_scores.best_eval_scope,
         steps=steps,
         levers=levers,
         convergenceReason=run_data.get("convergence_reason"),
@@ -1717,13 +1728,20 @@ def get_comparison(
     optimized_accuracy = run_scores.optimized if run_scores.optimized is not None else baseline_accuracy
 
     # Per-dimension scores are still per-iteration (separate judges). Pull
-    # baseline scores from iter 0 and optimized scores from the best
-    # accepted iter (or fall back to baseline when baseline retained).
-    def _scores_for_iter(target: int | None) -> dict[str, Any]:
+    # baseline scores from iter 0 (full scope) and optimized scores from
+    # the row that drove ``run_scores.optimized`` — which may be the
+    # post-enrichment row at iter 0 (``eval_scope == "enrichment"``) when
+    # the lever loop was short-circuited. Falling back to ``"full"`` keeps
+    # the legacy behavior intact.
+    def _scores_for_iter(
+        target: int | None, *, eval_scope: str = "full",
+    ) -> dict[str, Any]:
         if target is None:
             return {}
+        scope_norm = (eval_scope or "full").lower()
         for row in iters_rows:
-            if str(row.get("eval_scope") or "full").lower() != "full":
+            row_scope = str(row.get("eval_scope") or "full").lower()
+            if row_scope != scope_norm:
                 continue
             if _safe_int(row.get("iteration")) != target:
                 continue
@@ -1736,8 +1754,12 @@ def get_comparison(
             return scores_raw if isinstance(scores_raw, dict) else {}
         return {}
 
-    baseline_scores = _scores_for_iter(run_scores.baseline_iteration)
-    optimized_scores = _scores_for_iter(run_scores.best_iteration) or baseline_scores
+    baseline_scores = _scores_for_iter(
+        run_scores.baseline_iteration, eval_scope="full",
+    )
+    optimized_scores = _scores_for_iter(
+        run_scores.best_iteration, eval_scope=run_scores.best_eval_scope,
+    ) or baseline_scores
 
     dimensions: list[DimensionScore] = []
     all_dims = set(baseline_scores.keys()) | set(optimized_scores.keys())
@@ -1768,6 +1790,7 @@ def get_comparison(
         original=_extract_space_configuration(original_snapshot),
         optimized=_extract_space_configuration(current_ss),
         bestIteration=run_scores.best_iteration,
+        bestEvalScope=run_scores.best_eval_scope,
     )
 
 
@@ -2255,6 +2278,10 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
     full_rows = [r for r in iters_rows if str(r.get("eval_scope", "")).lower() == "full"]
     slice_rows = [r for r in iters_rows if str(r.get("eval_scope", "")).lower() == "slice"]
     p0_rows = [r for r in iters_rows if str(r.get("eval_scope", "")).lower() == "p0"]
+    enrichment_rows = [
+        r for r in iters_rows
+        if str(r.get("eval_scope", "")).lower() == "enrichment"
+    ]
 
     by_iter: dict[int, dict] = {}
     for row in full_rows:
@@ -2269,6 +2296,14 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
         it = _safe_int(row.get("iteration")) or 0
         by_iter.setdefault(it, {})
         by_iter[it]["p0"] = row
+    # Post-enrichment row (always iter 0). Stored separately so the
+    # iteration-card builder still renders the ``"full"`` baseline at iter
+    # 0 — this partition is read by the Proactive Enrichment step builder
+    # and is available for any future per-card "post-enrichment" surfacing.
+    for row in enrichment_rows:
+        it = _safe_int(row.get("iteration")) or 0
+        by_iter.setdefault(it, {})
+        by_iter[it]["enrichment"] = row
 
     patches_by_iter: dict[int, list[dict]] = {}
     for p in patches_rows:
@@ -2547,6 +2582,7 @@ def get_iteration_detail(run_id: str, config: Dependencies.Config):
         baselineScore=run_scores_iter.baseline,
         optimizedScore=run_scores_iter.optimized,
         bestIteration=run_scores_iter.best_iteration,
+        bestEvalScope=run_scores_iter.best_eval_scope,
         totalIterations=len(iterations),
         iterations=iterations,
         flaggedQuestions=flagged,

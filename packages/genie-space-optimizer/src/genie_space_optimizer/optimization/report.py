@@ -115,7 +115,14 @@ def _build_executive_summary(run_row: dict, iterations_df: pd.DataFrame) -> str:
 
     baseline_accuracy = 0.0
     if not iterations_df.empty:
-        baseline_rows = iterations_df[iterations_df["iteration"] == 0]
+        # Pin baseline to ``eval_scope == "full"`` so the
+        # post-enrichment iter 0 row (``eval_scope == "enrichment"``)
+        # cannot accidentally hijack the markdown summary's baseline
+        # number.
+        baseline_rows = iterations_df[
+            (iterations_df["iteration"] == 0)
+            & (iterations_df["eval_scope"] == "full")
+        ]
         if not baseline_rows.empty:
             baseline_accuracy = float(baseline_rows.iloc[0].get("overall_accuracy", 0.0))
 
