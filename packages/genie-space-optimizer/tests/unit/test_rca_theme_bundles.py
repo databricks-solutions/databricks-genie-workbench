@@ -82,6 +82,63 @@ def test_theme_patch_metadata_survives_proposal_to_patch_conversion():
     assert patches[0]["target_qids"] == ["retail_010"]
 
 
+def test_rca_metadata_survives_new_patch_type_conversion():
+    from genie_space_optimizer.optimization.applier import proposals_to_patches
+
+    proposals = [
+        {
+            "patch_type": "add_column_synonym",
+            "lever": 1,
+            "table": "orders",
+            "column": "gross_sales",
+            "column_synonyms": ["sales before returns"],
+            "rca_id": "rca_measure",
+            "patch_family": "contrastive_measure_disambiguation",
+            "target_qids": ["q_measure"],
+        },
+        {
+            "patch_type": "add_sql_snippet_measure",
+            "lever": 6,
+            "target_table": "orders",
+            "snippet_type": "measure",
+            "sql": "SUM(gross_sales)",
+            "display_name": "Gross Sales",
+            "instruction": "Use for revenue before returns.",
+            "validation_passed": True,
+            "rca_id": "rca_measure",
+            "patch_family": "contrastive_measure_disambiguation",
+            "target_qids": ["q_measure"],
+        },
+        {
+            "patch_type": "add_join_spec",
+            "lever": 4,
+            "left_table": "orders",
+            "right_table": "customers",
+            "left_column": "customer_id",
+            "right_column": "customer_id",
+            "rca_id": "rca_join",
+            "patch_family": "join_spec_guidance",
+            "target_qids": ["q_join"],
+        },
+        {
+            "patch_type": "add_example_sql",
+            "lever": 5,
+            "example_question": "Show monthly gross sales",
+            "example_sql": "SELECT month, SUM(gross_sales) FROM orders GROUP BY month",
+            "rca_id": "rca_shape",
+            "patch_family": "example_sql_shape_guidance",
+            "target_qids": ["q_shape"],
+        },
+    ]
+
+    patches = proposals_to_patches(proposals)
+
+    assert patches
+    assert all("rca_id" in patch for patch in patches)
+    assert all("patch_family" in patch for patch in patches)
+    assert all("target_qids" in patch for patch in patches)
+
+
 def test_attribute_theme_outcome_partitions_fixed_still_failing_and_regressed_qids():
     from genie_space_optimizer.optimization.rca import (
         RcaKind,
