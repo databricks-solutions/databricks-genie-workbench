@@ -354,3 +354,17 @@ def test_harness_uses_hard_first_control_plane_clusters_for_strategy() -> None:
     assert "_strategy_soft_clusters" in src
     assert "clusters=_strategy_hard_clusters" in src
     assert "soft_signal_clusters=_strategy_soft_clusters" in src
+
+
+def test_harness_uses_causal_grounding_for_action_group_targets() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness)
+
+    assert "causal_relevance_score" in src
+    assert "explain_causal_relevance" in src
+    assert "target_qids_from_action_group" in src
+    assert "_ag_target_qids" in src
+    assert "_rows_for_grounding" in src

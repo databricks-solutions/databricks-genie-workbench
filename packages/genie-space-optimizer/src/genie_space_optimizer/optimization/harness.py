@@ -10429,17 +10429,35 @@ def _run_lever_loop(
             from genie_space_optimizer.common.config import (
                 MIN_PROPOSAL_RELEVANCE,
             )
+            from genie_space_optimizer.optimization.control_plane import (
+                rows_for_qids,
+                target_qids_from_action_group,
+            )
             from genie_space_optimizer.optimization.proposal_grounding import (
-                relevance_score as _patch_relevance,
+                causal_relevance_score as _patch_relevance,
+                explain_causal_relevance as _explain_patch_relevance,
             )
 
-            _failing_rows_for_grounding = _get_failure_rows(
+            _all_rows_for_grounding = _get_failure_rows(
                 spark, run_id, catalog, schema,
+            )
+            _ag_target_qids = target_qids_from_action_group(
+                ag,
+                strategy.get("_source_clusters", []),
+            )
+            _rows_for_grounding = (
+                rows_for_qids(_all_rows_for_grounding, _ag_target_qids)
+                if _ag_target_qids else list(_all_rows_for_grounding)
             )
             _audit_decisions_grounding: list[tuple[dict, float, str]] = []
             _grounded: list[dict] = []
             for _patch in patches:
-                _score = _patch_relevance(_patch, _failing_rows_for_grounding)
+                _score = _patch_relevance(
+                    _patch,
+                    _rows_for_grounding,
+                    target_qids=_ag_target_qids,
+                )
+                _patch["_grounding_target_qids"] = list(_ag_target_qids)
                 _patch["relevance_score"] = round(float(_score), 3)
                 if _score >= MIN_PROPOSAL_RELEVANCE:
                     _grounded.append(_patch)
@@ -10512,6 +10530,13 @@ def _run_lever_loop(
                             "rca_id": _patch.get("rca_id"),
                             "patch_family": _patch.get("patch_family"),
                             "target_qids": _patch.get("target_qids", []),
+                            "ag_target_qids": list(_ag_target_qids),
+                            "scoped_row_count": len(_rows_for_grounding),
+                            "debug": _explain_patch_relevance(
+                                _patch,
+                                _rows_for_grounding,
+                                target_qids=_ag_target_qids,
+                            ),
                         },
                         "proposal_ids": (
                             [_patch.get("proposal_id")]
