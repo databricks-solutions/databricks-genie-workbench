@@ -289,3 +289,186 @@ def test_rca_sql_snippet_bridge_no_op_when_flag_off(monkeypatch) -> None:
     )
 
     assert not [p for p in proposals if p.get("source") == "rca_theme_lever6"]
+
+
+def test_rca_themes_requesting_join_specs_filters_correctly() -> None:
+    from genie_space_optimizer.optimization.optimizer import (
+        _rca_themes_requesting_join_specs,
+    )
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+
+    themes = [
+        RcaPatchTheme(
+            rca_id="rca_no_join",
+            rca_kind=RcaKind.MEASURE_SWAP,
+            patch_family="contrastive_measure_disambiguation",
+            patches=({"type": "update_column_description", "lever": 1},),
+            target_qids=("q1",),
+            touched_objects=("gross_sales",),
+        ),
+        RcaPatchTheme(
+            rca_id="rca_join",
+            rca_kind=RcaKind.JOIN_SPEC_MISSING_OR_WRONG,
+            patch_family="join_spec_guidance",
+            patches=(
+                {
+                    "type": "add_join_spec",
+                    "lever": 4,
+                    "expected_objects": [
+                        "orders.customer_id",
+                        "customers.customer_id",
+                    ],
+                },
+                {"type": "request_example_sql_synthesis", "lever": 5},
+            ),
+            target_qids=("q2",),
+            touched_objects=("orders", "customers"),
+        ),
+    ]
+
+    selected = _rca_themes_requesting_join_specs(themes)
+
+    assert [t.rca_id for t in selected] == ["rca_join"]
+
+
+def test_rca_join_spec_bridge_flag_is_imported_by_optimizer() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import optimizer
+
+    src = inspect.getsource(optimizer)
+
+    assert "ENABLE_RCA_JOIN_SPEC_BRIDGE" in src
+    assert "_rca_themes_requesting_join_specs" in src
+
+
+def test_rca_join_spec_bridge_produces_lever4_proposal_when_flag_on(
+    monkeypatch,
+) -> None:
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+
+    monkeypatch.setattr(optimizer, "ENABLE_RCA_JOIN_SPEC_BRIDGE", True)
+    # validate_join_spec_types reads metadata; stub with a permissive validator
+    # so we don't need a full schema fixture.
+    monkeypatch.setattr(
+        optimizer, "validate_join_spec_types",
+        lambda spec, snapshot: (True, ""),
+    )
+
+    theme = RcaPatchTheme(
+        rca_id="rca_join",
+        rca_kind=RcaKind.JOIN_SPEC_MISSING_OR_WRONG,
+        patch_family="join_spec_guidance",
+        patches=(
+            {
+                "type": "add_join_spec",
+                "lever": 4,
+                "expected_objects": [
+                    "orders.customer_id",
+                    "customers.customer_id",
+                ],
+                "intent": "missing customer linkage",
+            },
+        ),
+        target_qids=("q_join",),
+        touched_objects=("orders", "customers"),
+    )
+
+    proposals = optimizer.generate_proposals_from_strategy(
+        strategy={"action_groups": [], "_source_clusters": []},
+        action_group={
+            "id": "AG1",
+            "lever_directives": {"4": {}},
+            "source_cluster_ids": [],
+            "affected_questions": [],
+            "root_cause_summary": "test",
+        },
+        metadata_snapshot={"_rca_themes": [theme], "instructions": {}},
+        target_lever=4,
+        apply_mode="apply",
+        benchmarks=[],
+    )
+
+    p = next(
+        (x for x in proposals if x.get("source") == "rca_theme_lever4"),
+        None,
+    )
+    assert p is not None, f"bridge produced no rca_theme_lever4 proposal; got {proposals}"
+    assert p["lever"] == 4
+    assert p["patch_type"] == "add_join_spec"
+    assert p["rca_id"] == "rca_join"
+    assert p["patch_family"] == "join_spec_guidance"
+    assert p["target_qids"] == ["q_join"]
+    assert p["join_spec"]["left"]["identifier"] == "orders"
+    assert p["join_spec"]["right"]["identifier"] == "customers"
+
+
+def test_rca_join_spec_bridge_no_op_when_flag_off(monkeypatch) -> None:
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+
+    monkeypatch.setattr(optimizer, "ENABLE_RCA_JOIN_SPEC_BRIDGE", False)
+
+    theme = RcaPatchTheme(
+        rca_id="rca_join",
+        rca_kind=RcaKind.JOIN_SPEC_MISSING_OR_WRONG,
+        patch_family="join_spec_guidance",
+        patches=({"type": "add_join_spec", "lever": 4,
+                  "expected_objects": ["a.x", "b.x"]},),
+        target_qids=("q",),
+        touched_objects=("a", "b"),
+    )
+
+    proposals = optimizer.generate_proposals_from_strategy(
+        strategy={"action_groups": [], "_source_clusters": []},
+        action_group={
+            "id": "AG1",
+            "lever_directives": {"4": {}},
+            "source_cluster_ids": [],
+            "affected_questions": [],
+            "root_cause_summary": "test",
+        },
+        metadata_snapshot={"_rca_themes": [theme], "instructions": {}},
+        target_lever=4,
+        apply_mode="apply",
+        benchmarks=[],
+    )
+
+    assert not [p for p in proposals if p.get("source") == "rca_theme_lever4"]
+
+
+def test_rca_join_spec_bridge_skips_when_fewer_than_two_qualified_objects(
+    monkeypatch,
+) -> None:
+    from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+
+    monkeypatch.setattr(optimizer, "ENABLE_RCA_JOIN_SPEC_BRIDGE", True)
+
+    theme = RcaPatchTheme(
+        rca_id="rca_join",
+        rca_kind=RcaKind.JOIN_SPEC_MISSING_OR_WRONG,
+        patch_family="join_spec_guidance",
+        patches=({"type": "add_join_spec", "lever": 4,
+                  "expected_objects": ["orders.customer_id"]},),
+        target_qids=("q",),
+        touched_objects=("orders",),
+    )
+
+    proposals = optimizer.generate_proposals_from_strategy(
+        strategy={"action_groups": [], "_source_clusters": []},
+        action_group={
+            "id": "AG1",
+            "lever_directives": {"4": {}},
+            "source_cluster_ids": [],
+            "affected_questions": [],
+            "root_cause_summary": "test",
+        },
+        metadata_snapshot={"_rca_themes": [theme], "instructions": {}},
+        target_lever=4,
+        apply_mode="apply",
+        benchmarks=[],
+    )
+
+    assert not [p for p in proposals if p.get("source") == "rca_theme_lever4"]

@@ -33,6 +33,7 @@ from genie_space_optimizer.common.config import (
     DEFAULT_THRESHOLDS,
     DESCRIPTION_ENRICHMENT_PROMPT,
     ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS,
+    ENABLE_RCA_JOIN_SPEC_BRIDGE,
     ENABLE_RCA_SQL_SNIPPET_BRIDGE,
     ENABLE_RCA_THEMES_STRATEGIST,
     FAILURE_TAXONOMY,
@@ -7061,6 +7062,19 @@ def _rca_themes_requesting_sql_snippets(themes: list[Any]) -> list[Any]:
     return out
 
 
+def _rca_themes_requesting_join_specs(themes: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    for theme in themes or []:
+        patches = getattr(theme, "patches", None)
+        if isinstance(theme, dict):
+            patches = theme.get("patches")
+        for patch in patches or ():
+            if isinstance(patch, dict) and patch.get("type") == "add_join_spec":
+                out.append(theme)
+                break
+    return out
+
+
 def _format_rca_themes_for_strategy(
     rca_themes: list[Any],
     conflicts: list[Any],
@@ -12406,6 +12420,109 @@ def generate_proposals_from_strategy(
                             "ambiguity_detected": False,
                         },
                     })
+
+            if ENABLE_RCA_JOIN_SPEC_BRIDGE:
+                _bridged_themes = _rca_themes_requesting_join_specs(
+                    metadata_snapshot.get("_rca_themes") or []
+                )
+                for _theme in _bridged_themes:
+                    _theme_patches = list(getattr(_theme, "patches", ()) or ())
+                    _join_patches = [
+                        p for p in _theme_patches
+                        if isinstance(p, dict) and p.get("type") == "add_join_spec"
+                    ]
+                    if not _join_patches:
+                        continue
+                    _theme_id = str(getattr(_theme, "rca_id", ag_id))
+                    _theme_qids = list(getattr(_theme, "target_qids", ()) or ())
+                    _theme_family = str(getattr(_theme, "patch_family", ""))
+                    for _p in _join_patches:
+                        _expected_objects = [
+                            str(o).strip()
+                            for o in (_p.get("expected_objects") or [])
+                            if str(o).strip() and "." in str(o)
+                        ]
+                        if len(_expected_objects) < 2:
+                            logger.debug(
+                                "[%s] RCA join bridge: theme %s has %d qualified "
+                                "expected_objects (need 2); skipping",
+                                ag_id, _theme_id, len(_expected_objects),
+                            )
+                            continue
+                        _left_obj, _right_obj = _expected_objects[0], _expected_objects[1]
+                        _left_table, _left_col = _left_obj.rsplit(".", 1)
+                        _right_table, _right_col = _right_obj.rsplit(".", 1)
+                        if _left_table == _right_table:
+                            logger.debug(
+                                "[%s] RCA join bridge: same-table pair %s; skipping",
+                                ag_id, _left_table,
+                            )
+                            continue
+                        _pair = tuple(sorted((_left_table, _right_table)))
+                        if _pair in _proposed_pairs:
+                            logger.info(
+                                "[%s] RCA join bridge: pair %s already proposed; skipping",
+                                ag_id, _pair,
+                            )
+                            continue
+                        _condition = f"{_left_obj} = {_right_obj}"
+                        _sanitized = _sanitize_join_sql(_condition)
+                        _join_spec = ensure_join_spec_fields({
+                            "left": {"identifier": _left_table},
+                            "right": {"identifier": _right_table},
+                            "sql": [_sanitized] if _sanitized else [],
+                        }, config=metadata_snapshot)
+                        _valid, _reason = validate_join_spec_types(
+                            _join_spec, metadata_snapshot,
+                        )
+                        if not _valid:
+                            logger.info(
+                                "[%s] RCA join bridge rejected (type): %s",
+                                ag_id, _reason,
+                            )
+                            continue
+                        proposals.append({
+                            "proposal_id": f"P{len(proposals) + 1:03d}",
+                            "cluster_id": _theme_id,
+                            "lever": 4,
+                            "scope": "genie_config",
+                            "patch_type": "add_join_spec",
+                            "change_description": (
+                                f"[{ag_id}] RCA join: {_left_table} ↔ {_right_table}"
+                            ),
+                            "proposed_value": "",
+                            "rationale": (
+                                f"RCA-driven join from theme {_theme_id} "
+                                f"({_p.get('intent', 'derived from expected_sql')})"
+                            ),
+                            "join_spec": _join_spec,
+                            "dual_persistence": DUAL_PERSIST_PATHS.get(
+                                4, DUAL_PERSIST_PATHS[5],
+                            ),
+                            "confidence": 0.78,
+                            "questions_fixed": len(_theme_qids),
+                            "questions_at_risk": 0,
+                            "net_impact": max(len(_theme_qids) * 0.78, 1.0),
+                            "asi": {
+                                "failure_type": "missing_join_spec",
+                                "blame_set": [_left_table, _right_table],
+                                "severity": "major",
+                                "counterfactual_fixes": [],
+                                "ambiguity_detected": False,
+                            },
+                            "rca_id": _theme_id,
+                            "patch_family": _theme_family,
+                            "target_qids": _theme_qids,
+                            "source": "rca_theme_lever4",
+                            "provenance": {
+                                **provenance_base,
+                                "patch_type": "add_join_spec",
+                                "synthesis_source": "rca_theme_lever4",
+                                "rca_id": _theme_id,
+                                "patch_family": _theme_family,
+                            },
+                        })
+                        _proposed_pairs.add(_pair)
 
         # ── Lever 5: instructions + example SQL ──────────────────────────
         elif target_lever == 5:

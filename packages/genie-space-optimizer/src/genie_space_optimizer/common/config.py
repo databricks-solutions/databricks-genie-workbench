@@ -450,6 +450,21 @@ This does not bypass identifier validation, SQL execution checks, or
 benchmark-leakage firewall in ``_generate_lever6_proposal``.
 """
 
+ENABLE_RCA_JOIN_SPEC_BRIDGE: bool = (
+    os.getenv("GSO_ENABLE_RCA_JOIN_SPEC_BRIDGE", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""When true, RCA themes whose patches request ``add_join_spec``
+deterministically build a join proposal from the theme's
+``expected_objects`` (qualified ``table.column`` pairs) and run it
+through the existing Lever-4 validation + dedup machinery, even when
+the strategist did not surface the join in its directives.
+
+This does not bypass ``ensure_join_spec_fields`` normalization,
+``validate_join_spec_types`` checks, or duplicate-pair filtering against
+existing or already-proposed joins.
+"""
+
 ENFORCE_REFLECTION_REVALIDATION: bool = (
     os.getenv("GSO_ENFORCE_REFLECTION_REVALIDATION", "true").lower()
     in {"1", "true", "yes", "on"}
