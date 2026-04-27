@@ -462,6 +462,36 @@ def detect_theme_conflicts(themes: list[RcaPatchTheme]) -> list[ThemeConflict]:
     return conflicts
 
 
+def _theme_field(theme: Any, key: str, default: Any = "") -> Any:
+    if isinstance(theme, dict):
+        return theme.get(key, default)
+    return getattr(theme, key, default)
+
+
+def attribute_theme_outcomes(
+    themes: list[RcaPatchTheme],
+    *,
+    prev_failure_qids: set[str],
+    new_failure_qids: set[str],
+) -> list[ThemeAttribution]:
+    out: list[ThemeAttribution] = []
+    prev_failures = {str(q) for q in (prev_failure_qids or set())}
+    new_failures = {str(q) for q in (new_failure_qids or set())}
+    regressions = sorted(new_failures - prev_failures)
+    for theme in themes or []:
+        targets = {str(q) for q in (_theme_field(theme, "target_qids", ()) or ())}
+        fixed = sorted(targets & prev_failures - new_failures)
+        still = sorted(targets & new_failures)
+        out.append(ThemeAttribution(
+            rca_id=str(_theme_field(theme, "rca_id", "")),
+            target_qids=tuple(sorted(targets)),
+            fixed_qids=tuple(fixed),
+            still_failing_qids=tuple(still),
+            regressed_qids=tuple(regressions),
+        ))
+    return out
+
+
 def build_rca_ledger(
     rows: list[dict],
     *,

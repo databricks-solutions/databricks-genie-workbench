@@ -5185,6 +5185,77 @@ def _build_reflection_entry(
     }
 
 
+def _attach_rca_theme_attribution(
+    *,
+    spark: Any,
+    run_id: str,
+    iteration_counter: int,
+    ag_id: str,
+    metadata_snapshot: dict,
+    reflection: dict,
+    prev_failure_qids: set[str] | None,
+    new_failure_qids: set[str] | None,
+    catalog: str,
+    schema: str,
+) -> None:
+    """Attach and audit per-theme before/after eval outcome attribution."""
+    try:
+        from genie_space_optimizer.optimization.rca import (
+            attribute_theme_outcomes,
+        )
+
+        themes = metadata_snapshot.get("_rca_themes") or []
+        if not themes:
+            return
+        attributions = attribute_theme_outcomes(
+            themes,
+            prev_failure_qids=prev_failure_qids or set(),
+            new_failure_qids=new_failure_qids or set(),
+        )
+        serialized = [
+            {
+                "rca_id": a.rca_id,
+                "target_qids": list(a.target_qids),
+                "fixed_qids": list(a.fixed_qids),
+                "still_failing_qids": list(a.still_failing_qids),
+                "regressed_qids": list(a.regressed_qids),
+            }
+            for a in attributions
+        ]
+        reflection["rca_theme_attribution"] = serialized
+        if not serialized:
+            return
+        from genie_space_optimizer.optimization.state import (
+            write_lever_loop_decisions,
+        )
+
+        write_lever_loop_decisions(
+            spark,
+            [
+                {
+                    "run_id": run_id,
+                    "iteration": iteration_counter,
+                    "ag_id": ag_id,
+                    "decision_order": idx,
+                    "stage_letter": "R",
+                    "gate_name": "rca_theme_attribution",
+                    "decision": "attributed",
+                    "reason_code": None,
+                    "metrics": row,
+                }
+                for idx, row in enumerate(serialized, start=1)
+            ],
+            catalog=catalog,
+            schema=schema,
+        )
+    except Exception:
+        logger.debug(
+            "RCA theme attribution failed for iter %d",
+            iteration_counter,
+            exc_info=True,
+        )
+
+
 # Phase C1 retired the earlier ``_is_schema_fatal_patch_error`` shim in
 # favour of :class:`RollbackClass` and :func:`classify_rollback_reason`
 # from ``optimization/rollback_class``. A deterministic schema rejection
@@ -10930,6 +11001,18 @@ def _run_lever_loop(
                 refinement_mode=_rb_refinement,
                 **_ag_identity_kwargs,
             )
+            _attach_rca_theme_attribution(
+                spark=spark,
+                run_id=run_id,
+                iteration_counter=iteration_counter,
+                ag_id=ag_id,
+                metadata_snapshot=metadata_snapshot,
+                reflection=reflection,
+                prev_failure_qids=prev_failure_qids,
+                new_failure_qids=_rb_fail_qids or set(),
+                catalog=catalog,
+                schema=schema,
+            )
             reflection_buffer.append(reflection)
 
             # Regression-mining lane (audit-only, soft-fail). Mines
@@ -11158,6 +11241,18 @@ def _run_lever_loop(
                 gate_result.get("acceptance_delta_pp", _acc_delta)
             ),
             **_ag_identity_kwargs,
+        )
+        _attach_rca_theme_attribution(
+            spark=spark,
+            run_id=run_id,
+            iteration_counter=iteration_counter,
+            ag_id=ag_id,
+            metadata_snapshot=metadata_snapshot,
+            reflection=reflection,
+            prev_failure_qids=prev_failure_qids,
+            new_failure_qids=_accepted_fail_qids,
+            catalog=catalog,
+            schema=schema,
         )
         reflection_buffer.append(reflection)
         try:
