@@ -437,7 +437,7 @@ grounding, or post-iteration rollback.
 """
 
 ENABLE_RCA_SQL_SNIPPET_BRIDGE: bool = (
-    os.getenv("GSO_ENABLE_RCA_SQL_SNIPPET_BRIDGE", "false").lower()
+    os.getenv("GSO_ENABLE_RCA_SQL_SNIPPET_BRIDGE", "true").lower()
     in {"1", "true", "yes", "on"}
 )
 """When true, RCA themes whose patches request SQL snippets
