@@ -425,6 +425,17 @@ RCA_MAX_THEME_PATCHES_PER_ITERATION: int = int(
     os.getenv("GSO_RCA_MAX_THEME_PATCHES_PER_ITERATION", "8")
 )
 
+ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS: bool = (
+    os.getenv("GSO_ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS", "false").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""When true, selected RCA themes may request leakage-safe example SQL synthesis.
+
+This only creates candidate proposals through ``synthesize_example_sqls_for_rca``.
+It does not bypass synthesis validation, benchmark-leakage checks, proposal
+grounding, or post-iteration rollback.
+"""
+
 ENFORCE_REFLECTION_REVALIDATION: bool = (
     os.getenv("GSO_ENFORCE_REFLECTION_REVALIDATION", "true").lower()
     in {"1", "true", "yes", "on"}

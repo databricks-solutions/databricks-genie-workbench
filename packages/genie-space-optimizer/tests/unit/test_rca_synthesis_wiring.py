@@ -86,3 +86,42 @@ def test_synthesize_example_sqls_for_rca_reuses_existing_validator(monkeypatch):
     assert proposal["patch_type"] == "add_example_sql"
     assert proposal["rca_id"] == "rca_shape"
     assert proposal["source"] == "rca_theme"
+
+
+def test_rca_example_synthesis_flag_is_imported_by_optimizer() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import optimizer
+
+    src = inspect.getsource(optimizer)
+
+    assert "ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS" in src
+    assert "synthesize_example_sqls_for_rca" in src
+
+
+def test_rca_synthesis_requests_are_collected_from_selected_themes() -> None:
+    from genie_space_optimizer.optimization.optimizer import _rca_themes_requesting_synthesis
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+
+    themes = [
+        RcaPatchTheme(
+            rca_id="rca_no_synth",
+            rca_kind=RcaKind.EXTRA_DEFENSIVE_FILTER,
+            patch_family="avoid_unrequested_defensive_filters",
+            patches=({"type": "add_instruction", "lever": 5},),
+            target_qids=("q1",),
+            touched_objects=("QUERY CONSTRUCTION",),
+        ),
+        RcaPatchTheme(
+            rca_id="rca_synth",
+            rca_kind=RcaKind.EXAMPLE_SQL_SHAPE_NEEDED,
+            patch_family="example_sql_shape_guidance",
+            patches=({"type": "request_example_sql_synthesis", "lever": 5},),
+            target_qids=("q2",),
+            touched_objects=("gross_sales",),
+        ),
+    ]
+
+    selected = _rca_themes_requesting_synthesis(themes)
+
+    assert [t.rca_id for t in selected] == ["rca_synth"]

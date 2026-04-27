@@ -32,6 +32,7 @@ from genie_space_optimizer.common.config import (
     CONFLICT_RULES,
     DEFAULT_THRESHOLDS,
     DESCRIPTION_ENRICHMENT_PROMPT,
+    ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS,
     ENABLE_RCA_THEMES_STRATEGIST,
     FAILURE_TAXONOMY,
     GENERIC_FIX_PREFIXES,
@@ -7026,6 +7027,19 @@ def _field(obj: Any, name: str, default: Any = "") -> Any:
     return getattr(obj, name, default)
 
 
+def _rca_themes_requesting_synthesis(themes: list[Any]) -> list[Any]:
+    out: list[Any] = []
+    for theme in themes or []:
+        patches = getattr(theme, "patches", None)
+        if isinstance(theme, dict):
+            patches = theme.get("patches")
+        for patch in patches or ():
+            if isinstance(patch, dict) and patch.get("type") == "request_example_sql_synthesis":
+                out.append(theme)
+                break
+    return out
+
+
 def _format_rca_themes_for_strategy(
     rca_themes: list[Any],
     conflicts: list[Any],
@@ -12891,6 +12905,50 @@ def generate_proposals_from_strategy(
                         ),
                     },
                 })
+
+            if ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS:
+                try:
+                    from genie_space_optimizer.optimization.leakage import (
+                        BenchmarkCorpus,
+                    )
+                    from genie_space_optimizer.optimization.synthesis import (
+                        synthesize_example_sqls_for_rca,
+                    )
+
+                    _corpus = BenchmarkCorpus.from_benchmarks(benchmarks or [])
+                    for _theme in _rca_themes_requesting_synthesis(
+                        metadata_snapshot.get("_rca_themes") or []
+                    ):
+                        _proposal = synthesize_example_sqls_for_rca(
+                            _theme,
+                            metadata_snapshot,
+                            _corpus,
+                            w=w,
+                            spark=spark,
+                            catalog=catalog,
+                            gold_schema=gold_schema,
+                            warehouse_id=warehouse_id,
+                        )
+                        if not _proposal:
+                            continue
+                        _proposal.setdefault(
+                            "proposal_id",
+                            f"P{len(proposals) + 1:03d}",
+                        )
+                        _proposal.setdefault("cluster_id", ag_id)
+                        _proposal.setdefault("lever", 5)
+                        _proposal.setdefault("scope", "genie_config")
+                        _proposal.setdefault(
+                            "change_description",
+                            f"[{ag_id}] RCA synthesized example SQL",
+                        )
+                        _proposal.setdefault(
+                            "dual_persistence",
+                            DUAL_PERSIST_PATHS.get(5, DUAL_PERSIST_PATHS[5]),
+                        )
+                        proposals.append(_proposal)
+                except Exception:
+                    logger.debug("RCA example SQL synthesis failed", exc_info=True)
 
         # ── Lever 6: SQL Expressions ─────────────────────────────────────
         elif target_lever == 6:
