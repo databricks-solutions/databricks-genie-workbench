@@ -60,3 +60,23 @@ def test_detect_theme_conflicts_on_same_instruction_section():
 
     assert conflicts
     assert conflicts[0].object_id == "QUERY CONSTRUCTION"
+
+
+def test_theme_patch_metadata_survives_proposal_to_patch_conversion():
+    from genie_space_optimizer.optimization.applier import proposals_to_patches
+
+    proposal = {
+        "patch_type": "update_column_description",
+        "lever": 1,
+        "column": "avg_txn_day",
+        "description": "Enterprise average transaction value.",
+        "rca_id": "rca_avg_txn",
+        "patch_family": "contrastive_metric_routing",
+        "target_qids": ["retail_010"],
+    }
+
+    patches = proposals_to_patches([proposal])
+
+    assert patches[0]["rca_id"] == "rca_avg_txn"
+    assert patches[0]["patch_family"] == "contrastive_metric_routing"
+    assert patches[0]["target_qids"] == ["retail_010"]

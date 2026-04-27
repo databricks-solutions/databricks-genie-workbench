@@ -10372,6 +10372,9 @@ def _run_lever_loop(
                                 or _patch.get("instruction_section")
                             ),
                             "lever": _patch.get("lever"),
+                            "rca_id": _patch.get("rca_id"),
+                            "patch_family": _patch.get("patch_family"),
+                            "target_qids": _patch.get("target_qids", []),
                         },
                         "proposal_ids": (
                             [_patch.get("proposal_id")]
@@ -12961,6 +12964,9 @@ def _build_patch_record(entry: dict, lever: int, apply_mode: str) -> dict:
         "proposal_id": patch.get("source_proposal_id", patch.get("proposal_id", "")),
         "applied_patch_type": applied_type,
         "applied_patch_detail": entry.get("applied_patch_detail"),
+        "rca_id": patch.get("rca_id"),
+        "patch_family": patch.get("patch_family"),
+        "target_qids": patch.get("target_qids", []),
     }
 
 

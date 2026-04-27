@@ -2147,6 +2147,13 @@ def classify_risk(patch_type: str | dict) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _copy_proposal_metadata(patch: dict, proposal: dict) -> dict:
+    for meta_key in ("rca_id", "patch_family", "target_qids", "source", "confidence"):
+        if meta_key in proposal:
+            patch[meta_key] = proposal[meta_key]
+    return patch
+
+
 def proposals_to_patches(proposals: list[dict]) -> list[dict]:
     """Convert optimizer proposals into Patch DSL patches.
 
@@ -2198,7 +2205,7 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
             if p.get("alias") and snippet_type_key != "filters":
                 snippet["alias"] = p["alias"]
 
-            patches.append({
+            patches.append(_copy_proposal_metadata({
                 "type": patch_type,
                 "target": p.get("target_table", ""),
                 "lever": 6,
@@ -2209,7 +2216,7 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
                 "snippet_type": snippet_type_key,
                 # Tier 2.8: propagate validation stamp to the applier gate.
                 "validation_passed": bool(p.get("validation_passed", False)),
-            })
+            }, p))
             continue
 
         table_sections = p.get("table_sections")
@@ -2220,7 +2227,7 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
         col_name = p.get("column", "")
 
         if isinstance(table_sections, dict) and table_sections and tbl_id and not col_name:
-            patches.append({
+            patches.append(_copy_proposal_metadata({
                 "type": "update_description",
                 "target": tbl_id,
                 "new_text": "",
@@ -2233,7 +2240,7 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
                 "grounded_in": p.get("grounded_in", []),
                 "source_proposal_id": p.get("proposal_id", ""),
                 "table": tbl_id,
-            })
+            }, p))
             continue
 
         if isinstance(col_sections, dict) and col_sections and tbl_id and col_name:
@@ -2251,7 +2258,7 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
             }
             synonym_value = col_sections.get("synonyms", "")
             if non_synonym_sections:
-                patches.append({
+                patches.append(_copy_proposal_metadata({
                     **base,
                     "type": "update_column_description",
                     "target": tbl_id,
@@ -2259,21 +2266,21 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
                     "old_text": "",
                     "structured_sections": non_synonym_sections,
                     "column_entity_type": p.get("column_entity_type", ""),
-                })
+                }, p))
             if synonym_value:
                 if isinstance(synonym_value, list):
                     new_syns = [str(s).strip() for s in synonym_value if str(s).strip()]
                 else:
                     new_syns = [s.strip() for s in str(synonym_value).split(",") if s.strip()]
                 if new_syns:
-                    patches.append({
+                    patches.append(_copy_proposal_metadata({
                         **base,
                         "type": "add_column_synonym",
                         "target": tbl_id,
                         "new_text": "",
                         "old_text": "",
                         "synonyms": new_syns,
-                    })
+                    }, p))
             continue
 
         if (col_desc is not None or col_syns is not None) and tbl_id and col_name:
@@ -2287,22 +2294,22 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
                 "column": col_name,
             }
             if col_desc is not None and isinstance(col_desc, list) and col_desc:
-                patches.append({
+                patches.append(_copy_proposal_metadata({
                     **base,
                     "type": "update_column_description",
                     "target": tbl_id,
                     "new_text": col_desc[0] if len(col_desc) == 1 else "\n".join(col_desc),
                     "old_text": "",
-                })
+                }, p))
             if col_syns is not None and isinstance(col_syns, list) and col_syns:
-                patches.append({
+                patches.append(_copy_proposal_metadata({
                     **base,
                     "type": "add_column_synonym",
                     "target": tbl_id,
                     "new_text": col_syns[0] if len(col_syns) == 1 else "",
                     "old_text": "",
                     "synonyms": col_syns,
-                })
+                }, p))
             continue
 
         # ── Auto-convert freeform description patches to structured ──
@@ -2331,7 +2338,7 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
                         base_freeform["table"] = tbl_id
                     if col_name:
                         base_freeform["column"] = col_name
-                    patches.append({
+                    patches.append(_copy_proposal_metadata({
                         **base_freeform,
                         "type": patch_type,
                         "target": tbl_id or target,
@@ -2340,7 +2347,7 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
                         "structured_sections": structured,
                         "column_entity_type": p.get("column_entity_type", ""),
                         "table_entity_type": p.get("table_entity_type", "table"),
-                    })
+                    }, p))
                     continue
             elif not parsed or (len(parsed) == 1 and "_preamble" in parsed):
                 preamble = (parsed.get("_preamble") or new_text).strip()
@@ -2360,7 +2367,7 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
                         base_freeform["table"] = tbl_id
                     if col_name:
                         base_freeform["column"] = col_name
-                    patches.append({
+                    patches.append(_copy_proposal_metadata({
                         **base_freeform,
                         "type": patch_type,
                         "target": tbl_id or target,
@@ -2369,7 +2376,7 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
                         "structured_sections": {"definition": preamble},
                         "column_entity_type": p.get("column_entity_type", ""),
                         "table_entity_type": p.get("table_entity_type", "table"),
-                    })
+                    }, p))
                     continue
 
         patch_dict: dict = {
@@ -2403,7 +2410,7 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
             patch_dict["proposed_value"] = p["proposed_value"]
         if "change_description" in p and "change_description" not in patch_dict:
             patch_dict["change_description"] = p["change_description"]
-        patches.append(patch_dict)
+        patches.append(_copy_proposal_metadata(patch_dict, p))
     return patches
 
 
