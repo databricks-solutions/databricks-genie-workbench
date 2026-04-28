@@ -644,6 +644,22 @@ except: pass
 " 2>/dev/null
 )
 
+_lakebase_name_exists() {
+    local needle="$1"
+    local name
+
+    if [ "${#LB_NAMES[@]}" -eq 0 ]; then
+        return 1
+    fi
+
+    for name in "${LB_NAMES[@]}"; do
+        if [ "$name" = "$needle" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 LAKEBASE_BASE="${APP_NAME}-lakebase"
 if [[ ! "$LAKEBASE_BASE" =~ ^[a-z] ]]; then
     LAKEBASE_BASE="genie-$LAKEBASE_BASE"
@@ -654,7 +670,7 @@ if [ "${#LAKEBASE_BASE}" -gt 63 ]; then
 fi
 DEFAULT_LAKEBASE_INSTANCE="$LAKEBASE_BASE"
 LAKEBASE_SUFFIX=2
-while [[ " ${LB_NAMES[*]} " == *" $DEFAULT_LAKEBASE_INSTANCE "* ]]; do
+while _lakebase_name_exists "$DEFAULT_LAKEBASE_INSTANCE"; do
     SUFFIX="-$LAKEBASE_SUFFIX"
     MAX_BASE_LEN=$((63 - ${#SUFFIX}))
     DEFAULT_LAKEBASE_INSTANCE="${LAKEBASE_BASE:0:$MAX_BASE_LEN}${SUFFIX}"
@@ -701,7 +717,7 @@ while true; do
                 _error "Lakebase project name must be 63 characters or fewer."
                 continue
             fi
-            if [[ " ${LB_NAMES[*]} " == *" $LAKEBASE_INSTANCE "* ]]; then
+            if _lakebase_name_exists "$LAKEBASE_INSTANCE"; then
                 _error "Lakebase project '$LAKEBASE_INSTANCE' already exists. Choose the advanced attach option to reuse it, or enter a new project name."
                 continue
             fi
