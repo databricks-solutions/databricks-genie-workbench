@@ -60,6 +60,51 @@ mind while reading the rest:
 
 ---
 
+### Optimization Objective
+
+The lever loop has one terminal objective: reach 100% post-arbiter /
+arbiter-adjusted accuracy within the configured lever-loop attempt budget.
+The default budget is five adaptive attempts.
+
+Hard failures are the optimization target. A hard failure is a row where
+`result_correctness` is false and the arbiter did not mark Genie as correct.
+While any hard failure exists, the strategist receives only hard-failure
+clusters for action-group generation.
+
+Soft signals may remain visible in diagnostics and RCA evidence, but they do
+not outrank hard failures. `response_quality` is a text-response judge and is
+excluded from optimization targeting.
+
+### Causal Proposal Grounding
+
+Proposal grounding is scoped to the action group's target question IDs. The
+grounding surface combines:
+
+- expected and generated SQL identifiers,
+- nested `inputs` / `outputs` row payloads,
+- actionable ASI metadata such as `blame_set`, `wrong_clause`,
+  `counterfactual_fix`, `expected_objects`, and `actual_objects`,
+- RCA metadata such as `rca_id`, `patch_family`, and `target_qids`.
+
+`response_quality` metadata is ignored for grounding because it should not
+drive optimizer mutations.
+
+If grounding drops a patch, the decision audit records patch targets, target
+QIDs, scoped row count, overlap, and missing targets.
+
+### Control-Plane Acceptance
+
+An iteration is accepted only when all of the following are true:
+
+1. post-arbiter accuracy improves over the carried baseline,
+2. at least one targeted hard-failure QID is fixed,
+3. no out-of-target QID becomes a new hard failure.
+
+The loop stops immediately when post-arbiter accuracy reaches 100%, or after
+the configured maximum number of adaptive attempts.
+
+---
+
 ## Pipeline overview
 
 ```mermaid
