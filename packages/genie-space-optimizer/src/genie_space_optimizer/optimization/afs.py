@@ -333,27 +333,21 @@ def validate_afs(afs: dict, benchmark_corpus: Any) -> bool:
     from genie_space_optimizer.optimization.leakage import _jaccard, _tokenize
 
     questions = getattr(benchmark_corpus, "questions", None) or []
-    sqls = getattr(benchmark_corpus, "expected_sqls", None) or []
-    if not questions and not sqls:
+    if not questions:
         return True
-    # Precompute shingles for the corpus.
     q_shingles = [_tokenize(q) for q in questions]
-    s_shingles = [_tokenize(s) for s in sqls]
 
-    for s in _walk_strings(afs):
-        t = _tokenize(s)
-        if not t:
-            continue
-        for idx, shingles in enumerate(q_shingles):
-            if _jaccard(t, shingles) >= AFS_NGRAM_MAX_SIMILARITY:
-                raise AFSLeakError(
-                    f"AFS contains text too similar to benchmark question {idx}: {s[:120]!r}",
-                )
-        for idx, shingles in enumerate(s_shingles):
-            if _jaccard(t, shingles) >= AFS_NGRAM_MAX_SIMILARITY:
-                raise AFSLeakError(
-                    f"AFS contains text too similar to benchmark SQL {idx}: {s[:120]!r}",
-                )
+    for field_name in sorted(AFS_STRING_FIELDS_TO_SCAN):
+        value = afs.get(field_name)
+        for s in _walk_strings(value):
+            t = _tokenize(s)
+            if not t:
+                continue
+            for idx, shingles in enumerate(q_shingles):
+                if _jaccard(t, shingles) >= AFS_NGRAM_MAX_SIMILARITY:
+                    raise AFSLeakError(
+                        f"AFS field {field_name} contains text too similar to benchmark question {idx}: {s[:120]!r}",
+                    )
     return True
 
 

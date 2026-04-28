@@ -324,3 +324,32 @@ def test_embedding_layer_degrades_when_endpoint_fails() -> None:
         proposal, "add_example_sql", corpus, w=w,
     )
     assert is_leak
+
+
+def test_afs_validation_allows_schema_identifier_overlap_with_expected_sql() -> None:
+    from genie_space_optimizer.optimization.afs import validate_afs
+    from genie_space_optimizer.optimization.leakage import BenchmarkCorpus
+
+    corpus = BenchmarkCorpus.from_benchmarks([
+        {
+            "id": "q1",
+            "question": "How should PY sales be calculated?",
+            "expected_sql": (
+                "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+                "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
+            ),
+        }
+    ])
+    afs = {
+        "cluster_id": "H004",
+        "failure_type": "function_or_tvf_not_invoked",
+        "affected_judge": "schema_accuracy",
+        "question_count": 1,
+        "blame_set": ["fn_mtd_or_mtday"],
+        "counterfactual_fixes": [
+            "Use fn_mtd_or_mtday instead of inlining CASE logic."
+        ],
+        "suggested_fix_summary": "Root cause: function_or_tvf_not_invoked; Blamed: fn_mtd_or_mtday",
+    }
+
+    assert validate_afs(afs, corpus) is True

@@ -125,35 +125,12 @@ def test_canonicalize_sql_diff_for_different_queries() -> None:
                 ),
             },
         ),
-        # add_instruction — quotes a benchmark question in prose
-        (
-            "add_instruction",
-            {
-                "new_text": (
-                    "If the user asks 'What is the total revenue by product "
-                    "category last quarter?' you MUST partition by quarter."
-                ),
-            },
-        ),
-        # add_column_description — embeds benchmark SQL
-        (
-            "add_column_description",
-            {
-                "description": (
-                    "See example query: SELECT customer_id, SUM(amount) AS ltv "
-                    "FROM orders GROUP BY customer_id ORDER BY ltv DESC LIMIT 10"
-                ),
-            },
-        ),
-        # Note: add_sql_snippet_* and add_join_spec / update_join_spec
+        # Note: ``add_instruction``, ``add_column_description``,
+        # ``add_sql_snippet_*``, and ``add_join_spec`` / ``update_join_spec``
         # entries were removed from this parametrized list. The firewall
-        # is intentionally NOT wired for structural SQL (see the scoping
-        # comment above ``_PATCH_TEXT_FIELDS`` in leakage.py). Those
-        # paths are gated by the arbiter-approved source filter (proactive
-        # seeding), the post-iteration arbiter rollback (Lever 6), and
-        # exec-validation everywhere — all stronger than fingerprint
-        # matching for structural primitives. Dedicated allow-through
-        # tests below cover this intentional behaviour change.
+        # is intentionally scoped to example SQL answer-shape artifacts
+        # only (see the scoping comment above ``_PATCH_TEXT_FIELDS`` in
+        # leakage.py and the dedicated allow-through tests below).
     ],
 )
 def test_leaky_proposals_are_rejected(
@@ -645,3 +622,42 @@ def test_publish_benchmarks_opt_out_flag_skips_publish(monkeypatch) -> None:
     monkeypatch.setenv("GSO_PUBLISH_BENCHMARKS_TO_SPACE", "1")
     importlib.reload(_cfg)
     assert _cfg.PUBLISH_BENCHMARKS_TO_SPACE is True
+
+
+def test_benchmark_firewall_only_blocks_example_sql_answer_shape() -> None:
+    from genie_space_optimizer.optimization.leakage import (
+        BenchmarkCorpus,
+        is_benchmark_leak,
+    )
+
+    corpus = BenchmarkCorpus.from_benchmarks([
+        {
+            "id": "q1",
+            "question": "Use fn_mtd_or_mtday for PY sales MTD.",
+            "expected_sql": (
+                "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+                "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
+            ),
+        }
+    ])
+
+    example = {
+        "example_question": "Use fn_mtd_or_mtday for PY sales MTD.",
+        "example_sql": (
+            "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+            "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
+        ),
+    }
+    instruction = {
+        "new_text": (
+            "FUNCTION ROUTING:\n"
+            "- When users ask for fn_mtd_or_mtday, use the registered function instead of inlining CASE logic."
+        )
+    }
+    description = {
+        "description": "Column supports fn_mtd_or_mtday month-to-date routing semantics."
+    }
+
+    assert is_benchmark_leak(example, "add_example_sql", corpus)[0] is True
+    assert is_benchmark_leak(instruction, "add_instruction", corpus)[0] is False
+    assert is_benchmark_leak(description, "update_column_description", corpus)[0] is False

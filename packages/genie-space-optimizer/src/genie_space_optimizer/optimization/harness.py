@@ -5078,6 +5078,7 @@ def _build_reflection_entry(
     source_cluster_ids: list[str] | None = None,
     source_cluster_signatures: list[str] | None = None,
     acceptance_delta_pp: float | None = None,
+    extra: dict | None = None,
 ) -> dict:
     """Build a structured reflection dict for the adaptive loop memory.
 
@@ -5160,7 +5161,7 @@ def _build_reflection_entry(
 
     _lever_set = sorted({int(l) for l in levers}) if levers else []
 
-    return {
+    entry = {
         "iteration": iteration,
         "ag_id": ag_id,
         "accepted": accepted,
@@ -5193,6 +5194,9 @@ def _build_reflection_entry(
         # "the same cluster" joins across iterations.
         "source_cluster_signatures": list(source_cluster_signatures or []),
     }
+    if extra:
+        entry.update(extra)
+    return entry
 
 
 def _attach_rca_theme_attribution(
@@ -9211,6 +9215,21 @@ def _run_lever_loop(
         )
 
         try:
+            from genie_space_optimizer.optimization.rca_execution import (
+                build_rca_execution_plans,
+            )
+
+            metadata_snapshot["_rca_execution_plans"] = build_rca_execution_plans(
+                metadata_snapshot.get("_rca_themes") or []
+            )
+        except Exception:
+            logger.debug(
+                "RCA execution plan construction failed; continuing without forced RCA levers",
+                exc_info=True,
+            )
+            metadata_snapshot["_rca_execution_plans"] = []
+
+        try:
             write_asi_results(spark, run_id, iteration_counter - 1, _analysis["asi_rows"], catalog, schema, mlflow_run_id=_last_full_mlflow_run_id)
         except Exception:
             logger.debug("Failed to write ASI results", exc_info=True)
@@ -10029,6 +10048,54 @@ def _run_lever_loop(
                         _esc_tier,
                     )
 
+        try:
+            from genie_space_optimizer.optimization.rca_execution import (
+                forced_levers_from_reflections,
+                plans_for_action_group,
+                required_levers_for_action_group,
+                union_execution_levers,
+            )
+
+            _rca_plans_for_ag = plans_for_action_group(
+                ag,
+                metadata_snapshot.get("_rca_execution_plans") or [],
+            )
+            _rca_required_levers = required_levers_for_action_group(
+                ag,
+                metadata_snapshot.get("_rca_execution_plans") or [],
+            )
+            _forced_from_reflections = forced_levers_from_reflections(
+                reflection_buffer,
+                target_rca_ids=tuple(p.rca_id for p in _rca_plans_for_ag),
+                min_repeats=2,
+            )
+            _all_required_rca_levers = tuple(dict.fromkeys(
+                list(_rca_required_levers) + list(_forced_from_reflections)
+            ))
+            if _all_required_rca_levers:
+                ag["_rca_execution"] = {
+                    "rca_ids": [p.rca_id for p in _rca_plans_for_ag],
+                    "required_levers": list(_all_required_rca_levers),
+                    "defect_keys": [p.defect_key for p in _rca_plans_for_ag],
+                    "grounding_terms": sorted({
+                        term for p in _rca_plans_for_ag for term in p.grounding_terms
+                    }),
+                    "forced_from_reflections": list(_forced_from_reflections),
+                }
+                lever_keys = union_execution_levers(
+                    lever_keys,
+                    _all_required_rca_levers,
+                )
+                logger.info(
+                    "[%s] RCA execution required levers=%s final_levers=%s rca_ids=%s",
+                    ag_id,
+                    list(_all_required_rca_levers),
+                    lever_keys,
+                    ag["_rca_execution"]["rca_ids"],
+                )
+        except Exception:
+            logger.debug("Failed to union RCA-required levers", exc_info=True)
+
         # ── 3B.5: Generate proposals + apply patches ─────────────────
         all_proposals: list[dict] = []
         for lever_key in lever_keys:
@@ -10523,6 +10590,15 @@ def _run_lever_loop(
             _audit_decisions_grounding: list[tuple[dict, float, str]] = []
             _grounded: list[dict] = []
             for _patch in patches:
+                try:
+                    _rca_exec = ag.get("_rca_execution") or {}
+                    if isinstance(_rca_exec, dict):
+                        _patch["_rca_grounding_terms"] = sorted(set(
+                            list(_patch.get("_rca_grounding_terms") or [])
+                            + list(_rca_exec.get("grounding_terms") or [])
+                        ))
+                except Exception:
+                    logger.debug("Failed to stamp RCA grounding terms", exc_info=True)
                 _score = _patch_relevance(
                     _patch,
                     _rows_for_grounding,
@@ -10674,6 +10750,11 @@ def _run_lever_loop(
                 affected_question_ids=ag.get("affected_questions", []),
                 prev_failure_qids=prev_failure_qids,
                 new_failure_qids=prev_failure_qids,
+                extra={
+                    "rca_execution": ag.get("_rca_execution", {}),
+                    "grounding_failure_stage": "post_grounding",
+                    "grounding_failure_reason": _grounding_skip.reason_code,
+                },
                 **_ag_identity_kwargs,
             ))
             continue
@@ -12362,8 +12443,17 @@ def _run_finalize(
         print("\n".join(_term_lines))
 
         _check_timeout("resolve_terminal_status")
-        converged = all_thresholds_met(prev_scores, thresholds)
-        if converged:
+        from genie_space_optimizer.optimization.acceptance_policy import (
+            arbiter_objective_complete,
+        )
+
+        prev_accuracy = float(prev_scores.get("accuracy", 0.0)) if isinstance(prev_scores, dict) else 0.0
+        objective_met = arbiter_objective_complete(float(prev_accuracy))
+        thresholds_met = all_thresholds_met(prev_scores, thresholds)
+        if objective_met:
+            status = "CONVERGED"
+            reason = "post_arbiter_objective_met"
+        elif thresholds_met:
             status = "CONVERGED"
             reason = "threshold_met"
         elif iteration_counter >= max_iterations:

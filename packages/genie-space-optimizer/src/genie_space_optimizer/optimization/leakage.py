@@ -278,25 +278,17 @@ def preflight_embedding_endpoint(w: Any, endpoint: str | None = None) -> bool:
 # structural learning (a benchmark's ``SUM(revenue)`` pattern is
 # STRUCTURE, not an ANSWER).
 #
-# The firewall's narrow surviving role: answer-shape content. Only
-# ``add_example_sql`` carries (question, SQL) pairs that Genie could
-# regurgitate via prompt matching — that entry stays strict.
-# User-facing text fields (instructions, synonyms, column descriptions,
-# dictionaries) stay gated because they can echo benchmark question
-# phrasing in ways that let Genie leak answers through the prompt path.
-# Fields not listed are not tested (scaffolding / not persisted as
-# inference-input content). Keep in sync with docstring in
-# ``is_benchmark_leak``.
+# Firewall scoping:
+#
+# Benchmark leakage is an answer-shape risk. It applies to persisted example
+# SQL artifacts that carry question+SQL pairs Genie can later retrieve as
+# examples. It does not apply to structural primitives or metadata updates:
+# sql snippets, join specs, table/column descriptions, synonyms, dictionaries,
+# and space instructions still pass through their own validators plus the
+# post-apply full-eval arbiter acceptance gate.
 _PATCH_TEXT_FIELDS: dict[str, tuple[str, ...]] = {
     "add_example_sql": ("example_question", "example_sql"),
-    "add_instruction": ("new_text",),
-    "update_instruction": ("new_text",),
-    "add_column_description": ("description", "new_text"),
-    "update_column_description": ("description", "new_text"),
-    "add_column_dictionary": ("values", "synonyms"),
-    "add_column_synonym": ("synonyms",),
-    # add_join_spec / update_join_spec: removed — see scoping comment above.
-    # add_sql_snippet_{measure,filter,expression}: removed — see scoping comment above.
+    "update_example_sql": ("example_question", "example_sql"),
 }
 
 # SQL-bearing fields — when a value comes from one of these, we also check

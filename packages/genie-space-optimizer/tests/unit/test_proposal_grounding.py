@@ -467,3 +467,60 @@ def test_proposal_grounding_ignored_metadata_matches_config() -> None:
     assert isinstance(_IGNORED_METADATA_PREFIXES, frozenset)
     assert _IGNORED_METADATA_PREFIXES == frozenset(CONFIG_IGNORED)
 
+
+def test_instruction_patch_grounds_on_body_text_and_rca_terms() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        causal_relevance_score,
+        explain_causal_relevance,
+    )
+
+    patch = {
+        "type": "add_instruction",
+        "section_name": "FUNCTION ROUTING",
+        "new_text": (
+            "When users ask for fn_mtd_or_mtday, use the registered TVF "
+            "instead of inlining CASE logic."
+        ),
+        "rca_id": "rca_fn",
+        "patch_family": "function_routing_guidance",
+        "target_qids": ["q_fn"],
+        "_rca_grounding_terms": ["fn_mtd_or_mtday", "tvf"],
+    }
+    rows = [
+        {
+            "question_id": "q_fn",
+            "schema_accuracy/metadata": {
+                "failure_type": "wrong_column",
+                "blame_set": ["fn_mtd_or_mtday"],
+                "counterfactual_fix": "Use fn_mtd_or_mtday rather than inlining CASE logic.",
+            },
+        }
+    ]
+
+    assert causal_relevance_score(patch, rows, target_qids=("q_fn",)) == 1.0
+    details = explain_causal_relevance(patch, rows, target_qids=("q_fn",))
+    assert "fn_mtd_or_mtday" in details["overlap"]
+    assert details["target_qids"] == ["q_fn"]
+
+
+def test_instruction_patch_does_not_ground_when_body_lacks_rca_terms() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import causal_relevance_score
+
+    patch = {
+        "type": "add_instruction",
+        "section_name": "FUNCTION ROUTING",
+        "new_text": "Use clear instructions for functions.",
+        "target_qids": ["q_fn"],
+    }
+    rows = [
+        {
+            "question_id": "q_fn",
+            "schema_accuracy/metadata": {
+                "failure_type": "wrong_column",
+                "blame_set": ["fn_mtd_or_mtday"],
+            },
+        }
+    ]
+
+    assert causal_relevance_score(patch, rows, target_qids=("q_fn",)) == 0.0
+

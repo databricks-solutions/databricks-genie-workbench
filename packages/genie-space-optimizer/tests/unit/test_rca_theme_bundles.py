@@ -495,3 +495,54 @@ def test_rca_theme_selector_flag_off_returns_empty_strategy_context():
     text = _format_rca_themes_for_strategy([], [])
     assert "## Typed RCA Themes" in text
     assert "(No typed RCA themes available.)" in text
+
+
+def test_function_or_tvf_not_invoked_maps_to_function_and_sql_levers() -> None:
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        extract_rca_findings_from_row,
+        recommended_levers_for_rca_kind,
+    )
+
+    row = {
+        "question_id": "q_fn",
+        "inputs.expected_sql": (
+            "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+            "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
+        ),
+        "outputs.predictions.sql": (
+            "SELECT CASE WHEN day(NOW()) = 1 THEN "
+            "MEASURE(`_7now_py_sales_day`) ELSE MEASURE(`_7now_py_sales_mtd`) END"
+        ),
+        "schema_accuracy/metadata": {
+            "failure_type": "wrong_column",
+            "blame_set": ["fn_mtd_or_mtday"],
+            "counterfactual_fix": "Use the fn_mtd_or_mtday function instead of inlining CASE logic.",
+        },
+        "asset_routing/metadata": {
+            "failure_type": "asset_routing_error",
+            "blame_set": ["asset_routing:TVF", "fn_mtd_or_mtday"],
+            "counterfactual_fix": "Prefer TVF for this query pattern.",
+        },
+    }
+
+    findings = extract_rca_findings_from_row(row)
+    kinds = {f.rca_kind for f in findings}
+
+    assert RcaKind.FUNCTION_OR_TVF_NOT_INVOKED in kinds
+    assert recommended_levers_for_rca_kind(
+        RcaKind.FUNCTION_OR_TVF_NOT_INVOKED,
+    ) == (3, 5, 6)
+
+
+def test_plural_top_n_collapse_is_first_class_rca_kind() -> None:
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        recommended_levers_for_rca_kind,
+    )
+
+    assert recommended_levers_for_rca_kind(RcaKind.TOP_N_CARDINALITY_COLLAPSE) == (
+        1,
+        5,
+        6,
+    )

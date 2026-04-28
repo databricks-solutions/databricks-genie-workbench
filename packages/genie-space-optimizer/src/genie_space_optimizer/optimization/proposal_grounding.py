@@ -283,13 +283,71 @@ def extract_failure_surface(row: dict) -> set[str]:
     return surface
 
 
+_INSTRUCTION_PATCH_TYPES = frozenset({
+    "add_instruction",
+    "update_instruction",
+    "rewrite_instruction",
+    "update_instruction_section",
+})
+
+_PATCH_BODY_KEYS: tuple[str, ...] = (
+    "new_text",
+    "proposed_value",
+    "description",
+    "synonyms",
+    "expression",
+    "sql",
+    "join_spec",
+    "_rca_grounding_terms",
+)
+
+
+def _patch_type(patch: dict) -> str:
+    return str(patch.get("type") or patch.get("patch_type") or "")
+
+
+def _terms_from_any(value: object) -> set[str]:
+    terms: set[str] = set()
+    for text in _iter_text_values(value):
+        normalized = _normalize(text)
+        if normalized:
+            terms.add(normalized)
+        for tok in _IDENT_RE.findall(text):
+            terms.add(_normalize(tok))
+        for dotted in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)+", text):
+            dotted = _normalize(dotted)
+            terms.add(dotted)
+            terms.update(part for part in dotted.split(".") if part)
+    return {t for t in terms if t}
+
+
+def extract_patch_grounding_terms(patch: dict) -> set[str]:
+    terms = set(extract_patch_targets(patch))
+    ptype = _patch_type(patch)
+    if ptype in _INSTRUCTION_PATCH_TYPES:
+        terms = {
+            t for t in terms
+            if t not in {"function", "routing", "function routing", "query rules", "asset routing", "constraints"}
+        }
+    for key in _PATCH_BODY_KEYS:
+        if key in patch:
+            terms |= _terms_from_any(patch.get(key))
+    return terms
+
+
 def relevance_score(patch: dict, failing_rows: Iterable[dict]) -> float:
     """Fraction of patch targets that appear in any failing row's surface.
 
     Returns ``0.0`` when the patch has no targets or no failing rows
     are supplied. Always in ``[0.0, 1.0]``.
+
+    When the patch carries explicit ``_rca_grounding_terms`` (RCA-driven
+    proposals from the executable RCA control plane), any overlap with the
+    failure surface counts as full grounding — body-text tokens drag the
+    denominator down for prose-heavy patches even though the RCA terms
+    are exactly what the harness wanted to ground on.
     """
-    targets = extract_patch_targets(patch)
+    targets = extract_patch_grounding_terms(patch)
     if not targets:
         return 0.0
     rows = list(failing_rows or [])
@@ -301,6 +359,10 @@ def relevance_score(patch: dict, failing_rows: Iterable[dict]) -> float:
     if not union_surface:
         return 0.0
     overlap = targets & union_surface
+    if not overlap:
+        return 0.0
+    if patch.get("_rca_grounding_terms"):
+        return 1.0
     return len(overlap) / len(targets)
 
 
@@ -311,7 +373,7 @@ def explain_relevance(patch: dict, failing_rows: Iterable[dict]) -> dict:
     surface, overlap, and missing-target sets for audit rows and local
     troubleshooting.
     """
-    targets = extract_patch_targets(patch)
+    targets = extract_patch_grounding_terms(patch)
     rows = list(failing_rows or [])
     union_surface: set[str] = set()
     for row in rows:

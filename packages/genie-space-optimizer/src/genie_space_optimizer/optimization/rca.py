@@ -25,6 +25,11 @@ class RcaKind(str, Enum):
     SYNONYM_OR_ENTITY_MATCH_MISSING = "synonym_or_entity_match_missing"
     SQL_EXPRESSION_MISSING = "sql_expression_missing"
     EXAMPLE_SQL_SHAPE_NEEDED = "example_sql_shape_needed"
+    FUNCTION_OR_TVF_NOT_INVOKED = "function_or_tvf_not_invoked"
+    FUNCTION_ROUTING_MISMATCH = "function_routing_mismatch"
+    TOP_N_CARDINALITY_COLLAPSE = "top_n_cardinality_collapse"
+    TIME_WINDOW_LOGIC_MISMATCH = "time_window_logic_mismatch"
+    ASSET_TYPE_ROUTING_MISMATCH = "asset_type_routing_mismatch"
     UNKNOWN = "unknown"
 
 
@@ -93,6 +98,11 @@ _RCA_KIND_TO_LEVERS: dict[RcaKind, tuple[int, ...]] = {
     RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING: (1,),
     RcaKind.SQL_EXPRESSION_MISSING: (6,),
     RcaKind.EXAMPLE_SQL_SHAPE_NEEDED: (5,),
+    RcaKind.FUNCTION_OR_TVF_NOT_INVOKED: (3, 5, 6),
+    RcaKind.FUNCTION_ROUTING_MISMATCH: (3, 5, 6),
+    RcaKind.TOP_N_CARDINALITY_COLLAPSE: (1, 5, 6),
+    RcaKind.TIME_WINDOW_LOGIC_MISMATCH: (2, 5, 6),
+    RcaKind.ASSET_TYPE_ROUTING_MISMATCH: (5,),
     RcaKind.UNKNOWN: (5,),
 }
 
@@ -113,6 +123,11 @@ _RCA_KIND_TO_PATCH_FAMILY: dict[RcaKind, str] = {
     RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING: "synonym_entity_matching_guidance",
     RcaKind.SQL_EXPRESSION_MISSING: "sql_expression_guidance",
     RcaKind.EXAMPLE_SQL_SHAPE_NEEDED: "example_sql_shape_guidance",
+    RcaKind.FUNCTION_OR_TVF_NOT_INVOKED: "function_routing_guidance",
+    RcaKind.FUNCTION_ROUTING_MISMATCH: "function_routing_guidance",
+    RcaKind.TOP_N_CARDINALITY_COLLAPSE: "cardinality_preserving_top_n_guidance",
+    RcaKind.TIME_WINDOW_LOGIC_MISMATCH: "time_window_logic_guidance",
+    RcaKind.ASSET_TYPE_ROUTING_MISMATCH: "asset_type_routing_guidance",
     RcaKind.UNKNOWN: "generic_judge_guidance",
 }
 
@@ -191,14 +206,46 @@ def _tuple_of_str(value: Any) -> tuple[str, ...]:
     return ()
 
 
-def _safe_rca_kind(value: Any, failure_type: str = "") -> RcaKind:
+def _value_contains_function_or_tvf(*values: Any) -> bool:
+    text = " ".join(str(v).lower() for v in values if v is not None)
+    return (
+        "tvf" in text
+        or "udf" in text
+        or "function" in text
+        or "fn_" in text
+        or "_fn_" in text
+    )
+
+
+def _safe_rca_kind(value: Any, failure_type: str = "", metadata: dict | None = None) -> RcaKind:
     raw = str(value or "").strip()
     if raw:
         try:
             return RcaKind(raw)
         except ValueError:
             pass
+    metadata = metadata or {}
     failure = str(failure_type or "").strip().lower()
+    if _value_contains_function_or_tvf(
+        metadata.get("blame_set"),
+        metadata.get("counterfactual_fix"),
+        metadata.get("wrong_clause"),
+        metadata.get("expected_objects"),
+        metadata.get("actual_objects"),
+    ):
+        if failure in {
+            "asset_routing_error",
+            "wrong_column",
+            "wrong_table",
+            "missing_filter",
+            "wrong_filter_condition",
+            "other",
+        }:
+            return RcaKind.FUNCTION_OR_TVF_NOT_INVOKED
+    if failure == "asset_routing_error":
+        return RcaKind.ASSET_TYPE_ROUTING_MISMATCH
+    if failure in {"plural_top_n_collapse", "top_n_cardinality_collapse"}:
+        return RcaKind.TOP_N_CARDINALITY_COLLAPSE
     if failure in {"different_metric", "wrong_measure", "wrong_aggregation"}:
         return RcaKind.MEASURE_SWAP
     if failure in {"missing_join", "missing_join_spec", "wrong_join", "wrong_join_spec"}:
@@ -207,6 +254,8 @@ def _safe_rca_kind(value: Any, failure_type: str = "") -> RcaKind:
         return RcaKind.FILTER_LOGIC_MISMATCH
     if failure in {"missing_dimension", "wrong_grouping", "different_grain"}:
         return RcaKind.GRAIN_OR_GROUPING_MISMATCH
+    if failure in {"missing_temporal_filter", "wrong_time_window", "time_window_logic_mismatch"}:
+        return RcaKind.TIME_WINDOW_LOGIC_MISMATCH
     return RcaKind.UNKNOWN
 
 
@@ -218,7 +267,7 @@ def _asi_finding_from_metadata(
     failure_type = str(metadata.get("failure_type") or "").strip()
     if not qid or not failure_type:
         return None
-    kind = _safe_rca_kind(metadata.get("rca_kind"), failure_type)
+    kind = _safe_rca_kind(metadata.get("rca_kind"), failure_type, metadata)
     expected_objects = _tuple_of_str(metadata.get("expected_objects"))
     actual_objects = _tuple_of_str(metadata.get("actual_objects"))
     if not expected_objects:
@@ -701,6 +750,64 @@ def compile_patch_themes(
 
         elif f.rca_kind is RcaKind.EXAMPLE_SQL_SHAPE_NEEDED:
             patches.append(_example_synthesis_intent(base, f, root_cause="wide_vs_long_shape"))
+
+        elif f.rca_kind in {
+            RcaKind.FUNCTION_OR_TVF_NOT_INVOKED,
+            RcaKind.FUNCTION_ROUTING_MISMATCH,
+        }:
+            function_targets = tuple(
+                obj for obj in (f.expected_objects or f.actual_objects)
+                if "fn" in obj.lower() or "tvf" in obj.lower() or "function" in obj.lower()
+            ) or f.expected_objects or f.actual_objects
+            for obj in function_targets:
+                patches.append({
+                    **base,
+                    "type": "add_instruction",
+                    "lever": 3,
+                    "target": obj,
+                    "intent": f"Route requests that require {obj} to the registered function/TVF instead of inlining logic.",
+                })
+                patches.append(_patch_intent(
+                    base,
+                    ptype="add_sql_snippet_expression",
+                    lever=6,
+                    intent=f"Teach Genie the reusable SQL expression shape for {obj}.",
+                    target=obj,
+                ))
+            patches.append({
+                **base,
+                "type": "add_instruction",
+                "lever": 5,
+                "target": "ASSET ROUTING",
+                "intent": "Prefer the correct function or TVF asset type for matching user patterns.",
+            })
+
+        elif f.rca_kind is RcaKind.TOP_N_CARDINALITY_COLLAPSE:
+            for obj in f.expected_objects or f.actual_objects:
+                patches.append({
+                    **base,
+                    "type": "update_column_description",
+                    "lever": 1,
+                    "target": obj,
+                    "intent": "Clarify this dimension should preserve cardinality for top-N/grouped questions.",
+                })
+            patches.append(_example_synthesis_intent(base, f, root_cause="top_n_cardinality_collapse"))
+
+        elif f.rca_kind is RcaKind.TIME_WINDOW_LOGIC_MISMATCH:
+            patches.append(_patch_intent(
+                base,
+                ptype="add_sql_snippet_filter",
+                lever=6,
+                intent="Encode the correct reusable time-window filter logic.",
+                target="time_window",
+            ))
+            patches.append({
+                **base,
+                "type": "add_instruction",
+                "lever": 5,
+                "target": "QUERY RULES",
+                "intent": "Explain how user time-window language maps to filters.",
+            })
 
         if not patches:
             continue

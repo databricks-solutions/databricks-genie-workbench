@@ -25,6 +25,9 @@ from genie_space_optimizer.optimization.llm_client import (
     call_llm as _call_llm_openai,
     get_openai_client as _get_openai_client,
 )
+from genie_space_optimizer.optimization.rca_execution import (
+    clusters_share_defect_identity,
+)
 
 from genie_space_optimizer.common.config import (
     ADAPTIVE_STRATEGIST_PROMPT,
@@ -9147,31 +9150,40 @@ def _call_llm_for_adaptive_strategy(
             for cid in _src_ids
             if _all_clusters_map.get(str(cid))
         ]
-        _distinct_causes = {
-            c.get("root_cause", "") for c in _src_clusters if c and c.get("root_cause")
-        }
-        if len(_distinct_causes) <= 1:
+        if not _src_clusters:
             _validated_ags.append(_ag)
             continue
-        _src_with_impact = [
-            (cluster_impact(c), c) for c in _src_clusters if c
+        _winner = max(_src_clusters, key=cluster_impact)
+        _compatible_clusters = [
+            c for c in _src_clusters
+            if c is _winner or clusters_share_defect_identity(_winner, c)
         ]
-        _src_with_impact.sort(key=lambda t: t[0], reverse=True)
-        if not _src_with_impact:
-            _validated_ags.append(_ag)
-            continue
-        _winner = _src_with_impact[0][1]
-        _winning_id = _winner.get("cluster_id", "")
-        _ag["source_cluster_ids"] = [_winning_id]
-        _ag["affected_questions"] = sorted(_winner.get("question_ids", []) or [])
-        _ag.setdefault("root_cause_summary", _winner.get("root_cause", ""))
-        logger.warning(
-            "AG scope bound (Tier 2.5): dropped %d additional source cluster(s) "
-            "with distinct root_causes (%s) — kept highest-impact cluster %s",
-            len(_src_with_impact) - 1,
-            sorted(_distinct_causes), _winning_id,
-        )
+        if len(_compatible_clusters) < len(_src_clusters):
+            _dropped_ids = [
+                str(c.get("cluster_id", ""))
+                for c in _src_clusters
+                if c not in _compatible_clusters
+            ]
+            logger.warning(
+                "AG scope bound (RCA defect identity): dropped %d incompatible "
+                "source cluster(s) %s — kept defect-compatible clusters %s",
+                len(_dropped_ids),
+                _dropped_ids,
+                [c.get("cluster_id", "") for c in _compatible_clusters],
+            )
+        _ag["source_cluster_ids"] = [
+            str(c.get("cluster_id", ""))
+            for c in _compatible_clusters
+            if c.get("cluster_id")
+        ]
+        _ag["affected_questions"] = sorted({
+            str(q)
+            for c in _compatible_clusters
+            for q in (c.get("question_ids", []) or [])
+            if str(q)
+        })
         _validated_ags.append(_ag)
+        continue
     action_groups = _validated_ags
 
     global_rewrite = _normalize_instruction_rewrite(result.get("global_instruction_rewrite"))
@@ -12279,7 +12291,16 @@ def generate_proposals_from_strategy(
             target_lever, len(_my_pending), sorted(_my_pending.keys()),
         )
 
-    if not lever_dir and target_lever not in (4, 5, 6):
+    _rca_execution = action_group.get("_rca_execution") or {}
+    _rca_forces_lever = (
+        isinstance(_rca_execution, dict)
+        and int(target_lever) in {
+            int(x) for x in (_rca_execution.get("required_levers") or [])
+            if str(x).isdigit()
+        }
+    )
+
+    if not lever_dir and target_lever not in (1, 4, 5, 6) and not _rca_forces_lever:
         return proposals
 
     scope = _resolve_scope(target_lever, apply_mode)

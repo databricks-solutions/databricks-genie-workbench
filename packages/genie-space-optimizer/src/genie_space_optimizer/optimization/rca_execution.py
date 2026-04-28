@@ -1,0 +1,300 @@
+"""Executable RCA control-plane helpers.
+
+RCA themes are no longer only strategist context. This module turns typed RCA
+themes into deterministic execution plans that the harness can use to choose
+mandatory levers, stamp grounding terms, and feed structured reflection.
+
+The helpers are deliberately pure: no Spark, Databricks client, MLflow, Genie
+API, or LLM calls.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Any, Iterable
+
+
+_IDENT_RE = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b")
+
+
+@dataclass(frozen=True)
+class RcaExecutionPlan:
+    rca_id: str
+    rca_kind: str
+    patch_family: str
+    target_qids: tuple[str, ...]
+    required_levers: tuple[int, ...]
+    grounding_terms: tuple[str, ...]
+    defect_key: str
+    patch_intents: tuple[dict, ...]
+    confidence: float = 0.0
+    evidence_summary: str = ""
+
+
+def _field(obj: Any, name: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+def _normalize_term(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _iter_strings(value: Any) -> Iterable[str]:
+    if isinstance(value, str):
+        if value.strip():
+            yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _iter_strings(child)
+    elif isinstance(value, (list, tuple, set)):
+        for child in value:
+            yield from _iter_strings(child)
+
+
+def _terms_from_text(value: Any) -> list[str]:
+    terms: list[str] = []
+    for text in _iter_strings(value):
+        raw = _normalize_term(text)
+        if raw:
+            terms.append(raw)
+        for token in _IDENT_RE.findall(text):
+            token = _normalize_term(token)
+            if token:
+                terms.append(token)
+        for dotted in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)+", text):
+            dotted = _normalize_term(dotted)
+            if dotted:
+                terms.append(dotted)
+                terms.extend(part for part in dotted.split(".") if part)
+    return terms
+
+
+def _dedupe(items: Iterable[Any]) -> tuple[Any, ...]:
+    out: list[Any] = []
+    seen: set[Any] = set()
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return tuple(out)
+
+
+def _patch_lever(patch: dict) -> int | None:
+    raw = patch.get("lever")
+    try:
+        lever = int(raw)
+    except Exception:
+        return None
+    return lever if 1 <= lever <= 6 else None
+
+
+def _patch_grounding_terms(patch: dict) -> tuple[str, ...]:
+    fields = (
+        "target",
+        "target_object",
+        "target_table",
+        "table",
+        "column",
+        "metric",
+        "join_target",
+        "snippet_name",
+        "expression",
+        "sql",
+        "intent",
+        "new_text",
+        "description",
+        "synonyms",
+        "expected_objects",
+        "actual_objects",
+        "blame_set",
+    )
+    terms: list[str] = []
+    for field in fields:
+        if field in patch:
+            terms.extend(_terms_from_text(patch.get(field)))
+    return _dedupe(t for t in terms if t)
+
+
+def _theme_grounding_terms(theme: Any, patches: tuple[dict, ...]) -> tuple[str, ...]:
+    terms: list[str] = []
+    terms.extend(_terms_from_text(_field(theme, "touched_objects", ())))
+    terms.extend(_terms_from_text(_field(theme, "evidence_summary", "")))
+    for patch in patches:
+        terms.extend(_patch_grounding_terms(patch))
+    return _dedupe(t for t in terms if t)
+
+
+def defect_key_for_theme(theme: Any) -> str:
+    patch_family = str(_field(theme, "patch_family", "") or "unknown")
+    touched_terms = [
+        _normalize_term(t)
+        for t in (_field(theme, "touched_objects", ()) or ())
+        if _normalize_term(t)
+    ]
+    if touched_terms:
+        return f"{patch_family}:{'|'.join(sorted(set(touched_terms)))}"
+    target_qids = [
+        _normalize_term(q)
+        for q in (_field(theme, "target_qids", ()) or ())
+        if _normalize_term(q)
+    ]
+    return f"{patch_family}:qids:{'|'.join(sorted(target_qids))}"
+
+
+def build_rca_execution_plans(themes: Iterable[Any]) -> list[RcaExecutionPlan]:
+    plans: list[RcaExecutionPlan] = []
+    for theme in themes or []:
+        patches = tuple(
+            p for p in (_field(theme, "patches", ()) or ())
+            if isinstance(p, dict)
+        )
+        required = _dedupe(
+            lever
+            for lever in (_patch_lever(p) for p in patches)
+            if lever is not None
+        )
+        if not required:
+            continue
+        target_qids = _dedupe(
+            str(q).strip()
+            for q in (_field(theme, "target_qids", ()) or ())
+            if str(q).strip()
+        )
+        if not target_qids:
+            continue
+        rca_kind = _field(theme, "rca_kind", "")
+        if hasattr(rca_kind, "value"):
+            rca_kind = rca_kind.value
+        plans.append(RcaExecutionPlan(
+            rca_id=str(_field(theme, "rca_id", "")),
+            rca_kind=str(rca_kind or ""),
+            patch_family=str(_field(theme, "patch_family", "")),
+            target_qids=target_qids,
+            required_levers=tuple(int(x) for x in required),
+            grounding_terms=_theme_grounding_terms(theme, patches),
+            defect_key=defect_key_for_theme(theme),
+            patch_intents=patches,
+            confidence=float(_field(theme, "confidence", 0.0) or 0.0),
+            evidence_summary=str(_field(theme, "evidence_summary", "") or ""),
+        ))
+    return plans
+
+
+def required_levers_for_action_group(
+    action_group: dict,
+    plans: Iterable[RcaExecutionPlan],
+) -> tuple[int, ...]:
+    ag_qids = {
+        str(q).strip()
+        for q in (action_group.get("affected_questions") or [])
+        if str(q).strip()
+    }
+    if not ag_qids:
+        return ()
+    levers: list[int] = []
+    for plan in plans or []:
+        if not ag_qids.intersection(plan.target_qids):
+            continue
+        levers.extend(plan.required_levers)
+    return tuple(int(x) for x in _dedupe(levers))
+
+
+def union_execution_levers(
+    strategist_levers: Iterable[str | int],
+    required_levers: Iterable[int],
+) -> list[str]:
+    out: list[str] = []
+    for lever in strategist_levers or []:
+        s = str(lever)
+        if s.isdigit() and s not in out:
+            out.append(s)
+    for lever in required_levers or []:
+        s = str(int(lever))
+        if s not in out:
+            out.append(s)
+    return out
+
+
+def forced_levers_from_reflections(
+    reflection_buffer: Iterable[dict],
+    *,
+    target_rca_ids: Iterable[str],
+    min_repeats: int = 2,
+) -> tuple[int, ...]:
+    target_ids = {str(x) for x in target_rca_ids or [] if str(x)}
+    if not target_ids:
+        return ()
+    counts: dict[str, int] = {}
+    levers_by_rca: dict[str, list[int]] = {}
+    for entry in reflection_buffer or []:
+        if entry.get("accepted"):
+            continue
+        if entry.get("rollback_reason") != "no_grounded_patches":
+            continue
+        payload = entry.get("rca_execution")
+        if not isinstance(payload, dict):
+            continue
+        ids = [str(x) for x in (payload.get("rca_ids") or []) if str(x)]
+        required = [
+            int(x) for x in (payload.get("required_levers") or [])
+            if str(x).isdigit()
+        ]
+        for rca_id in ids:
+            if rca_id not in target_ids:
+                continue
+            counts[rca_id] = counts.get(rca_id, 0) + 1
+            levers_by_rca.setdefault(rca_id, []).extend(required)
+    forced: list[int] = []
+    for rca_id, count in counts.items():
+        if count >= min_repeats:
+            forced.extend(levers_by_rca.get(rca_id, []))
+    return tuple(int(x) for x in _dedupe(forced))
+
+
+def plans_for_action_group(
+    action_group: dict,
+    plans: Iterable[RcaExecutionPlan],
+) -> tuple[RcaExecutionPlan, ...]:
+    ag_qids = {
+        str(q).strip()
+        for q in (action_group.get("affected_questions") or [])
+        if str(q).strip()
+    }
+    return tuple(
+        plan for plan in (plans or [])
+        if ag_qids.intersection(plan.target_qids)
+    )
+
+
+def _cluster_terms(cluster: dict) -> set[str]:
+    terms: set[str] = set()
+    for key in (
+        "asi_blame_set",
+        "blame_set",
+        "expected_objects",
+        "actual_objects",
+        "asi_counterfactual_fixes",
+        "counterfactual_fixes",
+    ):
+        terms.update(_terms_from_text(cluster.get(key)))
+    return {
+        t for t in terms
+        if len(t) > 2 and t not in {"none", "null", "unknown", "other"}
+    }
+
+
+def clusters_share_defect_identity(left: dict, right: dict) -> bool:
+    left_terms = _cluster_terms(left)
+    right_terms = _cluster_terms(right)
+    if not left_terms or not right_terms:
+        return False
+    shared = left_terms & right_terms
+    if shared:
+        return True
+    left_fn = {t for t in left_terms if "fn" in t or "tvf" in t or "function" in t}
+    right_fn = {t for t in right_terms if "fn" in t or "tvf" in t or "function" in t}
+    return bool(left_fn and right_fn and left_fn & right_fn)

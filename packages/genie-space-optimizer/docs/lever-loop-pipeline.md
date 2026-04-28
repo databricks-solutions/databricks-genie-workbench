@@ -62,9 +62,11 @@ mind while reading the rest:
 
 ### Optimization Objective
 
-The lever loop has one terminal objective: reach 100% post-arbiter /
-arbiter-adjusted accuracy within the configured lever-loop attempt budget.
-The default budget is five adaptive attempts.
+The terminal optimization objective is 100% post-arbiter / arbiter-adjusted
+accuracy within the configured adaptive attempt budget. Per-judge thresholds
+remain diagnostic and may still produce a compatibility `threshold_met`
+terminal reason, but they are not the primary success definition for the RCA
+control plane.
 
 Hard failures are the optimization target. A hard failure is a row where
 `result_correctness` is false and the arbiter did not mark Genie as correct.
@@ -632,23 +634,12 @@ rejected, never silently passed. Counters (`firewall_drops`,
 `gate_drops`) are persisted for observability.
 
 **AFS leakage check (Stage H entry guard).** Every AFS dict, before
-being rendered into a prompt, runs through `afs.py::validate_afs`:
+being rendered into a prompt, runs through `afs.py::validate_afs`.
 
-```python
-for s in _walk_strings(afs):
-    for q_shingle in benchmark_question_shingles:
-        if jaccard(tokenize(s), q_shingle) >= AFS_NGRAM_MAX_SIMILARITY:  # 0.25
-            raise AFSLeakError(...)
-    for sql_shingle in benchmark_sql_shingles:
-        if jaccard(tokenize(s), sql_shingle) >= AFS_NGRAM_MAX_SIMILARITY:
-            raise AFSLeakError(...)
-```
-
-Tighter than the firewall (`NGRAM_SIMILARITY_THRESHOLD=0.60`) on
-purpose: AFS strings should be *derivative* of judge metadata, not
-*reproductive* of benchmark text. A judge's `counterfactual_fix` that
-quotes the benchmark question verbatim will trip this and the AFS is
-rejected with `AFSLeakError`.
+AFS validation protects against benchmark question echo in prompt context. It
+does not reject schema identifiers, functions, measures, joins, or SQL
+primitives merely because they also appear in benchmark expected SQL. The
+strict benchmark SQL firewall applies to persisted example SQL artifacts.
 
 **Synthesis budget + fallback** (`synthesis.py`):
 
