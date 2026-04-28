@@ -936,17 +936,18 @@ def _extract_existing_question_text(entry: Any) -> str:
 def _benchmarks_to_genie_format(
     benchmarks: list[dict],
     *,
-    tag_as_optimizer: bool = True,
+    tag_as_optimizer: bool = False,
     run_id: str | None = None,
 ) -> list[dict]:
     """Convert optimizer benchmark dicts to Genie-native ``benchmarks.questions`` format.
 
-    When ``tag_as_optimizer`` is True (the default when invoked via
-    ``publish_benchmarks_to_genie_space``), the question text gets a visible
-    ``[auto-optimize]`` prefix and a structured ``metadata`` dict is attached
-    so downstream tools can distinguish these rows from user-curated ones
-    without relying on text-matching. Prioritises curated/P0 benchmarks first,
-    then fills with synthetic.
+    Published rows are plain Genie benchmark questions. The optimizer keeps
+    source/provenance metadata in the UC evaluation dataset, not in the Genie
+    Space payload. Prioritises curated/P0 benchmarks first, then fills with
+    synthetic. The ``tag_as_optimizer`` parameter is retained only for
+    backward-compatible callers that still want the legacy
+    ``[auto-optimize]`` prefix + structured metadata; it must remain ``False``
+    for ``publish_benchmarks_to_genie_space``.
     """
     curated: list[dict] = []
     synthetic: list[dict] = []
@@ -1076,6 +1077,9 @@ def _extract_example_sql_questions(parsed: dict) -> set[str]:
                     result.add(_normalize_question_text(q))
 
     _walk_example_sqls(parsed)
+    inst = parsed.get("instructions")
+    if isinstance(inst, dict):
+        _walk_example_sqls(inst)
     tables = parsed.get("tables")
     if isinstance(tables, list):
         for t in tables:
@@ -1097,8 +1101,9 @@ def publish_benchmarks_to_genie_space(
     Fetches the current space config, converts benchmarks to Genie-native
     format, MERGES them into existing ``serialized_space.benchmarks.questions``
     (preserving any user-authored rows), and PATCHes the space via
-    ``updateSpace``. Published rows are tagged with a ``[auto-optimize]``
-    prefix + structured metadata (``source: gso_optimizer``, ``run_id``).
+    ``updateSpace``. Published rows are plain benchmark questions: no
+    ``[auto-optimize]`` prefix and no GSO ``metadata`` payload. Provenance
+    stays in the UC evaluation dataset, where the optimizer needs it.
 
     Questions that are already mirrored in the space's ``example_question_sqls``
     are excluded — keeping the same question in both slots would restore the
@@ -1133,7 +1138,7 @@ def publish_benchmarks_to_genie_space(
         )
 
     new_genie_questions = _benchmarks_to_genie_format(
-        pre_filtered, tag_as_optimizer=True, run_id=run_id,
+        pre_filtered, tag_as_optimizer=False, run_id=run_id,
     )
 
     merged_questions, added_count, dedup_skipped = _dedupe_and_merge_benchmarks(

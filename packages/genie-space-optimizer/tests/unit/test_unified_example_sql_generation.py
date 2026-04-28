@@ -1642,3 +1642,107 @@ class TestPR23DetectionVsRejectionHint:
             },
         )
         assert "0 MVs detected but mv_* rejections present" not in out
+
+
+class TestBenchmarkSpaceScopedMetadata:
+    def test_build_schema_contexts_filters_columns_and_routines_to_space_assets(self):
+        from genie_space_optimizer.optimization.evaluation import _build_schema_contexts
+
+        config = {
+            "_tables": ["cat.sch.fact_sales"],
+            "_metric_views": [],
+            "_functions": ["cat.sch.allowed_fn"],
+            "_parsed_space": {
+                "config": {
+                    "sample_questions": [
+                        {"question": ["How are sales trending?"]},
+                    ]
+                },
+                "data_sources": {
+                    "tables": [{"identifier": "cat.sch.fact_sales"}],
+                    "metric_views": [],
+                },
+                "instructions": {},
+            },
+            "_data_profile": {
+                "cat.sch.fact_sales": {"row_count": 10, "columns": {"market": {"cardinality": 2}}},
+                "cat.sch.secret_table": {"row_count": 10, "columns": {"secret_col": {"cardinality": 2}}},
+            },
+        }
+        uc_columns = [
+            {
+                "catalog_name": "cat",
+                "schema_name": "sch",
+                "table_name": "fact_sales",
+                "column_name": "market",
+                "data_type": "STRING",
+                "comment": "",
+            },
+            {
+                "catalog_name": "cat",
+                "schema_name": "sch",
+                "table_name": "secret_table",
+                "column_name": "secret_col",
+                "data_type": "STRING",
+                "comment": "",
+            },
+        ]
+        uc_routines = [
+            {"routine_name": "allowed_fn", "routine_definition": "RETURN SELECT 1"},
+            {"routine_name": "secret_fn", "routine_definition": "RETURN SELECT 2"},
+        ]
+
+        ctx = _build_schema_contexts(config, uc_columns, uc_routines)
+
+        assert "fact_sales.market" in ctx["tables_context"]
+        assert "secret_table.secret_col" not in ctx["tables_context"]
+        assert "market (STRING)" in ctx["column_allowlist"]
+        assert "secret_col" not in ctx["column_allowlist"]
+        assert "allowed_fn" in ctx["tvfs_context"]
+        assert "secret_fn" not in ctx["tvfs_context"]
+        assert "cat.sch.fact_sales" in ctx["data_profile_context"]
+        assert "cat.sch.secret_table" not in ctx["data_profile_context"]
+        assert "How are sales trending?" in ctx["sample_questions_context"]
+
+    def test_metadata_allowlist_rejects_schema_routine_not_in_space_config(self):
+        from genie_space_optimizer.optimization.evaluation import (
+            _build_metadata_allowlist,
+            _enforce_metadata_constraints,
+        )
+
+        config = {
+            "_tables": ["cat.sch.fact_sales"],
+            "_metric_views": [],
+            "_functions": ["cat.sch.allowed_fn"],
+            "_parsed_space": {
+                "data_sources": {"tables": [{"identifier": "cat.sch.fact_sales"}]},
+                "instructions": {},
+            },
+        }
+        allowlist = _build_metadata_allowlist(
+            config=config,
+            uc_columns=[
+                {
+                    "catalog_name": "cat",
+                    "schema_name": "sch",
+                    "table_name": "fact_sales",
+                    "column_name": "sales",
+                }
+            ],
+            uc_routines=[
+                {"routine_name": "allowed_fn"},
+                {"routine_name": "schema_only_fn"},
+            ],
+        )
+
+        ok, reason, message = _enforce_metadata_constraints(
+            benchmark={"required_tables": ["cat.sch.fact_sales"], "required_columns": ["sales"]},
+            sql="SELECT * FROM cat.sch.schema_only_fn()",
+            allowlist=allowlist,
+            catalog="cat",
+            schema="sch",
+        )
+
+        assert not ok
+        assert reason == "unknown_routine"
+        assert "schema_only_fn" in message

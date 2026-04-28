@@ -226,6 +226,9 @@ def load_benchmarks_from_dataset(
                     benchmarks = [_normalize_benchmark_row(r.asDict(recursive=True)) for r in rows]
                     if rows and "inputs" in (rows[0].asDict()):
                         logger.debug("Normalized %d benchmark rows from nested MLflow format", len(rows))
+                    from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
+                    if len(benchmarks) > MAX_BENCHMARK_COUNT:
+                        benchmarks = benchmarks[:MAX_BENCHMARK_COUNT]
                     return benchmarks
                 except Exception as read_err:
                     err_msg = str(read_err)
@@ -242,7 +245,11 @@ def load_benchmarks_from_dataset(
         else:
             df = spark_or_dataset
             rows = df.collect()
-            return [_normalize_benchmark_row(r.asDict(recursive=True)) for r in rows]
+            benchmarks = [_normalize_benchmark_row(r.asDict(recursive=True)) for r in rows]
+            from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
+            if len(benchmarks) > MAX_BENCHMARK_COUNT:
+                benchmarks = benchmarks[:MAX_BENCHMARK_COUNT]
+            return benchmarks
     except Exception:
         logger.exception("Failed to load benchmarks from %s", table_name)
         return []
@@ -979,27 +986,37 @@ def assign_splits(
     train_ratio: float = 1.0 - HELD_OUT_RATIO,
     seed: int = 42,
 ) -> list[dict]:
-    """Assign ``split`` field (``train`` or ``held_out``) to each benchmark.
+    """Assign ``split`` field using deterministic random sampling.
 
-    Curated benchmarks (``provenance == "curated"``) are always assigned to
-    ``train`` so the optimizer always sees user-authored questions.  Only
-    non-curated benchmarks participate in the random held-out split.
-
-    Uses deterministic shuffle based on *seed* for reproducibility.
+    Split assignment is intentionally independent of benchmark provenance.
+    User-authored, sample-derived, synthetic, and gap-fill questions all
+    participate in the same random split so the held-out set is a real random
+    sample of the final validated corpus.
     """
-    curated_indices = {
-        i for i, b in enumerate(benchmarks) if b.get("provenance") == "curated"
-    }
-    splittable = [i for i in range(len(benchmarks)) if i not in curated_indices]
+    from genie_space_optimizer.common.config import (
+        MIN_HELD_OUT_BENCHMARK_COUNT,
+        MIN_TRAIN_BENCHMARK_COUNT,
+    )
 
+    n = len(benchmarks)
+    if n == 0:
+        return benchmarks
+    if n == 1:
+        benchmarks[0]["split"] = "train"
+        return benchmarks
+
+    if n >= MIN_TRAIN_BENCHMARK_COUNT + MIN_HELD_OUT_BENCHMARK_COUNT:
+        held_out_count = MIN_HELD_OUT_BENCHMARK_COUNT
+    else:
+        held_out_count = max(1, min(n - 1, int(round(n * (1.0 - train_ratio)))))
+
+    indices = list(range(n))
     rng = random.Random(seed)
-    rng.shuffle(splittable)
-    cutoff = int(len(splittable) * train_ratio)
+    rng.shuffle(indices)
+    held_out_indices = set(indices[:held_out_count])
 
-    for i in curated_indices:
-        benchmarks[i]["split"] = "train"
-    for rank, idx in enumerate(splittable):
-        benchmarks[idx]["split"] = "train" if rank < cutoff else "held_out"
+    for i, benchmark in enumerate(benchmarks):
+        benchmark["split"] = "held_out" if i in held_out_indices else "train"
 
     return benchmarks
 

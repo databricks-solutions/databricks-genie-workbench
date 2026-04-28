@@ -601,7 +601,7 @@ export const DATA_FLOW_NODES: DataFlowNode[] = [
     label: "Benchmarks",
     deltaTable: "genie_benchmarks_{domain}",
     keyColumns: ["question", "expected_sql", "expected_asset", "category", "split", "validation_status"],
-    description: "LLM-generated and curated (question, expected_sql) pairs",
+    description: "Validated benchmark questions from Genie benchmarks, sample questions, and synthetic top-up",
     type: "storage",
   },
   {

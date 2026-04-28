@@ -6390,6 +6390,8 @@ def create_evaluation_dataset(
                 "Created new evaluation dataset: %s (experiment_id=%s)",
                 uc_table_name, exp_ids,
             )
+        if len(benchmarks) > max_benchmark_count:
+            benchmarks = _truncate_benchmarks(benchmarks, max_benchmark_count)
         records = []
         _seen_questions: set[str] = set()
         _dup_count = 0
@@ -8520,6 +8522,86 @@ def _extract_genie_hash_from_row(row: dict) -> str:
 # ── Benchmark Extraction from Genie Space ──────────────────────────────
 
 
+AUTO_OPTIMIZE_TAG_PREFIX = "[auto-optimize] "
+
+
+def _coerce_question_text(raw: Any) -> str:
+    if isinstance(raw, list):
+        return " ".join(str(part) for part in raw).strip()
+    return str(raw or "").strip()
+
+
+def _strip_legacy_auto_optimize_prefix(question: str) -> str:
+    text = str(question or "").strip()
+    if text.startswith(AUTO_OPTIMIZE_TAG_PREFIX):
+        return text[len(AUTO_OPTIMIZE_TAG_PREFIX):].strip()
+    return text
+
+
+def _extract_sql_answer(answers: Any) -> str:
+    if not isinstance(answers, list):
+        return ""
+    for ans in answers:
+        if not isinstance(ans, dict):
+            continue
+        if str(ans.get("format", "")).upper() != "SQL":
+            continue
+        content = ans.get("content", [])
+        if isinstance(content, list):
+            return "".join(str(part) for part in content).strip()
+        if isinstance(content, str):
+            return content.strip()
+    return ""
+
+
+def _normalized_question_key(question: str) -> str:
+    text = _strip_legacy_auto_optimize_prefix(str(question or ""))
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def _extract_example_sql_question_keys(config: dict) -> set[str]:
+    parsed = config.get("_parsed_space", config)
+    if not isinstance(parsed, dict):
+        return set()
+    keys: set[str] = set()
+
+    def _walk(container: dict) -> None:
+        example_sqls = container.get("example_question_sqls")
+        if not isinstance(example_sqls, list):
+            return
+        for item in example_sqls:
+            if isinstance(item, dict):
+                key = _normalized_question_key(_coerce_question_text(item.get("question", "")))
+                if key:
+                    keys.add(key)
+
+    _walk(parsed)
+    inst = parsed.get("instructions", {})
+    if isinstance(inst, dict):
+        _walk(inst)
+    return keys
+
+
+def _filter_example_sql_mirrored_benchmarks(
+    benchmarks: list[dict],
+    config: dict,
+) -> list[dict]:
+    blocked = _extract_example_sql_question_keys(config)
+    if not blocked:
+        return benchmarks
+    filtered = [
+        b for b in benchmarks
+        if _normalized_question_key(str(b.get("question", ""))) not in blocked
+    ]
+    dropped = len(benchmarks) - len(filtered)
+    if dropped:
+        logger.info(
+            "Dropped %d benchmark row(s) mirrored in example_question_sqls",
+            dropped,
+        )
+    return filtered
+
+
 def extract_genie_space_benchmarks(
     config: dict,
     spark: SparkSession,
@@ -8529,136 +8611,119 @@ def extract_genie_space_benchmarks(
     w: Any = None,
     warehouse_id: str = "",
 ) -> list[dict]:
-    """Extract curated benchmark questions from a Genie Space config.
+    """Extract benchmark questions from a Genie Space config.
 
-    Sources (in priority order):
-      1. ``instructions.example_question_sqls`` — curated Q+SQL pairs the space
-         owner has defined. These have the highest fidelity.
-      2. ``sample_questions`` — natural-language-only questions from the space
-         config (no expected SQL).
+    Sources:
+      1. ``benchmarks.questions`` — user-authored benchmark questions, with
+         optional SQL answers.
+      2. ``config.sample_questions`` — user-authored natural-language sample
+         questions that need ground-truth SQL generation.
 
-    Each returned dict has ``question``, ``expected_sql`` (may be empty for
-    sample-only questions), ``source`` = ``"genie_space"``, and
-    ``expected_asset``.
+    ``instructions.example_question_sqls`` are training examples and are
+    intentionally excluded from the benchmark corpus.
     """
     from genie_space_optimizer.optimization.benchmarks import validate_ground_truth_sql
 
     parsed_space = config.get("_parsed_space", {})
     if not isinstance(parsed_space, dict):
         parsed_space = {}
-    instr = parsed_space.get("instructions", {})
-    if not isinstance(instr, dict):
-        instr = {}
 
     benchmarks: list[dict] = []
     seen_questions: set[str] = set()
 
-    example_qs = instr.get("example_question_sqls", [])
-    for ex in (example_qs if isinstance(example_qs, list) else []):
-        if not isinstance(ex, dict):
-            continue
-        q_raw = ex.get("question", "")
-        if isinstance(q_raw, list):
-            q_raw = " ".join(str(c) for c in q_raw)
-        question = str(q_raw).strip()
-        if not question:
-            continue
-        q_lower = question.lower()
-        if q_lower in seen_questions:
-            continue
+    def _append_question(
+        *,
+        question: str,
+        expected_sql: str,
+        source: str,
+        category: str,
+    ) -> None:
+        normalized_question = _strip_legacy_auto_optimize_prefix(question)
+        q_lower = normalized_question.lower().strip()
+        if not q_lower or q_lower in seen_questions:
+            return
         seen_questions.add(q_lower)
 
-        sql_raw = ex.get("sql", "")
-        if isinstance(sql_raw, list):
-            sql_raw = "".join(str(c) for c in sql_raw)
-        expected_sql = str(sql_raw).strip()
-
-        if expected_sql:
+        validation_status = "question_only"
+        validation_reason_code = "missing_expected_sql"
+        sql = expected_sql.strip()
+        if sql:
             from genie_space_optimizer.optimization.benchmarks import fix_mv_alias_sort_collision
-            expected_sql = fix_mv_alias_sort_collision(expected_sql)
+            sql = fix_mv_alias_sort_collision(sql)
             is_valid, err = validate_ground_truth_sql(
-                expected_sql, spark, catalog=catalog, gold_schema=schema,
-                w=w, warehouse_id=warehouse_id,
+                sql,
+                spark,
+                catalog=catalog,
+                gold_schema=schema,
+                w=w,
+                warehouse_id=warehouse_id,
             )
-            if not is_valid:
+            if is_valid:
+                validation_status = "valid"
+                validation_reason_code = "ok"
+            else:
                 logger.warning(
-                    "Genie space example_question_sql failed validation: %s — %s",
-                    question[:60], err,
+                    "Genie space benchmark source SQL failed validation: %s -- %s",
+                    normalized_question[:60],
+                    err,
                 )
-                expected_sql = ""
+                sql = ""
+                validation_status = "question_only"
+                validation_reason_code = "invalid_source_sql"
 
         benchmarks.append({
-            "question": question,
-            "expected_sql": expected_sql,
-            "expected_asset": detect_asset_type(expected_sql) if expected_sql else "TABLE",
-            "category": "curated",
+            "question": normalized_question,
+            "expected_sql": sql,
+            "expected_asset": detect_asset_type(sql) if sql else "TABLE",
+            "category": category,
             "required_tables": [],
             "required_columns": [],
             "expected_facts": [],
-            "source": "genie_space",
+            "source": source,
+            "provenance": "curated",
+            "validation_status": validation_status,
+            "validation_reason_code": validation_reason_code,
+            "validation_error": None if sql else "No valid expected SQL in Genie benchmark source",
         })
 
     bench_section = parsed_space.get("benchmarks", {})
     if not isinstance(bench_section, dict):
         bench_section = {}
     bench_questions = bench_section.get("questions", [])
-    for bq in (bench_questions if isinstance(bench_questions, list) else []):
+    for bq in bench_questions if isinstance(bench_questions, list) else []:
         if not isinstance(bq, dict):
             continue
-        q_raw = bq.get("question", [])
-        if isinstance(q_raw, list):
-            q_raw = " ".join(str(c) for c in q_raw)
-        question = str(q_raw).strip()
-        if not question:
+        question = _coerce_question_text(bq.get("question", ""))
+        expected_sql = _extract_sql_answer(bq.get("answer", []))
+        _append_question(
+            question=question,
+            expected_sql=expected_sql,
+            source="genie_benchmark",
+            category="user_benchmark",
+        )
+
+    cfg_block = parsed_space.get("config", {})
+    if not isinstance(cfg_block, dict):
+        cfg_block = {}
+    sample_questions = cfg_block.get("sample_questions", [])
+    for sq in sample_questions if isinstance(sample_questions, list) else []:
+        if not isinstance(sq, dict):
             continue
-        q_lower = question.lower()
-        if q_lower in seen_questions:
-            continue
-        seen_questions.add(q_lower)
+        _append_question(
+            question=_coerce_question_text(sq.get("question", "")),
+            expected_sql="",
+            source="sample_question",
+            category="sample_question",
+        )
 
-        expected_sql = ""
-        answers = bq.get("answer", [])
-        if isinstance(answers, list):
-            for ans in answers:
-                if isinstance(ans, dict) and ans.get("format") == "SQL":
-                    content = ans.get("content", [])
-                    if isinstance(content, list):
-                        expected_sql = "".join(str(c) for c in content).strip()
-                    elif isinstance(content, str):
-                        expected_sql = content.strip()
-                    break
-
-        if expected_sql:
-            from genie_space_optimizer.optimization.benchmarks import fix_mv_alias_sort_collision
-            expected_sql = fix_mv_alias_sort_collision(expected_sql)
-            is_valid, err = validate_ground_truth_sql(
-                expected_sql, spark, catalog=catalog, gold_schema=schema,
-                w=w, warehouse_id=warehouse_id,
-            )
-            if not is_valid:
-                logger.warning(
-                    "Genie space benchmark question failed SQL validation: %s — %s",
-                    question[:60], err,
-                )
-                expected_sql = ""
-
-        benchmarks.append({
-            "question": question,
-            "expected_sql": expected_sql,
-            "expected_asset": detect_asset_type(expected_sql) if expected_sql else "TABLE",
-            "category": "curated",
-            "required_tables": [],
-            "required_columns": [],
-            "expected_facts": [],
-            "source": "genie_space",
-        })
+    benchmarks = _filter_example_sql_mirrored_benchmarks(benchmarks, config)
 
     logger.info(
-        "Extracted %d curated benchmarks from Genie space config "
-        "(%d with SQL, %d without SQL)",
+        "Extracted %d benchmark question(s) from Genie space config "
+        "(%d with SQL, %d requiring SQL generation)",
         len(benchmarks),
-        sum(1 for b in benchmarks if b["expected_sql"]),
-        sum(1 for b in benchmarks if not b["expected_sql"]),
+        sum(1 for b in benchmarks if b.get("expected_sql")),
+        sum(1 for b in benchmarks if not b.get("expected_sql")),
     )
     return benchmarks
 
@@ -8689,13 +8754,80 @@ def _build_valid_assets_context(config: dict) -> str:
     return "\n".join(lines) if lines else "(no assets configured)"
 
 
-def _format_data_profile_context(config: dict) -> str:
+def _space_table_asset_candidates(config: dict) -> set[str]:
+    candidates: set[str] = set()
+    for raw in sorted(
+        effective_table_identifiers(config)
+        | effective_metric_view_identifiers_with_catalog(config)
+    ):
+        candidates.update(_identifier_candidates(str(raw)))
+    return {c for c in candidates if c}
+
+
+def _space_function_candidates(config: dict) -> set[str]:
+    candidates: set[str] = set()
+    for raw in config.get("_functions", []) if isinstance(config.get("_functions"), list) else []:
+        candidates.update(_identifier_candidates(str(raw)))
+    return {c for c in candidates if c}
+
+
+def _uc_column_table_candidates(row: dict) -> set[str]:
+    table_name = str(row.get("table_name") or "").strip()
+    catalog_name = str(row.get("catalog_name") or "").strip()
+    schema_name = str(row.get("schema_name") or "").strip()
+    candidates = _identifier_candidates(table_name)
+    if catalog_name and schema_name and table_name:
+        candidates.update(_identifier_candidates(f"{catalog_name}.{schema_name}.{table_name}"))
+    if schema_name and table_name:
+        candidates.update(_identifier_candidates(f"{schema_name}.{table_name}"))
+    return {c for c in candidates if c}
+
+
+def _filter_uc_columns_to_space_assets(config: dict, uc_columns: list[dict]) -> list[dict]:
+    allowed = _space_table_asset_candidates(config)
+    if not allowed:
+        return []
+    return [
+        col for col in uc_columns
+        if isinstance(col, dict) and (_uc_column_table_candidates(col) & allowed)
+    ]
+
+
+def _filter_uc_routines_to_space_functions(config: dict, uc_routines: list[dict]) -> list[dict]:
+    allowed = _space_function_candidates(config)
+    if not allowed:
+        return []
+    filtered: list[dict] = []
+    for routine in uc_routines:
+        if not isinstance(routine, dict):
+            continue
+        raw_name = str(routine.get("routine_name") or routine.get("specific_name") or "").strip()
+        if raw_name and (_identifier_candidates(raw_name) & allowed):
+            filtered.append(routine)
+    return filtered
+
+
+def _filter_data_profile_to_space_assets(config: dict) -> dict[str, dict]:
+    profile = config.get("_data_profile", {})
+    if not isinstance(profile, dict):
+        return {}
+    allowed = _space_table_asset_candidates(config)
+    if not allowed:
+        return {}
+    scoped: dict[str, dict] = {}
+    for table, table_info in profile.items():
+        if _identifier_candidates(str(table)) & allowed:
+            scoped[str(table)] = table_info
+    return scoped
+
+
+def _format_data_profile_context(config: dict, data_profile: dict[str, dict] | None = None) -> str:
     """Build a compact data-profile section for benchmark generation prompts.
 
     Renders per-table row counts, per-column cardinality, distinct values
     for low-cardinality columns, and min/max ranges for numeric/date columns.
     """
-    profile = config.get("_data_profile", {})
+    profile = data_profile if data_profile is not None else config.get("_data_profile", {})
     if not profile:
         return "(no data profile available)"
     lines: list[str] = []
@@ -8722,9 +8854,12 @@ def _build_schema_contexts(
     uc_routines: list[dict],
 ) -> dict[str, str]:
     """Build the schema context strings for benchmark prompts."""
+    scoped_uc_columns = _filter_uc_columns_to_space_assets(config, uc_columns)
+    scoped_uc_routines = _filter_uc_routines_to_space_functions(config, uc_routines)
+
     tables_context = "\n".join(
         f"- {c.get('table_name', '')}.{c.get('column_name', '')} ({c.get('data_type', '')}): {c.get('comment', '')}"
-        for c in uc_columns
+        for c in scoped_uc_columns
     )
 
     # -- Metric views: enrich with measure/dimension column detail --
@@ -8797,8 +8932,8 @@ def _build_schema_contexts(
     tvfs = config.get("_functions", [])
     tvfs_context = "\n".join(
         f"- {r.get('routine_name', '')}: {r.get('routine_definition', '')[:200]}"
-        for r in uc_routines
-    ) if uc_routines else (
+        for r in scoped_uc_routines
+    ) if scoped_uc_routines else (
         "\n".join(f"- {t}" for t in tvfs) if tvfs else "(none)"
     )
 
@@ -8833,14 +8968,23 @@ def _build_schema_contexts(
         f"- {i.get('text', i) if isinstance(i, dict) else i}" for i in instructions
     ) if instructions else "(none)"
 
-    sample_questions = config.get("_parsed_space", {}).get("sample_questions", [])
+    cfg_block = parsed_space.get("config", {})
+    if not isinstance(cfg_block, dict):
+        cfg_block = {}
+    sample_questions = cfg_block.get("sample_questions", [])
+    if not isinstance(sample_questions, list) or not sample_questions:
+        # Legacy serialized spaces stored sample_questions at the top level;
+        # keep that fallback so older fixtures still render.
+        legacy = parsed_space.get("sample_questions", [])
+        if isinstance(legacy, list):
+            sample_questions = legacy
     sample_questions_context = "\n".join(
-        f"- {q.get('question', q) if isinstance(q, dict) else q}"
+        f"- {_coerce_question_text(q.get('question', q) if isinstance(q, dict) else q)}"
         for q in sample_questions
     ) if sample_questions else "(none)"
 
     columns_by_table: dict[str, list[str]] = {}
-    for c in uc_columns:
+    for c in scoped_uc_columns:
         if not isinstance(c, dict):
             continue
         tbl = str(c.get("table_name") or "").strip()
@@ -8863,7 +9007,10 @@ def _build_schema_contexts(
         "sample_questions_context": sample_questions_context,
         "valid_assets_context": _build_valid_assets_context(config),
         "column_allowlist": column_allowlist,
-        "data_profile_context": _format_data_profile_context(config),
+        "data_profile_context": _format_data_profile_context(
+            config,
+            _filter_data_profile_to_space_assets(config),
+        ),
     }
 
 
@@ -10249,7 +10396,10 @@ def _build_metadata_allowlist(
                 continue
             allowed_assets.update(_identifier_candidates(str(raw)))
 
-    for col in uc_columns:
+    scoped_columns = _filter_uc_columns_to_space_assets(config, uc_columns)
+    scoped_routines = _filter_uc_routines_to_space_functions(config, uc_routines)
+
+    for col in scoped_columns:
         if not isinstance(col, dict):
             continue
         col_name = str(col.get("column_name") or "").strip()
@@ -10262,7 +10412,7 @@ def _build_metadata_allowlist(
             allowed_columns.add(fq_col)
             normalized_to_column.setdefault(_normalize_name(fq_col), f"{table_name}.{col_name}")
 
-    for routine in uc_routines:
+    for routine in scoped_routines:
         if not isinstance(routine, dict):
             continue
         raw_name = str(
@@ -10287,7 +10437,15 @@ def _build_metadata_allowlist(
 
 def _extract_sql_asset_references(sql: str) -> set[str]:
     refs: set[str] = set()
-    for match in _SQL_REFERENCE_PATTERN.finditer(sql or ""):
+    text = sql or ""
+    for match in _SQL_REFERENCE_PATTERN.finditer(text):
+        # Skip TVF-style references — anything immediately followed by an
+        # opening paren is a function call. Routine validation handles those
+        # via _extract_sql_function_calls / allowlist["routines"], so we
+        # don't want to double-count them as unknown assets.
+        end = match.end()
+        if end < len(text) and text[end] == "(":
+            continue
         refs.update(_identifier_candidates(match.group(1)))
     return refs
 
@@ -10930,6 +11088,27 @@ def _enforce_instruction_default_filters_on_benchmarks(
     return patched
 
 
+def _compute_synthetic_target(
+    *,
+    target_count: int,
+    curated_count: int,
+    existing_count: int,
+) -> int:
+    """Return how many synthetic benchmarks are needed to reach target_count."""
+    return max(target_count - curated_count - existing_count, 0)
+
+
+def _needs_benchmark_top_up(benchmarks: list[dict]) -> bool:
+    from genie_space_optimizer.common.config import (
+        MIN_HELD_OUT_BENCHMARK_COUNT,
+        MIN_TRAIN_BENCHMARK_COUNT,
+    )
+
+    train_n = sum(1 for b in benchmarks if b.get("split") == "train")
+    held_out_n = sum(1 for b in benchmarks if b.get("split") == "held_out")
+    return train_n < MIN_TRAIN_BENCHMARK_COUNT or held_out_n < MIN_HELD_OUT_BENCHMARK_COUNT
+
+
 def generate_benchmarks(
     w: WorkspaceClient,
     config: dict,
@@ -10970,7 +11149,11 @@ def generate_benchmarks(
     curated_questions = {b.get("question", "").lower().strip() for b in curated}
     existing_questions = {b.get("question", "").lower().strip() for b in _existing}
     curated_questions |= existing_questions
-    synthetic_target = max(target_count - len(curated) - len(_existing), 5)
+    synthetic_target = _compute_synthetic_target(
+        target_count=min(target_count, max_benchmark_count),
+        curated_count=len(curated),
+        existing_count=len(_existing),
+    )
     allowlist = _build_metadata_allowlist(
         config=config,
         uc_columns=uc_columns,
@@ -10997,21 +11180,29 @@ def generate_benchmarks(
             + "\n".join(f"- {b.get('question', '')}" for b in all_existing)
         )
 
-    prompt = format_mlflow_template(
-        BENCHMARK_GENERATION_PROMPT,
-        domain=domain,
-        target_count=synthetic_target,
-        categories=json.dumps(BENCHMARK_CATEGORIES),
-        **ctx,
-    )
-    if existing_questions_context:
-        prompt += existing_questions_context
+    if synthetic_target > 0:
+        prompt = format_mlflow_template(
+            BENCHMARK_GENERATION_PROMPT,
+            domain=domain,
+            target_count=synthetic_target,
+            categories=json.dumps(BENCHMARK_CATEGORIES),
+            **ctx,
+        )
+        if existing_questions_context:
+            prompt += existing_questions_context
 
-    response = _call_llm_for_scoring(
-        w, prompt,
-        prompt_name=get_registered_prompt_name("benchmark_generation"),
-    )
-    raw_benchmarks: list[dict] = response if isinstance(response, list) else response.get("benchmarks", [])
+        response = _call_llm_for_scoring(
+            w, prompt,
+            prompt_name=get_registered_prompt_name("benchmark_generation"),
+        )
+        raw_benchmarks: list[dict] = response if isinstance(response, list) else response.get("benchmarks", [])
+    else:
+        logger.info(
+            "Skipping synthetic benchmark generation: target met by curated/existing rows "
+            "(curated=%d, existing=%d, target=%d, max=%d)",
+            len(curated), len(_existing), target_count, max_benchmark_count,
+        )
+        raw_benchmarks = []
 
     valid_benchmarks: list[dict] = []
     invalid_benchmarks: list[dict] = []
@@ -11389,22 +11580,26 @@ def generate_benchmarks(
         | accepted_questions
         | {str(b.get("question", "")).lower().strip() for b in _existing}
     )
-    gap_fill_benchmarks = _fill_coverage_gaps(
-        w=w,
-        config=config,
-        uc_columns=uc_columns,
-        uc_routines=uc_routines,
-        benchmarks=all_benchmarks,
-        catalog=catalog,
-        schema=schema,
-        spark=spark,
-        allowlist=allowlist,
-        domain=domain,
-        existing_questions=all_accepted_questions,
-        warehouse_id=warehouse_id,
-        target_benchmark_count=target_count,
-        max_benchmark_count=max_benchmark_count,
-    )
+    remaining_budget = max(max_benchmark_count - len(all_benchmarks), 0)
+    if remaining_budget <= 0:
+        gap_fill_benchmarks: list[dict] = []
+    else:
+        gap_fill_benchmarks = _fill_coverage_gaps(
+            w=w,
+            config=config,
+            uc_columns=uc_columns,
+            uc_routines=uc_routines,
+            benchmarks=all_benchmarks,
+            catalog=catalog,
+            schema=schema,
+            spark=spark,
+            allowlist=allowlist,
+            domain=domain,
+            existing_questions=all_accepted_questions,
+            warehouse_id=warehouse_id,
+            target_benchmark_count=min(target_count, max_benchmark_count),
+            max_benchmark_count=max_benchmark_count,
+        )
     gap_fill_offset = len(curated) + len(valid_benchmarks)
     for idx, b in enumerate(gap_fill_benchmarks):
         question_id = f"{domain}_gf_{gap_fill_offset + idx + 1:03d}"
@@ -11447,6 +11642,8 @@ def generate_benchmarks(
 
     from genie_space_optimizer.optimization.benchmarks import assign_splits
 
+    if len(all_benchmarks) > max_benchmark_count:
+        all_benchmarks = _truncate_benchmarks(all_benchmarks, max_benchmark_count)
     all_benchmarks = assign_splits(all_benchmarks)
     _train_n = sum(1 for b in all_benchmarks if b.get("split") == "train")
     _held_n = len(all_benchmarks) - _train_n
@@ -11578,6 +11775,10 @@ def load_benchmarks_from_dataset(
                 pre_dedup - len(deduped), table_name,
             )
         benchmarks = deduped
+
+        from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
+        if len(benchmarks) > MAX_BENCHMARK_COUNT:
+            benchmarks = _truncate_benchmarks(benchmarks, MAX_BENCHMARK_COUNT)
 
         logger.info("Loaded %d benchmarks from %s", len(benchmarks), table_name)
         return benchmarks

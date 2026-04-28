@@ -441,8 +441,9 @@ def test_resolve_lever5_does_not_copy_sql_for_sql_pattern() -> None:
 
 
 def test_publish_benchmarks_merges_with_existing() -> None:
-    """User-authored benchmarks must survive the merge; optimizer rows
-    must be tagged and appended."""
+    """User-authored benchmarks must survive the merge; optimizer rows are
+    appended as plain benchmark questions (no [auto-optimize] prefix, no
+    GSO metadata payload)."""
     from genie_space_optimizer.common.genie_client import (
         AUTO_OPTIMIZE_TAG_PREFIX,
         publish_benchmarks_to_genie_space,
@@ -492,14 +493,14 @@ def test_publish_benchmarks_merges_with_existing() -> None:
     # User-authored row survives and is first.
     assert merged[0]["question"] == [existing_q]
 
-    # Every optimizer row is tagged AND has structured metadata.
+    # Every optimizer row is appended as a plain Genie benchmark question:
+    # no [auto-optimize] prefix and no GSO metadata payload (the optimizer
+    # keeps provenance in the UC evaluation dataset, not in the space).
     optimizer_rows = merged[1:]
     assert len(optimizer_rows) == len(_BENCHMARKS)
     for row in optimizer_rows:
-        assert row["question"][0].startswith(AUTO_OPTIMIZE_TAG_PREFIX)
-        md = row.get("metadata") or {}
-        assert md.get("source") == "gso_optimizer"
-        assert md.get("run_id") == "run-123"
+        assert not row["question"][0].startswith(AUTO_OPTIMIZE_TAG_PREFIX)
+        assert "metadata" not in row
 
 
 def test_publish_benchmarks_dedupes_existing_matches() -> None:
@@ -593,6 +594,40 @@ def test_publish_benchmarks_skips_rows_mirrored_in_example_sqls() -> None:
 
     # q1 is mirrored; the remaining N-1 should still publish.
     assert new_count == len(_BENCHMARKS) - 1
+
+
+def test_publish_benchmarks_writes_plain_questions_without_gso_markers() -> None:
+    from genie_space_optimizer.common.genie_client import (
+        AUTO_OPTIMIZE_TAG_PREFIX,
+        publish_benchmarks_to_genie_space,
+    )
+
+    captured: dict = {}
+
+    def fake_fetch(w, space_id):
+        return {"_parsed_space": {"benchmarks": {"questions": []}, "instructions": {}}}
+
+    def fake_patch(w, space_id, parsed):
+        captured["parsed"] = parsed
+
+    with patch(
+        "genie_space_optimizer.common.genie_client.fetch_space_config",
+        side_effect=fake_fetch,
+    ), patch(
+        "genie_space_optimizer.common.genie_client.patch_space_config",
+        side_effect=fake_patch,
+    ):
+        new_count = publish_benchmarks_to_genie_space(
+            w=MagicMock(),
+            space_id="space-xyz",
+            benchmarks=_BENCHMARKS[:1],
+            run_id="run-123",
+        )
+
+    assert new_count == 1
+    published = captured["parsed"]["benchmarks"]["questions"][0]
+    assert not published["question"][0].startswith(AUTO_OPTIMIZE_TAG_PREFIX)
+    assert "metadata" not in published
 
 
 def test_publish_benchmarks_opt_out_flag_skips_publish(monkeypatch) -> None:

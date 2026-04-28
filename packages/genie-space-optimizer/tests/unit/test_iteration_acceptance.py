@@ -255,7 +255,9 @@ def test_new_sizing_flag_defaults_to_phase4_values(monkeypatch) -> None:
     import genie_space_optimizer.common.config as _cfg
     importlib.reload(_cfg)
     assert _cfg.TARGET_BENCHMARK_COUNT == 30
-    assert _cfg.MAX_BENCHMARK_COUNT == 35
+    # Hard 30-question cap: target == max so no evaluation ever runs on more
+    # than 30 questions (benchmark question isolation rework).
+    assert _cfg.MAX_BENCHMARK_COUNT == 30
     assert _cfg.HELD_OUT_RATIO == 0.15
 
 

@@ -708,15 +708,21 @@ _GSO_NEW_SIZING = os.environ.get("GSO_NEW_SIZING", "true").lower() in {
 
 if _GSO_NEW_SIZING:
     TARGET_BENCHMARK_COUNT = 30
-    MAX_BENCHMARK_COUNT = 35
+    MAX_BENCHMARK_COUNT = 30
 else:
     TARGET_BENCHMARK_COUNT = 24
     MAX_BENCHMARK_COUNT = 29
 """Hard ceiling on benchmark count. No evaluation should ever run on more
 than this many questions, regardless of how many are generated or loaded.
-With HELD_OUT_RATIO=0.15 the train split contains ~25 questions and ~5 are
-held out (Phase 4 default). Flip GSO_NEW_SIZING=0 to restore the legacy
-24/29 values."""
+With the Phase 4 default the corpus is exactly 30 questions (~25 train + ~5
+held out via HELD_OUT_RATIO=0.15). Flip GSO_NEW_SIZING=0 to restore the
+legacy 24/29 values."""
+
+MIN_TRAIN_BENCHMARK_COUNT = 20
+"""Minimum desired train benchmark count after split assignment."""
+
+MIN_HELD_OUT_BENCHMARK_COUNT = 5
+"""Minimum desired held-out benchmark count when the corpus has enough rows."""
 
 # Phase 4 (Bug #4) — per-iteration / acceptance-gate defaults.
 # The optimizer re-evaluates the full training corpus each iteration and

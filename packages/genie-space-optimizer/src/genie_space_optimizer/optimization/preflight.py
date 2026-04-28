@@ -2791,8 +2791,10 @@ def _load_or_generate_benchmarks(
         the stale UC table before persisting) and ``False`` for REUSE / TOP-UP.
 
     Strategy:
-      1. Extract curated benchmarks from the Genie Space config (example_question_sqls,
-         sample_questions). These are always included as the authoritative ground truth.
+      1. Extract benchmark questions from the Genie Space config
+         (``benchmarks.questions`` and ``config.sample_questions``).
+         ``example_question_sqls`` are training examples and are excluded
+         from the benchmark corpus.
       2. Try loading previously persisted benchmarks from UC dataset.
          If enough exist AND they already include the curated ones, reuse them.
       3. Otherwise, generate synthetic benchmarks via LLM to augment the curated set.
@@ -2830,6 +2832,10 @@ def _load_or_generate_benchmarks(
             b for b, v in zip(existing, validation_results)
             if v.get("valid")
         ]
+        from genie_space_optimizer.optimization.evaluation import (
+            _filter_example_sql_mirrored_benchmarks,
+        )
+        valid_existing = _filter_example_sql_mirrored_benchmarks(valid_existing, config)
         invalid_existing = [
             (b, v) for b, v in zip(existing, validation_results)
             if not v.get("valid")
@@ -2938,6 +2944,8 @@ def _load_or_generate_benchmarks(
                     if len(valid_existing) > max_benchmark_count:
                         from genie_space_optimizer.optimization.evaluation import _truncate_benchmarks
                         valid_existing = _truncate_benchmarks(valid_existing, max_benchmark_count)
+                    from genie_space_optimizer.optimization.benchmarks import assign_splits
+                    valid_existing = assign_splits(valid_existing)
                     return valid_existing, False
                 else:
                     gap = target_benchmark_count - len(valid_existing)
