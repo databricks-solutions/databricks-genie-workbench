@@ -8067,11 +8067,41 @@ def _run_gate_checks(
     _after_rows = full_result_1.get("rows") or []
     _pass_after = _build_pass_map(_after_rows)
 
+    # Control-plane acceptance: causal hard-failure improvement check.
+    # Aggregates target_qids from the patches that were applied this
+    # iteration (set by AG-scoped grounding in the proposal stage) and
+    # runs the pure helper to decide whether the iteration actually
+    # fixed what it claimed to fix without out-of-target regressions.
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    _target_qids: tuple[str, ...] = ()
+    for _patch in patches or []:
+        for _q in _patch.get("_grounding_target_qids", []) or []:
+            if _q:
+                _target_qids += (str(_q),)
+    if not _target_qids:
+        for _patch in patches or []:
+            for _q in _patch.get("target_qids", []) or []:
+                if _q:
+                    _target_qids += (str(_q),)
+    _target_qids = tuple(dict.fromkeys(_target_qids))
+
+    _control_plane_decision = decide_control_plane_acceptance(
+        baseline_accuracy=float(best_accuracy),
+        candidate_accuracy=float(full_accuracy),
+        target_qids=_target_qids,
+        pre_rows=_baseline_rows_for_control_plane,
+        post_rows=_after_rows,
+    )
+
     # Build "before" pass map from the latest full iteration in Delta
     # (the previous best). On iteration 0 / no prior baseline this is
     # an empty dict, which yields fail_to_pass / hold_fail labels for
     # every qid — non-blocking by definition.
     _pass_before: dict[str, bool] = {}
+    _baseline_rows_for_control_plane: list[dict] = []
     try:
         _baseline_iter = load_latest_full_iteration(spark, run_id, catalog, schema)
         if _baseline_iter:
@@ -8082,7 +8112,10 @@ def _run_gate_checks(
                 except Exception:
                     _baseline_rows_json = []
             if isinstance(_baseline_rows_json, list):
-                _pass_before = _build_pass_map(_baseline_rows_json)
+                _baseline_rows_for_control_plane = [
+                    r for r in _baseline_rows_json if isinstance(r, dict)
+                ]
+                _pass_before = _build_pass_map(_baseline_rows_for_control_plane)
     except Exception:
         logger.debug("Failed to load prior pass map for Task 4 check", exc_info=True)
 
@@ -8176,6 +8209,24 @@ def _run_gate_checks(
             "previous": _strict_decision.post_arbiter_baseline,
             "current": _strict_decision.post_arbiter_candidate,
             "drop": -_strict_decision.delta_pp,
+        })
+
+    if not _control_plane_decision.accepted:
+        regressions.append({
+            "judge": "control_plane_acceptance",
+            "previous": _control_plane_decision.baseline_accuracy,
+            "current": _control_plane_decision.candidate_accuracy,
+            "delta": _control_plane_decision.delta_pp,
+            "severity": "critical",
+            "reason": _control_plane_decision.reason_code,
+            "target_qids": list(_control_plane_decision.target_qids),
+            "target_fixed_qids": list(_control_plane_decision.target_fixed_qids),
+            "target_still_hard_qids": list(
+                _control_plane_decision.target_still_hard_qids
+            ),
+            "out_of_target_regressed_qids": list(
+                _control_plane_decision.out_of_target_regressed_qids
+            ),
         })
 
     # Under the single-criterion model the legacy noise filter and
@@ -8991,6 +9042,16 @@ def _run_lever_loop(
 
     for _iter_num in range(1, max_iterations + 1):
         # ── Exit checks ──────────────────────────────────────────────
+        from genie_space_optimizer.optimization.acceptance_policy import (
+            arbiter_objective_complete,
+        )
+
+        if arbiter_objective_complete(float(best_accuracy)):
+            logger.info(
+                "Post-arbiter objective reached: %.1f%%. Stopping lever loop.",
+                float(best_accuracy),
+            )
+            break
         if all_thresholds_met(best_scores, thresholds):
             logger.info("Convergence: all thresholds met before iteration %d", _iter_num)
             break

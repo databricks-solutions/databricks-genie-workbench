@@ -3559,14 +3559,32 @@ _ARBITER_CORRECT_VERDICTS = frozenset({"genie_correct", "both_correct"})
 
 
 def _rc_str(row: dict) -> str:
-    """Extract the ``result_correctness`` value as a lowercase string."""
-    val = row.get("result_correctness/value", row.get("result_correctness", ""))
+    """Extract the ``result_correctness`` value as a lowercase string.
+
+    Eval rows may use the MLflow-flattened ``feedback/result_correctness/value``
+    form or the legacy ``result_correctness/value`` form; both are recognized.
+    """
+    val = (
+        row.get("feedback/result_correctness/value")
+        or row.get("result_correctness/value")
+        or row.get("result_correctness")
+        or ""
+    )
     return str(val).strip().lower()
 
 
 def _arbiter_str(row: dict) -> str:
-    """Extract the arbiter verdict as a lowercase string."""
-    val = row.get("arbiter/value", row.get("arbiter", ""))
+    """Extract the arbiter verdict as a lowercase string.
+
+    Eval rows may use the MLflow-flattened ``feedback/arbiter/value`` form or
+    the legacy ``arbiter/value`` form; both are recognized.
+    """
+    val = (
+        row.get("feedback/arbiter/value")
+        or row.get("arbiter/value")
+        or row.get("arbiter")
+        or ""
+    )
     return str(val).strip().lower()
 
 

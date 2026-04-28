@@ -368,3 +368,16 @@ def test_harness_uses_causal_grounding_for_action_group_targets() -> None:
     assert "target_qids_from_action_group" in src
     assert "_ag_target_qids" in src
     assert "_rows_for_grounding" in src
+
+
+def test_harness_uses_control_plane_acceptance_and_arbiter_completion() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness)
+
+    assert "decide_control_plane_acceptance" in src
+    assert "arbiter_objective_complete" in src
+    assert "_control_plane_decision" in src
+    assert "_ag_target_qids" in src

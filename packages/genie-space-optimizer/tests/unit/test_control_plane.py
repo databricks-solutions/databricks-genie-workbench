@@ -120,3 +120,88 @@ def test_strategy_clusters_can_return_actionable_soft_when_no_hard_remain() -> N
 
     assert selected_hard == []
     assert [c["cluster_id"] for c in selected_soft] == ["S001"]
+
+
+def test_control_plane_acceptance_requires_target_improvement() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    pre_rows = [
+        {
+            "question_id": "q_target",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "ground_truth_correct",
+        },
+        {
+            "question_id": "q_other",
+            "feedback/result_correctness/value": "yes",
+            "feedback/arbiter/value": "both_correct",
+        },
+    ]
+    post_rows = [
+        {
+            "question_id": "q_target",
+            "feedback/result_correctness/value": "yes",
+            "feedback/arbiter/value": "both_correct",
+        },
+        {
+            "question_id": "q_other",
+            "feedback/result_correctness/value": "yes",
+            "feedback/arbiter/value": "both_correct",
+        },
+    ]
+
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=95.5,
+        candidate_accuracy=100.0,
+        target_qids=("q_target",),
+        pre_rows=pre_rows,
+        post_rows=post_rows,
+    )
+
+    assert decision.accepted is True
+    assert decision.reason_code == "accepted"
+    assert decision.target_fixed_qids == ("q_target",)
+
+
+def test_control_plane_acceptance_rejects_unrelated_global_gain() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    pre_rows = [
+        {
+            "question_id": "q_target",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "ground_truth_correct",
+        },
+        {
+            "question_id": "q_other",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "ground_truth_correct",
+        },
+    ]
+    post_rows = [
+        {
+            "question_id": "q_target",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "ground_truth_correct",
+        },
+        {
+            "question_id": "q_other",
+            "feedback/result_correctness/value": "yes",
+            "feedback/arbiter/value": "both_correct",
+        },
+    ]
+
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=90.0,
+        candidate_accuracy=95.0,
+        target_qids=("q_target",),
+        pre_rows=pre_rows,
+        post_rows=post_rows,
+    )
+
+    assert decision.accepted is False
+    assert decision.reason_code == "target_qids_not_improved"
