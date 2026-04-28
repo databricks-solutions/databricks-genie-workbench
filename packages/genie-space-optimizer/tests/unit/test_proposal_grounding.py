@@ -450,3 +450,20 @@ def test_causal_relevance_uses_target_qids_and_rca_metadata() -> None:
     assert score == 1.0
     assert details["target_qids"] == ["q_region"]
     assert "region_combination" in details["overlap"]
+
+
+def test_proposal_grounding_ignored_metadata_matches_config() -> None:
+    """``proposal_grounding._IGNORED_METADATA_PREFIXES`` must mirror
+    ``common.config.IGNORED_OPTIMIZATION_JUDGES`` so the optimizer
+    engine has a single ignored-judge policy.
+    """
+    from genie_space_optimizer.common.config import (
+        IGNORED_OPTIMIZATION_JUDGES as CONFIG_IGNORED,
+    )
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        _IGNORED_METADATA_PREFIXES,
+    )
+
+    assert isinstance(_IGNORED_METADATA_PREFIXES, frozenset)
+    assert _IGNORED_METADATA_PREFIXES == frozenset(CONFIG_IGNORED)
+

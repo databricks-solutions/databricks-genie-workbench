@@ -381,3 +381,58 @@ def test_harness_uses_control_plane_acceptance_and_arbiter_completion() -> None:
     assert "arbiter_objective_complete" in src
     assert "_control_plane_decision" in src
     assert "_ag_target_qids" in src
+
+
+def test_harness_loads_control_plane_baseline_before_acceptance_decision() -> None:
+    """``decide_control_plane_acceptance`` reads
+    ``_baseline_rows_for_control_plane``; if the load block runs after
+    the call, the gate path raises ``UnboundLocalError``. Pin the
+    ordering so a future refactor can't reintroduce that bug.
+    """
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness)
+
+    init_marker = "_baseline_rows_for_control_plane: list[dict] = []"
+    call_marker = "_control_plane_decision = decide_control_plane_acceptance("
+
+    init_idx = src.find(init_marker)
+    call_idx = src.find(call_marker)
+
+    assert init_idx != -1, (
+        "Expected to find _baseline_rows_for_control_plane initialisation"
+    )
+    assert call_idx != -1, (
+        "Expected to find _control_plane_decision = decide_control_plane_acceptance("
+    )
+    assert init_idx < call_idx, (
+        "Control-plane baseline rows must be loaded before "
+        "decide_control_plane_acceptance is called; otherwise the gate "
+        "path raises UnboundLocalError."
+    )
+
+
+def test_harness_guards_control_plane_regression_with_kill_switch() -> None:
+    """The rollback-driving ``control_plane_acceptance`` regression must
+    be guarded by ``ENABLE_CONTROL_PLANE_ACCEPTANCE`` so operators have
+    a kill switch if the new gate over-rejects.
+    """
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness)
+
+    assert "ENABLE_CONTROL_PLANE_ACCEPTANCE" in src, (
+        "harness must import the control-plane acceptance flag"
+    )
+    assert (
+        "ENABLE_CONTROL_PLANE_ACCEPTANCE\n"
+        "        and not _control_plane_decision.accepted"
+    ) in src, (
+        "control_plane_acceptance regression append must be guarded by "
+        "ENABLE_CONTROL_PLANE_ACCEPTANCE so operators can disable "
+        "rollback while keeping diagnostics."
+    )

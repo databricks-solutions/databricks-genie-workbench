@@ -42,6 +42,7 @@ from genie_space_optimizer.common.config import (
     DEFAULT_THRESHOLDS,
     DIMINISHING_RETURNS_EPSILON,
     DIMINISHING_RETURNS_LOOKBACK,
+    ENABLE_CONTROL_PLANE_ACCEPTANCE,
     ENABLE_REGRESSION_MINING_RCA_LEDGER,
     ENABLE_REGRESSION_MINING_STRATEGIST,
     ENABLE_RCA_LEDGER,
@@ -8067,6 +8068,35 @@ def _run_gate_checks(
     _after_rows = full_result_1.get("rows") or []
     _pass_after = _build_pass_map(_after_rows)
 
+    # Build "before" pass map from the latest full iteration in Delta
+    # (the previous best). On iteration 0 / no prior baseline this is
+    # an empty dict, which yields fail_to_pass / hold_fail labels for
+    # every qid — non-blocking by definition.
+    #
+    # IMPORTANT: this block must run *before* control-plane acceptance
+    # below — ``decide_control_plane_acceptance`` reads
+    # ``_baseline_rows_for_control_plane`` to compute target-QID
+    # transitions, so initialising it after the call would raise
+    # ``UnboundLocalError`` on the full-eval gate path.
+    _pass_before: dict[str, bool] = {}
+    _baseline_rows_for_control_plane: list[dict] = []
+    try:
+        _baseline_iter = load_latest_full_iteration(spark, run_id, catalog, schema)
+        if _baseline_iter:
+            _baseline_rows_json = _baseline_iter.get("rows_json")
+            if isinstance(_baseline_rows_json, str):
+                try:
+                    _baseline_rows_json = json.loads(_baseline_rows_json)
+                except Exception:
+                    _baseline_rows_json = []
+            if isinstance(_baseline_rows_json, list):
+                _baseline_rows_for_control_plane = [
+                    r for r in _baseline_rows_json if isinstance(r, dict)
+                ]
+                _pass_before = _build_pass_map(_baseline_rows_for_control_plane)
+    except Exception:
+        logger.debug("Failed to load prior pass map for Task 4 check", exc_info=True)
+
     # Control-plane acceptance: causal hard-failure improvement check.
     # Aggregates target_qids from the patches that were applied this
     # iteration (set by AG-scoped grounding in the proposal stage) and
@@ -8095,29 +8125,6 @@ def _run_gate_checks(
         pre_rows=_baseline_rows_for_control_plane,
         post_rows=_after_rows,
     )
-
-    # Build "before" pass map from the latest full iteration in Delta
-    # (the previous best). On iteration 0 / no prior baseline this is
-    # an empty dict, which yields fail_to_pass / hold_fail labels for
-    # every qid — non-blocking by definition.
-    _pass_before: dict[str, bool] = {}
-    _baseline_rows_for_control_plane: list[dict] = []
-    try:
-        _baseline_iter = load_latest_full_iteration(spark, run_id, catalog, schema)
-        if _baseline_iter:
-            _baseline_rows_json = _baseline_iter.get("rows_json")
-            if isinstance(_baseline_rows_json, str):
-                try:
-                    _baseline_rows_json = json.loads(_baseline_rows_json)
-                except Exception:
-                    _baseline_rows_json = []
-            if isinstance(_baseline_rows_json, list):
-                _baseline_rows_for_control_plane = [
-                    r for r in _baseline_rows_json if isinstance(r, dict)
-                ]
-                _pass_before = _build_pass_map(_baseline_rows_for_control_plane)
-    except Exception:
-        logger.debug("Failed to load prior pass map for Task 4 check", exc_info=True)
 
     # Suppressed qids: quarantine + GT correction queue. Those qids
     # legitimately can flip pass_to_fail without rolling back the AG.
@@ -8211,7 +8218,10 @@ def _run_gate_checks(
             "drop": -_strict_decision.delta_pp,
         })
 
-    if not _control_plane_decision.accepted:
+    if (
+        ENABLE_CONTROL_PLANE_ACCEPTANCE
+        and not _control_plane_decision.accepted
+    ):
         regressions.append({
             "judge": "control_plane_acceptance",
             "previous": _control_plane_decision.baseline_accuracy,

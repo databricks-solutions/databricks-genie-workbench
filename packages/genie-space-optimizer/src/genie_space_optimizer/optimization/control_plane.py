@@ -11,14 +11,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from genie_space_optimizer.common.config import (
+    IGNORED_OPTIMIZATION_JUDGES as _CONFIG_IGNORED_OPTIMIZATION_JUDGES,
+)
 from genie_space_optimizer.optimization.evaluation import (
     get_failed_judges,
     has_individual_judge_failure,
     row_is_hard_failure,
 )
 
-IGNORED_OPTIMIZATION_JUDGES: frozenset[str] = frozenset({"response_quality"})
-"""Judges that may be logged but must not drive optimization work."""
+IGNORED_OPTIMIZATION_JUDGES: frozenset[str] = frozenset(
+    _CONFIG_IGNORED_OPTIMIZATION_JUDGES
+)
+"""Judges that may be logged but must not drive optimization work.
+
+Sourced from ``common.config.IGNORED_OPTIMIZATION_JUDGES`` so the
+``GSO_IGNORED_OPTIMIZATION_JUDGES`` env var is the single source of
+truth across the optimizer engine. Re-exported here as a frozenset for
+fast membership checks in the control-plane path.
+"""
 
 
 def _row_qid(row: dict) -> str:
@@ -192,6 +203,13 @@ def decide_control_plane_acceptance(
 
     The global objective is post-arbiter accuracy. Target-qid checks prevent
     accepting unrelated gains when the proposed causal target did not improve.
+
+    The unified causal contract requires every iteration to declare which
+    hard-failure QIDs it intends to fix. An empty ``target_qids`` set means
+    the iteration's patches were never grounded to a causal target, so the
+    decision rejects with ``missing_target_qids`` even when global accuracy
+    rose — that prevents un-targeted, lucky gains from masking the loss of
+    causal grounding.
     """
     targets = tuple(dict.fromkeys(str(q) for q in target_qids or [] if str(q)))
     pre_hard = set(hard_failure_qids(pre_rows))
@@ -202,10 +220,13 @@ def decide_control_plane_acceptance(
     out_of_target_regressed = tuple(sorted((post_hard - pre_hard) - target_set))
     delta = round(float(candidate_accuracy) - float(baseline_accuracy), 1)
 
-    if delta <= 0:
+    if not targets:
+        reason = "missing_target_qids"
+        accepted = False
+    elif delta <= 0:
         reason = "post_arbiter_not_improved"
         accepted = False
-    elif targets and not target_fixed:
+    elif not target_fixed:
         reason = "target_qids_not_improved"
         accepted = False
     elif out_of_target_regressed:

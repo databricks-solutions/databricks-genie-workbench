@@ -28,6 +28,10 @@ import logging
 import re
 from typing import Iterable
 
+from genie_space_optimizer.common.config import (
+    IGNORED_OPTIMIZATION_JUDGES as _CONFIG_IGNORED_OPTIMIZATION_JUDGES,
+)
+
 logger = logging.getLogger(__name__)
 
 # Identifier-like tokens. We're deliberately permissive on what counts
@@ -75,7 +79,15 @@ def _normalize(token: str) -> str:
     return str(token).strip().lower()
 
 
-_IGNORED_METADATA_PREFIXES = frozenset({"response_quality"})
+_IGNORED_METADATA_PREFIXES: frozenset[str] = frozenset(
+    _CONFIG_IGNORED_OPTIMIZATION_JUDGES
+)
+"""Judges whose ``*/metadata`` keys never seed grounding targets.
+
+Sourced from ``common.config.IGNORED_OPTIMIZATION_JUDGES`` (driven by
+``GSO_IGNORED_OPTIMIZATION_JUDGES``) so the optimizer engine has a
+single, env-controllable ignored-judge policy.
+"""
 
 
 def _nested_get(row: dict, path: tuple[str, ...]) -> object:

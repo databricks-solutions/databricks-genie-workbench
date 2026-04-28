@@ -259,6 +259,21 @@ IGNORED_OPTIMIZATION_JUDGES: tuple[str, ...] = tuple(
 )
 """Judges visible in diagnostics but excluded from optimization targeting."""
 
+ENABLE_CONTROL_PLANE_ACCEPTANCE: bool = (
+    os.getenv("GSO_ENABLE_CONTROL_PLANE_ACCEPTANCE", "true").lower()
+    in {"1", "true", "yes", "on"}
+)
+"""Default-on kill switch for control-plane (causal) acceptance gating.
+
+The harness always computes ``decide_control_plane_acceptance`` for
+diagnostics, but only appends the rollback-driving
+``control_plane_acceptance`` regression when this flag is enabled. If
+the new gate over-rejects in a real workspace, set
+``GSO_ENABLE_CONTROL_PLANE_ACCEPTANCE=false`` to fall back to the legacy
+post-arbiter/regression-only acceptance path while keeping diagnostics
+intact.
+"""
+
 MIN_POST_ARBITER_GAIN_PP: float = float(
     os.getenv("GSO_MIN_POST_ARBITER_GAIN_PP", "0.0")
 )

@@ -205,3 +205,76 @@ def test_control_plane_acceptance_rejects_unrelated_global_gain() -> None:
 
     assert decision.accepted is False
     assert decision.reason_code == "target_qids_not_improved"
+
+
+def test_control_plane_acceptance_rejects_when_targets_missing() -> None:
+    """Empty ``target_qids`` means no causal contract was declared; the
+    iteration must reject even if global accuracy improved.
+    """
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    pre_rows = [
+        {
+            "question_id": "q_target",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "ground_truth_correct",
+        },
+    ]
+    post_rows = [
+        {
+            "question_id": "q_target",
+            "feedback/result_correctness/value": "yes",
+            "feedback/arbiter/value": "both_correct",
+        },
+    ]
+
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=90.0,
+        candidate_accuracy=100.0,
+        target_qids=(),
+        pre_rows=pre_rows,
+        post_rows=post_rows,
+    )
+
+    assert decision.accepted is False
+    assert decision.reason_code == "missing_target_qids"
+    assert decision.delta_pp == 10.0
+
+
+def test_control_plane_acceptance_missing_targets_priority_over_no_gain() -> None:
+    """When both target_qids are missing AND global accuracy is flat,
+    surface the missing-targets reason first so operators see the
+    causal-contract violation.
+    """
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=90.0,
+        candidate_accuracy=90.0,
+        target_qids=(),
+        pre_rows=[],
+        post_rows=[],
+    )
+
+    assert decision.accepted is False
+    assert decision.reason_code == "missing_target_qids"
+
+
+def test_control_plane_ignored_judges_match_config() -> None:
+    """control_plane.IGNORED_OPTIMIZATION_JUDGES must mirror the config
+    source so ``GSO_IGNORED_OPTIMIZATION_JUDGES`` is the single policy
+    knob across the optimizer engine.
+    """
+    from genie_space_optimizer.common.config import (
+        IGNORED_OPTIMIZATION_JUDGES as CONFIG_IGNORED,
+    )
+    from genie_space_optimizer.optimization.control_plane import (
+        IGNORED_OPTIMIZATION_JUDGES as CONTROL_PLANE_IGNORED,
+    )
+
+    assert isinstance(CONTROL_PLANE_IGNORED, frozenset)
+    assert CONTROL_PLANE_IGNORED == frozenset(CONFIG_IGNORED)
