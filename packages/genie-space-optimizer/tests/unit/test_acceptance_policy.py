@@ -112,9 +112,12 @@ def test_decision_is_frozen_dataclass() -> None:
         decision.accepted = False  # type: ignore[misc]
 
 
-def test_zero_min_gain_accepts_any_non_regression() -> None:
-    """With ``min_gain_pp=0.0`` the gate degenerates to "no regression
-    allowed" — any candidate at or above baseline accepts.
+def test_zero_min_gain_rejects_zero_delta() -> None:
+    """With ``min_gain_pp=0.0`` the gate still rejects a zero delta.
+
+    Causal target-qid checks in ``control_plane.decide_control_plane_acceptance``
+    are the anti-noise guard now; the post-arbiter gate requires strictly
+    positive movement so a no-op iteration cannot be accepted.
     """
     decision = decide_acceptance(
         post_arbiter_candidate=72.0,
@@ -122,8 +125,8 @@ def test_zero_min_gain_accepts_any_non_regression() -> None:
         min_gain_pp=0.0,
     )
 
-    assert decision.accepted is True
-    assert decision.reason_code == ACCEPTED
+    assert decision.accepted is False
+    assert decision.reason_code == REJECTED_INSUFFICIENT_GAIN
 
 
 def test_returns_acceptance_decision_instance() -> None:
@@ -135,3 +138,29 @@ def test_returns_acceptance_decision_instance() -> None:
     )
 
     assert isinstance(decision, AcceptanceDecision)
+
+
+def test_decide_acceptance_accepts_any_positive_arbiter_gain() -> None:
+    from genie_space_optimizer.optimization.acceptance_policy import (
+        ACCEPTED,
+        decide_acceptance,
+    )
+
+    decision = decide_acceptance(
+        post_arbiter_candidate=96.0,
+        post_arbiter_baseline=95.5,
+        min_gain_pp=0.0,
+    )
+
+    assert decision.accepted is True
+    assert decision.reason_code == ACCEPTED
+    assert decision.delta_pp == 0.5
+
+
+def test_arbiter_objective_is_complete_at_100_percent() -> None:
+    from genie_space_optimizer.optimization.acceptance_policy import (
+        arbiter_objective_complete,
+    )
+
+    assert arbiter_objective_complete(100.0) is True
+    assert arbiter_objective_complete(99.99) is False

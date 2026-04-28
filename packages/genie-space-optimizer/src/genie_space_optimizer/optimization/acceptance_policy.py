@@ -83,7 +83,7 @@ def decide_acceptance(
     delta = round(float(post_arbiter_candidate) - float(post_arbiter_baseline), 1)
     min_gain = float(min_gain_pp)
 
-    if delta >= min_gain:
+    if delta > 0 and delta >= min_gain:
         reason = ACCEPTED
         accepted = True
     elif delta < 0:
@@ -101,6 +101,15 @@ def decide_acceptance(
         min_gain_pp=round(min_gain, 1),
         reason_code=reason,
     )
+
+
+def arbiter_objective_complete(
+    post_arbiter_accuracy: float,
+    *,
+    target_accuracy: float = 100.0,
+) -> bool:
+    """Return true when the run has reached the terminal arbiter objective."""
+    return float(post_arbiter_accuracy) >= float(target_accuracy)
 
 
 @dataclass(frozen=True)

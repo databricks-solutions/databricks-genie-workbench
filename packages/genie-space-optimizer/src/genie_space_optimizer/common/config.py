@@ -260,22 +260,15 @@ IGNORED_OPTIMIZATION_JUDGES: tuple[str, ...] = tuple(
 """Judges visible in diagnostics but excluded from optimization targeting."""
 
 MIN_POST_ARBITER_GAIN_PP: float = float(
-    os.getenv("GSO_MIN_POST_ARBITER_GAIN_PP", "2.0")
+    os.getenv("GSO_MIN_POST_ARBITER_GAIN_PP", "0.0")
 )
-"""Single-criterion acceptance gain floor.
+"""Post-arbiter gain floor for accepting candidate states.
 
-The candidate iteration's post-arbiter (arbiter-adjusted) accuracy
-must exceed the carried baseline by at least this many percentage
-points. ``2.0`` is the default and serves as both the gain floor and
-the implicit regression guardrail: any drop or sub-2.0pp gain
-rejects.
-
-Replaces the legacy combination of ``MIN_PRIMARY_GAIN_PP`` (per-run
-floor on the primary objective),
-``MAX_POST_ARBITER_DROP_PP_SMALL_CORPUS`` (regression cap), and the
-variance-widened tolerance computed from a second confirmation eval.
-Override via the ``GSO_MIN_POST_ARBITER_GAIN_PP`` environment
-variable on a per-space basis."""
+The optimizer objective is 100% arbiter-adjusted accuracy within the configured
+lever-loop attempt budget. The default is 0.0 so any positive post-arbiter gain
+can be accepted when target-qid and out-of-target regression checks pass.
+Negative or zero deltas still reject in ``acceptance_policy.decide_acceptance``.
+"""
 
 BASELINE_DRIFT_DIAGNOSTIC_PP: float = float(
     os.getenv("GSO_BASELINE_DRIFT_DIAGNOSTIC_PP", "4.0")
