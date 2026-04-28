@@ -16,6 +16,12 @@ The app creates the `genie` schema and all tables on first startup (the SP owns 
 | `optimization_runs` | Legacy optimization accuracy records (used by scanner checks 11–12) |
 | `agent_sessions` | Create agent session persistence (message history, step state) |
 
+Lakebase state is tied to the Databricks App service principal that created
+these objects. For normal updates, keep the same app instance and run
+`./scripts/deploy.sh --update`. If you create a new app instance, use a fresh
+Lakebase project instead of pointing the new app at the old app's `genie`
+schema.
+
 ### Credential Refresh
 
 Lakebase credentials are auto-generated via the Databricks SDK (`postgres.generate_database_credential` for autoscaling, `database.generate_database_credential` for provisioned). These OAuth tokens expire after ~1 hour, so the app recreates the asyncpg connection pool every **50 minutes** to stay ahead of expiration.
@@ -36,6 +42,7 @@ If `LAKEBASE_HOST` is not configured (no Lakebase attached), the app falls back 
 | "Failed to list spaces" | Lakebase not attached | Re-run `deploy.sh --update` to auto-attach the postgres resource |
 | Connection errors after ~1 hour | Token refresh failed | Check app logs for credential generation errors |
 | Tables not created | SP lacks CONNECT or CREATE ON DATABASE | Re-run `deploy.sh --update` to re-create the SP role and grants |
+| `permission denied for sequence scan_results_id_seq` | New app is reusing Lakebase objects owned by an older app SP | Reuse the original app instance or move the new app to a fresh Lakebase project |
 
 ## MLflow
 
