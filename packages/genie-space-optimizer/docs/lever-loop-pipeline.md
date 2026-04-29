@@ -2712,3 +2712,14 @@ When diagnosing a stuck run, inspect the decision rows for:
 - `metadata_snapshot._rca_terminal_state.status`
 - RCA theme count versus RCA execution plan count
 - action-group target QIDs from the canonical target resolver
+
+## RCA Causal Bundle Control
+
+The lever loop preserves RCA intent through four gates:
+
+1. **AG-scoped RCA bridges.** RCA themes are eligible for bridge proposal generation only when their `target_qids` intersect the current action group's canonical target QIDs.
+2. **Proposal grounding.** Every proposal receives `relevance_score`, `_grounding_target_qids`, and `_grounding_failure_category` before any patch cap is applied.
+3. **Causal-first patch cap.** When an action group proposes more than `MAX_AG_PATCHES`, patches are ranked by `relevance_score` first. Lever diversity is used only to break equal-relevance ties.
+4. **RCA terminal authority.** Legacy plateau detection is advisory while `rca_terminal` reports `patchable_in_progress`. The loop stops before `max_iterations` only for convergence, benchmark defects, judge unreliability, or unpatchable RCA.
+
+Operators should inspect `genie_opt_lever_loop_decisions` with `gate_name IN ('proposal_grounding', 'patch_cap')` to follow a proposal from RCA theme through grounding and cap selection.
