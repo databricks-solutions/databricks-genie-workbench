@@ -423,6 +423,21 @@ def _paired_question_test(
     }
 
 
+def _rows_from_iteration_payload(iteration_row: dict | None) -> list[dict]:
+    """Decode the ``rows_json`` payload of a persisted iteration row."""
+    if not iteration_row:
+        return []
+    rows_json = iteration_row.get("rows_json")
+    if isinstance(rows_json, str):
+        try:
+            rows_json = json.loads(rows_json)
+        except (json.JSONDecodeError, TypeError):
+            rows_json = []
+    if not isinstance(rows_json, list):
+        return []
+    return [row for row in rows_json if isinstance(row, dict)]
+
+
 def _iteration_label(counter: int) -> str:
     """T3.17: Unified label for iteration_counter in log banners.
 
@@ -7958,6 +7973,16 @@ def _run_gate_checks(
     # gating signal.
     full_scores["_pre_arbiter/overall_accuracy"] = float(full_pre_arbiter_accuracy)
 
+    # Load the pre-candidate baseline BEFORE persisting the candidate row, so
+    # the control-plane gate cannot read the candidate as its own pre-state.
+    # ``before_iteration=iteration_counter`` tells the loader to ignore the
+    # row we are about to write.
+    _baseline_rows_for_control_plane: list[dict] = []
+    _baseline_iter_for_control_plane = load_latest_full_iteration(spark, run_id, catalog, schema, before_iteration=iteration_counter)
+    _baseline_rows_for_control_plane = _rows_from_iteration_payload(
+        _baseline_iter_for_control_plane
+    )
+
     write_iteration(
         spark, run_id, iteration_counter, full_result,
         catalog=catalog, schema=schema,
@@ -8127,34 +8152,14 @@ def _run_gate_checks(
     _after_rows = full_result_1.get("rows") or []
     _pass_after = _build_pass_map(_after_rows)
 
-    # Build "before" pass map from the latest full iteration in Delta
-    # (the previous best). On iteration 0 / no prior baseline this is
-    # an empty dict, which yields fail_to_pass / hold_fail labels for
-    # every qid — non-blocking by definition.
-    #
-    # IMPORTANT: this block must run *before* control-plane acceptance
-    # below — ``decide_control_plane_acceptance`` reads
-    # ``_baseline_rows_for_control_plane`` to compute target-QID
-    # transitions, so initialising it after the call would raise
-    # ``UnboundLocalError`` on the full-eval gate path.
+    # Build "before" pass map from the pre-candidate baseline rows captured
+    # above (loaded with ``before_iteration=iteration_counter`` so the
+    # candidate row we just persisted cannot serve as its own baseline).
     _pass_before: dict[str, bool] = {}
-    _baseline_rows_for_control_plane: list[dict] = []
     try:
-        _baseline_iter = load_latest_full_iteration(spark, run_id, catalog, schema)
-        if _baseline_iter:
-            _baseline_rows_json = _baseline_iter.get("rows_json")
-            if isinstance(_baseline_rows_json, str):
-                try:
-                    _baseline_rows_json = json.loads(_baseline_rows_json)
-                except Exception:
-                    _baseline_rows_json = []
-            if isinstance(_baseline_rows_json, list):
-                _baseline_rows_for_control_plane = [
-                    r for r in _baseline_rows_json if isinstance(r, dict)
-                ]
-                _pass_before = _build_pass_map(_baseline_rows_for_control_plane)
+        _pass_before = _build_pass_map(_baseline_rows_for_control_plane)
     except Exception:
-        logger.debug("Failed to load prior pass map for Task 4 check", exc_info=True)
+        logger.debug("Failed to build prior pass map for Task 4 check", exc_info=True)
 
     # Control-plane acceptance: causal hard-failure improvement check.
     # Aggregates target_qids from the patches that were applied this

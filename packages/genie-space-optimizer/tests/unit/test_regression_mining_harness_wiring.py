@@ -436,3 +436,27 @@ def test_harness_guards_control_plane_regression_with_kill_switch() -> None:
         "ENABLE_CONTROL_PLANE_ACCEPTANCE so operators can disable "
         "rollback while keeping diagnostics."
     )
+
+
+def test_harness_loads_control_plane_baseline_before_writing_candidate_full_eval() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness._run_gate_checks)
+
+    load_marker = (
+        "load_latest_full_iteration(spark, run_id, catalog, schema, "
+        "before_iteration=iteration_counter)"
+    )
+    write_marker = "write_iteration(\n        spark, run_id, iteration_counter, full_result,"
+    decision_marker = "_control_plane_decision = decide_control_plane_acceptance("
+
+    load_idx = src.find(load_marker)
+    write_idx = src.find(write_marker)
+    decision_idx = src.find(decision_marker)
+
+    assert load_idx != -1, "control-plane baseline must use before_iteration"
+    assert write_idx != -1, "candidate full eval must still be persisted"
+    assert decision_idx != -1, "control-plane acceptance decision must still run"
+    assert load_idx < write_idx < decision_idx
