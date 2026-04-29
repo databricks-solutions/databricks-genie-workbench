@@ -702,3 +702,47 @@ def test_partial_overlap_below_threshold_reports_below_min_relevance() -> None:
 
     assert 0.0 < details["score"] < 0.5
     assert details["failure_category"] == "below_min_relevance"
+
+
+def test_sql_filter_snippet_with_many_passing_dependents_requires_safe_scope() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        sql_filter_snippet_is_safe,
+    )
+
+    patch = {
+        "type": "add_sql_snippet_filter",
+        "target_object": "cat.sch.mv_7now_store_sales",
+        "value": "mv_7now_store_sales.time_window = 'day'",
+        "target_qids": ["q013"],
+    }
+
+    decision = sql_filter_snippet_is_safe(
+        patch,
+        passing_dependent_qids=("q001", "q002", "q003", "q004"),
+        max_passing_dependents=0,
+    )
+
+    assert decision["safe"] is False
+    assert decision["reason"] == "broad_sql_filter_has_passing_dependents"
+
+
+def test_sql_filter_snippet_without_passing_dependents_is_safe() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        sql_filter_snippet_is_safe,
+    )
+
+    patch = {
+        "type": "add_sql_snippet_filter",
+        "target_object": "cat.sch.mv_7now_store_sales",
+        "value": "mv_7now_store_sales.time_window = 'day'",
+        "target_qids": ["q013"],
+    }
+
+    decision = sql_filter_snippet_is_safe(
+        patch,
+        passing_dependent_qids=(),
+        max_passing_dependents=0,
+    )
+
+    assert decision["safe"] is True
+    assert decision["reason"] == "safe"

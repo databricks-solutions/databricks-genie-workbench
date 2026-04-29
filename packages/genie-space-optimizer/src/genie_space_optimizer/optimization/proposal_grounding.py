@@ -346,6 +346,32 @@ def explain_causal_relevance(
     return details
 
 
+def sql_filter_snippet_is_safe(
+    patch: dict,
+    *,
+    passing_dependent_qids: tuple[str, ...],
+    max_passing_dependents: int = 0,
+) -> dict:
+    """Reject broad ``add_sql_snippet_filter`` patches with passing dependents.
+
+    A filter snippet that targets a table used by many passing questions can
+    silently break those questions when applied. This pure helper reports
+    whether such a filter is safe to apply, without changing other patch
+    types.
+    """
+    patch_type = str(patch.get("type") or patch.get("patch_type") or "")
+    if patch_type != "add_sql_snippet_filter":
+        return {"safe": True, "reason": "not_sql_filter_snippet"}
+    dependents = tuple(str(q) for q in passing_dependent_qids or () if str(q))
+    if len(dependents) > int(max_passing_dependents):
+        return {
+            "safe": False,
+            "reason": "broad_sql_filter_has_passing_dependents",
+            "passing_dependent_qids": list(dependents[:10]),
+        }
+    return {"safe": True, "reason": "safe"}
+
+
 def select_patch_bundle(
     proposals: list[dict],
     *,
