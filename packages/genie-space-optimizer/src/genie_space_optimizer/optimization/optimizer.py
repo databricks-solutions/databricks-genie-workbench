@@ -10581,6 +10581,118 @@ def _generate_lever1_rca_proposal(
     }
 
 
+_STRUCTURAL_SQL_SNIPPET_PATCH_TYPES = {
+    "measure": "add_sql_snippet_measure",
+    "filter": "add_sql_snippet_filter",
+    "expression": "add_sql_snippet_expression",
+}
+
+
+def _proposal_from_structural_sql_candidate(
+    candidate: dict,
+    *,
+    metadata_snapshot: dict,
+    cluster_id: str,
+    target_qids: tuple[str, ...],
+    spark: Any = None,
+    catalog: str = "",
+    gold_schema: str = "",
+    w: WorkspaceClient | None = None,
+    warehouse_id: str = "",
+    benchmarks: list[dict] | None = None,
+) -> dict | None:
+    """Translate one structural SQL candidate into a Lever 6 proposal.
+
+    Refuses to emit anything other than ``add_sql_snippet_*`` patch types
+    when the source tag is ``rca_failed_question_sql``. This is the
+    primary firewall preventing failed-row benchmark SQL from leaking
+    into Example SQL artifacts.
+    """
+    del benchmarks  # Reserved for future post-validation hooks.
+    if not isinstance(candidate, dict):
+        return None
+    if candidate.get("source") != "rca_failed_question_sql":
+        return None
+    snippet_type = str(candidate.get("snippet_type") or "").strip().lower()
+    patch_type = _STRUCTURAL_SQL_SNIPPET_PATCH_TYPES.get(snippet_type)
+    if patch_type is None:
+        logger.warning(
+            "Rejected rca_failed_question_sql candidate with non-snippet type=%s",
+            snippet_type,
+        )
+        return None
+    sql_raw = str(candidate.get("sql") or "").strip()
+    if not sql_raw:
+        return None
+
+    sql_ok, violations = _validate_sql_identifiers(
+        sql_raw,
+        _build_identifier_allowlist(metadata_snapshot),
+    )
+    if not sql_ok:
+        logger.info(
+            "Lever 6 structural candidate rejected by identifier allowlist: %s",
+            violations,
+        )
+        return None
+
+    validation_passed = False
+    if spark is not None or (w is not None and warehouse_id):
+        from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
+
+        valid_result = validate_sql_snippet(
+            sql_raw,
+            snippet_type,
+            metadata_snapshot,
+            spark=spark,
+            catalog=catalog,
+            gold_schema=gold_schema,
+            w=w,
+            warehouse_id=warehouse_id,
+        )
+        if not valid_result[0]:
+            logger.info(
+                "Lever 6 structural candidate validation failed kind=%s reason=%s",
+                snippet_type,
+                valid_result[1],
+            )
+            return None
+        sql_raw = valid_result[2] if len(valid_result) > 2 else sql_raw
+        validation_passed = True
+
+    _qualified = _qualify_sql_snippet_metadata(
+        {
+            "snippet_type": snippet_type,
+            "sql": sql_raw,
+            "display_name": candidate.get("display_name", ""),
+            "instruction": candidate.get("instruction", ""),
+            "target_table": candidate.get("target_table", ""),
+        },
+        target_table=str(candidate.get("target_table", "") or ""),
+    )
+
+    return {
+        "patch_type": patch_type,
+        "lever": 6,
+        "snippet_type": snippet_type,
+        "display_name": _qualified.get("display_name", ""),
+        "alias": candidate.get("alias", ""),
+        "sql": sql_raw,
+        "synonyms": candidate.get("synonyms", []),
+        "instruction": _qualified.get("instruction", ""),
+        "target_table": candidate.get("target_table", ""),
+        "rationale": candidate.get("evidence", "RCA structural SQL learning"),
+        "affected_questions": list(target_qids),
+        "target_qids": list(target_qids),
+        "confidence": float(candidate.get("confidence", 0.85) or 0.85),
+        "questions_fixed": len(target_qids),
+        "validation_passed": validation_passed,
+        "source": "rca_failed_question_sql",
+        "source_question_id": candidate.get("source_question_id", ""),
+        "cluster_id": cluster_id,
+    }
+
+
 def _generate_lever6_proposal(
     cluster: dict,
     metadata_snapshot: dict,
@@ -13502,6 +13614,54 @@ def generate_proposals_from_strategy(
         elif target_lever == 6:
             ag_directives = action_group.get("lever_directives", {}).get("6", {})
             strategist_hints = ag_directives.get("sql_expressions", []) if isinstance(ag_directives, dict) else []
+
+            structural_candidates = [
+                c for c in (action_group.get("_lever6_structural_candidates") or [])
+                if isinstance(c, dict)
+            ]
+            target_qids = tuple(
+                str(q)
+                for q in (action_group.get("affected_questions") or [])
+                if str(q)
+            )
+            for candidate in structural_candidates:
+                proposal = _proposal_from_structural_sql_candidate(
+                    candidate,
+                    metadata_snapshot=metadata_snapshot,
+                    cluster_id=ag_id,
+                    target_qids=target_qids,
+                    spark=spark,
+                    catalog=catalog,
+                    gold_schema=gold_schema,
+                    w=w,
+                    warehouse_id=warehouse_id,
+                    benchmarks=benchmarks,
+                )
+                if proposal:
+                    proposal["proposal_id"] = f"P{len(proposals) + 1:03d}"
+                    proposal["scope"] = "genie_config"
+                    proposal["change_description"] = (
+                        f"[{ag_id}] RCA failed-row SQL Expression: "
+                        f"{proposal.get('display_name', 'unnamed')} "
+                        f"({proposal.get('snippet_type', '?')})"
+                    )
+                    proposal["proposed_value"] = proposal.get("sql", "")
+                    proposal["dual_persistence"] = DUAL_PERSIST_PATHS.get(
+                        6,
+                        DUAL_PERSIST_PATHS[5],
+                    )
+                    proposal["questions_at_risk"] = 0
+                    proposal["net_impact"] = max(
+                        proposal.get("questions_fixed", 0) * 0.7,
+                        1.0,
+                    )
+                    proposal["provenance"] = {
+                        **provenance_base,
+                        "patch_type": proposal["patch_type"],
+                        "synthesis_source": "rca_failed_question_sql",
+                        "source_question_id": proposal.get("source_question_id", ""),
+                    }
+                    proposals.append(proposal)
 
             source_cids = set(action_group.get("source_cluster_ids", []))
             all_clusters = (

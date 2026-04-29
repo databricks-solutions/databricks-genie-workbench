@@ -2466,3 +2466,86 @@ class TestProseMiningInstructionPersistence:
             assert any("7NOW current month sales" in s for s in instr)
         else:
             assert "7NOW current month sales" in instr
+
+
+class TestLever6StructuralCandidateBridge:
+    def test_structural_candidate_becomes_sql_snippet_proposal(self, monkeypatch):
+        from genie_space_optimizer.optimization import optimizer as opt
+
+        monkeypatch.setattr(
+            opt,
+            "_validate_sql_identifiers",
+            lambda *_args, **_kwargs: (True, []),
+        )
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+            lambda sql, snippet_type, *_args, **_kwargs: (True, "", sql),
+        )
+
+        ag = {
+            "id": "AG_FN",
+            "root_cause_summary": "missing function expression",
+            "affected_questions": ["q_fn"],
+            "source_cluster_ids": ["H001"],
+            "lever_directives": {},
+            "_lever6_structural_candidates": [
+                {
+                    "snippet_type": "expression",
+                    "sql": (
+                        "prashanth_subrahmanyam_catalog.sales_reports."
+                        "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
+                    ),
+                    "display_name": "Expression: fn_mtd_or_mtday",
+                    "alias": "fn_mtd_or_mtday",
+                    "instruction": "Use this expression for prior-year MTD sales.",
+                    "source_question_id": "q_fn",
+                    "source": "rca_failed_question_sql",
+                    "evidence": "expected SQL used function absent from generated SQL",
+                    "confidence": 0.85,
+                }
+            ],
+        }
+
+        proposals = opt.generate_proposals_from_strategy(
+            strategy={},
+            action_group=ag,
+            metadata_snapshot={"sql_snippets": {}, "data_sources": {"tables": [], "metric_views": []}},
+            target_lever=6,
+            apply_mode="genie_config",
+            spark=object(),
+            catalog="cat",
+            gold_schema="sch",
+            warehouse_id="wh",
+            benchmarks=[],
+        )
+
+        assert proposals
+        assert proposals[0]["patch_type"] == "add_sql_snippet_expression"
+        assert proposals[0]["source"] == "rca_failed_question_sql"
+        assert proposals[0]["validation_passed"] is True
+        assert proposals[0]["target_qids"] == ["q_fn"]
+
+    def test_structural_candidate_bridge_rejects_non_sql_snippet_patch_type(self):
+        from genie_space_optimizer.optimization.optimizer import (
+            _proposal_from_structural_sql_candidate,
+        )
+
+        candidate = {
+            "snippet_type": "example_sql",
+            "sql": "SELECT 1",
+            "display_name": "bad",
+            "source": "rca_failed_question_sql",
+        }
+
+        assert _proposal_from_structural_sql_candidate(
+            candidate,
+            metadata_snapshot={"sql_snippets": {}},
+            cluster_id="H001",
+            target_qids=("q1",),
+            spark=None,
+            catalog="cat",
+            gold_schema="sch",
+            w=None,
+            warehouse_id="",
+            benchmarks=[],
+        ) is None
