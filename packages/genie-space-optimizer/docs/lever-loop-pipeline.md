@@ -2753,3 +2753,65 @@ RCA inputs must use canonical shapes:
 - `blame_set` is always a JSON/list shape equivalent to `list[str]`, never a stringified list such as `'["time_window = mtd"]'`;
 - defensive filters and required filters are separate RCA kinds, so `defensive_filter_added` cannot emit `add_sql_snippet_filter`;
 - a large actionable soft cluster may be included alongside hard clusters only through the bounded soft scheduling lane.
+
+### Blast-radius gate (2026-04-29)
+
+After the counterfactual scan stamps `passing_dependents` and
+`high_collateral_risk` onto each proposal, the harness runs
+`patch_blast_radius_is_safe` for every patch with the AG's `target_qids`.
+A patch is dropped before the cap when:
+
+1. `high_collateral_risk` is true and at least one dependent sits outside
+   the AG target, OR
+2. the count of dependents outside target exceeds `max_outside_target`
+   (default 0 — no collateral allowed).
+
+The dropped set is logged under `[AG#] BLAST-RADIUS GATE` with the
+proposal id, patch type, reason code, and outside-target qids. The
+counterfactual scan banner above is now strictly informational; the gate
+banner is the one that matters for "which patches actually shipped".
+
+### Reflection rollback labels (2026-04-29)
+
+The reflection text now derives its label from the control-plane gate
+reason code:
+
+| control_plane_reason            | Label                       |
+|---------------------------------|-----------------------------|
+| rejected_no_gain / post_arbiter_not_improved | no_overall_improvement      |
+| rejected_unbounded_collateral                | unbounded_collateral        |
+| target_qids_not_improved                     | target_not_fixed            |
+| rejected_missing_causal_target               | no_causal_target            |
+| missing_pre_rows                             | gate_baseline_missing       |
+| stale_or_candidate_pre_rows                  | gate_baseline_stale         |
+| (other)                                      | (legacy reason short form)  |
+
+When you see `Rollback (unbounded_collateral)`, the next strategist call
+should narrow the patch set or pick a different lever; repeating the same
+plan will repeat the regression. Bounded collateral no longer rolls back:
+it is accepted as `accepted_with_regression_debt` and becomes mandatory
+next-iteration priority.
+
+### Accepted-baseline gate source (2026-04-29)
+
+The control-plane gate now reports a `baseline_source`. Normal operation is
+`accepted_baseline_memory`: rows captured from the last accepted/live state
+and updated only after an AG is accepted. `delta_latest_full_fallback` means
+the in-memory accepted rows were missing and the gate fell back to Delta;
+treat this as diagnostic risk because rejected full-eval rows can otherwise
+look like the baseline.
+
+### Quarantine stop semantics (2026-04-29)
+
+Quarantine can no longer silently remove unresolved patchable hard failures
+and let the loop continue on soft clusters. If quarantined qids include hard
+failures and hard clusters drop to zero, the loop stops for human review.
+If hard clusters remain, those qids stay in a diagnostic lane.
+
+### Scope and compatibility gates (2026-04-29)
+
+Broad Lever 5 rewrites (`rewrite_instruction`, `update_instruction_section`
+for global sections such as `QUERY RULES` / `ASSET ROUTING`) are rejected
+when they have no counterfactual dependents or specific target. Proposals
+are also checked for RCA/patch-type compatibility before expansion; for
+example, `missing_filter` cannot be patched with `add_sql_snippet_measure`.
