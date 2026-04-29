@@ -654,3 +654,87 @@ def test_proactive_default_config_flag_is_off():
     )
 
     assert ENABLE_PROACTIVE_FEATURE_MINING is False
+
+
+def test_extracts_missing_function_expression_candidate_from_failed_sql():
+    from genie_space_optimizer.optimization.feature_mining import (
+        extract_failed_row_sql_expression_candidates,
+    )
+
+    row = {
+        "question_id": "q_fn",
+        "arbiter/value": "ground_truth_correct",
+        "inputs.expected_sql": (
+            "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+            "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
+        ),
+        "outputs.predictions.sql": (
+            "SELECT CASE WHEN day(now()) = 1 "
+            "THEN MEASURE(`_7now_py_sales_day`) "
+            "ELSE MEASURE(`_7now_py_sales_mtd`) END"
+        ),
+    }
+
+    candidates = extract_failed_row_sql_expression_candidates(row)
+
+    assert len(candidates) == 1
+    assert candidates[0].snippet_type == "expression"
+    assert "fn_mtd_or_mtday" in candidates[0].sql
+    assert candidates[0].source_question_id == "q_fn"
+    assert candidates[0].source == "rca_failed_question_sql"
+
+
+def test_extracts_missing_filter_candidate_from_failed_sql():
+    from genie_space_optimizer.optimization.feature_mining import (
+        extract_failed_row_sql_expression_candidates,
+    )
+
+    row = {
+        "question_id": "q_filter",
+        "arbiter/value": "ground_truth_correct",
+        "expected_sql": (
+            "SELECT SUM(amount) FROM cat.sch.orders "
+            "WHERE order_date >= DATE_TRUNC('MONTH', CURRENT_DATE())"
+        ),
+        "generated_sql": "SELECT SUM(amount) FROM cat.sch.orders",
+    }
+
+    candidates = extract_failed_row_sql_expression_candidates(row)
+
+    assert any(c.snippet_type == "filter" for c in candidates)
+    assert any("DATE_TRUNC" in c.sql.upper() for c in candidates)
+    assert {c.source for c in candidates} == {"rca_failed_question_sql"}
+
+
+def test_extracts_missing_measure_candidate_from_failed_sql():
+    from genie_space_optimizer.optimization.feature_mining import (
+        extract_failed_row_sql_expression_candidates,
+    )
+
+    row = {
+        "question_id": "q_measure",
+        "arbiter/value": "ground_truth_correct",
+        "expected_sql": "SELECT SUM(cat.sch.orders.amount) FROM cat.sch.orders",
+        "generated_sql": "SELECT COUNT(*) FROM cat.sch.orders",
+    }
+
+    candidates = extract_failed_row_sql_expression_candidates(row)
+
+    assert any(c.snippet_type == "measure" for c in candidates)
+    assert any("SUM" in c.sql.upper() and "amount" in c.sql for c in candidates)
+
+
+def test_structural_extractor_excludes_unsafe_arbiter_verdicts():
+    from genie_space_optimizer.optimization.feature_mining import (
+        extract_failed_row_sql_expression_candidates,
+    )
+
+    base = {
+        "question_id": "q_bad",
+        "expected_sql": "SELECT SUM(amount) FROM cat.sch.orders",
+        "generated_sql": "SELECT COUNT(*) FROM cat.sch.orders",
+    }
+
+    for verdict in ("genie_correct", "neither_correct", "skipped", ""):
+        row = {**base, "arbiter/value": verdict}
+        assert extract_failed_row_sql_expression_candidates(row) == ()

@@ -27,6 +27,7 @@ metadata snapshot — no LLM, no remote calls. The module is leaf-level
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable
@@ -95,6 +96,41 @@ class SqlDiff:
     extra_in_genie: DiffSet = field(default_factory=DiffSet)
     candidate_levers: tuple[int, ...] = ()
     finding_kinds: tuple[DiffKind, ...] = ()
+
+
+@dataclass(frozen=True)
+class StructuralSqlCandidate:
+    """Reusable SQL primitive extracted from an arbiter-approved failed row.
+
+    Carries the ``rca_failed_question_sql`` source tag so downstream
+    proposal generation can route it only to ``add_sql_snippet_*`` patch
+    types and never to Example SQL.
+    """
+
+    snippet_type: str
+    sql: str
+    display_name: str
+    alias: str = ""
+    instruction: str = ""
+    target_table: str = ""
+    source_question_id: str = ""
+    source: str = "rca_failed_question_sql"
+    evidence: str = ""
+    confidence: float = 0.85
+
+    def as_dict(self) -> dict:
+        return {
+            "snippet_type": self.snippet_type,
+            "sql": self.sql,
+            "display_name": self.display_name,
+            "alias": self.alias,
+            "instruction": self.instruction,
+            "target_table": self.target_table,
+            "source_question_id": self.source_question_id,
+            "source": self.source,
+            "evidence": self.evidence,
+            "confidence": self.confidence,
+        }
 
 
 # ── mine_sql_features ────────────────────────────────────────
@@ -259,6 +295,240 @@ def _diff(genie: tuple[str, ...], gt: tuple[str, ...]) -> tuple[tuple[str, ...],
     """Return ``(missing_in_genie, extra_in_genie)`` set diff."""
     g, t = set(genie), set(gt)
     return tuple(sorted(t - g)), tuple(sorted(g - t))
+
+
+_STRUCTURAL_SAFE_VERDICTS = frozenset({"ground_truth_correct", "both_correct"})
+_AGG_EXPR_RE = re.compile(
+    r"\b(?:SUM|COUNT|AVG|MIN|MAX)\s*\([^)]{1,240}\)",
+    re.IGNORECASE,
+)
+_COUNT_DISTINCT_RE = re.compile(
+    r"\bCOUNT\s*\(\s*DISTINCT\s+[^)]{1,240}\)",
+    re.IGNORECASE,
+)
+_DERIVED_EXPR_RE = re.compile(
+    r"(?:DATE_TRUNC|YEAR|MONTH|QUARTER|WEEKOFYEAR|DAYOFWEEK)\s*\([^)]{1,240}\)"
+    r"|CASE\s+WHEN\s+.+?\s+END",
+    re.IGNORECASE | re.DOTALL,
+)
+_FUNCTION_EXPR_RE = re.compile(
+    r"\b(?:[a-zA-Z_][a-zA-Z0-9_]*\.){2,}[a-zA-Z_][a-zA-Z0-9_]*\s*\([^)]{1,500}\)",
+    re.IGNORECASE | re.DOTALL,
+)
+_WHERE_RE = re.compile(
+    r"\bWHERE\s+(.+?)(?:\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _row_value(row: dict, *keys: str) -> str:
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _row_arbiter_verdict(row: dict) -> str:
+    return _row_value(
+        row,
+        "arbiter/value",
+        "feedback/arbiter/value",
+        "arbiter",
+    ).lower()
+
+
+def _row_question_id(row: dict) -> str:
+    return _row_value(
+        row,
+        "question_id",
+        "inputs/question_id",
+        "benchmark_id",
+        "id",
+    )
+
+
+def _row_expected_sql(row: dict) -> str:
+    return _row_value(row, "inputs.expected_sql", "inputs/expected_sql", "expected_sql")
+
+
+def _row_generated_sql(row: dict) -> str:
+    return _row_value(
+        row,
+        "outputs.predictions.sql",
+        "outputs/predictions/sql",
+        "generated_sql",
+        "genie_sql",
+    )
+
+
+def _normalize_sql_fragment(sql: str) -> str:
+    return " ".join(str(sql or "").strip().split())
+
+
+def _fragment_key(sql: str) -> str:
+    return _normalize_sql_fragment(sql).lower()
+
+
+def _display_name_for_candidate(snippet_type: str, sql: str) -> str:
+    sql_norm = _normalize_sql_fragment(sql)
+    if snippet_type == "measure":
+        return f"Measure: {sql_norm[:60]}"
+    if snippet_type == "filter":
+        return f"Filter: {sql_norm[:60]}"
+    return f"Expression: {sql_norm[:60]}"
+
+
+def _candidate(
+    *,
+    snippet_type: str,
+    sql: str,
+    qid: str,
+    evidence: str,
+) -> StructuralSqlCandidate:
+    sql_norm = _normalize_sql_fragment(sql)
+    alias = re.sub(r"[^a-z0-9]+", "_", sql_norm.lower()).strip("_")[:50]
+    return StructuralSqlCandidate(
+        snippet_type=snippet_type,
+        sql=sql_norm,
+        display_name=_display_name_for_candidate(snippet_type, sql_norm),
+        alias=alias if snippet_type != "filter" else "",
+        instruction=(
+            f"Use this {snippet_type} when the question requires the "
+            f"SQL pattern seen in benchmark {qid}."
+        ),
+        source_question_id=qid,
+        evidence=evidence,
+    )
+
+
+def _expected_only_fragments(
+    pattern: re.Pattern, expected: str, generated: str,
+) -> tuple[str, ...]:
+    expected_fragments = {
+        _fragment_key(m.group(0)): m.group(0)
+        for m in pattern.finditer(expected)
+    }
+    generated_keys = {
+        _fragment_key(m.group(0)) for m in pattern.finditer(generated)
+    }
+    return tuple(
+        expected_fragments[key]
+        for key in sorted(expected_fragments)
+        if key and key not in generated_keys
+    )
+
+
+def _expected_only_filters(expected: str, generated: str) -> tuple[str, ...]:
+    exp = _WHERE_RE.search(expected or "")
+    gen = _WHERE_RE.search(generated or "")
+    if not exp:
+        return ()
+    expected_conditions = {
+        _fragment_key(part): part.strip()
+        for part in re.split(r"\s+AND\s+", exp.group(1), flags=re.IGNORECASE)
+        if part.strip()
+    }
+    generated_keys: set[str] = set()
+    if gen:
+        generated_keys = {
+            _fragment_key(part)
+            for part in re.split(
+                r"\s+AND\s+", gen.group(1), flags=re.IGNORECASE,
+            )
+            if part.strip()
+        }
+    return tuple(
+        expected_conditions[key]
+        for key in sorted(expected_conditions)
+        if key and key not in generated_keys
+    )
+
+
+def extract_failed_row_sql_expression_candidates(
+    row: dict,
+) -> tuple[StructuralSqlCandidate, ...]:
+    """Return reusable SQL snippet candidates from one arbiter-approved row.
+
+    This is the structural-learning lane for failed questions. It may inspect
+    benchmark ``expected_sql`` only to extract reusable SQL primitives. It must
+    not emit Example SQL or question-answer artifacts.
+    """
+    if not isinstance(row, dict):
+        return ()
+    verdict = _row_arbiter_verdict(row)
+    if verdict not in _STRUCTURAL_SAFE_VERDICTS:
+        return ()
+    expected = _row_expected_sql(row)
+    generated = _row_generated_sql(row)
+    qid = _row_question_id(row)
+    if not expected or not generated or not qid:
+        return ()
+
+    out: list[StructuralSqlCandidate] = []
+    seen: set[tuple[str, str]] = set()
+
+    for sql in _expected_only_fragments(_FUNCTION_EXPR_RE, expected, generated):
+        key = ("expression", _fragment_key(sql))
+        if key not in seen:
+            seen.add(key)
+            out.append(_candidate(
+                snippet_type="expression",
+                sql=sql,
+                qid=qid,
+                evidence=(
+                    "expected SQL used a function/TVF expression "
+                    "absent from generated SQL"
+                ),
+            ))
+
+    for sql in _expected_only_fragments(_DERIVED_EXPR_RE, expected, generated):
+        key = ("expression", _fragment_key(sql))
+        if key not in seen:
+            seen.add(key)
+            out.append(_candidate(
+                snippet_type="expression",
+                sql=sql,
+                qid=qid,
+                evidence=(
+                    "expected SQL used a derived expression "
+                    "absent from generated SQL"
+                ),
+            ))
+
+    for pattern in (_COUNT_DISTINCT_RE, _AGG_EXPR_RE):
+        for sql in _expected_only_fragments(pattern, expected, generated):
+            key = ("measure", _fragment_key(sql))
+            if key not in seen:
+                seen.add(key)
+                out.append(_candidate(
+                    snippet_type="measure",
+                    sql=sql,
+                    qid=qid,
+                    evidence=(
+                        "expected SQL used a measure expression "
+                        "absent from generated SQL"
+                    ),
+                ))
+
+    for sql in _expected_only_filters(expected, generated):
+        key = ("filter", _fragment_key(sql))
+        if key not in seen:
+            seen.add(key)
+            out.append(_candidate(
+                snippet_type="filter",
+                sql=sql,
+                qid=qid,
+                evidence=(
+                    "expected SQL used a filter predicate "
+                    "absent from generated SQL"
+                ),
+            ))
+
+    return tuple(out)
 
 
 def compute_diff(*, genie: SqlFeatures, ground_truth: SqlFeatures) -> SqlDiff:
