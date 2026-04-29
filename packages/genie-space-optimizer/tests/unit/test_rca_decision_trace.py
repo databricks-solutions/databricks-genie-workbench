@@ -21,6 +21,8 @@ def test_patch_inventory_summary_includes_causal_fields() -> None:
 
     assert summary == {
         "proposal_id": "P015",
+        "parent_proposal_id": "",
+        "expanded_patch_id": "",
         "lever": 5,
         "patch_type": "update_instruction_section",
         "target": "FUNCTION ROUTING",

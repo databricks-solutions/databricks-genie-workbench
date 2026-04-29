@@ -2148,6 +2148,30 @@ def classify_risk(patch_type: str | dict) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _stamp_expanded_patch_identity(
+    patch: dict,
+    proposal: dict,
+    *,
+    child_index: int,
+) -> dict:
+    """Stamp parent + expanded child identity onto a converted patch dict."""
+    parent_id = str(
+        proposal.get("proposal_id")
+        or proposal.get("id")
+        or patch.get("source_proposal_id")
+        or patch.get("proposal_id")
+        or ""
+    )
+    if not parent_id:
+        return patch
+    child_id = f"{parent_id}#{child_index}"
+    patch["parent_proposal_id"] = parent_id
+    patch["source_proposal_id"] = parent_id
+    patch["proposal_id"] = child_id
+    patch["expanded_patch_id"] = child_id
+    return patch
+
+
 def _single_column_target(value: Any) -> str:
     """Normalize a column-target proposal field to a single column name."""
     if isinstance(value, str):
@@ -2447,6 +2471,32 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
         if "change_description" in p and "change_description" not in patch_dict:
             patch_dict["change_description"] = p["change_description"]
         patches.append(_copy_proposal_metadata(patch_dict, p))
+
+    # Post-pass: stamp each patch with parent_proposal_id + expanded_patch_id.
+    # Group by source_proposal_id so children of the same proposal get
+    # sequential ``PARENT#1``, ``PARENT#2`` ids that survive cap selection.
+    proposals_by_id: dict[str, dict] = {}
+    for proposal in proposals:
+        pid = str(proposal.get("proposal_id") or proposal.get("id") or "")
+        if pid:
+            proposals_by_id[pid] = proposal
+    sequential_index: dict[str, int] = {}
+    for child in patches:
+        parent_id = str(
+            child.get("parent_proposal_id")
+            or child.get("source_proposal_id")
+            or child.get("proposal_id")
+            or ""
+        )
+        if not parent_id:
+            continue
+        sequential_index[parent_id] = sequential_index.get(parent_id, 0) + 1
+        proposal_for_child = proposals_by_id.get(parent_id, {"proposal_id": parent_id})
+        _stamp_expanded_patch_identity(
+            child,
+            proposal_for_child,
+            child_index=sequential_index[parent_id],
+        )
     return patches
 
 

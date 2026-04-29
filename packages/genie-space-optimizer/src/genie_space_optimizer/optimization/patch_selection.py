@@ -8,7 +8,14 @@ _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 
 def _proposal_id(patch: dict[str, Any], index: int) -> str:
-    return str(patch.get("proposal_id") or patch.get("id") or f"idx_{index}")
+    return str(
+        patch.get("proposal_id")
+        or patch.get("expanded_patch_id")
+        or patch.get("source_proposal_id")
+        or patch.get("parent_proposal_id")
+        or patch.get("id")
+        or f"idx_{index}"
+    )
 
 
 def _lever(patch: dict[str, Any]) -> int:

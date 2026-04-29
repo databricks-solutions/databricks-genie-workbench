@@ -15,8 +15,9 @@ def test_proposal_id_survives_update_column_description_conversion() -> None:
     }])
 
     assert len(patches) == 1
-    assert patches[0]["proposal_id"] == "AG1_COL1"
+    assert patches[0]["proposal_id"].startswith("AG1_COL1")
     assert patches[0]["source_proposal_id"] == "AG1_COL1"
+    assert patches[0]["parent_proposal_id"] == "AG1_COL1"
     assert patches[0]["target_qids"] == ["q022"]
     assert patches[0]["_grounding_target_qids"] == ["q022"]
 
@@ -36,8 +37,9 @@ def test_proposal_id_survives_sql_snippet_conversion() -> None:
     }])
 
     assert len(patches) == 1
-    assert patches[0]["proposal_id"] == "AG1_SQL1"
+    assert patches[0]["proposal_id"].startswith("AG1_SQL1")
     assert patches[0]["source_proposal_id"] == "AG1_SQL1"
+    assert patches[0]["parent_proposal_id"] == "AG1_SQL1"
     assert patches[0]["_grounding_target_qids"] == ["q022"]
 
 
@@ -67,3 +69,24 @@ def test_update_column_description_rejects_multi_column_list_target() -> None:
     }])
 
     assert patches == []
+
+
+def test_expanded_column_description_children_keep_parent_proposal_id() -> None:
+    from genie_space_optimizer.optimization.applier import proposals_to_patches
+
+    patches = proposals_to_patches([{
+        "proposal_id": "AG1_COL1",
+        "patch_type": "update_column_description",
+        "table": "cat.sch.mv_7now_fact_sales",
+        "column": "cy_tot_orders",
+        "structured_sections": {
+            "definition": "Current year orders.",
+            "aggregation": "SUM. Do not pre-filter NULL measures.",
+        },
+        "target_qids": ["q022"],
+    }])
+
+    assert len(patches) >= 1
+    assert {p["parent_proposal_id"] for p in patches} == {"AG1_COL1"}
+    assert all(p["proposal_id"].startswith("AG1_COL1#") for p in patches)
+    assert all(p["expanded_patch_id"].startswith("AG1_COL1#") for p in patches)

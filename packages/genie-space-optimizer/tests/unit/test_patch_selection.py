@@ -79,3 +79,30 @@ def test_causal_patch_cap_returns_all_patches_when_under_limit() -> None:
 
     assert selected == patches
     assert [d["decision"] for d in decisions] == ["selected", "selected"]
+
+
+def test_patch_selection_uses_source_proposal_id_fallback() -> None:
+    from genie_space_optimizer.optimization.patch_selection import (
+        select_causal_patch_cap,
+    )
+
+    patches = [
+        {
+            "source_proposal_id": "PARENT_A",
+            "patch_type": "add_instruction",
+            "relevance_score": 1.0,
+            "lever": 5,
+        },
+        {
+            "source_proposal_id": "PARENT_B",
+            "patch_type": "update_column_description",
+            "relevance_score": 0.5,
+            "lever": 1,
+        },
+    ]
+
+    selected, decisions = select_causal_patch_cap(patches, max_patches=1)
+
+    assert selected == [patches[0]]
+    assert decisions[0]["proposal_id"] == "PARENT_A"
+    assert decisions[1]["proposal_id"] == "PARENT_B"

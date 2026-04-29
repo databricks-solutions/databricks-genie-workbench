@@ -31,7 +31,19 @@ def summarize_patch_for_trace(patch: dict[str, Any]) -> dict[str, Any]:
         or ""
     )
     return {
-        "proposal_id": str(patch.get("proposal_id") or patch.get("id") or ""),
+        "proposal_id": str(
+            patch.get("proposal_id")
+            or patch.get("expanded_patch_id")
+            or patch.get("source_proposal_id")
+            or patch.get("id")
+            or ""
+        ),
+        "parent_proposal_id": str(
+            patch.get("parent_proposal_id")
+            or patch.get("source_proposal_id")
+            or ""
+        ),
+        "expanded_patch_id": str(patch.get("expanded_patch_id") or ""),
         "lever": _as_int(patch.get("lever"), 5),
         "patch_type": patch.get("patch_type") or patch.get("type"),
         "target": str(target),
@@ -75,6 +87,8 @@ def patch_cap_decision_rows(
                 "patch_type": decision.get("patch_type"),
                 "rca_id": decision.get("rca_id"),
                 "target_qids": list(decision.get("target_qids") or []),
+                "parent_proposal_id": str(decision.get("parent_proposal_id") or ""),
+                "expanded_patch_id": str(decision.get("expanded_patch_id") or ""),
             },
         })
     return rows
