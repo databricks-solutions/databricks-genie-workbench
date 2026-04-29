@@ -161,7 +161,7 @@ def test_archetype_catalog_covers_common_root_causes() -> None:
 @pytest.mark.parametrize(
     "failure_type, expected_archetype",
     [
-        ("plural_top_n_collapse", "top_n_by_metric"),
+        ("plural_top_n_collapse", "ordered_list_by_metric"),
         ("time_window_pivot", "period_over_period"),
         ("value_format_mismatch", "filter_compose"),
         ("column_disambiguation", "disambiguate_column"),
@@ -735,3 +735,34 @@ class TestBuildSchemaDataStructAndRelated:
         assert _parse_struct_field_names("string") == []
         assert _parse_struct_field_names("array<string>") == []
         assert _parse_struct_field_names("decimal(18,2)") == []
+
+
+def test_plural_top_n_archetype_routes_to_ordered_list_without_limit() -> None:
+    from genie_space_optimizer.optimization.archetypes import (
+        ARCHETYPES,
+        pick_archetype,
+    )
+
+    archetype = next(a for a in ARCHETYPES if a.name == "ordered_list_by_metric")
+
+    picked = pick_archetype(
+        {"failure_type": "plural_top_n_collapse"},
+        {
+            "data_sources": {
+                "tables": [
+                    {
+                        "column_configs": [
+                            {"name": "zone_vp_name", "data_type": "STRING"},
+                            {"name": "cy_sales", "data_type": "DOUBLE"},
+                        ]
+                    }
+                ]
+            }
+        },
+    )
+
+    assert picked is not None
+    assert picked.name == "ordered_list_by_metric"
+    assert "plural" in archetype.prompt_template.lower()
+    assert "do not filter to rank = 1" in archetype.prompt_template.lower()
+    assert "LIMIT" not in archetype.output_shape["requires_constructs"]

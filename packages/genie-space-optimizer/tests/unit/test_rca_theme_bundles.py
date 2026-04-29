@@ -597,3 +597,46 @@ def test_cluster_resolved_time_window_creates_time_window_rca_finding() -> None:
     findings = rca_findings_from_clusters(clusters)
 
     assert any(f.rca_kind is RcaKind.TIME_WINDOW_LOGIC_MISMATCH for f in findings)
+
+
+def test_top_n_cardinality_theme_emits_cardinality_preserving_instruction_and_example() -> None:
+    from genie_space_optimizer.optimization.rca import (
+        RcaFinding,
+        RcaKind,
+        compile_patch_themes,
+        recommended_levers_for_rca_kind,
+    )
+
+    finding = RcaFinding(
+        rca_id="rca_topn",
+        question_id="q_topn",
+        rca_kind=RcaKind.TOP_N_CARDINALITY_COLLAPSE,
+        confidence=0.9,
+        expected_objects=("rank_filter", "zone_vp_name", "total_cy_sales"),
+        evidence=(),
+        recommended_levers=recommended_levers_for_rca_kind(
+            RcaKind.TOP_N_CARDINALITY_COLLAPSE,
+        ),
+        patch_family="cardinality_preserving_top_n_guidance",
+        target_qids=("q_topn",),
+    )
+
+    theme = compile_patch_themes([finding], metadata_snapshot={})[0]
+    patches = list(theme.patches)
+
+    assert any(
+        p["type"] == "add_instruction"
+        and p["lever"] == 5
+        and "WHERE rank = 1" in p["intent"]
+        for p in patches
+    )
+    assert any(
+        p["type"] == "request_example_sql_synthesis"
+        and p["root_cause"] == "plural_top_n_collapse"
+        for p in patches
+    )
+    assert not any(
+        p["type"] == "add_sql_snippet_measure"
+        and p.get("target_object") == "total_cy_sales"
+        for p in patches
+    )

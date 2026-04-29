@@ -821,31 +821,70 @@ def compile_patch_themes(
             })
 
         elif f.rca_kind is RcaKind.TOP_N_CARDINALITY_COLLAPSE:
-            for obj in f.expected_objects or f.actual_objects:
+            objects = f.expected_objects or f.actual_objects
+            for obj in objects:
+                if not obj:
+                    continue
                 patches.append({
                     **base,
                     "type": "update_column_description",
                     "lever": 1,
                     "target": obj,
-                    "intent": "Clarify this dimension should preserve cardinality for top-N/grouped questions.",
+                    "intent": (
+                        "Clarify that this object participates in grouped ordered-list "
+                        "questions where plural wording preserves all grouped entities."
+                    ),
                 })
-            patches.append(_example_synthesis_intent(base, f, root_cause="top_n_cardinality_collapse"))
+            patches.append({
+                **base,
+                "type": "add_instruction",
+                "lever": 5,
+                "target": "QUERY PATTERNS",
+                "instruction_section": "QUERY PATTERNS",
+                "intent": (
+                    "For plural highest/lowest ranking questions, group by the entity "
+                    "and ORDER BY the metric; do not collapse to a single row with "
+                    "WHERE rank = 1 or LIMIT 1 unless the user explicitly asks for one."
+                ),
+                "blame_set": list(objects),
+            })
+            patches.append(_example_synthesis_intent(
+                base,
+                f,
+                root_cause="plural_top_n_collapse",
+            ))
 
         elif f.rca_kind is RcaKind.TIME_WINDOW_LOGIC_MISMATCH:
             patches.append(_patch_intent(
                 base,
-                ptype="add_sql_snippet_filter",
+                ptype="add_sql_snippet_expression",
                 lever=6,
-                intent="Encode the correct reusable time-window filter logic.",
+                intent=(
+                    "Encode the day-vs-MTD comparison shape as separate filtered "
+                    "subqueries joined on the comparison grain, not GROUP BY time_window."
+                ),
                 target="time_window",
+                expected_objects=list(f.expected_objects),
+                snippet_type="expression",
             ))
             patches.append({
                 **base,
                 "type": "add_instruction",
                 "lever": 5,
-                "target": "QUERY RULES",
-                "intent": "Explain how user time-window language maps to filters.",
+                "target": "QUERY PATTERNS",
+                "instruction_section": "QUERY PATTERNS",
+                "intent": (
+                    "When comparing day vs MTD metrics, query each time_window in "
+                    "a separate CTE and join them into columns at the requested grain; "
+                    "do not return one row per time_window unless asked."
+                ),
+                "blame_set": list(f.expected_objects),
             })
+            patches.append(_example_synthesis_intent(
+                base,
+                f,
+                root_cause="time_window_pivot",
+            ))
 
         if not patches:
             continue

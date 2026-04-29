@@ -218,11 +218,25 @@ ARCHETYPES: list[Archetype] = [
         patch_type="add_example_sql",
     ),
     Archetype(
+        name="ordered_list_by_metric",
+        applicable_root_causes=frozenset({"plural_top_n_collapse"}),
+        required_schema_traits=frozenset({"has_numeric", "has_categorical"}),
+        prompt_template=(
+            "Produce a cardinality-preserving ordered-list query for a plural "
+            "ranking question. Aggregate a numeric column by a categorical "
+            "dimension and ORDER BY the aggregate DESC. Do not filter to rank = 1 "
+            "and do not use LIMIT unless the invented question explicitly asks "
+            "for a fixed number of rows. Do NOT reproduce any benchmark text; "
+            "invent a concrete but reasonable question."
+        ),
+        output_shape={
+            "requires_constructs": ["SELECT", "GROUP_BY", "ORDER_BY"],
+        },
+    ),
+    Archetype(
         name="top_n_by_metric",
         applicable_root_causes=(
-            _ROOT_CAUSES_RANKING | _ROOT_CAUSES_AGG | frozenset({
-                "plural_top_n_collapse",
-            })
+            _ROOT_CAUSES_RANKING | _ROOT_CAUSES_AGG
         ),
         required_schema_traits=frozenset({"has_numeric"}),
         prompt_template=(
