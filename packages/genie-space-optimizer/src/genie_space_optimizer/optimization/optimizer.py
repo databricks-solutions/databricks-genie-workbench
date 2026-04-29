@@ -7046,6 +7046,60 @@ def _rca_themes_requesting_synthesis(themes: list[Any]) -> list[Any]:
     return out
 
 
+def _append_teaching_kit_support_proposals(
+    proposals: list[dict],
+    *,
+    synth_proposal: dict,
+    provenance_base: dict,
+    ag_id: str,
+    source_cluster_id: str = "",
+) -> None:
+    """Append teaching-kit support patches to ``proposals`` in place.
+
+    Shared between the strategist-driven Lever 5 cluster synthesis branch
+    and the RCA-theme-driven cluster synthesis branch so kit shape stamping
+    (``kit_id``, ``target_qids``, provenance, dual_persistence, defaults)
+    is identical regardless of which path produced the primary example.
+    """
+    for support in synth_proposal.get("_supporting_proposals", []) or []:
+        if not isinstance(support, dict):
+            continue
+        support.setdefault("proposal_id", f"P{len(proposals) + 1:03d}")
+        support.setdefault("cluster_id", f"{ag_id}_KIT")
+        support.setdefault("lever", support.get("lever", 5))
+        support.setdefault("scope", "genie_config")
+        support.setdefault(
+            "change_description",
+            f"[{ag_id}] Teaching kit support: {support.get('patch_type', '?')}",
+        )
+        support.setdefault(
+            "rationale",
+            f"Support patch for teaching kit {synth_proposal.get('kit_id', '')}",
+        )
+        support.setdefault(
+            "dual_persistence",
+            DUAL_PERSIST_PATHS.get(int(support.get("lever", 5)), DUAL_PERSIST_PATHS[5]),
+        )
+        support.setdefault("confidence", 0.8)
+        support.setdefault(
+            "questions_fixed",
+            len(synth_proposal.get("target_qids", []) or []),
+        )
+        support.setdefault("questions_at_risk", 0)
+        support.setdefault("net_impact", 0.7)
+        support.setdefault("target_qids", synth_proposal.get("target_qids", []))
+        support.setdefault("kit_id", synth_proposal.get("kit_id", ""))
+        support["provenance"] = {
+            **provenance_base,
+            **(support.get("provenance") or {}),
+            "patch_type": support.get("patch_type", ""),
+            "synthesis_source": "cluster_driven_teaching_kit",
+            "kit_id": support.get("kit_id", ""),
+            "source_cluster_id": source_cluster_id,
+        }
+        proposals.append(support)
+
+
 def _cluster_from_rca_example_theme(theme: Any) -> dict:
     """Project an RCA theme into a cluster-shaped dict for cluster-driven synthesis.
 
@@ -13620,43 +13674,16 @@ def generate_proposals_from_strategy(
                     },
                 })
 
-                for _support in synth_proposal.get("_supporting_proposals", []) or []:
-                    if not isinstance(_support, dict):
-                        continue
-                    _support.setdefault("proposal_id", f"P{len(proposals) + 1:03d}")
-                    _support.setdefault("cluster_id", f"{ag_id}_KIT")
-                    _support.setdefault("lever", _support.get("lever", 5))
-                    _support.setdefault("scope", "genie_config")
-                    _support.setdefault(
-                        "change_description",
-                        f"[{ag_id}] Teaching kit support: {_support.get('patch_type', '?')}",
-                    )
-                    _support.setdefault(
-                        "rationale",
-                        f"Support patch for teaching kit {synth_proposal.get('kit_id', '')}",
-                    )
-                    _support.setdefault(
-                        "dual_persistence",
-                        DUAL_PERSIST_PATHS.get(int(_support.get("lever", 5)), DUAL_PERSIST_PATHS[5]),
-                    )
-                    _support.setdefault("confidence", 0.8)
-                    _support.setdefault("questions_fixed", len(synth_proposal.get("target_qids", []) or []))
-                    _support.setdefault("questions_at_risk", 0)
-                    _support.setdefault("net_impact", 0.7)
-                    _support.setdefault("target_qids", synth_proposal.get("target_qids", []))
-                    _support.setdefault("kit_id", synth_proposal.get("kit_id", ""))
-                    _support["provenance"] = {
-                        **provenance_base,
-                        **(_support.get("provenance") or {}),
-                        "patch_type": _support.get("patch_type", ""),
-                        "synthesis_source": "cluster_driven_teaching_kit",
-                        "kit_id": _support.get("kit_id", ""),
-                        "source_cluster_id": synth_proposal.get(
-                            "_cluster_id",
-                            source_cluster.get("cluster_id", ""),
-                        ),
-                    }
-                    proposals.append(_support)
+                _append_teaching_kit_support_proposals(
+                    proposals,
+                    synth_proposal=synth_proposal,
+                    provenance_base=provenance_base,
+                    ag_id=ag_id,
+                    source_cluster_id=synth_proposal.get(
+                        "_cluster_id",
+                        source_cluster.get("cluster_id", ""),
+                    ),
+                )
 
             if ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS:
                 try:
@@ -13715,45 +13742,13 @@ def generate_proposals_from_strategy(
                         )
                         proposals.append(_proposal)
 
-                        for _support in _proposal.get("_supporting_proposals", []) or []:
-                            if not isinstance(_support, dict):
-                                continue
-                            _support.setdefault("proposal_id", f"P{len(proposals) + 1:03d}")
-                            _support.setdefault("cluster_id", f"{ag_id}_KIT")
-                            _support.setdefault("lever", _support.get("lever", 5))
-                            _support.setdefault("scope", "genie_config")
-                            _support.setdefault(
-                                "change_description",
-                                f"[{ag_id}] Teaching kit support: {_support.get('patch_type', '?')}",
-                            )
-                            _support.setdefault(
-                                "rationale",
-                                f"Support patch for teaching kit {_proposal.get('kit_id', '')}",
-                            )
-                            _support.setdefault(
-                                "dual_persistence",
-                                DUAL_PERSIST_PATHS.get(int(_support.get("lever", 5)), DUAL_PERSIST_PATHS[5]),
-                            )
-                            _support.setdefault("confidence", 0.8)
-                            _support.setdefault(
-                                "questions_fixed",
-                                len(_proposal.get("target_qids", []) or []),
-                            )
-                            _support.setdefault("questions_at_risk", 0)
-                            _support.setdefault("net_impact", 0.7)
-                            _support.setdefault(
-                                "target_qids", _proposal.get("target_qids", []),
-                            )
-                            _support.setdefault("kit_id", _proposal.get("kit_id", ""))
-                            _support["provenance"] = {
-                                **provenance_base,
-                                **(_support.get("provenance") or {}),
-                                "patch_type": _support.get("patch_type", ""),
-                                "synthesis_source": "cluster_driven_teaching_kit",
-                                "kit_id": _support.get("kit_id", ""),
-                                "source_cluster_id": _proposal.get("_cluster_id", ""),
-                            }
-                            proposals.append(_support)
+                        _append_teaching_kit_support_proposals(
+                            proposals,
+                            synth_proposal=_proposal,
+                            provenance_base=provenance_base,
+                            ag_id=ag_id,
+                            source_cluster_id=_proposal.get("_cluster_id", ""),
+                        )
                 except Exception:
                     logger.debug("RCA example SQL synthesis failed", exc_info=True)
 

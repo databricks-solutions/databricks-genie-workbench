@@ -773,3 +773,14 @@ def test_rca_lever1_synonym_filter_drops_low_quality_candidates() -> None:
         "net sales", "topline revenue", "another phrase",
         "fourth phrase", "fifth phrase",
     ]
+
+
+def test_optimizer_uses_shared_teaching_kit_support_appender() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import optimizer
+
+    src = inspect.getsource(optimizer)
+
+    assert "def _append_teaching_kit_support_proposals" in src
+    assert src.count("_append_teaching_kit_support_proposals(") >= 3
