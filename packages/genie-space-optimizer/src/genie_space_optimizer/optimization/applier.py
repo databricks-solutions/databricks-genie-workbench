@@ -2234,6 +2234,43 @@ def _stamp_expanded_patch_identity(
     return patch
 
 
+def _stamp_split_child_identity(
+    parent: dict,
+    child: dict,
+    *,
+    child_index: int,
+) -> dict:
+    """Assign a unique child id when a rewrite splits into section children.
+
+    The parent patch may already carry an ``expanded_patch_id`` like
+    ``P001#1`` (assigned by ``_stamp_expanded_patch_identity`` during
+    ``proposals_to_patches``). Sections inherit the parent's
+    ``parent_proposal_id`` but must get their own monotonic suffix to
+    avoid collisions when the bundle is logged or persisted.
+    """
+    parent_id = str(
+        parent.get("parent_proposal_id")
+        or parent.get("source_proposal_id")
+        or parent.get("proposal_id")
+        or ""
+    )
+    if not parent_id:
+        return child
+    base = parent_id.split("#", 1)[0] if "#" in parent_id else parent_id
+    parent_index = ""
+    if "#" in parent_id:
+        parent_index = parent_id.split("#", 1)[1]
+    suffix = (
+        f"{parent_index}.{child_index}" if parent_index else f"{child_index}"
+    )
+    new_id = f"{base}#{suffix}"
+    child["parent_proposal_id"] = base
+    child["source_proposal_id"] = base
+    child["proposal_id"] = new_id
+    child["expanded_patch_id"] = new_id
+    return child
+
+
 def _single_column_target(value: Any) -> str:
     """Normalize a column-target proposal field to a single column name."""
     if isinstance(value, str):
@@ -2743,6 +2780,12 @@ def _split_rewrite_instruction_patch(patch: dict) -> list[dict] | None:
             ", ".join(routed_log) if routed_log else "<none>",
         )
 
+    # Task 3 — assign unique child identities. Section children inherit the
+    # parent's ``proposal_id`` from ``_base_fields``; without re-stamping,
+    # all children share the same ``proposal_id`` and downstream
+    # attribution / logging collapses.
+    for _idx, _child in enumerate(children, start=1):
+        _stamp_split_child_identity(patch, _child, child_index=_idx)
     return children
 
 
