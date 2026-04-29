@@ -15,7 +15,7 @@ import os
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from databricks.sdk import WorkspaceClient
 from genie_space_optimizer._workspace_client import make_workspace_client
@@ -7033,9 +7033,63 @@ def _field(obj: Any, name: str, default: Any = "") -> Any:
     return getattr(obj, name, default)
 
 
-def _rca_themes_requesting_synthesis(themes: list[Any]) -> list[Any]:
+def _theme_target_qids(theme: Any) -> tuple[str, ...]:
+    values = getattr(theme, "target_qids", None)
+    if isinstance(theme, dict):
+        values = theme.get("target_qids")
+    return tuple(str(q).strip() for q in (values or ()) if str(q).strip())
+
+
+def _theme_matches_target_qids(
+    theme: Any,
+    target_qids: Iterable[str] | None = None,
+) -> bool:
+    """Return True if the theme should be eligible for the current AG.
+
+    When ``target_qids`` is empty/None the legacy global behavior applies
+    (every theme is eligible) so existing call sites without a known AG
+    target set keep working.
+    """
+    requested = {str(q).strip() for q in (target_qids or ()) if str(q).strip()}
+    if not requested:
+        return True
+    return bool(requested.intersection(_theme_target_qids(theme)))
+
+
+def _target_qids_for_rca_bridges(
+    action_group: dict,
+    strategy: dict,
+    metadata_snapshot: dict,
+) -> tuple[str, ...]:
+    """Resolve the canonical AG target QIDs used to scope RCA bridge themes."""
+    source_clusters = (
+        strategy.get("_source_clusters")
+        or metadata_snapshot.get("_failure_clusters")
+        or metadata_snapshot.get("failure_clusters")
+        or []
+    )
+    try:
+        from genie_space_optimizer.optimization.control_plane import (
+            target_qids_from_action_group,
+        )
+
+        return target_qids_from_action_group(action_group, source_clusters)
+    except Exception:
+        return tuple(
+            str(q).strip()
+            for q in (action_group.get("affected_questions") or ())
+            if str(q).strip()
+        )
+
+
+def _rca_themes_requesting_synthesis(
+    themes: list[Any],
+    target_qids: Iterable[str] | None = None,
+) -> list[Any]:
     out: list[Any] = []
     for theme in themes or []:
+        if not _theme_matches_target_qids(theme, target_qids):
+            continue
         patches = getattr(theme, "patches", None)
         if isinstance(theme, dict):
             patches = theme.get("patches")
@@ -7155,9 +7209,14 @@ _RCA_SQL_SNIPPET_PATCH_TYPES: frozenset[str] = frozenset({
 })
 
 
-def _rca_themes_requesting_sql_snippets(themes: list[Any]) -> list[Any]:
+def _rca_themes_requesting_sql_snippets(
+    themes: list[Any],
+    target_qids: Iterable[str] | None = None,
+) -> list[Any]:
     out: list[Any] = []
     for theme in themes or []:
+        if not _theme_matches_target_qids(theme, target_qids):
+            continue
         patches = getattr(theme, "patches", None)
         if isinstance(theme, dict):
             patches = theme.get("patches")
@@ -7168,9 +7227,14 @@ def _rca_themes_requesting_sql_snippets(themes: list[Any]) -> list[Any]:
     return out
 
 
-def _rca_themes_requesting_join_specs(themes: list[Any]) -> list[Any]:
+def _rca_themes_requesting_join_specs(
+    themes: list[Any],
+    target_qids: Iterable[str] | None = None,
+) -> list[Any]:
     out: list[Any] = []
     for theme in themes or []:
+        if not _theme_matches_target_qids(theme, target_qids):
+            continue
         patches = getattr(theme, "patches", None)
         if isinstance(theme, dict):
             patches = theme.get("patches")
@@ -7188,9 +7252,14 @@ _RCA_LEVER1_PATCH_TYPES: frozenset[str] = frozenset({
 })
 
 
-def _rca_themes_requesting_lever1(themes: list[Any]) -> list[Any]:
+def _rca_themes_requesting_lever1(
+    themes: list[Any],
+    target_qids: Iterable[str] | None = None,
+) -> list[Any]:
     out: list[Any] = []
     for theme in themes or []:
+        if not _theme_matches_target_qids(theme, target_qids):
+            continue
         patches = getattr(theme, "patches", None)
         if isinstance(theme, dict):
             patches = theme.get("patches")
@@ -12556,6 +12625,12 @@ def generate_proposals_from_strategy(
         "patch_type": "",
     }
 
+    _rca_bridge_target_qids = _target_qids_for_rca_bridges(
+        action_group,
+        strategy,
+        metadata_snapshot,
+    )
+
     def _rca_forced_instruction_proposal() -> dict | None:
         """Deterministic RCA bridge for forced Lever 5 with no directive.
 
@@ -12713,7 +12788,8 @@ def generate_proposals_from_strategy(
 
             if target_lever == 1 and ENABLE_RCA_LEVER1_BRIDGE:
                 _bridged_themes = _rca_themes_requesting_lever1(
-                    metadata_snapshot.get("_rca_themes") or []
+                    metadata_snapshot.get("_rca_themes") or [],
+                    target_qids=_rca_bridge_target_qids,
                 )
                 _l1_index: dict[tuple[str, str], dict] = {
                     (
@@ -13043,7 +13119,8 @@ def generate_proposals_from_strategy(
 
             if ENABLE_RCA_JOIN_SPEC_BRIDGE:
                 _bridged_themes = _rca_themes_requesting_join_specs(
-                    metadata_snapshot.get("_rca_themes") or []
+                    metadata_snapshot.get("_rca_themes") or [],
+                    target_qids=_rca_bridge_target_qids,
                 )
                 for _theme in _bridged_themes:
                     _theme_patches = list(getattr(_theme, "patches", ()) or ())
@@ -13692,7 +13769,8 @@ def generate_proposals_from_strategy(
                     )
 
                     for _theme in _rca_themes_requesting_synthesis(
-                        metadata_snapshot.get("_rca_themes") or []
+                        metadata_snapshot.get("_rca_themes") or [],
+                        target_qids=_rca_bridge_target_qids,
                     ):
                         _cluster = _cluster_from_rca_example_theme(_theme)
                         _proposal = run_cluster_driven_synthesis_for_single_cluster(
@@ -13853,7 +13931,8 @@ def generate_proposals_from_strategy(
 
             if ENABLE_RCA_SQL_SNIPPET_BRIDGE:
                 _bridged_themes = _rca_themes_requesting_sql_snippets(
-                    metadata_snapshot.get("_rca_themes") or []
+                    metadata_snapshot.get("_rca_themes") or [],
+                    target_qids=_rca_bridge_target_qids,
                 )
                 for _theme in _bridged_themes:
                     _theme_patches = list(getattr(_theme, "patches", ()) or ())

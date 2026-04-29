@@ -784,3 +784,74 @@ def test_optimizer_uses_shared_teaching_kit_support_appender() -> None:
 
     assert "def _append_teaching_kit_support_proposals" in src
     assert src.count("_append_teaching_kit_support_proposals(") >= 3
+
+
+def test_rca_bridge_selectors_only_return_themes_for_current_ag_targets() -> None:
+    from genie_space_optimizer.optimization.optimizer import (
+        _rca_themes_requesting_lever1,
+        _rca_themes_requesting_synthesis,
+        _rca_themes_requesting_sql_snippets,
+    )
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+
+    q028_theme = RcaPatchTheme(
+        rca_id="rca_q028_function_routing",
+        rca_kind=RcaKind.FUNCTION_OR_TVF_NOT_INVOKED,
+        patch_family="function_routing_guidance",
+        patches=(
+            {"type": "update_column_description", "lever": 1, "column": "fn_mtd_or_mtday"},
+            {"type": "request_example_sql_synthesis", "lever": 5},
+            {
+                "type": "add_sql_snippet_expression",
+                "lever": 6,
+                "target_object": "fn_mtd_or_mtday",
+                "snippet_type": "expression",
+            },
+        ),
+        target_qids=("q028",),
+        touched_objects=("fn_mtd_or_mtday",),
+    )
+    q012_theme = RcaPatchTheme(
+        rca_id="rca_q012_store_count",
+        rca_kind=RcaKind.MEASURE_SWAP,
+        patch_family="measure_disambiguation",
+        patches=(
+            {"type": "update_column_description", "lever": 1, "column": "store_count"},
+            {"type": "request_example_sql_synthesis", "lever": 5},
+            {
+                "type": "add_sql_snippet_measure",
+                "lever": 6,
+                "target_object": "mv_7now_store_sales.store_count",
+                "snippet_type": "measure",
+            },
+        ),
+        target_qids=("q012",),
+        touched_objects=("store_count",),
+    )
+    themes = [q012_theme, q028_theme]
+
+    assert [t.rca_id for t in _rca_themes_requesting_lever1(themes, target_qids=("q028",))] == [
+        "rca_q028_function_routing"
+    ]
+    assert [t.rca_id for t in _rca_themes_requesting_synthesis(themes, target_qids=("q028",))] == [
+        "rca_q028_function_routing"
+    ]
+    assert [t.rca_id for t in _rca_themes_requesting_sql_snippets(themes, target_qids=("q028",))] == [
+        "rca_q028_function_routing"
+    ]
+
+
+def test_rca_bridge_selectors_keep_legacy_behavior_when_no_ag_targets_are_known() -> None:
+    from genie_space_optimizer.optimization.optimizer import _rca_themes_requesting_synthesis
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+
+    theme = RcaPatchTheme(
+        rca_id="rca_synth",
+        rca_kind=RcaKind.EXAMPLE_SQL_SHAPE_NEEDED,
+        patch_family="example_sql_shape_guidance",
+        patches=({"type": "request_example_sql_synthesis", "lever": 5},),
+        target_qids=("q1",),
+        touched_objects=("gross_sales",),
+    )
+
+    assert [t.rca_id for t in _rca_themes_requesting_synthesis([theme])] == ["rca_synth"]
