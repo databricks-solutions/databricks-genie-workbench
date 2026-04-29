@@ -10985,121 +10985,50 @@ def _run_lever_loop(
         # confidence / highest-impact patches first (sorted by the
         # caller); extras are dropped with a clear warning.
         if len(patches) > MAX_AG_PATCHES:
-            # B4 — diversity-aware cap. The previous slice-only cap
-            # consumed the budget with low-risk Lever-1 column
-            # patches and dropped Lever-5 / Lever-6 patches at the
-            # tail — exactly the patches that address pattern-level
-            # failures. Pass 1 keeps at least one patch per distinct
-            # lever; pass 2 fills the remaining budget by the
-            # public ``risk_level`` field, preserving stable
-            # original order within each risk group.
-            #
-            # Uses each patch's existing ``risk_level`` (set by
-            # ``proposals_to_patches`` via ``classify_risk``) — no
-            # private import from applier.
-            _LOCAL_RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
-            _known_levers = [1, 2, 3, 4, 5, 6]
-            _seen_levers: list[int] = []
-            _by_lever: dict[int, list[dict]] = {}
-            # Phase 4.3: also bucket by ``(lever, section_name)`` so a
-            # single ``rewrite_instruction`` that expanded into N
-            # section patches can't consume the whole Lever-5 budget.
-            _by_lever_section: dict[tuple[int, str], list[dict]] = {}
-            for p in patches:
-                try:
-                    L = int(p.get("lever", 5))
-                except (TypeError, ValueError):
-                    L = 5
-                if L not in _by_lever:
-                    _seen_levers.append(L)
-                _by_lever.setdefault(L, []).append(p)
-                _section_key = str(p.get("section_name") or p.get("section") or "")
-                _by_lever_section.setdefault((L, _section_key), []).append(p)
-            _lever_order = (
-                [L for L in _known_levers if L in _by_lever]
-                + [L for L in _seen_levers if L not in _known_levers]
+            from genie_space_optimizer.optimization.patch_selection import (
+                select_causal_patch_cap,
             )
 
-            kept: list[dict] = []
-            remaining: dict[int, list[dict]] = {
-                k: list(v) for k, v in _by_lever.items()
+            _before_cap = list(patches)
+            patches, _patch_cap_decisions = select_causal_patch_cap(
+                _before_cap,
+                max_patches=MAX_AG_PATCHES,
+            )
+            _selected_ids = {
+                str(p.get("proposal_id") or p.get("id") or "")
+                for p in patches
             }
-            # Phase 4.3 pass-1: take one patch per ``(lever, section)``
-            # pair so a single rewrite-instruction split can't dominate
-            # the entire Lever-5 budget. After this pass, every distinct
-            # section that the strategist proposed has at least one slot
-            # in the cap.
-            _seen_section_keys: set[tuple[int, str]] = set()
-            for L in _lever_order:
-                _bucket = remaining.get(L) or []
-                # Pull the first patch for each unique section in this
-                # lever's bucket, preserving original order.
-                _new_bucket: list[dict] = []
-                for _p in _bucket:
-                    _sec = str(_p.get("section_name") or _p.get("section") or "")
-                    _key = (L, _sec)
-                    if _key not in _seen_section_keys:
-                        kept.append(_p)
-                        _seen_section_keys.add(_key)
-                        if len(kept) >= MAX_AG_PATCHES:
-                            break
-                    else:
-                        _new_bucket.append(_p)
-                remaining[L] = _new_bucket + [
-                    _p for _p in _bucket
-                    if (L, str(_p.get("section_name") or _p.get("section") or ""))
-                    in _seen_section_keys and _p not in kept
-                ]
-                if len(kept) >= MAX_AG_PATCHES:
-                    break
-
-            # Pass 2: keep at least one patch per remaining lever (any
-            # section).  Preserves the original "diverse levers" goal.
-            for L in _lever_order:
-                if remaining.get(L) and L not in {int(p.get("lever", 5)) for p in kept}:
-                    kept.append(remaining[L].pop(0))
-                    if len(kept) >= MAX_AG_PATCHES:
-                        break
-
-            if len(kept) < MAX_AG_PATCHES:
-                _remaining_flat = [
-                    p for L in _lever_order for p in remaining.get(L, [])
-                ]
-                _remaining_flat.sort(
-                    key=lambda p: _LOCAL_RISK_ORDER.get(
-                        str(p.get("risk_level", "low")).lower(), 1
-                    ),
-                )
-                kept.extend(_remaining_flat[: MAX_AG_PATCHES - len(kept)])
-
-            _levers_kept = sorted({int(p.get("lever", 5)) for p in kept})
-            _levers_dropped = sorted(
-                {int(p.get("lever", 5)) for p in patches}
-                - set(_levers_kept)
-            )
+            _dropped_decisions = [
+                d for d in _patch_cap_decisions
+                if d.get("decision") == "dropped"
+            ]
             logger.warning(
-                "AG %s patch cap (diversity-aware): kept %d of %d. "
-                "Levers kept: %s; levers fully dropped: %s.",
-                ag_id, len(kept), len(patches),
-                _levers_kept, _levers_dropped,
+                "AG %s patch cap (causal-first): kept %d of %d. "
+                "Dropped proposal_ids=%s.",
+                ag_id,
+                len(patches),
+                len(_before_cap),
+                [d.get("proposal_id") for d in _dropped_decisions[:8]],
             )
             print(
-                _section(f"[{ag_id}] PATCH CAP APPLIED (diversity-aware)", "-") + "\n"
-                + _kv("Original size", len(patches)) + "\n"
-                + _kv("Kept", len(kept)) + "\n"
-                + _kv("Levers kept", _levers_kept) + "\n"
+                _section(f"[{ag_id}] PATCH CAP APPLIED (causal-first)", "-") + "\n"
+                + _kv("Original size", len(_before_cap)) + "\n"
+                + _kv("Kept", len(patches)) + "\n"
                 + _kv(
-                    "Levers fully dropped",
-                    _levers_dropped if _levers_dropped else "(none)",
+                    "Selected proposal_ids",
+                    sorted(pid for pid in _selected_ids if pid) or "(none)",
+                ) + "\n"
+                + _kv(
+                    "Dropped proposal_ids",
+                    [d.get("proposal_id") for d in _dropped_decisions[:8]]
+                    if _dropped_decisions else "(none)",
                 ) + "\n"
                 + _kv(
                     "Reason",
-                    "Diversity-aware cap: preserve one patch per distinct "
-                    "lever before filling by risk_level.",
+                    "Causal-first cap: relevance_score ranks before lever diversity.",
                 ) + "\n"
                 + _bar("-")
             )
-            patches = kept
 
         # T3.3: shadow apply. When enabled, the intent is to clone the
         # space, apply patches to the clone, eval, and promote only on

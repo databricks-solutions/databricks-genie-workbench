@@ -152,3 +152,15 @@ def test_diminishing_returns_skips_mixed_class_entries() -> None:
         _rb("full_eval: schema_accuracy", iteration=2),
     ]
     assert _diminishing_returns(buf, epsilon=2.0, lookback=2) is False
+
+
+def test_harness_patch_cap_uses_causal_selector_not_diversity_first_logic() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness)
+
+    assert "select_causal_patch_cap" in src
+    assert "Diversity-aware cap: preserve one patch per distinct lever" not in src
+    assert "PATCH CAP APPLIED (causal-first)" in src
