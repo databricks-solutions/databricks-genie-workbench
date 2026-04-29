@@ -58,6 +58,7 @@ from genie_space_optimizer.optimization.structured_metadata import (
     update_sections,
 )
 from genie_space_optimizer.common.genie_client import (
+    fetch_space_config,
     patch_space_config,
     sort_genie_config,
     strip_non_exportable_fields,
@@ -4143,6 +4144,47 @@ def validate_patch_set(patches: list[dict], metadata_snapshot: dict) -> tuple[bo
     from genie_space_optimizer.optimization.optimizer import validate_patch_set as _validate
 
     return _validate(patches, metadata_snapshot)
+
+
+def _canonical_for_rollback_compare(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(k): _canonical_for_rollback_compare(v)
+            for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+            if not str(k).startswith("_")
+        }
+    if isinstance(value, list):
+        return [_canonical_for_rollback_compare(v) for v in value]
+    return value
+
+
+def verify_rollback_restored(
+    *,
+    w: WorkspaceClient | None,
+    space_id: str,
+    expected_snapshot: dict,
+) -> dict:
+    """Fetch the live space and confirm rollback restored the pre-AG config."""
+    if w is None:
+        return {"verified": True, "reason": "no_workspace_client"}
+    try:
+        live = fetch_space_config(w, space_id)
+    except Exception as exc:
+        logger.exception("Failed to fetch Genie Space after rollback")
+        return {
+            "verified": False,
+            "reason": "fetch_failed",
+            "error": str(exc)[:500],
+        }
+
+    expected_norm = _canonical_for_rollback_compare(expected_snapshot or {})
+    live_norm = _canonical_for_rollback_compare(live or {})
+    if live_norm == expected_norm:
+        return {"verified": True, "reason": "matched_pre_snapshot"}
+    return {
+        "verified": False,
+        "reason": "live_config_differs_from_pre_snapshot",
+    }
 
 
 def verify_dual_persistence(applied_patches: list[dict]) -> list[dict]:
