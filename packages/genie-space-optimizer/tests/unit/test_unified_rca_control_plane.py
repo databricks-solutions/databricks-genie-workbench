@@ -575,3 +575,64 @@ def test_latest_run_shape_filters_cross_ag_themes_and_keeps_function_routing_pat
         plateau_detected=True,
         terminal_decision=terminal,
     ) is False
+
+
+def test_latest_7now_run_shape_accepts_target_fix_and_rejects_candidate_self_baseline() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    baseline_rows = [
+        {
+            "question_id": "7now_delivery_analytics_space_gs_022",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "ground_truth_correct",
+        },
+        {
+            "question_id": "7now_delivery_analytics_space_gs_013",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "ground_truth_correct",
+        },
+        {
+            "question_id": "7now_delivery_analytics_space_gs_021",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "neither_correct",
+        },
+    ]
+    candidate_rows = [
+        {
+            "question_id": "7now_delivery_analytics_space_gs_022",
+            "feedback/result_correctness/value": "yes",
+            "feedback/arbiter/value": "both_correct",
+        },
+        {
+            "question_id": "7now_delivery_analytics_space_gs_013",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "ground_truth_correct",
+        },
+        {
+            "question_id": "7now_delivery_analytics_space_gs_021",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "neither_correct",
+        },
+    ]
+
+    accepted = decide_control_plane_acceptance(
+        baseline_accuracy=85.7,
+        candidate_accuracy=95.2,
+        target_qids=("7now_delivery_analytics_space_gs_022",),
+        pre_rows=baseline_rows,
+        post_rows=candidate_rows,
+    )
+    self_baselined = decide_control_plane_acceptance(
+        baseline_accuracy=85.7,
+        candidate_accuracy=95.2,
+        target_qids=("7now_delivery_analytics_space_gs_022",),
+        pre_rows=candidate_rows,
+        post_rows=candidate_rows,
+    )
+
+    assert accepted.accepted is True
+    assert accepted.target_fixed_qids == ("7now_delivery_analytics_space_gs_022",)
+    assert self_baselined.accepted is False
+    assert self_baselined.reason_code == "target_qids_not_improved"
