@@ -46,6 +46,12 @@ def normalize_blame_set(value: Any) -> tuple[str, ...]:
 
 
 def normalize_blame_key(value: Any) -> tuple[str, ...] | str:
-    """Return the reflection/tried-cluster key shape for a blame set."""
+    """Return the reflection/tried-cluster key shape for a blame set.
+
+    The reflection identity contract sorts tokens so identity keys stay
+    stable across runs even when blame_set ordering differs.
+    """
     normalized = normalize_blame_set(value)
-    return normalized if normalized else ""
+    if not normalized:
+        return ""
+    return tuple(sorted(normalized))

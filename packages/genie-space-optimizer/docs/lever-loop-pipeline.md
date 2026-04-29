@@ -2723,3 +2723,33 @@ The lever loop preserves RCA intent through four gates:
 4. **RCA terminal authority.** Legacy plateau detection is advisory while `rca_terminal` reports `patchable_in_progress`. The loop stops before `max_iterations` only for convergence, benchmark defects, judge unreliability, or unpatchable RCA.
 
 Operators should inspect `genie_opt_lever_loop_decisions` with `gate_name IN ('proposal_grounding', 'patch_cap')` to follow a proposal from RCA theme through grounding and cap selection.
+
+## Acceptance And Rollback Control Contract
+
+The lever loop optimizes for `100%` post-arbiter accuracy across the full benchmark corpus.
+
+An action group is accepted only when:
+
+- post-arbiter accuracy improves over the last accepted baseline by the configured gain floor;
+- the action group's target QIDs move out of the patchable hard-failure set;
+- no out-of-target QID becomes a new patchable hard failure;
+- no objective-blocking exclusions remain when the loop claims `100%`;
+- every patchable hard cluster is covered by an AG, explicitly deferred, or escalated;
+- each applied patch has a stable parent proposal ID and expanded patch ID;
+- rollback verification is not needed because the candidate was accepted.
+
+An action group is rolled back when:
+
+- post-arbiter accuracy regresses or does not clear the gain floor;
+- the target QIDs do not improve;
+- an out-of-target hard regression appears;
+- the proposal bundle is unsafe to apply;
+- rollback verification fails after an attempted rollback, in which case the rollback is classified as infrastructure and the run must not learn content lessons from it.
+
+Threshold pass is diagnostic only. The loop does not stop at threshold pass unless the full post-arbiter objective is complete.
+
+RCA inputs must use canonical shapes:
+
+- `blame_set` is always a JSON/list shape equivalent to `list[str]`, never a stringified list such as `'["time_window = mtd"]'`;
+- defensive filters and required filters are separate RCA kinds, so `defensive_filter_added` cannot emit `add_sql_snippet_filter`;
+- a large actionable soft cluster may be included alongside hard clusters only through the bounded soft scheduling lane.
