@@ -160,3 +160,29 @@ def test_result_correctness_both_empty_maps_to_good() -> None:
     assert result["assessment"] == "GOOD"
     assert result["assessment_reasons"] == []
     assert result["reason_family"] == "deterministic"
+
+
+def test_format_asi_markdown_includes_genie_summary_and_json() -> None:
+    from genie_space_optimizer.optimization.evaluation import format_asi_markdown
+
+    metadata = {
+        "failure_type": "wrong_filter",
+        "confidence": 0.9,
+        "genie_equivalent_eval": build_genie_equivalent_eval(
+            judge_name="logical_accuracy",
+            value="no",
+            failure_type="wrong_filter",
+            confidence=0.9,
+        ),
+    }
+
+    rendered = format_asi_markdown(
+        judge_name="logical_accuracy",
+        value="no",
+        rationale="Filter condition is missing.",
+        metadata=metadata,
+    )
+
+    assert "Genie equivalent eval: BAD / LLM_JUDGE_MISSING_OR_INCORRECT_FILTER" in rendered
+    assert '"genie_equivalent_eval"' in rendered
+    assert '"failure_type": "wrong_filter"' in rendered

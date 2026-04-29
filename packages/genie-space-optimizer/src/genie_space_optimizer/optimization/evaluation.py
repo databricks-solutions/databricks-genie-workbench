@@ -32,6 +32,10 @@ import pandas as pd
 from mlflow.entities import AssessmentSource, Feedback
 from mlflow.genai.scorers import scorer
 
+from genie_space_optimizer.optimization.genie_eval_taxonomy import (
+    format_genie_eval_summary,
+)
+
 from genie_space_optimizer.common.config import (
     ASI_SCHEMA,
     BENCHMARK_CATEGORIES,
@@ -3172,6 +3176,14 @@ def format_asi_markdown(
     verdict = verdict_map.get(value, value)
     rationale_text = (rationale or "").strip() or "No rationale provided."
 
+    genie_eval_summary = ""
+    if isinstance(metadata, dict):
+        genie_eval_summary = format_genie_eval_summary(
+            metadata.get("genie_equivalent_eval")
+        )
+    if genie_eval_summary and genie_eval_summary not in rationale_text:
+        rationale_text = f"{genie_eval_summary}\n\n{rationale_text}"
+
     payload: dict[str, Any] = {
         "judge": judge_name,
         "verdict": verdict,
@@ -3201,6 +3213,7 @@ def format_asi_markdown(
             "quoted_metadata_text",
             "ambiguity_detected",
             "affected_question_pattern",
+            "genie_equivalent_eval",
         ):
             if key in metadata:
                 payload[key] = metadata[key]
