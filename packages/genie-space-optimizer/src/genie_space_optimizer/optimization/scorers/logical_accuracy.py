@@ -62,7 +62,7 @@ def _make_logical_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
             "- MEASURE() on a metric view is logically equivalent to SUM/AVG on the underlying\n"
             "  fact table. A TVF call can also produce logically correct answers.\n\n"
             f"{context}\n\n"
-            'Respond with JSON only: {"correct": true/false, "failure_type": "<wrong_aggregation|wrong_filter|wrong_groupby|wrong_orderby>", '
+            'Respond with JSON only: {"correct": true/false, "failure_type": "<wrong_aggregation|wrong_filter|wrong_groupby|wrong_orderby|wrong_measure|incorrect_function_usage|tvf_parameter_error|missing_instruction|business_logic_missing|formatting_error>", '
             '"wrong_clause": "<the problematic SQL clause>", "blame_set": ["<column_or_function>"], '
             '"counterfactual_fix": "<specific Genie Space metadata change that would fix this, referencing exact table/column names>", '
             '"rca_kind": "<metric_view_routing_confusion|measure_swap|canonical_dimension_missed|missing_required_dimension|extra_defensive_filter|unknown>", '

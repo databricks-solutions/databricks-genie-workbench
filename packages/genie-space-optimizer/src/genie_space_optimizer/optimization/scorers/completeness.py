@@ -88,7 +88,7 @@ def _make_completeness_judge(w: WorkspaceClient, catalog: str, schema: str):
             "3. Defensive IS NOT NULL or ORDER BY clauses are NOT completeness issues.\n"
             "4. GROUP BY ALL is semantically identical to explicit GROUP BY.\n\n"
             f"{context}\n\n"
-            'Respond with JSON only: {"complete": true/false, "failure_type": "<missing_column|missing_filter|missing_temporal_filter|missing_aggregation|partial_answer>", '
+            'Respond with JSON only: {"complete": true/false, "failure_type": "<missing_column|missing_filter|missing_temporal_filter|missing_aggregation|partial_answer|missing_instruction|business_logic_missing>", '
             '"blame_set": ["<missing_element>"], '
             '"counterfactual_fix": "<specific Genie Space metadata change that would fix this, referencing exact table/column names>", '
             '"rationale": "<brief explanation>"}\n'

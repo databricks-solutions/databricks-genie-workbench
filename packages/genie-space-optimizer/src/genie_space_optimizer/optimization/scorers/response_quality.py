@@ -78,7 +78,7 @@ def _make_response_quality_judge(w: WorkspaceClient, catalog: str, schema: str):
             "2. Correctly answers the user's question\n"
             "3. Does not make claims unsupported by the query/data\n\n"
             'Respond with JSON only: {"accurate": true/false, '
-            '"failure_type": "<inaccurate_description|unsupported_claim|misleading_summary>", '
+            '"failure_type": "<inaccurate_description|unsupported_claim|misleading_summary|formatting_error|misinterpreted_request>", '
             '"counterfactual_fix": "<specific change to Genie Space metadata or instructions that would fix this response quality issue>", '
             '"rationale": "<brief explanation>"}\n'
             'If accurate, set failure_type to "" and counterfactual_fix to "".'

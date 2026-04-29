@@ -248,7 +248,7 @@ def _make_arbiter_scorer(
             f"Ground Truth Result (first 5 rows):\n{gt_sample}\n\n"
             f"Genie Result (first 5 rows):\n{genie_sample}\n\n"
             'Respond with JSON only: {"verdict": "<genie_correct|ground_truth_correct|both_correct|neither_correct>", '
-            '"failure_type": "<wrong_aggregation|wrong_filter|wrong_table|other>", '
+            '"failure_type": "<wrong_aggregation|wrong_filter|wrong_table|wrong_column|wrong_join|wrong_measure|missing_instruction|misinterpreted_request|formatting_error|incorrect_function_usage|other>", '
             '"blame_set": ["<blamed_object>"], '
             '"rca_kind": "<metric_view_routing_confusion|measure_swap|canonical_dimension_missed|missing_required_dimension|extra_defensive_filter|unknown>", '
             '"expected_objects": ["<table_or_column_or_measure_expected>"], '

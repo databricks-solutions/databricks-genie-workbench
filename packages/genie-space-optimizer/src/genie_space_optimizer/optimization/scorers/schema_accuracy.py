@@ -68,7 +68,7 @@ def _make_schema_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
             "   - Column aliasing differences\n\n"
             f"{context}\n\n"
             'Respond with JSON only: {"correct": true/false, '
-            '"failure_type": "<wrong_table|wrong_column|wrong_join|missing_join_spec|wrong_join_spec|missing_column>", '
+            '"failure_type": "<wrong_table|wrong_column|wrong_join|missing_join_spec|wrong_join_spec|missing_column|incorrect_function_usage|tvf_parameter_error>", '
             '"wrong_clause": "<the problematic SQL clause>", "blame_set": ["<table_or_column>"], '
             '"counterfactual_fix": "<specific Genie Space metadata change that would fix this, referencing exact table/column names>", '
             '"rca_kind": "<metric_view_routing_confusion|measure_swap|canonical_dimension_missed|missing_required_dimension|extra_defensive_filter|unknown>", '

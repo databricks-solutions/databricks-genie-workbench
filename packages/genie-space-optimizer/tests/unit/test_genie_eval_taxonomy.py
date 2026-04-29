@@ -206,3 +206,57 @@ def test_result_correctness_column_type_difference_takes_precedence_after_shape(
     )
 
     assert result["primary_assessment_reason"] == "COLUMN_TYPE_DIFFERENCE"
+
+
+def test_function_usage_gap_maps_from_existing_judges() -> None:
+    for judge_name in ("syntax_validity", "schema_accuracy", "logical_accuracy", "asset_routing"):
+        result = build_genie_equivalent_eval(
+            judge_name=judge_name,
+            value="no",
+            failure_type="incorrect_function_usage",
+            confidence=0.9,
+        )
+        assert result["primary_assessment_reason"] == "LLM_JUDGE_INCORRECT_FUNCTION_USAGE"
+
+
+def test_formatting_gap_maps_from_existing_judges() -> None:
+    for judge_name in ("logical_accuracy", "response_quality", "arbiter"):
+        result = build_genie_equivalent_eval(
+            judge_name=judge_name,
+            value="no",
+            failure_type="formatting_error",
+            confidence=0.9,
+        )
+        assert result["primary_assessment_reason"] == "LLM_JUDGE_FORMATTING_ERROR"
+
+
+def test_instruction_compliance_gap_maps_from_existing_judges() -> None:
+    for judge_name in ("logical_accuracy", "completeness", "arbiter"):
+        result = build_genie_equivalent_eval(
+            judge_name=judge_name,
+            value="no",
+            failure_type="missing_instruction",
+            confidence=0.9,
+        )
+        assert (
+            result["primary_assessment_reason"]
+            == "LLM_JUDGE_INSTRUCTION_COMPLIANCE_OR_MISSING_BUSINESS_LOGIC"
+        )
+
+
+def test_user_request_misinterpretation_gap_maps_from_existing_judges() -> None:
+    for judge_name, failure_type in (
+        ("semantic_equivalence", "different_scope"),
+        ("response_quality", "misleading_summary"),
+        ("arbiter", "misinterpreted_request"),
+    ):
+        result = build_genie_equivalent_eval(
+            judge_name=judge_name,
+            value="no",
+            failure_type=failure_type,
+            confidence=0.9,
+        )
+        assert (
+            result["primary_assessment_reason"]
+            == "LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST"
+        )

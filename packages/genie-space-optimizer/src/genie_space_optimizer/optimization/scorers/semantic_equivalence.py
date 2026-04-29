@@ -64,7 +64,7 @@ def _make_semantic_equivalence_judge(w: WorkspaceClient, catalog: str, schema: s
             "- A TVF and metric view covering the same domain are equivalent.\n"
             "- Focus on whether BOTH queries answer the SAME question.\n\n"
             f"{context}\n\n"
-            'Respond with JSON only: {"equivalent": true/false, "failure_type": "<different_metric|different_grain|different_scope>", '
+            'Respond with JSON only: {"equivalent": true/false, "failure_type": "<different_metric|different_grain|different_scope|misinterpreted_request>", '
             '"blame_set": ["<metric_or_dimension>"], '
             '"counterfactual_fix": "<specific Genie Space metadata change that would fix this, referencing exact table/column names>", '
             '"rationale": "<brief explanation>"}\n'
