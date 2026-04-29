@@ -186,3 +186,23 @@ def test_format_asi_markdown_includes_genie_summary_and_json() -> None:
     assert "Genie equivalent eval: BAD / LLM_JUDGE_MISSING_OR_INCORRECT_FILTER" in rendered
     assert '"genie_equivalent_eval"' in rendered
     assert '"failure_type": "wrong_filter"' in rendered
+
+
+def test_result_correctness_column_type_difference_takes_precedence_after_shape() -> None:
+    result = build_genie_equivalent_eval(
+        judge_name="result_correctness",
+        value="no",
+        failure_type="wrong_aggregation",
+        confidence=0.8,
+        comparison={
+            "gt_rows": 3,
+            "genie_rows": 3,
+            "gt_columns": ["customer_id"],
+            "genie_columns": ["customer_id"],
+            "column_type_difference": True,
+            "gt_column_types": {"customer_id": "int64"},
+            "genie_column_types": {"customer_id": "object"},
+        },
+    )
+
+    assert result["primary_assessment_reason"] == "COLUMN_TYPE_DIFFERENCE"

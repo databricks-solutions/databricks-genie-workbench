@@ -4835,6 +4835,15 @@ def make_predict_fn(
                                         "genie_rows": 0,
                                         "gt_columns": sorted(gt_df.columns.tolist()),
                                         "genie_columns": sorted(genie_df.columns.tolist()),
+                                        "gt_column_types": {
+                                            str(col): str(dtype)
+                                            for col, dtype in gt_df.dtypes.items()
+                                        },
+                                        "genie_column_types": {
+                                            str(col): str(dtype)
+                                            for col, dtype in genie_df.dtypes.items()
+                                        },
+                                        "column_type_difference": False,
                                         "gt_hash": "",
                                         "genie_hash": "",
                                         "error": None,
@@ -5109,6 +5118,22 @@ def make_predict_fn(
 
                                     gt_col_list = sorted(gt_df.columns.tolist())
                                     genie_col_list = sorted(genie_df.columns.tolist())
+                                    gt_column_types = {
+                                        str(col): str(dtype)
+                                        for col, dtype in gt_df.dtypes.items()
+                                    }
+                                    genie_column_types = {
+                                        str(col): str(dtype)
+                                        for col, dtype in genie_df.dtypes.items()
+                                    }
+                                    try:
+                                        column_type_difference = bool(
+                                            gt_col_list == genie_col_list
+                                            and gt_column_types != genie_column_types
+                                            and gt_df.astype(str).equals(genie_df.astype(str))
+                                        )
+                                    except Exception:
+                                        column_type_difference = False
                                     comparison = {
                                         "match": exact_match or hash_match or subset_match or approx_match or tied_subset or cosmetic_match or sig_match,
                                         "match_type": match_type,
@@ -5116,6 +5141,9 @@ def make_predict_fn(
                                         "genie_rows": len(genie_df),
                                         "gt_columns": gt_col_list,
                                         "genie_columns": genie_col_list,
+                                        "gt_column_types": gt_column_types,
+                                        "genie_column_types": genie_column_types,
+                                        "column_type_difference": column_type_difference,
                                         "gt_hash": gt_hash,
                                         "genie_hash": genie_hash,
                                         "gt_hash_sorted": gt_hash_sorted,
