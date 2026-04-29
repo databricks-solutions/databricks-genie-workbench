@@ -7046,6 +7046,54 @@ def _rca_themes_requesting_synthesis(themes: list[Any]) -> list[Any]:
     return out
 
 
+def _cluster_from_rca_example_theme(theme: Any) -> dict:
+    """Project an RCA theme into a cluster-shaped dict for cluster-driven synthesis.
+
+    The cluster-driven engine reads ``cluster_id``, ``root_cause``,
+    ``asi_blame_set``, ``asi_counterfactual_fixes``, and ``question_ids``
+    via ``format_afs``. We synthesize that shape from the RCA theme so the
+    same engine can be reused for both strategist-driven and RCA-driven
+    Example SQL requests.
+    """
+    patches = list(getattr(theme, "patches", ()) or ())
+    synth_patch = next(
+        (
+            p for p in patches
+            if isinstance(p, dict)
+            and p.get("type") == "request_example_sql_synthesis"
+        ),
+        {},
+    )
+    target_qids = [
+        str(q)
+        for q in (getattr(theme, "target_qids", ()) or ())
+        if str(q)
+    ]
+    blame_set = synth_patch.get("blame_set") or list(
+        getattr(theme, "touched_objects", ()) or ()
+    )
+    return {
+        "cluster_id": str(getattr(theme, "rca_id", "") or "rca_theme"),
+        "root_cause": str(
+            synth_patch.get("root_cause")
+            or getattr(getattr(theme, "rca_kind", None), "value", "")
+            or "rca_example_sql"
+        ),
+        "affected_judge": "rca",
+        "asi_blame_set": list(blame_set or []),
+        "asi_counterfactual_fixes": [
+            str(
+                synth_patch.get("intent")
+                or "Synthesize a counterfactual teaching example for this RCA shape."
+            )
+        ],
+        "question_ids": target_qids,
+        "target_qids": target_qids,
+        "rca_id": str(getattr(theme, "rca_id", "")),
+        "patch_family": str(getattr(theme, "patch_family", "")),
+    }
+
+
 _RCA_SQL_SNIPPET_PATCH_TYPES: frozenset[str] = frozenset({
     "add_sql_snippet_measure",
     "add_sql_snippet_filter",
@@ -13612,29 +13660,44 @@ def generate_proposals_from_strategy(
 
             if ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS:
                 try:
-                    from genie_space_optimizer.optimization.leakage import (
-                        BenchmarkCorpus,
-                    )
-                    from genie_space_optimizer.optimization.synthesis import (
-                        synthesize_example_sqls_for_rca,
+                    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+                        run_cluster_driven_synthesis_for_single_cluster,
                     )
 
-                    _corpus = BenchmarkCorpus.from_benchmarks(benchmarks or [])
                     for _theme in _rca_themes_requesting_synthesis(
                         metadata_snapshot.get("_rca_themes") or []
                     ):
-                        _proposal = synthesize_example_sqls_for_rca(
-                            _theme,
+                        _cluster = _cluster_from_rca_example_theme(_theme)
+                        _proposal = run_cluster_driven_synthesis_for_single_cluster(
+                            _cluster,
                             metadata_snapshot,
-                            _corpus,
-                            w=w,
-                            spark=spark,
+                            benchmarks=benchmarks,
                             catalog=catalog,
                             gold_schema=gold_schema,
                             warehouse_id=warehouse_id,
+                            w=w,
+                            spark=spark,
                         )
                         if not _proposal:
                             continue
+                        _proposal["source"] = "rca_teaching_kit"
+                        _proposal.setdefault(
+                            "rca_id", str(getattr(_theme, "rca_id", "")),
+                        )
+                        _proposal.setdefault(
+                            "target_qids",
+                            list(getattr(_theme, "target_qids", ()) or ()),
+                        )
+                        _proposal.setdefault(
+                            "provenance",
+                            {
+                                **provenance_base,
+                                "patch_type": "add_example_sql",
+                                "synthesis_source": "rca_teaching_kit",
+                                "rca_id": _proposal.get("rca_id", ""),
+                                "kit_id": _proposal.get("kit_id", ""),
+                            },
+                        )
                         _proposal.setdefault(
                             "proposal_id",
                             f"P{len(proposals) + 1:03d}",
@@ -13651,6 +13714,46 @@ def generate_proposals_from_strategy(
                             DUAL_PERSIST_PATHS.get(5, DUAL_PERSIST_PATHS[5]),
                         )
                         proposals.append(_proposal)
+
+                        for _support in _proposal.get("_supporting_proposals", []) or []:
+                            if not isinstance(_support, dict):
+                                continue
+                            _support.setdefault("proposal_id", f"P{len(proposals) + 1:03d}")
+                            _support.setdefault("cluster_id", f"{ag_id}_KIT")
+                            _support.setdefault("lever", _support.get("lever", 5))
+                            _support.setdefault("scope", "genie_config")
+                            _support.setdefault(
+                                "change_description",
+                                f"[{ag_id}] Teaching kit support: {_support.get('patch_type', '?')}",
+                            )
+                            _support.setdefault(
+                                "rationale",
+                                f"Support patch for teaching kit {_proposal.get('kit_id', '')}",
+                            )
+                            _support.setdefault(
+                                "dual_persistence",
+                                DUAL_PERSIST_PATHS.get(int(_support.get("lever", 5)), DUAL_PERSIST_PATHS[5]),
+                            )
+                            _support.setdefault("confidence", 0.8)
+                            _support.setdefault(
+                                "questions_fixed",
+                                len(_proposal.get("target_qids", []) or []),
+                            )
+                            _support.setdefault("questions_at_risk", 0)
+                            _support.setdefault("net_impact", 0.7)
+                            _support.setdefault(
+                                "target_qids", _proposal.get("target_qids", []),
+                            )
+                            _support.setdefault("kit_id", _proposal.get("kit_id", ""))
+                            _support["provenance"] = {
+                                **provenance_base,
+                                **(_support.get("provenance") or {}),
+                                "patch_type": _support.get("patch_type", ""),
+                                "synthesis_source": "cluster_driven_teaching_kit",
+                                "kit_id": _support.get("kit_id", ""),
+                                "source_cluster_id": _proposal.get("_cluster_id", ""),
+                            }
+                            proposals.append(_support)
                 except Exception:
                     logger.debug("RCA example SQL synthesis failed", exc_info=True)
 

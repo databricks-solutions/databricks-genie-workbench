@@ -1080,11 +1080,13 @@ def synthesize_example_sqls_for_rca(
     warehouse_id: str = "",
     llm_caller: Callable[[str], str] | None = None,
 ) -> dict | None:
-    """Synthesize an original example SQL from an RCA theme.
+    """Compatibility wrapper for legacy tests and callers.
 
-    Uses the same validator as normal synthesis. This is only a request
-    bridge; it does not persist anything and does not bypass leakage
-    checks.
+    Production RCA Example SQL synthesis is routed through
+    optimizer._cluster_from_rca_example_theme plus
+    cluster_driven_synthesis.run_cluster_driven_synthesis_for_single_cluster
+    so RCA, strategist, cluster-driven validation, and teaching-kit support
+    share one path.
     """
     afs = afs_from_rca_theme(theme)
     from genie_space_optimizer.optimization.archetypes import pick_archetype

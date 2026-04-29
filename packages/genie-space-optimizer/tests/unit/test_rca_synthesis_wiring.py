@@ -38,25 +38,42 @@ def test_rca_example_synthesis_request_omits_benchmark_question_and_expected_sql
     assert "expected_sql" not in str(afs)
 
 
-def test_synthesize_example_sqls_for_rca_reuses_existing_validator(monkeypatch):
-    from genie_space_optimizer.optimization import synthesis
+def test_rca_example_synthesis_uses_cluster_driven_engine(monkeypatch):
+    from genie_space_optimizer.optimization import optimizer
     from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
 
-    called = {"validate": False}
+    calls = {"cluster_driven": 0}
 
-    def fake_validate(proposal, **kwargs):
-        called["validate"] = True
-        return True, []
-
-    monkeypatch.setattr(synthesis, "validate_synthesis_proposal", fake_validate)
-    monkeypatch.setattr(
-        synthesis,
-        "_extract_json_proposal",
-        lambda raw: {
+    def fake_cluster_driven(cluster, metadata_snapshot, **kwargs):
+        calls["cluster_driven"] += 1
+        assert cluster["cluster_id"] == "rca_shape"
+        assert cluster["root_cause"] == "wrong_grouping"
+        assert cluster["question_ids"] == ["q1"]
+        assert cluster["rca_id"] == "rca_shape"
+        return {
             "patch_type": "add_example_sql",
-            "example_question": "Show monthly sales by category",
-            "example_sql": "SELECT category, SUM(sales) FROM orders GROUP BY category",
-        },
+            "example_question": "Show sales by category",
+            "example_sql": "SELECT category, SUM(sales) FROM cat.sch.orders GROUP BY category",
+            "usage_guidance": "Use for category aggregations.",
+            "_archetype_name": "simple_group_by",
+            "_cluster_id": "rca_shape",
+            "kit_id": "kit_rca_shape_1",
+            "target_qids": ["q1"],
+            "_supporting_proposals": [],
+        }
+
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.cluster_driven_synthesis.run_cluster_driven_synthesis_for_single_cluster",
+        fake_cluster_driven,
+    )
+    monkeypatch.setattr(optimizer, "ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS", True)
+    # Stub validator: the fake cluster-driven proposal references
+    # ``cat.sch.orders`` which is not in the empty snapshot, so the
+    # downstream Lever-5 identifier firewall would otherwise reject it.
+    monkeypatch.setattr(
+        optimizer,
+        "_validate_lever5_proposals",
+        lambda proposals, *_a, **_kw: proposals,
     )
 
     theme = RcaPatchTheme(
@@ -68,24 +85,35 @@ def test_synthesize_example_sqls_for_rca_reuses_existing_validator(monkeypatch):
                 "type": "request_example_sql_synthesis",
                 "lever": 5,
                 "root_cause": "wrong_grouping",
-                "blame_set": ["category", "sales"],
+                "blame_set": ["cat.sch.orders", "category", "sales"],
             },
         ),
         target_qids=("q1",),
         touched_objects=("category", "sales"),
     )
 
-    proposal = synthesis.synthesize_example_sqls_for_rca(
-        theme,
-        metadata_snapshot={},
-        benchmark_corpus=None,
-        llm_caller=lambda prompt: "{}",
+    proposals = optimizer.generate_proposals_from_strategy(
+        strategy={},
+        action_group={
+            "id": "AG_RCA",
+            "root_cause_summary": "wrong grouping",
+            "affected_questions": ["q1"],
+            "source_cluster_ids": [],
+            "lever_directives": {},
+        },
+        metadata_snapshot={
+            "_rca_themes": [theme],
+            "instructions": {},
+            "data_sources": {"tables": [], "metric_views": []},
+            "_space_id": "SP123",
+        },
+        target_lever=5,
+        apply_mode="genie_config",
+        benchmarks=[],
     )
 
-    assert called["validate"] is True
-    assert proposal["patch_type"] == "add_example_sql"
-    assert proposal["rca_id"] == "rca_shape"
-    assert proposal["source"] == "rca_theme"
+    assert calls["cluster_driven"] == 1
+    assert any(p.get("source") == "rca_teaching_kit" for p in proposals)
 
 
 def test_rca_example_synthesis_flag_is_imported_by_optimizer() -> None:
@@ -96,7 +124,8 @@ def test_rca_example_synthesis_flag_is_imported_by_optimizer() -> None:
     src = inspect.getsource(optimizer)
 
     assert "ENABLE_RCA_EXAMPLE_SQL_SYNTHESIS" in src
-    assert "synthesize_example_sqls_for_rca" in src
+    assert "run_cluster_driven_synthesis_for_single_cluster" in src
+    assert "_cluster_from_rca_example_theme" in src
 
 
 def test_rca_synthesis_requests_are_collected_from_selected_themes() -> None:
