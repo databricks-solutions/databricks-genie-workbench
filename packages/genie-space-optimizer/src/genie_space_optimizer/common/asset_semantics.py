@@ -607,6 +607,96 @@ def asset_semantics_entry(config: dict, identifier: str) -> dict | None:
     return None
 
 
+@dataclass(frozen=True)
+class EffectiveDataSourceSplit:
+    """Raw Genie shelves reclassified through the asset-semantics contract."""
+
+    tables: list[dict]
+    metric_views: list[dict]
+    unknown: list[dict]
+    raw_table_count: int
+    raw_metric_view_count: int
+
+
+def _entry_identifier(entry: dict) -> str:
+    return str(entry.get("identifier") or entry.get("name") or "").strip()
+
+
+def _entry_key(entry: dict) -> str:
+    return _entry_identifier(entry).lower()
+
+
+def _entry_has_measure_columns(entry: dict) -> bool:
+    for cc in entry.get("column_configs", []) or []:
+        if not isinstance(cc, dict):
+            continue
+        if str(cc.get("column_type") or "").lower() == "measure":
+            return True
+        if cc.get("is_measure"):
+            return True
+    return False
+
+
+def effective_data_source_split(config: dict) -> EffectiveDataSourceSplit:
+    """Return data-source entries reclassified by ``_asset_semantics``.
+
+    This is the enrichment-facing source of truth. It preserves raw Genie
+    shelf counts for logs, but consumers should use ``tables``,
+    ``metric_views``, and ``unknown`` instead of deriving type from raw
+    shelf placement.
+    """
+    parsed = config.get("_parsed_space", config)
+    if not isinstance(parsed, dict):
+        return EffectiveDataSourceSplit([], [], [], 0, 0)
+
+    ds = parsed.get("data_sources", {})
+    if not isinstance(ds, dict):
+        return EffectiveDataSourceSplit([], [], [], 0, 0)
+
+    raw_tables = [t for t in (ds.get("tables", []) or []) if isinstance(t, dict)]
+    raw_mvs = [mv for mv in (ds.get("metric_views", []) or []) if isinstance(mv, dict)]
+
+    tables: list[dict] = []
+    metric_views: list[dict] = []
+    unknown: list[dict] = []
+    seen_mv: set[str] = set()
+
+    def _append_mv(entry: dict) -> None:
+        key = _entry_key(entry)
+        if key and key in seen_mv:
+            return
+        if key:
+            seen_mv.add(key)
+        metric_views.append(entry)
+
+    for mv in raw_mvs:
+        _append_mv(mv)
+
+    for tbl in raw_tables:
+        ident = _entry_identifier(tbl)
+        entry = asset_semantics_entry(config, ident)
+        kind = str((entry or {}).get("kind") or "")
+        outcome = str((entry or {}).get("outcome") or "")
+
+        if kind == KIND_METRIC_VIEW or _entry_has_measure_columns(tbl):
+            _append_mv(tbl)
+            continue
+
+        if kind == KIND_UNKNOWN and outcome in UNRESOLVED_CATALOG_OUTCOMES:
+            unknown.append(tbl)
+            continue
+
+        tables.append(tbl)
+
+    return EffectiveDataSourceSplit(
+        tables=tables,
+        metric_views=metric_views,
+        unknown=unknown,
+        raw_table_count=len(raw_tables),
+        raw_metric_view_count=len(raw_mvs),
+    )
+
+
 def direct_join_block_reason(config: dict, identifier: str) -> str | None:
     """Return why ``identifier`` is unsafe for direct joins, if blocked."""
     entry = asset_semantics_entry(config, identifier)
