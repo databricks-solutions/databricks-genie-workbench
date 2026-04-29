@@ -317,6 +317,8 @@ def test_harness_attaches_structural_candidates_only_for_lever6_action_groups() 
     assert '"_lever6_structural_candidates"' in src
     assert "target_qids_from_action_group" in src
     assert "if \"6\" in lever_keys" in src or "if 6 in" in src
+    assert "Lever 6 structural candidates from failed GT SQL" in src
+    assert "_lever6_structural_candidates" in src
 
 
 def test_failed_question_gt_sql_flows_to_rca_forced_lever6_structural_candidate(monkeypatch) -> None:

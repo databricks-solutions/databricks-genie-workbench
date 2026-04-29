@@ -10147,6 +10147,23 @@ def _run_lever_loop(
                         ag_id,
                         len(_structural_candidates),
                     )
+                    print(
+                        _section(
+                            f"LEVER 6 STRUCTURAL SQL LEARNING [{ag_id}]",
+                            "-",
+                        )
+                        + "\n"
+                        + _kv("Scoped rows", len(_structural_rows))
+                        + "\n"
+                        + _kv("Candidates", len(_structural_candidates))
+                        + "\n"
+                        + _kv(
+                            "Source",
+                            "arbiter-approved failed question expected_sql",
+                        )
+                        + "\n"
+                        + _bar("-")
+                    )
             except Exception:
                 logger.debug(
                     "Failed to attach Lever 6 structural candidates",
