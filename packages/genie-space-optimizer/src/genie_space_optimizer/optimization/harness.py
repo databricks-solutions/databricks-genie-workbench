@@ -438,6 +438,40 @@ def _rows_from_iteration_payload(iteration_row: dict | None) -> list[dict]:
     return [row for row in rows_json if isinstance(row, dict)]
 
 
+_COLUMN_TARGETED_PATCH_TYPES = frozenset({
+    "update_column_description",
+    "add_column_synonym",
+})
+
+
+def _classify_proposal_log_status(proposal: dict) -> str:
+    """Return the operator-facing status for the proposal log block.
+
+    Earlier code looked only at the rationale ("not valid JSON" / "non-JSON")
+    so a proposal with a malformed column target showed ``Status: OK`` even
+    though it would be silently dropped by ``applier.proposals_to_patches``.
+    This helper makes invalid column targets visible at log time.
+    """
+    rationale = str(proposal.get("rationale") or "")
+    if "not valid JSON" in rationale or "non-JSON" in rationale.lower():
+        return "FAILED (non-JSON)"
+    ptype = str(proposal.get("type") or proposal.get("patch_type") or "")
+    if ptype in _COLUMN_TARGETED_PATCH_TYPES:
+        from genie_space_optimizer.optimization.applier import (
+            _single_column_target,
+        )
+
+        col = _single_column_target(
+            proposal.get("column")
+            or proposal.get("column_name")
+            or proposal.get("target_column")
+            or proposal.get("target")
+        )
+        if not col:
+            return "INVALID_TARGET"
+    return "OK"
+
+
 def _iteration_label(counter: int) -> str:
     """T3.17: Unified label for iteration_counter in log banners.
 
@@ -10949,12 +10983,13 @@ def _run_lever_loop(
             proposed_value = str(p.get("proposed_value", ""))
             table = p.get("table", "")
             column = p.get("column", "")
-            is_failed = "not valid JSON" in rationale or "non-JSON" in rationale.lower()
-            if is_failed:
+            status = _classify_proposal_log_status(p)
+            if status == "FAILED (non-JSON)":
+                _n_failed += 1
+            elif status == "INVALID_TARGET":
                 _n_failed += 1
             else:
                 _n_valid += 1
-            status = "FAILED (non-JSON)" if is_failed else "OK"
 
             proposal_lines.append(f"|  Proposal {pi} / {len(all_proposals)}  [{cluster_id}]")
             proposal_lines.append(f"|    {'Type:':<24s} {ptype}")
