@@ -186,3 +186,32 @@ def test_execution_plan_uses_theme_recommended_levers_even_if_patch_intents_are_
     plans = build_rca_execution_plans([theme])
 
     assert plans[0].required_levers == (1, 5, 6)
+
+
+def test_repeated_no_overlap_forces_patch_family_rotation() -> None:
+    from genie_space_optimizer.optimization.rca_execution import (
+        next_grounding_remediation,
+    )
+
+    reflection_buffer = [
+        {
+            "accepted": False,
+            "rollback_reason": "no_grounded_patches",
+            "rca_execution": {"rca_ids": ["rca_topn"], "required_levers": [1, 5, 6]},
+            "grounding_failure_category": "no_overlap",
+        },
+        {
+            "accepted": False,
+            "rollback_reason": "no_grounded_patches",
+            "rca_execution": {"rca_ids": ["rca_topn"], "required_levers": [1, 5, 6]},
+            "grounding_failure_category": "no_overlap",
+        },
+    ]
+
+    remediation = next_grounding_remediation(
+        reflection_buffer,
+        target_rca_ids=("rca_topn",),
+    )
+
+    assert remediation["action"] == "rotate_patch_family"
+    assert remediation["forced_levers"] == (5, 6)

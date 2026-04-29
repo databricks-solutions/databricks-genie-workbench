@@ -10058,6 +10058,7 @@ def _run_lever_loop(
         try:
             from genie_space_optimizer.optimization.rca_execution import (
                 forced_levers_from_reflections,
+                next_grounding_remediation,
                 plans_for_action_group,
                 required_levers_for_action_group,
                 union_execution_levers,
@@ -10076,8 +10077,18 @@ def _run_lever_loop(
                 target_rca_ids=tuple(p.rca_id for p in _rca_plans_for_ag),
                 min_repeats=2,
             )
+            _grounding_remediation = next_grounding_remediation(
+                reflection_buffer,
+                target_rca_ids=tuple(p.rca_id for p in _rca_plans_for_ag),
+            )
+            _forced_from_grounding = tuple(
+                int(x)
+                for x in (_grounding_remediation.get("forced_levers") or ())
+            )
             _all_required_rca_levers = tuple(dict.fromkeys(
-                list(_rca_required_levers) + list(_forced_from_reflections)
+                list(_rca_required_levers)
+                + list(_forced_from_reflections)
+                + list(_forced_from_grounding)
             ))
             if _all_required_rca_levers:
                 ag["_rca_execution"] = {
@@ -10088,6 +10099,7 @@ def _run_lever_loop(
                         term for p in _rca_plans_for_ag for term in p.grounding_terms
                     }),
                     "forced_from_reflections": list(_forced_from_reflections),
+                    "grounding_remediation": _grounding_remediation.get("action", "none"),
                 }
                 lever_keys = union_execution_levers(
                     lever_keys,
@@ -10570,6 +10582,7 @@ def _run_lever_loop(
         # questions' SQL or NL surface. Drop patches that cannot
         # plausibly affect any failing question before the diversity
         # cap so the resulting bundle is causally auditable.
+        _dominant_grounding_category = ""
         try:
             from genie_space_optimizer.common.config import (
                 MIN_PROPOSAL_RELEVANCE,
@@ -10640,6 +10653,19 @@ def _run_lever_loop(
                 })
 
             _dropped = [d for d in _audit_decisions_grounding if d[2] == "dropped"]
+            _dropped_grounding_patches = [
+                patch for patch, _score, decision in _audit_decisions_grounding
+                if decision == "dropped"
+            ]
+            _grounding_categories = [
+                str(patch.get("_grounding_failure_category") or "")
+                for patch in _dropped_grounding_patches
+                if str(patch.get("_grounding_failure_category") or "")
+            ]
+            _dominant_grounding_category = (
+                max(set(_grounding_categories), key=_grounding_categories.count)
+                if _grounding_categories else ""
+            )
             if _dropped:
                 logger.info(
                     "Task 5 grounding [%s]: dropped %d/%d ungrounded patches "
@@ -10797,6 +10823,7 @@ def _run_lever_loop(
                     "rca_execution": ag.get("_rca_execution", {}),
                     "grounding_failure_stage": "post_grounding",
                     "grounding_failure_reason": _grounding_skip.reason_code,
+                    "grounding_failure_category": _dominant_grounding_category,
                 },
                 **_ag_identity_kwargs,
             ))

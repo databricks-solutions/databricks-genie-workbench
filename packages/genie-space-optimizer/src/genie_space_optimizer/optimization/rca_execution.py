@@ -261,6 +261,45 @@ def forced_levers_from_reflections(
     return tuple(int(x) for x in _dedupe(forced))
 
 
+def next_grounding_remediation(
+    reflection_buffer: Iterable[dict],
+    *,
+    target_rca_ids: Iterable[str],
+    min_repeats: int = 2,
+) -> dict:
+    """Inspect repeated ungrounded reflections and recommend remediation.
+
+    Returns ``action`` plus ``forced_levers``: when grounding has failed for
+    the same RCA target ``min_repeats`` times with the same category, ask the
+    harness to repair the grounding contract or rotate to a different patch
+    family rather than retrying the same dead end.
+    """
+    target_ids = {str(x) for x in target_rca_ids or [] if str(x)}
+    counts: dict[str, int] = {}
+    for entry in reflection_buffer or []:
+        if entry.get("accepted"):
+            continue
+        if entry.get("rollback_reason") != "no_grounded_patches":
+            continue
+        payload = entry.get("rca_execution")
+        if not isinstance(payload, dict):
+            continue
+        ids = {str(x) for x in (payload.get("rca_ids") or []) if str(x)}
+        if target_ids and not (ids & target_ids):
+            continue
+        category = str(entry.get("grounding_failure_category") or "unknown")
+        counts[category] = counts.get(category, 0) + 1
+
+    for category, count in counts.items():
+        if count < min_repeats:
+            continue
+        if category in {"no_scoped_rows", "empty_surface"}:
+            return {"action": "repair_grounding_contract", "forced_levers": ()}
+        if category in {"no_overlap", "below_min_relevance"}:
+            return {"action": "rotate_patch_family", "forced_levers": (5, 6)}
+    return {"action": "none", "forced_levers": ()}
+
+
 def plans_for_action_group(
     action_group: dict,
     plans: Iterable[RcaExecutionPlan],
