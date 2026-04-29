@@ -333,6 +333,64 @@ class TestOrchestrator:
             )
         assert result is None
 
+    def test_successful_path_returns_teaching_kit_supporting_proposals(self):
+        snap = _mk_snapshot()
+
+        def fake_kit_llm(prompt: str) -> str:
+            return (
+                '{"kit_summary": "Teach grain and term mapping", '
+                '"example_sql": {'
+                '"example_question": "Which regions have the highest sales?", '
+                '"example_sql": "SELECT region, SUM(amount) FROM cat.sch.fact_sales GROUP BY region", '
+                '"usage_guidance": "Use for regional aggregation."'
+                '}, '
+                '"supporting_changes": ['
+                '{"patch_type": "add_column_synonym", '
+                '"table": "cat.sch.fact_sales", "column": "region", '
+                '"synonyms": ["sales region"]}, '
+                '{"patch_type": "add_sql_snippet_measure", '
+                '"display_name": "Total Sales", "sql": "SUM(amount)", '
+                '"instruction": "Use for total sales.", '
+                '"target_table": "cat.sch.fact_sales"}'
+                ']}'
+            )
+
+        with patch(
+            "genie_space_optimizer.optimization.cluster_driven_synthesis.validate_synthesis_proposal",
+            side_effect=_all_gates_pass,
+        ), patch(
+            "genie_space_optimizer.optimization.preflight_synthesis._gate_genie_agreement",
+            side_effect=_genie_agreement_passes,
+        ), patch(
+            "genie_space_optimizer.optimization.cluster_driven_synthesis._validate_supporting_sql_snippet",
+            side_effect=lambda proposal, **kwargs: {
+                **proposal,
+                "validation_passed": True,
+                "sql_snippet": {
+                    "id": "snip1",
+                    "name": proposal["display_name"],
+                    "sql": proposal["sql"],
+                },
+            },
+        ):
+            result = run_cluster_driven_synthesis_for_single_cluster(
+                _mk_cluster(),
+                snap,
+                benchmarks=[],
+                llm_caller=fake_kit_llm,
+            )
+
+        assert result is not None
+        assert result["patch_type"] == "add_example_sql"
+        assert result["kit_id"].startswith("kit_C1_")
+        supporting = result["_supporting_proposals"]
+        assert [p["patch_type"] for p in supporting] == [
+            "add_column_synonym",
+            "add_sql_snippet_measure",
+        ]
+        assert all(p["kit_id"] == result["kit_id"] for p in supporting)
+        assert supporting[1]["validation_passed"] is True
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 3. Lever 5 intercept (4 tests)

@@ -286,7 +286,48 @@ def render_cluster_driven_prompt(
         prefix_parts.append(hints)
     if not prefix_parts:
         return base
-    return "\n\n".join(prefix_parts) + "\n\n" + base
+    # Kit contract is appended only on cluster-driven paths (where AFS or
+    # failure evidence is present). This keeps the legacy byte-equivalence
+    # contract intact for the no-AFS preflight path.
+    kit_contract = (
+        "\n\n## Output contract\n"
+        "Return one JSON object for a teaching kit:\n"
+        "{\n"
+        "  \"kit_summary\": \"short explanation of the failure pattern taught\",\n"
+        "  \"example_sql\": {\n"
+        "    \"example_question\": \"new counterfactual business question, not a paraphrase of any failed input\",\n"
+        "    \"example_sql\": \"valid SQL over the allowed assets\",\n"
+        "    \"usage_guidance\": \"when Genie should reuse this example\"\n"
+        "  },\n"
+        "  \"supporting_changes\": [\n"
+        "    {\n"
+        "      \"patch_type\": \"add_instruction\",\n"
+        "      \"section_name\": \"QUERY CONSTRUCTION\",\n"
+        "      \"new_text\": \"one narrow instruction that helps retrieve or apply the example\"\n"
+        "    },\n"
+        "    {\n"
+        "      \"patch_type\": \"add_column_synonym\",\n"
+        "      \"table\": \"fully.qualified.table\",\n"
+        "      \"column\": \"column_name\",\n"
+        "      \"synonyms\": [\"natural language term\"]\n"
+        "    },\n"
+        "    {\n"
+        "      \"patch_type\": \"add_sql_snippet_measure|add_sql_snippet_filter|add_sql_snippet_expression\",\n"
+        "      \"display_name\": \"short name\",\n"
+        "      \"sql\": \"reusable SQL expression\",\n"
+        "      \"instruction\": \"when to use it\",\n"
+        "      \"target_table\": \"fully.qualified.table\",\n"
+        "      \"synonyms\": [\"optional natural language trigger\"]\n"
+        "    }\n"
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        "- Always include exactly one example_sql object.\n"
+        "- Include supporting_changes only when they directly help the example fix the RCA failure.\n"
+        "- Prefer zero to three supporting changes.\n"
+        "- Do not output unsupported patch types.\n"
+    )
+    return "\n\n".join(prefix_parts) + "\n\n" + base + kit_contract
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -540,6 +581,80 @@ def _log_summary(
     logger.info("synthesis.summary " + " ".join(fields))
 
 
+def _validate_supporting_sql_snippet(
+    proposal: dict,
+    *,
+    metadata_snapshot: dict,
+    spark: Any = None,
+    catalog: str = "",
+    gold_schema: str = "",
+    w: Any = None,
+    warehouse_id: str = "",
+) -> dict | None:
+    """Validate a teaching-kit SQL snippet proposal via the existing snippet gate.
+
+    Returns the proposal augmented with ``validation_passed=True`` and a
+    materialized ``sql_snippet`` payload when the snippet validates, or
+    ``None`` when validation fails.
+    """
+    patch_type = str(proposal.get("patch_type") or "")
+    if not patch_type.startswith("add_sql_snippet_"):
+        return proposal
+    snippet_type = str(
+        proposal.get("snippet_type") or patch_type.replace("add_sql_snippet_", "")
+    )
+    sql = str(proposal.get("sql") or "").strip()
+    if not sql:
+        return None
+    try:
+        from genie_space_optimizer.optimization.benchmarks import validate_sql_snippet
+
+        valid_result = validate_sql_snippet(
+            sql,
+            snippet_type,
+            metadata_snapshot,
+            spark=spark,
+            catalog=catalog,
+            gold_schema=gold_schema,
+            w=w,
+            warehouse_id=warehouse_id,
+        )
+        if not valid_result[0]:
+            logger.info(
+                "cluster-driven: supporting SQL snippet rejected: %s",
+                valid_result[1],
+            )
+            return None
+        sql = valid_result[2] if len(valid_result) > 2 else sql
+    except Exception:
+        logger.debug(
+            "cluster-driven: supporting SQL snippet validation failed",
+            exc_info=True,
+        )
+        return None
+
+    snippet_id = (
+        str(proposal.get("snippet_id") or proposal.get("alias") or proposal.get("display_name") or "")
+        .lower()
+        .replace(" ", "_")[:64]
+    )
+    snippet = {
+        "id": snippet_id,
+        "name": proposal.get("display_name", ""),
+        "display_name": proposal.get("display_name", ""),
+        "sql": sql,
+        "description": proposal.get("instruction", ""),
+        "synonyms": proposal.get("synonyms", []) or [],
+        "target_table": proposal.get("target_table", ""),
+    }
+    return {
+        **proposal,
+        "sql": sql,
+        "sql_snippet": snippet,
+        "validation_passed": True,
+    }
+
+
 def run_cluster_driven_synthesis_for_single_cluster(
     cluster: dict,
     metadata_snapshot: dict,
@@ -732,6 +847,34 @@ def run_cluster_driven_synthesis_for_single_cluster(
     # Reuse synthesis.py's robust JSON extractor — same as pre-flight.
     from genie_space_optimizer.optimization.synthesis import _extract_json_proposal
     proposal = _extract_json_proposal(raw) if raw else None
+
+    kit_id = f"kit_{cluster_id}_{_read_budget_count(metadata_snapshot) + 1}"
+    from genie_space_optimizer.optimization.teaching_kit import normalize_teaching_kit
+
+    kit = normalize_teaching_kit(
+        proposal or {},
+        kit_id=kit_id,
+        target_qids=target_qids,
+        rca_id=str(cluster.get("rca_id") or ""),
+    )
+    proposal = kit.primary or None
+    supporting_proposals: list[dict] = []
+    for support in kit.supporting:
+        if str(support.get("patch_type") or "").startswith("add_sql_snippet_"):
+            validated = _validate_supporting_sql_snippet(
+                support,
+                metadata_snapshot=metadata_snapshot,
+                spark=spark,
+                catalog=catalog,
+                gold_schema=gold_schema,
+                w=w,
+                warehouse_id=warehouse_id,
+            )
+            if validated is not None:
+                supporting_proposals.append(validated)
+        else:
+            supporting_proposals.append(support)
+
     if proposal is not None:
         proposal.setdefault("patch_type", archetype.patch_type)
         if "usage_guidance" not in proposal:
@@ -891,6 +1034,10 @@ def run_cluster_driven_synthesis_for_single_cluster(
         # so it's clear this is not a persisted field on the proposal.
         "_archetype_name": archetype.name,
         "_cluster_id": cluster_id,
+        "kit_id": proposal.get("kit_id", kit_id),
+        "target_qids": proposal.get("target_qids", target_qids),
+        "rca_id": proposal.get("rca_id", ""),
+        "_supporting_proposals": supporting_proposals,
     }
     _log_summary(
         "cluster", cluster_id=cluster_id, archetype=archetype.name,
