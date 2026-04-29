@@ -2253,6 +2253,10 @@ def run_preflight_example_synthesis(
     retries_on_measure_attempts = 0
     retries_on_measure_succeeded = 0
     repaired_measure_refs = 0
+    measure_retry_no_known_measures = 0
+    measure_retry_repair_still_failed = 0
+    measure_retry_same_failure_after_llm = 0
+    measure_retry_changed_failure_class = 0
 
     for archetype, slice_ in plans:
         if len(accepted) >= need:
@@ -2481,6 +2485,17 @@ def run_preflight_example_synthesis(
                 # shape the rewriter doesn't handle like a CTE), fall
                 # back to the LLM retry with offender-specific feedback.
                 retries_on_measure_fired += 1
+                try:
+                    from genie_space_optimizer.optimization.evaluation import (
+                        build_metric_view_measures,
+                    )
+                    _known_mv_measures = build_metric_view_measures(metadata_snapshot)
+                except Exception:
+                    _known_mv_measures = {}
+                if not _known_mv_measures:
+                    measure_retry_no_known_measures += 1
+                if _pre_meas:
+                    measure_retry_repair_still_failed += 1
                 current_fail = first_fail
                 for _m_attempt in range(_MAX_MEASURE_RETRIES):
                     retries_on_measure_attempts += 1
@@ -2532,9 +2547,11 @@ def run_preflight_example_synthesis(
                         (g for g in gate_results if not g.passed), None,
                     )
                     if not _is_measure_function_failure(next_fail):
+                        measure_retry_changed_failure_class += 1
                         # Different failure class — abandon and let
                         # the normal gate-rejection path count it.
                         break
+                    measure_retry_same_failure_after_llm += 1
                     current_fail = next_fail
 
             elif (
@@ -2699,6 +2716,10 @@ def run_preflight_example_synthesis(
     result["retries_on_measure_attempts"] = retries_on_measure_attempts
     result["retries_on_measure_succeeded"] = retries_on_measure_succeeded
     result["repaired_measure_refs"] = repaired_measure_refs
+    result["measure_retry_no_known_measures"] = measure_retry_no_known_measures
+    result["measure_retry_repair_still_failed"] = measure_retry_repair_still_failed
+    result["measure_retry_same_failure_after_llm"] = measure_retry_same_failure_after_llm
+    result["measure_retry_changed_failure_class"] = measure_retry_changed_failure_class
 
     # ── Observability ─────────────────────────────────────────────
     logger.info(
@@ -2887,6 +2908,16 @@ def _print_summary(result: dict) -> None:
             " ".join(parts),
             indent=4,
         ))
+    measure_detail_keys = (
+        "measure_retry_no_known_measures",
+        "measure_retry_repair_still_failed",
+        "measure_retry_same_failure_after_llm",
+        "measure_retry_changed_failure_class",
+    )
+    for key in measure_detail_keys:
+        value = result.get(key, 0)
+        if value:
+            lines.append(_kv(f"    {key}", value, indent=6))
     lines.append(_kv("Passed structural", result.get("passed_structural", 0)))
     lines.append(_kv("Passed arbiter gate", result.get("passed_arbiter", 0)))
     lines.append(_kv("Passed firewall", result.get("passed_firewall", 0)))

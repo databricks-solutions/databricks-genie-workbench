@@ -793,3 +793,55 @@ class TestStripOuterAggregateAroundMeasure:
         assert "SUM(" not in head.upper() or count >= 1, (
             f"fallback failed to strip: count={count} sql={sql!r}"
         )
+
+
+def test_preflight_summary_renders_measure_failure_telemetry() -> None:
+    import contextlib
+    import io
+
+    from genie_space_optimizer.optimization.preflight_synthesis import (
+        _print_summary,
+    )
+
+    result = {
+        "applied": 0,
+        "need": 5,
+        "existing": 0,
+        "target": 5,
+        "generated": 5,
+        "passed_parse": 5,
+        "passed_identifier_qualification": 5,
+        "passed_execute": 0,
+        "passed_firewall": 0,
+        "passed_structural": 0,
+        "passed_arbiter": 0,
+        "passed_genie_agreement": 0,
+        "dedup_rejected": 0,
+        "rejected_by_gate": {"execute": 5},
+        "asset_coverage": {},
+        "archetype_distribution": {},
+        "skipped_reason": None,
+        "traits": [],
+        "eligible_archetypes": [],
+        "gate_rejected_examples": [],
+        "execute_subbuckets": {"mv_missing_measure_function": 5},
+        "execute_subbucket_examples": {},
+        "retries_on_measure_fired": 6,
+        "retries_on_measure_attempts": 7,
+        "retries_on_measure_succeeded": 1,
+        "repaired_measure_refs": 2,
+        "measure_retry_no_known_measures": 3,
+        "measure_retry_repair_still_failed": 2,
+        "measure_retry_same_failure_after_llm": 4,
+        "measure_retry_changed_failure_class": 1,
+    }
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _print_summary(result)
+    out = buf.getvalue()
+
+    assert "measure_retry_no_known_measures" in out
+    assert "measure_retry_repair_still_failed" in out
+    assert "measure_retry_same_failure_after_llm" in out
+    assert "measure_retry_changed_failure_class" in out
