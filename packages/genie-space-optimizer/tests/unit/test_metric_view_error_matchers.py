@@ -120,3 +120,22 @@ def test_centralized_matcher_unblocks_existing_callers():
     assert _is_measure_function_failure(other_fail) is False
     assert _is_measure_function_failure(passed) is False
     assert _is_measure_function_failure(None) is False
+
+
+def test_sql_validation_classifier_buckets_generic_metric_view_usage() -> None:
+    from genie_space_optimizer.optimization.evaluation import (
+        _classify_sql_validation_error,
+    )
+
+    assert (
+        _classify_sql_validation_error(
+            "[METRIC_VIEW_UNSUPPORTED_USAGE] The metric view usage is not supported"
+        )
+        == "mv_unsupported_usage"
+    )
+    assert (
+        _classify_sql_validation_error(
+            "[UNSUPPORTED_METRIC_VIEW_USAGE] The metric view usage is not supported"
+        )
+        == "mv_unsupported_usage"
+    )

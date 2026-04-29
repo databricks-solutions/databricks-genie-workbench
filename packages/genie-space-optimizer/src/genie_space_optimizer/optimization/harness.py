@@ -3694,6 +3694,48 @@ def _repair_existing_sql_snippets(
     return result
 
 
+def _format_sql_expression_seeding_summary(result: dict) -> list[str]:
+    """Render the SQL EXPRESSION SEEDING summary block as printable lines.
+
+    Extracted so MV-validation sub-bucket rendering has a unit-testable
+    surface; the in-flight seeding loop calls this with the final result
+    dict.
+    """
+    lines = [_section("SQL EXPRESSION SEEDING", "-")]
+    lines.append(_kv("Candidates evaluated", result["total_candidates"]))
+    rebind_dropped = result.get("rebind_dropped", 0) or 0
+    if rebind_dropped:
+        lines.append(_kv("  Alias-rebind dropped", rebind_dropped, indent=4))
+        for ex in (result.get("rebind_dropped_examples") or [])[:3]:
+            lines.append(_kv(f"    e.g. {ex}", "", indent=6))
+    lines.append(_kv("Seeded", result["total_seeded"]))
+    lines.append(_kv("  Measures", result["measures_seeded"]))
+    lines.append(_kv("  Filters", result["filters_seeded"]))
+    lines.append(_kv("  Expressions", result["expressions_seeded"]))
+    lines.append(_kv("Rejected", result["total_rejected"]))
+    lines.append(_kv("  Firewall (leakage)", result["firewall_rejected"]))
+    lines.append(_kv("  Validation (EXPLAIN)", result["validation_rejected"]))
+    subbuckets = result.get("validation_subbuckets") or {}
+    examples = result.get("validation_subbucket_examples") or {}
+    if isinstance(subbuckets, dict) and subbuckets:
+        for reason, count in sorted(subbuckets.items(), key=lambda kv: (-kv[1], kv[0])):
+            lines.append(_kv(f"    {reason}", count, indent=6))
+            for ex in (examples.get(reason) or [])[:3]:
+                if not isinstance(ex, dict):
+                    continue
+                sql_prefix = str(ex.get("sql_prefix") or "")[:120]
+                error = str(ex.get("error") or "")[:120]
+                lines.append(f"|       [{reason}] {sql_prefix} — {error}")
+    lines.append(_kv("  Ngram duplicate", result["ngram_rejected"]))
+    for ex in result.get("rejected_examples", [])[:3]:
+        lines.append(
+            f"|   [{ex.get('gate')}] {ex.get('snippet_type')} "
+            f"{ex.get('sql_prefix')} — {ex.get('reason')}"
+        )
+    lines.append(_bar("-"))
+    return lines
+
+
 def _seed_new_sql_snippets(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -3773,6 +3815,8 @@ def _seed_new_sql_snippets(
         # longer runs in this path.
         "firewall_rejected": 0,
         "validation_rejected": 0,         # EXPLAIN / execution validator
+        "validation_subbuckets": {},
+        "validation_subbucket_examples": {},
         "ngram_rejected": 0,              # duplicate of an already-seeded snippet
         "measures_seeded": 0,
         "filters_seeded": 0,
@@ -3801,6 +3845,24 @@ def _seed_new_sql_snippets(
             "gate": gate,
             "reason": (reason or "")[:200],
         })
+
+    def _record_validation_subbucket(sql_raw: str, err: str) -> None:
+        try:
+            from genie_space_optimizer.optimization.evaluation import (
+                _classify_sql_validation_error,
+            )
+            reason = _classify_sql_validation_error(err or "")
+        except Exception:
+            reason = "sql_compile_error"
+        sub = result.setdefault("validation_subbuckets", {})
+        sub[reason] = sub.get(reason, 0) + 1
+        examples = result.setdefault("validation_subbucket_examples", {})
+        ex_list = examples.setdefault(reason, [])
+        if len(ex_list) < 3:
+            ex_list.append({
+                "sql_prefix": (sql_raw or "")[:120],
+                "error": (err or "")[:200],
+            })
 
     parsed = config.get("_parsed_space", config)
     existing_snippets = parsed.get("instructions", {}).get("sql_snippets", {})
@@ -3942,6 +4004,7 @@ def _seed_new_sql_snippets(
             if not is_valid:
                 logger.info("SQL expression candidate rejected: %s — %s", sql_raw[:80], err)
                 result["validation_rejected"] += 1
+                _record_validation_subbucket(sql_raw, err or "")
                 result["total_rejected"] += 1
                 _record_rejection(sql_raw, snippet_type, "validation", err or "")
                 continue
@@ -4015,44 +4078,7 @@ def _seed_new_sql_snippets(
 
         result["total_seeded"] = len(applied_snippets)
 
-        _lines = [_section("SQL EXPRESSION SEEDING", "-")]
-        _lines.append(_kv("Candidates evaluated", result["total_candidates"]))
-        # Phase 3.R7: alias-rebind diagnostics. Shown only when something
-        # was dropped so clean runs stay compact.
-        rebind_dropped = result.get("rebind_dropped", 0) or 0
-        if rebind_dropped:
-            _lines.append(_kv(
-                "  Alias-rebind dropped",
-                rebind_dropped,
-                indent=4,
-            ))
-            for ex in (result.get("rebind_dropped_examples") or [])[:3]:
-                _lines.append(_kv(f"    e.g. {ex}", "", indent=6))
-        _lines.append(_kv("Seeded", result["total_seeded"]))
-        _lines.append(_kv("  Measures", result["measures_seeded"]))
-        _lines.append(_kv("  Filters", result["filters_seeded"]))
-        _lines.append(_kv("  Expressions", result["expressions_seeded"]))
-        _lines.append(_kv("Rejected", result["total_rejected"]))
-        _lines.append(_kv("  Firewall (leakage)", result["firewall_rejected"]))
-        _lines.append(_kv("  Validation (EXPLAIN)", result["validation_rejected"]))
-        _lines.append(_kv("  Ngram duplicate", result["ngram_rejected"]))
-        # Per-candidate rejection reasons — cheap observability so the next
-        # diagnosis doesn't require grepping the job log. We print up to
-        # 3 examples; the full bounded list stays on the result dict.
-        _rejected_examples = result.get("rejected_examples") or []
-        if _rejected_examples:
-            _lines.append(_kv("Rejection examples (up to 3)", ""))
-            for _ex in _rejected_examples[:3]:
-                _sql_prefix = (_ex.get("sql_prefix") or "").strip()
-                _reason = (_ex.get("reason") or "").strip()
-                _gate = _ex.get("gate") or ""
-                _lines.append(_kv(
-                    f"  [{_gate}] {_sql_prefix[:60]}",
-                    _reason[:140],
-                    indent=4,
-                ))
-        _lines.append(_bar("-"))
-        print("\n".join(_lines))
+        print("\n".join(_format_sql_expression_seeding_summary(result)))
 
         write_stage(
             spark, run_id, "SQL_EXPRESSION_SEEDING", "COMPLETE",

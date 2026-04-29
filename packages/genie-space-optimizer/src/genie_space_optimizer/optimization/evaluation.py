@@ -4290,6 +4290,11 @@ def _classify_sql_validation_error(message: str) -> str:
             return "mv_measure_in_where"
         return "mv_missing_measure_function"
     if (
+        "metric_view_unsupported_usage" in lowered
+        or "unsupported_metric_view_usage" in lowered
+    ):
+        return "mv_unsupported_usage"
+    if (
         "missing_attributes.resolved_attribute_appear_in_operation" in lowered
         or "resolved attribute" in lowered
         and "appear in the operation" in lowered

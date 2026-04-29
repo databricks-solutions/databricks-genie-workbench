@@ -1816,6 +1816,14 @@ def validate_sql_snippet(
                 ),
                 prefixed_sql,
             )
+        try:
+            from genie_space_optimizer.optimization.evaluation import (
+                is_metric_view_error,
+            )
+            if is_metric_view_error(_msg):
+                return False, _msg, prefixed_sql
+        except Exception:
+            pass
         return False, f"Execution failed: {exc}", prefixed_sql
 
     # S8 — post-execution selectivity probe. EXPLAIN + LIMIT 1 passed;

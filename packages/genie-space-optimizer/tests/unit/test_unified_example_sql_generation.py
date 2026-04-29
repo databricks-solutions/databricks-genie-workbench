@@ -1789,3 +1789,35 @@ def test_preflight_effective_split_promotes_semantic_metric_view() -> None:
 
     assert [t["identifier"] for t in tables] == ["cat.sch.dim_store"]
     assert [mv["identifier"] for mv in metric_views] == ["cat.sch.mv_sales"]
+
+
+def test_sql_expression_seeding_summary_renders_validation_subbuckets() -> None:
+    from genie_space_optimizer.optimization.harness import (
+        _format_sql_expression_seeding_summary,
+    )
+
+    result = {
+        "total_candidates": 3,
+        "total_seeded": 1,
+        "total_rejected": 2,
+        "firewall_rejected": 0,
+        "validation_rejected": 2,
+        "ngram_rejected": 0,
+        "measures_seeded": 1,
+        "filters_seeded": 0,
+        "expressions_seeded": 0,
+        "validation_subbuckets": {
+            "mv_unsupported_usage": 2,
+        },
+        "validation_subbucket_examples": {
+            "mv_unsupported_usage": [{
+                "sql_prefix": "SUM(cat.sch.mv_sales.total_sales)",
+                "error": "[METRIC_VIEW_UNSUPPORTED_USAGE] no direct aggregate",
+            }],
+        },
+    }
+
+    out = "\n".join(_format_sql_expression_seeding_summary(result))
+
+    assert "mv_unsupported_usage" in out
+    assert "SUM(cat.sch.mv_sales.total_sales)" in out
