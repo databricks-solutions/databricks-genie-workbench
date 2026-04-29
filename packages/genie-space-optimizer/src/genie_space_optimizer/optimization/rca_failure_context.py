@@ -9,6 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from genie_space_optimizer.common.config import IGNORED_OPTIMIZATION_JUDGES
+from genie_space_optimizer.optimization.eval_row_access import (
+    iter_asi_metadata,
+    row_generated_sql,
+    row_qid,
+)
+
 
 _QUESTION_KEYS = frozenset({
     "question",
@@ -119,21 +126,23 @@ def _as_tuple(raw: Any) -> tuple[str, ...]:
     return (text,) if text else ()
 
 
-def _metadata_blocks(row: dict) -> list[dict]:
-    blocks: list[dict] = []
-    for key in _JUDGE_METADATA_KEYS:
-        value = row.get(key)
-        if isinstance(value, dict):
-            blocks.append(value)
-    return blocks
+def _metadata_blocks(row: dict) -> list[tuple[str, dict]]:
+    """Return ``[(judge_name, metadata_dict), ...]`` excluding ignored judges.
+
+    ``response_quality`` and any other judge in
+    :data:`IGNORED_OPTIMIZATION_JUDGES` are filtered out so they cannot drive
+    teaching-kit failure context (and therefore optimizer mutations).
+    """
+    ignored = {str(j).lower() for j in IGNORED_OPTIMIZATION_JUDGES}
+    return [
+        (judge, metadata)
+        for judge, metadata in iter_asi_metadata(row)
+        if str(judge).lower() not in ignored
+    ]
 
 
-def _failed_judges(row: dict) -> tuple[str, ...]:
-    out: list[str] = []
-    for key in _JUDGE_METADATA_KEYS:
-        if isinstance(row.get(key), dict):
-            out.append(key.split("/", 1)[0].replace("feedback.", ""))
-    return tuple(dict.fromkeys(out))
+def _failed_judges(blocks: list[tuple[str, dict]]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(judge for judge, _metadata in blocks))
 
 
 def _arbiter_verdict(row: dict) -> str:
@@ -147,29 +156,33 @@ def _arbiter_verdict(row: dict) -> str:
     ).lower()
 
 
-def _metadata_texts(blocks: list[dict], *keys: str) -> tuple[str, ...]:
+def _metadata_texts(
+    blocks: list[tuple[str, dict]], *keys: str,
+) -> tuple[str, ...]:
     out: list[str] = []
-    for block in blocks:
+    for _judge, block in blocks:
         for key in keys:
             value = block.get(key)
             if isinstance(value, str) and value.strip():
                 out.append(value.strip()[:500])
             elif isinstance(value, list):
-                out.extend(str(v).strip()[:500] for v in value if str(v).strip())
+                out.extend(
+                    str(v).strip()[:500] for v in value if str(v).strip()
+                )
     return tuple(dict.fromkeys(out))
 
 
-def _root_cause(blocks: list[dict]) -> str:
-    for block in blocks:
+def _root_cause(blocks: list[tuple[str, dict]]) -> str:
+    for _judge, block in blocks:
         value = block.get("failure_type") or block.get("root_cause")
         if value:
             return str(value).strip()
     return "unknown"
 
 
-def _blame_set(blocks: list[dict]) -> tuple[str, ...]:
+def _blame_set(blocks: list[tuple[str, dict]]) -> tuple[str, ...]:
     out: list[str] = []
-    for block in blocks:
+    for _judge, block in blocks:
         out.extend(_as_tuple(block.get("blame_set")))
     return tuple(dict.fromkeys(x for x in out if x))
 
@@ -177,8 +190,8 @@ def _blame_set(blocks: list[dict]) -> tuple[str, ...]:
 def failure_context_from_row(row: dict) -> RcaFailureContext | None:
     if not isinstance(row, dict):
         return None
-    qid = _row_value(row, *_QID_KEYS)
-    generated_sql = _row_value(row, *_GENERATED_SQL_KEYS)
+    qid = row_qid(row)
+    generated_sql = row_generated_sql(row)
     blocks = _metadata_blocks(row)
     if not qid or not generated_sql:
         return None
@@ -187,7 +200,7 @@ def failure_context_from_row(row: dict) -> RcaFailureContext | None:
         question_id=qid,
         generated_sql=generated_sql[:4000],
         root_cause=_root_cause(blocks),
-        failed_judges=_failed_judges(row),
+        failed_judges=_failed_judges(blocks),
         blame_set=_blame_set(blocks),
         counterfactual_fixes=_metadata_texts(blocks, "counterfactual_fix", "counterfactual_fixes"),
         rationales=_metadata_texts(blocks, "rationale", "rationale_snippet", "reason", "explanation"),

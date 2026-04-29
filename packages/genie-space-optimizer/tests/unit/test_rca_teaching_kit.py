@@ -167,3 +167,63 @@ def test_normalize_teaching_kit_supports_legacy_flat_example_sql_shape() -> None
     assert kit.primary["example_question"] == "Show sales by category"
     assert kit.primary["example_sql"].startswith("SELECT category")
     assert kit.supporting == []
+
+
+def test_failure_context_reads_request_response_payload_shape() -> None:
+    import json
+    from genie_space_optimizer.optimization.rca_failure_context import (
+        failure_context_from_row,
+    )
+
+    row = {
+        "request": json.dumps({
+            "kwargs": {
+                "question_id": "q_payload",
+                "question": "BENCHMARK QUESTION MUST NOT APPEAR",
+            }
+        }),
+        "response": json.dumps({
+            "sql": "SELECT zone_vp_name, SUM(cy_sales) FROM mv GROUP BY zone_vp_name"
+        }),
+        "schema_accuracy/metadata": {
+            "failure_type": "wrong_grouping",
+            "blame_set": ["zone_vp_name"],
+            "counterfactual_fix": "Group by zone_vp_name.",
+        },
+    }
+
+    ctx = failure_context_from_row(row)
+
+    assert ctx is not None
+    assert ctx.question_id == "q_payload"
+    assert "zone_vp_name" in ctx.generated_sql
+    assert "BENCHMARK QUESTION" not in str(ctx.as_prompt_dict())
+
+
+def test_failure_context_excludes_response_quality_metadata() -> None:
+    from genie_space_optimizer.optimization.rca_failure_context import (
+        failure_context_from_row,
+    )
+
+    row = {
+        "inputs/question_id": "q_text",
+        "outputs/response": "SELECT 1",
+        "response_quality/metadata": {
+            "failure_type": "bad_tone",
+            "counterfactual_fix": "Answer in a nicer tone.",
+            "blame_set": ["tone"],
+        },
+        "schema_accuracy/metadata": {
+            "failure_type": "wrong_measure",
+            "counterfactual_fix": "Use cy_sales.",
+            "blame_set": ["cy_sales"],
+        },
+    }
+
+    ctx = failure_context_from_row(row)
+
+    assert ctx is not None
+    rendered = str(ctx.as_prompt_dict())
+    assert "cy_sales" in rendered
+    assert "nicer tone" not in rendered
+    assert "bad_tone" not in rendered
