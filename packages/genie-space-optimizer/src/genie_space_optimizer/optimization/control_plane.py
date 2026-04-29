@@ -121,22 +121,36 @@ def _is_response_quality_only_cluster(cluster: dict) -> bool:
 def clusters_for_strategy(
     hard_clusters: list[dict],
     soft_clusters: list[dict],
+    *,
+    hard_only_threshold: int = 3,
+    soft_min_questions: int = 5,
+    max_soft_clusters: int = 1,
 ) -> tuple[list[dict], list[dict]]:
     """Return clusters that may drive the strategist.
 
-    Hard failures are the optimization target. When any hard cluster exists,
-    soft clusters are withheld from action-group generation so the strategist
-    cannot spend the iteration on soft text-quality work. When no hard
-    cluster remains, only non-response-quality soft clusters are eligible.
+    Hard failures remain first priority. When the hard set is small and a
+    soft cluster covers many questions, include a bounded soft lane so the
+    optimizer can learn broad corpus guidance without starving hard fixes.
     """
     hard = list(hard_clusters or [])
     soft = [
         c for c in (soft_clusters or [])
         if isinstance(c, dict) and not _is_response_quality_only_cluster(c)
     ]
-    if hard:
+    if not hard:
+        return [], soft
+    if len(hard) > int(hard_only_threshold):
         return hard, []
-    return [], soft
+
+    large_soft = sorted(
+        [
+            c for c in soft
+            if len(c.get("question_ids", []) or []) >= int(soft_min_questions)
+        ],
+        key=lambda c: len(c.get("question_ids", []) or []),
+        reverse=True,
+    )
+    return hard, large_soft[: int(max_soft_clusters)]
 
 
 def hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:

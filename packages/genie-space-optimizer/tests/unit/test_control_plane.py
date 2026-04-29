@@ -423,3 +423,64 @@ def test_diagnostic_action_group_for_uncovered_cluster_is_single_cluster_scoped(
     assert ag["affected_questions"] == ["q013"]
     assert ag["coverage_reason"] == "strategist_omitted_patchable_hard_cluster"
     assert "wrong_filter_condition" in ag["root_cause_summary"]
+
+
+def test_clusters_for_strategy_includes_large_soft_cluster_when_hard_count_is_small() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        clusters_for_strategy,
+    )
+
+    hard = [
+        {"cluster_id": "H001", "question_ids": ["q022"]},
+        {"cluster_id": "H002", "question_ids": ["q013"]},
+    ]
+    large_soft = {
+        "cluster_id": "S001",
+        "question_ids": [f"soft_{i}" for i in range(8)],
+        "affected_judges": ["expected_response"],
+    }
+    small_soft = {
+        "cluster_id": "S002",
+        "question_ids": ["soft_small"],
+        "affected_judges": ["schema_accuracy"],
+    }
+
+    selected_hard, selected_soft = clusters_for_strategy(
+        hard,
+        [small_soft, large_soft],
+        hard_only_threshold=3,
+        soft_min_questions=5,
+        max_soft_clusters=1,
+    )
+
+    assert selected_hard == hard
+    assert selected_soft == [large_soft]
+
+
+def test_clusters_for_strategy_still_withholds_soft_when_many_hard_clusters_remain() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        clusters_for_strategy,
+    )
+
+    hard = [
+        {"cluster_id": "H001", "question_ids": ["q1"]},
+        {"cluster_id": "H002", "question_ids": ["q2"]},
+        {"cluster_id": "H003", "question_ids": ["q3"]},
+        {"cluster_id": "H004", "question_ids": ["q4"]},
+    ]
+    soft = [{
+        "cluster_id": "S001",
+        "question_ids": [f"soft_{i}" for i in range(8)],
+        "affected_judges": ["expected_response"],
+    }]
+
+    selected_hard, selected_soft = clusters_for_strategy(
+        hard,
+        soft,
+        hard_only_threshold=3,
+        soft_min_questions=5,
+        max_soft_clusters=1,
+    )
+
+    assert selected_hard == hard
+    assert selected_soft == []
