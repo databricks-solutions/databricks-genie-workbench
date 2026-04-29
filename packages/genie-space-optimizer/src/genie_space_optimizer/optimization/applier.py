@@ -1275,6 +1275,45 @@ def _is_measure_column(column_name: str, data_type: str) -> bool:
     return any(lower_name.startswith(p) for p in MEASURE_NAME_PREFIXES)
 
 
+def _prompt_matching_sources(config: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    """Return ``(tables, metric_views, unknown)`` using ``_asset_semantics``."""
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            effective_data_source_split,
+        )
+        split = effective_data_source_split(config)
+        return split.tables, split.metric_views, split.unknown
+    except Exception:
+        logger.debug(
+            "Prompt matching falling back to raw data source shelves",
+            exc_info=True,
+        )
+    parsed = config.get("_parsed_space", config)
+    ds = parsed.get("data_sources", {}) if isinstance(parsed, dict) else {}
+    return (
+        list(ds.get("tables", []) or []),
+        list(ds.get("metric_views", []) or []),
+        [],
+    )
+
+
+def _semantic_measure_names(config: dict, identifier: str) -> set[str]:
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            asset_semantics_entry,
+        )
+        entry = asset_semantics_entry(config, identifier)
+    except Exception:
+        entry = None
+    if not isinstance(entry, dict):
+        return set()
+    return {
+        str(m).lower()
+        for m in (entry.get("measures") or [])
+        if isinstance(m, str) and m.strip()
+    }
+
+
 def _is_hidden(cc: dict) -> bool:
     if cc.get("visible") is False:
         return True
@@ -1577,8 +1616,16 @@ def auto_apply_prompt_matching(
 
     parsed = config.get("_parsed_space", config)
     ds = parsed.get("data_sources", {})
-    tables = ds.get("tables", [])
-    metric_views = ds.get("metric_views", [])
+    tables, metric_views, unknown_sources = _prompt_matching_sources(config)
+    if unknown_sources:
+        logger.info(
+            "Prompt matching skipped %d unresolved asset(s): %s",
+            len(unknown_sources),
+            [
+                u.get("identifier") or u.get("name")
+                for u in unknown_sources[:5]
+            ],
+        )
     uc_columns: list[dict] = config.get("_uc_columns", [])
     data_profile: dict = config.get("_data_profile") or {}
     rls_audit: dict = config.get("_rls_audit") or {}
@@ -1670,7 +1717,10 @@ def auto_apply_prompt_matching(
     for tbl in tables + metric_views:
         identifier = tbl.get("identifier", "")
         short_name = _table_short_name(identifier)
-        is_mv = tbl in metric_views
+        is_mv = any(tbl is mv for mv in metric_views)
+        semantic_measures = (
+            _semantic_measure_names(config, identifier) if is_mv else set()
+        )
         table_rls = _table_has_rls(tbl)
         if table_rls:
             rls_skipped_tables.append(identifier)
@@ -1690,7 +1740,10 @@ def auto_apply_prompt_matching(
             dtype = type_lookup.get((short_name.lower(), col_name.lower()), "")
             # MV measure columns opt out of EM entirely (numeric aggregates
             # don't have meaningful value dictionaries).
-            if is_mv and _is_measure_column(col_name, dtype):
+            if is_mv and (
+                col_name.lower() in semantic_measures
+                or _is_measure_column(col_name, dtype)
+            ):
                 continue
             if dtype.upper().split("(")[0].strip() != "STRING":
                 continue
@@ -1923,8 +1976,16 @@ def _legacy_apply_em(
     """
     parsed = config.get("_parsed_space", config)
     ds = parsed.get("data_sources", {})
-    tables = ds.get("tables", [])
-    metric_views = ds.get("metric_views", [])
+    tables, metric_views, unknown_sources = _prompt_matching_sources(config)
+    if unknown_sources:
+        logger.info(
+            "Legacy prompt matching skipped %d unresolved asset(s): %s",
+            len(unknown_sources),
+            [
+                u.get("identifier") or u.get("name")
+                for u in unknown_sources[:5]
+            ],
+        )
     uc_columns: list[dict] = config.get("_uc_columns", [])
 
     bootstrapped = _ensure_column_configs_from_uc(tables + metric_views, uc_columns)
@@ -1986,6 +2047,7 @@ def _legacy_apply_em(
     for mv in metric_views:
         identifier = mv.get("identifier", "")
         short_name = _table_short_name(identifier)
+        semantic_measures = _semantic_measure_names(config, identifier)
         if _table_has_rls(mv):
             rls_skipped_tables.append(identifier)
         for cc in mv.get("column_configs", []):
@@ -1993,7 +2055,7 @@ def _legacy_apply_em(
             if _is_hidden(cc) or not col_name:
                 continue
             dtype = type_lookup.get((short_name.lower(), col_name.lower()), "")
-            if _is_measure_column(col_name, dtype):
+            if col_name.lower() in semantic_measures or _is_measure_column(col_name, dtype):
                 continue
             if not cc.get("enable_format_assistance"):
                 cc["enable_format_assistance"] = True

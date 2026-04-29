@@ -862,3 +862,89 @@ class TestLegacyScorer:
 
     def test_generic_one(self):
         assert _entity_matching_score_legacy("login_ip") == 1
+
+
+def test_prompt_matching_uses_semantic_metric_view_split(monkeypatch) -> None:
+    from genie_space_optimizer.common.asset_semantics import (
+        KIND_METRIC_VIEW,
+        stamp_asset_semantics,
+    )
+
+    _pin_smarter_scoring(monkeypatch, True)
+    config = {
+        "_parsed_space": {
+            "data_sources": {
+                "tables": [
+                    {
+                        "identifier": "cat.sch.mv_sales",
+                        "column_configs": [
+                            {"column_name": "store_id"},
+                            {"column_name": "total_sales"},
+                        ],
+                    },
+                    {
+                        "identifier": "cat.sch.dim_store",
+                        "column_configs": [
+                            {"column_name": "store_name"},
+                        ],
+                    },
+                ],
+                "metric_views": [],
+            },
+        },
+        "_uc_columns": [
+            {"table_name": "mv_sales", "column_name": "store_id", "data_type": "STRING"},
+            {"table_name": "mv_sales", "column_name": "total_sales", "data_type": "DOUBLE"},
+            {"table_name": "dim_store", "column_name": "store_name", "data_type": "STRING"},
+        ],
+    }
+    stamp_asset_semantics(config, {
+        "cat.sch.mv_sales": {
+            "identifier": "cat.sch.mv_sales",
+            "short_name": "mv_sales",
+            "kind": KIND_METRIC_VIEW,
+            "measures": ["total_sales"],
+            "dimensions": ["store_id"],
+        },
+    })
+
+    result = _run_apply(config)
+
+    enabled = {
+        (entry["table"], entry["column"])
+        for entry in result["applied"]
+        if entry["type"] == "enable_value_dictionary"
+    }
+    assert ("cat.sch.mv_sales", "total_sales") not in enabled
+    assert all(table != "cat.sch.mv_sales" or col != "total_sales" for table, col in enabled)
+
+
+def test_prompt_matching_does_not_treat_mv_named_view_as_metric_view(monkeypatch) -> None:
+    from genie_space_optimizer.common.asset_semantics import (
+        KIND_VIEW,
+        stamp_asset_semantics,
+    )
+
+    _pin_smarter_scoring(monkeypatch, True)
+    config = _make_config({
+        "cat.sch.mv_dim_location": [
+            ("location_name", "STRING"),
+            ("region", "STRING"),
+        ],
+    })
+    stamp_asset_semantics(config, {
+        "cat.sch.mv_dim_location": {
+            "identifier": "cat.sch.mv_dim_location",
+            "short_name": "mv_dim_location",
+            "kind": KIND_VIEW,
+        },
+    })
+
+    result = _run_apply(config)
+
+    enabled = {
+        (entry["table"], entry["column"])
+        for entry in result["applied"]
+        if entry["type"] == "enable_value_dictionary"
+    }
+    assert ("cat.sch.mv_dim_location", "location_name") in enabled

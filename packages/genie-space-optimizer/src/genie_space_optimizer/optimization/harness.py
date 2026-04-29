@@ -986,12 +986,27 @@ def _run_prompt_matching_setup(
     try:
         _parsed = config.get("_parsed_space", {})
         _ds = _parsed.get("data_sources", {}) if isinstance(_parsed, dict) else {}
-        _tbl_count = len(_ds.get("tables", []))
-        _mv_count = len(_ds.get("metric_views", []))
+        _raw_tbl_count = len(_ds.get("tables", []))
+        _raw_mv_count = len(_ds.get("metric_views", []))
+        try:
+            from genie_space_optimizer.common.asset_semantics import (
+                effective_data_source_split,
+            )
+            _split = effective_data_source_split(config)
+            _eff_tbl_count = len(_split.tables)
+            _eff_mv_count = len(_split.metric_views)
+            _unknown_count = len(_split.unknown)
+        except Exception:
+            _eff_tbl_count = _raw_tbl_count
+            _eff_mv_count = _raw_mv_count
+            _unknown_count = 0
         print(
             f"\n[PROMPT MATCHING] Starting auto-config — "
-            f"tables: {_tbl_count}, metric_views: {_mv_count}, "
-            f"total data sources: {_tbl_count + _mv_count}"
+            f"raw tables: {_raw_tbl_count}, raw metric_views: {_raw_mv_count}, "
+            f"effective tables: {_eff_tbl_count}, "
+            f"effective metric_views: {_eff_mv_count}, "
+            f"unknown: {_unknown_count}, "
+            f"total raw data sources: {_raw_tbl_count + _raw_mv_count}"
         )
 
         apply_log = auto_apply_prompt_matching(
