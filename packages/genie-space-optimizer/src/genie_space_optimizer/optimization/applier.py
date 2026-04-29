@@ -2149,7 +2149,20 @@ def classify_risk(patch_type: str | dict) -> str:
 
 
 def _copy_proposal_metadata(patch: dict, proposal: dict) -> dict:
-    for meta_key in ("rca_id", "patch_family", "target_qids", "source", "confidence"):
+    proposal_id = proposal.get("proposal_id") or proposal.get("id")
+    if proposal_id:
+        patch["proposal_id"] = str(proposal_id)
+        patch.setdefault("source_proposal_id", str(proposal_id))
+
+    for meta_key in (
+        "rca_id",
+        "patch_family",
+        "target_qids",
+        "_grounding_target_qids",
+        "source",
+        "confidence",
+        "provenance",
+    ):
         if meta_key in proposal:
             patch[meta_key] = proposal[meta_key]
     return patch
