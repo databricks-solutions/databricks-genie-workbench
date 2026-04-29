@@ -416,11 +416,12 @@ Default true because audit-only ledger construction does not change
 optimizer behavior."""
 
 ENABLE_RCA_THEMES_STRATEGIST: bool = (
-    os.getenv("GSO_ENABLE_RCA_THEMES_STRATEGIST", "false").lower()
+    os.getenv("GSO_ENABLE_RCA_THEMES_STRATEGIST", "true").lower()
     in {"1", "true", "yes", "on"}
 )
 """When true, include selected RCA themes and conflict matrix in the
-strategist prompt."""
+strategist prompt. Defaults true because hard-failure RCA is part of the
+unified optimizer control plane, not optional diagnostics."""
 
 ENABLE_RCA_THEME_SELECTION: bool = (
     os.getenv(

@@ -640,3 +640,60 @@ def test_top_n_cardinality_theme_emits_cardinality_preserving_instruction_and_ex
         and p.get("target_object") == "total_cy_sales"
         for p in patches
     )
+
+
+def test_asset_type_routing_mismatch_compiles_to_instruction_theme() -> None:
+    from genie_space_optimizer.optimization.rca import (
+        RcaEvidence,
+        RcaFinding,
+        RcaKind,
+        compile_patch_themes,
+    )
+
+    finding = RcaFinding(
+        rca_id="rca_q_asset",
+        question_id="q_asset",
+        rca_kind=RcaKind.ASSET_TYPE_ROUTING_MISMATCH,
+        confidence=0.8,
+        expected_objects=("registered function fn_mtd_or_mtday",),
+        actual_objects=("metric view inline case expression",),
+        evidence=(RcaEvidence("judge_asi", "wrong asset type selected", 0.8),),
+        recommended_levers=(3, 5),
+        patch_family="asset_type_routing_guidance",
+        target_qids=("q_asset",),
+    )
+
+    themes = compile_patch_themes([finding])
+
+    assert len(themes) == 1
+    assert themes[0].rca_kind is RcaKind.ASSET_TYPE_ROUTING_MISMATCH
+    assert set(themes[0].recommended_levers) == {3, 5}
+    assert any(p["type"] == "add_instruction" for p in themes[0].patches)
+
+
+def test_unknown_rca_with_evidence_compiles_to_safe_instruction_theme() -> None:
+    from genie_space_optimizer.optimization.rca import (
+        RcaEvidence,
+        RcaFinding,
+        RcaKind,
+        compile_patch_themes,
+    )
+
+    finding = RcaFinding(
+        rca_id="rca_q_unknown",
+        question_id="q_unknown",
+        rca_kind=RcaKind.UNKNOWN,
+        confidence=0.6,
+        expected_objects=("zone_vp_name",),
+        actual_objects=("store_id",),
+        evidence=(RcaEvidence("judge_asi", "grouped by store_id instead of zone_vp_name", 0.6),),
+        recommended_levers=(5,),
+        patch_family="unknown_guidance",
+        target_qids=("q_unknown",),
+    )
+
+    themes = compile_patch_themes([finding])
+
+    assert len(themes) == 1
+    assert themes[0].patches[0]["type"] == "add_instruction"
+    assert themes[0].patches[0]["lever"] == 5

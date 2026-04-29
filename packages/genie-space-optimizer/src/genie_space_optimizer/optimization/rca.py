@@ -932,6 +932,41 @@ def compile_patch_themes(
                 root_cause="time_window_pivot",
             ))
 
+        elif f.rca_kind is RcaKind.ASSET_TYPE_ROUTING_MISMATCH:
+            patches.append(_patch_intent(
+                base,
+                ptype="add_instruction",
+                lever=5,
+                target="ASSET ROUTING",
+                instruction_section="ASSET ROUTING",
+                intent=(
+                    "Prefer the expected asset type for this question pattern; "
+                    "do not substitute a metric view, table, or inline expression "
+                    "when the RCA identifies a registered function or TVF."
+                ),
+                expected_objects=list(f.expected_objects),
+                actual_objects=list(f.actual_objects),
+            ))
+
+        elif f.rca_kind is RcaKind.UNKNOWN:
+            evidence_text = " ".join(e.detail for e in f.evidence[:2]).strip()
+            touched = list(f.expected_objects or f.actual_objects)
+            if evidence_text or touched:
+                patches.append(_patch_intent(
+                    base,
+                    ptype="add_instruction",
+                    lever=5,
+                    target="QUERY CONSTRUCTION",
+                    instruction_section="QUERY CONSTRUCTION",
+                    intent=(
+                        "Apply the judge counterfactual narrowly for the target "
+                        "question pattern; avoid broad metadata changes until a "
+                        "more specific RCA kind is available."
+                    ),
+                    expected_objects=touched,
+                    evidence_summary=evidence_text,
+                ))
+
         if not patches:
             continue
         themes.append(RcaPatchTheme(

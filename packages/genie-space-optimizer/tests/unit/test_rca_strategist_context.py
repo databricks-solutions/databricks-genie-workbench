@@ -58,3 +58,13 @@ def test_format_rca_themes_includes_conflict_matrix() -> None:
     assert "No typed RCA themes available" in text
     assert "RCA Theme Conflict Matrix" in text
     assert "rca_a -> rca_b" in text
+
+
+def test_rca_themes_strategist_context_enabled_by_default(monkeypatch) -> None:
+    import importlib
+    import genie_space_optimizer.common.config as config
+
+    monkeypatch.delenv("GSO_ENABLE_RCA_THEMES_STRATEGIST", raising=False)
+    reloaded = importlib.reload(config)
+
+    assert reloaded.ENABLE_RCA_THEMES_STRATEGIST is True
