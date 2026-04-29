@@ -12103,15 +12103,52 @@ def _discover_schema_sql_expressions(
 
     # Visit tables AND metric_views — both can contribute mining-worthy
     # numeric/date columns on real spaces (your `mv_esr_fact_sales`,
-    # `mv_esr_dim_date`, etc.).
-    sources = list(ds.get("tables", []) or []) + list(ds.get("metric_views", []) or [])
+    # `mv_esr_dim_date`, etc.). Use the shared semantics split so
+    # table-shelf metric views are reclassified before SQL seeding.
+    try:
+        from genie_space_optimizer.common.asset_semantics import (
+            asset_semantics_entry,
+            effective_data_source_split,
+        )
+        split = effective_data_source_split(metadata_snapshot)
+        sources_with_kind = (
+            [(src, "table") for src in split.tables]
+            + [(src, "metric_view") for src in split.metric_views]
+        )
+    except Exception:
+        logger.debug(
+            "Schema SQL expression discovery falling back to raw shelves",
+            exc_info=True,
+        )
+        sources_with_kind = (
+            [(src, "table") for src in list(ds.get("tables", []) or [])]
+            + [(src, "metric_view") for src in list(ds.get("metric_views", []) or [])]
+        )
 
-    for source in sources:
+        def asset_semantics_entry(*_args, **_kwargs):  # type: ignore[no-redef]
+            return None
+
+    def _semantic_measure_names(identifier: str) -> set[str]:
+        try:
+            entry = asset_semantics_entry(metadata_snapshot, identifier)
+        except Exception:
+            entry = None
+        if not isinstance(entry, dict):
+            return set()
+        return {
+            str(m).lower()
+            for m in (entry.get("measures") or [])
+            if isinstance(m, str) and m.strip()
+        }
+
+    for source, source_kind in sources_with_kind:
         if not isinstance(source, dict):
             continue
         table_id = source.get("identifier", "") or source.get("name", "")
         if not table_id:
             continue
+
+        semantic_measures = _semantic_measure_names(table_id)
 
         # Prefer ``column_configs`` (production shape) and fall back to
         # ``columns`` so legacy fixtures and internal-normalized snapshots
@@ -12136,7 +12173,15 @@ def _discover_schema_sql_expressions(
             base_type = col_type.split("(")[0].strip()
             fq_col = f"{table_id}.{col_name}"
 
-            if base_type in _NUMERIC_TYPES and _MEASURE_PATTERNS.search(col_name):
+            is_semantic_mv_measure = (
+                source_kind == "metric_view"
+                and col_name.lower() in semantic_measures
+            )
+            if (
+                base_type in _NUMERIC_TYPES
+                and _MEASURE_PATTERNS.search(col_name)
+                and not is_semantic_mv_measure
+            ):
                 sql_expr = f"SUM({fq_col})"
                 if sql_expr.lower() not in seen_sqls:
                     seen_sqls.add(sql_expr.lower())

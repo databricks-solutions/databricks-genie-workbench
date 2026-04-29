@@ -1975,22 +1975,77 @@ class TestDiscoverSchemaSqlExpressions:
         assert "MONTH(cat.sales.fact_orders.order_date)" in sqls
         assert "QUARTER(cat.sales.fact_orders.order_date)" in sqls
 
-    def test_visits_metric_views(self):
-        """Bug fingerprint: before the fix, MVs were skipped entirely.
-        After: MV numeric + timestamp columns contribute candidates."""
+    def test_metric_view_measures_do_not_emit_table_style_sum(self):
+        """Effective MV measures must not produce SUM(mv.measure).
+
+        Databricks metric views require MEASURE(measure_name) in full SQL
+        queries, and Genie SQL snippets cannot safely store a table-style
+        aggregate over an MV measure. The schema-discovery source should
+        skip MV measure aggregates instead of creating known-invalid
+        candidates that validation later rejects.
+        """
+        from genie_space_optimizer.common.asset_semantics import (
+            KIND_METRIC_VIEW,
+            stamp_asset_semantics,
+        )
         from genie_space_optimizer.optimization.optimizer import (
             _discover_schema_sql_expressions,
         )
 
-        candidates = _discover_schema_sql_expressions(self._production_snapshot())
+        snapshot = self._production_snapshot()
+        stamp_asset_semantics(snapshot, {
+            "cat.sales.mv_sales": {
+                "identifier": "cat.sales.mv_sales",
+                "short_name": "mv_sales",
+                "kind": KIND_METRIC_VIEW,
+                "measures": ["total_cost"],
+                "dimensions": ["created_at"],
+            },
+        })
+
+        candidates = _discover_schema_sql_expressions(snapshot)
         sqls = {c["sql"] for c in candidates}
 
-        # Numeric "total_cost" on the MV.
-        assert "SUM(cat.sales.mv_sales.total_cost)" in sqls, (
-            f"expected MV-sourced measure; got {sqls}"
-        )
-        # Timestamp "created_at" → MONTH/QUARTER.
+        assert "SUM(cat.sales.mv_sales.total_cost)" not in sqls
         assert "MONTH(cat.sales.mv_sales.created_at)" in sqls
+
+    def test_table_shelf_semantic_metric_view_skips_measure_sum(self):
+        from genie_space_optimizer.common.asset_semantics import (
+            KIND_METRIC_VIEW,
+            stamp_asset_semantics,
+        )
+        from genie_space_optimizer.optimization.optimizer import (
+            _discover_schema_sql_expressions,
+        )
+
+        snapshot = {
+            "data_sources": {
+                "tables": [{
+                    "identifier": "cat.sales.mv_sales",
+                    "column_configs": [
+                        {"column_name": "total_sales", "data_type": "DOUBLE"},
+                        {"column_name": "business_date", "data_type": "DATE"},
+                    ],
+                }],
+                "metric_views": [],
+            },
+        }
+        stamp_asset_semantics(snapshot, {
+            "cat.sales.mv_sales": {
+                "identifier": "cat.sales.mv_sales",
+                "short_name": "mv_sales",
+                "kind": KIND_METRIC_VIEW,
+                "measures": ["total_sales"],
+                "dimensions": ["business_date"],
+            },
+        })
+
+        sqls = {
+            c["sql"]
+            for c in _discover_schema_sql_expressions(snapshot)
+        }
+        assert "SUM(cat.sales.mv_sales.total_sales)" not in sqls
+        assert "MONTH(cat.sales.mv_sales.business_date)" in sqls
 
     def test_legacy_columns_shape_still_works(self):
         """Backcompat: tables with ``columns`` (older / test shape)
