@@ -5680,17 +5680,12 @@ def _filter_tried_clusters(
 
 
 def _normalise_blame(blame_raw: Any) -> tuple[str, ...] | str:
-    """Canonical blame representation used by reflection entries and the
-    tried-clusters filter. Empty collections normalise to ``""`` (same
-    shape as ``None``) so legacy 2-tuple keys written with an empty
-    blame will match a cluster whose ``asi_blame_set`` is also empty.
-    """
-    if blame_raw is None:
-        return ""
-    if isinstance(blame_raw, (list, tuple, set, frozenset)):
-        items = tuple(sorted(str(b) for b in blame_raw if str(b)))
-        return items or ""
-    return str(blame_raw)
+    """Canonical blame representation used by reflection and tried-cluster keys."""
+    from genie_space_optimizer.optimization.blame_normalization import (
+        normalize_blame_key,
+    )
+
+    return normalize_blame_key(blame_raw)
 
 
 def _extract_arbiter_actions_from_baseline(

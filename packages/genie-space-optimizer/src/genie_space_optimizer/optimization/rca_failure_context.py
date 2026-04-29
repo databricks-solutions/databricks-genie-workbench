@@ -181,9 +181,13 @@ def _root_cause(blocks: list[tuple[str, dict]]) -> str:
 
 
 def _blame_set(blocks: list[tuple[str, dict]]) -> tuple[str, ...]:
+    from genie_space_optimizer.optimization.blame_normalization import (
+        normalize_blame_set,
+    )
+
     out: list[str] = []
     for _judge, block in blocks:
-        out.extend(_as_tuple(block.get("blame_set")))
+        out.extend(normalize_blame_set(block.get("blame_set")))
     return tuple(dict.fromkeys(x for x in out if x))
 
 
