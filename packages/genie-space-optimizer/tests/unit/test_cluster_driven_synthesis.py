@@ -498,6 +498,53 @@ class TestLever5Intercept:
         # The actionable guidance must appear before any trailing metadata.
         assert "Aggregate sales by region" in fb2["new_text"]
 
+    def test_teaching_kit_primary_proposal_carries_target_qids_and_kit_provenance(self, monkeypatch):
+        from genie_space_optimizer.optimization import optimizer
+
+        snap = _mk_snapshot()
+        snap["_failure_clusters"] = [_mk_cluster("C1", "missing_aggregation")]
+
+        def fake_synthesis(*_args, **_kwargs):
+            return {
+                "patch_type": "add_example_sql",
+                "example_question": "Which regions have the highest sales?",
+                "example_sql": "SELECT region, SUM(amount) FROM cat.sch.fact_sales GROUP BY region",
+                "usage_guidance": "Use for regional aggregation.",
+                "_archetype_name": "simple_group_by",
+                "_cluster_id": "C1",
+                "kit_id": "kit_C1_1",
+                "target_qids": ["q1"],
+                "rca_id": "rca_agg",
+                "_supporting_proposals": [],
+            }
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.cluster_driven_synthesis.run_cluster_driven_synthesis_for_single_cluster",
+            fake_synthesis,
+        )
+
+        proposals = optimizer.generate_proposals_from_strategy(
+            strategy={},
+            action_group={
+                "id": "AG1",
+                "root_cause_summary": "missing aggregation",
+                "affected_questions": ["q1"],
+                "source_cluster_ids": ["C1"],
+                "lever_directives": {"5": {"example_sqls": [{"intent": "teach aggregation"}]}},
+            },
+            metadata_snapshot=snap,
+            target_lever=5,
+            apply_mode="genie_config",
+            benchmarks=[],
+        )
+
+        primary = next(p for p in proposals if p["patch_type"] == "add_example_sql")
+        assert primary["kit_id"] == "kit_C1_1"
+        assert primary["target_qids"] == ["q1"]
+        assert primary["rca_id"] == "rca_agg"
+        assert primary["provenance"]["kit_id"] == "kit_C1_1"
+        assert primary["provenance"]["target_qids"] == ["q1"]
+
     def test_lever5_intercept_appends_teaching_kit_supporting_proposals(self, monkeypatch):
         from genie_space_optimizer.optimization import optimizer
 
