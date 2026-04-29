@@ -158,3 +158,31 @@ def test_optimizer_uses_defect_identity_for_ag_scope_binding() -> None:
 
     assert "clusters_share_defect_identity" in src
     assert "AG scope bound (RCA defect identity)" in src
+
+
+def test_execution_plan_uses_theme_recommended_levers_even_if_patch_intents_are_sparse() -> None:
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+    from genie_space_optimizer.optimization.rca_execution import build_rca_execution_plans
+
+    theme = RcaPatchTheme(
+        rca_id="rca_topn",
+        rca_kind=RcaKind.TOP_N_CARDINALITY_COLLAPSE,
+        patch_family="cardinality_preserving_top_n_guidance",
+        patches=(
+            {
+                "type": "request_example_sql_synthesis",
+                "lever": 5,
+                "root_cause": "plural_top_n_collapse",
+                "intent": "synthesize ordered-list example SQL",
+            },
+        ),
+        target_qids=("q_topn",),
+        touched_objects=("rank_filter",),
+        confidence=0.9,
+        evidence_summary="Remove WHERE rank = 1.",
+        recommended_levers=(1, 5, 6),
+    )
+
+    plans = build_rca_execution_plans([theme])
+
+    assert plans[0].required_levers == (1, 5, 6)

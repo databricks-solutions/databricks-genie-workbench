@@ -152,11 +152,17 @@ def build_rca_execution_plans(themes: Iterable[Any]) -> list[RcaExecutionPlan]:
             p for p in (_field(theme, "patches", ()) or ())
             if isinstance(p, dict)
         )
-        required = _dedupe(
+        recommended = tuple(
+            int(x)
+            for x in (_field(theme, "recommended_levers", ()) or ())
+            if str(x).isdigit() and 1 <= int(x) <= 6
+        )
+        patch_levers = tuple(
             lever
             for lever in (_patch_lever(p) for p in patches)
             if lever is not None
         )
+        required = _dedupe((*recommended, *patch_levers))
         if not required:
             continue
         target_qids = _dedupe(

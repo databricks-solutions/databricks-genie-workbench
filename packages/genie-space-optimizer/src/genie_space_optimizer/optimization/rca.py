@@ -72,6 +72,7 @@ class RcaPatchTheme:
     risk_level: str = "medium"
     confidence: float = 0.0
     evidence_summary: str = ""
+    recommended_levers: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -858,6 +859,7 @@ def compile_patch_themes(
             risk_level="medium",
             confidence=f.confidence,
             evidence_summary="; ".join(e.detail for e in f.evidence[:3]),
+            recommended_levers=f.recommended_levers,
         ))
     return themes
 
