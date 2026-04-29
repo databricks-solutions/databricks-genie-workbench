@@ -2148,6 +2148,15 @@ def classify_risk(patch_type: str | dict) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+def _single_column_target(value: Any) -> str:
+    """Normalize a column-target proposal field to a single column name."""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list) and len(value) == 1 and isinstance(value[0], str):
+        return value[0].strip()
+    return ""
+
+
 def _copy_proposal_metadata(patch: dict, proposal: dict) -> dict:
     proposal_id = proposal.get("proposal_id") or proposal.get("id")
     if proposal_id:
@@ -2238,7 +2247,20 @@ def proposals_to_patches(proposals: list[dict]) -> list[dict]:
         col_desc = p.get("column_description")
         col_syns = p.get("column_synonyms")
         tbl_id = p.get("table", "")
-        col_name = p.get("column", "")
+        col_name = _single_column_target(
+            p.get("column")
+            or p.get("column_name")
+            or p.get("target_column")
+            or p.get("target")
+        )
+        if patch_type in ("update_column_description", "add_column_synonym") and not col_name:
+            logger.info(
+                "Dropping %s proposal %s because column target is invalid: %r",
+                patch_type,
+                p.get("proposal_id") or p.get("id") or "(unknown)",
+                p.get("column") or p.get("target"),
+            )
+            continue
 
         if isinstance(table_sections, dict) and table_sections and tbl_id and not col_name:
             patches.append(_copy_proposal_metadata({
