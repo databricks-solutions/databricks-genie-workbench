@@ -5145,6 +5145,63 @@ def _next_grounding_action_payload(
         }
 
 
+def _format_rollback_reflection(
+    *,
+    rollback_reason: str,
+    control_plane_reason: str,
+    any_target_improved: bool,
+    regressions: list,
+    patch_types: list[str],
+    root_cause_summary: str,
+    accuracy_delta_pp: float,
+) -> str:
+    """Return a strategist-facing reflection sentence for a rolled-back AG.
+
+    The label prefix names the actual cause (so the next strategist call
+    does not repeat the same approach). Mapping:
+
+      rejected_no_gain                 -> Rollback (no_overall_improvement)
+      rejected_unbounded_collateral    -> Rollback (unbounded_collateral)
+      target_qids_not_improved         -> Rollback (target_not_fixed)
+      rejected_missing_causal_target   -> Rollback (no_causal_target)
+      missing_pre_rows                 -> Rollback (gate_baseline_missing)
+      stale_or_candidate_pre_rows      -> Rollback (gate_baseline_stale)
+      else                             -> Rollback (<rollback_reason short>)
+    """
+    label_map = {
+        "post_arbiter_not_improved": "no_overall_improvement",
+        "rejected_no_gain": "no_overall_improvement",
+        "out_of_target_hard_regression": "collateral_regression",
+        "rejected_unbounded_collateral": "unbounded_collateral",
+        "target_qids_not_improved": "target_not_fixed",
+        "missing_target_qids": "no_causal_target",
+        "rejected_missing_causal_target": "no_causal_target",
+        "missing_pre_rows": "gate_baseline_missing",
+        "stale_or_candidate_pre_rows": "gate_baseline_stale",
+    }
+    if control_plane_reason in label_map:
+        label = label_map[control_plane_reason]
+    else:
+        label = (rollback_reason or "unknown").split(":", 1)[0].strip() or "unknown"
+
+    patch_text = ", ".join(patch_types) if patch_types else "(no patches)"
+
+    if any_target_improved and regressions:
+        return (
+            f"Rollback ({label}): patches ({patch_text}) improved some target "
+            f"questions but caused regressions on {len(regressions)} other(s) "
+            f"(qids={[str(r.get('qid', '?')) for r in regressions[:3]]}). "
+            f"Narrower scope on the same lever may help."
+        )
+    return (
+        f"Rollback ({label}): {root_cause_summary or 'unknown root cause'} "
+        f"was not resolved by {patch_text} "
+        f"(accuracy delta {accuracy_delta_pp:+.1f}%). "
+        f"Real reason: {control_plane_reason or rollback_reason}. "
+        f"A different lever or escalation is needed."
+    )
+
+
 def _build_reflection_entry(
     iteration: int,
     ag_id: str,
@@ -11793,19 +11850,22 @@ def _run_lever_loop(
             )
             _regressions = gate_result.get("regressions", [])
             _rb_patch_types = sorted({p.get("patch_type", "?") for p in patches})
-            if _any_target_improved and _regressions:
-                _rb_reflection = (
-                    f"Rollback ({_rb_refinement}): patches ({', '.join(_rb_patch_types)}) "
-                    f"improved some target questions but caused regressions on "
-                    f"{len(_regressions)} other(s). Narrower scope on the same lever may help."
-                )
-            else:
-                _rb_reflection = (
-                    f"Rollback ({_rb_refinement}): {ag.get('root_cause_summary', 'unknown root cause')} "
-                    f"was not resolved by {', '.join(_rb_patch_types)} "
-                    f"(accuracy delta {_rb_acc_delta:+.1f}%). "
-                    f"A different lever or escalation is needed."
-                )
+            _control_plane_reason_for_reflection = ""
+            for _r in _regressions:
+                if _r.get("judge") == "control_plane_acceptance":
+                    _control_plane_reason_for_reflection = str(
+                        _r.get("reason") or ""
+                    )
+                    break
+            _rb_reflection = _format_rollback_reflection(
+                rollback_reason=reason,
+                control_plane_reason=_control_plane_reason_for_reflection,
+                any_target_improved=_any_target_improved,
+                regressions=_regressions,
+                patch_types=_rb_patch_types,
+                root_cause_summary=str(ag.get("root_cause_summary", "")),
+                accuracy_delta_pp=float(_rb_acc_delta),
+            )
             reflection = _build_reflection_entry(
                 iteration=iteration_counter, ag_id=ag_id, accepted=False,
                 levers=[int(lk) for lk in lever_keys],
