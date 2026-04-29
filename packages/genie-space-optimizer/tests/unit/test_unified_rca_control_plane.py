@@ -445,3 +445,20 @@ def test_rca_execution_uses_same_qid_scope_as_grounding_for_malformed_action_gro
     assert expected_qids == ("q_time",)
     assert required_levers_for_action_group(ag, plans, source_clusters=source_clusters) == (2, 5, 6)
     assert len(plans_for_action_group(ag, plans, source_clusters=source_clusters)) == 1
+
+
+def test_unified_rca_contract_harness_imports_from_main_control_modules() -> None:
+    from genie_space_optimizer.optimization.rca_contract_harness import (
+        evaluate_frozen_rca_contract,
+    )
+
+    result = evaluate_frozen_rca_contract(
+        rows=[],
+        source_clusters=[],
+        action_group={"id": "AG_empty", "affected_questions": []},
+        post_arbiter_accuracy=100.0,
+        iteration_counter=1,
+        max_iterations=5,
+    )
+
+    assert result["terminal"]["status"] == "converged"
