@@ -1374,6 +1374,7 @@ def read_latest_stage(
 def load_latest_full_iteration(
     spark: SparkSession, run_id: str, catalog: str, schema: str,
     *, include_rolled_back: bool = False,
+    before_iteration: int | None = None,
 ) -> dict | None:
     """Latest iteration with ``eval_scope='full'``. Used for resume + convergence.
 
@@ -1382,16 +1383,26 @@ def load_latest_full_iteration(
     state (the ghost-cluster feedback loop). Set ``include_rolled_back=True``
     only when a caller specifically needs to reason about the rolled-back
     data (e.g. post-mortem audits).
+
+    When *before_iteration* is provided, rows at that iteration or later are
+    ignored. This prevents the full-eval acceptance path from reading the
+    candidate row it just wrote as its own control-plane baseline.
     """
     fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
     rollback_filter = (
         "" if include_rolled_back
         else " AND (rolled_back IS NULL OR rolled_back = false)"
     )
+    before_filter = (
+        f" AND iteration < {int(before_iteration)}"
+        if before_iteration is not None
+        else ""
+    )
     df = run_query(
         spark,
         f"SELECT * FROM {fqn} WHERE run_id = '{run_id}' AND eval_scope = 'full'"
-        f"{rollback_filter} "
+        f"{rollback_filter}"
+        f"{before_filter} "
         f"ORDER BY iteration DESC LIMIT 1",
     )
     if df.empty:
