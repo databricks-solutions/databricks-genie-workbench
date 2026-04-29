@@ -462,3 +462,116 @@ def test_unified_rca_contract_harness_imports_from_main_control_modules() -> Non
     )
 
     assert result["terminal"]["status"] == "converged"
+
+
+def test_latest_run_shape_filters_cross_ag_themes_and_keeps_function_routing_patch() -> None:
+    from genie_space_optimizer.optimization.optimizer import (
+        _rca_themes_requesting_synthesis,
+        _rca_themes_requesting_sql_snippets,
+    )
+    from genie_space_optimizer.optimization.patch_selection import select_causal_patch_cap
+    from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
+    from genie_space_optimizer.optimization.rca_terminal import (
+        RcaTerminalDecision,
+        RcaTerminalStatus,
+        legacy_plateau_allows_stop,
+    )
+
+    q028_theme = RcaPatchTheme(
+        rca_id="rca_q028_function_routing",
+        rca_kind=RcaKind.FUNCTION_OR_TVF_NOT_INVOKED,
+        patch_family="function_routing_guidance",
+        patches=(
+            {"type": "request_example_sql_synthesis", "lever": 5},
+            {
+                "type": "add_sql_snippet_expression",
+                "lever": 6,
+                "target_object": "fn_mtd_or_mtday",
+                "snippet_type": "expression",
+            },
+        ),
+        target_qids=("q028",),
+        touched_objects=("fn_mtd_or_mtday",),
+    )
+    unrelated_q012 = RcaPatchTheme(
+        rca_id="rca_q012_store_count",
+        rca_kind=RcaKind.MEASURE_SWAP,
+        patch_family="store_count_measure_guidance",
+        patches=(
+            {"type": "request_example_sql_synthesis", "lever": 5},
+            {
+                "type": "add_sql_snippet_measure",
+                "lever": 6,
+                "target_object": "mv_7now_store_sales.store_count",
+                "snippet_type": "measure",
+            },
+        ),
+        target_qids=("q012",),
+        touched_objects=("store_count",),
+    )
+    unrelated_q025 = RcaPatchTheme(
+        rca_id="rca_q025_time_window",
+        rca_kind=RcaKind.TIME_WINDOW_LOGIC_MISMATCH,
+        patch_family="time_window_guidance",
+        patches=({"type": "request_example_sql_synthesis", "lever": 5},),
+        target_qids=("q025",),
+        touched_objects=("business_date",),
+    )
+    themes = [unrelated_q012, unrelated_q025, q028_theme]
+
+    assert [t.rca_id for t in _rca_themes_requesting_synthesis(themes, target_qids=("q028",))] == [
+        "rca_q028_function_routing"
+    ]
+    assert [t.rca_id for t in _rca_themes_requesting_sql_snippets(themes, target_qids=("q028",))] == [
+        "rca_q028_function_routing"
+    ]
+
+    patches = [
+        {
+            "proposal_id": "P001",
+            "lever": 5,
+            "patch_type": "update_instruction_section",
+            "section_name": "QUERY RULES",
+            "relevance_score": 0.55,
+            "risk_level": "low",
+            "rca_id": "rca_q012_store_count",
+            "target_qids": ["q012"],
+        },
+        {
+            "proposal_id": "P015",
+            "lever": 5,
+            "patch_type": "update_instruction_section",
+            "section_name": "FUNCTION ROUTING",
+            "relevance_score": 1.0,
+            "risk_level": "medium",
+            "rca_id": "rca_q028_function_routing",
+            "target_qids": ["q028"],
+        },
+        {
+            "proposal_id": "P016",
+            "lever": 6,
+            "patch_type": "add_sql_snippet_expression",
+            "display_name": "fn_mtd_or_mtday routing",
+            "relevance_score": 0.95,
+            "risk_level": "medium",
+            "rca_id": "rca_q028_function_routing",
+            "target_qids": ["q028"],
+        },
+    ]
+    selected, decisions = select_causal_patch_cap(patches, max_patches=2)
+
+    assert [p["proposal_id"] for p in selected] == ["P015", "P016"]
+    assert {
+        d["proposal_id"]: d["decision"]
+        for d in decisions
+    }["P001"] == "dropped"
+
+    terminal = RcaTerminalDecision(
+        status=RcaTerminalStatus.PATCHABLE_IN_PROGRESS,
+        should_continue=True,
+        reason="1 actionable RCA plans remain",
+    )
+    assert legacy_plateau_allows_stop(
+        plateau_detected=True,
+        terminal_decision=terminal,
+    ) is False
