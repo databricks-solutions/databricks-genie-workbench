@@ -317,3 +317,82 @@ def test_harness_attaches_structural_candidates_only_for_lever6_action_groups() 
     assert '"_lever6_structural_candidates"' in src
     assert "target_qids_from_action_group" in src
     assert "if \"6\" in lever_keys" in src or "if 6 in" in src
+
+
+def test_failed_question_gt_sql_flows_to_rca_forced_lever6_structural_candidate(monkeypatch) -> None:
+    from genie_space_optimizer.optimization import optimizer as opt
+    from genie_space_optimizer.optimization.feature_mining import (
+        extract_failed_row_sql_expression_candidates,
+    )
+    from genie_space_optimizer.optimization.rca import build_rca_ledger
+    from genie_space_optimizer.optimization.rca_execution import (
+        build_rca_execution_plans,
+        required_levers_for_action_group,
+        union_execution_levers,
+    )
+
+    row = {
+        "question_id": "q_fn",
+        "arbiter/value": "ground_truth_correct",
+        "inputs.expected_sql": (
+            "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+            "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
+        ),
+        "outputs.predictions.sql": (
+            "SELECT CASE WHEN day(now()) = 1 "
+            "THEN MEASURE(`_7now_py_sales_day`) "
+            "ELSE MEASURE(`_7now_py_sales_mtd`) END"
+        ),
+        "asset_routing/metadata": {
+            "failure_type": "asset_routing_error",
+            "blame_set": ["fn_mtd_or_mtday"],
+            "counterfactual_fix": "Use fn_mtd_or_mtday instead of inlining CASE logic.",
+        },
+    }
+
+    ledger = build_rca_ledger([row])
+    plans = build_rca_execution_plans(ledger["themes"])
+    ag = {
+        "id": "AG_FN",
+        "affected_questions": ["q_fn"],
+        "source_cluster_ids": ["H001"],
+        "lever_directives": {"5": {"instruction_sections": {"FUNCTION ROUTING": "Use the function."}}},
+    }
+
+    required = required_levers_for_action_group(ag, plans)
+    final_levers = union_execution_levers(["5"], required)
+
+    assert "6" in final_levers
+
+    candidates = [
+        c.as_dict()
+        for c in extract_failed_row_sql_expression_candidates(row)
+    ]
+    ag["_lever6_structural_candidates"] = candidates
+
+    monkeypatch.setattr(
+        opt,
+        "_validate_sql_identifiers",
+        lambda *_args, **_kwargs: (True, []),
+    )
+    monkeypatch.setattr(
+        "genie_space_optimizer.optimization.benchmarks.validate_sql_snippet",
+        lambda sql, snippet_type, *_args, **_kwargs: (True, "", sql),
+    )
+
+    proposals = opt.generate_proposals_from_strategy(
+        strategy={},
+        action_group=ag,
+        metadata_snapshot={"sql_snippets": {}, "data_sources": {"tables": [], "metric_views": []}},
+        target_lever=6,
+        apply_mode="genie_config",
+        spark=object(),
+        catalog="cat",
+        gold_schema="sch",
+        warehouse_id="wh",
+        benchmarks=[],
+    )
+
+    assert any(p["patch_type"] == "add_sql_snippet_expression" for p in proposals)
+    assert all(p["patch_type"] != "add_example_sql" for p in proposals)
+    assert any(p.get("source") == "rca_failed_question_sql" for p in proposals)
