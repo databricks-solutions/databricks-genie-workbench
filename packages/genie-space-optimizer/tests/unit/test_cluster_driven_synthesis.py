@@ -554,6 +554,46 @@ class TestLeakSafety:
         block = render_afs_block(afs_view)
         assert "SHOULD NOT APPEAR" not in block
 
+    def test_failure_context_block_includes_genie_sql_not_expected_sql(self):
+        from genie_space_optimizer.optimization.archetypes import ARCHETYPES
+
+        slice_ = AssetSlice(tables=[_mk_table("cat.sch.fact_sales")])
+        ctx = ClusterContext(
+            afs={"cluster_id": "C1", "failure_type": "wrong_grouping"},
+            asset_slice=slice_,
+            failure_contexts=[
+                {
+                    "question_id": "q_001",
+                    "generated_sql": "SELECT store_id, SUM(amount) FROM cat.sch.fact_sales GROUP BY store_id",
+                    "root_cause": "wrong_grouping",
+                    "failed_judges": ["schema_accuracy"],
+                    "blame_set": ["zone_vp_name"],
+                    "counterfactual_fixes": ["Group by zone_vp_name instead of store_id."],
+                    "rationales": ["The generated SQL used the wrong grain."],
+                    "arbiter_verdict": "ground_truth_correct",
+                }
+            ],
+        )
+
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            render_failure_context_block,
+        )
+
+        rendered = render_cluster_driven_prompt(
+            ARCHETYPES[0],
+            ctx,
+            ["existing Q?"],
+        )
+        block = render_failure_context_block(ctx.failure_contexts)
+
+        assert "## RCA failure evidence" in rendered
+        assert "Genie generated SQL" in rendered
+        assert "SELECT store_id" in rendered
+        assert "Group by zone_vp_name" in rendered
+        assert "expected_sql" not in rendered
+        # Failure block itself must not echo benchmark question phrasing.
+        assert "benchmark question" not in block.lower()
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 5. Observability + provenance (2 tests)

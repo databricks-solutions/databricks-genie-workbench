@@ -130,6 +130,54 @@ def render_afs_block(afs: dict) -> str:
     return "\n".join(lines)
 
 
+def render_failure_context_block(failure_contexts: list[dict] | None) -> str:
+    """Render safe RCA failure evidence for teaching-kit synthesis.
+
+    This block may contain Genie's generated SQL and judge feedback. It must
+    not contain benchmark questions or expected SQL.
+    """
+    contexts = [c for c in (failure_contexts or []) if isinstance(c, dict)]
+    if not contexts:
+        return ""
+    lines = [
+        "## RCA failure evidence",
+        "Use this to understand what Genie misunderstood. Do not imitate any failed input prompt.",
+    ]
+    for idx, ctx in enumerate(contexts[:3], 1):
+        lines.append(f"  Failure {idx}:")
+        lines.append(f"    Question ID: {ctx.get('question_id', '')}")
+        lines.append(f"    Root cause: {ctx.get('root_cause', 'unknown')}")
+        if ctx.get("failed_judges"):
+            lines.append(
+                f"    Failed judges: "
+                f"{', '.join(str(x) for x in ctx.get('failed_judges', []))}"
+            )
+        if ctx.get("blame_set"):
+            lines.append(
+                f"    Blame: {', '.join(str(x) for x in ctx.get('blame_set', []))}"
+            )
+        if ctx.get("counterfactual_fixes"):
+            lines.append("    Counterfactual fixes:")
+            for fix in ctx.get("counterfactual_fixes", [])[:3]:
+                lines.append(f"      - {str(fix)[:300]}")
+        if ctx.get("rationales"):
+            lines.append("    Judge rationale:")
+            for rationale in ctx.get("rationales", [])[:3]:
+                lines.append(f"      - {str(rationale)[:300]}")
+        generated_sql = str(ctx.get("generated_sql") or "").strip()
+        if generated_sql:
+            lines.append("    Genie generated SQL:")
+            lines.append("```sql")
+            lines.append(generated_sql[:4000])
+            lines.append("```")
+
+    rendered = "\n".join(lines)
+    forbidden_tokens = ("expected_sql", "benchmark question", "inputs.question")
+    if any(token in rendered.lower() for token in forbidden_tokens):
+        raise ValueError("RCA failure evidence block contains forbidden benchmark field name")
+    return rendered
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # ClusterContext — SynthesisContext for the cluster-driven trigger
 # ═══════════════════════════════════════════════════════════════════════
@@ -170,6 +218,10 @@ class ClusterContext:
     # treated as absent so the existing byte-equivalence contract for
     # the no-AFS / no-hints path is preserved.
     regression_mining_hints: str = ""
+    # RCA failure-evidence lane: per-target-QID dictionaries containing
+    # Genie's generated SQL, judge metadata, and counterfactual fixes.
+    # Excludes benchmark question text and expected SQL by construction.
+    failure_contexts: list[dict] | None = None
 
     def to_identifier_allowlist(self) -> str:
         return self.asset_slice.to_identifier_allowlist()
@@ -215,6 +267,7 @@ def render_cluster_driven_prompt(
         retry_feedback=retry_feedback,
     )
     afs_block = render_afs_block(context.afs)
+    failure_block = render_failure_context_block(context.failure_contexts)
     hints = (context.regression_mining_hints or "").strip()
     # Byte-equivalence contract: with neither AFS nor hints, the
     # pre-flight prompt renders verbatim. Hints are placed AFTER the
@@ -227,6 +280,8 @@ def render_cluster_driven_prompt(
             "## Failure signature (AFS) — this example must address this failure\n"
             f"{afs_block}"
         )
+    if failure_block:
+        prefix_parts.append(failure_block)
     if hints:
         prefix_parts.append(hints)
     if not prefix_parts:
@@ -604,12 +659,41 @@ def run_cluster_driven_synthesis_for_single_cluster(
     # ``GSO_ENABLE_REGRESSION_MINING_STRATEGIST`` flag is on. Default
     # ("") reproduces the legacy byte-equivalent prompt path.
     _rm_hints = metadata_snapshot.get("_regression_mining_hints") or ""
+
+    target_qids = [
+        str(q)
+        for q in (
+            cluster.get("question_ids")
+            or cluster.get("affected_questions")
+            or cluster.get("target_qids")
+            or []
+        )
+        if str(q)
+    ]
+    failure_contexts: list[dict] = []
+    try:
+        from genie_space_optimizer.optimization.rca_failure_context import (
+            contexts_for_target_qids,
+        )
+
+        failure_contexts = contexts_for_target_qids(
+            metadata_snapshot.get("_rca_failure_contexts_by_qid") or {},
+            target_qids,
+        )
+    except Exception:
+        logger.debug(
+            "cluster-driven: failed to resolve RCA failure contexts",
+            exc_info=True,
+        )
+        failure_contexts = []
+
     context = ClusterContext(
         afs=afs,
         asset_slice=slice_,
         cluster_id=cluster_id,
         data_profile=metadata_snapshot.get("_data_profile") or None,
         regression_mining_hints=str(_rm_hints) if isinstance(_rm_hints, str) else "",
+        failure_contexts=failure_contexts,
     )
 
     # Bump budget counter — we're about to issue an LLM call.
