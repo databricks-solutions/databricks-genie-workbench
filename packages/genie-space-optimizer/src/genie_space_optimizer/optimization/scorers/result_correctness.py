@@ -18,6 +18,9 @@ from genie_space_optimizer.optimization.evaluation import (
     format_asi_markdown,
     slim_comparison,
 )
+from genie_space_optimizer.optimization.genie_eval_taxonomy import (
+    with_genie_equivalent_eval,
+)
 
 
 @scorer
@@ -121,6 +124,12 @@ def result_correctness_scorer(inputs: dict, outputs: dict, expectations: dict) -
             confidence=0.7,
             actual_value=cmp.get("error", "")[:100],
         )
+        metadata = with_genie_equivalent_eval(
+            metadata,
+            judge_name="result_correctness",
+            value="no",
+            comparison=cmp,
+        )
         return Feedback(
             name="result_correctness",
             value="no",
@@ -205,6 +214,12 @@ def result_correctness_scorer(inputs: dict, outputs: dict, expectations: dict) -
         expected_value=f"rows={cmp.get('gt_rows')}, hash={cmp.get('gt_hash')}",
         actual_value=f"rows={cmp.get('genie_rows')}, hash={cmp.get('genie_hash')}",
         counterfactual_fix=_cfix,
+    )
+    metadata = with_genie_equivalent_eval(
+        metadata,
+        judge_name="result_correctness",
+        value="no",
+        comparison=cmp,
     )
     return Feedback(
         name="result_correctness",

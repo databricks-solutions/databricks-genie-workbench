@@ -24,6 +24,9 @@ from genie_space_optimizer.optimization.evaluation import (
     build_asi_metadata,
     format_asi_markdown,
 )
+from genie_space_optimizer.optimization.genie_eval_taxonomy import (
+    with_genie_equivalent_eval,
+)
 
 
 def _sql_hash(sql: str) -> str:
@@ -62,7 +65,13 @@ def _structurally_equivalent(sql_a: str, sql_b: str) -> bool:
 
 def _make_pass(question_id: str, match_tier: str, rationale: str) -> Feedback:
     """Helper — build a ``value="yes"`` Feedback with match_tier metadata."""
-    metadata = {"match_tier": match_tier}
+    metadata = with_genie_equivalent_eval(
+        {"match_tier": match_tier},
+        judge_name="repeatability",
+        value="yes",
+        failure_type="",
+        confidence=1.0,
+    )
     return Feedback(
         name="repeatability",
         value="yes",
@@ -70,6 +79,7 @@ def _make_pass(question_id: str, match_tier: str, rationale: str) -> Feedback:
             judge_name="repeatability",
             value="yes",
             rationale=rationale,
+            metadata=metadata,
             question_id=question_id,
         ),
         source=CODE_SOURCE,
@@ -112,6 +122,11 @@ def repeatability_scorer(inputs: dict, outputs: dict, expectations: dict) -> Fee
             counterfactual_fix="Investigate why Genie returned no SQL for this question",
         )
         metadata["match_tier"] = "no_output"
+        metadata = with_genie_equivalent_eval(
+            metadata,
+            judge_name="repeatability",
+            value="no",
+        )
         return Feedback(
             name="repeatability",
             value="no",
@@ -151,6 +166,11 @@ def repeatability_scorer(inputs: dict, outputs: dict, expectations: dict) -> Fee
             ),
         )
         metadata["match_tier"] = "execution"
+        metadata = with_genie_equivalent_eval(
+            metadata,
+            judge_name="repeatability",
+            value="no",
+        )
         return Feedback(
             name="repeatability",
             value="no",
@@ -211,6 +231,11 @@ def repeatability_scorer(inputs: dict, outputs: dict, expectations: dict) -> Fee
         ),
     )
     metadata["match_tier"] = "none"
+    metadata = with_genie_equivalent_eval(
+        metadata,
+        judge_name="repeatability",
+        value="no",
+    )
     return Feedback(
         name="repeatability",
         value="no",

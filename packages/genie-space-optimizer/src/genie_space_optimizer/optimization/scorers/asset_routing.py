@@ -17,6 +17,9 @@ from genie_space_optimizer.optimization.evaluation import (
     build_asi_metadata,
     format_asi_markdown,
 )
+from genie_space_optimizer.optimization.genie_eval_taxonomy import (
+    with_genie_equivalent_eval,
+)
 
 
 _VALID_ASSET_TYPES = frozenset({"MV", "TVF", "TABLE"})
@@ -57,6 +60,17 @@ def asset_routing_scorer(inputs: dict, outputs: dict, expectations: dict) -> Fee
             reason = f"results match ({cmp.get('match_type', '?')})"
         else:
             reason = "both returned empty results (no data to validate routing)"
+        override_metadata = with_genie_equivalent_eval(
+            {
+                "expected_asset": expected_type,
+                "actual_asset": actual_asset,
+                "override_reason": "result_match" if result_matched else "empty_results",
+            },
+            judge_name="asset_routing",
+            value="yes",
+            failure_type="",
+            confidence=1.0,
+        )
         return Feedback(
             name="asset_routing",
             value="yes",
@@ -68,6 +82,7 @@ def asset_routing_scorer(inputs: dict, outputs: dict, expectations: dict) -> Fee
                     f"but {reason}. "
                     f"Asset preference noted but not a correctness failure."
                 ),
+                metadata=override_metadata,
                 extra={
                     "expected_asset": expected_type,
                     "actual_asset": actual_asset,
@@ -76,6 +91,7 @@ def asset_routing_scorer(inputs: dict, outputs: dict, expectations: dict) -> Fee
                 question_id=question_id,
             ),
             source=CODE_SOURCE,
+            metadata=override_metadata,
         )
 
     metadata = None
@@ -88,6 +104,20 @@ def asset_routing_scorer(inputs: dict, outputs: dict, expectations: dict) -> Fee
             actual_value=actual_asset,
             blame_set=[f"asset_routing:{expected_type}"],
             counterfactual_fix=f"Add instruction to prefer {expected_type} for this query pattern",
+        )
+        metadata = with_genie_equivalent_eval(
+            metadata,
+            judge_name="asset_routing",
+            value="no",
+            comparison=cmp,
+        )
+    else:
+        metadata = with_genie_equivalent_eval(
+            {},
+            judge_name="asset_routing",
+            value="yes",
+            failure_type="",
+            confidence=1.0,
         )
     return Feedback(
         name="asset_routing",

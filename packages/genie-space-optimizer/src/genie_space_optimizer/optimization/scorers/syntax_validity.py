@@ -25,6 +25,9 @@ from genie_space_optimizer.optimization.evaluation import (
     build_asi_metadata,
     format_asi_markdown,
 )
+from genie_space_optimizer.optimization.genie_eval_taxonomy import (
+    with_genie_equivalent_eval,
+)
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -83,6 +86,12 @@ def _make_syntax_validity_scorer(spark: SparkSession, catalog: str, schema: str)
                 missing_metadata="Genie returned no SQL",
                 counterfactual_fix="Check Genie Space instructions and data asset visibility",
             )
+            metadata = with_genie_equivalent_eval(
+                metadata,
+                judge_name="syntax_validity",
+                value="no",
+                failure_type="no_genie_sql",
+            )
             return Feedback(
                 name="syntax_validity",
                 value="no",
@@ -111,6 +120,11 @@ def _make_syntax_validity_scorer(spark: SparkSession, catalog: str, schema: str)
                     "Every `ident` must have a matching closing backtick."
                 ),
             )
+            metadata = with_genie_equivalent_eval(
+                metadata,
+                judge_name="syntax_validity",
+                value="no",
+            )
             return Feedback(
                 name="syntax_validity",
                 value="no",
@@ -135,6 +149,13 @@ def _make_syntax_validity_scorer(spark: SparkSession, catalog: str, schema: str)
             with quiet_grpc_logs():
                 _set_sql_context(spark, catalog, schema)
                 spark.sql(f"EXPLAIN {sql}")
+            pass_metadata = with_genie_equivalent_eval(
+                {},
+                judge_name="syntax_validity",
+                value="yes",
+                failure_type="",
+                confidence=1.0,
+            )
             return Feedback(
                 name="syntax_validity",
                 value="yes",
@@ -142,9 +163,11 @@ def _make_syntax_validity_scorer(spark: SparkSession, catalog: str, schema: str)
                     judge_name="syntax_validity",
                     value="yes",
                     rationale="SQL parses successfully via EXPLAIN.",
+                    metadata=pass_metadata,
                     question_id=question_id,
                 ),
                 source=CODE_SOURCE,
+                metadata=pass_metadata,
             )
         except Exception as e:
             error_msg = str(e)[:200]
@@ -162,6 +185,16 @@ def _make_syntax_validity_scorer(spark: SparkSession, catalog: str, schema: str)
             if _pos is not None:
                 if isinstance(metadata, dict):
                     metadata.setdefault("parse_position", {"line": _pos[0], "pos": _pos[1]})
+            mapping_failure_type = "incorrect_function_usage" if any(
+                token in error_msg.upper()
+                for token in ("UNRESOLVED_ROUTINE", "ROUTINE_NOT_FOUND", "FUNCTION", "ARGUMENT")
+            ) else metadata.get("failure_type", "other")
+            metadata = with_genie_equivalent_eval(
+                metadata,
+                judge_name="syntax_validity",
+                value="no",
+                failure_type=mapping_failure_type,
+            )
             return Feedback(
                 name="syntax_validity",
                 value="no",
