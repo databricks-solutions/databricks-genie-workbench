@@ -395,7 +395,7 @@ def test_harness_loads_control_plane_baseline_before_acceptance_decision() -> No
 
     src = inspect.getsource(harness)
 
-    init_marker = "_baseline_rows_for_control_plane: list[dict] = []"
+    init_marker = "_baseline_rows_for_control_plane = list("
     call_marker = "_control_plane_decision = decide_control_plane_acceptance("
 
     init_idx = src.find(init_marker)
@@ -445,10 +445,7 @@ def test_harness_loads_control_plane_baseline_before_writing_candidate_full_eval
 
     src = inspect.getsource(harness._run_gate_checks)
 
-    load_marker = (
-        "load_latest_full_iteration(spark, run_id, catalog, schema, "
-        "before_iteration=iteration_counter)"
-    )
+    load_marker = "before_iteration=iteration_counter,"
     write_marker = "write_iteration(\n        spark, run_id, iteration_counter, full_result,"
     decision_marker = "_control_plane_decision = decide_control_plane_acceptance("
 

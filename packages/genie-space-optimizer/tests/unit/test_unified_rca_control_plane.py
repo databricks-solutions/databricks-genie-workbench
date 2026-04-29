@@ -635,4 +635,8 @@ def test_latest_7now_run_shape_accepts_target_fix_and_rejects_candidate_self_bas
     assert accepted.accepted is True
     assert accepted.target_fixed_qids == ("7now_delivery_analytics_space_gs_022",)
     assert self_baselined.accepted is False
-    assert self_baselined.reason_code == "target_qids_not_improved"
+    # Task 5 — when pre and post rows are identical AND the score moved,
+    # the gate now flags the smoking-gun candidate-self-baseline shape with
+    # ``stale_or_candidate_pre_rows`` so operators stop misreading empty
+    # diagnostic fields as a real verdict.
+    assert self_baselined.reason_code == "stale_or_candidate_pre_rows"
