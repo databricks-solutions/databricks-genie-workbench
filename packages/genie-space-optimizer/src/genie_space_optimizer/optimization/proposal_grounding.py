@@ -372,6 +372,56 @@ def sql_filter_snippet_is_safe(
     return {"safe": True, "reason": "safe"}
 
 
+_GLOBAL_INSTRUCTION_SECTIONS = frozenset({
+    "QUERY RULES",
+    "ASSET ROUTING",
+    "CONSTRAINTS",
+    "AGGREGATION RULES",
+})
+
+
+def instruction_patch_scope_is_safe(
+    patch: dict,
+    *,
+    ag_target_qids: tuple[str, ...],
+) -> dict:
+    """Reject broad instruction rewrites that have no counterfactual footprint.
+
+    ``rewrite_instruction`` and ``update_instruction_section`` patches that
+    touch global sections (``QUERY RULES``, ``ASSET ROUTING``, etc.) without
+    a specific target or counterfactual dependents can change behavior on
+    many passing questions. The blast-radius gate cannot see them because
+    they don't carry a table/column footprint, so this second classifier
+    drops them before the patch cap.
+    """
+    ptype = str(patch.get("type") or patch.get("patch_type") or "")
+    if ptype not in {"rewrite_instruction", "update_instruction_section"}:
+        return {"safe": True, "reason": "not_instruction_rewrite"}
+    if patch.get("passing_dependents") is not None:
+        return {"safe": True, "reason": "has_counterfactual_dependents"}
+
+    section = str(
+        patch.get("section_name")
+        or patch.get("instruction_section")
+        or ""
+    ).upper().strip()
+    has_specific_target = bool(
+        patch.get("target_qids")
+        or patch.get("_grounding_target_qids")
+        or patch.get("target_object")
+        or patch.get("target_table")
+        or patch.get("column")
+    )
+    if ptype == "rewrite_instruction" or section in _GLOBAL_INSTRUCTION_SECTIONS:
+        if not has_specific_target:
+            return {
+                "safe": False,
+                "reason": "global_instruction_scope_without_dependents",
+                "section_name": section or "(full rewrite)",
+            }
+    return {"safe": True, "reason": "narrow_instruction_scope"}
+
+
 def patch_blast_radius_is_safe(
     patch: dict,
     *,
