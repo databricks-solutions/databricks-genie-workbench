@@ -175,3 +175,15 @@ def test_harness_suppresses_legacy_plateau_when_rca_terminal_is_patchable() -> N
 
     assert "legacy_plateau_allows_stop" in src
     assert "LEGACY PLATEAU SUPPRESSED" in src
+
+
+def test_harness_persists_patch_cap_trace_rows_and_prints_inventory() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness)
+
+    assert "patch_cap_decision_rows" in src
+    assert "format_patch_inventory" in src
+    assert "PROPOSAL INVENTORY" in src

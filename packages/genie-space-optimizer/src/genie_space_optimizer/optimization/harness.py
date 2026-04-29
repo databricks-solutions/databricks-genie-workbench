@@ -10904,6 +10904,21 @@ def _run_lever_loop(
                 )
             patches = _grounded
 
+            try:
+                from genie_space_optimizer.optimization.rca_decision_trace import (
+                    format_patch_inventory,
+                )
+
+                print(
+                    _section(f"PROPOSAL INVENTORY [{ag_id}]", "-") + "\n"
+                    + _kv("AG target QIDs", list(_ag_target_qids)) + "\n"
+                    + _kv("Grounded patch count", len(patches)) + "\n"
+                    + _kv("Patches", format_patch_inventory(patches)) + "\n"
+                    + _bar("-")
+                )
+            except Exception:
+                logger.debug("Failed to print proposal inventory", exc_info=True)
+
             # Emit a per-patch ``proposal_grounding`` decision row for
             # each kept/dropped decision so the Task-3 audit chain
             # ``cluster -> proposal -> grounding -> apply -> accept``
@@ -11089,6 +11104,28 @@ def _run_lever_loop(
                 ) + "\n"
                 + _bar("-")
             )
+
+            try:
+                from genie_space_optimizer.optimization.rca_decision_trace import (
+                    patch_cap_decision_rows,
+                )
+                from genie_space_optimizer.optimization.state import (
+                    write_lever_loop_decisions as _write_decisions,
+                )
+
+                _write_decisions(
+                    spark,
+                    patch_cap_decision_rows(
+                        run_id=run_id,
+                        iteration=iteration_counter,
+                        ag_id=ag_id,
+                        decisions=_patch_cap_decisions,
+                    ),
+                    catalog=catalog,
+                    schema=schema,
+                )
+            except Exception:
+                logger.debug("Failed to persist patch-cap decision rows", exc_info=True)
 
         # T3.3: shadow apply. When enabled, the intent is to clone the
         # space, apply patches to the clone, eval, and promote only on
