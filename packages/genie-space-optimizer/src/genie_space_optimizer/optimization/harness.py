@@ -11247,6 +11247,142 @@ def _run_lever_loop(
             ))
             continue
 
+        # Task 2 — Blast-radius gate. The counterfactual scan above stamps
+        # ``passing_dependents`` and ``high_collateral_risk`` on each
+        # proposal; turn those informational stamps into a deterministic
+        # gate so high-blast-radius patches are dropped before they reach
+        # the patch cap and ship.
+        try:
+            from genie_space_optimizer.optimization.proposal_grounding import (
+                instruction_patch_scope_is_safe as _instruction_scope_is_safe,
+                patch_blast_radius_is_safe,
+            )
+            from genie_space_optimizer.optimization.control_plane import (
+                target_qids_from_action_group as _target_qids_for_blast,
+            )
+
+            _blast_target_qids = _target_qids_for_blast(
+                ag,
+                strategy.get("_source_clusters", []),
+            )
+            _blast_kept: list[dict] = []
+            _blast_dropped: list[dict] = []
+            for _candidate in patches:
+                _decision = patch_blast_radius_is_safe(
+                    _candidate,
+                    ag_target_qids=_blast_target_qids,
+                    max_outside_target=0,
+                )
+                if not _decision["safe"]:
+                    _blast_dropped.append({
+                        "proposal_id": str(
+                            _candidate.get("proposal_id")
+                            or _candidate.get("id")
+                            or "?"
+                        ),
+                        "patch_type": str(
+                            _candidate.get("type")
+                            or _candidate.get("patch_type")
+                            or "?"
+                        ),
+                        "reason": _decision["reason"],
+                        "passing_dependents_outside_target": _decision.get(
+                            "passing_dependents_outside_target", []
+                        ),
+                    })
+                    continue
+                # Task 2A — second classifier for broad instruction rewrites
+                # that have no counterfactual dependents.
+                _scope_decision = _instruction_scope_is_safe(
+                    _candidate,
+                    ag_target_qids=_blast_target_qids,
+                )
+                if not _scope_decision["safe"]:
+                    _blast_dropped.append({
+                        "proposal_id": str(
+                            _candidate.get("proposal_id")
+                            or _candidate.get("id")
+                            or "?"
+                        ),
+                        "patch_type": str(
+                            _candidate.get("type")
+                            or _candidate.get("patch_type")
+                            or "?"
+                        ),
+                        "reason": _scope_decision["reason"],
+                        "passing_dependents_outside_target": [],
+                    })
+                    continue
+                _blast_kept.append(_candidate)
+            if _blast_dropped:
+                print(
+                    _section(f"[{ag_id}] BLAST-RADIUS GATE", "-") + "\n"
+                    + _kv("Patches dropped", len(_blast_dropped)) + "\n"
+                    + _kv(
+                        "AG target QIDs",
+                        list(_blast_target_qids) or "(none)",
+                    ) + "\n"
+                    + "\n".join(
+                        f"|  - {d['proposal_id']} ({d['patch_type']}): "
+                        f"reason={d['reason']}, "
+                        f"outside_target={d['passing_dependents_outside_target']}"
+                        for d in _blast_dropped
+                    ) + "\n"
+                    + _bar("-")
+                )
+                logger.warning(
+                    "AG %s blast-radius gate dropped %d/%d patches: %s",
+                    ag_id,
+                    len(_blast_dropped),
+                    len(patches),
+                    [d["proposal_id"] for d in _blast_dropped[:8]],
+                )
+            patches = _blast_kept
+        except ImportError:
+            # instruction_patch_scope_is_safe not yet implemented (Task 2A
+            # lands separately) — proceed with blast-radius gate alone.
+            from genie_space_optimizer.optimization.proposal_grounding import (
+                patch_blast_radius_is_safe,
+            )
+            from genie_space_optimizer.optimization.control_plane import (
+                target_qids_from_action_group as _target_qids_for_blast,
+            )
+
+            _blast_target_qids = _target_qids_for_blast(
+                ag,
+                strategy.get("_source_clusters", []),
+            )
+            _blast_kept = []
+            _blast_dropped = []
+            for _candidate in patches:
+                _decision = patch_blast_radius_is_safe(
+                    _candidate,
+                    ag_target_qids=_blast_target_qids,
+                    max_outside_target=0,
+                )
+                if _decision["safe"]:
+                    _blast_kept.append(_candidate)
+                else:
+                    _blast_dropped.append({
+                        "proposal_id": str(
+                            _candidate.get("proposal_id") or "?"
+                        ),
+                        "patch_type": str(_candidate.get("type") or "?"),
+                        "reason": _decision["reason"],
+                        "passing_dependents_outside_target": _decision.get(
+                            "passing_dependents_outside_target", []
+                        ),
+                    })
+            if _blast_dropped:
+                logger.warning(
+                    "AG %s blast-radius gate dropped %d/%d patches: %s",
+                    ag_id,
+                    len(_blast_dropped),
+                    len(patches),
+                    [d["proposal_id"] for d in _blast_dropped[:8]],
+                )
+            patches = _blast_kept
+
         # Tier 2.6: cap AG patch-set size. A single failing patch in a
         # large batch rolls back everything — including the patches that
         # would have helped. If the cap is exceeded, keep the highest-
