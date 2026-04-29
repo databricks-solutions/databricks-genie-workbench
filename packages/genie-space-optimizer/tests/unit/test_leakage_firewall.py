@@ -661,3 +661,43 @@ def test_benchmark_firewall_only_blocks_example_sql_answer_shape() -> None:
     assert is_benchmark_leak(example, "add_example_sql", corpus)[0] is True
     assert is_benchmark_leak(instruction, "add_instruction", corpus)[0] is False
     assert is_benchmark_leak(description, "update_column_description", corpus)[0] is False
+
+
+def test_failed_row_structural_learning_allows_snippets_but_blocks_example_sql() -> None:
+    from genie_space_optimizer.optimization.leakage import (
+        BenchmarkCorpus,
+        is_benchmark_leak,
+    )
+
+    corpus = BenchmarkCorpus.from_benchmarks([
+        {
+            "id": "q_fn",
+            "question": "Show prior-year month-to-date sales.",
+            "expected_sql": (
+                "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+                "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
+            ),
+        }
+    ])
+
+    snippet = {
+        "patch_type": "add_sql_snippet_expression",
+        "source": "rca_failed_question_sql",
+        "sql": (
+            "prashanth_subrahmanyam_catalog.sales_reports."
+            "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
+        ),
+        "display_name": "7NOW PY MTD Selector",
+    }
+    example = {
+        "patch_type": "add_example_sql",
+        "source": "rca_failed_question_sql",
+        "example_question": "Show prior-year month-to-date sales.",
+        "example_sql": (
+            "SELECT prashanth_subrahmanyam_catalog.sales_reports."
+            "fn_mtd_or_mtday(MEASURE(`_7now_py_sales_mtd`))"
+        ),
+    }
+
+    assert is_benchmark_leak(snippet, "add_sql_snippet_expression", corpus)[0] is False
+    assert is_benchmark_leak(example, "add_example_sql", corpus)[0] is True

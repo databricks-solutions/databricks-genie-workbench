@@ -1,28 +1,20 @@
-"""Benchmark-leakage firewall (Bug #4).
+"""Benchmark answer-shape leakage firewall (Bug #4).
 
-This module is the single write-path gate that prevents benchmark content
-from being copied verbatim (or near-verbatim) into the space being
-evaluated. Every optimizer proposal — across every patch_type — must pass
-``is_benchmark_leak`` before it is persisted.
+This module prevents benchmark question+answer examples from being copied
+verbatim or near-verbatim into inference-visible Example SQL artifacts.
+It deliberately does not block structural primitives such as SQL snippets,
+join specs, metadata descriptions, synonyms, dictionaries, or instructions.
 
 Design:
-* ``canonicalize_sql`` — lexically-normalized fingerprint. Two SQL
-  statements that differ only in whitespace, casing, aliases, or trailing
-  semicolons compare equal. Catches copy-paste attempts where the LLM
-  politely re-indents the benchmark.
-* ``BenchmarkCorpus`` — precomputes n-gram shingles and SQL fingerprints
-  for every benchmark (both train and held-out). The firewall checks
-  candidate proposals against the *full* corpus so held-out leakage is
-  caught too even though held-out questions are never fed into any LLM
-  prompt.
-* ``is_benchmark_leak`` — shape-aware dispatch on ``patch_type``. Each
-  patch type has a narrow, typed set of text-bearing fields; only those
-  are tested. This avoids false positives on scaffolding fields
-  (``rationale``, ``change_description``) that may legitimately reference
-  a benchmark in a non-leaky way (e.g. "fix cluster X").
-
-Embedding-cosine detection (P2.3) is added separately; this v1 covers
-n-gram + fingerprint, which is fast, deterministic, and zero-dependency.
+* ``canonicalize_sql`` — lexically-normalized fingerprint for answer-shaped
+  SQL fields.
+* ``BenchmarkCorpus`` — precomputes n-gram shingles and SQL fingerprints for
+  benchmark questions and expected SQL.
+* ``is_benchmark_leak`` — shape-aware dispatch on patch type. Today only
+  ``add_example_sql`` and ``update_example_sql`` are firewalled because they
+  persist retrievable question+SQL examples. Structural SQL snippets are
+  guarded by source gating, identifier allowlists, SQL validation, proposal
+  grounding, and post-apply arbiter evaluation.
 """
 
 from __future__ import annotations
