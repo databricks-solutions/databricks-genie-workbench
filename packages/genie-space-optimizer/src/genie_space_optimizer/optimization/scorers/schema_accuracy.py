@@ -22,6 +22,9 @@ from genie_space_optimizer.optimization.evaluation import (
     format_asi_markdown,
     get_registered_prompt_name,
 )
+from genie_space_optimizer.optimization.genie_eval_taxonomy import (
+    with_genie_equivalent_eval,
+)
 from genie_space_optimizer.optimization.scorers import build_scorer_context
 
 if TYPE_CHECKING:
@@ -122,6 +125,11 @@ def _make_schema_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
                 confidence=0.0,
                 counterfactual_fix="LLM judge unavailable — retry or check endpoint",
             )
+            metadata = with_genie_equivalent_eval(
+                metadata,
+                judge_name="schema_accuracy",
+                value="unknown",
+            )
             return Feedback(
                 name="schema_accuracy",
                 value="unknown",
@@ -216,6 +224,13 @@ def _make_schema_accuracy_judge(w: WorkspaceClient, catalog: str, schema: str):
             rca_kind=result.get("rca_kind") or "",
             patch_family=result.get("patch_family") or "",
             recommended_levers=result.get("recommended_levers") or [],
+        )
+        metadata = with_genie_equivalent_eval(
+            metadata,
+            judge_name="schema_accuracy",
+            value="no",
+            failure_type=result.get("failure_type", "wrong_column"),
+            comparison=cmp,
         )
         return Feedback(
             name="schema_accuracy",

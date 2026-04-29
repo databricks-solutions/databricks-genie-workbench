@@ -24,6 +24,9 @@ from genie_space_optimizer.optimization.evaluation import (
     get_registered_prompt_name,
     slim_comparison,
 )
+from genie_space_optimizer.optimization.genie_eval_taxonomy import (
+    with_genie_equivalent_eval,
+)
 from genie_space_optimizer.optimization.scorers import build_scorer_context
 
 if TYPE_CHECKING:
@@ -129,6 +132,11 @@ def _make_completeness_judge(w: WorkspaceClient, catalog: str, schema: str):
                 confidence=0.0,
                 counterfactual_fix="LLM judge unavailable — retry or check endpoint",
             )
+            metadata = with_genie_equivalent_eval(
+                metadata,
+                judge_name="completeness",
+                value="unknown",
+            )
             return Feedback(
                 name="completeness",
                 value="unknown",
@@ -222,6 +230,13 @@ def _make_completeness_judge(w: WorkspaceClient, catalog: str, schema: str):
                 f"Fix {result.get('failure_type', 'completeness issue')} "
                 f"involving {', '.join(result.get('blame_set', ['unknown']))}"
             ),
+        )
+        metadata = with_genie_equivalent_eval(
+            metadata,
+            judge_name="completeness",
+            value="no",
+            failure_type=result.get("failure_type", "missing_column"),
+            comparison=cmp,
         )
         return Feedback(
             name="completeness",

@@ -22,6 +22,9 @@ from genie_space_optimizer.optimization.evaluation import (
     format_asi_markdown,
     get_registered_prompt_name,
 )
+from genie_space_optimizer.optimization.genie_eval_taxonomy import (
+    with_genie_equivalent_eval,
+)
 from genie_space_optimizer.optimization.scorers import build_scorer_context
 
 if TYPE_CHECKING:
@@ -104,6 +107,11 @@ def _make_semantic_equivalence_judge(w: WorkspaceClient, catalog: str, schema: s
                 severity="info",
                 confidence=0.0,
                 counterfactual_fix="LLM judge unavailable — retry or check endpoint",
+            )
+            metadata = with_genie_equivalent_eval(
+                metadata,
+                judge_name="semantic_equivalence",
+                value="unknown",
             )
             return Feedback(
                 name="semantic_equivalence",
@@ -198,6 +206,13 @@ def _make_semantic_equivalence_judge(w: WorkspaceClient, catalog: str, schema: s
                 f"Fix {result.get('failure_type', 'semantic mismatch')} "
                 f"involving {', '.join(result.get('blame_set', ['unknown']))}"
             ),
+        )
+        metadata = with_genie_equivalent_eval(
+            metadata,
+            judge_name="semantic_equivalence",
+            value="no",
+            failure_type=result.get("failure_type", "different_metric"),
+            comparison=cmp,
         )
         return Feedback(
             name="semantic_equivalence",

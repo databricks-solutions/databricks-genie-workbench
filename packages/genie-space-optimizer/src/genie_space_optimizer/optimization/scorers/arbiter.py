@@ -26,6 +26,9 @@ from genie_space_optimizer.optimization.evaluation import (
     format_asi_markdown,
     get_registered_prompt_name,
 )
+from genie_space_optimizer.optimization.genie_eval_taxonomy import (
+    with_genie_equivalent_eval,
+)
 
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
@@ -315,6 +318,22 @@ def _make_arbiter_scorer(
                     patch_family=result.get("patch_family") or "",
                     recommended_levers=result.get("recommended_levers") or [],
                 )
+                _meta = with_genie_equivalent_eval(
+                    _meta,
+                    judge_name="arbiter",
+                    value="no",
+                    failure_type=result.get("failure_type", "other"),
+                    comparison=cmp,
+                )
+            else:
+                _meta = with_genie_equivalent_eval(
+                    {},
+                    judge_name="arbiter",
+                    value="yes",
+                    failure_type="",
+                    confidence=1.0,
+                    comparison=cmp,
+                )
             return Feedback(
                 name="arbiter",
                 value=verdict,
@@ -345,6 +364,11 @@ def _make_arbiter_scorer(
                 severity="info",
                 confidence=0.0,
                 counterfactual_fix="LLM judge unavailable — retry or check endpoint",
+            )
+            metadata = with_genie_equivalent_eval(
+                metadata,
+                judge_name="arbiter",
+                value="unknown",
             )
             return Feedback(
                 name="arbiter",
