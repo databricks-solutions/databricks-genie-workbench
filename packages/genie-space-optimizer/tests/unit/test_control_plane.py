@@ -380,3 +380,46 @@ def test_patchable_hard_failure_qids_include_only_ground_truth_correct() -> None
 
     assert patchable_hard_failure_qids(rows) == ("q_gt",)
     assert ambiguous_failure_qids(rows) == ("q_neither",)
+
+
+def test_uncovered_patchable_clusters_detects_missing_hard_cluster() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        uncovered_patchable_clusters,
+    )
+
+    clusters = [
+        {"cluster_id": "H001", "question_ids": ["q021"]},
+        {"cluster_id": "H002", "question_ids": ["q022"]},
+        {"cluster_id": "H003", "question_ids": ["q013"]},
+    ]
+    action_groups = [
+        {
+            "id": "AG1",
+            "source_cluster_ids": ["H002"],
+            "affected_questions": ["q022"],
+        }
+    ]
+
+    uncovered = uncovered_patchable_clusters(clusters, action_groups)
+
+    assert [c["cluster_id"] for c in uncovered] == ["H001", "H003"]
+
+
+def test_diagnostic_action_group_for_uncovered_cluster_is_single_cluster_scoped() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        diagnostic_action_group_for_cluster,
+    )
+
+    ag = diagnostic_action_group_for_cluster({
+        "cluster_id": "H003",
+        "root_cause": "wrong_filter_condition",
+        "question_ids": ["q013"],
+        "asi_counterfactual_fixes": [
+            "Pivot day and mtd metrics into separate columns."
+        ],
+    })
+
+    assert ag["source_cluster_ids"] == ["H003"]
+    assert ag["affected_questions"] == ["q013"]
+    assert ag["coverage_reason"] == "strategist_omitted_patchable_hard_cluster"
+    assert "wrong_filter_condition" in ag["root_cause_summary"]

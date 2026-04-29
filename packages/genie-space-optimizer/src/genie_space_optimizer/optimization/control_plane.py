@@ -168,6 +168,57 @@ def _result_correctness_value(row: dict) -> str:
     ).strip().lower()
 
 
+def _cluster_qids(cluster: dict) -> set[str]:
+    return {str(q) for q in cluster.get("question_ids", []) or [] if str(q)}
+
+
+def uncovered_patchable_clusters(
+    source_clusters: list[dict],
+    action_groups: list[dict],
+) -> list[dict]:
+    """Return patchable hard clusters not covered by strategist output."""
+    covered_cluster_ids: set[str] = set()
+    covered_qids: set[str] = set()
+    for ag in action_groups or []:
+        covered_cluster_ids.update(
+            str(cid) for cid in ag.get("source_cluster_ids", []) or [] if str(cid)
+        )
+        covered_qids.update(
+            str(q) for q in ag.get("affected_questions", []) or [] if str(q)
+        )
+
+    uncovered: list[dict] = []
+    for cluster in source_clusters or []:
+        cid = str(cluster.get("cluster_id") or "")
+        qids = _cluster_qids(cluster)
+        if cid and cid in covered_cluster_ids:
+            continue
+        if qids and qids <= covered_qids:
+            continue
+        uncovered.append(cluster)
+    return uncovered
+
+
+def diagnostic_action_group_for_cluster(cluster: dict) -> dict:
+    """Build a deterministic AG when the strategist omits a hard cluster."""
+    cid = str(cluster.get("cluster_id") or "H_UNKNOWN")
+    qids = [str(q) for q in cluster.get("question_ids", []) or [] if str(q)]
+    root = str(cluster.get("root_cause") or cluster.get("asi_failure_type") or "unknown")
+    fixes = [
+        str(f) for f in cluster.get("asi_counterfactual_fixes", []) or []
+        if str(f)
+    ]
+    fix_text = fixes[0] if fixes else "Use the cluster RCA evidence to produce a targeted metadata change."
+    return {
+        "id": f"AG_COVERAGE_{cid}",
+        "root_cause_summary": f"{root}: {fix_text}",
+        "affected_questions": qids,
+        "source_cluster_ids": [cid],
+        "coverage_reason": "strategist_omitted_patchable_hard_cluster",
+        "lever_directives": {},
+    }
+
+
 def patchable_hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
     """Rows where GT is confirmed correct and Genie should be patched."""
     qids: list[str] = []
