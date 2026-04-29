@@ -9252,6 +9252,43 @@ def _run_lever_loop(
             metadata_snapshot["_rca_execution_plans"] = []
 
         try:
+            from genie_space_optimizer.optimization.rca_terminal import (
+                classify_terminal_state,
+            )
+
+            _terminal_decision = classify_terminal_state(
+                post_arbiter_accuracy=float(best_accuracy),
+                max_iterations=int(max_iterations),
+                iteration_counter=int(iteration_counter),
+                actionable_plan_count=len(
+                    metadata_snapshot.get("_rca_execution_plans") or []
+                ),
+                repeated_failure_count=sum(
+                    1 for r in reflection_buffer
+                    if not r.get("accepted")
+                ),
+                judge_failure_count=sum(
+                    1 for r in reflection_buffer
+                    if r.get("rollback_reason") == "judge_unreliable"
+                ),
+                benchmark_issue_count=sum(
+                    1 for r in reflection_buffer
+                    if r.get("rollback_reason") == "benchmark_broken"
+                ),
+                unpatchable_count=sum(
+                    1 for r in reflection_buffer
+                    if r.get("rollback_reason") == "unpatchable_with_six_levers"
+                ),
+            )
+            metadata_snapshot["_rca_terminal_state"] = {
+                "status": _terminal_decision.status.value,
+                "should_continue": _terminal_decision.should_continue,
+                "reason": _terminal_decision.reason,
+            }
+        except Exception:
+            logger.debug("RCA terminal-state classification failed", exc_info=True)
+
+        try:
             write_asi_results(spark, run_id, iteration_counter - 1, _analysis["asi_rows"], catalog, schema, mlflow_run_id=_last_full_mlflow_run_id)
         except Exception:
             logger.debug("Failed to write ASI results", exc_info=True)
