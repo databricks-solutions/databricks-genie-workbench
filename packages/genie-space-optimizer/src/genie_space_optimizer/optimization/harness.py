@@ -9815,6 +9815,7 @@ def _run_lever_loop(
                 # Soft clusters were previously left untouched, which
                 # is what let iter-2's S001 still contain the suffixed
                 # variants of quarantined base qids.
+                _pre_prune_hard_clusters = list(clusters or [])
                 for c in list(clusters) + list(soft_signal_clusters or []):
                     c_qids = c.get("question_ids", [])
                     c["question_ids"] = [
@@ -9826,6 +9827,49 @@ def _run_lever_loop(
                     c for c in (soft_signal_clusters or [])
                     if c.get("question_ids")
                 ]
+                # Task 5A — quarantine must not silently remove unresolved
+                # patchable hard failures and let the loop pivot to soft
+                # clusters. Stop for human review when no hard clusters
+                # remain; otherwise carry the qids in a diagnostic lane.
+                try:
+                    from genie_space_optimizer.optimization.control_plane import (
+                        decide_quarantine_continuation,
+                    )
+
+                    _pre_prune_hard_qids = {
+                        str(q)
+                        for _c in _pre_prune_hard_clusters
+                        for q in (_c.get("question_ids", []) or [])
+                        if str(q)
+                    }
+                    _q_decision = decide_quarantine_continuation(
+                        quarantined_qids=set(_quarantine_qids),
+                        unresolved_patchable_qids=_pre_prune_hard_qids,
+                        hard_cluster_count_after_prune=len(clusters),
+                        soft_cluster_count_after_prune=len(soft_signal_clusters or []),
+                    )
+                    if _q_decision["action"] == "stop_for_human_review":
+                        print(
+                            _section("QUARANTINE STOP — PATCHABLE HARD FAILURES", "!") + "\n"
+                            + _kv("Blocking QIDs", ", ".join(_q_decision["blocking_qids"])) + "\n"
+                            + "|  Quarantine removed unresolved hard failures. Stopping instead of pivoting to soft signals.\n"
+                            + _bar("!")
+                        )
+                        logger.warning(
+                            "Stopping lever loop because quarantine removed unresolved patchable hard failures: %s",
+                            _q_decision["blocking_qids"],
+                        )
+                        break
+                    if _q_decision["action"] == "diagnostic_lane":
+                        logger.warning(
+                            "Quarantined patchable hard qids remain in diagnostic lane: %s",
+                            _q_decision["blocking_qids"],
+                        )
+                except Exception:
+                    logger.debug(
+                        "decide_quarantine_continuation failed (non-fatal)",
+                        exc_info=True,
+                    )
                 if not clusters and not soft_signal_clusters:
                     logger.info("All clusters emptied after quarantine — stopping at iteration %d", _iter_num)
                     break

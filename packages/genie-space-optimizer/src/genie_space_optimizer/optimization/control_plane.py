@@ -249,6 +249,45 @@ def patchable_hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(qids))
 
 
+def decide_quarantine_continuation(
+    *,
+    quarantined_qids: set[str],
+    unresolved_patchable_qids: set[str],
+    hard_cluster_count_after_prune: int,
+    soft_cluster_count_after_prune: int,
+) -> dict:
+    """Decide whether quarantine may remove qids and continue the loop.
+
+    Quarantine must not silently remove unresolved patchable hard failures
+    while the lever loop pivots to soft signals. When the intersection of
+    quarantined and unresolved-patchable is non-empty, the loop either stops
+    for human review (no hard clusters remain) or carries those qids in a
+    diagnostic lane (hard clusters remain).
+    """
+    blocking = sorted(
+        str(q) for q in (quarantined_qids or set()) & (unresolved_patchable_qids or set())
+    )
+    if blocking and int(hard_cluster_count_after_prune or 0) == 0:
+        return {
+            "action": "stop_for_human_review",
+            "reason": "quarantined_patchable_hard_failures",
+            "blocking_qids": blocking,
+        }
+    if blocking:
+        return {
+            "action": "diagnostic_lane",
+            "reason": "quarantined_patchable_hard_failures",
+            "blocking_qids": blocking,
+        }
+    if int(hard_cluster_count_after_prune or 0) > 0:
+        return {"action": "continue", "reason": "hard_clusters_remain", "blocking_qids": []}
+    return {
+        "action": "continue",
+        "reason": "no_quarantined_patchable_hard_failures",
+        "blocking_qids": [],
+    }
+
+
 def ambiguous_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
     """Rows where neither answer is endorsed and benchmark review is safer."""
     qids: list[str] = []
