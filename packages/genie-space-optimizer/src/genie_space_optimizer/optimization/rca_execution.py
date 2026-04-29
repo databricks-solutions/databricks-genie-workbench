@@ -315,13 +315,25 @@ def next_grounding_remediation(
         category = str(entry.get("grounding_failure_category") or "unknown")
         counts[category] = counts.get(category, 0) + 1
 
+    from genie_space_optimizer.optimization.rca_next_action import (
+        next_action_for_rejection,
+    )
+
     for category, count in counts.items():
         if count < min_repeats:
             continue
-        if category in {"no_scoped_rows", "empty_surface"}:
-            return {"action": "repair_grounding_contract", "forced_levers": ()}
-        if category in {"no_overlap", "below_min_relevance"}:
-            return {"action": "rotate_patch_family", "forced_levers": (5, 6)}
+        decision = next_action_for_rejection(
+            rollback_reason="no_grounded_patches",
+            grounding_failure_category=category,
+            repeated_count=count,
+        )
+        if decision.action.value != "none":
+            return {
+                "action": decision.action.value,
+                "forced_levers": decision.forced_levers,
+                "terminal_status": decision.terminal_status,
+                "reason": decision.reason,
+            }
     return {"action": "none", "forced_levers": ()}
 
 

@@ -5056,6 +5056,39 @@ def _run_enrichment(
 # ── Adaptive loop helpers ───────────────────────────────────────────
 
 
+def _next_grounding_action_payload(
+    *,
+    rollback_reason: str,
+    grounding_failure_category: str = "",
+    repeated_count: int = 1,
+) -> dict:
+    """Build a serializable next-action payload for reflection extras."""
+    try:
+        from genie_space_optimizer.optimization.rca_next_action import (
+            next_action_for_rejection,
+        )
+
+        decision = next_action_for_rejection(
+            rollback_reason=rollback_reason,
+            grounding_failure_category=grounding_failure_category,
+            repeated_count=repeated_count,
+        )
+        return {
+            "action": decision.action.value,
+            "forced_levers": list(decision.forced_levers),
+            "terminal_status": decision.terminal_status,
+            "reason": decision.reason,
+        }
+    except Exception:
+        logger.debug("RCA next-action mapping failed", exc_info=True)
+        return {
+            "action": "none",
+            "forced_levers": [],
+            "terminal_status": "",
+            "reason": str(rollback_reason or ""),
+        }
+
+
 def _build_reflection_entry(
     iteration: int,
     ag_id: str,
@@ -10934,6 +10967,11 @@ def _run_lever_loop(
                     "grounding_failure_stage": "post_grounding",
                     "grounding_failure_reason": _grounding_skip.reason_code,
                     "grounding_failure_category": _dominant_grounding_category,
+                    "rca_next_action": _next_grounding_action_payload(
+                        rollback_reason=_grounding_skip.reason_code,
+                        grounding_failure_category=_dominant_grounding_category,
+                        repeated_count=1,
+                    ),
                 },
                 **_ag_identity_kwargs,
             ))
