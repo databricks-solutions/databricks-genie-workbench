@@ -1746,3 +1746,46 @@ class TestBenchmarkSpaceScopedMetadata:
         assert not ok
         assert reason == "unknown_routine"
         assert "schema_only_fn" in message
+
+
+def test_preflight_effective_split_promotes_semantic_metric_view() -> None:
+    from genie_space_optimizer.common.asset_semantics import (
+        KIND_METRIC_VIEW,
+        stamp_asset_semantics,
+    )
+    from genie_space_optimizer.optimization.preflight_synthesis import (
+        _effective_data_source_split,
+    )
+
+    metadata = {
+        "data_sources": {
+            "tables": [
+                {
+                    "identifier": "cat.sch.mv_sales",
+                    "column_configs": [
+                        {"column_name": "store_id"},
+                        {"column_name": "total_sales"},
+                    ],
+                },
+                {
+                    "identifier": "cat.sch.dim_store",
+                    "column_configs": [{"column_name": "store_id"}],
+                },
+            ],
+            "metric_views": [],
+        },
+    }
+    stamp_asset_semantics(metadata, {
+        "cat.sch.mv_sales": {
+            "identifier": "cat.sch.mv_sales",
+            "short_name": "mv_sales",
+            "kind": KIND_METRIC_VIEW,
+            "measures": ["total_sales"],
+            "dimensions": ["store_id"],
+        },
+    })
+
+    tables, metric_views = _effective_data_source_split(metadata)
+
+    assert [t["identifier"] for t in tables] == ["cat.sch.dim_store"]
+    assert [mv["identifier"] for mv in metric_views] == ["cat.sch.mv_sales"]
