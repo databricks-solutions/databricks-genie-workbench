@@ -215,3 +215,41 @@ def test_repeated_no_overlap_forces_patch_family_rotation() -> None:
 
     assert remediation["action"] == "rotate_patch_family"
     assert remediation["forced_levers"] == (5, 6)
+
+
+def test_execution_plan_lookup_recovers_qids_from_source_clusters_when_affected_questions_are_text() -> None:
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaExecutionPlan,
+        plans_for_action_group,
+        required_levers_for_action_group,
+        target_qids_for_action_group_execution,
+    )
+
+    plans = [
+        RcaExecutionPlan(
+            rca_id="rca_q1_topn",
+            rca_kind="top_n_cardinality_collapse",
+            patch_family="cardinality_preserving_top_n_guidance",
+            target_qids=("q1",),
+            required_levers=(1, 5, 6),
+            grounding_terms=("zone_vp", "rank", "plural_top_n_collapse"),
+            defect_key="cardinality_preserving_top_n_guidance:zone_vp",
+            patch_intents=(),
+        )
+    ]
+    ag = {
+        "id": "AG5",
+        "source_cluster_ids": ["cluster_topn"],
+        "affected_questions": ["Which zone VPs stores have the highest CY sales?"],
+    }
+    source_clusters = [
+        {
+            "cluster_id": "cluster_topn",
+            "question_ids": ["q1"],
+            "root_cause": "plural_top_n_collapse",
+        }
+    ]
+
+    assert target_qids_for_action_group_execution(ag, source_clusters) == ("q1",)
+    assert required_levers_for_action_group(ag, plans, source_clusters=source_clusters) == (1, 5, 6)
+    assert [p.rca_id for p in plans_for_action_group(ag, plans, source_clusters=source_clusters)] == ["rca_q1_topn"]

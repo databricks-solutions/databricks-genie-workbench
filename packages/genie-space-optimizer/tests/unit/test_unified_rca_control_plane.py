@@ -409,3 +409,39 @@ def test_harness_stashes_rca_failure_contexts_by_qid() -> None:
 
     assert "failure_contexts_by_qid" in src
     assert '"_rca_failure_contexts_by_qid"' in src
+
+
+def test_rca_execution_uses_same_qid_scope_as_grounding_for_malformed_action_group() -> None:
+    from genie_space_optimizer.optimization.control_plane import target_qids_from_action_group
+    from genie_space_optimizer.optimization.rca_execution import (
+        RcaExecutionPlan,
+        plans_for_action_group,
+        required_levers_for_action_group,
+    )
+
+    ag = {
+        "id": "AG_text",
+        "source_cluster_ids": ["cluster_time"],
+        "affected_questions": ["Show day vs MTD sales by zone VP"],
+    }
+    source_clusters = [
+        {"cluster_id": "cluster_time", "question_ids": ["q_time"]}
+    ]
+    plans = [
+        RcaExecutionPlan(
+            rca_id="rca_q_time_time_window",
+            rca_kind="time_window_logic_mismatch",
+            patch_family="time_window_pivot_guidance",
+            target_qids=("q_time",),
+            required_levers=(2, 5, 6),
+            grounding_terms=("time_window", "mtd", "day"),
+            defect_key="time_window_pivot_guidance:time_window",
+            patch_intents=(),
+        )
+    ]
+
+    expected_qids = target_qids_from_action_group(ag, source_clusters)
+
+    assert expected_qids == ("q_time",)
+    assert required_levers_for_action_group(ag, plans, source_clusters=source_clusters) == (2, 5, 6)
+    assert len(plans_for_action_group(ag, plans, source_clusters=source_clusters)) == 1

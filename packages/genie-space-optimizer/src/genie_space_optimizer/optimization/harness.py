@@ -10079,13 +10079,16 @@ def _run_lever_loop(
                 union_execution_levers,
             )
 
+            _source_clusters_for_execution = strategy.get("_source_clusters", [])
             _rca_plans_for_ag = plans_for_action_group(
                 ag,
                 metadata_snapshot.get("_rca_execution_plans") or [],
+                source_clusters=_source_clusters_for_execution,
             )
             _rca_required_levers = required_levers_for_action_group(
                 ag,
                 metadata_snapshot.get("_rca_execution_plans") or [],
+                source_clusters=_source_clusters_for_execution,
             )
             _forced_from_reflections = forced_levers_from_reflections(
                 reflection_buffer,

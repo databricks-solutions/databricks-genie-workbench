@@ -190,15 +190,40 @@ def build_rca_execution_plans(themes: Iterable[Any]) -> list[RcaExecutionPlan]:
     return plans
 
 
+def target_qids_for_action_group_execution(
+    action_group: dict,
+    source_clusters: Iterable[dict] = (),
+) -> tuple[str, ...]:
+    """Resolve action-group target QIDs using the same contract as grounding.
+
+    Strategist-emitted ``affected_questions`` is sometimes natural-language
+    text rather than canonical QIDs; the canonical resolver in
+    ``control_plane`` falls back to ``source_cluster_ids`` so RCA execution
+    sees the same QID scope that grounding and acceptance use.
+    """
+    try:
+        from genie_space_optimizer.optimization.control_plane import (
+            target_qids_from_action_group,
+        )
+
+        return target_qids_from_action_group(action_group, source_clusters)
+    except Exception:
+        return _dedupe(
+            str(q).strip()
+            for q in (action_group.get("affected_questions") or [])
+            if str(q).strip()
+        )
+
+
 def required_levers_for_action_group(
     action_group: dict,
     plans: Iterable[RcaExecutionPlan],
+    *,
+    source_clusters: Iterable[dict] = (),
 ) -> tuple[int, ...]:
-    ag_qids = {
-        str(q).strip()
-        for q in (action_group.get("affected_questions") or [])
-        if str(q).strip()
-    }
+    ag_qids = set(
+        target_qids_for_action_group_execution(action_group, source_clusters)
+    )
     if not ag_qids:
         return ()
     levers: list[int] = []
@@ -303,12 +328,12 @@ def next_grounding_remediation(
 def plans_for_action_group(
     action_group: dict,
     plans: Iterable[RcaExecutionPlan],
+    *,
+    source_clusters: Iterable[dict] = (),
 ) -> tuple[RcaExecutionPlan, ...]:
-    ag_qids = {
-        str(q).strip()
-        for q in (action_group.get("affected_questions") or [])
-        if str(q).strip()
-    }
+    ag_qids = set(
+        target_qids_for_action_group_execution(action_group, source_clusters)
+    )
     return tuple(
         plan for plan in (plans or [])
         if ag_qids.intersection(plan.target_qids)
