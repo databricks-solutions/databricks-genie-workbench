@@ -697,3 +697,69 @@ def test_unknown_rca_with_evidence_compiles_to_safe_instruction_theme() -> None:
     assert len(themes) == 1
     assert themes[0].patches[0]["type"] == "add_instruction"
     assert themes[0].patches[0]["lever"] == 5
+
+
+def test_remove_is_not_null_feedback_maps_to_extra_defensive_filter() -> None:
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        build_rca_ledger,
+        themes_for_strategy_context,
+    )
+
+    rows = [{
+        "question_id": "q022",
+        "outputs.predictions.sql": (
+            "SELECT location_number, SUM(cy_tot_orders) "
+            "FROM mv_7now_fact_sales "
+            "WHERE cy_tot_orders IS NOT NULL AND cy_cust_count IS NOT NULL "
+            "GROUP BY location_number"
+        ),
+        "inputs.expected_sql": (
+            "SELECT location_number, SUM(cy_tot_orders) "
+            "FROM mv_7now_fact_sales GROUP BY location_number"
+        ),
+        "completeness/metadata": {
+            "failure_type": "missing_filter",
+            "blame_set": ["IS NOT NULL filters on cy_tot_orders and cy_cust_count"],
+            "counterfactual_fix": (
+                "Remove the defensive IS NOT NULL filters on cy_tot_orders and cy_cust_count."
+            ),
+        },
+    }]
+
+    ledger = build_rca_ledger(rows)
+    themes = themes_for_strategy_context(
+        list(ledger["themes"]),
+        enable_selection=False,
+        max_themes=10,
+        max_patches=20,
+    )
+
+    assert any(t.rca_kind is RcaKind.EXTRA_DEFENSIVE_FILTER for t in themes)
+    defensive = next(t for t in themes if t.rca_kind is RcaKind.EXTRA_DEFENSIVE_FILTER)
+    assert {p["type"] for p in defensive.patches} == {"add_instruction"}
+
+
+def test_extra_defensive_filter_theme_does_not_emit_sql_filter_snippet() -> None:
+    from genie_space_optimizer.optimization.rca import (
+        RcaFinding,
+        RcaKind,
+        compile_patch_themes,
+    )
+
+    theme = compile_patch_themes([
+        RcaFinding(
+            rca_id="rca_extra_filter",
+            question_id="q022",
+            rca_kind=RcaKind.EXTRA_DEFENSIVE_FILTER,
+            confidence=0.9,
+            expected_objects=(),
+            actual_objects=("cy_tot_orders IS NOT NULL",),
+            recommended_levers=(5,),
+            patch_family="avoid_unrequested_defensive_filters",
+            target_qids=("q022",),
+        )
+    ])[0]
+
+    assert all(p["type"] != "add_sql_snippet_filter" for p in theme.patches)
+    assert any(p["type"] == "add_instruction" for p in theme.patches)

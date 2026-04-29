@@ -190,6 +190,14 @@ def _value_contains_function_or_tvf(*values: Any) -> bool:
     )
 
 
+def _mentions_remove_defensive_filter(text: str) -> bool:
+    lower = str(text or "").lower()
+    return (
+        "is not null" in lower
+        and any(token in lower for token in ("remove", "do not add", "don't add", "avoid"))
+    )
+
+
 def _safe_rca_kind(value: Any, failure_type: str = "", metadata: dict | None = None) -> RcaKind:
     raw = str(value or "").strip()
     if raw:
@@ -199,6 +207,12 @@ def _safe_rca_kind(value: Any, failure_type: str = "", metadata: dict | None = N
             pass
     metadata = metadata or {}
     failure = str(failure_type or "").strip().lower()
+    fix_text = " ".join(
+        str(metadata.get(k) or "")
+        for k in ("counterfactual_fix", "rationale", "wrong_clause")
+    )
+    if _mentions_remove_defensive_filter(f"{failure} {fix_text}"):
+        return RcaKind.EXTRA_DEFENSIVE_FILTER
     if _value_contains_function_or_tvf(
         metadata.get("blame_set"),
         metadata.get("counterfactual_fix"),
