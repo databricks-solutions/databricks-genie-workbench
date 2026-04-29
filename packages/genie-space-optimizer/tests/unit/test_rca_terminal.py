@@ -83,3 +83,41 @@ def test_terminal_state_patchable_in_progress_when_plans_remain() -> None:
 
     assert decision.status is RcaTerminalStatus.PATCHABLE_IN_PROGRESS
     assert decision.should_continue is True
+
+
+def test_legacy_plateau_is_suppressed_when_rca_is_patchable() -> None:
+    from genie_space_optimizer.optimization.rca_terminal import (
+        RcaTerminalDecision,
+        RcaTerminalStatus,
+        legacy_plateau_allows_stop,
+    )
+
+    decision = RcaTerminalDecision(
+        status=RcaTerminalStatus.PATCHABLE_IN_PROGRESS,
+        should_continue=True,
+        reason="1 actionable RCA plans remain",
+    )
+
+    assert legacy_plateau_allows_stop(
+        plateau_detected=True,
+        terminal_decision=decision,
+    ) is False
+
+
+def test_legacy_plateau_is_allowed_after_explicit_terminal_state() -> None:
+    from genie_space_optimizer.optimization.rca_terminal import (
+        RcaTerminalDecision,
+        RcaTerminalStatus,
+        legacy_plateau_allows_stop,
+    )
+
+    decision = RcaTerminalDecision(
+        status=RcaTerminalStatus.EXHAUSTED_BUDGET,
+        should_continue=False,
+        reason="reached 5 lever-loop iterations",
+    )
+
+    assert legacy_plateau_allows_stop(
+        plateau_detected=True,
+        terminal_decision=decision,
+    ) is True

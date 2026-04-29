@@ -164,3 +164,14 @@ def test_harness_patch_cap_uses_causal_selector_not_diversity_first_logic() -> N
     assert "select_causal_patch_cap" in src
     assert "Diversity-aware cap: preserve one patch per distinct lever" not in src
     assert "PATCH CAP APPLIED (causal-first)" in src
+
+
+def test_harness_suppresses_legacy_plateau_when_rca_terminal_is_patchable() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness)
+
+    assert "legacy_plateau_allows_stop" in src
+    assert "LEGACY PLATEAU SUPPRESSED" in src

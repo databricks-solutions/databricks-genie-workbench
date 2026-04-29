@@ -85,3 +85,21 @@ def classify_terminal_state(
         True,
         f"{actionable_plan_count} actionable RCA plans remain",
     )
+
+
+def legacy_plateau_allows_stop(
+    *,
+    plateau_detected: bool,
+    terminal_decision: RcaTerminalDecision | None,
+) -> bool:
+    """Return whether the old plateau gate may stop the RCA loop.
+
+    Plateau is advisory while actionable RCA plans remain. It becomes a
+    stopping signal only after the explicit terminal classifier has already
+    determined that the loop should not continue.
+    """
+    if not plateau_detected:
+        return False
+    if terminal_decision is None:
+        return True
+    return terminal_decision.should_continue is False

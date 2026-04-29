@@ -9124,15 +9124,75 @@ def _run_lever_loop(
         if all_thresholds_met(best_scores, thresholds):
             logger.info("Convergence: all thresholds met before iteration %d", _iter_num)
             break
-        if _diminishing_returns(reflection_buffer):
-            logger.info("Diminishing returns detected — stopping at iteration %d", _iter_num)
+        from genie_space_optimizer.optimization.rca_terminal import (
+            RcaTerminalDecision as _RcaTerminalDecision,
+            RcaTerminalStatus as _RcaTerminalStatus,
+            legacy_plateau_allows_stop,
+        )
+
+        _plateau_detected = _diminishing_returns(reflection_buffer)
+        _prev_terminal_state = metadata_snapshot.get("_rca_terminal_state") or {}
+        _prev_terminal_decision: _RcaTerminalDecision | None
+        if _prev_terminal_state:
+            try:
+                _prev_terminal_decision = _RcaTerminalDecision(
+                    status=_RcaTerminalStatus(
+                        _prev_terminal_state.get("status")
+                        or _RcaTerminalStatus.PATCHABLE_IN_PROGRESS.value
+                    ),
+                    should_continue=bool(
+                        _prev_terminal_state.get("should_continue", True)
+                    ),
+                    reason=str(_prev_terminal_state.get("reason") or ""),
+                )
+            except Exception:
+                _prev_terminal_decision = None
+        else:
+            _prev_terminal_decision = None
+
+        if legacy_plateau_allows_stop(
+            plateau_detected=_plateau_detected,
+            terminal_decision=_prev_terminal_decision,
+        ):
+            logger.info(
+                "Diminishing returns confirmed by RCA terminal state at iteration %d",
+                _iter_num,
+            )
+            _reason = (
+                _prev_terminal_decision.reason
+                if _prev_terminal_decision is not None
+                else "diminishing returns (no improvement >= epsilon)"
+            )
+            _status_value = (
+                _prev_terminal_decision.status.value
+                if _prev_terminal_decision is not None
+                else "(unknown)"
+            )
             print(
                 _section("LEVER LOOP — TERMINATION: plateau", "!") + "\n"
-                + _kv("Reason", "diminishing returns (no improvement >= epsilon)") + "\n"
+                + _kv("Reason", _reason) + "\n"
+                + _kv("RCA terminal status", _status_value) + "\n"
                 + _kv("Iteration", _iteration_label(_iter_num)) + "\n"
                 + _bar("!")
             )
             break
+        if (
+            _plateau_detected
+            and _prev_terminal_decision is not None
+            and _prev_terminal_decision.should_continue
+        ):
+            logger.info(
+                "Legacy plateau suppressed at iteration %d because RCA terminal state is %s",
+                _iter_num,
+                _prev_terminal_decision.status.value,
+            )
+            print(
+                _section("LEGACY PLATEAU SUPPRESSED", "-") + "\n"
+                + _kv("RCA terminal status", _prev_terminal_decision.status.value) + "\n"
+                + _kv("Reason", _prev_terminal_decision.reason) + "\n"
+                + _kv("Contract", "continue until 100% post-arbiter accuracy or max_iterations") + "\n"
+                + _bar("-")
+            )
         _diverging, _div_rationale = _detect_divergence(reflection_buffer)
         if _diverging:
             logger.info(
