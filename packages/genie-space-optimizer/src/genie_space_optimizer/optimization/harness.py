@@ -10589,6 +10589,8 @@ def _run_lever_loop(
             )
             _audit_decisions_grounding: list[tuple[dict, float, str]] = []
             _grounded: list[dict] = []
+            _grounding_debug_by_idx: list[dict] = []
+            _grounding_debug_rows: list[dict] = []
             for _patch in patches:
                 try:
                     _rca_exec = ag.get("_rca_execution") or {}
@@ -10599,18 +10601,36 @@ def _run_lever_loop(
                         ))
                 except Exception:
                     logger.debug("Failed to stamp RCA grounding terms", exc_info=True)
-                _score = _patch_relevance(
+                _debug = _explain_patch_relevance(
                     _patch,
                     _rows_for_grounding,
                     target_qids=_ag_target_qids,
                 )
+                _score = float(_debug.get("score", 0.0))
                 _patch["_grounding_target_qids"] = list(_ag_target_qids)
-                _patch["relevance_score"] = round(float(_score), 3)
+                _patch["relevance_score"] = round(_score, 3)
+                _patch["_grounding_failure_category"] = _debug.get("failure_category")
                 if _score >= MIN_PROPOSAL_RELEVANCE:
                     _grounded.append(_patch)
                     _audit_decisions_grounding.append((_patch, _score, "kept"))
                 else:
                     _audit_decisions_grounding.append((_patch, _score, "dropped"))
+                _grounding_debug_by_idx.append(_debug)
+                _grounding_debug_rows.append({
+                    "patch_type": _patch.get("type") or _patch.get("patch_type"),
+                    "target": (
+                        _patch.get("column")
+                        or _patch.get("target")
+                        or _patch.get("section_name")
+                        or "?"
+                    ),
+                    "score": round(_score, 3),
+                    "category": _debug.get("failure_category"),
+                    "scoped_row_count": len(_rows_for_grounding),
+                    "surface_size": _debug.get("surface_size"),
+                    "overlap": list(_debug.get("overlap") or [])[:8],
+                    "rca_overlap": list(_debug.get("rca_overlap") or [])[:8],
+                })
 
             _dropped = [d for d in _audit_decisions_grounding if d[2] == "dropped"]
             if _dropped:
@@ -10634,6 +10654,15 @@ def _run_lever_loop(
                             f" (+{len(_dropped) - 5} more)" if len(_dropped) > 5 else ""
                         ),
                     ) + "\n"
+                    + _kv(
+                        "Grounding debug",
+                        "; ".join(
+                            f"{d['patch_type']}:{d['target']} cat={d['category']} "
+                            f"rows={d['scoped_row_count']} surface={d['surface_size']} "
+                            f"overlap={d['overlap']} rca={d['rca_overlap']}"
+                            for d in _grounding_debug_rows[:3]
+                        ),
+                    ) + "\n"
                     + _bar("-")
                 )
             patches = _grounded
@@ -10650,6 +10679,16 @@ def _run_lever_loop(
                 for _idx, (_patch, _score, _dec) in enumerate(
                     _audit_decisions_grounding, start=1,
                 ):
+                    _debug_for_row = (
+                        _grounding_debug_by_idx[_idx - 1]
+                        if _idx - 1 < len(_grounding_debug_by_idx)
+                        else _explain_patch_relevance(
+                            _patch,
+                            _rows_for_grounding,
+                            target_qids=_ag_target_qids,
+                        )
+                    )
+                    _category_for_row = _debug_for_row.get("failure_category")
                     _grounding_rows.append({
                         "run_id": run_id,
                         "iteration": iteration_counter,
@@ -10661,7 +10700,7 @@ def _run_lever_loop(
                             "accepted" if _dec == "kept" else "dropped"
                         ),
                         "reason_code": (
-                            None if _dec == "kept" else "below_min_relevance"
+                            None if _dec == "kept" else (_category_for_row or "below_min_relevance")
                         ),
                         "metrics": {
                             "relevance_score": round(float(_score), 3),
@@ -10679,11 +10718,8 @@ def _run_lever_loop(
                             "target_qids": _patch.get("target_qids", []),
                             "ag_target_qids": list(_ag_target_qids),
                             "scoped_row_count": len(_rows_for_grounding),
-                            "debug": _explain_patch_relevance(
-                                _patch,
-                                _rows_for_grounding,
-                                target_qids=_ag_target_qids,
-                            ),
+                            "failure_category": _category_for_row,
+                            "debug": _debug_for_row,
                         },
                         "proposal_ids": (
                             [_patch.get("proposal_id")]

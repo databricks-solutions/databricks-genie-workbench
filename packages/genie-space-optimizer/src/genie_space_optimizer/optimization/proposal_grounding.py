@@ -162,6 +162,32 @@ def extract_patch_grounding_terms(patch: dict) -> set[str]:
     return terms
 
 
+def _rca_terms(patch: dict) -> set[str]:
+    return _terms_from_any(patch.get("_rca_grounding_terms"))
+
+
+def _score_from_sets(
+    *,
+    targets: set[str],
+    surface: set[str],
+    rca_terms: set[str],
+    row_count: int,
+) -> tuple[float, str, set[str], set[str]]:
+    if row_count == 0:
+        return 0.0, "no_scoped_rows", set(), set()
+    if not surface:
+        return 0.0, "empty_surface", set(), set()
+    overlap = targets & surface
+    rca_overlap = rca_terms & surface
+    if rca_overlap:
+        return 1.0, "grounded", overlap, rca_overlap
+    if not targets:
+        return 0.0, "no_targets", overlap, rca_overlap
+    if not overlap:
+        return 0.0, "no_overlap", overlap, rca_overlap
+    return len(overlap) / len(targets), "grounded", overlap, rca_overlap
+
+
 def relevance_score(patch: dict, failing_rows: Iterable[dict]) -> float:
     """Fraction of patch targets that appear in any failing row's surface.
 
@@ -169,51 +195,55 @@ def relevance_score(patch: dict, failing_rows: Iterable[dict]) -> float:
     are supplied. Always in ``[0.0, 1.0]``.
 
     When the patch carries explicit ``_rca_grounding_terms`` (RCA-driven
-    proposals from the executable RCA control plane), any overlap with the
-    failure surface counts as full grounding — body-text tokens drag the
-    denominator down for prose-heavy patches even though the RCA terms
-    are exactly what the harness wanted to ground on.
+    proposals from the executable RCA control plane), any overlap of those
+    RCA terms with the failure surface counts as full grounding — even if
+    generic body-target overlap is sparse, because the RCA terms are
+    exactly what the harness wanted to ground on.
     """
     targets = extract_patch_grounding_terms(patch)
-    if not targets:
-        return 0.0
     rows = list(failing_rows or [])
-    if not rows:
-        return 0.0
     union_surface: set[str] = set()
     for row in rows:
         union_surface |= extract_failure_surface(row)
-    if not union_surface:
-        return 0.0
-    overlap = targets & union_surface
-    if not overlap:
-        return 0.0
-    if patch.get("_rca_grounding_terms"):
-        return 1.0
-    return len(overlap) / len(targets)
+    score, _category, _overlap, _rca_overlap = _score_from_sets(
+        targets=targets,
+        surface=union_surface,
+        rca_terms=_rca_terms(patch),
+        row_count=len(rows),
+    )
+    return score
 
 
 def explain_relevance(patch: dict, failing_rows: Iterable[dict]) -> dict:
     """Return debug details for why a patch did or did not ground.
 
     This mirrors :func:`relevance_score` while preserving the target,
-    surface, overlap, and missing-target sets for audit rows and local
-    troubleshooting.
+    surface, overlap, RCA-term, and missing-target sets for audit rows and
+    local troubleshooting. The ``failure_category`` makes downstream retry
+    logic actionable.
     """
     targets = extract_patch_grounding_terms(patch)
+    rca_terms = _rca_terms(patch)
     rows = list(failing_rows or [])
     union_surface: set[str] = set()
     for row in rows:
         union_surface |= extract_failure_surface(row)
-    overlap = targets & union_surface
-    missing = targets - union_surface
-    score = (len(overlap) / len(targets)) if targets and rows and union_surface else 0.0
+    score, category, overlap, rca_overlap = _score_from_sets(
+        targets=targets,
+        surface=union_surface,
+        rca_terms=rca_terms,
+        row_count=len(rows),
+    )
     return {
         "score": score,
+        "failure_category": category,
         "targets": sorted(targets),
         "surface": sorted(union_surface),
+        "surface_size": len(union_surface),
         "overlap": sorted(overlap),
-        "missing_targets": sorted(missing),
+        "rca_terms": sorted(rca_terms),
+        "rca_overlap": sorted(rca_overlap),
+        "missing_targets": sorted(targets - union_surface),
     }
 
 

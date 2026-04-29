@@ -579,3 +579,49 @@ def test_causal_relevance_supports_slash_style_qids_and_surfaces() -> None:
     assert score > 0.0
     assert details["scoped_row_count"] == 1
     assert "rank" in details["overlap"]
+
+
+def test_rca_grounding_terms_are_sufficient_when_they_overlap_surface() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        causal_relevance_score,
+        explain_causal_relevance,
+    )
+
+    row = {
+        "inputs/question_id": "q_topn",
+        "inputs/question": "Which zone VPs stores have the highest total CY sales?",
+        "schema_accuracy/metadata": {
+            "failure_type": "wrong_column",
+            "blame_set": ["rank_filter"],
+            "counterfactual_fix": "Remove WHERE rank = 1.",
+        },
+    }
+    patch = {
+        "type": "update_instruction_section",
+        "section_name": "QUERY PATTERNS",
+        "new_text": "- Preserve plural cardinality for ordered ranking questions.",
+        "_rca_grounding_terms": ["rank_filter"],
+    }
+
+    assert causal_relevance_score(patch, [row], target_qids=("q_topn",)) == 1.0
+    details = explain_causal_relevance(patch, [row], target_qids=("q_topn",))
+    assert details["rca_overlap"] == ["rank_filter"]
+    assert details["failure_category"] == "grounded"
+
+
+def test_grounding_explanation_distinguishes_no_scoped_rows_and_empty_surface() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        explain_causal_relevance,
+    )
+
+    patch = {"type": "update_column_description", "column": "zone_vp_name"}
+
+    no_rows = explain_causal_relevance(patch, [], target_qids=("q_missing",))
+    assert no_rows["failure_category"] == "no_scoped_rows"
+
+    empty_surface = explain_causal_relevance(
+        patch,
+        [{"inputs/question_id": "q_empty"}],
+        target_qids=("q_empty",),
+    )
+    assert empty_surface["failure_category"] == "empty_surface"
