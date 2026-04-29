@@ -2681,3 +2681,34 @@ future mode would need to constrain proposal generation and/or patch apply
 around selected `rca_id` values; the current implementation deliberately
 stops at audit, prompt context, and attribution.
 
+
+## RCA Optimizer Completion Contract
+
+The lever loop is considered functioning only when every hard failure follows
+one closed-loop path:
+
+```text
+eval row
+  -> canonical failure record
+  -> typed RCA ledger
+  -> executable RCA plan or terminal state
+  -> required lever set
+  -> proposals
+  -> proposal grounding
+  -> apply and post-arbiter acceptance
+  -> outcome attribution
+  -> next RCA action or terminal state
+```
+
+The optimizer must not silently drop actionable RCA findings. If no patch can
+be generated, the run should report one of the terminal statuses from
+`optimization/rca_terminal.py`: `converged`, `benchmark_broken`,
+`judge_unreliable`, `unpatchable_with_six_levers`, or `exhausted_budget`.
+
+When diagnosing a stuck run, inspect the decision rows for:
+
+- `proposal_grounding.metrics.failure_category`
+- `reflection.rca_next_action.action`
+- `metadata_snapshot._rca_terminal_state.status`
+- RCA theme count versus RCA execution plan count
+- action-group target QIDs from the canonical target resolver
