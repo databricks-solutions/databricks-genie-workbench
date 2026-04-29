@@ -12,6 +12,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterable
 
+from genie_space_optimizer.optimization.eval_row_access import (
+    iter_asi_metadata as _iter_asi_metadata,
+    row_expected_sql as _expected_sql,
+    row_generated_sql as _generated_sql,
+    row_qid as _qid,
+)
+
 
 class RcaKind(str, Enum):
     METRIC_VIEW_ROUTING_CONFUSION = "metric_view_routing_confusion"
@@ -157,45 +164,6 @@ def _first_str(row: dict, *keys: str) -> str:
         if isinstance(val, str) and val.strip():
             return val
     return ""
-
-
-def _qid(row: dict) -> str:
-    inputs = row.get("inputs")
-    input_qid = inputs.get("question_id") if isinstance(inputs, dict) else ""
-    return str(
-        row.get("inputs.question_id")
-        or row.get("inputs/question_id")
-        or row.get("question_id")
-        or row.get("id")
-        or input_qid
-        or ""
-    )
-
-
-def _expected_sql(row: dict) -> str:
-    return _first_str(row, "inputs.expected_sql", "inputs/expected_sql", "expected_sql")
-
-
-def _generated_sql(row: dict) -> str:
-    return _first_str(
-        row,
-        "outputs.predictions.sql",
-        "outputs/predictions/sql",
-        "generated_sql",
-        "genie_sql",
-    )
-
-
-def _iter_asi_metadata(row: dict) -> Iterable[tuple[str, dict]]:
-    """Yield judge ASI metadata dicts from flat MLflow eval rows."""
-    for key, value in (row or {}).items():
-        if not isinstance(value, dict):
-            continue
-        if not isinstance(key, str):
-            continue
-        if key.endswith("/metadata") or key.endswith(".metadata"):
-            judge_name = key.rsplit("/", 1)[0].rsplit(".", 1)[0]
-            yield judge_name, value
 
 
 def _tuple_of_str(value: Any) -> tuple[str, ...]:
@@ -491,6 +459,75 @@ def extract_rca_findings_from_row(
             target_qids=(qid,),
         ))
 
+    return findings
+
+
+_CLUSTER_ROOT_TO_RCA_KIND: dict[str, RcaKind] = {
+    "plural_top_n_collapse": RcaKind.TOP_N_CARDINALITY_COLLAPSE,
+    "top_n_cardinality_collapse": RcaKind.TOP_N_CARDINALITY_COLLAPSE,
+    "time_window_pivot": RcaKind.TIME_WINDOW_LOGIC_MISMATCH,
+}
+
+
+def _cluster_kind(cluster: dict) -> RcaKind | None:
+    root = str(cluster.get("root_cause") or "").strip().lower()
+    blame_text = " ".join(
+        str(x).lower() for x in _tuple_of_str(cluster.get("asi_blame_set"))
+    )
+    fix_text = " ".join(
+        str(x).lower()
+        for x in _tuple_of_str(cluster.get("asi_counterfactual_fixes"))
+    )
+    if root in _CLUSTER_ROOT_TO_RCA_KIND:
+        return _CLUSTER_ROOT_TO_RCA_KIND[root]
+    if root == "wrong_filter_condition" and "time_window" in f"{blame_text} {fix_text}":
+        return RcaKind.TIME_WINDOW_LOGIC_MISMATCH
+    return None
+
+
+def rca_findings_from_clusters(clusters: Iterable[dict]) -> list[RcaFinding]:
+    """Promote cluster-resolved root causes into typed RCA findings.
+
+    Failure clustering already labels structural defects (e.g.,
+    ``plural_top_n_collapse``); the lever loop must carry that decision
+    into the executable RCA ledger so patch families and grounding terms
+    reflect the resolved root cause, not just per-row judge metadata.
+    """
+    findings: list[RcaFinding] = []
+    for cluster in clusters or []:
+        if not isinstance(cluster, dict):
+            continue
+        kind = _cluster_kind(cluster)
+        if kind is None:
+            continue
+        qids = _tuple_of_str(cluster.get("question_ids"))
+        if not qids:
+            continue
+        blame = _tuple_of_str(cluster.get("asi_blame_set"))
+        fixes = _tuple_of_str(cluster.get("asi_counterfactual_fixes"))
+        evidence_detail = (
+            "; ".join(fixes[:3])
+            or str(cluster.get("root_cause") or kind.value)
+        )
+        for qid in qids:
+            findings.append(RcaFinding(
+                rca_id=_mk_id(qid, kind),
+                question_id=qid,
+                rca_kind=kind,
+                confidence=0.9,
+                expected_objects=blame,
+                actual_objects=(),
+                evidence=(
+                    RcaEvidence(
+                        source="cluster_resolved_root_cause",
+                        detail=evidence_detail,
+                        confidence=0.9,
+                    ),
+                ),
+                recommended_levers=recommended_levers_for_rca_kind(kind),
+                patch_family=patch_family_for_rca_kind(kind),
+                target_qids=(qid,),
+            ))
     return findings
 
 

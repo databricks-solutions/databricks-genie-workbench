@@ -546,3 +546,54 @@ def test_plural_top_n_collapse_is_first_class_rca_kind() -> None:
         5,
         6,
     )
+
+
+def test_cluster_resolved_plural_top_n_creates_top_n_rca_finding() -> None:
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        rca_findings_from_clusters,
+    )
+
+    clusters = [
+        {
+            "cluster_id": "H001",
+            "root_cause": "plural_top_n_collapse",
+            "question_ids": ["7now_delivery_analytics_space_gs_025"],
+            "asi_blame_set": ["RANK()", "rank_filter"],
+            "asi_counterfactual_fixes": [
+                "Remove WHERE rank = 1 and return all zone VPs ordered by total_cy_sales DESC."
+            ],
+        }
+    ]
+
+    findings = rca_findings_from_clusters(clusters)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.rca_kind is RcaKind.TOP_N_CARDINALITY_COLLAPSE
+    assert finding.target_qids == ("7now_delivery_analytics_space_gs_025",)
+    assert "rank_filter" in finding.expected_objects
+    assert finding.patch_family == "cardinality_preserving_top_n_guidance"
+
+
+def test_cluster_resolved_time_window_creates_time_window_rca_finding() -> None:
+    from genie_space_optimizer.optimization.rca import (
+        RcaKind,
+        rca_findings_from_clusters,
+    )
+
+    clusters = [
+        {
+            "cluster_id": "H002",
+            "root_cause": "wrong_filter_condition",
+            "question_ids": ["7now_delivery_analytics_space_gs_012"],
+            "asi_blame_set": ["time_window grouping structure", "time_window"],
+            "asi_counterfactual_fixes": [
+                "Compare day vs MTD using separate CTEs filtered by time_window and join results."
+            ],
+        }
+    ]
+
+    findings = rca_findings_from_clusters(clusters)
+
+    assert any(f.rca_kind is RcaKind.TIME_WINDOW_LOGIC_MISMATCH for f in findings)

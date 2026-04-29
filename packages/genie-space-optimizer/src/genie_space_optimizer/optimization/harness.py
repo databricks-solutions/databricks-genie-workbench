@@ -7291,12 +7291,19 @@ def _analyze_and_distribute(
     }
     if ENABLE_RCA_LEDGER:
         try:
-            from genie_space_optimizer.optimization.rca import build_rca_ledger
+            from genie_space_optimizer.optimization.rca import (
+                build_rca_ledger,
+                rca_findings_from_clusters,
+            )
 
+            _cluster_rca_findings = rca_findings_from_clusters(clusters)
             _rca_ledger = build_rca_ledger(
                 filtered_failure_rows,
                 metadata_snapshot=metadata_snapshot,
-                extra_findings=metadata_snapshot.get("_regression_rca_findings") or [],
+                extra_findings=[
+                    *(_cluster_rca_findings or []),
+                    *(metadata_snapshot.get("_regression_rca_findings") or []),
+                ],
             )
         except Exception:
             logger.debug("RCA ledger construction failed (non-fatal)", exc_info=True)
