@@ -7308,6 +7308,21 @@ def _analyze_and_distribute(
         except Exception:
             logger.debug("RCA ledger construction failed (non-fatal)", exc_info=True)
 
+    try:
+        from genie_space_optimizer.optimization.rca_failure_context import (
+            failure_contexts_by_qid,
+        )
+
+        metadata_snapshot["_rca_failure_contexts_by_qid"] = failure_contexts_by_qid(
+            filtered_failure_rows,
+        )
+    except Exception:
+        logger.debug(
+            "RCA failure context extraction failed; continuing without prompt evidence",
+            exc_info=True,
+        )
+        metadata_snapshot["_rca_failure_contexts_by_qid"] = {}
+
     return {
         "lever_assignments": lever_assignments,
         "all_clusters": clusters,

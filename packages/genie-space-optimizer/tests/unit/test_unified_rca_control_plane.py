@@ -398,3 +398,14 @@ def test_failed_question_gt_sql_flows_to_rca_forced_lever6_structural_candidate(
     assert any(p["patch_type"] == "add_sql_snippet_expression" for p in proposals)
     assert all(p["patch_type"] != "add_example_sql" for p in proposals)
     assert any(p.get("source") == "rca_failed_question_sql" for p in proposals)
+
+
+def test_harness_stashes_rca_failure_contexts_by_qid() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness._analyze_and_distribute)
+
+    assert "failure_contexts_by_qid" in src
+    assert '"_rca_failure_contexts_by_qid"' in src
