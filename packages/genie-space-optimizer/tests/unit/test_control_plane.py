@@ -56,7 +56,10 @@ def test_target_qids_from_action_group_prefers_explicit_affected_questions() -> 
         "source_cluster_ids": ["H001"],
     }
     clusters = [
-        {"cluster_id": "H001", "question_ids": ["q_from_cluster"]},
+        {
+            "cluster_id": "H001",
+            "question_ids": ["q_hard_1", "q_hard_2", "q_hard_3", "q_from_cluster"],
+        },
     ]
 
     assert target_qids_from_action_group(ag, clusters) == (
@@ -278,3 +281,47 @@ def test_control_plane_ignored_judges_match_config() -> None:
 
     assert isinstance(CONTROL_PLANE_IGNORED, frozenset)
     assert CONTROL_PLANE_IGNORED == frozenset(CONFIG_IGNORED)
+
+
+def test_target_qids_falls_back_when_affected_questions_are_question_text() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        target_qids_from_action_group,
+    )
+
+    ag = {
+        "id": "AG5",
+        "affected_questions": ["Which zone VPs stores have the highest total CY sales"],
+        "source_cluster_ids": ["H001"],
+    }
+    clusters = [
+        {
+            "cluster_id": "H001",
+            "question_ids": ["7now_delivery_analytics_space_gs_025"],
+        }
+    ]
+
+    assert target_qids_from_action_group(ag, clusters) == (
+        "7now_delivery_analytics_space_gs_025",
+    )
+
+
+def test_target_qids_keeps_valid_explicit_qids() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        target_qids_from_action_group,
+    )
+
+    ag = {
+        "id": "AG1",
+        "affected_questions": ["7now_delivery_analytics_space_gs_025"],
+        "source_cluster_ids": ["H001"],
+    }
+    clusters = [
+        {
+            "cluster_id": "H001",
+            "question_ids": ["7now_delivery_analytics_space_gs_025"],
+        }
+    ]
+
+    assert target_qids_from_action_group(ag, clusters) == (
+        "7now_delivery_analytics_space_gs_025",
+    )

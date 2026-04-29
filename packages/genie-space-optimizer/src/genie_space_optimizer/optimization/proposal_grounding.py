@@ -31,6 +31,12 @@ from typing import Iterable
 from genie_space_optimizer.common.config import (
     IGNORED_OPTIMIZATION_JUDGES as _CONFIG_IGNORED_OPTIMIZATION_JUDGES,
 )
+from genie_space_optimizer.optimization.eval_row_access import (
+    extract_failure_surface as _extract_failure_surface,
+    row_qid as _row_qid,
+    rows_for_qids as _rows_for_qids,
+    token_terms as _canonical_token_terms,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,26 +61,6 @@ _PATCH_TARGET_KEYS: tuple[str, ...] = (
     "snippet_name",
 )
 
-# Persisted MLflow eval rows use dotted keys (``outputs.predictions.sql``,
-# ``inputs.expected_sql``); ad-hoc test fixtures and a few in-memory
-# call sites use the flat ``generated_sql`` / ``expected_sql`` shape. We
-# look up both — flat names stay in the chain so existing fixture-based
-# tests remain valid, dotted names match what ``_get_failure_rows``
-# loads from ``iterations.rows_json``.
-_FAILURE_SURFACE_SQL_KEYS: tuple[str, ...] = (
-    "outputs.predictions.sql",
-    "inputs.expected_sql",
-    "generated_sql",
-    "expected_sql",
-    "genie_sql",
-)
-
-_FAILURE_SURFACE_NL_KEYS: tuple[str, ...] = (
-    "outputs.predictions.response_text",
-    "nl_response",
-)
-
-
 def _normalize(token: str) -> str:
     return str(token).strip().lower()
 
@@ -88,68 +74,6 @@ Sourced from ``common.config.IGNORED_OPTIMIZATION_JUDGES`` (driven by
 ``GSO_IGNORED_OPTIMIZATION_JUDGES``) so the optimizer engine has a
 single, env-controllable ignored-judge policy.
 """
-
-
-def _nested_get(row: dict, path: tuple[str, ...]) -> object:
-    cur: object = row
-    for part in path:
-        if not isinstance(cur, dict):
-            return ""
-        cur = cur.get(part, "")
-    return cur
-
-
-def _row_qid(row: dict) -> str:
-    inputs = row.get("inputs")
-    nested_qid = inputs.get("question_id") if isinstance(inputs, dict) else ""
-    return str(
-        row.get("inputs.question_id")
-        or row.get("question_id")
-        or row.get("qid")
-        or row.get("id")
-        or nested_qid
-        or ""
-    )
-
-
-def _iter_text_values(value: object) -> Iterable[str]:
-    if isinstance(value, str):
-        if value.strip():
-            yield value
-    elif isinstance(value, dict):
-        for child in value.values():
-            yield from _iter_text_values(child)
-    elif isinstance(value, (list, tuple, set)):
-        for child in value:
-            yield from _iter_text_values(child)
-
-
-def _asi_metadata_surface(row: dict) -> set[str]:
-    surface: set[str] = set()
-    for key, value in (row or {}).items():
-        if not isinstance(value, dict):
-            continue
-        if not isinstance(key, str):
-            continue
-        if not (key.endswith("/metadata") or key.endswith(".metadata")):
-            continue
-        judge = key.rsplit("/", 1)[0].rsplit(".", 1)[0]
-        if judge in _IGNORED_METADATA_PREFIXES:
-            continue
-        for meta_key in (
-            "failure_type",
-            "wrong_clause",
-            "blame_set",
-            "counterfactual_fix",
-            "expected_objects",
-            "actual_objects",
-            "rca_kind",
-            "patch_family",
-        ):
-            for text in _iter_text_values(value.get(meta_key)):
-                for tok in _IDENT_RE.findall(text):
-                    surface.add(_normalize(tok))
-    return surface
 
 
 def extract_patch_targets(patch: dict) -> set[str]:
@@ -181,106 +105,14 @@ def extract_patch_targets(patch: dict) -> set[str]:
 def extract_failure_surface(row: dict) -> set[str]:
     """Return identifiers + NL tokens visible in a failing eval row.
 
-    Tries sqlglot first to recover columns, functions, and tables;
-    falls back to regex on the raw SQL string when sqlglot can't
-    parse. The NL response is always tokenized via regex.
+    Delegates to the canonical eval-row accessor so slash-style MLflow
+    keys, dotted keys, nested dicts, and request/response payloads all
+    contribute the same surface tokens.
     """
-    surface: set[str] = set()
-    try:
-        import sqlglot
-        from sqlglot import exp as _exp  # noqa: N812
-    except Exception:
-        sqlglot = None  # type: ignore[assignment]
-
-    for sql_key in _FAILURE_SURFACE_SQL_KEYS:
-        sql = row.get(sql_key) or ""
-        if not isinstance(sql, str) or not sql.strip():
-            continue
-
-        if sqlglot is not None:
-            try:
-                parsed = sqlglot.parse_one(sql, read="databricks")
-                if parsed is not None:
-                    for col in parsed.find_all(_exp.Column):
-                        if getattr(col, "name", None):
-                            surface.add(_normalize(col.name))
-                    for fn in parsed.find_all(_exp.Func):
-                        try:
-                            name = fn.sql_name()
-                            if name:
-                                surface.add(_normalize(name))
-                        except Exception:
-                            continue
-                    for tbl in parsed.find_all(_exp.Table):
-                        if getattr(tbl, "name", None):
-                            surface.add(_normalize(tbl.name))
-            except Exception:
-                logger.debug(
-                    "sqlglot parse failed for %s; using regex fallback",
-                    sql_key,
-                    exc_info=True,
-                )
-
-        # Regex fallback always runs — it costs nothing and catches
-        # tokens sqlglot may miss (e.g. metric_view aliases inside
-        # ``MEASURE(...)``).
-        for tok in _IDENT_RE.findall(sql):
-            if tok:
-                surface.add(_normalize(tok))
-
-    nested_sqls = (
-        _nested_get(row, ("inputs", "expected_sql")),
-        _nested_get(row, ("request", "expected_sql")),
-        _nested_get(row, ("outputs", "predictions", "sql")),
-        _nested_get(row, ("outputs", "predictions", "query")),
-        _nested_get(row, ("response", "sql")),
+    return _extract_failure_surface(
+        row,
+        ignored_judges=_IGNORED_METADATA_PREFIXES,
     )
-    for sql in nested_sqls:
-        if not isinstance(sql, str) or not sql.strip():
-            continue
-        if sqlglot is not None:
-            try:
-                parsed = sqlglot.parse_one(sql, read="databricks")
-                if parsed is not None:
-                    for col in parsed.find_all(_exp.Column):
-                        if getattr(col, "name", None):
-                            surface.add(_normalize(col.name))
-                    for tbl in parsed.find_all(_exp.Table):
-                        if getattr(tbl, "name", None):
-                            surface.add(_normalize(tbl.name))
-                    for fn in parsed.find_all(_exp.Func):
-                        try:
-                            name = fn.sql_name()
-                            if name:
-                                surface.add(_normalize(name))
-                        except Exception:
-                            continue
-            except Exception:
-                logger.debug("sqlglot parse failed for nested SQL", exc_info=True)
-        for tok in _IDENT_RE.findall(sql):
-            if tok:
-                surface.add(_normalize(tok))
-
-    for nl_key in _FAILURE_SURFACE_NL_KEYS:
-        nl = row.get(nl_key) or ""
-        if not isinstance(nl, str) or not nl.strip():
-            continue
-        for tok in _IDENT_RE.findall(nl):
-            if tok:
-                surface.add(_normalize(tok))
-
-    nested_nl_values = (
-        _nested_get(row, ("inputs", "question")),
-        _nested_get(row, ("outputs", "predictions", "response_text")),
-    )
-    for nl in nested_nl_values:
-        if isinstance(nl, str):
-            for tok in _IDENT_RE.findall(nl):
-                surface.add(_normalize(tok))
-
-    surface |= _asi_metadata_surface(row)
-
-    return surface
 
 
 _INSTRUCTION_PATCH_TYPES = frozenset({
@@ -298,6 +130,12 @@ _PATCH_BODY_KEYS: tuple[str, ...] = (
     "expression",
     "sql",
     "join_spec",
+    "structured_sections",
+    "column_sections",
+    "table_sections",
+    "sql_snippet",
+    "instruction",
+    "rationale",
     "_rca_grounding_terms",
 )
 
@@ -307,18 +145,7 @@ def _patch_type(patch: dict) -> str:
 
 
 def _terms_from_any(value: object) -> set[str]:
-    terms: set[str] = set()
-    for text in _iter_text_values(value):
-        normalized = _normalize(text)
-        if normalized:
-            terms.add(normalized)
-        for tok in _IDENT_RE.findall(text):
-            terms.add(_normalize(tok))
-        for dotted in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)+", text):
-            dotted = _normalize(dotted)
-            terms.add(dotted)
-            terms.update(part for part in dotted.split(".") if part)
-    return {t for t in terms if t}
+    return _canonical_token_terms(value)
 
 
 def extract_patch_grounding_terms(patch: dict) -> set[str]:
@@ -391,16 +218,10 @@ def explain_relevance(patch: dict, failing_rows: Iterable[dict]) -> dict:
 
 
 def _filter_rows_for_qids(rows: Iterable[dict], qids: Iterable[str] | None) -> list[dict]:
-    wanted = {str(q) for q in (qids or []) if str(q)}
+    wanted = tuple(str(q) for q in (qids or []) if str(q))
     if not wanted:
         return [r for r in rows or [] if isinstance(r, dict)]
-    out: list[dict] = []
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        if _row_qid(row) in wanted:
-            out.append(row)
-    return out
+    return _rows_for_qids(rows, wanted)
 
 
 def causal_relevance_score(

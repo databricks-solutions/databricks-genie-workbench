@@ -524,3 +524,58 @@ def test_instruction_patch_does_not_ground_when_body_lacks_rca_terms() -> None:
 
     assert causal_relevance_score(patch, rows, target_qids=("q_fn",)) == 0.0
 
+
+
+def test_causal_relevance_supports_slash_style_qids_and_surfaces() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        causal_relevance_score,
+        explain_causal_relevance,
+    )
+
+    rows = [
+        {
+            "inputs/question_id": "7now_delivery_analytics_space_gs_025",
+            "inputs/question": "Which zone VPs stores have the highest total CY sales?",
+            "inputs/expected_response": (
+                "SELECT zone_vp_name, SUM(cy_sales) AS total_cy_sales "
+                "FROM mv_7now_fact_sales GROUP BY zone_vp_name "
+                "ORDER BY total_cy_sales DESC"
+            ),
+            "outputs/response": (
+                "SELECT zone_vp_name, total_cy_sales FROM ranked "
+                "WHERE rank = 1"
+            ),
+            "schema_accuracy/metadata": {
+                "failure_type": "wrong_column",
+                "blame_set": ["RANK()", "rank_filter"],
+                "counterfactual_fix": (
+                    "Remove WHERE rank = 1 and return all zone VPs ordered "
+                    "by total_cy_sales DESC."
+                ),
+            },
+        }
+    ]
+    patch = {
+        "type": "update_instruction_section",
+        "section_name": "QUERY PATTERNS",
+        "new_text": (
+            "- For plural highest/lowest questions, return all grouped "
+            "entities ordered by the metric; do not add WHERE rank = 1."
+        ),
+        "target_qids": ["7now_delivery_analytics_space_gs_025"],
+    }
+
+    score = causal_relevance_score(
+        patch,
+        rows,
+        target_qids=("7now_delivery_analytics_space_gs_025",),
+    )
+    details = explain_causal_relevance(
+        patch,
+        rows,
+        target_qids=("7now_delivery_analytics_space_gs_025",),
+    )
+
+    assert score > 0.0
+    assert details["scoped_row_count"] == 1
+    assert "rank" in details["overlap"]

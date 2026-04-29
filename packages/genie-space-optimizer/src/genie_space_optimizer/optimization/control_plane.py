@@ -14,6 +14,11 @@ from typing import Any, Iterable
 from genie_space_optimizer.common.config import (
     IGNORED_OPTIMIZATION_JUDGES as _CONFIG_IGNORED_OPTIMIZATION_JUDGES,
 )
+from genie_space_optimizer.optimization.eval_row_access import (
+    row_qid as _row_qid,
+    rows_by_qid,
+    rows_for_qids,
+)
 from genie_space_optimizer.optimization.evaluation import (
     get_failed_judges,
     has_individual_judge_failure,
@@ -32,23 +37,6 @@ fast membership checks in the control-plane path.
 """
 
 
-def _row_qid(row: dict) -> str:
-    inputs = row.get("inputs")
-    if isinstance(inputs, dict):
-        nested_qid = inputs.get("question_id") or inputs.get("id")
-    else:
-        nested_qid = ""
-    return str(
-        row.get("inputs.question_id")
-        or row.get("inputs/question_id")
-        or row.get("question_id")
-        or row.get("qid")
-        or row.get("id")
-        or nested_qid
-        or ""
-    )
-
-
 def actionable_failed_judges(row: dict) -> tuple[str, ...]:
     """Return failed judges that are allowed to drive optimizer action."""
     failed = tuple(get_failed_judges(row or {}))
@@ -62,29 +50,6 @@ def is_actionable_soft_signal_row(row: dict) -> bool:
     if not has_individual_judge_failure(row or {}):
         return False
     return bool(actionable_failed_judges(row or {}))
-
-
-def rows_by_qid(rows: Iterable[dict]) -> dict[str, dict]:
-    """Index eval rows by question ID, dropping rows without an ID."""
-    out: dict[str, dict] = {}
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        qid = _row_qid(row)
-        if qid:
-            out[qid] = row
-    return out
-
-
-def rows_for_qids(rows: Iterable[dict], qids: Iterable[str]) -> list[dict]:
-    """Return eval rows matching qids in qid order."""
-    index = rows_by_qid(rows)
-    out: list[dict] = []
-    for qid in qids or []:
-        row = index.get(str(qid))
-        if row is not None:
-            out.append(row)
-    return out
 
 
 def _qid_from_question_ref(value: Any) -> str:
@@ -106,27 +71,34 @@ def target_qids_from_action_group(
 ) -> tuple[str, ...]:
     """Resolve the qids an action group claims to fix.
 
-    Explicit ``affected_questions`` wins. If absent, use source clusters.
-    Order is stable and duplicates are removed.
+    Explicit ``affected_questions`` is accepted only when its entries
+    match known source-cluster qids. LLMs sometimes emit the natural
+    language question text in this field; that must fall back to
+    ``source_cluster_ids`` rather than scoping grounding to zero rows.
     """
-    qids: list[str] = []
+    source_ids = {
+        str(cid)
+        for cid in action_group.get("source_cluster_ids", []) or []
+        if str(cid)
+    }
+    known_qids: list[str] = []
+    for cluster in source_clusters or []:
+        if source_ids and str(cluster.get("cluster_id", "")) not in source_ids:
+            continue
+        for qid in cluster.get("question_ids", []) or []:
+            if qid:
+                known_qids.append(str(qid))
+
+    known_set = set(known_qids)
+    explicit: list[str] = []
     for ref in action_group.get("affected_questions") or []:
         qid = _qid_from_question_ref(ref)
-        if qid:
-            qids.append(qid)
-    if not qids:
-        source_ids = {
-            str(cid)
-            for cid in action_group.get("source_cluster_ids", []) or []
-            if str(cid)
-        }
-        for cluster in source_clusters or []:
-            if str(cluster.get("cluster_id", "")) not in source_ids:
-                continue
-            for qid in cluster.get("question_ids", []) or []:
-                if qid:
-                    qids.append(str(qid))
-    return tuple(dict.fromkeys(qids))
+        if qid and (not known_set or qid in known_set):
+            explicit.append(qid)
+
+    if explicit:
+        return tuple(dict.fromkeys(explicit))
+    return tuple(dict.fromkeys(known_qids))
 
 
 def _cluster_judges(cluster: dict) -> tuple[str, ...]:
