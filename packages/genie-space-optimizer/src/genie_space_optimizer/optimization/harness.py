@@ -11830,6 +11830,43 @@ def _run_lever_loop(
         if not gate_result.get("passed"):
             reason = gate_result.get("rollback_reason", "unknown")
             rollback(apply_log, w, space_id, metadata_snapshot)
+            # Task 7 — verify the Genie Space actually returned to its
+            # pre-AG state. If not, halt subsequent AGs because clustering
+            # against a still-modified space pollutes downstream RCA.
+            try:
+                from genie_space_optimizer.optimization.applier import (
+                    verify_rollback_restored,
+                )
+
+                _restore_decision = verify_rollback_restored(
+                    w=w,
+                    space_id=space_id,
+                    expected_snapshot=metadata_snapshot,
+                )
+                if not _restore_decision.get("verified", True):
+                    logger.error(
+                        "AG %s: verify_rollback_restored returned not verified "
+                        "(reason=%s) — Genie Space state may not match "
+                        "pre-iteration baseline. Halting further AGs.",
+                        ag_id,
+                        _restore_decision.get("reason", "unknown"),
+                    )
+                    print(
+                        _section("ROLLBACK VERIFICATION FAILED", "-") + "\n"
+                        + _kv("AG", ag_id) + "\n"
+                        + _kv("Reason", _restore_decision.get("reason", "unknown")) + "\n"
+                        + "|  Genie Space state did not match pre-iteration snapshot.\n"
+                        + "|  Investigate metadata persistence; halting further AGs.\n"
+                        + _bar("-")
+                    )
+                    pending_action_groups = []
+                    pending_strategy = None
+            except Exception:
+                logger.warning(
+                    "verify_rollback_restored raised — treating as non-fatal "
+                    "but flagging for operator review",
+                    exc_info=True,
+                )
             mark_patches_rolled_back(
                 spark, run_id, iteration_counter, reason, catalog, schema,
             )
