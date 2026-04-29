@@ -112,6 +112,28 @@ def arbiter_objective_complete(
     return float(post_arbiter_accuracy) >= float(target_accuracy)
 
 
+def arbiter_objective_complete_from_counts(
+    *,
+    post_arbiter_accuracy: float,
+    total_questions: int,
+    evaluated_count: int,
+    blocking_excluded_count: int,
+    target_accuracy: float = 100.0,
+) -> bool:
+    """Return true only when the full benchmark objective is complete.
+
+    A run with 100% on 20 scored rows and 1 unresolved excluded row is not
+    complete. That is a 20/20 scored success, not a 21/21 benchmark success.
+    """
+    if int(total_questions or 0) <= 0:
+        return False
+    if int(blocking_excluded_count or 0) > 0:
+        return False
+    if int(evaluated_count or 0) < int(total_questions or 0):
+        return False
+    return float(post_arbiter_accuracy) >= float(target_accuracy)
+
+
 @dataclass(frozen=True)
 class BaselineDriftDiagnostic:
     """Outcome of the post-hoc baseline drift check.

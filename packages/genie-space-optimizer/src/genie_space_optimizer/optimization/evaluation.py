@@ -3759,6 +3759,37 @@ EXCLUSION_QUARANTINED = "quarantined"
 EXCLUSION_TEMPORAL_STALE = "temporal_stale"
 
 
+_OBJECTIVE_BLOCKING_EXCLUSIONS = frozenset({
+    EXCLUSION_GT_EXCLUDED,
+    EXCLUSION_GENIE_RESULT_UNAVAILABLE,
+})
+
+
+def objective_blocking_exclusion_count(rows: list[dict]) -> int:
+    """Count exclusions that should prevent 100% objective completion."""
+    count = 0
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        err_type = str(
+            row.get("outputs/comparison/error_type")
+            or row.get("outputs.comparison.error_type")
+            or row.get("comparison.error_type")
+            or ""
+        ).strip().lower()
+        rc = str(
+            row.get("feedback/result_correctness/value")
+            or row.get("result_correctness/value")
+            or row.get("result_correctness")
+            or ""
+        ).strip().lower()
+        if rc == "excluded":
+            count += 1
+        elif err_type == "genie_result_unavailable":
+            count += 1
+    return count
+
+
 def _extract_row_signals(row: dict) -> dict[str, Any]:
     """Extract the commonly-needed fields from a raw evaluation row.
 

@@ -164,3 +164,29 @@ def test_arbiter_objective_is_complete_at_100_percent() -> None:
 
     assert arbiter_objective_complete(100.0) is True
     assert arbiter_objective_complete(99.99) is False
+
+
+def test_arbiter_objective_requires_no_unresolved_exclusions() -> None:
+    from genie_space_optimizer.optimization.acceptance_policy import (
+        arbiter_objective_complete_from_counts,
+    )
+
+    assert arbiter_objective_complete_from_counts(
+        post_arbiter_accuracy=100.0,
+        total_questions=21,
+        evaluated_count=20,
+        blocking_excluded_count=1,
+    ) is False
+
+
+def test_arbiter_objective_complete_when_all_questions_scored_and_correct() -> None:
+    from genie_space_optimizer.optimization.acceptance_policy import (
+        arbiter_objective_complete_from_counts,
+    )
+
+    assert arbiter_objective_complete_from_counts(
+        post_arbiter_accuracy=100.0,
+        total_questions=21,
+        evaluated_count=21,
+        blocking_excluded_count=0,
+    ) is True

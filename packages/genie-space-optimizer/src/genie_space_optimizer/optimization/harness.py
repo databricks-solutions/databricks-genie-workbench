@@ -9119,21 +9119,49 @@ def _run_lever_loop(
     pending_action_groups: list[dict] = []
     pending_strategy: dict | None = None
 
+    # Track exclusion counts for the objective-complete check. These start
+    # from the current baseline iteration and update each accepted candidate.
+    from genie_space_optimizer.optimization.evaluation import (
+        objective_blocking_exclusion_count as _objective_blocking_exclusion_count,
+    )
+    _best_total_questions = len(benchmarks) if benchmarks else 0
+    _best_evaluated_count = int(
+        (baseline_iter or {}).get("evaluated_count")
+        or _best_total_questions
+    )
+    _best_blocking_excluded_count = 0
+    if baseline_iter:
+        try:
+            _best_blocking_excluded_count = _objective_blocking_exclusion_count(
+                _rows_from_iteration_payload(baseline_iter)
+            )
+        except Exception:
+            _best_blocking_excluded_count = 0
+
     for _iter_num in range(1, max_iterations + 1):
         # ── Exit checks ──────────────────────────────────────────────
         from genie_space_optimizer.optimization.acceptance_policy import (
-            arbiter_objective_complete,
+            arbiter_objective_complete_from_counts,
         )
 
-        if arbiter_objective_complete(float(best_accuracy)):
+        if arbiter_objective_complete_from_counts(
+            post_arbiter_accuracy=float(best_accuracy),
+            total_questions=_best_total_questions,
+            evaluated_count=_best_evaluated_count,
+            blocking_excluded_count=_best_blocking_excluded_count,
+        ):
             logger.info(
-                "Post-arbiter objective reached: %.1f%%. Stopping lever loop.",
+                "Post-arbiter objective reached: %.1f%% over %d/%d scored rows with no blocking exclusions. Stopping lever loop.",
                 float(best_accuracy),
+                int(_best_evaluated_count),
+                int(_best_total_questions),
             )
             break
         if all_thresholds_met(best_scores, thresholds):
-            logger.info("Convergence: all thresholds met before iteration %d", _iter_num)
-            break
+            logger.info(
+                "Thresholds met before iteration %d, but lever-loop objective is not complete; continuing toward 100%% post-arbiter accuracy.",
+                _iter_num,
+            )
         from genie_space_optimizer.optimization.rca_terminal import (
             RcaTerminalDecision as _RcaTerminalDecision,
             RcaTerminalStatus as _RcaTerminalStatus,
