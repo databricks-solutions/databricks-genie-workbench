@@ -2186,12 +2186,13 @@ def cluster_failures(
         profile["root_causes"].append(root)
 
         if f.get("asi_blame_set"):
-            raw_blame = f["asi_blame_set"]
-            items = raw_blame if isinstance(raw_blame, list) else [str(raw_blame)]
-            for item in items:
-                item_str = str(item).strip()
-                if item_str and item_str not in profile["blame_sets"]:
-                    profile["blame_sets"].append(item_str)
+            from genie_space_optimizer.optimization.blame_normalization import (
+                normalize_blame_set,
+            )
+
+            for token in normalize_blame_set(f["asi_blame_set"]):
+                if token and token not in profile["blame_sets"]:
+                    profile["blame_sets"].append(token)
         if f.get("asi_counterfactual_fix"):
             profile["counterfactual_fixes"].append(f["asi_counterfactual_fix"])
         if f.get("asi_wrong_clause"):
@@ -2597,7 +2598,16 @@ def cluster_failures(
             "confidence": min(0.9, 0.5 + 0.1 * len(unique_qids)),
             "signal_type": signal_type,
             "asi_failure_type": sample_asi_type,
-            "asi_blame_set": [b.strip() for b in blame_str.split("|") if b.strip()] if blame_str else None,
+            "asi_blame_set": (
+                list(
+                    __import__(
+                        "genie_space_optimizer.optimization.blame_normalization",
+                        fromlist=["normalize_blame_set"],
+                    ).normalize_blame_set(
+                        [b.strip() for b in blame_str.split("|") if b.strip()]
+                    )
+                ) if blame_str else None
+            ),
             "asi_wrong_clause": next((wc for wc in all_wrong_clauses if wc), None),
             "asi_counterfactual_fixes": _merged_cfs,
             "asi_counterfactual_sources": _cf_sources,
