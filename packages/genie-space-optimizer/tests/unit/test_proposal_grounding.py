@@ -625,3 +625,80 @@ def test_grounding_explanation_distinguishes_no_scoped_rows_and_empty_surface() 
         target_qids=("q_empty",),
     )
     assert empty_surface["failure_category"] == "empty_surface"
+
+
+def test_generic_rca_terms_do_not_full_ground_patch() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        explain_causal_relevance,
+    )
+
+    row = {
+        "inputs/question_id": "q1",
+        "inputs/question": "Which zone VPs have highest CY sales?",
+        "outputs/response": "SELECT zone_vp_name, SUM(cy_sales) FROM mv GROUP BY zone_vp_name",
+        "schema_accuracy/metadata": {
+            "failure_type": "wrong_grouping",
+            "blame_set": ["zone_vp_name"],
+            "counterfactual_fix": "Preserve plural grouped entities.",
+        },
+    }
+    patch = {
+        "patch_type": "add_instruction",
+        "target": "QUERY PATTERNS",
+        "new_text": "Use metrics carefully.",
+        "_rca_grounding_terms": ["query", "metric", "sales"],
+    }
+
+    details = explain_causal_relevance(patch, [row], target_qids=["q1"], min_relevance=0.5)
+
+    assert details["failure_category"] == "generic_rca_overlap"
+    assert details["score"] < 1.0
+
+
+def test_specific_rca_terms_full_ground_patch() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        explain_causal_relevance,
+    )
+
+    row = {
+        "inputs/question_id": "q1",
+        "outputs/response": "SELECT zone_vp_name, SUM(cy_sales) FROM mv GROUP BY zone_vp_name",
+        "schema_accuracy/metadata": {
+            "failure_type": "plural_top_n_collapse",
+            "blame_set": ["zone_vp_name"],
+            "counterfactual_fix": "Plural top-N questions should group by zone_vp_name.",
+        },
+    }
+    patch = {
+        "patch_type": "add_instruction",
+        "target": "QUERY PATTERNS",
+        "new_text": "For plural highest questions, group by zone_vp_name and order by CY sales.",
+        "_rca_grounding_terms": ["zone_vp_name", "plural_top_n_collapse"],
+    }
+
+    details = explain_causal_relevance(patch, [row], target_qids=["q1"], min_relevance=0.5)
+
+    assert details["score"] == 1.0
+    assert details["failure_category"] == "grounded"
+    assert "zone_vp_name" in details["rca_overlap"]
+
+
+def test_partial_overlap_below_threshold_reports_below_min_relevance() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        explain_causal_relevance,
+    )
+
+    row = {
+        "inputs/question_id": "q1",
+        "outputs/response": "SELECT zone_vp_name FROM mv",
+    }
+    patch = {
+        "patch_type": "update_column_description",
+        "column": "zone_vp_name",
+        "new_text": "Differentiate zone_vp_name, market_name, store_id, item_id, and channel.",
+    }
+
+    details = explain_causal_relevance(patch, [row], target_qids=["q1"], min_relevance=0.5)
+
+    assert 0.0 < details["score"] < 0.5
+    assert details["failure_category"] == "below_min_relevance"

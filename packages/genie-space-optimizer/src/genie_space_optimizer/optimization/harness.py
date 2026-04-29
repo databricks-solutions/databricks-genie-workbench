@@ -10768,6 +10768,7 @@ def _run_lever_loop(
                     _patch,
                     _rows_for_grounding,
                     target_qids=_ag_target_qids,
+                    min_relevance=MIN_PROPOSAL_RELEVANCE,
                 )
                 _score = float(_debug.get("score", 0.0))
                 _patch["_grounding_target_qids"] = list(_ag_target_qids)
@@ -10862,6 +10863,7 @@ def _run_lever_loop(
                             _patch,
                             _rows_for_grounding,
                             target_qids=_ag_target_qids,
+                            min_relevance=MIN_PROPOSAL_RELEVANCE,
                         )
                     )
                     _category_for_row = _debug_for_row.get("failure_category")

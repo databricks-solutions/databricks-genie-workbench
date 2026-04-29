@@ -162,8 +162,48 @@ def extract_patch_grounding_terms(patch: dict) -> set[str]:
     return terms
 
 
-def _rca_terms(patch: dict) -> set[str]:
+_GENERIC_RCA_GROUNDING_TERMS: frozenset[str] = frozenset({
+    "query",
+    "queries",
+    "metric",
+    "metrics",
+    "measure",
+    "measures",
+    "sales",
+    "value",
+    "values",
+    "filter",
+    "filters",
+    "group",
+    "grouping",
+    "time",
+    "date",
+    "table",
+    "column",
+    "columns",
+    "genie",
+    "expected",
+    "actual",
+})
+
+
+def _raw_rca_terms(patch: dict) -> set[str]:
     return _terms_from_any(patch.get("_rca_grounding_terms"))
+
+
+def _rca_terms(patch: dict) -> set[str]:
+    """Specific RCA grounding terms (generic stopwords removed).
+
+    Generic words like ``query`` or ``metric`` cannot full-score a patch on
+    their own — they almost always overlap any failure surface. Specific
+    identifiers (``zone_vp_name``, ``plural_top_n_collapse``) drive
+    grounding; generic overlap is reported via ``generic_rca_overlap``.
+    """
+    terms = _terms_from_any(patch.get("_rca_grounding_terms"))
+    return {
+        term for term in terms
+        if term not in _GENERIC_RCA_GROUNDING_TERMS and len(term) > 2
+    }
 
 
 def _score_from_sets(
@@ -171,7 +211,9 @@ def _score_from_sets(
     targets: set[str],
     surface: set[str],
     rca_terms: set[str],
+    raw_rca_terms: set[str],
     row_count: int,
+    min_relevance: float = 0.0,
 ) -> tuple[float, str, set[str], set[str]]:
     if row_count == 0:
         return 0.0, "no_scoped_rows", set(), set()
@@ -179,16 +221,27 @@ def _score_from_sets(
         return 0.0, "empty_surface", set(), set()
     overlap = targets & surface
     rca_overlap = rca_terms & surface
+    generic_rca_overlap = (raw_rca_terms - rca_terms) & surface
     if rca_overlap:
         return 1.0, "grounded", overlap, rca_overlap
+    if generic_rca_overlap:
+        return 0.0, "generic_rca_overlap", overlap, generic_rca_overlap
     if not targets:
         return 0.0, "no_targets", overlap, rca_overlap
     if not overlap:
         return 0.0, "no_overlap", overlap, rca_overlap
-    return len(overlap) / len(targets), "grounded", overlap, rca_overlap
+    score = len(overlap) / len(targets)
+    if score < float(min_relevance):
+        return score, "below_min_relevance", overlap, rca_overlap
+    return score, "grounded", overlap, rca_overlap
 
 
-def relevance_score(patch: dict, failing_rows: Iterable[dict]) -> float:
+def relevance_score(
+    patch: dict,
+    failing_rows: Iterable[dict],
+    *,
+    min_relevance: float = 0.0,
+) -> float:
     """Fraction of patch targets that appear in any failing row's surface.
 
     Returns ``0.0`` when the patch has no targets or no failing rows
@@ -209,12 +262,19 @@ def relevance_score(patch: dict, failing_rows: Iterable[dict]) -> float:
         targets=targets,
         surface=union_surface,
         rca_terms=_rca_terms(patch),
+        raw_rca_terms=_raw_rca_terms(patch),
         row_count=len(rows),
+        min_relevance=min_relevance,
     )
     return score
 
 
-def explain_relevance(patch: dict, failing_rows: Iterable[dict]) -> dict:
+def explain_relevance(
+    patch: dict,
+    failing_rows: Iterable[dict],
+    *,
+    min_relevance: float = 0.0,
+) -> dict:
     """Return debug details for why a patch did or did not ground.
 
     This mirrors :func:`relevance_score` while preserving the target,
@@ -224,6 +284,7 @@ def explain_relevance(patch: dict, failing_rows: Iterable[dict]) -> dict:
     """
     targets = extract_patch_grounding_terms(patch)
     rca_terms = _rca_terms(patch)
+    raw_rca_terms = _raw_rca_terms(patch)
     rows = list(failing_rows or [])
     union_surface: set[str] = set()
     for row in rows:
@@ -232,7 +293,9 @@ def explain_relevance(patch: dict, failing_rows: Iterable[dict]) -> dict:
         targets=targets,
         surface=union_surface,
         rca_terms=rca_terms,
+        raw_rca_terms=raw_rca_terms,
         row_count=len(rows),
+        min_relevance=min_relevance,
     )
     return {
         "score": score,
@@ -259,11 +322,12 @@ def causal_relevance_score(
     failure_rows: Iterable[dict],
     *,
     target_qids: Iterable[str] | None = None,
+    min_relevance: float = 0.0,
 ) -> float:
     """Score patch relevance against its causal target rows and ASI surface."""
     qids = tuple(target_qids or patch.get("target_qids") or ())
     scoped_rows = _filter_rows_for_qids(failure_rows, qids)
-    return relevance_score(patch, scoped_rows)
+    return relevance_score(patch, scoped_rows, min_relevance=min_relevance)
 
 
 def explain_causal_relevance(
@@ -271,11 +335,12 @@ def explain_causal_relevance(
     failure_rows: Iterable[dict],
     *,
     target_qids: Iterable[str] | None = None,
+    min_relevance: float = 0.0,
 ) -> dict:
     """Debug causal grounding with qid scope and ASI-enriched surfaces."""
     qids = tuple(target_qids or patch.get("target_qids") or ())
     scoped_rows = _filter_rows_for_qids(failure_rows, qids)
-    details = explain_relevance(patch, scoped_rows)
+    details = explain_relevance(patch, scoped_rows, min_relevance=min_relevance)
     details["target_qids"] = list(qids)
     details["scoped_row_count"] = len(scoped_rows)
     return details
