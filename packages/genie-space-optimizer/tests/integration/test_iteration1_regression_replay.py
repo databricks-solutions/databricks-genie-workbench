@@ -69,3 +69,33 @@ def test_iteration1_blast_radius_gate_drops_broad_filter_and_column() -> None:
     assert by_id["P007#1"]["safe"] is False
     assert by_id["P007#1"]["reason"] == "high_collateral_risk_flagged"
     assert "q001" in by_id["P007#1"]["passing_dependents_outside_target"]
+
+
+def test_replay_bundle_after_blast_radius_gate_excludes_broad_filter_snippet() -> None:
+    """Simulate the harness-style filter loop and assert the survivors."""
+    target_qids = ("q009", "q021")
+    patches = _patches_for_replay()
+
+    survivors = []
+    dropped_reasons = {}
+    for p in patches:
+        decision = patch_blast_radius_is_safe(
+            p, ag_target_qids=target_qids, max_outside_target=0,
+        )
+        if decision["safe"]:
+            survivors.append(p)
+        else:
+            dropped_reasons[p["proposal_id"]] = decision["reason"]
+
+    survivor_ids = sorted(s["proposal_id"] for s in survivors)
+    assert "P006#1" in survivor_ids, "low-risk add_instruction must survive"
+    assert "P007#1" not in survivor_ids, (
+        "broad add_sql_snippet_filter must be rejected — this is the "
+        "exact patch that broke q001 in the 7now iter-1 run"
+    )
+    assert "P001#1" not in survivor_ids, (
+        "high-risk update_column_description on a 10+ dependent table "
+        "must also be rejected"
+    )
+    assert dropped_reasons["P007#1"] == "high_collateral_risk_flagged"
+    assert dropped_reasons["P001#1"] == "high_collateral_risk_flagged"
