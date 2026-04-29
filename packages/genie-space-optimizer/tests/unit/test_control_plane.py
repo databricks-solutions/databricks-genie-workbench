@@ -484,3 +484,128 @@ def test_clusters_for_strategy_still_withholds_soft_when_many_hard_clusters_rema
 
     assert selected_hard == hard
     assert selected_soft == []
+
+
+def test_decide_control_plane_acceptance_credits_target_fix_when_pre_rows_present() -> None:
+    """Iter-2 shape: q009 fixed, q021 still hard, q001 regressed, +4.5pp."""
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    pre_rows = [
+        {
+            "id": "q009",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+        {
+            "id": "q021",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+        {
+            "id": "q026",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+        {
+            "id": "q001",
+            "feedback/arbiter/value": "both_correct",
+            "feedback/result_correctness/value": "yes",
+        },
+    ]
+    post_rows = [
+        {
+            "id": "q009",
+            "feedback/arbiter/value": "both_correct",
+            "feedback/result_correctness/value": "yes",
+        },
+        {
+            "id": "q021",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+        {
+            "id": "q026",
+            "feedback/arbiter/value": "genie_correct",
+            "feedback/result_correctness/value": "no",
+        },
+        {
+            "id": "q001",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+    ]
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=86.4,
+        candidate_accuracy=90.9,
+        target_qids=("q009", "q021"),
+        pre_rows=pre_rows,
+        post_rows=post_rows,
+    )
+    assert "q009" in decision.target_fixed_qids, (
+        "q009 demonstrably moved from hard to passing — must be in target_fixed_qids"
+    )
+    assert "q021" in decision.target_still_hard_qids
+    assert "q001" in decision.out_of_target_regressed_qids, (
+        "q001 demonstrably moved from passing to hard — must be tracked as regression debt"
+    )
+    assert decision.reason_code in {
+        "accepted_with_regression_debt",
+        "out_of_target_hard_regression",
+    }
+
+
+def test_decide_control_plane_acceptance_flags_stale_candidate_like_baseline() -> None:
+    """Smoking-gun guard: when pre and post hard sets are identical AND there is
+    a non-zero accuracy delta, the gate is not comparing against the accepted
+    baseline."""
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    candidate_rows = [
+        {
+            "id": "q021",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+        {
+            "id": "q001",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+    ]
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=86.4,
+        candidate_accuracy=90.9,
+        target_qids=("q009", "q021"),
+        pre_rows=candidate_rows,
+        post_rows=candidate_rows,
+    )
+    assert decision.accepted is False
+    assert decision.reason_code == "stale_or_candidate_pre_rows"
+    assert decision.target_fixed_qids == ()
+    assert decision.target_still_hard_qids == ()
+    assert decision.out_of_target_regressed_qids == ()
+
+
+def test_decide_control_plane_acceptance_records_empty_pre_rows_as_distinct_reason() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=86.4,
+        candidate_accuracy=86.4,
+        target_qids=("q009",),
+        pre_rows=[],
+        post_rows=[
+            {
+                "id": "q009",
+                "feedback/arbiter/value": "both_correct",
+                "feedback/result_correctness/value": "yes",
+            },
+        ],
+    )
+    assert decision.reason_code == "missing_pre_rows"

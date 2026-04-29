@@ -8009,15 +8009,29 @@ def _run_gate_checks(
     # gating signal.
     full_scores["_pre_arbiter/overall_accuracy"] = float(full_pre_arbiter_accuracy)
 
-    # Load the pre-candidate baseline BEFORE persisting the candidate row, so
-    # the control-plane gate cannot read the candidate as its own pre-state.
-    # ``before_iteration=iteration_counter`` tells the loader to ignore the
-    # row we are about to write.
-    _baseline_rows_for_control_plane: list[dict] = []
-    _baseline_iter_for_control_plane = load_latest_full_iteration(spark, run_id, catalog, schema, before_iteration=iteration_counter)
-    _baseline_rows_for_control_plane = _rows_from_iteration_payload(
-        _baseline_iter_for_control_plane
+    # Task 5 — Compare the candidate against the last accepted/live baseline
+    # rather than whatever Delta last persisted. Rejected candidate full-eval
+    # rows can otherwise become the gate baseline and produce empty
+    # target_fixed_qids / out_of_target_regressed_qids.
+    _baseline_rows_for_control_plane = list(
+        _accepted_baseline_rows_for_control_plane or []
     )
+    _baseline_source_for_control_plane = "accepted_baseline_memory"
+    if not _baseline_rows_for_control_plane:
+        _fallback_iter_for_control_plane = load_latest_full_iteration(
+            spark, run_id, catalog, schema,
+            before_iteration=iteration_counter,
+        )
+        _baseline_rows_for_control_plane = _rows_from_iteration_payload(
+            _fallback_iter_for_control_plane
+        )
+        _baseline_source_for_control_plane = "delta_latest_full_fallback"
+    if not _baseline_rows_for_control_plane:
+        logger.warning(
+            "Control-plane gate has empty accepted baseline rows at "
+            "iteration_counter=%s. Gate will reject with missing_pre_rows.",
+            iteration_counter,
+        )
 
     write_iteration(
         spark, run_id, iteration_counter, full_result,
@@ -8218,6 +8232,47 @@ def _run_gate_checks(
                 if _q:
                     _target_qids += (str(_q),)
     _target_qids = tuple(dict.fromkeys(_target_qids))
+
+    # Task 5 — gate input visibility. Operators must be able to tell at a
+    # glance whether pre_rows came from accepted-baseline memory, was empty,
+    # or matched post_rows (smoking-gun stale-baseline shape).
+    try:
+        from genie_space_optimizer.optimization.control_plane import (
+            hard_failure_qids as _hard_failure_qids_for_log,
+        )
+
+        _pre_hard_for_log = sorted(
+            set(_hard_failure_qids_for_log(_baseline_rows_for_control_plane))
+        )
+        _post_hard_for_log = sorted(
+            set(_hard_failure_qids_for_log(_after_rows))
+        )
+        logger.info(
+            "Control-plane gate inputs (AG=%s, source=%s): pre_rows=%d "
+            "(hard=%s), post_rows=%d (hard=%s), target_qids=%s",
+            ag_id,
+            _baseline_source_for_control_plane,
+            len(_baseline_rows_for_control_plane),
+            _pre_hard_for_log[:10],
+            len(_after_rows),
+            _post_hard_for_log[:10],
+            list(_target_qids),
+        )
+        if (
+            _baseline_rows_for_control_plane
+            and _after_rows
+            and set(_pre_hard_for_log) == set(_post_hard_for_log)
+        ):
+            logger.error(
+                "AG %s: pre_hard == post_hard while the score moved — "
+                "the gate baseline may be stale/candidate-like. Verify "
+                "the gate is using _accepted_baseline_rows_for_control_plane "
+                "and not a rejected full-eval row from "
+                "load_latest_full_iteration.",
+                ag_id,
+            )
+    except Exception:
+        logger.debug("Gate input log failed (non-fatal)", exc_info=True)
 
     _control_plane_decision = decide_control_plane_acceptance(
         baseline_accuracy=float(best_accuracy),
@@ -8591,6 +8646,17 @@ def _run_lever_loop(
     best_accuracy = prev_accuracy
     best_model_id = prev_model_id
     best_iteration = iteration_counter
+    # Task 5 — Accepted/live baseline rows for the control-plane gate.
+    # This is updated only after an AG is accepted, never after a
+    # rejected candidate full eval. Falling back to Delta latest-full
+    # makes the source visible in logs as a diagnostic risk.
+    _accepted_baseline_rows_for_control_plane: list[dict] = []
+    try:
+        _accepted_baseline_rows_for_control_plane = _rows_from_iteration_payload(
+            load_latest_full_iteration(spark, run_id, catalog, schema)
+        )
+    except Exception:
+        logger.warning("Failed to initialize accepted baseline rows", exc_info=True)
     # Tracks ``best_accuracy`` as carried into the *previous* iteration
     # (i.e. before that iteration's gate ran). Used by the post-hoc
     # baseline-drift diagnostic in ``_run_gate_checks`` to detect
@@ -11841,6 +11907,9 @@ def _run_lever_loop(
         best_iteration = iteration_counter
         prev_scores = full_scores
         prev_model_id = new_model_id
+        # Task 5 — only update accepted-baseline rows on accept; rollback
+        # paths must NOT touch this list.
+        _accepted_baseline_rows_for_control_plane = list(_after_rows or [])
 
         new_refs = extract_reference_sqls(full_result)
         if new_refs:

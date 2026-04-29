@@ -276,6 +276,8 @@ class ControlPlaneAcceptance:
     target_fixed_qids: tuple[str, ...]
     target_still_hard_qids: tuple[str, ...]
     out_of_target_regressed_qids: tuple[str, ...]
+    regression_debt_qids: tuple[str, ...] = ()
+    protected_regressed_qids: tuple[str, ...] = ()
 
 
 def _fmt_qids(qids: Iterable[str]) -> str:
@@ -292,7 +294,9 @@ def format_control_plane_acceptance_detail(
         f"target_qids={_fmt_qids(decision.target_qids)}; "
         f"target_fixed_qids={_fmt_qids(decision.target_fixed_qids)}; "
         f"target_still_hard_qids={_fmt_qids(decision.target_still_hard_qids)}; "
-        f"out_of_target_regressed_qids={_fmt_qids(decision.out_of_target_regressed_qids)}"
+        f"out_of_target_regressed_qids={_fmt_qids(decision.out_of_target_regressed_qids)}; "
+        f"regression_debt_qids={_fmt_qids(decision.regression_debt_qids)}; "
+        f"protected_regressed_qids={_fmt_qids(decision.protected_regressed_qids)}"
     )
 
 
@@ -303,43 +307,85 @@ def decide_control_plane_acceptance(
     target_qids: Iterable[str],
     pre_rows: Iterable[dict],
     post_rows: Iterable[dict],
+    min_gain_pp: float = 0.0,
+    max_new_hard_regressions: int = 1,
+    protected_qids: Iterable[str] = (),
 ) -> ControlPlaneAcceptance:
     """Accept only causal post-arbiter improvement with no hard regressions.
 
-    The global objective is post-arbiter accuracy. Target-qid checks prevent
-    accepting unrelated gains when the proposed causal target did not improve.
-
-    The unified causal contract requires every iteration to declare which
-    hard-failure QIDs it intends to fix. An empty ``target_qids`` set means
-    the iteration's patches were never grounded to a causal target, so the
-    decision rejects with ``missing_target_qids`` even when global accuracy
-    rose — that prevents un-targeted, lucky gains from masking the loss of
-    causal grounding.
+    Reason codes:
+      missing_target_qids               — strategist did not declare causal targets
+      rejected_missing_causal_target    — alias for missing_target_qids
+      missing_pre_rows                  — gate was given an empty baseline
+      stale_or_candidate_pre_rows       — pre rows are not the accepted baseline
+      post_arbiter_not_improved         — global accuracy did not move
+      rejected_no_gain                  — gain below min_gain_pp threshold
+      target_qids_not_improved          — none of the declared causal targets flipped
+      accepted_with_regression_debt     — net gain with bounded collateral debt
+      out_of_target_hard_regression     — at least one prior-passing qid went hard
+      rejected_unbounded_collateral     — collateral exceeds debt budget
+      accepted                          — net causal win, no collateral regressions
     """
+    pre_rows_list = list(pre_rows or [])
+    post_rows_list = list(post_rows or [])
     targets = tuple(dict.fromkeys(str(q) for q in target_qids or [] if str(q)))
-    pre_hard = set(hard_failure_qids(pre_rows))
-    post_hard = set(hard_failure_qids(post_rows))
+    pre_hard = set(hard_failure_qids(pre_rows_list))
+    post_hard = set(hard_failure_qids(post_rows_list))
     target_set = set(targets)
     target_fixed = tuple(sorted((pre_hard & target_set) - post_hard))
     target_still = tuple(sorted(post_hard & target_set))
     out_of_target_regressed = tuple(sorted((post_hard - pre_hard) - target_set))
     delta = round(float(candidate_accuracy) - float(baseline_accuracy), 1)
 
+    fixed_count = len(target_fixed)
+    regression_count = len(out_of_target_regressed)
+    protected_set = {str(q) for q in protected_qids or () if str(q)}
+    protected_regressed = tuple(
+        q for q in out_of_target_regressed if q in protected_set
+    )
+    has_gain = delta >= float(min_gain_pp) and delta > 0
+    has_causal_fix = bool(target_fixed)
+    collateral_bounded = (
+        regression_count <= int(max_new_hard_regressions)
+        and regression_count <= max(fixed_count, 1)
+        and not protected_regressed
+    )
+
     if not targets:
         reason = "missing_target_qids"
         accepted = False
-    elif delta <= 0:
-        reason = "post_arbiter_not_improved"
+    elif not pre_rows_list:
+        reason = "missing_pre_rows"
         accepted = False
-    elif not target_fixed:
+    elif (
+        post_rows_list
+        and pre_hard == post_hard
+        and delta != 0.0
+    ):
+        reason = "stale_or_candidate_pre_rows"
+        accepted = False
+        target_fixed = ()
+        target_still = ()
+        out_of_target_regressed = ()
+    elif not has_gain:
+        reason = "rejected_no_gain" if float(min_gain_pp) > 0 else "post_arbiter_not_improved"
+        accepted = False
+    elif not has_causal_fix:
         reason = "target_qids_not_improved"
         accepted = False
+    elif out_of_target_regressed and collateral_bounded:
+        reason = "accepted_with_regression_debt"
+        accepted = True
     elif out_of_target_regressed:
-        reason = "out_of_target_hard_regression"
+        reason = "rejected_unbounded_collateral"
         accepted = False
     else:
         reason = "accepted"
         accepted = True
+
+    regression_debt_qids = (
+        out_of_target_regressed if accepted and out_of_target_regressed else ()
+    )
 
     return ControlPlaneAcceptance(
         accepted=accepted,
@@ -351,4 +397,6 @@ def decide_control_plane_acceptance(
         target_fixed_qids=target_fixed,
         target_still_hard_qids=target_still,
         out_of_target_regressed_qids=out_of_target_regressed,
+        regression_debt_qids=regression_debt_qids,
+        protected_regressed_qids=protected_regressed,
     )
