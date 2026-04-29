@@ -18,6 +18,10 @@ from genie_space_optimizer.optimization.eval_row_access import (
     row_generated_sql as _generated_sql,
     row_qid as _qid,
 )
+from genie_space_optimizer.optimization.feature_mining import (
+    StructuralSqlCandidate,
+    extract_failed_row_sql_expression_candidates,
+)
 
 
 class RcaKind(str, Enum):
@@ -305,6 +309,43 @@ def _mk_id(qid: str, kind: RcaKind) -> str:
     return f"rca_{safe_qid}_{kind.value}"
 
 
+def _rca_kind_for_structural_candidate(candidate: StructuralSqlCandidate) -> RcaKind:
+    sql_l = candidate.sql.lower()
+    evidence_l = candidate.evidence.lower()
+    if "function" in evidence_l or "tvf" in evidence_l or re.search(r"\bfn_", sql_l):
+        return RcaKind.FUNCTION_OR_TVF_NOT_INVOKED
+    if candidate.snippet_type == "filter":
+        return RcaKind.FILTER_LOGIC_MISMATCH
+    if candidate.snippet_type == "measure":
+        return RcaKind.MEASURE_SWAP
+    return RcaKind.SQL_EXPRESSION_MISSING
+
+
+def _structural_candidate_to_finding(
+    qid: str,
+    candidate: StructuralSqlCandidate,
+) -> RcaFinding:
+    kind = _rca_kind_for_structural_candidate(candidate)
+    return RcaFinding(
+        rca_id=_mk_id(qid, kind),
+        question_id=qid,
+        rca_kind=kind,
+        confidence=float(candidate.confidence),
+        expected_objects=(candidate.sql,),
+        actual_objects=(),
+        evidence=(
+            RcaEvidence(
+                source="rca_failed_question_sql",
+                detail=candidate.evidence,
+                confidence=float(candidate.confidence),
+            ),
+        ),
+        recommended_levers=recommended_levers_for_rca_kind(kind),
+        patch_family=patch_family_for_rca_kind(kind),
+        target_qids=(qid,),
+    )
+
+
 def extract_rca_findings_from_row(
     row: dict,
     *,
@@ -332,6 +373,9 @@ def extract_rca_findings_from_row(
 
     if not qid or not expected or not generated:
         return findings
+
+    for candidate in extract_failed_row_sql_expression_candidates(row):
+        findings.append(_structural_candidate_to_finding(qid, candidate))
 
     exp_measures = _measures(expected)
     gen_measures = _measures(generated)
@@ -784,6 +828,7 @@ def compile_patch_themes(
                 intent="define reusable SQL expression primitive for this RCA",
                 expected_objects=list(f.expected_objects),
                 snippet_type="expression",
+                source="rca_failed_question_sql",
             ))
 
         elif f.rca_kind is RcaKind.EXAMPLE_SQL_SHAPE_NEEDED:
@@ -811,6 +856,7 @@ def compile_patch_themes(
                     lever=6,
                     intent=f"Teach Genie the reusable SQL expression shape for {obj}.",
                     target=obj,
+                    source="rca_failed_question_sql",
                 ))
             patches.append({
                 **base,
