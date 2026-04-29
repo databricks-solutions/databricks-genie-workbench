@@ -498,6 +498,65 @@ class TestLever5Intercept:
         # The actionable guidance must appear before any trailing metadata.
         assert "Aggregate sales by region" in fb2["new_text"]
 
+    def test_lever5_intercept_appends_teaching_kit_supporting_proposals(self, monkeypatch):
+        from genie_space_optimizer.optimization import optimizer
+
+        snap = _mk_snapshot()
+        snap["_failure_clusters"] = [_mk_cluster("C1", "missing_aggregation")]
+
+        def fake_synthesis(*_args, **_kwargs):
+            return {
+                "patch_type": "add_example_sql",
+                "example_question": "Which regions have the highest sales?",
+                "example_sql": "SELECT region, SUM(amount) FROM cat.sch.fact_sales GROUP BY region",
+                "usage_guidance": "Use for regional aggregation.",
+                "_archetype_name": "simple_group_by",
+                "_cluster_id": "C1",
+                "kit_id": "kit_C1_1",
+                "target_qids": ["q1", "q2"],
+                "_supporting_proposals": [
+                    {
+                        "patch_type": "add_column_synonym",
+                        "table": "cat.sch.fact_sales",
+                        "table_id": "cat.sch.fact_sales",
+                        "column": "region",
+                        "column_name": "region",
+                        "synonyms": ["sales region"],
+                        "kit_id": "kit_C1_1",
+                        "target_qids": ["q1", "q2"],
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(
+            "genie_space_optimizer.optimization.cluster_driven_synthesis.run_cluster_driven_synthesis_for_single_cluster",
+            fake_synthesis,
+        )
+
+        proposals = optimizer.generate_proposals_from_strategy(
+            strategy={},
+            action_group={
+                "id": "AG1",
+                "root_cause_summary": "missing aggregation",
+                "affected_questions": ["q1", "q2"],
+                "source_cluster_ids": ["C1"],
+                "lever_directives": {
+                    "5": {"example_sqls": [{"intent": "teach aggregation"}]},
+                },
+            },
+            metadata_snapshot=snap,
+            target_lever=5,
+            apply_mode="genie_config",
+            benchmarks=[],
+        )
+
+        assert any(p["patch_type"] == "add_example_sql" for p in proposals)
+        support = [p for p in proposals if p["patch_type"] == "add_column_synonym"]
+        assert len(support) == 1
+        assert support[0]["kit_id"] == "kit_C1_1"
+        assert support[0]["target_qids"] == ["q1", "q2"]
+        assert support[0]["provenance"]["synthesis_source"] == "cluster_driven_teaching_kit"
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # 4. Leak safety (3 tests)
