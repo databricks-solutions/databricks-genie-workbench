@@ -12342,6 +12342,71 @@ def generate_proposals_from_strategy(
         "patch_type": "",
     }
 
+    def _rca_forced_instruction_proposal() -> dict | None:
+        """Deterministic RCA bridge for forced Lever 5 with no directive.
+
+        When the strategist routed the AG to Lever 5 via the RCA execution
+        contract but did not emit a native ``instruction_sections`` directive,
+        produce a causal instruction patch from the RCA grounding terms so the
+        forced lever can still ground.
+        """
+        if target_lever != 5 or not _rca_forces_lever:
+            return None
+        terms = [
+            str(t).strip()
+            for t in (_rca_execution.get("grounding_terms") or [])
+            if str(t).strip()
+        ]
+        joined = " ".join(terms).lower()
+        if "rank" in joined or "top_n" in joined or "plural" in joined:
+            body = (
+                "QUERY PATTERNS:\n"
+                "- For plural highest/lowest ranking questions, group by the requested "
+                "entity and ORDER BY the metric. Do not collapse to a single row with "
+                "WHERE rank = 1 or LIMIT 1 unless the user explicitly asks for one."
+            )
+        elif "time_window" in joined:
+            body = (
+                "QUERY PATTERNS:\n"
+                "- When comparing day vs MTD metrics, query each time_window separately "
+                "and join the results into columns at the requested grain. Do not return "
+                "one row per time_window unless asked."
+            )
+        else:
+            return None
+        return {
+            "proposal_id": f"P{len(proposals) + 1:03d}",
+            "cluster_id": ag_id,
+            "lever": 5,
+            "scope": "genie_config",
+            "patch_type": "add_instruction",
+            "change_description": f"[{ag_id}] RCA forced instruction bridge",
+            "proposed_value": body,
+            "rationale": _per_target_rationale(
+                "rca_forced_instruction",
+                extra="deterministic RCA bridge for forced Lever 5",
+            ),
+            "dual_persistence": DUAL_PERSIST_PATHS.get(5, DUAL_PERSIST_PATHS[5]),
+            "confidence": 0.75,
+            "questions_fixed": q_fixed,
+            "questions_at_risk": 0,
+            "net_impact": max(q_fixed * 0.75, 1.0),
+            "asi": {
+                "failure_type": root_cause or "rca_forced_instruction",
+                "blame_set": terms,
+                "severity": "major",
+                "counterfactual_fixes": [],
+                "ambiguity_detected": False,
+            },
+            "rca_id": ",".join(str(x) for x in (_rca_execution.get("rca_ids") or [])),
+            "patch_family": ",".join(
+                str(x) for x in (_rca_execution.get("defect_keys") or [])
+            ),
+            "target_qids": affected_qs,
+            "_rca_grounding_terms": terms,
+            "provenance": {**provenance_base, "patch_type": "add_instruction"},
+        }
+
     from mlflow.entities import SpanType as _SpanType
 
     with mlflow.start_span(
@@ -12868,6 +12933,10 @@ def generate_proposals_from_strategy(
         # ── Lever 5: instructions + example SQL ──────────────────────────
         elif target_lever == 5:
             l5_dir = lever_dir or {}
+            if not lever_dir:
+                bridge = _rca_forced_instruction_proposal()
+                if bridge:
+                    proposals.append(bridge)
             instruction_sections = l5_dir.get("instruction_sections")
             instruction_guidance = (l5_dir.get("instruction_guidance") or "").strip()
 

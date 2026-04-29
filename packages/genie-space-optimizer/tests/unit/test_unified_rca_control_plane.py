@@ -134,3 +134,39 @@ def test_fn_mtd_or_mtday_rca_flow_forces_non_lever5_paths_and_grounding() -> Non
         rows,
         target_qids=("q_022", "q_031"),
     ) == 1.0
+
+
+def test_rca_forced_lever5_emits_instruction_bridge_without_strategist_directive() -> None:
+    from genie_space_optimizer.optimization.optimizer import generate_proposals_from_strategy
+
+    metadata_snapshot = {
+        "instructions": {},
+        "_rca_themes": [],
+        "data_sources": {"tables": [], "metric_views": []},
+    }
+    ag = {
+        "id": "AG_TOPN",
+        "root_cause_summary": "plural top-N collapse",
+        "affected_questions": ["q_topn"],
+        "source_cluster_ids": ["H001"],
+        "lever_directives": {},
+        "_rca_execution": {
+            "rca_ids": ["rca_topn"],
+            "required_levers": [5],
+            "grounding_terms": ["rank_filter", "where rank 1", "plural_top_n_collapse"],
+        },
+    }
+
+    proposals = generate_proposals_from_strategy(
+        strategy={},
+        action_group=ag,
+        metadata_snapshot=metadata_snapshot,
+        target_lever=5,
+        apply_mode="genie_config",
+    )
+
+    assert any(
+        p.get("patch_type") == "add_instruction"
+        and "rank" in str(p.get("proposed_value", "")).lower()
+        for p in proposals
+    )
