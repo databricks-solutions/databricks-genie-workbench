@@ -94,6 +94,26 @@ drive optimizer mutations.
 If grounding drops a patch, the decision audit records patch targets, target
 QIDs, scoped row count, overlap, and missing targets.
 
+### RCA Grounding Control Contract
+
+Proposal grounding uses `optimization.eval_row_access` as the only supported
+reader for eval rows. It recognizes slash-style MLflow keys, dotted keys, flat
+fixture keys, nested dictionaries, and request/response payloads.
+
+Grounding categories:
+
+- `grounded`: Patch targets or RCA grounding terms overlap the target failure surface.
+- `no_scoped_rows`: The action group resolved to QIDs that do not exist in eval rows.
+- `empty_surface`: Rows exist, but no question, SQL, response, or ASI tokens were recoverable.
+- `no_targets`: Patch has no patch target or body terms.
+- `no_overlap`: Patch and RCA terms do not overlap the failure surface.
+- `below_min_relevance`: Patch has overlap but does not meet `GSO_MIN_PROPOSAL_RELEVANCE`.
+
+For RCA-stamped patches, `_rca_grounding_terms` are sufficient when they overlap
+the target failure surface. This is deterministic and local: no benchmark text is
+sent to an LLM, and the benchmark leakage firewall still applies to answer-shaped
+example SQL patches.
+
 ### Control-Plane Acceptance
 
 An iteration is accepted only when all of the following are true:
