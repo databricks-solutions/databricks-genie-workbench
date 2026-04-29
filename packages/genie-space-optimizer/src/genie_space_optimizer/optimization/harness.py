@@ -8274,12 +8274,25 @@ def _run_gate_checks(
     except Exception:
         logger.debug("Gate input log failed (non-fatal)", exc_info=True)
 
+    _max_new_hard_regressions = 1
+    _protected_qids: tuple[str, ...] = ()
+    try:
+        if isinstance(config, dict):
+            _max_new_hard_regressions = int(config.get("max_new_hard_regressions", 1))
+            _protected_qids = tuple(
+                str(q) for q in (config.get("protected_benchmark_qids") or []) if str(q)
+            )
+    except Exception:
+        pass
     _control_plane_decision = decide_control_plane_acceptance(
         baseline_accuracy=float(best_accuracy),
         candidate_accuracy=float(full_accuracy),
         target_qids=_target_qids,
         pre_rows=_baseline_rows_for_control_plane,
         post_rows=_after_rows,
+        min_gain_pp=float(MIN_POST_ARBITER_GAIN_PP),
+        max_new_hard_regressions=_max_new_hard_regressions,
+        protected_qids=_protected_qids,
     )
 
     # Suppressed qids: quarantine + GT correction queue. Those qids
@@ -8345,22 +8358,18 @@ def _run_gate_checks(
     except Exception:
         logger.debug("Failed to persist per-question regression rows", exc_info=True)
 
-    if _t4_verdict.blocking_qids:
-        regressions.append({
-            "judge": (
-                "per_question_regression "
-                f"({len(_t4_verdict.blocking_qids)} blocking qid(s))"
-            ),
-            "previous": float(len(_t4_verdict.blocking_qids)),
-            "current": 0.0,
-            "drop": float(len(_t4_verdict.blocking_qids)),
-            "blocking_qids": _t4_verdict.blocking_qids[:10],
-        })
+    # Task 5B — diagnostic only. The control-plane decision below now owns
+    # acceptance with a tiered policy (bounded debt vs unbounded collateral).
+    # Appending these qids as ``regressions`` here would pre-empt that
+    # policy and force a rollback even when the gate intends to accept the
+    # AG with regression debt.
+    _per_question_blocking_qids = list(_t4_verdict.blocking_qids or [])
+    if _per_question_blocking_qids:
         logger.info(
-            "Per-question regression check rolled back AG %s: %d blocking qid(s): %s",
+            "Per-question regression check detected %d candidate debt qid(s) for AG %s: %s",
+            len(_per_question_blocking_qids),
             ag_id,
-            len(_t4_verdict.blocking_qids),
-            ", ".join(_t4_verdict.blocking_qids[:10]),
+            ", ".join(_per_question_blocking_qids[:10]),
         )
 
     if not _strict_decision.accepted:
