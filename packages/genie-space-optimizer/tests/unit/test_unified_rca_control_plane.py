@@ -304,3 +304,16 @@ def test_7now_hard_failures_build_grounded_rca_execution_path() -> None:
     assert details["scoped_row_count"] == 1
     assert details["failure_category"] == "grounded"
     assert details["rca_overlap"]
+
+
+def test_harness_attaches_structural_candidates_only_for_lever6_action_groups() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness)
+
+    assert "extract_failed_row_sql_expression_candidates" in src
+    assert '"_lever6_structural_candidates"' in src
+    assert "target_qids_from_action_group" in src
+    assert "if \"6\" in lever_keys" in src or "if 6 in" in src

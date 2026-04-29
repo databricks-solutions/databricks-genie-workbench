@@ -10115,6 +10115,44 @@ def _run_lever_loop(
         except Exception:
             logger.debug("Failed to union RCA-required levers", exc_info=True)
 
+        if "6" in lever_keys:
+            try:
+                from genie_space_optimizer.optimization.control_plane import (
+                    rows_for_qids,
+                    target_qids_from_action_group,
+                )
+                from genie_space_optimizer.optimization.feature_mining import (
+                    extract_failed_row_sql_expression_candidates,
+                )
+
+                _all_rows_for_structural_learning = _get_failure_rows(
+                    spark, run_id, catalog, schema,
+                )
+                _structural_target_qids = target_qids_from_action_group(
+                    ag,
+                    strategy.get("_source_clusters", []),
+                )
+                _structural_rows = rows_for_qids(
+                    _all_rows_for_structural_learning,
+                    _structural_target_qids,
+                )
+                _structural_candidates: list[dict] = []
+                for _row in _structural_rows:
+                    for _candidate in extract_failed_row_sql_expression_candidates(_row):
+                        _structural_candidates.append(_candidate.as_dict())
+                if _structural_candidates:
+                    ag["_lever6_structural_candidates"] = _structural_candidates
+                    logger.info(
+                        "[%s] Lever 6 structural candidates from failed GT SQL: %d",
+                        ag_id,
+                        len(_structural_candidates),
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to attach Lever 6 structural candidates",
+                    exc_info=True,
+                )
+
         # ── 3B.5: Generate proposals + apply patches ─────────────────
         all_proposals: list[dict] = []
         for lever_key in lever_keys:
