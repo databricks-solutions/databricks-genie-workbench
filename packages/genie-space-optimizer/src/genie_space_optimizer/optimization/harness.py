@@ -8168,6 +8168,7 @@ def _run_gate_checks(
     # fixed what it claimed to fix without out-of-target regressions.
     from genie_space_optimizer.optimization.control_plane import (
         decide_control_plane_acceptance,
+        format_control_plane_acceptance_detail,
     )
 
     _target_qids: tuple[str, ...] = ()
@@ -8293,6 +8294,7 @@ def _run_gate_checks(
             "delta": _control_plane_decision.delta_pp,
             "severity": "critical",
             "reason": _control_plane_decision.reason_code,
+            "detail": format_control_plane_acceptance_detail(_control_plane_decision),
             "target_qids": list(_control_plane_decision.target_qids),
             "target_fixed_qids": list(_control_plane_decision.target_fixed_qids),
             "target_still_hard_qids": list(
@@ -8324,10 +8326,13 @@ def _run_gate_checks(
             if _cur is None:
                 _cur = full_scores.get(r.get("judge", ""), 0.0)
             _delta = float(_cur) - float(_prev)
-            return (
+            base = (
                 f"{r.get('judge', '?')} {float(_prev):.1f}->{float(_cur):.1f} "
                 f"({_delta:+.1f}pp)"
             )
+            if r.get("judge") == "control_plane_acceptance":
+                return f"{base} [{r.get('detail', '')}]"
+            return base
 
         _reg_details = ", ".join(_fmt_reg(r) for r in regressions)
         print(

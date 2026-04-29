@@ -163,6 +163,24 @@ class ControlPlaneAcceptance:
     out_of_target_regressed_qids: tuple[str, ...]
 
 
+def _fmt_qids(qids: Iterable[str]) -> str:
+    values = tuple(str(q) for q in qids or () if str(q))
+    return ", ".join(values) if values else "(none)"
+
+
+def format_control_plane_acceptance_detail(
+    decision: ControlPlaneAcceptance,
+) -> str:
+    """Return a compact operator-facing reason for control-plane rejection."""
+    return (
+        f"reason={decision.reason_code}; "
+        f"target_qids={_fmt_qids(decision.target_qids)}; "
+        f"target_fixed_qids={_fmt_qids(decision.target_fixed_qids)}; "
+        f"target_still_hard_qids={_fmt_qids(decision.target_still_hard_qids)}; "
+        f"out_of_target_regressed_qids={_fmt_qids(decision.out_of_target_regressed_qids)}"
+    )
+
+
 def decide_control_plane_acceptance(
     *,
     baseline_accuracy: float,

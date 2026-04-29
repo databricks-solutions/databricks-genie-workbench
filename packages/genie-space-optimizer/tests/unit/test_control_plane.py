@@ -325,3 +325,30 @@ def test_target_qids_keeps_valid_explicit_qids() -> None:
     assert target_qids_from_action_group(ag, clusters) == (
         "7now_delivery_analytics_space_gs_025",
     )
+
+
+def test_format_control_plane_acceptance_detail_includes_reason_and_qids() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        ControlPlaneAcceptance,
+        format_control_plane_acceptance_detail,
+    )
+
+    detail = format_control_plane_acceptance_detail(
+        ControlPlaneAcceptance(
+            accepted=False,
+            reason_code="target_qids_not_improved",
+            baseline_accuracy=85.7,
+            candidate_accuracy=100.0,
+            delta_pp=14.3,
+            target_qids=("q022",),
+            target_fixed_qids=(),
+            target_still_hard_qids=("q022",),
+            out_of_target_regressed_qids=("q020",),
+        )
+    )
+
+    assert "reason=target_qids_not_improved" in detail
+    assert "target_qids=q022" in detail
+    assert "target_fixed_qids=(none)" in detail
+    assert "target_still_hard_qids=q022" in detail
+    assert "out_of_target_regressed_qids=q020" in detail
