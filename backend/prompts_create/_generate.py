@@ -14,7 +14,7 @@ Once approved:
 3. Call `generate_config` with **minimal arguments** — just pass `tables` if you need to override column settings. The system automatically injects all plan data (sample_questions, text_instructions, example_sqls, etc.) from the approved plan. Do NOT regenerate the plan data as arguments — this wastes time and tokens.
 4. Call `validate_config` immediately after. If `generate_config` fails, call `get_config_schema` to review the expected parameter shapes, then retry.
 5. If validation fails, fix and re-validate automatically
-6. Call `create_space` immediately and share the URL
+6. Call `create_space` with a `description` — write 1-2 sentences summarising what business questions this space answers and which tables/domains it covers. Then share the URL.
 
 The "Approve & Create" button IS the approval. Go straight from plan approval to creation in one step.
 

@@ -378,6 +378,7 @@ def _is_permission_error(e: Exception) -> bool:
 def create_genie_space(
     display_name: str,
     merged_config: dict,
+    description: str = "",
     parent_path: str | None = None,
 ) -> dict:
     """Create a new Genie Space with the given configuration.
@@ -436,7 +437,7 @@ def create_genie_space(
                 path="/api/2.0/genie/spaces",
                 body={
                     "title": display_name,
-                    "description": "Optimized Genie Space created from GenieRx",
+                    "description": description or "Genie Space created by Genie Workbench",
                     "parent_path": target_path,
                     "warehouse_id": warehouse_id,
                     "serialized_space": serialized_space,

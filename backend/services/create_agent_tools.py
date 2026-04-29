@@ -737,10 +737,11 @@ TOOL_DEFINITIONS = [
                 "type": "object",
                 "properties": {
                     "display_name": {"type": "string", "description": "Display name for the space"},
+                    "description": {"type": "string", "description": "1-2 sentence description of what this Genie Space enables users to explore"},
                     "config": {"type": "object", "description": "The validated serialized_space dict (optional — defaults to last generated config)"},
                     "parent_path": {"type": "string", "description": "Workspace folder path for the space (optional)"},
                 },
-                "required": ["display_name"],
+                "required": ["display_name", "description"],
             },
         },
     },
@@ -2969,7 +2970,7 @@ def _check_sorted(items: list, key_fn, key_name: str, path: str, error_fn) -> No
 
 
 @mlflow.trace(name="create_space", span_type=SpanType.TOOL)
-def _create_space(display_name: str, config: dict | None = None, parent_path: str | None = None) -> dict:
+def _create_space(display_name: str, description: str = "", config: dict | None = None, parent_path: str | None = None) -> dict:
     """Create the Genie space via the API.
 
     Path resolution is automatic: configured directory -> /Shared/.
@@ -2980,6 +2981,7 @@ def _create_space(display_name: str, config: dict | None = None, parent_path: st
     try:
         result = create_genie_space(
             display_name=display_name,
+            description=description,
             merged_config=config,
             parent_path=parent_path,
         )

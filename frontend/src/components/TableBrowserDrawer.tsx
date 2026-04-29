@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
-import { X, Search, ChevronRight, ChevronDown, Check, Loader2, CheckSquare } from "lucide-react"
+import { X, Search, ChevronRight, ChevronDown, Check, Loader2, CheckSquare, Home } from "lucide-react"
 import { discoverCatalogs, discoverSchemas, discoverTables, searchTables } from "@/lib/api"
 
 const MAX_TABLES = 30
@@ -16,6 +16,7 @@ interface TableBrowserDrawerProps {
 interface CatalogNode {
   name: string
   comment?: string | null
+  is_home?: boolean
 }
 
 interface SchemaNode {
@@ -88,7 +89,8 @@ export function TableBrowserDrawer({
           comment: t.comment || null,
         }))
         setSearchResults(tableNodes)
-        setSearchTree(buildSearchTree(tableNodes))
+        const homeCatalogName = catalogs.find((c) => c.is_home)?.name ?? ""
+        setSearchTree(buildSearchTree(tableNodes, homeCatalogName))
       } catch {
         if (!controller.signal.aborted) {
           setSearchResults([])
@@ -321,6 +323,7 @@ export function TableBrowserDrawer({
                 ) : (
                   <ChevronRight className="w-3 h-3 text-muted flex-shrink-0" />
                 )}
+                {cat.is_home && <Home className="w-3 h-3 text-accent flex-shrink-0" />}
                 <span className="text-primary font-medium truncate">{cat.name}</span>
               </button>
 
@@ -457,7 +460,7 @@ interface SearchTreeCatalog {
   tableCount: number
 }
 
-function buildSearchTree(tables: TableNode[]): SearchTreeCatalog[] {
+function buildSearchTree(tables: TableNode[], homeCatalog = ""): SearchTreeCatalog[] {
   const catMap = new Map<string, Map<string, TableNode[]>>()
   for (const t of tables) {
     const parts = t.full_name.split(".")
@@ -469,7 +472,11 @@ function buildSearchTree(tables: TableNode[]): SearchTreeCatalog[] {
     schMap.get(sch)!.push(t)
   }
   return [...catMap.entries()]
-    .sort(([a], [b]) => a.localeCompare(b))
+    .sort(([a], [b]) => {
+      const aHome = homeCatalog && a === homeCatalog ? 0 : 1
+      const bHome = homeCatalog && b === homeCatalog ? 0 : 1
+      return aHome !== bHome ? aHome - bHome : a.localeCompare(b)
+    })
     .map(([catName, schMap]) => {
       const schemas = [...schMap.entries()]
         .sort(([a], [b]) => a.localeCompare(b))
