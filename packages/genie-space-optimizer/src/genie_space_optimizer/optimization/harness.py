@@ -10032,6 +10032,36 @@ def _run_lever_loop(
                     list(_strategy_hard_clusters) + list(_strategy_soft_clusters)
                 )
                 action_groups = strategy.get("action_groups", [])
+                # Task 8 — strategist coverage enforcement. Any patchable
+                # hard cluster the LLM dropped gets a deterministic
+                # diagnostic AG so the loop attempts it before declaring
+                # "exhausted".
+                try:
+                    from genie_space_optimizer.optimization.control_plane import (
+                        diagnostic_action_group_for_cluster,
+                        uncovered_patchable_clusters,
+                    )
+
+                    _uncovered = uncovered_patchable_clusters(
+                        clusters,
+                        action_groups,
+                    )
+                    if _uncovered:
+                        logger.warning(
+                            "Strategist did not cover %d patchable hard cluster(s); "
+                            "appending diagnostic AGs: %s",
+                            len(_uncovered),
+                            [c.get("cluster_id") for c in _uncovered],
+                        )
+                        for _c in _uncovered:
+                            action_groups.append(
+                                diagnostic_action_group_for_cluster(_c)
+                            )
+                except Exception:
+                    logger.debug(
+                        "Strategist coverage enforcement raised (non-fatal)",
+                        exc_info=True,
+                    )
                 # Sort by priority (lower = higher priority); fall back
                 # to source-cluster impact_score when priority is
                 # missing or tied.
