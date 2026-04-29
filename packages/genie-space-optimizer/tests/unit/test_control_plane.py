@@ -352,3 +352,31 @@ def test_format_control_plane_acceptance_detail_includes_reason_and_qids() -> No
     assert "target_fixed_qids=(none)" in detail
     assert "target_still_hard_qids=q022" in detail
     assert "out_of_target_regressed_qids=q020" in detail
+
+
+def test_patchable_hard_failure_qids_include_only_ground_truth_correct() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        ambiguous_failure_qids,
+        patchable_hard_failure_qids,
+    )
+
+    rows = [
+        {
+            "question_id": "q_gt",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "ground_truth_correct",
+        },
+        {
+            "question_id": "q_neither",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "neither_correct",
+        },
+        {
+            "question_id": "q_both",
+            "feedback/result_correctness/value": "no",
+            "feedback/arbiter/value": "both_correct",
+        },
+    ]
+
+    assert patchable_hard_failure_qids(rows) == ("q_gt",)
+    assert ambiguous_failure_qids(rows) == ("q_neither",)

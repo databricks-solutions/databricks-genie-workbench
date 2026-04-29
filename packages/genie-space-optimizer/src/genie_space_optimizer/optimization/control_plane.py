@@ -150,6 +150,56 @@ def hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(qids))
 
 
+def _arbiter_value(row: dict) -> str:
+    return str(
+        row.get("feedback/arbiter/value")
+        or row.get("arbiter/value")
+        or row.get("arbiter")
+        or ""
+    ).strip().lower()
+
+
+def _result_correctness_value(row: dict) -> str:
+    return str(
+        row.get("feedback/result_correctness/value")
+        or row.get("result_correctness/value")
+        or row.get("result_correctness")
+        or ""
+    ).strip().lower()
+
+
+def patchable_hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
+    """Rows where GT is confirmed correct and Genie should be patched."""
+    qids: list[str] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if _result_correctness_value(row) not in {"no", "false", "0", "0.0"}:
+            continue
+        if _arbiter_value(row) != "ground_truth_correct":
+            continue
+        qid = _row_qid(row)
+        if qid:
+            qids.append(qid)
+    return tuple(dict.fromkeys(qids))
+
+
+def ambiguous_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
+    """Rows where neither answer is endorsed and benchmark review is safer."""
+    qids: list[str] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if _result_correctness_value(row) not in {"no", "false", "0", "0.0"}:
+            continue
+        if _arbiter_value(row) != "neither_correct":
+            continue
+        qid = _row_qid(row)
+        if qid:
+            qids.append(qid)
+    return tuple(dict.fromkeys(qids))
+
+
 @dataclass(frozen=True)
 class ControlPlaneAcceptance:
     accepted: bool
