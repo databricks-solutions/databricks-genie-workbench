@@ -11003,6 +11003,50 @@ def _run_lever_loop(
             ))
             continue
 
+        # Task 6A — RCA/patch-type compatibility gate. Drop proposals
+        # whose patch type cannot fix the cluster's RCA defect (e.g. a
+        # measure patch for a missing-filter defect).
+        try:
+            from genie_space_optimizer.optimization.proposal_grounding import (
+                proposal_is_defect_compatible,
+            )
+
+            _compatible_proposals: list[dict] = []
+            _incompatible_proposals: list[dict] = []
+            for _p in all_proposals:
+                _decision = proposal_is_defect_compatible(_p)
+                if _decision["compatible"]:
+                    _compatible_proposals.append(_p)
+                else:
+                    _incompatible_proposals.append({
+                        "proposal_id": str(_p.get("proposal_id") or _p.get("id") or "?"),
+                        "patch_type": str(_p.get("patch_type") or _p.get("type") or "?"),
+                        "rca_kind": _decision.get("rca_kind"),
+                        "reason": _decision["reason"],
+                    })
+            if _incompatible_proposals:
+                print(
+                    _section(f"[{ag_id}] DEFECT-COMPATIBILITY GATE", "-") + "\n"
+                    + _kv("Proposals dropped", len(_incompatible_proposals)) + "\n"
+                    + "\n".join(
+                        f"|  - {d['proposal_id']} ({d['patch_type']}): "
+                        f"rca={d['rca_kind']} reason={d['reason']}"
+                        for d in _incompatible_proposals
+                    ) + "\n"
+                    + _bar("-")
+                )
+                logger.warning(
+                    "AG %s defect-compatibility gate dropped %d proposal(s)",
+                    ag_id,
+                    len(_incompatible_proposals),
+                )
+            all_proposals = _compatible_proposals
+        except Exception:
+            logger.debug(
+                "Defect-compatibility gate failed (non-fatal)",
+                exc_info=True,
+            )
+
         # ── Apply coordinated patch set ──────────────────────────────
         patches = proposals_to_patches(all_proposals)
 

@@ -372,6 +372,71 @@ def sql_filter_snippet_is_safe(
     return {"safe": True, "reason": "safe"}
 
 
+_RCA_KIND_COMPATIBLE_PATCH_TYPES = {
+    "missing_filter": frozenset({
+        "add_sql_snippet_filter",
+        "add_instruction",
+        "update_instruction",
+        "update_instruction_section",
+        "rewrite_instruction",
+        "add_example_sql",
+    }),
+    "missing_temporal_filter": frozenset({
+        "add_sql_snippet_filter",
+        "add_instruction",
+        "update_instruction_section",
+        "add_example_sql",
+    }),
+    "wrong_filter_condition": frozenset({
+        "add_sql_snippet_filter",
+        "add_instruction",
+        "update_instruction_section",
+        "add_example_sql",
+    }),
+    "missing_measure": frozenset({
+        "add_sql_snippet_measure",
+        "add_sql_snippet_calculation",
+        "update_column_description",
+        "add_example_sql",
+    }),
+    "missing_aggregation": frozenset({
+        "add_sql_snippet_calculation",
+        "add_instruction",
+        "update_instruction_section",
+        "add_example_sql",
+    }),
+    "wrong_asset_routing": frozenset({
+        "update_table_description",
+        "add_join",
+        "add_instruction",
+        "update_instruction_section",
+    }),
+}
+
+
+def proposal_is_defect_compatible(proposal: dict) -> dict:
+    """Return whether a proposal's patch type is compatible with its RCA defect."""
+    rca_kind = str(
+        proposal.get("rca_kind")
+        or proposal.get("root_cause")
+        or proposal.get("asi_failure_type")
+        or ""
+    ).strip().lower()
+    patch_type = str(proposal.get("patch_type") or proposal.get("type") or "").strip()
+    allowed = _RCA_KIND_COMPATIBLE_PATCH_TYPES.get(rca_kind)
+    if allowed is None:
+        return {"compatible": True, "reason": "unknown_rca_kind"}
+    if patch_type in allowed:
+        return {"compatible": True, "reason": "compatible"}
+    return {
+        "compatible": False,
+        "reason": "patch_type_incompatible_with_rca_kind",
+        "rca_kind": rca_kind,
+        "patch_type": patch_type,
+        "allowed_patch_types": sorted(allowed),
+    }
+
+
 _GLOBAL_INSTRUCTION_SECTIONS = frozenset({
     "QUERY RULES",
     "ASSET ROUTING",
