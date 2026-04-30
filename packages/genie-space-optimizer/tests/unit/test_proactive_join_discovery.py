@@ -123,3 +123,22 @@ def test_example_sql_join_mining_combines_unified_and_fallback_examples(monkeypa
     assert len(examples) == 2
     assert examples[0]["expected_sql"].startswith("SELECT * FROM a")
     assert examples[1]["expected_sql"].startswith("SELECT * FROM c")
+
+
+def test_join_discovery_result_has_explicit_observability_fields():
+    from genie_space_optimizer.optimization.harness import (
+        _empty_join_discovery_result,
+    )
+
+    result = _empty_join_discovery_result()
+
+    for key in (
+        "fk_rows_available",
+        "fk_candidates_built",
+        "execution_candidates",
+        "example_sql_join_candidates",
+        "joins_skipped_metric_view",
+        "type_incompatible",
+        "spec_validation_rejected",
+    ):
+        assert key in result

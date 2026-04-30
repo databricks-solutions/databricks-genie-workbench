@@ -1747,6 +1747,32 @@ def _run_proactive_join_discovery(
 # ── Iterative join mining (runs after each accepted iteration) ────────
 
 
+def _empty_join_discovery_result() -> dict:
+    """Initial counter dict for join discovery banners.
+
+    Operators previously saw a single ``new_joins_applied`` line; this
+    structure exposes per-source candidate counts (FK rows vs FK
+    candidates vs execution-proven vs example-SQL-derived) and explicit
+    rejection buckets so a non-zero ``new_joins_applied`` can be
+    correlated to its provenance without grep'ing debug logs.
+    """
+    return {
+        "existing_specs": 0,
+        "fk_rows_available": 0,
+        "fk_candidates_built": 0,
+        "fk_candidates": 0,
+        "execution_candidates": 0,
+        "example_sql_join_candidates": 0,
+        "candidates_found": 0,
+        "already_defined": 0,
+        "type_incompatible": 0,
+        "spec_validation_rejected": 0,
+        "joins_skipped_metric_view": 0,
+        "total_applied": 0,
+        "total_skipped": 0,
+    }
+
+
 def _collect_examples_for_join_mining(
     *,
     unified_example_result: dict,
