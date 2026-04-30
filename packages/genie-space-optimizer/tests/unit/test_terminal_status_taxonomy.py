@@ -61,3 +61,20 @@ def test_harness_plateau_printer_uses_resolve_terminal_on_plateau() -> None:
     assert "regression_debt_qids=" in snippet
     assert "quarantined_qids=" in snippet
     assert "(unknown)" not in snippet
+
+
+def test_plateau_with_untried_sql_delta_gets_specific_terminal_status():
+    from genie_space_optimizer.optimization.rca_terminal import (
+        RcaTerminalStatus,
+        resolve_terminal_on_plateau,
+    )
+
+    decision = resolve_terminal_on_plateau(
+        quarantined_qids={"gs_026"},
+        current_hard_qids={"gs_026"},
+        regression_debt_qids=set(),
+        sql_delta_qids={"gs_026"},
+    )
+
+    assert decision.status is RcaTerminalStatus.UNRESOLVED_HARD_FAILURE_WITH_UNTRIED_SQL_DELTA
+    assert decision.should_continue is True

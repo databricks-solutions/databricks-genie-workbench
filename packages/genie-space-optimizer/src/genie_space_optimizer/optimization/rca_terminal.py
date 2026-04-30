@@ -14,6 +14,7 @@ class RcaTerminalStatus(str, Enum):
     UNPATCHABLE_WITH_SIX_LEVERS = "unpatchable_with_six_levers"
     EXHAUSTED_BUDGET = "exhausted_budget"
     UNRESOLVED_HARD_FAILURES_QUARANTINED = "unresolved_hard_failures_quarantined"
+    UNRESOLVED_HARD_FAILURE_WITH_UNTRIED_SQL_DELTA = "unresolved_hard_failure_with_untried_sql_delta"
     DIMINISHING_RETURNS_WITH_OPEN_DEBT = "diminishing_returns_with_open_debt"
     PLATEAU_NO_OPEN_FAILURES = "plateau_no_open_failures"
 
@@ -113,13 +114,25 @@ def resolve_terminal_on_plateau(
     quarantined_qids: set[str],
     current_hard_qids: set[str],
     regression_debt_qids: set[str],
+    sql_delta_qids: set[str] | None = None,
 ) -> RcaTerminalDecision:
     """Resolve the plateau terminal status from current eval state.
 
-    Priority: hard failures still in quarantine > open regression debt >
-    clean plateau. The result replaces the old ``(unknown)`` plateau
-    label so downstream consumers see a typed status.
+    Priority: hard failures with concrete SQL deltas (still patchable) >
+    hard failures still in quarantine > open regression debt > clean
+    plateau. The result replaces the old ``(unknown)`` plateau label so
+    downstream consumers see a typed status.
     """
+    still_patchable = sorted(set(sql_delta_qids or set()) & set(current_hard_qids))
+    if still_patchable:
+        return RcaTerminalDecision(
+            status=RcaTerminalStatus.UNRESOLVED_HARD_FAILURE_WITH_UNTRIED_SQL_DELTA,
+            should_continue=True,
+            reason=(
+                f"{len(still_patchable)} hard failure(s) have concrete SQL deltas "
+                f"remaining: {still_patchable}"
+            ),
+        )
     quarantined_and_hard = sorted(set(quarantined_qids) & set(current_hard_qids))
     if quarantined_and_hard:
         return RcaTerminalDecision(
