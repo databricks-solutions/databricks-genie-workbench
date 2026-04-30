@@ -174,3 +174,54 @@ def test_write_scan_snapshot_retries_merge(monkeypatch: pytest.MonkeyPatch) -> N
     assert wrote is True
     assert len(captured_sql) == 1
     assert captured_sql[0].lstrip().startswith("MERGE INTO cat.sch.genie_opt_scan_snapshots")
+
+
+def test_create_evaluation_dataset_persists_30_unique_topup_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    from genie_space_optimizer.optimization import evaluation
+
+    merged_records: list[dict] = []
+
+    class _FakeDataset:
+        def merge_records(self, records):
+            merged_records.extend(records)
+
+    class _FakeDatasets:
+        def get_dataset(self, name: str):
+            return _FakeDataset()
+
+    def fake_retry(operation, **kwargs):
+        return operation()
+
+    monkeypatch.setattr(evaluation.mlflow.genai, "datasets", _FakeDatasets())
+    monkeypatch.setattr(evaluation, "retry_delta_write", fake_retry)
+
+    benchmarks = [
+        {
+            "id": f"sales_gs_{i + 1:03d}",
+            "question": f"validated curated question {i + 1}",
+            "expected_sql": "SELECT 1",
+            "split": "train",
+        }
+        for i in range(18)
+    ] + [
+        {
+            "id": f"sales_{i + 19:03d}",
+            "question": f"validated synthetic top-up question {i + 1}",
+            "expected_sql": "SELECT 1",
+            "split": "held_out" if i < 5 else "train",
+        }
+        for i in range(12)
+    ]
+
+    result = evaluation.create_evaluation_dataset(
+        object(),
+        benchmarks,
+        "cat.sch",
+        "sales",
+        max_benchmark_count=30,
+    )
+
+    assert result["record_count"] == 30
+    assert len(merged_records) == 30
+    assert len({r["inputs"]["question_id"] for r in merged_records}) == 30
+    assert len({r["inputs"]["question"].lower().strip() for r in merged_records}) == 30

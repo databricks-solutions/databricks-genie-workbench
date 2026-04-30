@@ -23,3 +23,22 @@ def test_benchmark_id_allocator_tracks_ids_allocated_in_same_call() -> None:
     assert allocate("domain_gf", 1) == "domain_gf_001"
     assert allocate("domain_gf", 1) == "domain_gf_002"
     assert allocate("domain_gf", 2) == "domain_gf_003"
+
+
+def test_allocator_prevents_incident_shape_gs_id_reuse() -> None:
+    from genie_space_optimizer.optimization.evaluation import _make_benchmark_id_allocator
+
+    existing = [
+        {"id": f"esr_daily_sales_performance_analytics_space_gs_{i + 1:03d}"}
+        for i in range(18)
+    ]
+    allocate = _make_benchmark_id_allocator(existing)
+
+    newly_allocated = [
+        allocate("esr_daily_sales_performance_analytics_space_gs", i + 1)
+        for i in range(12)
+    ]
+
+    assert newly_allocated[0] == "esr_daily_sales_performance_analytics_space_gs_019"
+    assert newly_allocated[-1] == "esr_daily_sales_performance_analytics_space_gs_030"
+    assert not ({b["id"] for b in existing} & set(newly_allocated))
