@@ -65,6 +65,12 @@ export function TableBrowserDrawer({
   // Debounced search — fires automatically as user types
   useEffect(() => {
     const q = searchQuery.trim()
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
+    }
+
     if (q.length < MIN_SEARCH_LENGTH) {
       setSearchResults(null)
       setSearchTree([])
@@ -73,8 +79,6 @@ export function TableBrowserDrawer({
     }
 
     setSearching(true)
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    if (abortRef.current) abortRef.current.abort()
 
     debounceRef.current = setTimeout(async () => {
       const controller = new AbortController()
@@ -97,14 +101,19 @@ export function TableBrowserDrawer({
           setSearchTree([])
         }
       } finally {
+        if (abortRef.current === controller) abortRef.current = null
         if (!controller.signal.aborted) setSearching(false)
       }
     }, SEARCH_DEBOUNCE_MS)
 
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
+      if (abortRef.current) {
+        abortRef.current.abort()
+        abortRef.current = null
+      }
     }
-  }, [searchQuery])
+  }, [searchQuery, catalogs])
 
   // Diff from committed selection
   const diff = useMemo(() => {

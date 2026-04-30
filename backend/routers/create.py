@@ -45,7 +45,8 @@ async def create_preflight(request: Request):
                 client = get_workspace_client()
                 for wh in client.warehouses.list():
                     is_serverless = getattr(wh, "enable_serverless_compute", False)
-                    wh_type = str(getattr(wh, "warehouse_type", ""))
+                    warehouse_type = getattr(wh, "warehouse_type", "")
+                    wh_type = getattr(warehouse_type, "value", warehouse_type)
                     if is_serverless or wh_type == "PRO":
                         warehouses_available = True
                         break

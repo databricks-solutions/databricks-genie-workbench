@@ -74,9 +74,48 @@ def _sql_escape_like(s: str) -> str:
     return s.replace("'", "''").replace("%", "\\%").replace("_", "\\_")
 
 
+def _enum_value_upper(value: Any) -> str:
+    """Normalize SDK enum-like values for stable comparisons."""
+    raw = getattr(value, "value", value)
+    return str(raw or "").upper()
+
+
 def _base_col_type(type_text: str) -> str:
     """Normalize a column type to its base name (strip generics and precision)."""
     return type_text.lower().split("<")[0].split("(")[0].strip()
+
+
+def _reconcile_metric_view_sources(config: dict) -> dict:
+    """Remove duplicate table entries when the same identifier is a metric view.
+
+    Genie treats column configs as unique by (identifier, column_name) across the
+    entire space, so the same asset cannot appear in both tables and metric_views.
+    Metric view entries are authoritative when both sections contain the same id.
+    """
+    data_sources = config.get("data_sources")
+    if not isinstance(data_sources, dict):
+        return config
+
+    tables = data_sources.get("tables")
+    metric_views = data_sources.get("metric_views")
+    if not isinstance(tables, list) or not isinstance(metric_views, list):
+        return config
+
+    metric_ids = {
+        mv.get("identifier")
+        for mv in metric_views
+        if isinstance(mv, dict) and mv.get("identifier")
+    }
+    if not metric_ids:
+        return config
+
+    data_sources["tables"] = [
+        tbl for tbl in tables
+        if not (isinstance(tbl, dict) and tbl.get("identifier") in metric_ids)
+    ]
+    data_sources["tables"].sort(key=lambda x: x.get("identifier", "") if isinstance(x, dict) else "")
+    metric_views.sort(key=lambda x: x.get("identifier", "") if isinstance(x, dict) else "")
+    return config
 
 
 # ── Tool definitions (OpenAI function-calling format) ────────────────────────
@@ -1100,7 +1139,7 @@ def _describe_table(table_identifier: str) -> dict:
         if host:
             uc_url = f"{host}/explore/data/{parts[0]}/{parts[1]}/{parts[2]}"
 
-    table_type = str(table_info.table_type) if table_info.table_type else None
+    table_type = _enum_value_upper(table_info.table_type) if table_info.table_type else None
 
     result_dict: dict[str, Any] = {
         "table": table_identifier,
@@ -1836,7 +1875,8 @@ def _discover_warehouses() -> dict:
     eligible = []
     for wh in warehouses:
         is_serverless = getattr(wh, "enable_serverless_compute", False)
-        wh_type_str = str(getattr(wh, "warehouse_type", "")) if hasattr(wh, "warehouse_type") else ""
+        warehouse_type = getattr(wh, "warehouse_type", "")
+        wh_type_str = getattr(warehouse_type, "value", warehouse_type)
         is_pro = wh_type_str == "PRO"
         if is_serverless or is_pro:
             eligible.append({
@@ -2043,6 +2083,7 @@ def _generate_config(
         data_sources["metric_views"] = mv_items
 
     config["data_sources"] = data_sources
+    _reconcile_metric_view_sources(config)
 
     # ── instructions ──
     instructions: dict[str, Any] = {}
@@ -2579,10 +2620,13 @@ _SIZE_CHECK_FIELDS = {"description", "content", "question", "sql", "instruction"
 _GUIDANCE_FIELDS = {"comment", "instruction", "usage_guidance"}
 
 
-def _validate_config(config: dict | None = None) -> dict:
+def _validate_config(config: dict | None = None, reconcile_sources: bool = True) -> dict:
     """Validate a serialized_space config. Returns errors and warnings."""
     if not config:
         return {"error": "No config to validate — call generate_config first"}
+    config = copy.deepcopy(config)
+    if reconcile_sources:
+        _reconcile_metric_view_sources(config)
     errors = []
     warnings = []
 
@@ -2605,17 +2649,37 @@ def _validate_config(config: dict | None = None) -> dict:
         for i, sq in enumerate(sqs):
             _check_id(f"config.sample_questions[{i}].id", sq.get("id"), error)
 
+    data_sources = config.get("data_sources", {})
+    tables = data_sources.get("tables", [])
+    mvs = data_sources.get("metric_views", [])
+    col_keys: set[tuple[str, str]] = set()
+
+    def check_column_configs(source_type: str, source_index: int, ident: str, ccs: list) -> None:
+        for j, cc in enumerate(ccs):
+            key = (ident, cc.get("column_name", ""))
+            if key in col_keys:
+                error(
+                    f"data_sources.{source_type}[{source_index}].column_configs",
+                    f"Duplicate column config: {key}",
+                )
+            col_keys.add(key)
+            if cc.get("enable_entity_matching") and not cc.get("enable_format_assistance"):
+                error(
+                    f"data_sources.{source_type}[{source_index}].column_configs[{j}]",
+                    f"enable_entity_matching requires enable_format_assistance to be true (column: {cc.get('column_name', '')})"
+                )
+
+    # data sources
+    if not tables and not mvs:
+        error("data_sources", "At least one table or metric view is required")
+
     # tables
-    tables = config.get("data_sources", {}).get("tables", [])
-    if not tables:
-        error("data_sources.tables", "No tables defined")
-    else:
+    if tables:
         _check_sorted(tables, lambda x: x.get("identifier", ""), "identifier", "data_sources.tables", error)
         if len(tables) > _MAX_TABLES:
             error("data_sources.tables", f"Maximum {_MAX_TABLES} tables allowed (found {len(tables)})")
         elif len(tables) >= 9:
             warning("data_sources.tables", f"{len(tables)} tables — consider splitting into focused rooms for >8 tables")
-        col_keys: set[tuple[str, str]] = set()
         for i, tbl in enumerate(tables):
             ident = tbl.get("identifier", "")
             if not _TABLE_ID_PATTERN.match(ident):
@@ -2623,25 +2687,19 @@ def _validate_config(config: dict | None = None) -> dict:
             ccs = tbl.get("column_configs", [])
             if ccs:
                 _check_sorted(ccs, lambda x: x.get("column_name", ""), "column_name", f"data_sources.tables[{i}].column_configs", error)
-            for j, cc in enumerate(ccs):
-                key = (ident, cc.get("column_name", ""))
-                if key in col_keys:
-                    error(f"data_sources.tables[{i}].column_configs", f"Duplicate column config: {key}")
-                col_keys.add(key)
-                if cc.get("enable_entity_matching") and not cc.get("enable_format_assistance"):
-                    error(
-                        f"data_sources.tables[{i}].column_configs[{j}]",
-                        f"enable_entity_matching requires enable_format_assistance to be true (column: {cc.get('column_name', '')})"
-                    )
+            check_column_configs("tables", i, ident, ccs)
 
     # metric_views
-    mvs = config.get("data_sources", {}).get("metric_views", [])
     if mvs:
         _check_sorted(mvs, lambda x: x.get("identifier", ""), "identifier", "data_sources.metric_views", error)
         for i, mv in enumerate(mvs):
+            ident = mv.get("identifier", "")
+            if not _TABLE_ID_PATTERN.match(ident):
+                error(f"data_sources.metric_views[{i}].identifier", f"'{ident}' must be catalog.schema.metric_view")
             ccs = mv.get("column_configs", [])
             if ccs:
                 _check_sorted(ccs, lambda x: x.get("column_name", ""), "column_name", f"data_sources.metric_views[{i}].column_configs", error)
+            check_column_configs("metric_views", i, ident, ccs)
 
     # text_instructions
     ti = config.get("instructions", {}).get("text_instructions", [])
@@ -2978,6 +3036,7 @@ def _create_space(display_name: str, description: str = "", config: dict | None 
     """
     if not config:
         return {"success": False, "error": "No config provided — call generate_config first"}
+    config = _reconcile_metric_view_sources(copy.deepcopy(config))
     try:
         result = create_genie_space(
             display_name=display_name,
@@ -3011,6 +3070,7 @@ def _update_space(space_id: str, config: dict | None = None, display_name: str |
         body: dict[str, Any] = {}
 
         if config:
+            config = _reconcile_metric_view_sources(copy.deepcopy(config))
             constrained = _enforce_constraints(config)
             cleaned = _clean_config(constrained)
             body["serialized_space"] = json.dumps(cleaned)

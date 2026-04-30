@@ -6,6 +6,7 @@
 /.build/
 .cursor/
 .codex/
+.agents/
 .superpowers/
 docs/superpowers/
 context/
