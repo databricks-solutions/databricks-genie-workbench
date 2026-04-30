@@ -190,6 +190,8 @@ def _classify_result_correctness_reason(comparison: dict[str, Any]) -> str | Non
         return "RESULT_MISSING_COLUMNS"
     if gt_columns and genie_columns and genie_columns > gt_columns:
         return "RESULT_EXTRA_COLUMNS"
+    if match_type in {"hash_mismatch", "same_shape_value_mismatch", "value_mismatch"}:
+        return "SINGLE_CELL_DIFFERENCE"
     if gt_rows > genie_rows:
         return "RESULT_MISSING_ROWS"
     if gt_rows < genie_rows:

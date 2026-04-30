@@ -260,3 +260,39 @@ def test_user_request_misinterpretation_gap_maps_from_existing_judges() -> None:
             result["primary_assessment_reason"]
             == "LLM_JUDGE_MISINTERPRETATION_OF_USER_REQUEST"
         )
+
+
+def test_result_correctness_maps_hash_mismatch_to_single_cell_difference() -> None:
+    metadata = build_genie_equivalent_eval(
+        judge_name="result_correctness",
+        value="no",
+        comparison={
+            "match": False,
+            "match_type": "hash_mismatch",
+            "gt_rows": 1,
+            "genie_rows": 1,
+            "gt_columns": ["cy_sales_value"],
+            "genie_columns": ["cy_sales_value"],
+        },
+    )
+
+    assert metadata["primary_assessment_reason"] == "SINGLE_CELL_DIFFERENCE"
+    assert metadata["unmapped"] is False
+
+
+def test_result_correctness_maps_same_shape_mismatch_to_needs_review_not_other() -> None:
+    metadata = build_genie_equivalent_eval(
+        judge_name="result_correctness",
+        value="no",
+        comparison={
+            "match": False,
+            "match_type": "same_shape_value_mismatch",
+            "gt_rows": 4,
+            "genie_rows": 4,
+            "gt_columns": ["zone_combination", "cy_sales_value"],
+            "genie_columns": ["zone_combination", "cy_sales_value"],
+        },
+    )
+
+    assert metadata["primary_assessment_reason"] == "SINGLE_CELL_DIFFERENCE"
+    assert metadata["reason_family"] == "deterministic"
