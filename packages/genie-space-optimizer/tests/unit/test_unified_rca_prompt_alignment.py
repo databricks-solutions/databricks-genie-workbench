@@ -307,3 +307,71 @@ def test_build_context_data_returns_none_when_no_regression_debt() -> None:
         )
 
         assert context["mandatory_regression_debt_qids"] is None
+
+
+def test_adaptive_strategist_llm_call_uses_tolerant_response_validator() -> None:
+    """Source-level guard: adaptive strategist call uses the tolerant validator."""
+    import inspect
+
+    from genie_space_optimizer.optimization import optimizer
+
+    source = inspect.getsource(optimizer._call_llm_for_adaptive_strategy)
+
+    assert 'span_name="adaptive_strategy"' in source
+    assert "response_validator=_adaptive_strategist_response_validator" in source
+    assert "response_validator=_extract_json" not in source
+
+
+def test_adaptive_strategist_validator_accepts_strict_json() -> None:
+    from genie_space_optimizer.optimization.optimizer import (
+        _adaptive_strategist_response_validator,
+    )
+
+    assert _adaptive_strategist_response_validator(
+        '{"action_groups": []}'
+    ) == {"action_groups": []}
+
+
+def test_adaptive_strategist_validator_accepts_truncated_but_recoverable_json() -> None:
+    from genie_space_optimizer.optimization.optimizer import (
+        _adaptive_strategist_response_validator,
+    )
+
+    # ``_repair_truncated_strategy_json`` extracts a balanced ``[...]``
+    # for ``action_groups`` even when the surrounding object is unclosed.
+    # The strict parser fails because the outer object has no closing
+    # brace, but the salvage path returns a usable dict.
+    truncated = (
+        '{"action_groups": ['
+        '{"primary_cluster_id": "H001", '
+        '"source_cluster_ids": ["H001"], '
+        '"affected_questions": ["q014"], '
+        '"root_cause_summary": "missing filter", '
+        '"patches": []}'
+        '], "rationale": "truncated tail follo'
+    )
+
+    parsed = _adaptive_strategist_response_validator(truncated)
+    # Either the strict parser extracts the inner array, or the salvage
+    # wraps it into the strategy dict. Both are recoverable; what matters
+    # is that the validator returns parsed structure rather than raising
+    # so ``_traced_llm_call`` does not retry the prompt.
+    if isinstance(parsed, dict):
+        assert "action_groups" in parsed
+    else:
+        assert isinstance(parsed, list) and parsed
+        assert parsed[0]["primary_cluster_id"] == "H001"
+
+
+def test_adaptive_strategist_validator_rejects_non_json_refusal() -> None:
+    import json
+    import pytest
+
+    from genie_space_optimizer.optimization.optimizer import (
+        _adaptive_strategist_response_validator,
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        _adaptive_strategist_response_validator(
+            "I'm sorry, I cannot help with that request."
+        )

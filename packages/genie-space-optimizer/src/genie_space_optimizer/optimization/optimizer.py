@@ -314,6 +314,29 @@ def _traced_llm_call(
         raise last_err  # type: ignore[misc]
 
 
+def _adaptive_strategist_response_validator(text: str) -> Any:
+    """Tolerant JSON validator for the adaptive strategist call.
+
+    Strategy:
+    1. Try strict parse via ``_extract_json``.
+    2. On ``json.JSONDecodeError`` fall back to
+       ``_repair_truncated_strategy_json`` — the same salvage path used at
+       the call site post-success. This stops truncated-but-recoverable
+       responses from being treated as non-JSON refusals and exhausting
+       retries inside ``_traced_llm_call``.
+    3. Re-raise the original ``JSONDecodeError`` only if BOTH parses fail.
+    """
+    from genie_space_optimizer.optimization.evaluation import _extract_json
+
+    try:
+        return _extract_json(text)
+    except json.JSONDecodeError:
+        try:
+            return _repair_truncated_strategy_json(text)
+        except json.JSONDecodeError:
+            raise
+
+
 def _log_token_usage(span: Any, response: Any) -> None:
     """Attach token usage from an OpenAI response to an MLflow span."""
     usage = getattr(response, "usage", None)
@@ -9330,7 +9353,11 @@ def _call_llm_for_adaptive_strategy(
 
     try:
         text, _response = _traced_llm_call(
-            w, system_msg, prompt, span_name="adaptive_strategy",
+            w,
+            system_msg,
+            prompt,
+            span_name="adaptive_strategy",
+            response_validator=_adaptive_strategist_response_validator,
         )
     except Exception:
         logger.exception("Adaptive strategist LLM call failed after retries")
