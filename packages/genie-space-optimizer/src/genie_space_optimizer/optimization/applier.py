@@ -64,6 +64,10 @@ from genie_space_optimizer.common.genie_client import (
     strip_non_exportable_fields,
 )
 from genie_space_optimizer.optimization.optimizer import _resolve_scope
+from genie_space_optimizer.optimization.applier_audit import (
+    ApplierDecision,
+    build_applier_decision,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -3981,6 +3985,10 @@ def apply_patch_set(
     # final dropped_patches list in the apply_log.
     early_dropped_patches: list[dict] = []
     patched_objects: set[str] = set()
+    # Task 3 — per-patch decision audit, surfaced via apply_log so the
+    # harness can reconcile what the cap selected against what the
+    # applier actually applied (Task 4).
+    applier_decisions: list[ApplierDecision] = []
 
     for idx in sorted_indices:
         patch = patches[idx]
@@ -4008,6 +4016,14 @@ def apply_patch_set(
                 "drop_reason": "validation_missing",
                 "drop_detail": str(_render_err),
             })
+            applier_decisions.append(
+                build_applier_decision(
+                    patch=patch,
+                    decision="dropped_validation",
+                    reason="render_raised_runtime_error",
+                    error=str(_render_err),
+                )
+            )
             continue
 
         if risk == "high" and not force_apply:
@@ -4056,9 +4072,24 @@ def apply_patch_set(
                 "applied_patch_detail": _detail,
                 "proposal_patch_type": _proposal_type,
             })
+            applier_decisions.append(
+                build_applier_decision(
+                    patch=patch,
+                    decision="applied",
+                    reason="render_and_apply_succeeded",
+                )
+            )
             rollback_commands.append(rendered.get("rollback_command", ""))
             if target:
                 patched_objects.add(target)
+        else:
+            applier_decisions.append(
+                build_applier_decision(
+                    patch=patch,
+                    decision="dropped_no_op",
+                    reason="apply_action_returned_false",
+                )
+            )
 
     sort_genie_config(config)
     # D1–D3: write sentinel-wrapped quality instruction blocks. The call is
@@ -4267,6 +4298,11 @@ def apply_patch_set(
         "patch_deployed": patch_deployed,
         "patch_error": patch_error,
         "dropped_patches": dropped_patches + early_dropped_patches,
+        # Task 3 — per-patch applier decision audit so the harness can
+        # reconcile cap-selected vs applier-applied identity sets and
+        # operators can see why a patch was dropped without grepping
+        # multiple log lines.
+        "applier_decisions": [d.__dict__ for d in applier_decisions],
     }
 
 
