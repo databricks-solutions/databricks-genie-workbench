@@ -77,3 +77,35 @@ def test_harness_logs_strategist_coverage_gap_diagnostic_shape() -> None:
     assert "uncovered_cluster_ids" in source
     assert "rca_cards_present" in source
     assert "_log_strategist_coverage_gap(" in source
+
+
+def test_soft_skip_does_not_persist_into_correction_state_quarantined_qids() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    source = inspect.getsource(harness._run_lever_loop)
+
+    assert "_iter_local_skip_qids = _quarantine_qids | _soft_skip_qids" in source
+    assert "_correction_state[\"quarantined_qids\"] |= _newly_quarantined" in source
+
+    iter_local_idx = source.index("_iter_local_skip_qids = _quarantine_qids | _soft_skip_qids")
+    persist_idx = source.index("_correction_state[\"quarantined_qids\"] |= _newly_quarantined")
+    assert iter_local_idx < persist_idx
+
+    persist_block = source[persist_idx - 800 : persist_idx]
+    # The persist site uses ``_quarantine_qids`` only; the iteration-local
+    # skip set is computed elsewhere so soft-skip qids cannot leak in.
+    assert "_quarantine_qids - _correction_state[\"quarantined_qids\"]" in persist_block
+    assert "_iter_local_skip_qids = " not in persist_block
+
+
+def test_soft_skip_logs_iteration_local_label() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    source = inspect.getsource(harness._run_lever_loop)
+
+    assert "T4.3 CONVERGENCE QUARANTINE" in source
+    assert "iteration-local; not persisted" in source

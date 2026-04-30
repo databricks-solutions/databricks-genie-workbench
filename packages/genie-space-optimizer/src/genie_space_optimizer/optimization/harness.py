@@ -10095,6 +10095,10 @@ def _run_lever_loop(
                     # to not dominate cluster-formation this pass.
                     _soft_skip_qids.add(_pq_id)
 
+            # Iteration-local skip set used ONLY for this pass's
+            # cluster-formation call. Hard quarantine persists via
+            # ``_quarantine_qids``; soft-skip qids re-enter next iteration.
+            _iter_local_skip_qids = _quarantine_qids | _soft_skip_qids
             if _soft_skip_qids:
                 logger.info(
                     "T4.3: soft-skipping %d stuck/worsening question(s) "
@@ -10113,14 +10117,28 @@ def _run_lever_loop(
                     ) + "\n"
                     + _kv(
                         "Rationale",
-                        "stuck/worsening convergence state; re-entered next iter",
+                        "iteration-local; not persisted into hard quarantine",
                     ) + "\n"
                     + _bar("-")
                 )
-                # Merge into quarantine_qids only for this iteration's
-                # cluster-formation call — the _correction_state store
-                # below is for hard quarantine, which persists.
-                _quarantine_qids = _quarantine_qids | _soft_skip_qids
+                # Task 1 — iteration-local soft skip is consumed by the
+                # next ``cluster_failures(...)`` call only. The hard
+                # quarantine store ``_correction_state["quarantined_qids"]``
+                # below MUST NOT see soft-skip qids: a transiently stuck
+                # question that was already fixed by a prior accepted AG
+                # would otherwise become permanently quarantined and
+                # invisible to the next iteration's failure analysis.
+                # Trace AG1 fixing ``gs_021`` with +5.3pp accuracy in the
+                # 7now run; the next iteration soft-skipped ``gs_021``
+                # then hard-quarantined it, hiding the fact that the
+                # acceptance gate had already taken credit for the fix.
+                logger.debug(
+                    "Soft-skip qids %s are iteration-local; only "
+                    "_quarantine_qids %s flow into the persistent hard "
+                    "quarantine state below.",
+                    sorted(_soft_skip_qids),
+                    sorted(_quarantine_qids),
+                )
             if _quarantine_qids:
                 _newly_quarantined = _quarantine_qids - _correction_state["quarantined_qids"]
                 if _newly_quarantined:
