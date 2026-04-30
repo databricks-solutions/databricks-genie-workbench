@@ -542,7 +542,12 @@ def write_stage(
         ]
     )
 
-    spark.sql(f"INSERT INTO {fqn} ({col_names}) VALUES ({vals})")
+    execute_delta_write_with_retry(
+        spark,
+        f"INSERT INTO {fqn} ({col_names}) VALUES ({vals})",
+        operation_name="write_stage",
+        table_name=fqn,
+    )
     logger.info("Stage %s/%s for run %s", stage, status, run_id)
 
 
@@ -684,7 +689,12 @@ def write_iteration(
         ]
     )
 
-    spark.sql(f"INSERT INTO {fqn} ({col_names}) VALUES ({vals})")
+    execute_delta_write_with_retry(
+        spark,
+        f"INSERT INTO {fqn} ({col_names}) VALUES ({vals})",
+        operation_name="write_iteration",
+        table_name=fqn,
+    )
     logger.info(
         "Iteration %d (lever=%s, scope=%s) for run %s: accuracy=%.1f%%",
         iteration,
@@ -712,10 +722,16 @@ def update_iteration_reflection(
         return s.replace("\\", "\\\\").replace("'", "''")
 
     payload = _esc(json.dumps(reflection_json))
-    spark.sql(
+    stmt = (
         f"UPDATE {fqn} SET reflection_json = '{payload}' "
         f"WHERE run_id = '{run_id}' AND iteration = {iteration} "
         f"AND eval_scope = '{eval_scope}'"
+    )
+    execute_delta_write_with_retry(
+        spark,
+        stmt,
+        operation_name="update_iteration_reflection",
+        table_name=fqn,
     )
     logger.info(
         "Updated reflection_json for run %s iteration %d scope=%s",
@@ -818,18 +834,30 @@ def mark_patches_rolled_back(
     patches_fqn = _fqn(catalog, schema, TABLE_PATCHES)
     iters_fqn = _fqn(catalog, schema, TABLE_ITERATIONS)
     safe_reason = reason.replace("'", "''")
-    spark.sql(
+    patches_stmt = (
         f"UPDATE {patches_fqn} SET rolled_back = true, "
         f"rolled_back_at = TIMESTAMP '{now}', "
         f"rollback_reason = '{safe_reason}' "
         f"WHERE run_id = '{run_id}' AND iteration = {iteration}"
     )
+    execute_delta_write_with_retry(
+        spark,
+        patches_stmt,
+        operation_name="mark_patches_rolled_back.patches",
+        table_name=patches_fqn,
+    )
     try:
-        spark.sql(
+        iterations_stmt = (
             f"UPDATE {iters_fqn} SET rolled_back = true, "
             f"rolled_back_at = TIMESTAMP '{now}', "
             f"rollback_reason = '{safe_reason}' "
             f"WHERE run_id = '{run_id}' AND iteration = {iteration}"
+        )
+        execute_delta_write_with_retry(
+            spark,
+            iterations_stmt,
+            operation_name="mark_patches_rolled_back.iterations",
+            table_name=iters_fqn,
         )
     except Exception:
         # Non-fatal: the patches-table stamp is still correct, so the
