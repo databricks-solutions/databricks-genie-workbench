@@ -2014,3 +2014,39 @@ class TestPhase6FinalSelection:
         selected = _select_diverse_example_sqls(candidates, target_count=3)
 
         assert len(selected) == 3
+
+
+class TestPhase6AppliedExampleReturn:
+    def test_unified_result_includes_accepted_examples(self, monkeypatch, patched_core):
+        from genie_space_optimizer.optimization import harness as h_mod
+
+        monkeypatch.setattr(
+            h_mod,
+            "_apply_proactive_example_sqls",
+            lambda *args, **kwargs: {
+                "applied": [
+                    {
+                        "patch": {
+                            "example_question": "Top regions",
+                            "example_sql": "SELECT region FROM cat.sch.sales LIMIT 5",
+                        }
+                    }
+                ]
+            },
+        )
+
+        result = h_mod._run_unified_example_sql_generation(
+            w=None,
+            spark=None,
+            run_id="r1",
+            space_id="s1",
+            config=_mk_config(),
+            metadata_snapshot=_mk_config()["_parsed_space"],
+            uc_columns=_mk_uc_columns(),
+            domain="sales",
+            catalog="cat",
+            schema="sch",
+            full_firewall_corpus=[],
+        )
+
+        assert "accepted_examples" in result

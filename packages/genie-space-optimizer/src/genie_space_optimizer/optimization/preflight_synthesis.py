@@ -2039,23 +2039,43 @@ def _apply_preflight_proposals(
     benchmarks: list[dict] | None,
     catalog: str,
     schema: str,
-) -> int:
+) -> dict:
     """Hand proposals to the shared applier; firewall runs inline.
 
     Separated into its own function so unit tests can stub out the
     harness-level applier without rebuilding the patch pipeline.
+
+    Returns ``{"applied_count": int, "applied_examples": list[dict]}``
+    so callers (and downstream join mining) can see which proposals
+    actually landed.
     """
     if not proposals:
-        return 0
+        return {"applied_count": 0, "applied_examples": []}
     from genie_space_optimizer.optimization.harness import (
         _apply_proactive_example_sqls,
     )
-    _apply_proactive_example_sqls(
+    apply_log = _apply_proactive_example_sqls(
         w, spark, run_id, space_id, proposals,
         metadata_snapshot, config, catalog, schema,
         benchmarks=benchmarks,
     )
-    return len(proposals)
+    applied_entries = (
+        apply_log.get("applied", []) if isinstance(apply_log, dict) else []
+    )
+    applied_examples = [
+        {
+            "example_question": str((entry.get("patch") or {}).get("example_question") or ""),
+            "example_sql": str((entry.get("patch") or {}).get("example_sql") or ""),
+            "usage_guidance": str((entry.get("patch") or {}).get("usage_guidance") or ""),
+            "patch_type": "add_example_sql",
+        }
+        for entry in applied_entries
+        if isinstance(entry, dict)
+    ]
+    return {
+        "applied_count": len(applied_entries),
+        "applied_examples": applied_examples,
+    }
 
 
 def run_preflight_example_synthesis(
@@ -2139,6 +2159,7 @@ def run_preflight_example_synthesis(
         "asset_coverage": {},
         "archetype_distribution": {},
         "skipped_reason": None,
+        "accepted_examples": [],
         # Operator diagnostics — populated after we run the planner so
         # ``_print_summary`` can explain WHY the generated count is low
         # without the operator having to grep debug logs.
@@ -2691,13 +2712,15 @@ def run_preflight_example_synthesis(
             asset_counts[aid] = asset_counts.get(aid, 0) + 1
 
     # ── Apply (firewall runs inline) ──────────────────────────────
-    applied = _apply_preflight_proposals(
+    apply_result = _apply_preflight_proposals(
         accepted[:need],
         w=w, spark=spark, run_id=run_id, space_id=space_id,
         metadata_snapshot=metadata_snapshot, config=config,
         benchmarks=benchmarks, catalog=catalog, schema=schema,
     )
 
+    applied = int(apply_result.get("applied_count", 0))
+    result["accepted_examples"] = apply_result.get("applied_examples", [])
     result["applied"] = applied
     result["rejected_by_gate"] = reject_by_gate
     result["archetype_distribution"] = archetype_counts

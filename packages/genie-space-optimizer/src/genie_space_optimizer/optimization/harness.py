@@ -2137,6 +2137,7 @@ def _run_unified_example_sql_generation(
         "rejection_counters": {},
         "unified_generated": 0,
         "archetype_fallback": False,
+        "accepted_examples": [],
     }
 
     try:
@@ -2206,12 +2207,24 @@ def _run_unified_example_sql_generation(
     ]
 
     try:
-        _apply_proactive_example_sqls(
+        apply_log = _apply_proactive_example_sqls(
             w, spark, run_id, space_id, proposals,
             metadata_snapshot, config, catalog, schema,
             benchmarks=full_firewall_corpus,
         )
-        out["applied"] = len(proposals)
+        applied_entries = (
+            apply_log.get("applied", []) if isinstance(apply_log, dict) else []
+        )
+        out["applied"] = len(applied_entries)
+        out["accepted_examples"] = [
+            {
+                "question": str((entry.get("patch") or {}).get("example_question") or ""),
+                "expected_sql": str((entry.get("patch") or {}).get("example_sql") or ""),
+                "source": "unified_example_sql",
+            }
+            for entry in applied_entries
+            if isinstance(entry, dict)
+        ]
     except Exception:
         logger.warning(
             "unified applier raised; proposals not deployed",
@@ -2473,7 +2486,7 @@ def _apply_proactive_example_sqls(
     catalog: str,
     schema: str,
     benchmarks: list[dict] | None = None,
-) -> None:
+) -> dict:
     """Apply mined benchmark example SQLs proactively via the Genie API.
 
     Bug #4 firewall — every proposal is passed through ``is_benchmark_leak``
@@ -2481,7 +2494,12 @@ def _apply_proactive_example_sqls(
     proposals are dropped with a counter increment. Callers are expected to
     pass the benchmark corpus so the firewall can run; older call sites
     that omit it degrade gracefully (no firewall, logs a warning).
+
+    Returns the applier ``apply_log`` dict so downstream join-mining and
+    observability can see which proposals actually landed.
     """
+    if not mined_proposals:
+        return {"applied": []}
     from genie_space_optimizer.optimization.applier import (
         proposals_to_patches,
         apply_patch_set,
@@ -2558,6 +2576,8 @@ def _apply_proactive_example_sqls(
             },
             catalog, schema,
         )
+
+    return apply_log
 
 
 # ── Stage 2.95: PROACTIVE INSTRUCTION SEEDING ────────────────────────
