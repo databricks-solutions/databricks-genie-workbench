@@ -256,6 +256,27 @@ def load_benchmarks_from_dataset(
     return []
 
 
+def assert_benchmark_handoff_visible(
+    *,
+    expected_total: int,
+    actual_total: int,
+    domain: str,
+    table_name: str,
+) -> None:
+    """Fail before baseline eval when preflight-published benchmark count is not visible."""
+    if expected_total <= 0:
+        return
+    if actual_total >= expected_total:
+        return
+    raise RuntimeError(
+        "Benchmark handoff mismatch before evaluation: "
+        f"preflight published {expected_total} benchmark(s) for domain={domain}, "
+        f"but baseline loaded {actual_total} from {table_name}. "
+        "This usually means the UC evaluation dataset table is stale or merge_records "
+        "has not become visible. Retry the load or fail before mlflow.genai.evaluate."
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # 2. Validation
 # ═══════════════════════════════════════════════════════════════════════

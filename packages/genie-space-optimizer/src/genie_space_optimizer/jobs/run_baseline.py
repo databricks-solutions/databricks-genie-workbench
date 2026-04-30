@@ -188,6 +188,7 @@ from pyspark.sql import SparkSession
 
 from genie_space_optimizer.jobs._helpers import _banner as _banner_base
 from genie_space_optimizer.jobs._helpers import _log as _log_base
+from genie_space_optimizer.optimization.benchmarks import assert_benchmark_handoff_visible
 from genie_space_optimizer.optimization.evaluation import load_benchmarks_from_dataset
 from genie_space_optimizer.optimization.harness import (
     baseline_setup_scorers,
@@ -232,6 +233,13 @@ if _warehouse_id:
 
 from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
 max_benchmark_count = int(dbutils.jobs.taskValues.get(taskKey="preflight", key="max_benchmark_count", default=str(MAX_BENCHMARK_COUNT)))
+expected_benchmark_count = int(
+    dbutils.jobs.taskValues.get(
+        taskKey="preflight",
+        key="benchmark_count",
+        default="0",
+    )
+)
 
 import mlflow
 mlflow.set_experiment(exp_name)
@@ -261,6 +269,12 @@ _log(
 
 uc_schema = f"{catalog}.{schema}"
 _all_benchmarks = load_benchmarks_from_dataset(spark, uc_schema, domain)
+assert_benchmark_handoff_visible(
+    expected_total=expected_benchmark_count,
+    actual_total=len(_all_benchmarks),
+    domain=domain,
+    table_name=f"{uc_schema}.genie_benchmarks_{domain}",
+)
 benchmarks = [b for b in _all_benchmarks if b.get("split") != "held_out"]
 _held_out_n = len(_all_benchmarks) - len(benchmarks)
 _banner("Loaded Benchmarks")
