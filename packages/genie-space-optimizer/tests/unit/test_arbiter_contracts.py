@@ -41,3 +41,27 @@ def test_expected_judge_set_is_fixed_and_ordered() -> None:
         "result_correctness",
         "arbiter",
     )
+
+
+def test_build_arbiter_quorum_shadow_records_non_decisive_signal() -> None:
+    from genie_space_optimizer.optimization.scorers.arbiter import (
+        build_arbiter_quorum_shadow,
+    )
+
+    shadow = build_arbiter_quorum_shadow(
+        arbiter_verdict="ground_truth_correct",
+        judge_values={
+            "result_correctness": "no",
+            "logical_accuracy": "yes",
+            "semantic_equivalence": "yes",
+        },
+    )
+
+    assert shadow == {
+        "enabled": True,
+        "decision_effect": "none_shadow_only",
+        "arbiter_verdict": "ground_truth_correct",
+        "supporting_yes_count": 2,
+        "supporting_no_count": 1,
+        "suggested_tiebreaker": "genie_shape_supported",
+    }

@@ -56,6 +56,38 @@ def is_arbiter_pass_verdict(verdict: str) -> bool:
     return str(verdict or "").strip().lower() in ARBITER_PASS_VERDICTS
 
 
+def build_arbiter_quorum_shadow(
+    *,
+    arbiter_verdict: str,
+    judge_values: dict[str, str],
+) -> dict[str, object]:
+    """Telemetry-only quorum signal alongside the arbiter verdict.
+
+    Records what the SQL-shape and result-correctness judges would have
+    said about Genie's answer. ``decision_effect`` is hardcoded to
+    ``"none_shadow_only"`` — see ``docs/scoring_v2_rollout.md`` for the
+    promotion contract.
+    """
+    yes_values = {"yes", "true", "1", "both_correct", "genie_correct"}
+    no_values = {"no", "false", "0", "ground_truth_correct", "neither_correct"}
+    yes_count = sum(1 for value in judge_values.values() if str(value).lower() in yes_values)
+    no_count = sum(1 for value in judge_values.values() if str(value).lower() in no_values)
+    if yes_count > no_count:
+        suggested = "genie_shape_supported"
+    elif no_count > yes_count:
+        suggested = "ground_truth_supported"
+    else:
+        suggested = "tie"
+    return {
+        "enabled": True,
+        "decision_effect": "none_shadow_only",
+        "arbiter_verdict": str(arbiter_verdict or ""),
+        "supporting_yes_count": yes_count,
+        "supporting_no_count": no_count,
+        "suggested_tiebreaker": suggested,
+    }
+
+
 def _parse_arbiter_verdict(rationale: str) -> str:
     """Extract verdict from arbiter feedback text."""
     text = rationale.lower()
@@ -350,6 +382,15 @@ def _make_arbiter_scorer(
                     failure_type="",
                     confidence=1.0,
                     comparison=cmp,
+                )
+            if isinstance(_meta, dict):
+                _meta["arbiter_quorum_shadow"] = build_arbiter_quorum_shadow(
+                    arbiter_verdict=verdict,
+                    judge_values={
+                        "result_correctness": str(cmp.get("result_correctness_value") or ""),
+                        "logical_accuracy": str(cmp.get("logical_accuracy_value") or ""),
+                        "semantic_equivalence": str(cmp.get("semantic_equivalence_value") or ""),
+                    },
                 )
             return Feedback(
                 name="arbiter",
