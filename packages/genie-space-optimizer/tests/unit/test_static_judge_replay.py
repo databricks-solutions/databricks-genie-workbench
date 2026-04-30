@@ -91,6 +91,7 @@ def test_static_replay_accepts_bounded_soft_to_hard_debt() -> None:
     assert result.acceptance.reason_code == "accepted_with_regression_debt"
     assert result.acceptance.target_fixed_qids == ("q002", "q005", "q009")
     assert result.acceptance.regression_debt_qids == ("q014",)
+    assert result.acceptance.soft_to_hard_regressed_qids == ("q014",)
     assert [p["proposal_id"] for p in result.kept_patches] == ["P_filter"]
 
 

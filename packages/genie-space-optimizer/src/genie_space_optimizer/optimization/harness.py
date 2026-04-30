@@ -8758,6 +8758,9 @@ def _run_lever_loop(
         )
     except Exception:
         logger.warning("Failed to initialize accepted baseline rows", exc_info=True)
+    # Task 8 — accumulator for regression-debt qids carried into the next
+    # strategist call. Updated only when an AG is accepted with debt.
+    _regression_debt_qids_for_next_iteration: tuple[str, ...] = ()
     # Tracks ``best_accuracy`` as carried into the *previous* iteration
     # (i.e. before that iteration's gate ran). Used by the post-hoc
     # baseline-drift diagnostic in ``_run_gate_checks`` to detect
@@ -10041,11 +10044,47 @@ def _run_lever_loop(
                         + _kv("Source clusters", sorted(_src_ids)) + "\n"
                         + _bar("-")
                     )
+                    # Task 8 — if regression debt is outstanding, drop any
+                    # buffered AG that does not target debt qids and force a
+                    # fresh strategist call instead.
+                    if _regression_debt_qids_for_next_iteration:
+                        _debt_set = set(_regression_debt_qids_for_next_iteration)
+                        _ag_qids = {
+                            str(q)
+                            for q in (ag.get("affected_questions", []) or [])
+                            if str(q)
+                        }
+                        if not (_debt_set & _ag_qids):
+                            ag = None
+                            pending_action_groups.clear()
+                            pending_strategy = None
+                            strategy = None
                 else:
                     pending_strategy = None
                     strategy = None
 
             if ag is None:
+                # Task 8 — pass debt qids into the strategist context and
+                # promote any live hard cluster covering them to the front.
+                if _regression_debt_qids_for_next_iteration:
+                    metadata_snapshot["_mandatory_regression_debt_qids"] = list(
+                        _regression_debt_qids_for_next_iteration
+                    )
+                    _debt_set = set(_regression_debt_qids_for_next_iteration)
+                    _debt_clusters = [
+                        c for c in _strategy_hard_clusters
+                        if _debt_set & {
+                            str(q) for q in (c.get("question_ids", []) or [])
+                            if str(q)
+                        }
+                    ]
+                    _debt_cluster_ids = {
+                        str(c.get("cluster_id") or "") for c in _debt_clusters
+                    }
+                    _strategy_hard_clusters = _debt_clusters + [
+                        c for c in _strategy_hard_clusters
+                        if str(c.get("cluster_id") or "") not in _debt_cluster_ids
+                    ]
                 strategy = _call_llm_for_adaptive_strategy(
                     clusters=_strategy_hard_clusters,
                     soft_signal_clusters=_strategy_soft_clusters,
@@ -12327,6 +12366,20 @@ def _run_lever_loop(
         _accepted_baseline_rows_for_control_plane = [
             dict(row) for row in _accepted_full_rows
         ]
+        # Task 8 — carry accepted regression debt into the next strategist
+        # input so the loop targets it before any new soft cluster.
+        _acceptance_detail = gate_result.get("acceptance_decision") or {}
+        _regression_debt_qids_for_next_iteration = tuple(
+            str(q)
+            for q in (_acceptance_detail.get("regression_debt_qids") or [])
+            if str(q)
+        )
+        if _regression_debt_qids_for_next_iteration:
+            print(
+                _section("REGRESSION DEBT CARRIED FORWARD", "-") + "\n"
+                + _kv("QIDs", list(_regression_debt_qids_for_next_iteration)) + "\n"
+                + _bar("-")
+            )
 
         new_refs = extract_reference_sqls(full_result)
         if new_refs:
