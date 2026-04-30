@@ -164,6 +164,31 @@ def hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(qids))
 
 
+def row_is_passing(row: dict) -> bool:
+    """Return True when a row is neither a hard failure nor an actionable soft signal."""
+    if not isinstance(row, dict):
+        return False
+    return not row_is_hard_failure(row) and not is_actionable_soft_signal_row(row)
+
+
+def row_is_actionable_soft(row: dict) -> bool:
+    """Return True when a row is an actionable soft-signal failure."""
+    if not isinstance(row, dict):
+        return False
+    return is_actionable_soft_signal_row(row)
+
+
+def row_status(row: dict) -> str:
+    """Return ``"hard"``, ``"soft"``, or ``"passing"`` for a row."""
+    if not isinstance(row, dict):
+        return "passing"
+    if row_is_hard_failure(row):
+        return "hard"
+    if row_is_actionable_soft(row):
+        return "soft"
+    return "passing"
+
+
 def _arbiter_value(row: dict) -> str:
     return str(
         row.get("feedback/arbiter/value")
@@ -317,6 +342,8 @@ class ControlPlaneAcceptance:
     out_of_target_regressed_qids: tuple[str, ...]
     regression_debt_qids: tuple[str, ...] = ()
     protected_regressed_qids: tuple[str, ...] = ()
+    soft_to_hard_regressed_qids: tuple[str, ...] = ()
+    passing_to_hard_regressed_qids: tuple[str, ...] = ()
 
 
 def _fmt_qids(qids: Iterable[str]) -> str:
@@ -335,7 +362,9 @@ def format_control_plane_acceptance_detail(
         f"target_still_hard_qids={_fmt_qids(decision.target_still_hard_qids)}; "
         f"out_of_target_regressed_qids={_fmt_qids(decision.out_of_target_regressed_qids)}; "
         f"regression_debt_qids={_fmt_qids(decision.regression_debt_qids)}; "
-        f"protected_regressed_qids={_fmt_qids(decision.protected_regressed_qids)}"
+        f"protected_regressed_qids={_fmt_qids(decision.protected_regressed_qids)}; "
+        f"soft_to_hard_regressed_qids={_fmt_qids(decision.soft_to_hard_regressed_qids)}; "
+        f"passing_to_hard_regressed_qids={_fmt_qids(decision.passing_to_hard_regressed_qids)}"
     )
 
 
@@ -348,6 +377,7 @@ def decide_control_plane_acceptance(
     post_rows: Iterable[dict],
     min_gain_pp: float = 0.0,
     max_new_hard_regressions: int = 1,
+    max_new_passing_to_hard_regressions: int = 0,
     protected_qids: Iterable[str] = (),
 ) -> ControlPlaneAcceptance:
     """Accept only causal post-arbiter improvement with no hard regressions.
@@ -382,10 +412,24 @@ def decide_control_plane_acceptance(
     protected_regressed = tuple(
         q for q in out_of_target_regressed if q in protected_set
     )
+    pre_by_qid = {
+        str(row.get("question_id") or row.get("id") or ""): row
+        for row in pre_rows_list
+        if isinstance(row, dict)
+    }
+    soft_to_hard = tuple(
+        q for q in out_of_target_regressed
+        if row_status(pre_by_qid.get(q, {})) == "soft"
+    )
+    passing_to_hard = tuple(
+        q for q in out_of_target_regressed
+        if row_status(pre_by_qid.get(q, {})) == "passing"
+    )
     has_gain = delta >= float(min_gain_pp) and delta > 0
     has_causal_fix = bool(target_fixed)
     collateral_bounded = (
         regression_count <= int(max_new_hard_regressions)
+        and len(passing_to_hard) <= int(max_new_passing_to_hard_regressions)
         and regression_count <= max(fixed_count, 1)
         and not protected_regressed
     )
@@ -438,4 +482,6 @@ def decide_control_plane_acceptance(
         out_of_target_regressed_qids=out_of_target_regressed,
         regression_debt_qids=regression_debt_qids,
         protected_regressed_qids=protected_regressed,
+        soft_to_hard_regressed_qids=soft_to_hard,
+        passing_to_hard_regressed_qids=passing_to_hard,
     )

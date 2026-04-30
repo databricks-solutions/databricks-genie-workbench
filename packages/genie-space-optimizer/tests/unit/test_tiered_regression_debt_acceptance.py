@@ -34,6 +34,9 @@ def test_accepts_ag2_shape_with_bounded_regression_debt() -> None:
         post_rows=post_rows,
         min_gain_pp=2.0,
         max_new_hard_regressions=1,
+        # Task 3 — q001 was previously passing, so accepting it as debt
+        # requires opting in via the passing→hard budget.
+        max_new_passing_to_hard_regressions=1,
         protected_qids=(),
     )
     assert decision.accepted is True

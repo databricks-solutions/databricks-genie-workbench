@@ -550,9 +550,13 @@ def test_decide_control_plane_acceptance_credits_target_fix_when_pre_rows_presen
     assert "q001" in decision.out_of_target_regressed_qids, (
         "q001 demonstrably moved from passing to hard — must be tracked as regression debt"
     )
+    # Task 3 — passing→hard regressions are rejected by default
+    # (max_new_passing_to_hard_regressions=0); the older debt-acceptance
+    # path applied only to soft→hard regressions.
     assert decision.reason_code in {
         "accepted_with_regression_debt",
         "out_of_target_hard_regression",
+        "rejected_unbounded_collateral",
     }
 
 
@@ -609,3 +613,105 @@ def test_decide_control_plane_acceptance_records_empty_pre_rows_as_distinct_reas
         ],
     )
     assert decision.reason_code == "missing_pre_rows"
+
+
+def test_control_plane_accepts_soft_to_hard_debt_when_budget_allows() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    pre_rows = [
+        {
+            "question_id": "q_fix_1",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+        {
+            "question_id": "q_fix_2",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+        {
+            "question_id": "q_soft",
+            "feedback/arbiter/value": "both_correct",
+            "feedback/schema_accuracy/value": "no",
+        },
+    ]
+    post_rows = [
+        {
+            "question_id": "q_fix_1",
+            "feedback/arbiter/value": "both_correct",
+            "feedback/result_correctness/value": "yes",
+        },
+        {
+            "question_id": "q_fix_2",
+            "feedback/arbiter/value": "both_correct",
+            "feedback/result_correctness/value": "yes",
+        },
+        {
+            "question_id": "q_soft",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+    ]
+
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=71.4,
+        candidate_accuracy=78.6,
+        target_qids=("q_fix_1", "q_fix_2"),
+        pre_rows=pre_rows,
+        post_rows=post_rows,
+        min_gain_pp=1.0,
+        max_new_hard_regressions=1,
+        max_new_passing_to_hard_regressions=0,
+    )
+
+    assert decision.accepted is True
+    assert decision.reason_code == "accepted_with_regression_debt"
+    assert decision.regression_debt_qids == ("q_soft",)
+    assert decision.soft_to_hard_regressed_qids == ("q_soft",)
+    assert decision.passing_to_hard_regressed_qids == ()
+
+
+def test_control_plane_rejects_passing_to_hard_regression_by_default() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    pre_rows = [
+        {
+            "question_id": "q_fix",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+        {
+            "question_id": "q_clean",
+            "feedback/arbiter/value": "both_correct",
+            "feedback/result_correctness/value": "yes",
+        },
+    ]
+    post_rows = [
+        {
+            "question_id": "q_fix",
+            "feedback/arbiter/value": "both_correct",
+            "feedback/result_correctness/value": "yes",
+        },
+        {
+            "question_id": "q_clean",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+    ]
+
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=50.0,
+        candidate_accuracy=75.0,
+        target_qids=("q_fix",),
+        pre_rows=pre_rows,
+        post_rows=post_rows,
+        min_gain_pp=1.0,
+    )
+
+    assert decision.accepted is False
+    assert decision.reason_code == "rejected_unbounded_collateral"
+    assert decision.passing_to_hard_regressed_qids == ("q_clean",)
