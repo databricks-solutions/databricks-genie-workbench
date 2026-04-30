@@ -11523,6 +11523,37 @@ def _run_lever_loop(
             )
 
         # ── Apply coordinated patch set ──────────────────────────────
+        try:
+            from genie_space_optimizer.optimization.proposal_shape import (
+                normalize_column_proposals,
+            )
+
+            _uc_columns_for_shape = (
+                metadata_snapshot.get("_uc_columns", [])
+                if isinstance(metadata_snapshot, dict)
+                else []
+            )
+            all_proposals, _shape_decisions = normalize_column_proposals(
+                all_proposals,
+                uc_columns=_uc_columns_for_shape,
+            )
+            if _shape_decisions:
+                print(
+                    _section(f"[{ag_id}] RCA COLUMN SHAPE NORMALIZATION", "-") + "\n"
+                    + _kv("Decisions", len(_shape_decisions)) + "\n"
+                    + "\n".join(
+                        f"|  - {d['proposal_id']} ({d['patch_type']}): "
+                        f"{d['decision']} reason={d['reason']} outputs={d['output_count']}"
+                        for d in _shape_decisions[:12]
+                    ) + "\n"
+                    + _bar("-")
+                )
+        except Exception:
+            logger.debug(
+                "RCA column proposal normalization failed (non-fatal)",
+                exc_info=True,
+            )
+
         patches = proposals_to_patches(all_proposals)
 
         # Phase 4.3: expand ``rewrite_instruction`` proposals into
