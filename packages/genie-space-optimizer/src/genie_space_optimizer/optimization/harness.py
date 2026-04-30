@@ -1747,6 +1747,107 @@ def _run_proactive_join_discovery(
 # ── Iterative join mining (runs after each accepted iteration) ────────
 
 
+def _example_sqls_to_positive_eval_rows(examples: list[dict]) -> list[dict]:
+    """Convert accepted example SQLs into synthetic eval rows for join mining.
+
+    Each example becomes a single row with ``arbiter/value`` set to
+    ``ground_truth_correct`` so the proven-joins pipeline treats the SQL
+    as known-good without invoking real arbiter scoring.
+    """
+    rows: list[dict] = []
+    for idx, ex in enumerate(examples or []):
+        if not isinstance(ex, dict):
+            continue
+        question = str(
+            ex.get("question")
+            or ex.get("example_question")
+            or ""
+        ).strip()
+        sql = str(
+            ex.get("expected_sql")
+            or ex.get("example_sql")
+            or ex.get("sql")
+            or ""
+        ).strip()
+        if not sql:
+            continue
+        qid = f"example_sql_{idx + 1}"
+        rows.append({
+            "question_id": qid,
+            "inputs/question": question,
+            "inputs/expected_sql": sql,
+            "request": {
+                "question": question,
+                "expected_sql": sql,
+            },
+            "response": {"response": ""},
+            "arbiter/value": "ground_truth_correct",
+            "feedback/arbiter/value": "ground_truth_correct",
+        })
+    return rows
+
+
+def _mine_and_apply_joins_from_example_sqls(
+    *,
+    w: "WorkspaceClient",
+    spark: "SparkSession",
+    run_id: str,
+    space_id: str,
+    metadata_snapshot: dict,
+    examples: list[dict],
+    catalog: str,
+    schema: str,
+) -> dict:
+    """Mine table-table joins from accepted example SQLs.
+
+    Reuses the proven-joins pipeline (``_mine_and_apply_proven_joins``)
+    by converting each accepted example into a positive synthetic eval
+    row and feeding the result into the same extraction → corroboration
+    → spec-build → semantics-filter → applier flow used after a passing
+    iteration.
+    """
+    rows = _example_sqls_to_positive_eval_rows(examples)
+    result: dict = {
+        "total_applied": 0,
+        "examples_scanned": len(examples or []),
+        "synthetic_rows": len(rows),
+        "source": "accepted_example_sqls",
+        "extraction_diagnostics": {},
+    }
+    if not rows:
+        return result
+
+    mined = _mine_and_apply_proven_joins(
+        w,
+        spark,
+        run_id,
+        space_id,
+        metadata_snapshot,
+        rows,
+        catalog,
+        schema,
+        iteration=0,
+    )
+    result.update(mined or {})
+    result["examples_scanned"] = len(examples or [])
+    result["synthetic_rows"] = len(rows)
+    result["source"] = "accepted_example_sqls"
+
+    _jm_lines = [_section("EXAMPLE SQL JOIN MINING", "-")]
+    _jm_lines.append(_kv("Accepted examples scanned", result["examples_scanned"]))
+    _jm_lines.append(_kv("Synthetic positive rows", result["synthetic_rows"]))
+    _diag = result.get("extraction_diagnostics", {}) or {}
+    if _diag:
+        _jm_lines.append(_kv("  SQL with JOIN", _diag.get("sql_with_join", "?")))
+        _jm_lines.append(_kv("  FROM unresolved", _diag.get("no_from_resolved", "?")))
+        _jm_lines.append(_kv("  Joined unresolved", _diag.get("no_joined_resolved", "?")))
+    _jm_lines.append(_kv("Skipped (metric_view)", result.get("joins_skipped_metric_view", 0)))
+    _jm_lines.append(_kv("New joins applied", result.get("total_applied", 0)))
+    _jm_lines.append(_bar("-"))
+    print("\n".join(_jm_lines))
+    return result
+
+
 def _mine_and_apply_proven_joins(
     w: "WorkspaceClient",
     spark: "SparkSession",
