@@ -377,7 +377,7 @@ def decide_control_plane_acceptance(
     post_rows: Iterable[dict],
     min_gain_pp: float = 0.0,
     max_new_hard_regressions: int = 1,
-    max_new_passing_to_hard_regressions: int = 0,
+    max_new_passing_to_hard_regressions: int | None = None,
     protected_qids: Iterable[str] = (),
 ) -> ControlPlaneAcceptance:
     """Accept only causal post-arbiter improvement with no hard regressions.
@@ -427,9 +427,17 @@ def decide_control_plane_acceptance(
     )
     has_gain = delta >= float(min_gain_pp) and delta > 0
     has_causal_fix = bool(target_fixed)
+    # Task 7 — when callers do not specify a tighter passing-to-hard cap,
+    # default to the overall ``max_new_hard_regressions`` budget. This
+    # prevents a single passing-to-hard regression from rejecting a
+    # net-positive AG that fixed its declared causal target.
+    if max_new_passing_to_hard_regressions is None:
+        effective_passing_to_hard_budget = int(max_new_hard_regressions)
+    else:
+        effective_passing_to_hard_budget = int(max_new_passing_to_hard_regressions)
     collateral_bounded = (
         regression_count <= int(max_new_hard_regressions)
-        and len(passing_to_hard) <= int(max_new_passing_to_hard_regressions)
+        and len(passing_to_hard) <= effective_passing_to_hard_budget
         and regression_count <= max(fixed_count, 1)
         and not protected_regressed
     )

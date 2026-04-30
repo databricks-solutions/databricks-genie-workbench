@@ -703,6 +703,11 @@ def test_control_plane_rejects_passing_to_hard_regression_by_default() -> None:
         },
     ]
 
+    # Task 7 — explicit ``max_new_passing_to_hard_regressions=0`` to opt
+    # into the strict legacy policy. The library default now derives
+    # the passing-to-hard cap from ``max_new_hard_regressions`` so a
+    # single bounded passing-to-hard regression no longer rejects a
+    # net-positive AG that fixed its declared causal target.
     decision = decide_control_plane_acceptance(
         baseline_accuracy=50.0,
         candidate_accuracy=75.0,
@@ -710,6 +715,7 @@ def test_control_plane_rejects_passing_to_hard_regression_by_default() -> None:
         pre_rows=pre_rows,
         post_rows=post_rows,
         min_gain_pp=1.0,
+        max_new_passing_to_hard_regressions=0,
     )
 
     assert decision.accepted is False
@@ -744,3 +750,100 @@ def test_acceptance_detail_includes_regression_tiers() -> None:
     assert "regression_debt_qids=q014" in detail
     assert "soft_to_hard_regressed_qids=q014" in detail
     assert "passing_to_hard_regressed_qids=(none)" in detail
+
+
+def test_ag4_passing_to_hard_within_overall_budget_is_accepted_with_debt() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    def _hard(qid: str) -> dict:
+        return {
+            "question_id": qid,
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        }
+
+    def _pass(qid: str) -> dict:
+        return {
+            "question_id": qid,
+            "feedback/arbiter/value": "both_correct",
+            "feedback/result_correctness/value": "yes",
+        }
+
+    pre_rows = [
+        _hard("gs_001"),
+        _pass("gs_021"),
+        _pass("gs_004"),
+        _pass("gs_018"),
+        _pass("gs_026"),
+    ]
+    post_rows = [
+        _pass("gs_001"),
+        _hard("gs_021"),
+        _pass("gs_004"),
+        _pass("gs_018"),
+        _pass("gs_026"),
+    ]
+
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=75.0,
+        candidate_accuracy=80.0,
+        target_qids=("gs_001",),
+        pre_rows=pre_rows,
+        post_rows=post_rows,
+        max_new_hard_regressions=1,
+    )
+
+    assert decision.accepted is True
+    assert decision.reason_code == "accepted_with_regression_debt"
+    assert decision.target_fixed_qids == ("gs_001",)
+    assert decision.target_still_hard_qids == ()
+    assert decision.passing_to_hard_regressed_qids == ("gs_021",)
+    assert decision.out_of_target_regressed_qids == ("gs_021",)
+    assert decision.regression_debt_qids == ("gs_021",)
+
+
+def test_passing_to_hard_budget_can_be_tightened_below_overall_budget() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    pre_rows = [
+        {
+            "question_id": "q1",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+        {
+            "question_id": "q2",
+            "feedback/arbiter/value": "both_correct",
+            "feedback/result_correctness/value": "yes",
+        },
+    ]
+    post_rows = [
+        {
+            "question_id": "q1",
+            "feedback/arbiter/value": "both_correct",
+            "feedback/result_correctness/value": "yes",
+        },
+        {
+            "question_id": "q2",
+            "feedback/arbiter/value": "ground_truth_correct",
+            "feedback/result_correctness/value": "no",
+        },
+    ]
+
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=50.0,
+        candidate_accuracy=51.0,
+        target_qids=("q1",),
+        pre_rows=pre_rows,
+        post_rows=post_rows,
+        max_new_hard_regressions=1,
+        max_new_passing_to_hard_regressions=0,
+    )
+
+    assert decision.accepted is False
+    assert decision.reason_code == "rejected_unbounded_collateral"
+    assert decision.passing_to_hard_regressed_qids == ("q2",)
