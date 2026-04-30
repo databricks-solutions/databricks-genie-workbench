@@ -6535,8 +6535,8 @@ def _collect_related_tables_by_identifier(
     Returns ``{lower_identifier: [{table, join_on}, …]}``. ``join_on`` is the
     rendered ``L.col = R.col`` form when extractable, otherwise the spec's
     ``description``. Surfacing this in the schema brief tells the LLM that
-    e.g. ``mv_esr_dim_date`` is reached via JOIN, not as a struct column on
-    a sibling MV.
+    e.g. a sibling ``mv_<domain>_dim_<entity>`` is reached via JOIN, not
+    as a struct column on a sibling MV.
     """
     ds = metadata_snapshot.get("data_sources", {}) or {}
     if not isinstance(ds, dict):
@@ -11021,6 +11021,33 @@ def _proposal_from_structural_sql_candidate(
     }
 
 
+def _lever6_reject_payload(
+    *,
+    reason: str,
+    cluster_id: str,
+    target_table: str = "",
+    detail: Any = "",
+) -> dict[str, Any]:
+    """Structured payload for Lever-6 rejection MLflow spans.
+
+    Reason values are intentionally a closed enum so trace dashboards can
+    group rejection causes:
+      - ``llm_call_failed``
+      - ``unparseable_json``
+      - ``invalid_snippet_type``
+      - ``empty_sql``
+      - ``invalid_identifiers``
+      - ``snippet_validation_failed``
+    """
+    return {
+        "rejected": True,
+        "reject_reason": reason,
+        "cluster_id": str(cluster_id or ""),
+        "target_table": str(target_table or ""),
+        "detail": detail,
+    }
+
+
 def _generate_lever6_proposal(
     cluster: dict,
     metadata_snapshot: dict,
@@ -12070,11 +12097,20 @@ def _auto_display_name(sql: str, snippet_type: str) -> str:
 # Lever 6 proposals, and prose mining) all produce ``display_name`` /
 # ``instruction`` metadata. Without a deterministic post-processing
 # step, names like ``Month-to-Date Filter`` end up applied to multiple
-# domain-specific tables in the same Genie Space (e.g. 7NOW vs ESR
-# fact tables), which makes Genie's snippet selection ambiguous.
+# domain-specific tables in the same Genie Space (e.g. ``mv_<domain_a>_*``
+# vs ``mv_<domain_b>_*`` fact tables), which makes Genie's snippet
+# selection ambiguous.
 #
 # The helpers below are the enforcement layer. Prompts can drift, but
-# this code runs unconditionally after enrichment.
+# this code runs unconditionally after enrichment. Pattern matching is
+# delegated to :mod:`genie_space_optimizer.common.naming` so the
+# leaf-prefix vocabulary stays in one place.
+
+from genie_space_optimizer.common.naming import (  # noqa: E402 — sibling helper
+    DEFAULT_DOMAIN_PREFIX_RE as _MV_DOMAIN_PREFIX_RE,  # backwards-compat alias
+    domain_qualifier_from_identifier as _domain_qualifier_from_identifier_impl,
+    schema_qualifier_from_identifier,
+)
 
 # Regex that finds three-or-more-part fully-qualified identifiers (e.g.
 # ``catalog.schema.table``). Anchored on word boundaries so it doesn't
@@ -12082,16 +12118,6 @@ def _auto_display_name(sql: str, snippet_type: str) -> str:
 # segment with a table name.
 _FQ_IDENTIFIER_RE = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){2,})\b"
-)
-
-# Pattern that pulls the compact domain qualifier out of an
-# unqualified table name like ``mv_7now_fact_sales`` →
-# ``7now`` / ``mv_esr_dim_date`` → ``esr``. The heuristic is
-# intentionally conservative — it only fires for ``mv_<domain>_*``
-# names because that's the convention used by the metric views in
-# our Genie Spaces.
-_MV_DOMAIN_PREFIX_RE = re.compile(
-    r"^mv_(?P<domain>[A-Za-z0-9]+)_", re.IGNORECASE
 )
 
 
@@ -12118,23 +12144,35 @@ def _extract_primary_table_identifier(sql: str) -> str:
     return full
 
 
-def _domain_qualifier_from_identifier(identifier: str) -> str:
+def _domain_qualifier_from_identifier(
+    identifier: str,
+    *,
+    distinct_schemas: int = 0,
+) -> str:
     """Return the compact source qualifier for ``identifier``.
 
-    Recognises ``mv_<domain>_*`` metric-view names and emits the
-    ``<domain>`` token in upper-case (``mv_7now_fact_sales`` →
-    ``7NOW``, ``mv_esr_dim_date`` → ``ESR``). Generic table names
-    receive no qualifier so we don't add noisy artificial prefixes
-    like ``T `` to a ``Total Revenue`` measure on a plain table.
+    Resolves in two passes:
+
+    1. Leaf-prefix match against the broadened
+       ``mv|vw|f|d|stg|...|view_<domain>_*`` vocabulary in
+       :mod:`common.naming` (plus any user-supplied patterns from
+       ``GSO_DOMAIN_TABLE_PATTERNS``).
+    2. Schema fallback when no leaf prefix matches AND the space has
+       multiple distinct schemas (``distinct_schemas >= 2``). The
+       fallback uses the schema portion of the dotted identifier so
+       e.g. ``cat.orders.fact_lines`` becomes ``ORDERS``.
+
+    Generic table names with no recognized prefix in a single-schema
+    space receive no qualifier so we don't add noisy artificial
+    prefixes like ``T `` to a ``Total Revenue`` measure on a plain
+    ``cat.sch.t`` table.
     """
-    ident = (identifier or "").strip()
-    if not ident:
-        return ""
-    short = ident.rsplit(".", 1)[-1].lower()
-    match = _MV_DOMAIN_PREFIX_RE.match(short)
-    if not match:
-        return ""
-    return match.group("domain").upper()
+    qualifier = _domain_qualifier_from_identifier_impl(identifier)
+    if qualifier:
+        return qualifier
+    return schema_qualifier_from_identifier(
+        identifier, distinct_schemas=distinct_schemas
+    )
 
 
 def _qualify_sql_snippet_metadata(
@@ -12146,9 +12184,10 @@ def _qualify_sql_snippet_metadata(
 
     Applies the SQL Expression naming disambiguation policy:
 
-    - Adds the compact domain qualifier (e.g. ``7NOW``) to
-      ``display_name`` when the candidate references a domain-specific
-      table and the name does not already start with the qualifier.
+    - Adds the compact domain qualifier (e.g. ``ORDERS`` extracted
+      from ``mv_orders_fact_lines``) to ``display_name`` when the
+      candidate references a domain-specific table and the name does
+      not already start with the qualifier.
     - Backfills an empty / blank ``instruction`` so Genie picks up the
       "when to use this" hint with source-aware text.
     - Returns a new dict so callers can safely substitute the
@@ -12259,8 +12298,8 @@ def _discover_schema_sql_expressions(
     seen_sqls: set[str] = set()
 
     # Visit tables AND metric_views — both can contribute mining-worthy
-    # numeric/date columns on real spaces (your `mv_esr_fact_sales`,
-    # `mv_esr_dim_date`, etc.). Use the shared semantics split so
+    # numeric/date columns on real spaces (e.g. ``mv_<domain>_fact_<entity>``
+    # plus ``mv_<domain>_dim_date``). Use the shared semantics split so
     # table-shelf metric views are reclassified before SQL seeding.
     try:
         from genie_space_optimizer.common.asset_semantics import (
@@ -12371,9 +12410,10 @@ def _discover_schema_sql_expressions(
                         })
 
     # Apply the deterministic naming policy now that ``target_table``
-    # is attached. For domain-specific tables (``mv_7now_*``,
-    # ``mv_esr_*``, …) this prefixes the display name with the
-    # qualifier; generic tables are left untouched.
+    # is attached. For domain-specific tables (``mv_<domain>_*``,
+    # ``vw_<domain>_*``, ``f_<domain>_*``, …) this prefixes the
+    # display name with the qualifier; generic tables are left
+    # untouched.
     return [_qualify_sql_snippet_metadata(c) for c in candidates]
 
 
@@ -12438,8 +12478,9 @@ def _enrich_candidates_with_llm(
 
     # Run the deterministic qualifier as a post-processing pass, so a
     # generic LLM-supplied ``display_name`` (e.g. ``Month-to-Date
-    # Filter``) for a 7NOW SQL still ends up qualified. This is the
-    # safety net for prompt drift / failures and is cheap to run.
+    # Filter``) for a domain-specific SQL still ends up qualified.
+    # This is the safety net for prompt drift / failures and is cheap
+    # to run.
     return [_qualify_sql_snippet_metadata(c) for c in candidates]
 
 
