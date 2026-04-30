@@ -741,9 +741,10 @@ def _call_llm_for_scoring(
 
 
 # Allow backtick-quoted identifiers to start with a digit (e.g.
-# Databricks measure names like ``7now_orders_diff_mtd``). When the
-# column or alias is wrapped in backticks the leading digit is legal;
-# unquoted identifiers still must start with a letter or underscore.
+# Databricks measure names like ``5g_orders_diff_mtd`` or any
+# digit-prefixed business identifier). When the column or alias is
+# wrapped in backticks the leading digit is legal; unquoted
+# identifiers still must start with a letter or underscore.
 _MEASURE_ALIAS_COLLISION_PATTERN = re.compile(
     r"MEASURE\s*\(\s*(?:`(\w+)`|([A-Za-z_]\w*))\s*\)"
     r"\s+AS\s+(?:`(\w+)`|([A-Za-z_]\w*))",
@@ -9280,7 +9281,7 @@ def _attempt_sql_correction(
         # validation. This closes the gap the field log surfaced:
         # the unified pipeline rejected candidates with bare table
         # stems (e.g. ``FROM dim_date`` when the allowlist held
-        # ``cat.sch.mv_esr_dim_date``) even though the preflight
+        # ``cat.sch.mv_<domain>_dim_date``) even though the preflight
         # pipeline would have repaired them deterministically. Now
         # both pipelines handle the same failure shape identically.
         sql_str = str(sql)
@@ -10448,6 +10449,49 @@ _SQL_REFERENCE_PATTERN = re.compile(
     r"|[A-Za-z_]\w*\.[A-Za-z_]\w*\.[A-Za-z_]\w*)",
     re.IGNORECASE,
 )
+
+_SQL_FQ_ROUTINE_CALL_PATTERN = re.compile(
+    r"(?<![\w`])"
+    r"(`[^`]+`|[A-Za-z_]\w*)\s*\.\s*"
+    r"(`[^`]+`|[A-Za-z_]\w*)\s*\.\s*"
+    r"(`[^`]+`|[A-Za-z_]\w*)\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _clean_sql_identifier_part(value: str) -> str:
+    return (value or "").strip().strip("`").lower()
+
+
+def _extract_fully_qualified_routine_calls(sql: str) -> set[str]:
+    """Return fully qualified routine calls like ``catalog.schema.name(``.
+
+    The extractor is intentionally catalog/schema-independent. Benchmark
+    provenance must not depend on the optimizer's current SQL context because
+    the failing 7now case used a valid physical UC routine that was not a
+    Genie Space asset.
+    """
+    calls: set[str] = set()
+    for match in _SQL_FQ_ROUTINE_CALL_PATTERN.finditer(sql or ""):
+        catalog = _clean_sql_identifier_part(match.group(1))
+        schema = _clean_sql_identifier_part(match.group(2))
+        name = _clean_sql_identifier_part(match.group(3))
+        if catalog and schema and name:
+            calls.add(f"{catalog}.{schema}.{name}")
+    return calls
+
+
+def _benchmark_space_routine_violations(sql: str, config: dict) -> list[str]:
+    """Return fully-qualified routine calls not registered in the Genie Space."""
+    calls = _extract_fully_qualified_routine_calls(sql)
+    if not calls:
+        return []
+    allowed = _space_function_candidates(config)
+    violations: list[str] = []
+    for call in sorted(calls):
+        if not (_identifier_candidates(call) & allowed):
+            violations.append(call)
+    return violations
 
 
 def _normalize_name(value: str) -> str:
