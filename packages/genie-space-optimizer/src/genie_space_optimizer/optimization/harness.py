@@ -12097,6 +12097,9 @@ def _run_lever_loop(
                     "Selected proposal_ids",
                     sorted(pid for pid in _selected_ids if pid) or "(none)",
                 ) + "\n"
+                + _kv("Dropped count", len(_dropped_decisions)) + "\n"
+                + _kv("Dropped shown", min(len(_dropped_decisions), 8)) + "\n"
+                + _kv("Dropped truncated", len(_dropped_decisions) > 8) + "\n"
                 + _kv(
                     "Dropped proposal_ids",
                     [d.get("proposal_id") for d in _dropped_decisions[:8]]

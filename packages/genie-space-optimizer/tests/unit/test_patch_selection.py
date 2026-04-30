@@ -363,3 +363,16 @@ def test_non_behavior_failure_keeps_existing_causal_ranking() -> None:
     )
 
     assert [p["proposal_id"] for p in selected] == ["P001#1"]
+
+
+def test_harness_patch_cap_log_discloses_dropped_count_and_truncation() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    source = inspect.getsource(harness._run_lever_loop)
+    cap_idx = source.index("PATCH CAP APPLIED (causal-first)")
+    snippet = source[cap_idx - 800 : cap_idx + 1200]
+    assert "Dropped count" in snippet
+    assert "Dropped shown" in snippet
+    assert "Dropped truncated" in snippet
