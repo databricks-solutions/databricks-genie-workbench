@@ -568,6 +568,16 @@ def _ensure_sql_context(spark: SparkSession, catalog: str, schema: str) -> None:
 # ── Result Dataclass ──────────────────────────────────────────────────
 
 
+class FailedRollbackVerification(RuntimeError):
+    """Raised after rollback leaves live Genie config in an untrusted state.
+
+    Task 2 — once the parsed-config rollback verifier reports a real
+    mismatch we cannot continue the run safely: subsequent AGs would
+    re-cluster against a polluted live space. Raise terminally; the run
+    is marked ``FAILED`` with ``convergence_reason="failed_rollback_verification"``.
+    """
+
+
 @dataclass
 class OptimizationResult:
     """Outcome of an optimization run (used by convenience function)."""
@@ -8787,6 +8797,39 @@ def _run_lever_loop(
     # Task 8 — accumulator for regression-debt qids carried into the next
     # strategist call. Updated only when an AG is accepted with debt.
     _regression_debt_qids_for_next_iteration: tuple[str, ...] = ()
+
+    # Task 2 — surface the trigger-time baseline snapshot ownership
+    # contract. The run-level ``config_snapshot`` belongs in the
+    # ``genie_opt_runs`` row, written by the app backend before the
+    # lever loop starts. If it is missing here we degrade to a
+    # one-shot bounded API fallback so the next operator reading the
+    # log can tell the contract was violated.
+    try:
+        _run_row = load_run(spark, run_id, catalog, schema) or {}
+    except Exception:
+        _run_row = {}
+    if not _run_row.get("config_snapshot"):
+        logger.warning(
+            "RUN-LEVEL CONFIG SNAPSHOT MISSING for run_id=%s. The run-level "
+            "config snapshot should have been captured at trigger time by the app "
+            "backend before the lever loop started. Falling back to a one-shot "
+            "API fetch; this will fail on serverless if the runtime identity "
+            "lacks Genie Space 'Can Edit' permission.",
+            run_id,
+        )
+        try:
+            from genie_space_optimizer.optimization.snapshot_contract import (
+                capture_pre_ag_snapshot,
+            )
+            _fallback_baseline = capture_pre_ag_snapshot(
+                w=w, space_id=space_id, ag_id="run_baseline"
+            )
+        except Exception:
+            logger.exception(
+                "Run-level baseline snapshot fallback fetch failed; downstream "
+                "rollback verification will fail terminally."
+            )
+            _fallback_baseline = None
     # Tracks ``best_accuracy`` as carried into the *previous* iteration
     # (i.e. before that iteration's gate ran). Used by the post-hoc
     # baseline-drift diagnostic in ``_run_gate_checks`` to detect
@@ -11721,6 +11764,44 @@ def _run_lever_loop(
                 + _bar("-")
             )
 
+        # Task 2 — capture the live parsed Genie config immediately before
+        # patch application. This in-memory snapshot becomes the source of
+        # truth for both ``rollback`` and ``verify_rollback_restored`` so
+        # the rollback contract does not depend on Delta state that may be
+        # missing or stale.
+        from genie_space_optimizer.optimization.snapshot_contract import (
+            capture_pre_ag_snapshot,
+        )
+
+        _pre_ag_snapshot_capture = capture_pre_ag_snapshot(
+            w=w,
+            space_id=space_id,
+            ag_id=ag_id,
+        )
+        if not _pre_ag_snapshot_capture.get("captured"):
+            reason = _pre_ag_snapshot_capture.get("reason", "pre_ag_snapshot_failed")
+            logger.error(
+                "AG %s: could not capture pre-AG snapshot before apply "
+                "(reason=%s). Skipping patch application.",
+                ag_id,
+                reason,
+            )
+            print(
+                _section(f"[{ag_id}] SKIP APPLY: PRE-AG SNAPSHOT FAILED", "!") + "\n"
+                + _kv("Reason", reason) + "\n"
+                + _bar("!")
+            )
+            pending_action_groups = []
+            pending_strategy = None
+            continue
+
+        metadata_snapshot = _pre_ag_snapshot_capture["snapshot"]
+        logger.info(
+            "pre-AG snapshot captured for AG %s digest=%s",
+            ag_id,
+            _pre_ag_snapshot_capture.get("digest", ""),
+        )
+
         apply_log = apply_patch_set(
             w, space_id, patches, metadata_snapshot, apply_mode=apply_mode,
         )
@@ -11989,21 +12070,36 @@ def _run_lever_loop(
                 if not _restore_decision.get("verified", True):
                     logger.error(
                         "AG %s: verify_rollback_restored returned not verified "
-                        "(reason=%s) — Genie Space state may not match "
-                        "pre-iteration baseline. Halting further AGs.",
+                        "(reason=%s, first_diff=%s). Genie Space state may not "
+                        "match pre-iteration baseline. Failing run terminally.",
                         ag_id,
                         _restore_decision.get("reason", "unknown"),
+                        _restore_decision.get("first_diff_path", "(none)"),
                     )
                     print(
                         _section("ROLLBACK VERIFICATION FAILED", "-") + "\n"
                         + _kv("AG", ag_id) + "\n"
                         + _kv("Reason", _restore_decision.get("reason", "unknown")) + "\n"
+                        + _kv("Expected digest", _restore_decision.get("expected_digest", "(none)")) + "\n"
+                        + _kv("Live digest", _restore_decision.get("live_digest", "(none)")) + "\n"
+                        + _kv("First diff", _restore_decision.get("first_diff_path", "(none)")) + "\n"
                         + "|  Genie Space state did not match pre-iteration snapshot.\n"
-                        + "|  Investigate metadata persistence; halting further AGs.\n"
+                        + "|  Failing the run terminally; subsequent AGs cannot trust live state.\n"
                         + _bar("-")
                     )
-                    pending_action_groups = []
-                    pending_strategy = None
+                    update_run_status(
+                        spark,
+                        run_id,
+                        catalog,
+                        schema,
+                        status="FAILED",
+                        convergence_reason="failed_rollback_verification",
+                    )
+                    raise FailedRollbackVerification(
+                        json.dumps(_restore_decision, default=str)[:1000]
+                    )
+            except FailedRollbackVerification:
+                raise
             except Exception:
                 logger.warning(
                     "verify_rollback_restored raised — treating as non-fatal "

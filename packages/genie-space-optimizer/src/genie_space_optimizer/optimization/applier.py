@@ -4354,27 +4354,24 @@ def verify_rollback_restored(
     space_id: str,
     expected_snapshot: dict,
 ) -> dict:
-    """Fetch the live space and confirm rollback restored the pre-AG config."""
-    if w is None:
-        return {"verified": True, "reason": "no_workspace_client"}
-    try:
-        live = fetch_space_config(w, space_id)
-    except Exception as exc:
-        logger.exception("Failed to fetch Genie Space after rollback")
-        return {
-            "verified": False,
-            "reason": "fetch_failed",
-            "error": str(exc)[:500],
-        }
+    """Fetch the live space and confirm rollback restored the pre-AG config.
 
-    expected_norm = _canonical_for_rollback_compare(expected_snapshot or {})
-    live_norm = _canonical_for_rollback_compare(live or {})
-    if live_norm == expected_norm:
-        return {"verified": True, "reason": "matched_pre_snapshot"}
-    return {
-        "verified": False,
-        "reason": "live_config_differs_from_pre_snapshot",
-    }
+    Delegates to ``snapshot_contract.compare_live_to_expected_snapshot`` so
+    expected and live both flow through the same exportable / sorted Genie
+    config normalization. The legacy ``_canonical_for_rollback_compare``
+    diff treated the full API response as the rollback contract, which
+    flagged false mismatches whenever runtime metadata
+    (``_uc_columns``, ``_data_profile``, etc.) drifted.
+    """
+    from genie_space_optimizer.optimization.snapshot_contract import (
+        compare_live_to_expected_snapshot,
+    )
+
+    return compare_live_to_expected_snapshot(
+        w=w,
+        space_id=space_id,
+        expected_snapshot=expected_snapshot,
+    )
 
 
 def verify_dual_persistence(applied_patches: list[dict]) -> list[dict]:
