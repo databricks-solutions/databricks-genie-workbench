@@ -2719,8 +2719,12 @@ def run_preflight_example_synthesis(
         benchmarks=benchmarks, catalog=catalog, schema=schema,
     )
 
-    applied = int(apply_result.get("applied_count", 0))
-    result["accepted_examples"] = apply_result.get("applied_examples", [])
+    if isinstance(apply_result, dict):
+        applied = int(apply_result.get("applied_count", 0))
+        result["accepted_examples"] = apply_result.get("applied_examples", [])
+    else:
+        applied = int(apply_result or 0)
+        result["accepted_examples"] = []
     result["applied"] = applied
     result["rejected_by_gate"] = reject_by_gate
     result["archetype_distribution"] = archetype_counts
