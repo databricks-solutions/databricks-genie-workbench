@@ -161,7 +161,9 @@ def test_harness_patch_cap_uses_causal_selector_not_diversity_first_logic() -> N
 
     src = inspect.getsource(harness)
 
-    assert "select_causal_patch_cap" in src
+    # Task 5 — the harness migrated to the target-aware variant which
+    # preserves one patch per AG target QID before global causal rank.
+    assert "select_target_aware_causal_patch_cap" in src
     assert "Diversity-aware cap: preserve one patch per distinct lever" not in src
     assert "PATCH CAP APPLIED (causal-first)" in src
 
