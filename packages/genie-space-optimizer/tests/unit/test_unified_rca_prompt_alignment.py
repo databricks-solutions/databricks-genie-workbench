@@ -242,3 +242,68 @@ def test_preflight_example_synthesis_prompt_renders_with_double_brace_substituti
     assert "{{ slice_tables }}" not in rendered
     assert "cat.sch.sales" in rendered
     assert '"example_question"' in rendered
+
+
+def test_build_context_data_surfaces_mandatory_regression_debt_qids() -> None:
+    from genie_space_optimizer.optimization.optimizer import _build_context_data
+
+    metadata_snapshot = {
+        "_mandatory_regression_debt_qids": ["q014", "q007"],
+        "_data_profile": {},
+        "instructions": {
+            "text_instructions": [{"content": "Use sales reports."}],
+            "join_specs": [],
+            "sql_snippets": [],
+            "example_question_sqls": [],
+        },
+        "data_sources": {"tables": [], "metric_views": []},
+    }
+
+    context = _build_context_data(
+        clusters=[],
+        soft_signal_clusters=[],
+        metadata_snapshot=metadata_snapshot,
+        reflection_buffer=[],
+        priority_ranking=[],
+        blame_set=None,
+        success_summary="10 of 14 benchmarks pass.",
+        reflection_text="",
+        persistence_text="",
+        proven_patterns_text="",
+        suggestions_text="",
+    )
+
+    assert context["mandatory_regression_debt_qids"] == ["q014", "q007"]
+
+
+def test_build_context_data_returns_none_when_no_regression_debt() -> None:
+    from genie_space_optimizer.optimization.optimizer import _build_context_data
+
+    for empty_value in (None, [], ()):
+        metadata_snapshot = {
+            "_mandatory_regression_debt_qids": empty_value,
+            "_data_profile": {},
+            "instructions": {
+                "text_instructions": [],
+                "join_specs": [],
+                "sql_snippets": [],
+                "example_question_sqls": [],
+            },
+            "data_sources": {"tables": [], "metric_views": []},
+        }
+
+        context = _build_context_data(
+            clusters=[],
+            soft_signal_clusters=[],
+            metadata_snapshot=metadata_snapshot,
+            reflection_buffer=[],
+            priority_ranking=[],
+            blame_set=None,
+            success_summary="(no progress yet)",
+            reflection_text="",
+            persistence_text="",
+            proven_patterns_text="",
+            suggestions_text="",
+        )
+
+        assert context["mandatory_regression_debt_qids"] is None

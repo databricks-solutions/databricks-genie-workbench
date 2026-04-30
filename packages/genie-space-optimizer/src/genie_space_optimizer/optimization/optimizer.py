@@ -7444,6 +7444,10 @@ def _build_context_data(
 
     return {
         "progress_summary": success_summary,
+        "mandatory_regression_debt_qids": (
+            list(metadata_snapshot.get("_mandatory_regression_debt_qids") or [])
+            or None
+        ),
         "priority_analysis": [
             {
                 "rank": c.get("rank", "?"),
