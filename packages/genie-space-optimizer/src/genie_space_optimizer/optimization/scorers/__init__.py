@@ -90,6 +90,19 @@ def build_scorer_context(
     return "\n".join(parts)
 
 
+EXPECTED_JUDGE_SET = (
+    "syntax_validity",
+    "schema_accuracy",
+    "logical_accuracy",
+    "semantic_equivalence",
+    "completeness",
+    "response_quality",
+    "asset_routing",
+    "result_correctness",
+    "arbiter",
+)
+
+
 def make_all_scorers(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -111,7 +124,7 @@ def make_all_scorers(
     from .semantic_equivalence import _make_semantic_equivalence_judge
     from .syntax_validity import _make_syntax_validity_scorer
 
-    return [
+    scorers = [
         _make_syntax_validity_scorer(spark, catalog, schema),
         _make_schema_accuracy_judge(w, catalog, schema),
         _make_logical_accuracy_judge(w, catalog, schema),
@@ -122,6 +135,8 @@ def make_all_scorers(
         result_correctness_scorer,
         _make_arbiter_scorer(w, catalog, schema, loaded_prompts, instruction_context=instruction_context),
     ]
+    assert len(scorers) == len(EXPECTED_JUDGE_SET)
+    return scorers
 
 
 def make_repeatability_scorers() -> list:
@@ -138,6 +153,7 @@ def make_repeatability_scorers() -> list:
 
 
 __all__ = [
+    "EXPECTED_JUDGE_SET",
     "asset_routing_scorer",
     "build_scorer_context",
     "repeatability_scorer",

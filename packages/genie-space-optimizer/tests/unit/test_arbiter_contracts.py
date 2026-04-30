@@ -25,3 +25,19 @@ def test_is_arbiter_pass_verdict() -> None:
     assert is_arbiter_pass_verdict("ground_truth_correct") is False
     assert is_arbiter_pass_verdict("neither_correct") is False
     assert is_arbiter_pass_verdict("skipped") is False
+
+
+def test_expected_judge_set_is_fixed_and_ordered() -> None:
+    from genie_space_optimizer.optimization.scorers import EXPECTED_JUDGE_SET
+
+    assert EXPECTED_JUDGE_SET == (
+        "syntax_validity",
+        "schema_accuracy",
+        "logical_accuracy",
+        "semantic_equivalence",
+        "completeness",
+        "response_quality",
+        "asset_routing",
+        "result_correctness",
+        "arbiter",
+    )
