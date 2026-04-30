@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from "react"
-import { X, Search, ChevronRight, ChevronDown, Check, Loader2, CheckSquare } from "lucide-react"
+import { useState, useEffect, useCallback, useMemo, useRef } from "react"
+import { X, Search, ChevronRight, ChevronDown, Check, Loader2, CheckSquare, Home } from "lucide-react"
 import { discoverCatalogs, discoverSchemas, discoverTables, searchTables } from "@/lib/api"
 
 const MAX_TABLES = 30
+const SEARCH_DEBOUNCE_MS = 400
+const MIN_SEARCH_LENGTH = 2
 
 interface TableBrowserDrawerProps {
   open: boolean
@@ -14,6 +16,7 @@ interface TableBrowserDrawerProps {
 interface CatalogNode {
   name: string
   comment?: string | null
+  is_home?: boolean
 }
 
 interface SchemaNode {
@@ -51,11 +54,66 @@ export function TableBrowserDrawer({
   const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState<Record<string, boolean>>({})
 
-  // Search state
+  // Search state — single debounced server-side search, rendered as a tree
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<TableNode[] | null>(null)
-  const [searchGrouped, setSearchGrouped] = useState<Record<string, TableNode[]>>({})
+  const [searchTree, setSearchTree] = useState<SearchTreeCatalog[]>([])
   const [searching, setSearching] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+
+  // Debounced search — fires automatically as user types
+  useEffect(() => {
+    const q = searchQuery.trim()
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
+    }
+
+    if (q.length < MIN_SEARCH_LENGTH) {
+      setSearchResults(null)
+      setSearchTree([])
+      setSearching(false)
+      return
+    }
+
+    setSearching(true)
+
+    debounceRef.current = setTimeout(async () => {
+      const controller = new AbortController()
+      abortRef.current = controller
+      try {
+        const keywords = q.split(/\s+/)
+        const res = await searchTables(keywords)
+        if (controller.signal.aborted) return
+        const tableNodes: TableNode[] = (res.tables || []).map((t) => ({
+          full_name: t.full_name,
+          name: t.full_name.split(".").pop() || t.full_name,
+          comment: t.comment || null,
+        }))
+        setSearchResults(tableNodes)
+        const homeCatalogName = catalogs.find((c) => c.is_home)?.name ?? ""
+        setSearchTree(buildSearchTree(tableNodes, homeCatalogName))
+      } catch {
+        if (!controller.signal.aborted) {
+          setSearchResults([])
+          setSearchTree([])
+        }
+      } finally {
+        if (abortRef.current === controller) abortRef.current = null
+        if (!controller.signal.aborted) setSearching(false)
+      }
+    }, SEARCH_DEBOUNCE_MS)
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current)
+      if (abortRef.current) {
+        abortRef.current.abort()
+        abortRef.current = null
+      }
+    }
+  }, [searchQuery, catalogs])
 
   // Diff from committed selection
   const diff = useMemo(() => {
@@ -116,42 +174,10 @@ export function TableBrowserDrawer({
     [expandedSchemas, tables]
   )
 
-  const handleSearch = useCallback(async () => {
-    if (!searchQuery.trim()) {
-      setSearchResults(null)
-      setSearchGrouped({})
-      return
-    }
-    setSearching(true)
-    try {
-      const keywords = searchQuery.trim().split(/\s+/)
-      const res = await searchTables(keywords)
-      const tableNodes: TableNode[] = (res.tables || []).map((t) => ({
-        full_name: t.full_name,
-        name: t.full_name.split(".").pop() || t.full_name,
-        comment: t.comment || null,
-      }))
-      setSearchResults(tableNodes)
-      const grouped: Record<string, TableNode[]> = {}
-      for (const t of tableNodes) {
-        const parts = t.full_name.split(".")
-        const group = parts.length >= 2 ? `${parts[0]}.${parts[1]}` : "other"
-        if (!grouped[group]) grouped[group] = []
-        grouped[group].push(t)
-      }
-      setSearchGrouped(grouped)
-    } catch {
-      setSearchResults([])
-      setSearchGrouped({})
-    } finally {
-      setSearching(false)
-    }
-  }, [searchQuery])
-
   const clearSearch = useCallback(() => {
     setSearchQuery("")
     setSearchResults(null)
-    setSearchGrouped({})
+    setSearchTree([])
   }, [])
 
   const isPending = useCallback((fullName: string) => pending.has(fullName), [pending])
@@ -195,6 +221,25 @@ export function TableBrowserDrawer({
     [tables]
   )
 
+  const selectAllSearchTables = useCallback(
+    (schemaTables: TableNode[]) => {
+      setPending((prev) => {
+        const next = new Set(prev)
+        const allSelected = schemaTables.every((t) => next.has(t.full_name))
+        if (allSelected) {
+          for (const t of schemaTables) next.delete(t.full_name)
+        } else {
+          for (const t of schemaTables) {
+            if (next.size >= MAX_TABLES) break
+            next.add(t.full_name)
+          }
+        }
+        return next
+      })
+    },
+    []
+  )
+
   const handleApply = useCallback(() => {
     onApplyChanges(diff.added, diff.removed)
   }, [onApplyChanges, diff])
@@ -205,7 +250,12 @@ export function TableBrowserDrawer({
     <div className="w-80 flex-shrink-0 border-r border-default bg-surface flex flex-col h-full overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-default">
-        <span className="text-xs font-semibold text-primary">Table Browser</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-primary">Table Browser</span>
+          {catalogs.length > 0 && (
+            <span className="text-[10px] text-muted">{catalogs.length} catalogs</span>
+          )}
+        </div>
         <button onClick={onClose} className="text-muted hover:text-primary transition-colors">
           <X className="w-3.5 h-3.5" />
         </button>
@@ -223,20 +273,23 @@ export function TableBrowserDrawer({
         <div className="relative">
           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted" />
           <input
-            className="w-full text-xs bg-elevated border border-default rounded px-2 py-1.5 pl-7 text-primary placeholder:text-muted focus:outline-none focus:border-accent"
-            placeholder="Search tables, columns, comments..."
+            className="w-full text-xs bg-elevated border border-default rounded px-2 py-1.5 pl-7 pr-7 text-primary placeholder:text-muted focus:outline-none focus:border-accent"
+            placeholder="Search tables, schemas, catalogs…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSearch()}
           />
-          {searching && (
+          {searching ? (
             <Loader2 className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted animate-spin" />
-          )}
+          ) : searchQuery.length > 0 ? (
+            <button onClick={clearSearch} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-primary">
+              <X className="w-3 h-3" />
+            </button>
+          ) : null}
         </div>
-        {searchResults !== null && (
-          <button onClick={clearSearch} className="text-[10px] text-accent hover:underline mt-1">
-            Clear search — back to browse
-          </button>
+        {searchResults !== null && !searching && (
+          <div className="text-[10px] text-muted mt-1">
+            {searchResults.length} table{searchResults.length !== 1 ? "s" : ""} found
+          </div>
         )}
       </div>
 
@@ -247,32 +300,25 @@ export function TableBrowserDrawer({
             <Loader2 className="w-4 h-4 animate-spin mr-2" /> Searching...
           </div>
         ) : searchResults !== null ? (
-          Object.keys(searchGrouped).length === 0 ? (
+          searchTree.length === 0 ? (
             <div className="px-3 py-6 text-center text-muted">No tables found</div>
           ) : (
-            Object.entries(searchGrouped)
-              .sort(([a], [b]) => a.localeCompare(b))
-              .map(([group, groupTables]) => (
-                <div key={group}>
-                  <div className="px-3 py-1.5 text-[10px] font-medium text-muted bg-elevated sticky top-0">
-                    {group} <span className="text-muted/60">({groupTables.length})</span>
-                  </div>
-                  {groupTables.map((t) => (
-                    <TableRow
-                      key={t.full_name}
-                      table={t}
-                      selected={isPending(t.full_name)}
-                      disabled={atLimit && !isPending(t.full_name)}
-                      onToggle={() => toggleTable(t.full_name)}
-                      indent={1}
-                    />
-                  ))}
-                </div>
-              ))
+            <SearchResultTree
+              tree={searchTree}
+              isPending={isPending}
+              atLimit={atLimit}
+              onToggleTable={toggleTable}
+              onSelectAll={selectAllSearchTables}
+              pending={pending}
+            />
           )
         ) : loading._catalogs ? (
           <div className="flex items-center justify-center py-8 text-muted">
             <Loader2 className="w-4 h-4 animate-spin mr-2" /> Loading catalogs...
+          </div>
+        ) : catalogs.length === 0 ? (
+          <div className="px-3 py-6 text-center text-muted">
+            No catalogs available
           </div>
         ) : (
           catalogs.map((cat) => (
@@ -286,6 +332,7 @@ export function TableBrowserDrawer({
                 ) : (
                   <ChevronRight className="w-3 h-3 text-muted flex-shrink-0" />
                 )}
+                {cat.is_home && <Home className="w-3 h-3 text-accent flex-shrink-0" />}
                 <span className="text-primary font-medium truncate">{cat.name}</span>
               </button>
 
@@ -362,7 +409,7 @@ export function TableBrowserDrawer({
       <div className="border-t border-default px-3 py-2 bg-surface">
         <div className="flex items-center justify-between mb-1.5">
           <span className="text-[10px] text-muted">
-            {pending.size}/{MAX_TABLES} table{pending.size !== 1 ? "s" : ""}
+            {pending.size} of {MAX_TABLES} max selected
           </span>
           {diff.hasChanges && (
             <span className="text-[10px] text-accent">
@@ -406,6 +453,141 @@ export function TableBrowserDrawer({
         </button>
       </div>
     </div>
+  )
+}
+
+// ── Search result tree types & builder ───────────────────────────
+
+interface SearchTreeSchema {
+  name: string
+  tables: TableNode[]
+}
+
+interface SearchTreeCatalog {
+  name: string
+  schemas: SearchTreeSchema[]
+  tableCount: number
+}
+
+function buildSearchTree(tables: TableNode[], homeCatalog = ""): SearchTreeCatalog[] {
+  const catMap = new Map<string, Map<string, TableNode[]>>()
+  for (const t of tables) {
+    const parts = t.full_name.split(".")
+    if (parts.length < 3) continue
+    const [cat, sch] = parts
+    if (!catMap.has(cat)) catMap.set(cat, new Map())
+    const schMap = catMap.get(cat)!
+    if (!schMap.has(sch)) schMap.set(sch, [])
+    schMap.get(sch)!.push(t)
+  }
+  return [...catMap.entries()]
+    .sort(([a], [b]) => {
+      const aHome = homeCatalog && a === homeCatalog ? 0 : 1
+      const bHome = homeCatalog && b === homeCatalog ? 0 : 1
+      return aHome !== bHome ? aHome - bHome : a.localeCompare(b)
+    })
+    .map(([catName, schMap]) => {
+      const schemas = [...schMap.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([schName, tbls]) => ({ name: schName, tables: tbls.sort((a, b) => a.name.localeCompare(b.name)) }))
+      return { name: catName, schemas, tableCount: schemas.reduce((n, s) => n + s.tables.length, 0) }
+    })
+}
+
+// ── Search result tree (same look as browse tree, auto-expanded) ─
+
+function SearchResultTree({
+  tree,
+  isPending,
+  atLimit,
+  onToggleTable,
+  onSelectAll,
+  pending,
+}: {
+  tree: SearchTreeCatalog[]
+  isPending: (name: string) => boolean
+  atLimit: boolean
+  onToggleTable: (name: string) => void
+  onSelectAll: (tables: TableNode[]) => void
+  pending: Set<string>
+}) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const toggle = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+
+  return (
+    <>
+      {tree.map((cat) => {
+        const catCollapsed = collapsed.has(cat.name)
+        return (
+          <div key={cat.name}>
+            <button
+              onClick={() => toggle(cat.name)}
+              className="flex items-center gap-1.5 w-full px-3 py-1.5 hover:bg-elevated transition-colors text-left"
+            >
+              {catCollapsed ? (
+                <ChevronRight className="w-3 h-3 text-muted flex-shrink-0" />
+              ) : (
+                <ChevronDown className="w-3 h-3 text-muted flex-shrink-0" />
+              )}
+              <span className="text-primary font-medium truncate">{cat.name}</span>
+              <span className="text-[10px] text-muted ml-auto flex-shrink-0">{cat.tableCount}</span>
+            </button>
+
+            {!catCollapsed &&
+              cat.schemas.map((sch) => {
+                const schKey = `${cat.name}.${sch.name}`
+                const schCollapsed = collapsed.has(schKey)
+                const allSelected = sch.tables.every((t) => pending.has(t.full_name))
+                return (
+                  <div key={schKey}>
+                    <div className="flex items-center w-full pl-7 pr-3 py-1.5 hover:bg-elevated transition-colors">
+                      <button
+                        onClick={() => toggle(schKey)}
+                        className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
+                      >
+                        {schCollapsed ? (
+                          <ChevronRight className="w-3 h-3 text-muted flex-shrink-0" />
+                        ) : (
+                          <ChevronDown className="w-3 h-3 text-muted flex-shrink-0" />
+                        )}
+                        <span className="text-secondary truncate">{sch.name}</span>
+                        <span className="text-[10px] text-muted ml-1 flex-shrink-0">({sch.tables.length})</span>
+                      </button>
+                      {!schCollapsed && sch.tables.length > 0 && (
+                        <button
+                          onClick={() => onSelectAll(sch.tables)}
+                          className="text-[10px] text-accent hover:underline flex items-center gap-0.5 flex-shrink-0"
+                          title={allSelected ? "Deselect all" : "Select all"}
+                        >
+                          <CheckSquare className="w-3 h-3" />
+                          {allSelected ? "None" : "All"}
+                        </button>
+                      )}
+                    </div>
+
+                    {!schCollapsed &&
+                      sch.tables.map((t) => (
+                        <TableRow
+                          key={t.full_name}
+                          table={t}
+                          selected={isPending(t.full_name)}
+                          disabled={atLimit && !isPending(t.full_name)}
+                          onToggle={() => onToggleTable(t.full_name)}
+                          indent={3}
+                        />
+                      ))}
+                  </div>
+                )
+              })}
+          </div>
+        )
+      })}
+    </>
   )
 }
 

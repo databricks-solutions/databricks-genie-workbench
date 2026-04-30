@@ -293,6 +293,10 @@ export function streamFixAgent(
 
 // ── Create Wizard ────────────────────────────────────────────────────────────
 
+export async function fetchCreatePreflight(): Promise<{ warehouses_available: boolean; obo_enabled: boolean; app_name: string }> {
+  return fetchWithTimeout(`${API_BASE}/create/preflight`)
+}
+
 export async function discoverCatalogs(): Promise<{ catalogs: UcCatalog[] }> {
   return fetchWithTimeout<{ catalogs: UcCatalog[] }>(`${API_BASE}/create/discover/catalogs`)
 }

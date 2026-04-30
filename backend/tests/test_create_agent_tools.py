@@ -10,6 +10,10 @@ from backend.services.create_agent_tools import (
     PII_PATTERNS,
     ETL_PATTERNS,
     _base_col_type,
+    _enum_value_upper,
+    _generate_config,
+    _reconcile_metric_view_sources,
+    _validate_config,
     _TYPE_HINT_MAP,
     _STRING_TYPES,
     _DATE_TYPES,
@@ -17,6 +21,8 @@ from backend.services.create_agent_tools import (
     _BOOLEAN_TYPES,
     _update_config,
 )
+from backend.services.create_agent import CreateGenieAgent
+from backend.services.create_agent_session import AgentSession
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +146,107 @@ class TestTypeSets:
 
     def test_boolean_types(self):
         assert "boolean" in _BOOLEAN_TYPES
+
+
+# ---------------------------------------------------------------------------
+# Metric view classification and config reconciliation
+# ---------------------------------------------------------------------------
+
+class TestMetricViewClassification:
+    def test_enum_value_upper_handles_sdk_enums_and_strings(self):
+        class FakeEnum:
+            value = "metric_view"
+
+        assert _enum_value_upper(FakeEnum()) == "METRIC_VIEW"
+        assert _enum_value_upper("metric_view") == "METRIC_VIEW"
+        assert _enum_value_upper(None) == ""
+
+    def test_backfill_classifies_metric_view_describe_result_as_metric_view(self):
+        session = AgentSession(session_id="test")
+        session.history.append({
+            "role": "tool",
+            "content": (
+                '{"table":"cat.sch.mv_churn_risk",'
+                '"table_type":"metric_view",'
+                '"comment":"Churn metrics",'
+                '"columns":[{"name":"AI Feature Adopter"}]}'
+            ),
+        })
+        args: dict = {}
+
+        injected = CreateGenieAgent._backfill_generate_config_args(session, args)
+
+        assert "tables" not in args
+        assert args["metric_views"][0]["identifier"] == "cat.sch.mv_churn_risk"
+        assert args["metric_views"][0]["column_configs"] == [
+            {"column_name": "AI Feature Adopter", "enable_format_assistance": True}
+        ]
+        assert injected == ["metric_views(1)"]
+
+    def test_reconcile_prefers_metric_view_entry_over_duplicate_table(self):
+        config = {
+            "data_sources": {
+                "tables": [
+                    {"identifier": "cat.sch.accounts"},
+                    {"identifier": "cat.sch.mv_churn_risk", "column_configs": [{"column_name": "risk"}]},
+                ],
+                "metric_views": [
+                    {"identifier": "cat.sch.mv_churn_risk", "column_configs": [{"column_name": "risk"}]},
+                ],
+            }
+        }
+
+        result = _reconcile_metric_view_sources(config)
+
+        assert [t["identifier"] for t in result["data_sources"]["tables"]] == ["cat.sch.accounts"]
+        assert [mv["identifier"] for mv in result["data_sources"]["metric_views"]] == ["cat.sch.mv_churn_risk"]
+
+    def test_generate_config_reconciles_duplicate_metric_view_identifier(self):
+        result = _generate_config(
+            tables=[
+                {"identifier": "cat.sch.accounts"},
+                {"identifier": "cat.sch.mv_churn_risk", "column_configs": [{"column_name": "risk"}]},
+            ],
+            metric_views=[
+                {"identifier": "cat.sch.mv_churn_risk", "column_configs": [{"column_name": "risk"}]},
+            ],
+        )
+
+        data_sources = result["config"]["data_sources"]
+        assert [t["identifier"] for t in data_sources["tables"]] == ["cat.sch.accounts"]
+        assert [mv["identifier"] for mv in data_sources["metric_views"]] == ["cat.sch.mv_churn_risk"]
+
+    def test_validate_detects_cross_section_column_duplicates_when_not_reconciled(self):
+        config = {
+            "version": 2,
+            "config": {"sample_questions": []},
+            "data_sources": {
+                "tables": [
+                    {"identifier": "cat.sch.mv_churn_risk", "column_configs": [{"column_name": "risk"}]},
+                ],
+                "metric_views": [
+                    {"identifier": "cat.sch.mv_churn_risk", "column_configs": [{"column_name": "risk"}]},
+                ],
+            },
+        }
+
+        result = _validate_config(config, reconcile_sources=False)
+
+        assert any(
+            err["message"] == "Duplicate column config: ('cat.sch.mv_churn_risk', 'risk')"
+            for err in result["errors"]
+        )
+
+    def test_validate_allows_metric_view_only_config(self):
+        result = _validate_config({
+            "version": 2,
+            "config": {"sample_questions": []},
+            "data_sources": {
+                "metric_views": [{"identifier": "cat.sch.mv_churn_risk"}],
+            },
+        })
+
+        assert result["valid"] is True
 
 
 # ---------------------------------------------------------------------------

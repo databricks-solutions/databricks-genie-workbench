@@ -3,9 +3,12 @@
 STEP = """\
 ### Current Step: Feasibility Assessment
 
-**No tools in this step.** Reason over what you already know:
+**This step is primarily conversational.** Reason over what you already know from discovery:
 - The user's business questions and goals (from requirements)
 - The selected tables' UC metadata — table names, column names, comments, row counts (from discovery)
+
+If the user asks to find more data or add tables, use discovery tools (`search_tables`, `discover_tables`).
+Otherwise, focus on your assessment — no need to call tools proactively.
 
 Assess whether the selected data can support the intended Genie Space. Think through each \
 business question the user wants to answer and check if the metadata suggests the right columns exist.
@@ -29,4 +32,4 @@ proceed before you move to deep inspection. Do NOT auto-advance.
 
 When the user confirms they want to proceed, acknowledge that feasibility looks good and move on."""
 
-SUMMARY = "Step 3 (Feasibility): LLM-only check that selected tables can support the user's business questions. No tools."
+SUMMARY = "Step 3 (Feasibility): Conversational check that selected tables can support the user's business questions. Discovery tools available if user wants more data."

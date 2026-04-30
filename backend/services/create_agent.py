@@ -49,23 +49,23 @@ STEP_THINKING: dict[str, str] = {
     "post_creation": "Finalizing your Genie Space…",
 }
 
-# Tools allowed per step — structural guardrail to prevent the LLM from
-# calling tools outside the current step's scope.
-# Empty set = no tools (pure conversation). Missing key = all tools (fallback).
+# Tools allowed per step — each step is a cumulative superset of all preceding
+# steps so the agent never loses capabilities as the workflow advances.
+# The prompt guides the agent on what to focus on; STEP_TOOLS is a safety net.
+_DISCOVERY = {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"}
+_INSPECTION = _DISCOVERY | {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"}
+_PLAN = _INSPECTION | {"generate_plan", "present_plan"}
+_CONFIG = _PLAN | {"discover_warehouses", "generate_config", "validate_config", "create_space"}
+_POST = _CONFIG | {"update_config", "update_space"}
+
 STEP_TOOLS: dict[str, set[str]] = {
-    # Requirements has discovery tools so the agent can transition naturally
-    # when the user says "go find my data." The prompt guides the agent to
-    # gather requirements first — tools are available but not encouraged.
-    "requirements": {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"},
-    "discovery": {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"},
-    # Feasibility has inspection tools available so the LLM can call
-    # describe_table after the user confirms. The prompt instructs it to
-    # present an assessment and WAIT before calling tools.
-    "feasibility": {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"},
-    "inspection": {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"},
-    "plan": {"generate_plan", "present_plan", "test_sql"},
-    "config_create": {"discover_warehouses", "generate_config", "validate_config", "create_space"},
-    "post_creation": {"update_config", "validate_config", "update_space"},
+    "requirements": _DISCOVERY,
+    "discovery": _DISCOVERY,
+    "feasibility": _INSPECTION,
+    "inspection": _INSPECTION,
+    "plan": _PLAN,
+    "config_create": _CONFIG,
+    "post_creation": _POST,
 }
 
 STEP_ORDER = [
@@ -820,13 +820,13 @@ class CreateGenieAgent:
         if not result.get("success") and result.get("error"):
             err = result["error"]
             if "Invalid" in err or "configuration" in err.lower() or "proto" in err.lower():
-                yield {"event": "tool_result", "data": {"tool": "create_space", "result": {"repairing": True, "original_error": err}}}
                 yield {"event": "thinking", "data": {"message": "Config rejected by API — repairing automatically...", "step": "create", "round": 0}}
 
                 fixed = await loop.run_in_executor(None, run_in_context(self._repair_config, config, err))
                 if fixed:
                     config = fixed
                     session.space_config = config
+                    yield {"event": "thinking", "data": {"message": "Retrying space creation with repaired config...", "step": "create", "round": 0}}
                     result = await loop.run_in_executor(
                         None, run_in_context(handle_tool_call, "create_space", {"display_name": display_name}, config)
                     )
@@ -841,6 +841,8 @@ class CreateGenieAgent:
                 "url": result["space_url"],
                 "display_name": result.get("display_name", display_name),
             }}
+        elif result.get("error"):
+            yield {"event": "error", "data": {"message": result["error"]}}
 
     async def _fast_create(
         self,
@@ -1234,8 +1236,8 @@ class CreateGenieAgent:
                         if col.get("description"):
                             entry["description"] = col["description"]
                         cols.append(entry)
-                    ttype = result.get("table_type", "")
-                    if ttype and "METRIC_VIEW" in ttype:
+                    ttype = str(result.get("table_type", "")).upper()
+                    if "METRIC_VIEW" in ttype:
                         # Metric views go into mvs_by_id with column_configs
                         # (only enable_format_assistance, NOT enable_entity_matching)
                         mv_cols = [{"column_name": c["column_name"], "enable_format_assistance": True} for c in cols]

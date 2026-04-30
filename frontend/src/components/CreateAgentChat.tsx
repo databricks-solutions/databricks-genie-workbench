@@ -11,6 +11,8 @@ import {
   Check,
   ExternalLink,
   AlertCircle,
+  AlertTriangle,
+  Info,
   Sparkles,
   Copy,
   CheckCheck,
@@ -37,9 +39,10 @@ import {
 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import { streamAgentChat } from "@/lib/api"
+import { streamAgentChat, fetchCreatePreflight } from "@/lib/api"
 import type { AgentChatMessage, AgentUIElement } from "@/types"
 import { TableBrowserDrawer } from "@/components/TableBrowserDrawer"
+import { Tooltip } from "@/components/ui/tooltip"
 interface CreateAgentChatProps {
   onCreated: (spaceId: string, displayName: string, spaceUrl?: string, initialTab?: string) => void
 }
@@ -358,6 +361,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   const [fixStep, setFixStep] = useState(0) // 0=analyze, 1=update_config, 2=apply, 3=done
   const [fixResult, setFixResult] = useState<{ spaceId: string; url: string } | null>(null)
   const queuedMessageRef = useRef<string | null>(null)
+  const [preflight, setPreflight] = useState<{ warehouses_available: boolean; obo_enabled: boolean; app_name: string } | null>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -395,6 +399,12 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
   useEffect(() => {
     if (!isStreaming) inputRef.current?.focus()
   }, [isStreaming])
+
+  useEffect(() => {
+    fetchCreatePreflight()
+      .then(setPreflight)
+      .catch(() => setPreflight({ warehouses_available: false, obo_enabled: false, app_name: "this app" }))
+  }, [])
 
   // Shared session reset — used by both confirmClear and prefill
   const resetSession = () => {
@@ -681,7 +691,6 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
 
           const streamId = streamingMsgIdRef.current
           if (streamId) {
-            // Finalize the streaming message with full content and ui_elements
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === streamId
@@ -692,12 +701,12 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             streamingContentRef.current = ""
             streamingMsgIdRef.current = null
           } else {
-            // Fallback: no preceding deltas (e.g. reasoning text before tool calls)
             setMessages((prev) => [
               ...prev,
               { id: nextId(), role: "assistant", content, timestamp: Date.now(), ui_elements: uiElements as AgentUIElement[] | null | undefined },
             ])
           }
+
         },
         onCreated: (spaceId, url, displayName) => {
           setMessages((prev) => [
@@ -2055,6 +2064,8 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         totalProfiled += profiles ? Object.keys(profiles).length : 0
       }
       if (m.tool_name === "assess_data_quality") {
+        const qt = r.tables as Record<string, unknown> | undefined
+        if (qt) Object.keys(qt).forEach((t) => tables.add(t.split(".").pop() || t))
         const qs = r.summary as { total_recommended_excludes?: number; total_recommended_review?: number } | undefined
         qualityIssues += (qs?.total_recommended_excludes ?? 0) + (qs?.total_recommended_review ?? 0)
       }
@@ -2231,6 +2242,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             )}
           </div>
         )
+      }
+
+      if (el.type === "multi_select" && el.id === "table_selection") {
+        return null
       }
 
       if (el.type === "multi_select" && el.options && el.options.length > 0) {
@@ -2856,6 +2871,32 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     <div className="flex gap-4 h-[calc(100vh-13rem)]">
       {/* Chat column */}
       <div className="flex-1 flex flex-col min-w-0 gap-1">
+        {/* Warehouse warning banner */}
+        {preflight && !preflight.warehouses_available && (
+          <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-600 dark:text-amber-400">
+            <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>No Pro or Serverless SQL warehouse found — space creation will fail.</span>
+            <Tooltip
+              side="bottom"
+              className="w-80 text-left leading-relaxed"
+              content={
+                <div className="space-y-2">
+                  <p className="font-semibold">How to fix this:</p>
+                  {!preflight.obo_enabled && (
+                    <p><span className="font-medium">Option 1 — Enable OBO auth:</span> Ask your workspace admin to enable On-Behalf-Of User Authorization in the workspace Preview settings. This lets the app act on your behalf and access SQL warehouses you already have access to.</p>
+                  )}
+                  <p><span className="font-medium">{!preflight.obo_enabled ? "Option 2" : "Fix"} — Grant direct access:</span> Give <span className="font-mono">{preflight.app_name}</span> CAN USE permission on a Pro or Serverless SQL warehouse.</p>
+                </div>
+              }
+            >
+              <button className="ml-auto flex items-center gap-1 underline underline-offset-2 hover:text-amber-500 whitespace-nowrap">
+                <Info className="w-3 h-3" />
+                How to fix
+              </button>
+            </Tooltip>
+          </div>
+        )}
+
         {/* Chat area */}
         <div className="flex-1 overflow-y-auto border border-default rounded-xl bg-surface">
           {messages.length === 0 ? (
