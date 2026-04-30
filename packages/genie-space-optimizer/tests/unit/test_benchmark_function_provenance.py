@@ -67,3 +67,44 @@ def test_benchmark_space_routine_violations_allows_registered_function() -> None
     sql = "SELECT cat.sch.fn_mtd_or_mtday(MEASURE(a), MEASURE(b)) FROM cat.sch.mv_7now_store_sales"
 
     assert _benchmark_space_routine_violations(sql, config) == []
+
+
+def test_mark_function_not_in_space_marks_candidate_invalid() -> None:
+    from genie_space_optimizer.optimization.evaluation import (
+        _mark_function_not_in_space_if_needed,
+    )
+
+    config = {"_functions": []}
+    candidate = {
+        "question": "Use fn_mtd_or_mtday by zone",
+        "expected_sql": "SELECT cat.sch.fn_mtd_or_mtday(MEASURE(a), MEASURE(b)) FROM cat.sch.mv",
+        "validation_status": "valid",
+        "validation_reason_code": "ok",
+        "validation_error": None,
+    }
+
+    assert _mark_function_not_in_space_if_needed(candidate, config) is True
+
+    assert candidate["validation_status"] == "invalid"
+    assert candidate["validation_reason_code"] == "function_not_in_space"
+    assert candidate["quarantine_reason_code"] == "function_not_in_space"
+    assert "cat.sch.fn_mtd_or_mtday" in candidate["validation_error"]
+
+
+def test_mark_function_not_in_space_leaves_registered_candidate_valid() -> None:
+    from genie_space_optimizer.optimization.evaluation import (
+        _mark_function_not_in_space_if_needed,
+    )
+
+    config = {"_functions": ["cat.sch.fn_mtd_or_mtday"]}
+    candidate = {
+        "question": "Use fn_mtd_or_mtday by zone",
+        "expected_sql": "SELECT cat.sch.fn_mtd_or_mtday(MEASURE(a), MEASURE(b)) FROM cat.sch.mv",
+        "validation_status": "valid",
+        "validation_reason_code": "ok",
+        "validation_error": None,
+    }
+
+    assert _mark_function_not_in_space_if_needed(candidate, config) is False
+    assert candidate["validation_status"] == "valid"
+    assert candidate["validation_reason_code"] == "ok"

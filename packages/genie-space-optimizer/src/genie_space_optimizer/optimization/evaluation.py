@@ -10494,6 +10494,35 @@ def _benchmark_space_routine_violations(sql: str, config: dict) -> list[str]:
     return violations
 
 
+def _mark_function_not_in_space_if_needed(candidate: dict, config: dict) -> bool:
+    """Mark a benchmark candidate invalid when SQL calls unregistered routines.
+
+    Returns ``True`` when the candidate was mutated (i.e. a routine the
+    Genie Space does not own was found). The candidate's
+    ``validation_status``, ``validation_reason_code``, ``validation_error``,
+    and ``quarantine_reason_*`` keys are stamped so downstream consumers
+    treat it as a quarantined invalid benchmark rather than a Genie failure.
+    """
+    violations = _benchmark_space_routine_violations(
+        str(candidate.get("expected_sql") or ""),
+        config,
+    )
+    if not violations:
+        return False
+
+    message = (
+        "Benchmark SQL references routine(s) that exist in UC but are not "
+        f"registered in this Genie Space: {violations[:5]}"
+    )
+    candidate["validation_status"] = "invalid"
+    candidate["validation_reason_code"] = "function_not_in_space"
+    candidate["validation_error"] = message
+    candidate["quarantine_reason_code"] = "function_not_in_space"
+    candidate["quarantine_reason_detail"] = message
+    candidate["unregistered_routines"] = violations
+    return True
+
+
 def _normalize_name(value: str) -> str:
     return re.sub(r"[^a-z0-9_]", "", (value or "").lower())
 
@@ -11387,6 +11416,20 @@ def generate_benchmarks(
             "validation_error": None,
             "correction_source": "",
         }
+
+        # Task 2 — quarantine benchmarks whose SQL calls a routine that is
+        # physically resolvable in UC but not registered in this Genie
+        # Space's ``data_sources.functions``. Genie cannot see those
+        # functions at runtime, so the benchmark would otherwise produce a
+        # misleading judge failure that the lever loop would chase.
+        if _mark_function_not_in_space_if_needed(benchmark, config):
+            invalid_benchmarks.append(benchmark)
+            logger.warning(
+                "Benchmark quarantined: function_not_in_space: %s — %s",
+                str(benchmark.get("question", ""))[:60],
+                benchmark.get("validation_error", ""),
+            )
+            continue
 
         metadata_ok, reason_code, reason_message = _enforce_metadata_constraints(
             benchmark=benchmark,
