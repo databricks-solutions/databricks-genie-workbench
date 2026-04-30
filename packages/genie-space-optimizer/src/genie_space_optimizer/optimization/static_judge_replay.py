@@ -68,7 +68,7 @@ def run_static_judge_replay(
     max_patches: int = 3,
     min_gain_pp: float = 1.0,
     max_new_hard_regressions: int = 1,
-    max_new_passing_to_hard_regressions: int = 0,
+    max_new_passing_to_hard_regressions: int | None = None,
     protected_qids: tuple[str, ...] = (),
     quarantined_qids: set[str] | None = None,
     unresolved_patchable_qids: set[str] | None = None,

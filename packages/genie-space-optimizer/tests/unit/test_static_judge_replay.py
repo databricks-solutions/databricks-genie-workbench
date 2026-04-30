@@ -259,3 +259,198 @@ def test_static_replay_surfaces_quarantined_patchable_hard_failures() -> None:
     assert result.quarantine_decision is not None
     assert result.quarantine_decision["action"] == "stop_for_human_review"
     assert result.quarantine_decision["blocking_qids"] == ["q021"]
+
+
+def _hard_row(qid: str) -> dict:
+    return {
+        "question_id": qid,
+        "feedback/arbiter/value": "ground_truth_correct",
+        "feedback/result_correctness/value": "no",
+    }
+
+
+def _passing_row(qid: str) -> dict:
+    return {
+        "question_id": qid,
+        "feedback/arbiter/value": "both_correct",
+        "feedback/result_correctness/value": "yes",
+    }
+
+
+def test_static_replay_observed_ag1_reports_target_fixed_qid() -> None:
+    from genie_space_optimizer.optimization.static_judge_replay import (
+        run_static_judge_replay,
+    )
+
+    baseline_rows = [
+        _hard_row("gs_026"),
+        _hard_row("gs_021"),
+        _hard_row("gs_004"),
+        _hard_row("gs_001"),
+        _passing_row("gs_018"),
+    ]
+    candidate_rows = [
+        _hard_row("gs_026"),
+        _hard_row("gs_021"),
+        _passing_row("gs_004"),
+        _passing_row("gs_001"),
+        _hard_row("gs_018"),
+    ]
+    action_group = {
+        "id": "AG1",
+        "source_cluster_ids": ["H004"],
+        "affected_questions": ["gs_004"],
+    }
+    proposals = [
+        {
+            "proposal_id": "P004_asset_routing",
+            "type": "rewrite_instruction",
+            "relevance_score": 1.0,
+            "rca_id": "rca_gs004_asset_routing",
+            "target_qids": ["gs_004"],
+        },
+    ]
+
+    result = run_static_judge_replay(
+        baseline_accuracy=20.0,
+        candidate_accuracy=40.0,
+        baseline_rows=baseline_rows,
+        candidate_rows=candidate_rows,
+        action_group=action_group,
+        source_clusters=[{"cluster_id": "H004", "question_ids": ["gs_004"]}],
+        proposals=proposals,
+        max_patches=3,
+        max_new_hard_regressions=1,
+    )
+
+    assert result.acceptance.target_qids == ("gs_004",)
+    assert result.acceptance.target_fixed_qids == ("gs_004",)
+    assert result.acceptance.target_still_hard_qids == ()
+    assert result.acceptance.regression_debt_qids == ("gs_018",)
+    assert result.acceptance.reason_code == "accepted_with_regression_debt"
+
+
+def test_static_replay_preserves_rca_patches_and_accepts_bounded_debt() -> None:
+    from genie_space_optimizer.optimization.static_judge_replay import (
+        run_static_judge_replay,
+    )
+
+    baseline_rows = [
+        _hard_row("q007"),
+        _hard_row("q009"),
+        _hard_row("q005"),
+        _hard_row("q002"),
+        _passing_row("q015"),
+    ]
+    candidate_rows = [
+        _passing_row("q007"),
+        _passing_row("q009"),
+        _hard_row("q005"),
+        _hard_row("q002"),
+        _hard_row("q015"),
+    ]
+    action_group = {
+        "id": "AG2",
+        "source_cluster_ids": ["H001", "H003", "H005", "H006"],
+        "affected_questions": ["q007", "q009", "q005", "q002"],
+    }
+    proposals = [
+        {
+            "proposal_id": "P002_broad",
+            "type": "update_column_description",
+            "relevance_score": 1.0,
+            "target_qids": ["q007", "q009", "q005", "q002"],
+        },
+        {
+            "proposal_id": "P008_rca",
+            "type": "update_column_description",
+            "relevance_score": 1.0,
+            "rca_id": "rca_q007_measure_swap",
+            "target_qids": ["q007"],
+        },
+        {
+            "proposal_id": "P047_filter",
+            "type": "add_sql_snippet_filter",
+            "relevance_score": 1.0,
+            "rca_id": "rca_q007_filter",
+            "_grounding_target_qids": ["q007"],
+        },
+    ]
+
+    result = run_static_judge_replay(
+        baseline_accuracy=57.1,
+        candidate_accuracy=64.3,
+        baseline_rows=baseline_rows,
+        candidate_rows=candidate_rows,
+        action_group=action_group,
+        source_clusters=[
+            {"cluster_id": "H001", "question_ids": ["q007"]},
+            {"cluster_id": "H003", "question_ids": ["q009"]},
+            {"cluster_id": "H005", "question_ids": ["q005"]},
+            {"cluster_id": "H006", "question_ids": ["q002"]},
+        ],
+        proposals=proposals,
+        max_patches=3,
+        max_new_hard_regressions=1,
+    )
+
+    kept_ids = [patch["proposal_id"] for patch in result.kept_patches]
+    assert "P008_rca" in kept_ids
+    assert "P047_filter" in kept_ids
+    assert result.acceptance.accepted is True
+    assert result.acceptance.reason_code == "accepted_with_regression_debt"
+    assert result.acceptance.regression_debt_qids == ("q015",)
+
+
+def test_static_replay_observed_ag4_passing_to_hard_is_accepted_with_debt() -> None:
+    from genie_space_optimizer.optimization.static_judge_replay import (
+        run_static_judge_replay,
+    )
+
+    baseline_rows = [
+        _hard_row("gs_001"),
+        _passing_row("gs_021"),
+        _passing_row("gs_004"),
+        _passing_row("gs_018"),
+        _passing_row("gs_026"),
+    ]
+    candidate_rows = [
+        _passing_row("gs_001"),
+        _hard_row("gs_021"),
+        _passing_row("gs_004"),
+        _passing_row("gs_018"),
+        _passing_row("gs_026"),
+    ]
+    action_group = {
+        "id": "AG4",
+        "source_cluster_ids": ["H001"],
+        "affected_questions": ["gs_001"],
+    }
+    proposals = [
+        {
+            "proposal_id": "P001_asset_routing",
+            "type": "rewrite_instruction",
+            "relevance_score": 1.0,
+            "rca_id": "rca_gs001_asset_routing",
+            "target_qids": ["gs_001"],
+        },
+    ]
+
+    result = run_static_judge_replay(
+        baseline_accuracy=75.0,
+        candidate_accuracy=80.0,
+        baseline_rows=baseline_rows,
+        candidate_rows=candidate_rows,
+        action_group=action_group,
+        source_clusters=[{"cluster_id": "H001", "question_ids": ["gs_001"]}],
+        proposals=proposals,
+        max_patches=3,
+        max_new_hard_regressions=1,
+    )
+
+    assert result.acceptance.target_qids == ("gs_001",)
+    assert result.acceptance.target_fixed_qids == ("gs_001",)
+    assert result.acceptance.passing_to_hard_regressed_qids == ("gs_021",)
+    assert result.acceptance.regression_debt_qids == ("gs_021",)
+    assert result.acceptance.reason_code == "accepted_with_regression_debt"
+    assert result.acceptance.accepted is True
