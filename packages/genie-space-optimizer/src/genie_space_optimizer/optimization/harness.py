@@ -12307,8 +12307,17 @@ def _run_lever_loop(
         prev_scores = full_scores
         prev_model_id = new_model_id
         # Task 5 — only update accepted-baseline rows on accept; rollback
-        # paths must NOT touch this list.
-        _accepted_baseline_rows_for_control_plane = list(_after_rows or [])
+        # paths must NOT touch this list. Pull from the gate's
+        # ``full_result.rows`` so the snapshot is the same row set the
+        # gate just used to decide acceptance, not a stale ``_after_rows``
+        # local that may have been narrowed for diagnostics.
+        _accepted_full_rows = (
+            gate_result.get("full_result", {}).get("rows")
+            or []
+        )
+        _accepted_baseline_rows_for_control_plane = [
+            dict(row) for row in _accepted_full_rows
+        ]
 
         new_refs = extract_reference_sqls(full_result)
         if new_refs:

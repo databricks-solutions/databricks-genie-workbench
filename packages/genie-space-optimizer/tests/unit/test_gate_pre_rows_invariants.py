@@ -100,3 +100,15 @@ def test_run_gate_checks_does_not_read_loop_local_baseline_name() -> None:
 
     assert "list(_accepted_baseline_rows_for_control_plane or [])" not in source
     assert "accepted_baseline_rows_for_control_plane or []" in source
+
+
+def test_accept_path_updates_baseline_from_gate_result_full_rows() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    source = inspect.getsource(harness._run_lever_loop)
+
+    assert 'gate_result.get("full_result", {})' in source
+    assert 'get("rows")' in source
+    assert "list(_after_rows or [])" not in source
