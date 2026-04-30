@@ -163,3 +163,51 @@ def test_strategy_prompts_embed_contract_tag() -> None:
         assert "<unified_rca_engine_contract>" in prompt
         assert "</unified_rca_engine_contract>" in prompt
         assert prompt.index("<unified_rca_engine_contract>") < prompt.index("<instructions>")
+
+
+def test_lever_6_sql_expression_prompt_renders_with_double_brace_substitution() -> None:
+    """Regression guard: prove ``{{ var }}`` placeholders survive intact."""
+    from genie_space_optimizer.common.config import (
+        LEVER_6_SQL_EXPRESSION_PROMPT,
+        format_mlflow_template,
+    )
+
+    rendered = format_mlflow_template(
+        LEVER_6_SQL_EXPRESSION_PROMPT,
+        root_cause="missing time_window filter",
+        cluster_context="(cluster_context)",
+        schema_context="(schema_context)",
+        existing_sql_snippets="(none)",
+        strategist_hints="(none)",
+    )
+    assert "{{ root_cause }}" not in rendered
+    assert "missing time_window filter" in rendered
+    assert "{{ cluster_context }}" not in rendered
+    assert '"snippet_type"' in rendered
+
+
+def test_lever_prompts_embed_contract_tag() -> None:
+    """Each lever / proposal prompt embeds the contract by structural tag."""
+    from genie_space_optimizer.common.config import (
+        EXPAND_INSTRUCTION_PROMPT,
+        LEVER_1_2_COLUMN_PROMPT,
+        LEVER_4_JOIN_DISCOVERY_PROMPT,
+        LEVER_4_JOIN_SPEC_PROMPT,
+        LEVER_5_HOLISTIC_PROMPT,
+        LEVER_5_INSTRUCTION_PROMPT,
+        LEVER_6_SQL_EXPRESSION_PROMPT,
+        PROPOSAL_GENERATION_PROMPT,
+    )
+
+    for prompt in (
+        LEVER_1_2_COLUMN_PROMPT,
+        LEVER_4_JOIN_DISCOVERY_PROMPT,
+        LEVER_4_JOIN_SPEC_PROMPT,
+        LEVER_5_HOLISTIC_PROMPT,
+        LEVER_5_INSTRUCTION_PROMPT,
+        LEVER_6_SQL_EXPRESSION_PROMPT,
+        PROPOSAL_GENERATION_PROMPT,
+        EXPAND_INSTRUCTION_PROMPT,
+    ):
+        assert "<unified_rca_engine_contract>" in prompt
+        assert "</unified_rca_engine_contract>" in prompt

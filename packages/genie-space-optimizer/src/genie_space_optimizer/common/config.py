@@ -1452,6 +1452,106 @@ BENCHMARK_COVERAGE_GAP_PROMPT = (
     '</output_schema>'
 )
 
+# ── 5a. Unified RCA Engine Contract (defined before any consumer prompt) ─
+#
+# Shared header injected into every RCA-driven optimizer prompt so the
+# strategist, lever, proposal, mining, and reactive paths all reason about
+# the same control-plane invariants. Preflight example synthesis uses a
+# narrower contract; see ``LEAK_SAFE_EXAMPLE_SYNTHESIS_CONTRACT_PROMPT``.
+
+UNIFIED_RCA_ENGINE_CONTRACT_PROMPT = """\
+<unified_rca_engine_contract>
+## Unified RCA engine contract
+
+The optimizer is a closed-loop control system. Every proposed action must
+preserve this chain:
+
+judge feedback -> RCA -> lever -> patch -> gateable outcome
+
+Primary objective:
+- Reach 100% post-arbiter accuracy, or exhaust the configured lever-loop budget.
+- Hard failures are the first priority. Hard failures include arbiter verdicts
+  `ground_truth_correct` and `neither_correct`.
+- Soft signals may guide preventive improvements only when hard failures and
+  mandatory regression debt are not being starved.
+
+Mandatory causal fields:
+- Every action group must declare `primary_cluster_id`, `source_cluster_ids`,
+  and `affected_questions` using those exact JSON field names.
+- Every proposal must be explainable as: this judge signal produced this RCA,
+  this RCA maps to this lever, and this patch is expected to fix these target
+  questions.
+- If `regression_debt_qids` are present in context, they are mandatory priority
+  and must be targeted before optional soft improvements.
+
+Patch safety rules:
+- A patch type must match RCA defect. A filter defect needs a filter patch,
+  scoped instruction, or example SQL. Do not substitute a measure patch for a
+  missing or wrong filter.
+- A broad global instruction change is unsafe unless it is scoped to target
+  questions or backed by explicit counterfactual dependents.
+- Prefer narrow structured metadata, SQL expressions, join specs, or example SQL
+  over broad prose when the root cause is structural SQL behavior.
+- Preserve at least one causal patch per target question when proposing a bundle.
+
+Regression policy awareness:
+- Net post-arbiter gains can be accepted with bounded regression debt.
+- Do not hide or ignore newly regressed hard questions; surface them as
+  `regression_debt_qids`.
+- Protected or required benchmark regressions must be treated as unbounded
+  collateral risk.
+
+Leakage boundary:
+- Do not copy held-out benchmark expected SQL into Genie-visible examples.
+- Use failure evidence and generated SQL to understand behavior, but output
+  reusable guidance, scoped metadata, SQL expressions, or safe example patterns.
+
+Precedence:
+- If a downstream prompt provides a more specific lever map (for example a
+  strategist `## Contract: All Instruments of Power` section), that map is
+  authoritative for lever routing. This contract specifies the global control
+  invariants only.
+</unified_rca_engine_contract>
+"""
+
+
+LEAK_SAFE_EXAMPLE_SYNTHESIS_CONTRACT_PROMPT = """\
+<leak_safe_example_synthesis_contract>
+## Leak-safe example synthesis contract
+
+This prompt creates one reusable Genie-visible example question/SQL pair.
+
+Rules:
+- Return exactly one single JSON object matching the requested schema.
+- Do not copy held-out benchmark expected SQL into Genie-visible examples.
+- Use schema metadata and the supplied failure pattern to create a reusable
+  example; remove benchmark-specific literals, aliases, row limits, and wording.
+- Keep the generated SQL narrow to the requested tables, joins, filters, and
+  measures. Do not introduce broad global behavior.
+- Prefer one precise example over a generalized rule.
+</leak_safe_example_synthesis_contract>
+"""
+
+# ── Feature flag: allow operators to disable contract injection in
+# emergencies without a code change. Default is ON.
+_INCLUDE_UNIFIED_RCA_CONTRACT = (
+    os.getenv("GSO_INCLUDE_UNIFIED_RCA_CONTRACT", "true").strip().lower()
+    not in ("false", "0", "no", "off")
+)
+
+_RCA_CONTRACT_HEADER: str = (
+    UNIFIED_RCA_ENGINE_CONTRACT_PROMPT + "\n\n"
+    if _INCLUDE_UNIFIED_RCA_CONTRACT
+    else ""
+)
+
+_EXAMPLE_SYNTHESIS_CONTRACT_HEADER: str = (
+    LEAK_SAFE_EXAMPLE_SYNTHESIS_CONTRACT_PROMPT + "\n\n"
+    if _INCLUDE_UNIFIED_RCA_CONTRACT
+    else ""
+)
+
+
 # ── 5b. Proposal Generation Prompts ───────────────────────────────────
 
 PROPOSAL_GENERATION_PROMPT = (
@@ -1460,6 +1560,7 @@ PROPOSAL_GENERATION_PROMPT = (
     'so that it generates correct SQL for user questions.\n'
     '</role>\n'
     '\n'
+    + _RCA_CONTRACT_HEADER +
     '<context>\n'
     '## Failure Analysis\n'
     '- Root cause: {{ failure_type }}\n'
@@ -1496,6 +1597,7 @@ LEVER_1_2_COLUMN_PROMPT = (
     'and column descriptions and synonyms so that Genie generates correct SQL.\n'
     '</role>\n'
     '\n'
+    + _RCA_CONTRACT_HEADER +
     '<context>\n'
     '## Failure Analysis\n'
     '- Root cause: {{ failure_type }}\n'
@@ -1885,6 +1987,7 @@ EXPAND_INSTRUCTION_PROMPT = (
     '— never rewrite or rephrase content that already exists.\n'
     '</role>\n'
     '\n'
+    + _RCA_CONTRACT_HEADER +
     '<context>\n'
     '## Existing Instructions\n'
     '{{ existing_instructions }}\n'
@@ -2017,6 +2120,7 @@ LEVER_4_JOIN_SPEC_PROMPT = (
     'You are a Databricks Genie Space join optimization expert.\n'
     '</role>\n'
     '\n'
+    + _RCA_CONTRACT_HEADER +
     '<context>\n'
     '## SQL Diffs showing join issues\n'
     '{{ sql_diffs }}\n'
@@ -2096,6 +2200,7 @@ LEVER_4_JOIN_DISCOVERY_PROMPT = (
     'Your task is to identify MISSING join relationships between tables.\n'
     '</role>\n'
     '\n'
+    + _RCA_CONTRACT_HEADER +
     '<context>\n'
     '## Full Schema Context (tables, columns, data types, descriptions)\n'
     '{{ full_schema_context }}\n'
@@ -2237,6 +2342,7 @@ LEVER_5_INSTRUCTION_PROMPT = (
     'You are a Databricks Genie Space instruction expert.\n'
     '</role>\n'
     '\n'
+    + _RCA_CONTRACT_HEADER +
     '<context>\n'
     '## SQL Diffs showing routing/disambiguation issues\n'
     '{{ sql_diffs }}\n'
@@ -2334,6 +2440,7 @@ LEVER_5_HOLISTIC_PROMPT = (
     'plus targeted example SQL queries.\n'
     '</role>\n'
     '\n'
+    + _RCA_CONTRACT_HEADER +
     '<context>\n'
     '## Genie Space Purpose\n'
     '{{ space_description }}\n'
@@ -2452,111 +2559,6 @@ LEVER_5_HOLISTIC_PROMPT = (
     'If no instruction changes needed, set "instruction_text" to "".\n'
     '</output_schema>'
 )
-
-# ── 5a. Unified RCA Engine Contract ───────────────────────────────────
-#
-# Shared header injected into every RCA-driven optimizer prompt so the
-# strategist, lever, proposal, mining, and reactive paths all reason about
-# the same control-plane invariants. Preflight example synthesis uses a
-# narrower contract; see ``LEAK_SAFE_EXAMPLE_SYNTHESIS_CONTRACT_PROMPT``.
-
-UNIFIED_RCA_ENGINE_CONTRACT_PROMPT = """\
-<unified_rca_engine_contract>
-## Unified RCA engine contract
-
-The optimizer is a closed-loop control system. Every proposed action must
-preserve this chain:
-
-judge feedback -> RCA -> lever -> patch -> gateable outcome
-
-Primary objective:
-- Reach 100% post-arbiter accuracy, or exhaust the configured lever-loop budget.
-- Hard failures are the first priority. Hard failures include arbiter verdicts
-  `ground_truth_correct` and `neither_correct`.
-- Soft signals may guide preventive improvements only when hard failures and
-  mandatory regression debt are not being starved.
-
-Mandatory causal fields:
-- Every action group must declare `primary_cluster_id`, `source_cluster_ids`,
-  and `affected_questions` using those exact JSON field names.
-- Every proposal must be explainable as: this judge signal produced this RCA,
-  this RCA maps to this lever, and this patch is expected to fix these target
-  questions.
-- If `regression_debt_qids` are present in context, they are mandatory priority
-  and must be targeted before optional soft improvements.
-
-Patch safety rules:
-- A patch type must match RCA defect. A filter defect needs a filter patch,
-  scoped instruction, or example SQL. Do not substitute a measure patch for a
-  missing or wrong filter.
-- A broad global instruction change is unsafe unless it is scoped to target
-  questions or backed by explicit counterfactual dependents.
-- Prefer narrow structured metadata, SQL expressions, join specs, or example SQL
-  over broad prose when the root cause is structural SQL behavior.
-- Preserve at least one causal patch per target question when proposing a bundle.
-
-Regression policy awareness:
-- Net post-arbiter gains can be accepted with bounded regression debt.
-- Do not hide or ignore newly regressed hard questions; surface them as
-  `regression_debt_qids`.
-- Protected or required benchmark regressions must be treated as unbounded
-  collateral risk.
-
-Leakage boundary:
-- Do not copy held-out benchmark expected SQL into Genie-visible examples.
-- Use failure evidence and generated SQL to understand behavior, but output
-  reusable guidance, scoped metadata, SQL expressions, or safe example patterns.
-
-Precedence:
-- If a downstream prompt provides a more specific lever map (for example a
-  strategist `## Contract: All Instruments of Power` section), that map is
-  authoritative for lever routing. This contract specifies the global control
-  invariants only.
-</unified_rca_engine_contract>
-"""
-
-
-LEAK_SAFE_EXAMPLE_SYNTHESIS_CONTRACT_PROMPT = """\
-<leak_safe_example_synthesis_contract>
-## Leak-safe example synthesis contract
-
-This prompt creates one reusable Genie-visible example question/SQL pair.
-
-Rules:
-- Return exactly one single JSON object matching the requested schema.
-- Do not copy held-out benchmark expected SQL into Genie-visible examples.
-- Use schema metadata and the supplied failure pattern to create a reusable
-  example; remove benchmark-specific literals, aliases, row limits, and wording.
-- Keep the generated SQL narrow to the requested tables, joins, filters, and
-  measures. Do not introduce broad global behavior.
-- Prefer one precise example over a generalized rule.
-</leak_safe_example_synthesis_contract>
-"""
-
-# ── Feature flag: allow operators to disable contract injection in
-# emergencies without a code change. Default is ON. Read once at module
-# import; deployments must restart the optimizer to flip it.
-_INCLUDE_UNIFIED_RCA_CONTRACT = (
-    os.getenv("GSO_INCLUDE_UNIFIED_RCA_CONTRACT", "true").strip().lower()
-    not in ("false", "0", "no", "off")
-)
-
-# ── Helper headers used by consumer prompts. Always reference these
-# constants — never inline the contract prompts directly into another
-# prompt. That keeps the env flag effective and makes the size-guard
-# tests easy to scope.
-_RCA_CONTRACT_HEADER: str = (
-    UNIFIED_RCA_ENGINE_CONTRACT_PROMPT + "\n\n"
-    if _INCLUDE_UNIFIED_RCA_CONTRACT
-    else ""
-)
-
-_EXAMPLE_SYNTHESIS_CONTRACT_HEADER: str = (
-    LEAK_SAFE_EXAMPLE_SYNTHESIS_CONTRACT_PROMPT + "\n\n"
-    if _INCLUDE_UNIFIED_RCA_CONTRACT
-    else ""
-)
-
 
 # ── 5b. Holistic Strategist Prompt ────────────────────────────────────
 
@@ -4578,7 +4580,7 @@ _LEVER_TO_PATCH_TYPE: dict[tuple[str, int], str] = {
 
 # ── 23. Lever 6 SQL Expression Prompt ──────────────────────────────────
 
-LEVER_6_SQL_EXPRESSION_PROMPT = """You are an expert at defining SQL Expressions for Databricks Genie Spaces.
+_LEVER_6_SQL_EXPRESSION_BODY = """You are an expert at defining SQL Expressions for Databricks Genie Spaces.
 
 ## Context
 
@@ -4654,6 +4656,8 @@ table or domain it applies to.
 or ``Active Filter`` when more than one fact table or metric view in \
 the schema could host that concept.
 """
+
+LEVER_6_SQL_EXPRESSION_PROMPT = _RCA_CONTRACT_HEADER + _LEVER_6_SQL_EXPRESSION_BODY
 
 # ── 24. Prose Rule Mining (multi-target; prose → structured) ──────────
 #
