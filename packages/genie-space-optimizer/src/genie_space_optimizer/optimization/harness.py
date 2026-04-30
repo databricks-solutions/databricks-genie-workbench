@@ -5389,6 +5389,90 @@ def _build_reflection_entry(
     return entry
 
 
+def _log_target_fixed_disagreement(
+    *,
+    ag_id: str,
+    baseline_source: str,
+    pre_hard_qids: list[str],
+    post_hard_qids: list[str],
+    target_qids: tuple[str, ...],
+    target_fixed_qids: tuple[str, ...],
+) -> None:
+    """Log when eval row deltas imply a fix but the control plane reports none."""
+    pre_hard = set(pre_hard_qids)
+    post_hard = set(post_hard_qids)
+    target_set = set(str(q) for q in target_qids if str(q))
+    fixed_by_delta = tuple(sorted(target_set & (pre_hard - post_hard)))
+    if not fixed_by_delta or target_fixed_qids:
+        return
+    logger.warning(
+        "CONTROL PLANE TARGET-FIXED DISAGREEMENT: AG=%s source=%s "
+        "pre_hard=%s post_hard=%s target_qids=%s fixed_by_delta=%s "
+        "target_fixed_qids=%s",
+        ag_id,
+        baseline_source,
+        pre_hard_qids,
+        post_hard_qids,
+        list(target_qids),
+        list(fixed_by_delta),
+        list(target_fixed_qids),
+    )
+    print(
+        _section("CONTROL PLANE TARGET-FIXED DISAGREEMENT", "!") + "\n"
+        + _kv("AG", ag_id) + "\n"
+        + _kv("Baseline source", baseline_source) + "\n"
+        + _kv("Target QIDs", list(target_qids)) + "\n"
+        + _kv("Fixed by hard-row delta", list(fixed_by_delta)) + "\n"
+        + _kv("Control-plane target_fixed_qids", list(target_fixed_qids)) + "\n"
+        + _bar("!")
+    )
+
+
+def _log_strategist_coverage_gap(
+    *,
+    iteration: int,
+    uncovered_cluster_ids: list[str],
+    cluster_question_counts: dict[str, int],
+    rca_cards_present: dict[str, bool],
+    strategist_action_groups: int,
+    strategist_input_token_estimate: int | None,
+    strategist_output_truncated: bool,
+) -> None:
+    """Log why the strategist did not cover one or more patchable hard clusters."""
+    if not uncovered_cluster_ids:
+        return
+    logger.warning(
+        "STRATEGIST COVERAGE GAP: iter=%s uncovered_cluster_ids=%s "
+        "cluster_question_counts=%s rca_cards_present=%s "
+        "strategist_action_groups=%s strategist_input_token_estimate=%s "
+        "strategist_output_truncated=%s",
+        iteration,
+        uncovered_cluster_ids,
+        {cid: cluster_question_counts.get(cid) for cid in uncovered_cluster_ids},
+        {cid: rca_cards_present.get(cid, False) for cid in uncovered_cluster_ids},
+        strategist_action_groups,
+        strategist_input_token_estimate,
+        strategist_output_truncated,
+    )
+    print(
+        _section("STRATEGIST COVERAGE GAP", "!") + "\n"
+        + _kv("Iteration", iteration) + "\n"
+        + _kv("Uncovered cluster ids", uncovered_cluster_ids) + "\n"
+        + _kv(
+            "Cluster question counts",
+            {cid: cluster_question_counts.get(cid) for cid in uncovered_cluster_ids},
+        ) + "\n"
+        + _kv(
+            "RCA cards present",
+            {cid: rca_cards_present.get(cid, False) for cid in uncovered_cluster_ids},
+        ) + "\n"
+        + _kv("Strategist action groups returned", strategist_action_groups) + "\n"
+        + _kv("Strategist input token estimate", strategist_input_token_estimate) + "\n"
+        + _kv("Strategist output truncated", strategist_output_truncated) + "\n"
+        + _bar("!")
+    )
+
+
 def _qid_values(raw: object) -> list[str]:
     values: list[str] = []
     for item in raw or []:
@@ -8469,6 +8553,23 @@ def _run_gate_checks(
         protected_qids=_protected_qids,
     )
 
+    # Task 6 — instrument the case where eval-row deltas imply a fix on
+    # a target QID but the control-plane gate reports none.
+    try:
+        _log_target_fixed_disagreement(
+            ag_id=ag_id,
+            baseline_source=_baseline_source_for_control_plane,
+            pre_hard_qids=_pre_hard_for_log,
+            post_hard_qids=_post_hard_for_log,
+            target_qids=tuple(_target_qids),
+            target_fixed_qids=tuple(_control_plane_decision.target_fixed_qids),
+        )
+    except Exception:
+        logger.debug(
+            "Failed to log target-fixed disagreement diagnostic",
+            exc_info=True,
+        )
+
     # Suppressed qids: quarantine + GT correction queue. Those qids
     # legitimately can flip pass_to_fail without rolling back the AG.
     _suppressed_qids: set[str] = set()
@@ -8869,6 +8970,12 @@ def _run_lever_loop(
     # Task 8 — accumulator for regression-debt qids carried into the next
     # strategist call. Updated only when an AG is accepted with debt.
     _regression_debt_qids_for_next_iteration: tuple[str, ...] = ()
+
+    # Task 6 — track whether live Genie state is trusted enough to
+    # mutate quarantine. Set to False if rollback verification ever
+    # reports a real mismatch; restored on the next accepted AG. Task 2
+    # makes a real mismatch terminal, so this is defense-in-depth.
+    _rollback_state_trusted_for_quarantine = True
 
     # Task 2 — surface the trigger-time baseline snapshot ownership
     # contract. The run-level ``config_snapshot`` belongs in the
@@ -9959,6 +10066,14 @@ def _run_lever_loop(
             _, _persist_data = _build_question_persistence_summary(
                 _verdict_history, reflection_buffer,
             )
+            if not _rollback_state_trusted_for_quarantine:
+                logger.warning(
+                    "Skipping convergence quarantine because live state is untrusted; "
+                    "hard failures must remain visible until rollback verification passes."
+                )
+                _quarantine_qids: set[str] = set()
+                _soft_skip_qids: set[str] = set()
+                _persist_data = {}
             _quarantine_qids: set[str] = set()
             # T4.3: temporary quarantine for stuck/worsening questions
             # that haven't hit the hard-quarantine threshold yet. These
@@ -10262,6 +10377,46 @@ def _run_lever_loop(
                         action_groups,
                     )
                     if _uncovered:
+                        # Task 6 — log a structured diagnostic so the next
+                        # operator can tell the difference between "no RCA
+                        # card", "RCA card present but strategist returned
+                        # nothing", and "output truncated".
+                        try:
+                            _uncovered_ids = [
+                                str(c.get("cluster_id"))
+                                for c in _uncovered
+                                if c.get("cluster_id")
+                            ]
+                            _log_strategist_coverage_gap(
+                                iteration=iteration_counter,
+                                uncovered_cluster_ids=_uncovered_ids,
+                                cluster_question_counts={
+                                    str(c.get("cluster_id")): len(
+                                        c.get("question_ids") or []
+                                    )
+                                    for c in clusters or []
+                                    if c.get("cluster_id")
+                                },
+                                rca_cards_present={
+                                    str(c.get("cluster_id")): bool(c.get("rca_card"))
+                                    for c in clusters or []
+                                    if c.get("cluster_id")
+                                },
+                                strategist_action_groups=len(
+                                    (strategy or {}).get("action_groups") or []
+                                ),
+                                strategist_input_token_estimate=(strategy or {}).get(
+                                    "_input_token_estimate"
+                                ),
+                                strategist_output_truncated=bool(
+                                    (strategy or {}).get("_output_truncated")
+                                ),
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Failed to log strategist coverage gap diagnostic",
+                                exc_info=True,
+                            )
                         logger.warning(
                             "Strategist did not cover %d patchable hard cluster(s); "
                             "appending diagnostic AGs: %s",
@@ -12172,6 +12327,7 @@ def _run_lever_loop(
                         + "|  Failing the run terminally; subsequent AGs cannot trust live state.\n"
                         + _bar("-")
                     )
+                    _rollback_state_trusted_for_quarantine = False
                     update_run_status(
                         spark,
                         run_id,
@@ -12573,6 +12729,9 @@ def _run_lever_loop(
         _accepted_baseline_rows_for_control_plane = [
             dict(row) for row in _accepted_full_rows
         ]
+        # Task 6 — restore quarantine trust now that an AG accepted and the
+        # live Genie config matches the gate's accepted-baseline rows.
+        _rollback_state_trusted_for_quarantine = True
         # Task 8 — carry accepted regression debt into the next strategist
         # input so the loop targets it before any new soft cluster.
         _acceptance_detail = gate_result.get("acceptance_decision") or {}
