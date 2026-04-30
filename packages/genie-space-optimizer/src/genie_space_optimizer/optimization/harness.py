@@ -4687,6 +4687,45 @@ def _prepare_lever_loop(
     return config
 
 
+def _collect_uc_foreign_keys_for_enrichment(
+    *,
+    w: "WorkspaceClient",
+    spark: "SparkSession",
+    table_refs: list[tuple[str, str, str]],
+) -> list[dict]:
+    """Best-effort REST-first / Spark-fallback FK collection for enrichment.
+
+    Returns ``[]`` when both paths fail. Errors are warning-level; the
+    caller continues without FK metadata rather than aborting enrichment.
+    """
+    if not table_refs:
+        return []
+    from genie_space_optimizer.common.uc_metadata import (
+        get_foreign_keys_for_tables,
+        get_foreign_keys_for_tables_rest,
+    )
+
+    try:
+        rows = get_foreign_keys_for_tables_rest(w, table_refs)
+        if isinstance(rows, list) and rows:
+            return rows
+    except Exception as exc:
+        logger.warning(
+            "Lever loop: REST FK collection failed, falling back to Spark: %s",
+            str(exc)[:200],
+        )
+
+    try:
+        rows = get_foreign_keys_for_tables(spark, table_refs)
+        return rows if isinstance(rows, list) else []
+    except Exception as exc:
+        logger.warning(
+            "Lever loop: Spark FK fallback failed: %s",
+            str(exc)[:200],
+        )
+        return []
+
+
 def _refresh_config_preserving_mv_state(
     w: "WorkspaceClient",
     space_id: str,
@@ -4695,6 +4734,7 @@ def _refresh_config_preserving_mv_state(
     data_profile: dict,
     yaml_cache: dict,
     table_refs: list,
+    uc_foreign_keys: list | None = None,
 ) -> tuple[dict, dict]:
     """Re-fetch the Genie space config without losing MV detection state.
 
@@ -4720,11 +4760,15 @@ def _refresh_config_preserving_mv_state(
 
     config = fetch_space_config(w, space_id)
     config["_uc_columns"] = uc_columns
+    if uc_foreign_keys is not None:
+        config["_uc_foreign_keys"] = list(uc_foreign_keys)
     if isinstance(yaml_cache, dict) and yaml_cache:
         config["_metric_view_yaml"] = dict(yaml_cache)
     metadata_snapshot = config.get("_parsed_space", config)
     if isinstance(metadata_snapshot, dict):
         metadata_snapshot["_data_profile"] = data_profile
+        if uc_foreign_keys is not None:
+            metadata_snapshot["_uc_foreign_keys"] = list(uc_foreign_keys)
         if isinstance(yaml_cache, dict) and yaml_cache:
             metadata_snapshot["_metric_view_yaml"] = dict(yaml_cache)
     if uc_columns:
