@@ -2341,15 +2341,11 @@ def preflight_validate_benchmarks(
                 "gap": gap,
             },
         )
-        genie_benchmarks_topup = extract_genie_space_benchmarks(
-            config, spark, catalog=catalog, schema=schema,
-            w=w, warehouse_id=warehouse_id,
-        )
         topped_up = generate_benchmarks(
             w, config, uc_columns, uc_tags, uc_routines,
             domain, catalog, schema, spark,
             target_count=target_benchmark_count,
-            genie_space_benchmarks=genie_benchmarks_topup,
+            genie_space_benchmarks=[],
             existing_benchmarks=benchmarks,
             warehouse_id=warehouse_id,
             max_benchmark_count=max_benchmark_count,

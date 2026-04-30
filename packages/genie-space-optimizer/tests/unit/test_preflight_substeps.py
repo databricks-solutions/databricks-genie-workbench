@@ -260,6 +260,71 @@ class TestPreflightValidateBenchmarks:
         _, kwargs = mock_validate.call_args
         assert kwargs.get("warehouse_id") == "wh-789"
 
+    @patch("genie_space_optimizer.optimization.preflight.write_stage")
+    @patch("genie_space_optimizer.optimization.preflight.validate_benchmarks")
+    @patch("genie_space_optimizer.optimization.preflight.generate_benchmarks")
+    @patch("genie_space_optimizer.optimization.preflight.extract_genie_space_benchmarks")
+    def test_post_validation_topup_does_not_reextract_curated_benchmarks(
+        self,
+        mock_extract,
+        mock_generate,
+        mock_validate,
+        mock_write_stage,
+    ):
+        """Top-up must fill only the synthetic gap after validation.
+
+        Regression for the 30 -> 19 handoff mismatch: re-extracting curated
+        Genie benchmark rows during top-up reintroduced gs_001.. IDs that were
+        already present in the validated corpus.
+        """
+        from genie_space_optimizer.optimization.preflight import preflight_validate_benchmarks
+
+        initial = [
+            {
+                "id": f"sales_gs_{i + 1:03d}",
+                "question": f"validated question {i + 1}",
+                "expected_sql": "SELECT 1",
+            }
+            for i in range(18)
+        ]
+        topped_up = initial + [
+            {
+                "id": f"sales_{i + 19:03d}",
+                "question": f"synthetic top-up question {i + 1}",
+                "expected_sql": "SELECT 1",
+            }
+            for i in range(12)
+        ]
+
+        mock_validate.side_effect = [
+            [{"valid": True}] * 18,
+            [{"valid": True}] * 30,
+        ]
+        mock_generate.return_value = topped_up
+
+        result = preflight_validate_benchmarks(
+            MagicMock(),
+            MagicMock(),
+            "run-1",
+            "cat",
+            "gold",
+            {"_parsed_space": {}},
+            initial,
+            [],
+            [],
+            [],
+            "sales",
+            target_benchmark_count=30,
+            max_benchmark_count=30,
+        )
+
+        assert len(result["benchmarks"]) == 30
+        assert result["benchmarks"] == topped_up
+        mock_extract.assert_not_called()
+        _, kwargs = mock_generate.call_args
+        assert kwargs["genie_space_benchmarks"] == []
+        assert kwargs["existing_benchmarks"] == initial
+
 
 # ---------------------------------------------------------------------------
 # Step 5: preflight_load_human_feedback
