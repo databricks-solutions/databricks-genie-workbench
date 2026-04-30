@@ -460,7 +460,7 @@ def instruction_patch_scope_is_safe(
     drops them before the patch cap.
     """
     ptype = str(patch.get("type") or patch.get("patch_type") or "")
-    if ptype not in {"rewrite_instruction", "update_instruction_section"}:
+    if ptype not in {"add_instruction", "rewrite_instruction", "update_instruction_section"}:
         return {"safe": True, "reason": "not_instruction_rewrite"}
     if patch.get("passing_dependents") is not None:
         return {"safe": True, "reason": "has_counterfactual_dependents"}
@@ -477,7 +477,7 @@ def instruction_patch_scope_is_safe(
         or patch.get("target_table")
         or patch.get("column")
     )
-    if ptype == "rewrite_instruction" or section in _GLOBAL_INSTRUCTION_SECTIONS:
+    if ptype in {"add_instruction", "rewrite_instruction"} or section in _GLOBAL_INSTRUCTION_SECTIONS:
         if not has_specific_target:
             return {
                 "safe": False,

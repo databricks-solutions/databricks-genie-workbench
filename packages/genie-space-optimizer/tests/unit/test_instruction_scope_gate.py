@@ -61,3 +61,19 @@ def test_allows_narrow_non_global_instruction_section() -> None:
     )
     assert decision["safe"] is True
     assert decision["reason"] == "narrow_instruction_scope"
+
+
+def test_rejects_global_add_instruction_without_targets_or_dependents() -> None:
+    patch = {
+        "type": "add_instruction",
+        "section_name": "QUERY RULES",
+        "new_text": "APSD KPI queries require UNION ALL of Day and MTD periods.",
+    }
+
+    decision = instruction_patch_scope_is_safe(
+        patch,
+        ag_target_qids=("q002", "q005", "q009"),
+    )
+
+    assert decision["safe"] is False
+    assert decision["reason"] == "global_instruction_scope_without_dependents"
