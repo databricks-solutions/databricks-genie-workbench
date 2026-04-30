@@ -4192,10 +4192,21 @@ def _execute_sql_via_warehouse(
                 rows.append(dict(zip(columns, row_data)))
         return pd.DataFrame(rows, columns=pd.Index(columns) if columns else None)
 
+    state = str(resp.status.state) if resp.status and resp.status.state else "UNKNOWN"
+    statement_id = getattr(resp, "statement_id", None) or ""
+    if state in {"PENDING", "RUNNING"}:
+        raise RuntimeError(
+            "SQL warehouse query did not finish within "
+            f"wait_timeout={wait_timeout}; state={state}; statement_id={statement_id}"
+        )
+
     error_msg = ""
     if resp.status and resp.status.error:
         error_msg = resp.status.error.message or str(resp.status.error)
-    raise RuntimeError(error_msg or "SQL warehouse query failed")
+    raise RuntimeError(
+        error_msg
+        or f"SQL warehouse query failed with state={state}; statement_id={statement_id}"
+    )
 
 
 def _exec_sql(

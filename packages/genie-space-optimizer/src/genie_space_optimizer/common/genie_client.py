@@ -398,6 +398,26 @@ def run_genie_query(
                     break
                 poll_interval = min(poll_interval + 1, GENIE_POLL_MAX)
 
+            elapsed = time.time() - start
+            if not any(s in status for s in ["COMPLETED", "FAILED", "CANCELLED"]):
+                logger.warning(
+                    "Genie query timed out after %.1fs for space %s conversation=%s message=%s",
+                    elapsed,
+                    space_id,
+                    conversation_id,
+                    message_id,
+                )
+                return {
+                    "status": "TIMEOUT",
+                    "sql": None,
+                    "conversation_id": conversation_id,
+                    "message_id": message_id,
+                    "attachment_id": None,
+                    "statement_id": None,
+                    "analysis_text": None,
+                    "error": f"Genie query timed out after {elapsed:.1f}s",
+                }
+
             sql = None
             attachment_id = None
             statement_id = None
