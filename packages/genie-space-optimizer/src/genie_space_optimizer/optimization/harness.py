@@ -13,6 +13,11 @@ convenience function (used for dev/test only) share identical code paths.
 Architecture: ``preflight`` → ``baseline_eval`` → ``enrichment`` →
 ``lever_loop`` → ``finalize`` → ``deploy``.  Inter-task data flows via
 ``dbutils.jobs.taskValues``.  Detailed state goes to Delta.
+
+Lever loop ordering: each iteration drains the per-run
+``diagnostic_action_queue`` (coverage-gap AGs from
+``uncovered_patchable_clusters``) before invoking the strategist; live
+clusters bypass diagnostics that have since resolved.
 """
 
 from __future__ import annotations
@@ -9850,6 +9855,7 @@ def _run_lever_loop(
     )
     pending_action_groups: list[dict] = []
     pending_strategy: dict | None = None
+    diagnostic_action_queue: list[dict] = []
 
     _dead_on_arrival_patch_signatures: set[tuple[str, ...]] = set()
     _dead_on_arrival_ag_ids: set[str] = set()
@@ -10670,10 +10676,49 @@ def _run_lever_loop(
                         c for c in _strategy_hard_clusters
                         if str(c.get("cluster_id") or "") not in _debt_cluster_ids
                     ]
+                _live_cluster_ids = {
+                    str(c.get("cluster_id") or "")
+                    for c in _strategy_hard_clusters + list(_strategy_soft_clusters or [])
+                    if c.get("cluster_id")
+                }
+                _diag_preempt: dict | None = None
+                while diagnostic_action_queue and _diag_preempt is None:
+                    _candidate = diagnostic_action_queue.pop(0)
+                    _src_ids = {
+                        str(cid) for cid in (_candidate.get("source_cluster_ids") or []) if str(cid)
+                    }
+                    if _src_ids and not (_src_ids & _live_cluster_ids):
+                        print(
+                            _section("SKIPPING DIAGNOSTIC AG BECAUSE CLUSTER RESOLVED", "-")
+                            + "\n"
+                            + _kv("AG id", _candidate.get("id", "?"))
+                            + "\n"
+                            + _kv("Source clusters", sorted(_src_ids))
+                            + "\n"
+                            + _bar("-")
+                        )
+                        continue
+                    _diag_preempt = _candidate
+                    print(
+                        _section("USING DIAGNOSTIC AG FROM COVERAGE GAP", "-")
+                        + "\n"
+                        + _kv("AG id", _diag_preempt.get("id", "?"))
+                        + "\n"
+                        + _kv("Source clusters", sorted(_src_ids))
+                        + "\n"
+                        + _bar("-")
+                    )
+
                 _memo_key = _strategist_memo_key(
                     list(_strategy_hard_clusters), metadata_snapshot,
                 )
-                if _memo_key in strategist_memo_cache:
+                if _diag_preempt is not None:
+                    strategy = {
+                        "action_groups": [_diag_preempt],
+                        "_memoized": False,
+                        "_diagnostic_preempt": True,
+                    }
+                elif _memo_key in strategist_memo_cache:
                     strategy = copy.deepcopy(strategist_memo_cache[_memo_key])
                     strategy["_memoized"] = True
                 else:
@@ -10776,9 +10821,9 @@ def _run_lever_loop(
                             [c.get("cluster_id") for c in _uncovered],
                         )
                         for _c in _uncovered:
-                            action_groups.append(
-                                diagnostic_action_group_for_cluster(_c)
-                            )
+                            _diag_ag = diagnostic_action_group_for_cluster(_c)
+                            action_groups.append(_diag_ag)
+                            diagnostic_action_queue.append(_diag_ag)
                 except Exception:
                     logger.debug(
                         "Strategist coverage enforcement raised (non-fatal)",
