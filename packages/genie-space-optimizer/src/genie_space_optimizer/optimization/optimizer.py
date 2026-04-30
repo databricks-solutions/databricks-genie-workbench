@@ -1690,6 +1690,60 @@ def _classify_sql_diff(ctx: dict) -> str:
     return "missing_instruction"
 
 
+def _normalize_ast_diff_sql_pairs(raw: Any) -> list[dict[str, str]]:
+    """Normalize row-level SQL pairs into the dict shape AFS expects.
+
+    ``harness.py`` writes ``(generated_sql, expected_sql)``;
+    ``afs._structural_diff`` expects ``{"expected_sql": ..., "generated_sql": ...}``.
+    Accept both shapes so future callers can use the clearer dict form.
+    """
+    if not raw:
+        return []
+    items = raw if isinstance(raw, list) else [raw]
+    out: list[dict[str, str]] = []
+    for item in items:
+        if isinstance(item, dict):
+            expected_sql = str(item.get("expected_sql") or "")
+            generated_sql = str(item.get("generated_sql") or "")
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            generated_sql = str(item[0] or "")
+            expected_sql = str(item[1] or "")
+        else:
+            continue
+        if expected_sql and generated_sql:
+            pair = {"expected_sql": expected_sql, "generated_sql": generated_sql}
+            if pair not in out:
+                out.append(pair)
+    return out[:5]
+
+
+def _summarize_feature_diffs(raw: list[Any]) -> dict[str, Any]:
+    """Summarize feature_mining.SqlDiff objects without carrying raw SQL.
+
+    Prompt-facing output is intentionally a closed set of enum-like tokens and
+    integer lever IDs. Keep table names, column names, and SQL text out of this
+    block; AFS carries structural diffs separately through its leak-safe
+    projection path.
+    """
+    kinds: list[str] = []
+    levers: list[int] = []
+    for diff in raw:
+        primary = getattr(diff, "primary_kind", None)
+        kind = getattr(primary, "value", None) or str(primary or "")
+        if kind and kind != "None" and kind not in kinds:
+            kinds.append(kind)
+        for lever in getattr(diff, "candidate_levers", ()) or ():
+            if int(lever) not in levers:
+                levers.append(int(lever))
+    if not kinds:
+        return {}
+    return {
+        "primary_kind": kinds[0],
+        "kinds": kinds,
+        "candidate_levers": levers,
+    }
+
+
 def cluster_failures(
     eval_results: dict,
     metadata_snapshot: dict,
@@ -2027,6 +2081,13 @@ def cluster_failures(
                 }
                 if isinstance(asi_join_assessment, dict) and asi_join_assessment.get("left_table"):
                     failure_entry["asi_join_assessment"] = asi_join_assessment
+                _ast_pairs = _normalize_ast_diff_sql_pairs(
+                    row.get("_sql_pairs_for_ast_diff")
+                )
+                if _ast_pairs:
+                    failure_entry["_sql_pairs_for_ast_diff"] = _ast_pairs
+                if row.get("_feature_diff") is not None:
+                    failure_entry["_feature_diff"] = row["_feature_diff"]
                 failures.append(failure_entry)
 
     question_profiles: dict[str, dict] = {}
@@ -2040,6 +2101,8 @@ def cluster_failures(
                 "counterfactual_fixes": [],
                 "wrong_clauses": [],
                 "sql_context": f.get("sql_context", {}),
+                "sql_pairs_for_ast_diff": [],
+                "feature_diffs": [],
                 "failures": [],
                 # Tier 2.12: preserve the benchmark's real id so downstream
                 # outward-facing fields (ag.affected_questions, provenance,
@@ -2050,6 +2113,11 @@ def cluster_failures(
         profile = question_profiles[qid]
         profile["judges"].add(f["judge"])
         profile["failures"].append(f)
+        for _pair in f.get("_sql_pairs_for_ast_diff") or []:
+            if _pair not in profile["sql_pairs_for_ast_diff"]:
+                profile["sql_pairs_for_ast_diff"].append(_pair)
+        if f.get("_feature_diff") is not None:
+            profile["feature_diffs"].append(f["_feature_diff"])
 
         # S3 — Root-cause cascade, ordered so each level overrides later
         # ones. The historical bug was that empty ``generated_sql`` fell
@@ -2375,6 +2443,8 @@ def cluster_failures(
         sql_contexts: list[dict] = []
         sample_asi_type: str | None = None
         join_assessments: list[dict] = []
+        sql_pairs_for_ast_diff: list[dict[str, str]] = []
+        feature_diffs: list[Any] = []
 
         _cluster_is_sql_shape = root_cause in _SQL_SHAPE_ROOT_CAUSES
         _suppress_classes = {SignalClass.NL_TEXT, SignalClass.META}
@@ -2412,6 +2482,10 @@ def cluster_failures(
                 })
             if profile["sql_context"]:
                 sql_contexts.append(profile["sql_context"])
+            for _pair in profile.get("sql_pairs_for_ast_diff", []) or []:
+                if _pair not in sql_pairs_for_ast_diff:
+                    sql_pairs_for_ast_diff.append(_pair)
+            feature_diffs.extend(profile.get("feature_diffs", []) or [])
             if not sample_asi_type:
                 for f in profile["failures"]:
                     if f.get("asi_failure_type"):
@@ -2645,6 +2719,11 @@ def cluster_failures(
         }
         if join_assessments:
             entry["join_assessments"] = join_assessments
+        if sql_pairs_for_ast_diff:
+            entry["_sql_pairs_for_ast_diff"] = sql_pairs_for_ast_diff[:5]
+        _failure_features = _summarize_feature_diffs(feature_diffs)
+        if _failure_features:
+            entry["failure_features"] = _failure_features
         clusters.append(entry)
 
     clusters.sort(key=lambda c: len(c["question_ids"]), reverse=True)
