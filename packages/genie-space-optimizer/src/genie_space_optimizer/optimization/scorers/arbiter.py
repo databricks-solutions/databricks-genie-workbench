@@ -36,6 +36,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+ARBITER_VERDICTS = {
+    "genie_correct",
+    "ground_truth_correct",
+    "both_correct",
+    "neither_correct",
+    "skipped",
+}
+ARBITER_PASS_VERDICTS = {"genie_correct", "both_correct"}
+ARBITER_FAIL_VERDICTS = {"ground_truth_correct", "neither_correct"}
+
+
+def is_arbiter_pass_verdict(verdict: str) -> bool:
+    """Return True when the arbiter verdict counts as a Genie pass.
+
+    The other valid verdicts (`ground_truth_correct`, `neither_correct`,
+    `skipped`) are not treated as passes by any scoring path.
+    """
+    return str(verdict or "").strip().lower() in ARBITER_PASS_VERDICTS
+
+
 def _parse_arbiter_verdict(rationale: str) -> str:
     """Extract verdict from arbiter feedback text."""
     text = rationale.lower()
@@ -61,7 +81,9 @@ def _make_arbiter_scorer(
             "\nGENIE SPACE INSTRUCTIONS (SOURCE OF TRUTH for this space's business rules):\n"
             f"{_trimmed}\n\n"
             "CRITICAL RULE FOR DEFAULT FILTERS: If the instructions above define a DEFAULT "
-            "FILTER (e.g. 'Default filter: same_store_7now = Y for all PSD queries'), then:\n"
+            "FILTER (e.g. 'Default filter: <flag_column> = <value> for all "
+            "<metric>-related queries' — such as a default region, default active-only, "
+            "or default time-window filter), then:\n"
             "- Genie is CORRECT to include that filter even if the question does not "
             "explicitly mention it — the filter is mandated by the space's business rules.\n"
             "- Ground Truth is WRONG if it omits a mandated default filter.\n"
@@ -280,12 +302,7 @@ def _make_arbiter_scorer(
         try:
             result = _call_llm_for_scoring(w, prompt, prompt_name=get_registered_prompt_name("arbiter"))
             verdict = result.get("verdict", "ground_truth_correct")
-            valid_verdicts = {
-                "genie_correct",
-                "ground_truth_correct",
-                "both_correct",
-                "neither_correct",
-            }
+            valid_verdicts = ARBITER_VERDICTS - {"skipped"}
             if verdict not in valid_verdicts:
                 verdict = _parse_arbiter_verdict(result.get("rationale", str(result)))
 
