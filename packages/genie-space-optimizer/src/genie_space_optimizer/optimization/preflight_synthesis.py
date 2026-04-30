@@ -1327,16 +1327,15 @@ def _extract_offending_identifiers(reason: str) -> list[str]:
 
 
 # Leaf-prefix patterns we strip when building "soft stems" for a
-# canonical identifier. Covers the medallion + Databricks-convention
-# shapes we see in practice:
-#   mv_, vw_, dim_, fact_, agg_, tbl_  (single prefix)
-#   mv_esr_, mv_7now_, vw_sales_, ...  (two-segment prefix)
-# Matching is case-insensitive; we only register soft stems that still
-# resolve UNIQUELY to one canonical identifier so ambiguous rewrites
-# are impossible.
-_LEAF_SOFT_PREFIXES = ("mv_", "vw_", "dim_", "fact_", "agg_", "tbl_")
-_LEAF_TWO_SEG_PREFIX = re.compile(
-    r"^(?:mv|vw)_[a-z0-9]+_(?P<tail>.+)$", re.IGNORECASE,
+# canonical identifier. Sourced from :mod:`common.naming` so the
+# vocabulary stays in one place. Covers the medallion + Databricks-
+# convention shapes we see in practice (single prefix and two-segment
+# ``<medallion>_<domain>_<tail>`` prefix). Matching is case-insensitive;
+# we only register soft stems that still resolve UNIQUELY to one
+# canonical identifier so ambiguous rewrites are impossible.
+from genie_space_optimizer.common.naming import (  # noqa: E402 — sibling helper
+    LEAF_SOFT_PREFIXES as _LEAF_SOFT_PREFIXES,
+    LEAF_TWO_SEG_PREFIX as _LEAF_TWO_SEG_PREFIX,
 )
 
 
@@ -1353,13 +1352,13 @@ def _build_stem_map(canonical: list[str]) -> dict[str, str]:
     uniqueness check on the way out is what guarantees correctness:
 
     * **Hard stems** — every suffix of the dotted identifier path
-      (``mv_esr_dim_date``, ``sales_reports.mv_esr_dim_date``, full
-      FQ). These are always safe rewrites when unique because they
-      differ only in qualifier scope.
+      (``mv_<domain>_dim_date``, ``schema.mv_<domain>_dim_date``,
+      full FQ). These are always safe rewrites when unique because
+      they differ only in qualifier scope.
     * **Prefix-strip soft stems** — leaf with a medallion or
       two-segment leaf prefix stripped (``dim_date`` from
-      ``mv_esr_dim_date``). This is the shape observed most often in
-      the production log.
+      ``mv_<domain>_dim_date``). This is the shape observed most
+      often in the production log.
     * **Underscore-suffix soft stems** — every suffix of the leaf
       after an underscore boundary (``other_dim_date`` registers
       ``dim_date`` and ``date``). This makes the uniqueness check
@@ -1388,7 +1387,7 @@ def _build_stem_map(canonical: list[str]) -> dict[str, str]:
         for prefix in _LEAF_SOFT_PREFIXES:
             if leaf.lower().startswith(prefix):
                 _register(leaf[len(prefix):], full)
-        # Two-segment soft stem (mv_esr_, mv_7now_, vw_foo_, ...).
+        # Two-segment soft stem (mv_<domain>_, vw_<domain>_, ...).
         m = _LEAF_TWO_SEG_PREFIX.match(leaf)
         if m:
             _register(m.group("tail"), full)
@@ -1396,9 +1395,9 @@ def _build_stem_map(canonical: list[str]) -> dict[str, str]:
         # the leaf that starts at an underscore boundary. This is
         # what makes ``other_dim_date`` contribute ``dim_date`` and
         # ``date`` to the map — so the ``dim_date`` stem becomes
-        # ambiguous with ``mv_esr_dim_date`` (which also registers
-        # ``dim_date`` via the two-segment prefix strip) and no
-        # rewrite fires.
+        # ambiguous with ``mv_<domain>_dim_date`` (which also
+        # registers ``dim_date`` via the two-segment prefix strip)
+        # and no rewrite fires.
         underscore_positions = [i for i, ch in enumerate(leaf) if ch == "_"]
         for pos in underscore_positions:
             tail = leaf[pos + 1:]
@@ -1436,9 +1435,9 @@ def repair_stemmed_identifiers_in_sql(
     if not unique_stems:
         return sql, []
 
-    # Longest-first so ``schema.mv_esr_dim_date`` wins over ``dim_date``
-    # when both are present in the SQL. This keeps the final SQL as
-    # close to the LLM's intent as possible.
+    # Longest-first so ``schema.mv_<domain>_dim_date`` wins over
+    # ``dim_date`` when both are present in the SQL. This keeps the
+    # final SQL as close to the LLM's intent as possible.
     #
     # Two complementary passes per stem:
     #
@@ -1529,7 +1528,8 @@ def _repair_stemmed_identifiers(
 
     The engine runs this BEFORE the validator so the common "LLM
     stemmed the prefix" case (e.g. ``FROM dim_date`` when the allowlist
-    has ``cat.sch.mv_esr_dim_date``) never burns a retry LLM call.
+    has ``cat.sch.mv_<domain>_dim_date``) never burns a retry LLM
+    call.
     """
     sql = str(proposal.get("example_sql") or "")
     if not sql:
@@ -1565,7 +1565,7 @@ _MEASURE_FAILURE_MARKER = "METRIC_VIEW_MISSING_MEASURE_FUNCTION"
 # Spark emits the offending measure names as a comma-separated list
 # inside square brackets. Example:
 #   [METRIC_VIEW_MISSING_MEASURE_FUNCTION] The usage of measure column
-#   [7now_avg_txn_cy_day, 7now_avg_txn_prior] must be wrapped in MEASURE()
+#   [avg_txn_cy_day, avg_txn_prior] must be wrapped in MEASURE()
 _MEASURE_OFFENDERS_RE = re.compile(
     r"METRIC_VIEW_MISSING_MEASURE_FUNCTION.*?\[(?P<list>[^\]]+)\]",
     re.IGNORECASE | re.DOTALL,
@@ -2288,9 +2288,10 @@ def run_preflight_example_synthesis(
         # The most common qualification failure in prod is the LLM
         # emitting a stemmed identifier ("FROM dim_date") when the
         # allowlist has exactly one canonical match
-        # ("cat.sch.mv_esr_dim_date"). Rewrite unique stems in place so
-        # the first validation pass succeeds without burning a retry.
-        # Ambiguous stems are left alone; the retry path handles those.
+        # ("cat.sch.mv_<domain>_dim_date"). Rewrite unique stems in
+        # place so the first validation pass succeeds without burning
+        # a retry. Ambiguous stems are left alone; the retry path
+        # handles those.
         proposal, _pre_subs = _repair_stemmed_identifiers(proposal, slice_)
         if _pre_subs:
             repaired_stemmed_identifiers += len(_pre_subs)

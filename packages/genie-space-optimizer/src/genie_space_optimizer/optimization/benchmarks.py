@@ -626,38 +626,27 @@ def validate_benchmarks(
 # ═══════════════════════════════════════════════════════════════════════
 
 
-_SAME_STORE_QUESTION_TERMS = (
-    "same-store",
-    "same store",
-    "finance monthly same-store",
-    "finance monthly same store",
-    "comp store",
-    "comparable store",
-)
-
-
 def deterministic_question_sql_alignment_issues(benchmark: dict) -> list[str]:
     """Return deterministic alignment issues for a benchmark.
 
-    The LLM alignment check is expensive and noisy for filters that are
-    cheap to detect via string match. This helper enumerates the common
-    ESR same-store class so the live alignment validator can skip the LLM
-    call when the benchmark is unambiguously misaligned.
+    The LLM alignment check is expensive and noisy for filter
+    misalignments that are cheap to detect via string match. This
+    helper consults the configurable
+    ``DETERMINISTIC_EXTRA_FILTER_RULES`` registry in
+    :mod:`alignment_rules` so deployments can opt into deterministic
+    shortcuts for their well-known business flags. The default
+    registry is empty, which means every benchmark falls through to
+    the LLM alignment validator (the previous behavior for any space
+    that did not match the legacy hardcoded rule).
     """
-    question = str(benchmark.get("question") or "").lower()
-    sql = str(benchmark.get("expected_sql") or "").lower()
-    issues: list[str] = []
-    has_same_store_filter = "is_finance_monthly_same_store" in sql
-    question_mentions_same_store = any(
-        term in question for term in _SAME_STORE_QUESTION_TERMS
+    from genie_space_optimizer.optimization.alignment_rules import (
+        evaluate_extra_filter_rules,
     )
-    if has_same_store_filter and not question_mentions_same_store:
-        issues.append(
-            "EXTRA_FILTER: SQL filters on is_finance_monthly_same_store but "
-            "the question does not ask for same-store or finance-monthly "
-            "same-store results."
-        )
-    return issues
+
+    return evaluate_extra_filter_rules(
+        question=str(benchmark.get("question") or ""),
+        expected_sql=str(benchmark.get("expected_sql") or ""),
+    )
 
 
 def validate_question_sql_alignment(

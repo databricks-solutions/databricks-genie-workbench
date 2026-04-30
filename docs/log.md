@@ -206,7 +206,7 @@
   - `tr-21a0462b55a9b6f1e1952f43bc446902`: schema judge, state `OK`, token usage `1160`, duration `3013 ms`.
   - `tr-f1aba9639a7529e333acdda6069fee6b`: completeness judge, state `OK`, token usage `934`, duration `3167 ms`.
   - `tr-c8e57b6435360dad4d4637b3e73a2a24`: semantics judge, state `OK`, token usage `912`.
-- Example trace context: question "What is the average 7NOW sales per customer by market for same-store locations?" produced exact result match and judges marked the generated SQL as functionally equivalent.
+- Example trace context: question "What is the average <metric> per customer by market for <flag-qualified> locations?" produced exact result match and judges marked the generated SQL as functionally equivalent.
 - Iteration API still returns `[]`.
 - Diagnosis: baseline evaluation is actively scoring benchmark rows. Trace-level health is good; iteration 0 will appear after evaluation aggregation/persistence.
 
@@ -257,17 +257,17 @@
 
 ### Example Generated SQL Evidence
 
-- Question `retail_store_sales_analytics_gs_002`: "What is the average 7NOW sales per customer by market for same-store locations?"
-  - Generated SQL uses `try_divide(SUM(f.cy_sales), SUM(f.cy_cust_count))` over `mv_7now_fact_sales` joined to `mv_esr_dim_location`, filtering `loc.is_finance_monthly_same_store = 'Y'`.
+- Question `retail_store_sales_analytics_gs_002`: "What is the average <metric> per customer by market for <flag-qualified> locations?"
+  - Generated SQL uses `try_divide(SUM(f.cy_sales), SUM(f.cy_cust_count))` over `mv_<domain_a>_fact_sales` joined to `mv_<domain_b>_dim_location`, filtering `loc.<flag_column> = 'Y'`.
   - Comparison: `match=true`, `match_type=exact`, `gt_rows=7`, `genie_rows=7`.
 - Question `retail_store_sales_analytics_007`: "Show me the total sales amount in USD and transaction count by day of week for all stores in March 2026..."
-  - Generated SQL joins `mv_esr_fact_sales` to `mv_esr_dim_date`, filters `d.full_date >= DATE('2026-03-01')` and `< DATE('2026-04-01')`, groups by `d.day_of_week`.
+  - Generated SQL joins `mv_<domain_b>_fact_sales` to `mv_<domain_b>_dim_date`, filters `d.full_date >= DATE('2026-03-01')` and `< DATE('2026-04-01')`, groups by `d.day_of_week`.
   - Comparison: `match=true`, `match_type=column_subset`, `gt_rows=7`, `genie_rows=7`.
 - Question `retail_store_sales_analytics_017`: "For each store, show the zone name ... total USD sales and transaction count ... for the most recent date available."
   - Generated SQL creates a `latest_date` CTE with `MAX(date_key_2)`, joins fact sales to dim location, groups by store and zone.
   - Comparison: `match=true`, `match_type=column_subset`, `gt_rows=5`, `genie_rows=5`.
-- Question `retail_store_sales_analytics_014`: "Which stores have 7NOW same-store flag set to N and still have current-year sales in the day time window?"
-  - Generated SQL filters `same_store_7now = 'N'`, `time_window = 'day'`, and `cy_sales > 0`.
+- Question `retail_store_sales_analytics_014`: "Which stores have the <flag-qualified> indicator set to N and still have current-year sales in the day time window?"
+  - Generated SQL filters `<flag_column> = 'N'`, `time_window = 'day'`, and `cy_sales > 0`.
   - Comparison: `match=true`, `match_type=column_subset`, `gt_rows=3`, `genie_rows=3`.
 - Diagnosis: baseline evaluation is actively generating SQL and the observed subset is matching expected results. No failures yet, but the final score must wait for all 27 benchmarks and iteration persistence.
 

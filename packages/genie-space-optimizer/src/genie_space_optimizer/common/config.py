@@ -887,12 +887,15 @@ BENCHMARK_GENERATION_PROMPT = (
     '\n'
     '## CRITICAL: Instruction-Mandated Default Filters\n'
     'The Genie Space Instructions section above may define default filters (e.g. '
-    '"Default filter: same_store_7now = Y for all PSD queries"). These are MANDATORY:\n'
+    '"Default filter: <flag_column> = <value> for all <metric>-related queries", '
+    'such as a default region filter, a default active-only filter, or a default '
+    'time-window filter). These are MANDATORY:\n'
     '- EVERY benchmark SQL that falls under the scope of a default filter MUST include '
     'that filter in its WHERE clause. Omitting it produces incorrect ground truth.\n'
     '- The question text MUST reflect the default filter so question and SQL stay aligned. '
-    'Example: instead of "What are the PSD KPIs by zone?" with WHERE same_store_7now = \'Y\', '
-    'write "What are the same-store PSD KPIs by zone?"\n'
+    'Example: instead of "What are the metric KPIs by region?" with '
+    'WHERE <flag_column> = \'<value>\', '
+    'write "What are the <flag-qualified> metric KPIs by region?" so the question and SQL agree.\n'
     '- Do NOT add filters that are neither mentioned in the question NOR mandated by instructions.\n'
     '\n'
     '## Minimal SQL Principle\n'
@@ -3158,12 +3161,14 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     '\n'
     '## Contract: Compound-Concept Queries\n'
     'When a question requires resolving MULTIPLE business concepts simultaneously '
-    '(e.g. "Canada 7Now delivery PSD sales by zone" = country filter + channel filter '
-    '+ metric + grouping dimension), apply a multi-lever approach:\n'
+    '(for example: "North-America wholesale revenue by region" = country filter + '
+    'channel filter + metric + grouping dimension; OR: "EMEA premium-tier claim '
+    'count by line-of-business" = region filter + tier filter + metric + grouping '
+    'dimension), apply a multi-lever approach:\n'
     '1. Lever 6: Add SQL expressions for each atomic concept — a filter for the '
-    'country, a filter for the channel, a measure for the metric.\n'
+    'country/region, a filter for the channel/tier, a measure for the metric.\n'
     '2. Lever 2: Ensure column descriptions include concept-to-column mappings '
-    '(e.g. "Canada = country_code=CA", "PSD sales = psd_sales column").\n'
+    '(e.g. "North America = region_code=NA", "wholesale = channel column = WH").\n'
     '3. Lever 5: Add an example SQL that demonstrates the FULL filter chain for '
     'this type of compound query.\n'
     'NEVER leave a compound-concept failure with just an instruction rewrite — '
@@ -3172,7 +3177,7 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     '\n'
     '## Contract: Instruction-Defined Default Filters\n'
     'If the Genie Space instructions define a default filter (e.g. "always filter by '
-    'same_store_7now = Y unless explicitly requested otherwise"), that filter is '
+    '<flag_column> = <value> unless explicitly requested otherwise"), that filter is '
     'CORRECT BEHAVIOR. Do NOT blame it as "over-filtering" in root cause analysis. '
     'Only flag the filter as a problem if the user explicitly asked to exclude it.\n'
     '\n'
@@ -4647,9 +4652,11 @@ business domain inside this space. If two fact tables or metric views \
 in the schema could plausibly share a concept, the name MUST encode \
 which one it applies to.
 - When the SQL references a domain-specific table such as \
-``mv_7now_fact_sales`` or ``mv_esr_dim_date``, include the compact \
-qualifier (``7NOW``, ``ESR``, …) at the start of ``display_name`` — \
-e.g. ``7NOW Month-to-Date Filter``, NOT ``Month-to-Date Filter``.
+``mv_<domain>_fact_<entity>`` or ``mv_<domain>_dim_<entity>`` (for \
+example ``mv_orders_fact_lines`` or ``mv_claims_dim_date``), include \
+the compact qualifier (``ORDERS``, ``CLAIMS``, …) at the start of \
+``display_name`` — e.g. ``ORDERS Month-to-Date Filter``, NOT \
+``Month-to-Date Filter``.
 - ``instruction`` MUST state when to use the expression and which \
 table or domain it applies to.
 - Avoid generic names like ``Month-to-Date Filter``, ``Total Revenue``, \
@@ -4733,11 +4740,13 @@ Bare columns are rejected by the Genie serving path.
 - Drop anything the Existing SQL Expressions list already covers.
 - ``display_name`` MUST be specific enough to disambiguate the source \
 table or business domain inside this space. When the SQL references a \
-domain-specific table such as ``mv_7now_fact_sales`` or \
-``mv_esr_dim_date``, prefix ``display_name`` with the compact qualifier \
-(e.g. ``7NOW Month-to-Date Filter``, ``ESR Total Sales Amount``). Avoid \
-generic names like ``Month-to-Date Filter`` when multiple fact tables \
-or metric views in this space could plausibly share that concept.
+domain-specific table such as ``mv_<domain>_fact_<entity>`` or \
+``mv_<domain>_dim_<entity>`` (for example ``mv_orders_fact_lines`` or \
+``mv_claims_dim_date``), prefix ``display_name`` with the compact \
+qualifier (e.g. ``ORDERS Month-to-Date Filter``, \
+``CLAIMS Total Premium Amount``). Avoid generic names like \
+``Month-to-Date Filter`` when multiple fact tables or metric views in \
+this space could plausibly share that concept.
 - ``description`` MUST mention when to use the snippet AND which \
 table or domain it applies to.
 
@@ -4904,12 +4913,13 @@ For each candidate, provide:
 - display_name: A concise business-friendly name. MUST be specific \
 enough to disambiguate the source table or business domain inside \
 this space. When the SQL references a domain-specific table such as \
-``mv_7now_fact_sales`` or ``mv_esr_dim_date``, prefix the name with \
-the compact qualifier (e.g. ``7NOW Month-to-Date Filter``, \
-``ESR Total Sales Amount``). Avoid generic names like \
-``Month-to-Date Filter`` or ``Total Revenue`` when multiple fact \
-tables or metric views in this space could plausibly share that \
-concept.
+``mv_<domain>_fact_<entity>`` or ``mv_<domain>_dim_<entity>`` (for \
+example ``mv_orders_fact_lines`` or ``mv_claims_dim_date``), prefix \
+the name with the compact qualifier (e.g. \
+``ORDERS Month-to-Date Filter``, ``CLAIMS Total Premium Amount``). \
+Avoid generic names like ``Month-to-Date Filter`` or \
+``Total Revenue`` when multiple fact tables or metric views in this \
+space could plausibly share that concept.
 - synonyms: 2-3 alternative terms users might use.
 - instruction: One sentence on when Genie should use this expression. \
 MUST mention the source table or business domain so Genie can pick \
@@ -5022,7 +5032,7 @@ alias you haven't declared for THIS query.
 
 Worked example (identifier = ``{{ schema_example_identifier }}``):
 - BAD   SELECT d.day_of_week FROM dim_date d
-- BAD   SELECT mv_esr_dim_date.day_of_week FROM mv_esr_dim_date
+- BAD   SELECT mv_<domain>_dim_date.day_of_week FROM mv_<domain>_dim_date
 - GOOD  SELECT t.day_of_week
         FROM {{ schema_example_identifier }} t
 

@@ -783,9 +783,10 @@ def validate_synthesis_proposal(
         lambda: _gate_parse(proposal),
         # PR 31 — repairs run BEFORE qualification so deterministic
         # stem promotion can fix ``FROM dim_date`` →
-        # ``FROM cat.sch.mv_esr_dim_date`` before the qualification
-        # gate rejects the bare stem (the unified correction pipeline
-        # has the same ordering — see `evaluation.py` ~line 8410).
+        # ``FROM cat.sch.mv_<domain>_dim_date`` before the
+        # qualification gate rejects the bare stem (the unified
+        # correction pipeline has the same ordering — see
+        # ``evaluation.py`` ~line 8410).
         _apply_pre_execute_repairs,
         lambda: _gate_identifier_qualification(proposal, identifier_allowlist),
         # PR 32 — categorical-cast guardrail runs AFTER qualification
