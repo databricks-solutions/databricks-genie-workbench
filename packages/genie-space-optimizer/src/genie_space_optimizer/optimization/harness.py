@@ -8590,8 +8590,12 @@ def _run_gate_checks(
         f"{j} {best_scores.get(j, 0):.1f}->{full_scores.get(j, 0):.1f}"
         for j in sorted(full_scores)
     )
+    if _control_plane_decision.reason_code == "accepted_with_regression_debt":
+        _accept_label = "PASS -- ACCEPT WITH REGRESSION DEBT"
+    else:
+        _accept_label = "PASS -- ACCEPTED"
     print(
-        _section(f"FULL EVAL [{ag_id}]: PASS -- ACCEPTED", "=") + "\n"
+        _section(f"FULL EVAL [{ag_id}]: {_accept_label}", "=") + "\n"
         + _kv(
             "Objective",
             f"{_objective}  (primary={_primary_label})",
@@ -8649,6 +8653,28 @@ def _run_gate_checks(
         "acceptance_delta_pp": _strict_decision.delta_pp,
         "new_model_id": new_model_id,
         "full_result": full_result,
+        # Task 9 — surface acceptance tiering so the loop can carry debt
+        # forward without re-running ``decide_control_plane_acceptance``.
+        "acceptance_decision": {
+            "reason": _control_plane_decision.reason_code,
+            "target_qids": list(_control_plane_decision.target_qids),
+            "target_fixed_qids": list(_control_plane_decision.target_fixed_qids),
+            "target_still_hard_qids": list(
+                _control_plane_decision.target_still_hard_qids
+            ),
+            "out_of_target_regressed_qids": list(
+                _control_plane_decision.out_of_target_regressed_qids
+            ),
+            "regression_debt_qids": list(
+                _control_plane_decision.regression_debt_qids
+            ),
+            "soft_to_hard_regressed_qids": list(
+                _control_plane_decision.soft_to_hard_regressed_qids
+            ),
+            "passing_to_hard_regressed_qids": list(
+                _control_plane_decision.passing_to_hard_regressed_qids
+            ),
+        },
     }
 
 

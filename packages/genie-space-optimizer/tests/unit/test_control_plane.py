@@ -715,3 +715,32 @@ def test_control_plane_rejects_passing_to_hard_regression_by_default() -> None:
     assert decision.accepted is False
     assert decision.reason_code == "rejected_unbounded_collateral"
     assert decision.passing_to_hard_regressed_qids == ("q_clean",)
+
+
+def test_acceptance_detail_includes_regression_tiers() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        ControlPlaneAcceptance,
+        format_control_plane_acceptance_detail,
+    )
+
+    detail = format_control_plane_acceptance_detail(
+        ControlPlaneAcceptance(
+            accepted=True,
+            reason_code="accepted_with_regression_debt",
+            baseline_accuracy=71.4,
+            candidate_accuracy=78.6,
+            delta_pp=7.2,
+            target_qids=("q005",),
+            target_fixed_qids=("q005",),
+            target_still_hard_qids=(),
+            out_of_target_regressed_qids=("q014",),
+            regression_debt_qids=("q014",),
+            protected_regressed_qids=(),
+            soft_to_hard_regressed_qids=("q014",),
+            passing_to_hard_regressed_qids=(),
+        )
+    )
+
+    assert "regression_debt_qids=q014" in detail
+    assert "soft_to_hard_regressed_qids=q014" in detail
+    assert "passing_to_hard_regressed_qids=(none)" in detail
