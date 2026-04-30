@@ -26,15 +26,77 @@ def test_create_evaluation_dataset_retries_merge_records(monkeypatch: pytest.Mon
     monkeypatch.setattr(evaluation.mlflow.genai, "datasets", _FakeDatasets())
     monkeypatch.setattr(evaluation, "retry_delta_write", fake_retry)
 
-    dataset = evaluation.create_evaluation_dataset(
+    result = evaluation.create_evaluation_dataset(
         object(),
         [{"id": "q1", "question": "How much revenue?", "expected_sql": "SELECT 1"}],
         "cat.sch",
         "sales",
     )
 
-    assert dataset is not None
+    assert result["dataset"] is not None
+    assert result["table_name"] == "cat.sch.genie_benchmarks_sales"
+    assert result["input_count"] == 1
+    assert result["record_count"] == 1
+    assert result["unique_question_id_count"] == 1
     assert calls == ["merge:1"]
+
+
+def test_create_evaluation_dataset_rejects_duplicate_question_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    from genie_space_optimizer.optimization import evaluation
+
+    merge_calls: list[int] = []
+
+    class _FakeDataset:
+        def merge_records(self, records):
+            merge_calls.append(len(records))
+
+    class _FakeDatasets:
+        def get_dataset(self, name: str):
+            return _FakeDataset()
+
+    monkeypatch.setattr(evaluation.mlflow.genai, "datasets", _FakeDatasets())
+
+    with pytest.raises(RuntimeError, match="Duplicate benchmark question_id"):
+        evaluation.create_evaluation_dataset(
+            object(),
+            [
+                {"id": "dup_qid", "question": "How much revenue?", "expected_sql": "SELECT 1"},
+                {"id": "dup_qid", "question": "How many stores?", "expected_sql": "SELECT 2"},
+            ],
+            "cat.sch",
+            "sales",
+        )
+
+    assert merge_calls == []
+
+
+def test_create_evaluation_dataset_rejects_duplicate_normalized_questions(monkeypatch: pytest.MonkeyPatch) -> None:
+    from genie_space_optimizer.optimization import evaluation
+
+    merge_calls: list[int] = []
+
+    class _FakeDataset:
+        def merge_records(self, records):
+            merge_calls.append(len(records))
+
+    class _FakeDatasets:
+        def get_dataset(self, name: str):
+            return _FakeDataset()
+
+    monkeypatch.setattr(evaluation.mlflow.genai, "datasets", _FakeDatasets())
+
+    with pytest.raises(RuntimeError, match="Duplicate benchmark question text"):
+        evaluation.create_evaluation_dataset(
+            object(),
+            [
+                {"id": "q1", "question": "How much revenue?", "expected_sql": "SELECT 1"},
+                {"id": "q2", "question": "  how much revenue?  ", "expected_sql": "SELECT 1"},
+            ],
+            "cat.sch",
+            "sales",
+        )
+
+    assert merge_calls == []
 
 
 def test_flag_for_human_review_uses_delta_write_retry(monkeypatch: pytest.MonkeyPatch) -> None:

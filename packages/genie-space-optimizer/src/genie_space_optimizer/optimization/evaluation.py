@@ -6516,6 +6516,33 @@ def _collect_infra_eval_errors(rows: list[dict[str, Any]]) -> list[str]:
     return deduped
 
 
+def _find_duplicate_values(values: list[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return {value: count for value, count in counts.items() if value and count > 1}
+
+
+def _summarize_duplicate_records(
+    records: list[dict],
+    *,
+    field: str,
+    max_items: int = 5,
+) -> str:
+    examples: list[str] = []
+    for record in records:
+        inputs = record.get("inputs", {})
+        question_id = str(inputs.get("question_id", "") or "")
+        question = str(inputs.get("question", "") or "")
+        value = str(inputs.get(field, "") or "")
+        if field == "_normalized_question":
+            value = question.lower().strip()
+        examples.append(f"{field}={value!r} question_id={question_id!r} question={question[:80]!r}")
+        if len(examples) >= max_items:
+            break
+    return "; ".join(examples)
+
+
 def create_evaluation_dataset(
     spark: SparkSession,
     benchmarks: list[dict],
@@ -6527,7 +6554,7 @@ def create_evaluation_dataset(
     experiment_id: str = "",
     *,
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
-) -> Any | None:
+) -> dict[str, Any]:
     """Create or update the MLflow UC evaluation dataset from benchmarks.
 
     Uses ``merge_records`` (upsert by question_id) to preserve version history
@@ -6554,15 +6581,7 @@ def create_evaluation_dataset(
         if len(benchmarks) > max_benchmark_count:
             benchmarks = _truncate_benchmarks(benchmarks, max_benchmark_count)
         records = []
-        _seen_questions: set[str] = set()
-        _dup_count = 0
         for b in benchmarks:
-            _q_key = str(b.get("question", "")).lower().strip()
-            if _q_key in _seen_questions:
-                _dup_count += 1
-                continue
-            _seen_questions.add(_q_key)
-
             _expected_sql = b.get("expected_sql", "")
             expectations = {
                 "expected_response": _expected_sql,
@@ -6599,11 +6618,6 @@ def create_evaluation_dataset(
                     "expectations": expectations,
                 }
             )
-        if _dup_count:
-            logger.warning(
-                "Dropped %d duplicate benchmark(s) by question text before persisting to %s",
-                _dup_count, uc_table_name,
-            )
         if len(records) > max_benchmark_count:
             records = _truncate_benchmarks(
                 [{"provenance": r.get("expectations", {}).get("provenance", "other"), **r} for r in records],
@@ -6611,13 +6625,52 @@ def create_evaluation_dataset(
             )
             for r in records:
                 r.pop("provenance", None)
+
+        question_ids = [
+            str(r.get("inputs", {}).get("question_id", "") or "").strip()
+            for r in records
+        ]
+        duplicate_qids = _find_duplicate_values(question_ids)
+        if duplicate_qids:
+            duplicate_records = [
+                r for r in records
+                if str(r.get("inputs", {}).get("question_id", "") or "").strip() in duplicate_qids
+            ]
+            raise RuntimeError(
+                "Duplicate benchmark question_id values before MLflow merge_records "
+                f"for {uc_table_name}: {duplicate_qids}. "
+                f"Examples: {_summarize_duplicate_records(duplicate_records, field='question_id')}"
+            )
+
+        normalized_questions = [
+            str(r.get("inputs", {}).get("question", "") or "").lower().strip()
+            for r in records
+        ]
+        duplicate_questions = _find_duplicate_values(normalized_questions)
+        if duplicate_questions:
+            duplicate_records = [
+                r for r in records
+                if str(r.get("inputs", {}).get("question", "") or "").lower().strip() in duplicate_questions
+            ]
+            raise RuntimeError(
+                "Duplicate benchmark question text before MLflow merge_records "
+                f"for {uc_table_name}: {list(duplicate_questions)[:5]}. "
+                f"Examples: {_summarize_duplicate_records(duplicate_records, field='_normalized_question')}"
+            )
+
         retry_delta_write(
             lambda: eval_dataset.merge_records(records),
             operation_name="evaluation_dataset.merge_records",
             table_name=uc_table_name,
         )
         logger.info("UC Evaluation Dataset: %s (%d records merged)", uc_table_name, len(records))
-        return eval_dataset
+        return {
+            "dataset": eval_dataset,
+            "table_name": uc_table_name,
+            "input_count": len(benchmarks),
+            "record_count": len(records),
+            "unique_question_id_count": len(set(question_ids)),
+        }
     except Exception:
         logger.exception("UC dataset creation failed for %s", uc_table_name)
         raise
