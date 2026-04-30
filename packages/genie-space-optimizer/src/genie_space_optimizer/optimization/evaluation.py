@@ -568,45 +568,43 @@ _FENCED_BLOCK_RE = re.compile(
 )
 
 
-def _extract_json(content: str) -> dict | list:
+def _strip_trailing_statement_semicolon(sql: str) -> str:
+    """Remove trailing semicolons before embedding SQL in a subquery wrapper.
+
+    Sample-row capture wraps SQL in ``SELECT * FROM (...) _gvse_sample LIMIT n``.
+    A trailing ``;`` makes the wrapper SQL syntactically invalid because the
+    inner statement terminates the outer query. Strip whitespace + trailing
+    semicolons so the wrapper compiles regardless of how the upstream LLM /
+    benchmark fixture wrote the statement.
+    """
+    text = str(sql or "").strip()
+    while text.endswith(";"):
+        text = text[:-1].rstrip()
+    return text
+
+
+def _extract_json(content: str | None, *, strict: bool = False) -> dict | list | None:
     """Extract a JSON value from LLM response text with lenient wrapping.
 
-    Handles common LLM output patterns:
-
-    - Pure JSON (object or array)
-    - JSON wrapped in markdown code fences (``` or ```json), anywhere in the
-      string (not only at the start) — some LLMs prefix with "Here is ...".
-    - JSON preceded/followed by prose ("Here are my suggestions: {...}")
-    - Trailing "Extra data" (``json.loads`` reports the position of the first
-      extraneous byte; we truncate and retry).
-    - Array output wrapped in prose (``[{...}, {...}]``) — previously only
-      object output was rescued via regex; this caused the instruction-to-SQL
-      conversion to silently return ``[]`` when the LLM added any prose around
-      the array.
-
-    Empty / whitespace-only input returns ``{}`` rather than raising a
-    ``JSONDecodeError`` (Phase 3.R8). The pipeline's LLM wrappers
-    occasionally return an empty response when the provider throttles or
-    returns a blank completion; the caller's ``try/except`` would have
-    caught the exception but the traceback was noise. Returning a clean
-    empty dict lets the existing ``result.get("changes", [])`` pattern
-    degrade gracefully to "no changes in this batch".
-
-    Return type is a union ``dict | list`` so callers that expect an array
-    (the prose-rule miner) aren't forced to re-parse. Existing object-only
-    callers continue to work; the return type is dict for their prompts.
-
-    Raises the saved ``JSONDecodeError`` when every strategy fails on
-    non-empty input — callers that want lenient behaviour can try-except
-    and fall back to ``[]`` / ``{}``.
+    Returns ``None`` for empty / whitespace-only / fenced-but-empty /
+    non-JSON content so callers can treat "no parseable response" as a
+    typed soft failure. Pass ``strict=True`` to preserve the legacy
+    raise-on-error behaviour for code paths that need a hard failure
+    (e.g. ``_traced_llm_call`` ``response_validator``).
     """
-    content = content.strip()
-    if not content:
-        return {}
+    if content is None:
+        if strict:
+            raise ValueError("No content to parse as JSON")
+        return None
+    text = content.strip()
+    if not text:
+        if strict:
+            raise ValueError("Empty content cannot be parsed as JSON")
+        return None
 
     # Fenced block anywhere in the string — prefer it over the surrounding
     # prose so a preamble like "Here is the JSON:\n```json\n{...}\n```" works.
-    fence_match = _FENCED_BLOCK_RE.search(content)
+    fence_match = _FENCED_BLOCK_RE.search(text)
     if fence_match:
         fenced = fence_match.group("body").strip()
         if fenced:
@@ -616,11 +614,16 @@ def _extract_json(content: str) -> dict | list:
                 # Fall through — the fenced block might itself be malformed
                 # but the surrounding text could still contain valid JSON.
                 pass
+        else:
+            # Fenced block with no body. Treat the same as empty content.
+            if strict:
+                raise ValueError("Empty fenced block cannot be parsed as JSON")
+            return None
 
     _saved_err: json.JSONDecodeError | None = None
 
     try:
-        return json.loads(content)
+        return json.loads(text)
     except json.JSONDecodeError as exc:
         _saved_err = exc
 
@@ -630,7 +633,7 @@ def _extract_json(content: str) -> dict | list:
         and _saved_err.msg.startswith("Extra data")
     ):
         try:
-            return json.loads(content[: _saved_err.pos])
+            return json.loads(text[: _saved_err.pos])
         except json.JSONDecodeError:
             pass
 
@@ -638,10 +641,10 @@ def _extract_json(content: str) -> dict | list:
     # one that parses. We prefer whichever is longer so a nested structure
     # wins over a short sub-literal.
     candidates: list[tuple[int, str]] = []
-    obj_match = re.search(r"\{.*\}", content, re.DOTALL)
+    obj_match = re.search(r"\{.*\}", text, re.DOTALL)
     if obj_match:
         candidates.append((len(obj_match.group(0)), obj_match.group(0)))
-    arr_match = re.search(r"\[.*\]", content, re.DOTALL)
+    arr_match = re.search(r"\[.*\]", text, re.DOTALL)
     if arr_match:
         candidates.append((len(arr_match.group(0)), arr_match.group(0)))
     # Longest-first maximises the chance of getting the outermost structure.
@@ -651,8 +654,16 @@ def _extract_json(content: str) -> dict | list:
         except json.JSONDecodeError:
             continue
 
-    assert _saved_err is not None  # pragma: no cover — invariant
-    raise _saved_err
+    if strict:
+        assert _saved_err is not None  # pragma: no cover — invariant
+        raise _saved_err
+    logger.debug(
+        "_extract_json could not parse content; returning None. "
+        "first_120_chars=%r error=%s",
+        text[:120],
+        _saved_err,
+    )
+    return None
 
 
 def _extract_json_array(content: str) -> list:
