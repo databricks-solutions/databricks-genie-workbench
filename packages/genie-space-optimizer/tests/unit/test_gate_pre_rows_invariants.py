@@ -79,3 +79,24 @@ def test_gate_detects_actual_iteration2_regression_debt_shape() -> None:
     assert "q009" in decision.target_fixed_qids
     assert "q001" in decision.out_of_target_regressed_qids
     assert decision.delta_pp == 4.5
+
+
+def test_run_gate_checks_requires_explicit_accepted_baseline_rows() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    signature = inspect.signature(harness._run_gate_checks)
+
+    assert "accepted_baseline_rows_for_control_plane" in signature.parameters
+
+
+def test_run_gate_checks_does_not_read_loop_local_baseline_name() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    source = inspect.getsource(harness._run_gate_checks)
+
+    assert "list(_accepted_baseline_rows_for_control_plane or [])" not in source
+    assert "accepted_baseline_rows_for_control_plane or []" in source

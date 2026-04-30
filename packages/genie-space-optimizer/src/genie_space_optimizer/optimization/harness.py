@@ -7547,6 +7547,7 @@ def _run_gate_checks(
     max_benchmark_count: int = MAX_BENCHMARK_COUNT,
     prev_failure_qids: set[str] | None = None,
     prev_iter_pre_accept_baseline: float | None = None,
+    accepted_baseline_rows_for_control_plane: list[dict] | None = None,
 ) -> dict:
     """Run slice → P0 → full eval gate sequence for an action group.
 
@@ -8105,7 +8106,7 @@ def _run_gate_checks(
     # rows can otherwise become the gate baseline and produce empty
     # target_fixed_qids / out_of_target_regressed_qids.
     _baseline_rows_for_control_plane = list(
-        _accepted_baseline_rows_for_control_plane or []
+        accepted_baseline_rows_for_control_plane or []
     )
     _baseline_source_for_control_plane = "accepted_baseline_memory"
     if not _baseline_rows_for_control_plane:
@@ -11881,6 +11882,9 @@ def _run_lever_loop(
             max_benchmark_count=max_benchmark_count,
             prev_failure_qids=prev_failure_qids,
             prev_iter_pre_accept_baseline=_prev_iter_pre_accept_baseline,
+            accepted_baseline_rows_for_control_plane=(
+                _accepted_baseline_rows_for_control_plane
+            ),
         )
         # After the gate finishes, this iteration's pre-acceptance
         # baseline becomes the reference for the next iteration's
