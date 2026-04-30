@@ -88,6 +88,7 @@ AFS_ALLOWED_FIELDS: frozenset[str] = frozenset({
     "counterfactual_fixes",
     "judge_verdict_pattern",
     "structural_diff",
+    "failure_features",
     "question_count",
     "affected_judge",
     "suggested_fix_summary",
@@ -283,6 +284,7 @@ def format_afs(cluster: dict) -> dict:
         "blame_set": _normalize_blame(cluster.get("asi_blame_set"))[:10],
         "counterfactual_fixes": _counterfactual_fixes(cluster),
         "structural_diff": _structural_diff(cluster),
+        "failure_features": cluster.get("failure_features") or {},
         "judge_verdict_pattern": _judge_verdict_pattern(cluster),
         "suggested_fix_summary": _suggested_fix_summary(cluster),
     }

@@ -6352,6 +6352,9 @@ def _format_cluster_briefs_afs(clusters: list[dict], top_n: int = 5) -> str:
         sd = afs.get("structural_diff") or {}
         if sd:
             lines.append(f"Structural signature: {json.dumps(sd, default=str)}")
+        ff = afs.get("failure_features") or {}
+        if ff:
+            lines.append(f"Typed failure features: {json.dumps(ff, default=str)}")
         vp = afs.get("judge_verdict_pattern")
         if vp:
             lines.append(f"Judge verdict pattern: {vp}")
@@ -7460,6 +7463,14 @@ def _build_context_data(
         "rca_theme_context": rca_theme_context or None,
         "schema": _build_schema_data(metadata_snapshot, filter_tables=relevant_tables),
         "failure_clusters": _build_cluster_data(clusters),
+        "failure_features": [
+            {
+                "cluster_id": c.get("cluster_id"),
+                **(c.get("failure_features") or {}),
+            }
+            for c in clusters[:10]
+            if c.get("failure_features")
+        ],
         "soft_signal_clusters": _build_soft_signal_data(soft_signal_clusters),
         "structured_metadata": {
             "tables": _build_structured_table_data(metadata_snapshot, blame_set),
