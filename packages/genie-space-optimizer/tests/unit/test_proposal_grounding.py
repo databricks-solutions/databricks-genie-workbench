@@ -808,3 +808,32 @@ def test_select_patch_bundle_keeps_off_lineage_proposal_when_justified() -> None
         clusters_by_proposal=clusters_by_proposal,
     )
     assert [p["id"] for p in selected] == ["P011#1"]
+
+
+def test_l6_counterfactual_blast_radius_gate_rejects_many_outside_dependents():
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        patch_blast_radius_is_safe,
+    )
+
+    patch = {
+        "type": "add_sql_snippet_expression",
+        "lever": 6,
+        "target_qids": ["gs_026"],
+        "passing_dependents": ["gs_001", "gs_002", "gs_003", "gs_004"],
+        "target_dependents": ["gs_026"],
+    }
+
+    decision = patch_blast_radius_is_safe(
+        patch,
+        ag_target_qids=("gs_026",),
+        max_outside_target=0,
+    )
+
+    assert decision["safe"] is False
+    assert decision["reason"] == "blast_radius_exceeds_threshold"
+    assert decision["passing_dependents_outside_target"] == [
+        "gs_001",
+        "gs_002",
+        "gs_003",
+        "gs_004",
+    ]

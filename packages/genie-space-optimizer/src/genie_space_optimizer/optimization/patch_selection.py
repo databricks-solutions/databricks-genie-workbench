@@ -129,6 +129,7 @@ def select_causal_patch_cap(
     patches: list[dict[str, Any]],
     *,
     max_patches: int,
+    active_cluster_ids: tuple[str, ...] = (),
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Select a capped patch bundle with causal relevance as the primary key.
 
@@ -174,6 +175,7 @@ def select_causal_patch_cap(
             relevance = _score(patch, "relevance_score")
             diversity_bonus = 1 if lever not in seen_levers else 0
             return (
+                -_active_cluster_match_tier(patch, active_cluster_ids),
                 -relevance,
                 -causal_attribution_tier(patch),
                 -diversity_bonus,
@@ -244,6 +246,30 @@ def _root_cause(patch: dict[str, Any]) -> str:
     return str(raw).strip().split(":", 1)[0]
 
 
+def _cluster_ids(patch: dict[str, Any]) -> tuple[str, ...]:
+    raw: list[Any] = []
+    raw.extend(patch.get("source_cluster_ids") or [])
+    raw.append(patch.get("primary_cluster_id"))
+    raw.append(patch.get("cluster_id"))
+    return tuple(dict.fromkeys(str(v) for v in raw if str(v)))
+
+
+def _active_cluster_match_tier(
+    patch: dict[str, Any],
+    active_cluster_ids: tuple[str, ...],
+) -> int:
+    """Return 2 for primary-cluster match, 1 for any source cluster match, 0 otherwise."""
+    active = {str(cid) for cid in active_cluster_ids or () if str(cid)}
+    if not active:
+        return 0
+    patch_clusters = set(_cluster_ids(patch))
+    if patch.get("primary_cluster_id") and str(patch.get("primary_cluster_id")) in active:
+        return 2
+    if patch_clusters & active:
+        return 1
+    return 0
+
+
 def _is_direct_behavior_patch(patch: dict[str, Any]) -> bool:
     if _root_cause(patch) not in _BEHAVIOR_ROOT_CAUSES:
         return False
@@ -264,6 +290,7 @@ def select_target_aware_causal_patch_cap(
     *,
     target_qids: tuple[str, ...],
     max_patches: int,
+    active_cluster_ids: tuple[str, ...] = (),
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Cap patches while preserving at least one patch per target QID.
 
@@ -285,6 +312,7 @@ def select_target_aware_causal_patch_cap(
     selected_ids: set[str] = set()
 
     reserved_direct_fix_pids: set[str] = set()
+    active_cluster_reserved_pids: set[str] = set()
     if max_patches > 0:
         direct_candidates = [
             (idx, patch)
@@ -295,6 +323,7 @@ def select_target_aware_causal_patch_cap(
             idx, patch = min(
                 direct_candidates,
                 key=lambda item: (
+                    -_active_cluster_match_tier(item[1], active_cluster_ids),
                     -_score(item[1], "relevance_score"),
                     -causal_attribution_tier(item[1]),
                     _risk_rank(item[1]),
@@ -306,6 +335,8 @@ def select_target_aware_causal_patch_cap(
             pid = _proposal_id(patch, idx)
             selected_ids.add(pid)
             reserved_direct_fix_pids.add(pid)
+            if _active_cluster_match_tier(patch, active_cluster_ids) > 0:
+                active_cluster_reserved_pids.add(pid)
 
     for target in target_set:
         if len(selected) >= max_patches:
@@ -324,6 +355,7 @@ def select_target_aware_causal_patch_cap(
         idx, patch = min(
             candidates,
             key=lambda item: (
+                -_active_cluster_match_tier(item[1], active_cluster_ids),
                 -_score(item[1], "relevance_score"),
                 -causal_attribution_tier(item[1]),
                 _risk_rank(item[1]),
@@ -343,6 +375,7 @@ def select_target_aware_causal_patch_cap(
         filler, _ = select_causal_patch_cap(
             remaining,
             max_patches=max_patches - len(selected),
+            active_cluster_ids=active_cluster_ids,
         )
         selected.extend(filler)
         for fp in filler:
@@ -365,7 +398,9 @@ def select_target_aware_causal_patch_cap(
     for idx, patch in enumerate(patches):
         pid = _proposal_id(patch, idx)
         selected_flag = pid in selected_pid_set
-        if selected_flag and pid in reserved_direct_fix_pids:
+        if selected_flag and pid in active_cluster_reserved_pids:
+            selection_reason = "active_cluster_direct_behavior_reserved"
+        elif selected_flag and pid in reserved_direct_fix_pids:
             selection_reason = "behavior_direct_fix_reserved"
         elif selected_flag:
             selection_reason = "target_coverage"

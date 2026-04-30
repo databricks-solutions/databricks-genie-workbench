@@ -84,6 +84,27 @@ def proposal_target_assets(patch: dict | None) -> tuple[str, ...]:
     return tuple(seen)
 
 
+_STRICT_ASSET_PATCH_TYPES = frozenset({
+    "add_sql_snippet_filter",
+    "add_sql_snippet_measure",
+    "add_sql_snippet_expression",
+    "add_sql_snippet_calculation",
+    "add_example_sql",
+})
+
+
+def l5_l6_patch_requires_asset_alignment(patch: dict | None) -> bool:
+    """Return True for L5/L6 patches that mutate SQL shape and need asset alignment."""
+    if not isinstance(patch, dict):
+        return False
+    ptype = str(patch.get("type") or patch.get("patch_type") or "")
+    try:
+        lever = int(patch.get("lever", 0) or 0)
+    except (TypeError, ValueError):
+        lever = 0
+    return ptype in _STRICT_ASSET_PATCH_TYPES or lever in {5, 6}
+
+
 def proposal_aligns_with_cluster(
     patch: dict | None,
     cluster: dict | None,
@@ -113,6 +134,13 @@ def proposal_aligns_with_cluster(
         }
 
     if not proposal_assets:
+        if l5_l6_patch_requires_asset_alignment(patch) and cluster_assets:
+            return {
+                "aligned": False,
+                "reason": "strict_patch_missing_target_asset",
+                "proposal_assets": proposal_assets,
+                "cluster_assets": cluster_assets,
+            }
         return {
             "aligned": True,
             "reason": "no_lineage_constraint",

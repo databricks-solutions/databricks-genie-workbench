@@ -90,3 +90,27 @@ def test_proposal_with_no_target_asset_aligns_when_lineage_empty() -> None:
     decision = proposal_aligns_with_cluster(patch, cluster)
     assert decision["aligned"] is True
     assert decision["reason"] == "no_lineage_constraint"
+
+
+def test_l6_snippet_must_align_with_cluster_asset_without_cross_asset_justification():
+    from genie_space_optimizer.optimization.proposal_asset_alignment import (
+        proposal_aligns_with_cluster,
+    )
+
+    cluster = {
+        "cluster_id": "H002",
+        "blame_assets": ["cat.sch.tkt_payment"],
+        "reference_assets": [],
+        "lineage_assets": ["cat.sch.tkt_payment"],
+    }
+    patch = {
+        "type": "add_sql_snippet_expression",
+        "lever": 6,
+        "target_table": "cat.sch.tkt_document",
+        "column": "BASE_FARE_AMT",
+    }
+
+    decision = proposal_aligns_with_cluster(patch, cluster)
+
+    assert decision["aligned"] is False
+    assert decision["reason"] == "asset_not_in_cluster_lineage"

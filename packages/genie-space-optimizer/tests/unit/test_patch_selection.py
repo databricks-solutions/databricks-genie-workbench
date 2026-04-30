@@ -376,3 +376,64 @@ def test_harness_patch_cap_log_discloses_dropped_count_and_truncation() -> None:
     assert "Dropped count" in snippet
     assert "Dropped shown" in snippet
     assert "Dropped truncated" in snippet
+
+
+def test_active_cluster_direct_behavior_patch_beats_peripheral_rca_patch():
+    from genie_space_optimizer.optimization.patch_selection import (
+        select_target_aware_causal_patch_cap,
+    )
+
+    patches = [
+        {
+            "proposal_id": "metadata-payment-amount",
+            "type": "update_column_description",
+            "lever": 1,
+            "relevance_score": 0.99,
+            "rca_id": "rca-payment",
+            "target_qids": ["gs_026"],
+            "primary_cluster_id": "H002",
+            "source_cluster_ids": ["H002"],
+            "target_table": "cat.sch.tkt_payment",
+            "column": "PAYMENT_AMT",
+        },
+        {
+            "proposal_id": "snippet-document-base-fare",
+            "type": "add_sql_snippet_expression",
+            "lever": 6,
+            "relevance_score": 1.0,
+            "rca_id": "rca-document",
+            "target_qids": ["gs_026"],
+            "primary_cluster_id": "H999",
+            "source_cluster_ids": ["H999"],
+            "target_table": "cat.sch.tkt_document",
+            "column": "BASE_FARE_AMT",
+        },
+        {
+            "proposal_id": "direct-payment-filter",
+            "type": "add_sql_snippet_filter",
+            "lever": 6,
+            "root_cause": "wrong_filter_condition",
+            "relevance_score": 0.80,
+            "rca_id": "rca-payment",
+            "target_qids": ["gs_026"],
+            "primary_cluster_id": "H002",
+            "source_cluster_ids": ["H002"],
+            "target_table": "cat.sch.tkt_payment",
+            "column": "PAYMENT_CURRENCY_CD",
+        },
+    ]
+
+    selected, decisions = select_target_aware_causal_patch_cap(
+        patches,
+        target_qids=("gs_026",),
+        max_patches=2,
+        active_cluster_ids=("H002",),
+    )
+
+    assert [p["proposal_id"] for p in selected] == [
+        "direct-payment-filter",
+        "metadata-payment-amount",
+    ]
+    by_id = {d["proposal_id"]: d for d in decisions}
+    assert by_id["direct-payment-filter"]["selection_reason"] == "active_cluster_direct_behavior_reserved"
+    assert by_id["snippet-document-base-fare"]["decision"] == "dropped"
