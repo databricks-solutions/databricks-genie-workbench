@@ -12064,6 +12064,64 @@ def _run_lever_loop(
             w, space_id, patches, metadata_snapshot, apply_mode=apply_mode,
         )
 
+        # Task 4 — surface cap-selected vs applier-applied disagreement at
+        # WARN level so silent applier drops (the AG2 cap selected
+        # ['P002#3','P004#1','P005#1'] but applied only the off-causal
+        # filter on mv_esr_dim_date) cannot recur unnoticed.
+        try:
+            from genie_space_optimizer.optimization.applier_audit import (
+                diff_selected_vs_applied,
+            )
+
+            _cap_selected_ids = [
+                str(p.get("expanded_patch_id") or p.get("id") or p.get("proposal_id") or "")
+                for p in (patches or [])
+                if (p.get("expanded_patch_id") or p.get("id") or p.get("proposal_id"))
+            ]
+            _applier_applied_ids = [
+                str(
+                    entry.get("patch", {}).get("expanded_patch_id")
+                    or entry.get("patch", {}).get("id")
+                    or entry.get("patch", {}).get("proposal_id")
+                    or ""
+                )
+                for entry in (apply_log.get("applied") or [])
+                if entry.get("patch")
+            ]
+            _recon = diff_selected_vs_applied(
+                selected_ids=_cap_selected_ids,
+                applied_ids=_applier_applied_ids,
+            )
+            print(
+                _section("CAP-VS-APPLIED RECONCILIATION", "-") + "\n"
+                + _kv("Cap selected", ", ".join(_cap_selected_ids)[:200] or "(none)") + "\n"
+                + _kv(
+                    "Applier applied",
+                    ", ".join(_applier_applied_ids)[:200] or "(none)",
+                ) + "\n"
+                + _kv(
+                    "Selected but not applied",
+                    ", ".join(_recon.selected_but_not_applied)[:200] or "(none)",
+                ) + "\n"
+                + _kv(
+                    "Applied but not selected",
+                    ", ".join(_recon.applied_but_not_selected)[:200] or "(none)",
+                ) + "\n"
+                + _bar("-")
+            )
+            if not _recon.in_agreement:
+                logger.warning(
+                    "CAP-VS-APPLIED RECONCILIATION: selected_but_not_applied=%s "
+                    "applied_but_not_selected=%s",
+                    _recon.selected_but_not_applied,
+                    _recon.applied_but_not_selected,
+                )
+        except Exception:
+            logger.debug(
+                "Cap-vs-applied reconciliation failed (non-fatal)",
+                exc_info=True,
+            )
+
         _apply_skip = _should_skip_eval_for_patch_bundle(
             patches=patches,
             apply_log=apply_log,

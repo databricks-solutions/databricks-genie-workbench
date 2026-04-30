@@ -83,3 +83,23 @@ def test_apply_patch_set_emits_decision_per_patch_in_apply_log() -> None:
     assert "applier_decisions" in source
     assert "build_applier_decision(" in source
     assert "from genie_space_optimizer.optimization.applier_audit import" in inspect.getsource(applier)
+
+
+def test_harness_emits_cap_vs_applied_reconciliation_after_apply() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    source = inspect.getsource(harness._run_lever_loop)
+
+    apply_idx = source.index("        apply_log = apply_patch_set(")
+    recon_idx = source.index("CAP-VS-APPLIED RECONCILIATION", apply_idx)
+    assert recon_idx > apply_idx
+
+    snippet = source[recon_idx - 1500 : recon_idx + 1500]
+    assert "diff_selected_vs_applied(" in snippet
+    assert "selected_ids=_cap_selected_ids" in snippet
+    assert "applied_ids=_applier_applied_ids" in snippet
+    assert "logger.warning" in snippet
+    assert "selected_but_not_applied" in snippet
+    assert "applied_but_not_selected" in snippet
