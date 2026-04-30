@@ -5389,6 +5389,78 @@ def _build_reflection_entry(
     return entry
 
 
+def _qid_values(raw: object) -> list[str]:
+    values: list[str] = []
+    for item in raw or []:
+        if isinstance(item, dict):
+            value = item.get("question_id") or item.get("id")
+        else:
+            value = item
+        if value:
+            values.append(str(value))
+    return list(dict.fromkeys(values))
+
+
+def _cluster_qids_for_ids(
+    source_clusters: list[dict],
+    cluster_ids: list[str],
+) -> list[str]:
+    wanted = {str(cid) for cid in cluster_ids or [] if str(cid)}
+    qids: list[str] = []
+    for cluster in source_clusters or []:
+        cid = str(cluster.get("cluster_id") or "")
+        if cid in wanted:
+            qids.extend(_qid_values(cluster.get("question_ids") or []))
+    return list(dict.fromkeys(qids))
+
+
+def _backfill_patch_causal_metadata(
+    *,
+    patches: list[dict],
+    action_group: dict,
+    source_clusters: list[dict],
+) -> list[dict]:
+    """Attach AG/cluster causal metadata to broad strategist proposals.
+
+    Explicit RCA metadata always wins. This helper fills only missing
+    ``target_qids`` / ``_grounding_target_qids`` / source-cluster fields so
+    the patch cap can distinguish broad AG proposals from precise RCA
+    proposals.
+    """
+    ag_id = str(
+        action_group.get("id")
+        or action_group.get("action_group_id")
+        or action_group.get("ag_id")
+        or ""
+    )
+    source_cluster_ids = [
+        str(cid) for cid in (action_group.get("source_cluster_ids") or []) if str(cid)
+    ]
+    primary_cluster_id = str(action_group.get("primary_cluster_id") or "")
+    ag_qids = _qid_values(action_group.get("affected_questions") or [])
+    if not ag_qids:
+        ag_qids = _cluster_qids_for_ids(source_clusters, source_cluster_ids)
+
+    enriched: list[dict] = []
+    for patch in patches or []:
+        item = dict(patch)
+        if ag_id and not item.get("action_group_id"):
+            item["action_group_id"] = ag_id
+        if primary_cluster_id and not item.get("primary_cluster_id"):
+            item["primary_cluster_id"] = primary_cluster_id
+        if source_cluster_ids and not item.get("source_cluster_ids"):
+            item["source_cluster_ids"] = list(source_cluster_ids)
+
+        explicit_targets = _qid_values(item.get("target_qids") or [])
+        grounding_targets = _qid_values(item.get("_grounding_target_qids") or [])
+        target_qids = explicit_targets or grounding_targets or ag_qids
+        if target_qids:
+            item["target_qids"] = list(target_qids)
+            item["_grounding_target_qids"] = list(target_qids)
+        enriched.append(item)
+    return enriched
+
+
 def _attach_rca_theme_attribution(
     *,
     spark: Any,
@@ -11657,6 +11729,19 @@ def _run_lever_loop(
                     [d["proposal_id"] for d in _blast_dropped[:8]],
                 )
             patches = _blast_kept
+
+        # Task 5 — backfill AG/cluster causal metadata onto broad
+        # strategist proposals so the cap can distinguish RCA-attributed
+        # patches (tier 3) from broad AG-fallback patches (tier 1).
+        patches = _backfill_patch_causal_metadata(
+            patches=patches,
+            action_group=ag,
+            source_clusters=(
+                strategy.get("_source_clusters", [])
+                if isinstance(strategy, dict)
+                else []
+            ),
+        )
 
         # Tier 2.6: cap AG patch-set size. A single failing patch in a
         # large batch rolls back everything — including the patches that
