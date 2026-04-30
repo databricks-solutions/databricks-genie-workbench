@@ -404,7 +404,7 @@ class TestTracedLlmCallValidator:
             None, "system", "user",
             span_name="test_validator_retry",
             max_retries=3,
-            response_validator=_extract_json,
+            response_validator=lambda t: _extract_json(t, strict=True),
         )
 
         assert text.startswith("{")
@@ -430,7 +430,7 @@ class TestTracedLlmCallValidator:
                 None, "system", "user",
                 span_name="test_validator_exhausted",
                 max_retries=2,
-                response_validator=_extract_json,
+                response_validator=lambda t: _extract_json(t, strict=True),
             )
 
         assert mock_client.chat.completions.create.call_count == 2
@@ -457,9 +457,9 @@ class TestTracedLlmCallValidator:
 
     @patch("genie_space_optimizer.optimization.optimizer._get_openai_client")
     def test_validator_accepts_empty_response_via_extract_json(self, mock_get_client):
-        """``_extract_json`` returns ``{}`` on whitespace-only input so the
-        validator passes without retry — the existing "empty batch = no
-        changes" contract must be preserved."""
+        """Task 8 — ``_extract_json`` returns ``None`` on whitespace-only
+        input so the default (non-strict) validator passes without retry,
+        preserving the "empty batch = no changes" contract."""
         from genie_space_optimizer.optimization.evaluation import _extract_json
         from genie_space_optimizer.optimization.optimizer import _traced_llm_call
 
@@ -496,7 +496,7 @@ class TestTracedLlmCallValidator:
             None, "system", "user",
             span_name="test_validator_happy",
             max_retries=3,
-            response_validator=_extract_json,
+            response_validator=lambda t: _extract_json(t, strict=True),
         )
 
         assert '"changes"' in text
@@ -536,7 +536,7 @@ class TestTracedLlmCallLastResponseAttachment:
                 None, "system", "user",
                 span_name="test_last_response",
                 max_retries=2,
-                response_validator=_extract_json,
+                response_validator=lambda t: _extract_json(t, strict=True),
             )
 
         assert getattr(exc_info.value, "last_response_text", None) == (
@@ -598,7 +598,7 @@ class TestTracedLlmCallLastResponseAttachment:
                 None, "system", "user",
                 span_name="test_mixed_failures",
                 max_retries=2,
-                response_validator=_extract_json,
+                response_validator=lambda t: _extract_json(t, strict=True),
             )
 
         assert getattr(exc_info.value, "last_response_text", None) == (

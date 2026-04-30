@@ -291,9 +291,12 @@ class TestExtractJson:
     def test_extract_json_array_returns_list(self):
         assert _extract_json_array('[1, 2]') == [1, 2]
 
-    def test_totally_invalid_raises(self):
+    def test_totally_invalid_raises_under_strict(self):
+        # Task 8 — default behaviour returns ``None``; callers that
+        # require a hard failure must pass ``strict=True``.
+        assert _extract_json('this is not json at all') is None
         with pytest.raises(Exception):
-            _extract_json('this is not json at all')
+            _extract_json('this is not json at all', strict=True)
 
 
 class TestCanonicalSchemaValidator:

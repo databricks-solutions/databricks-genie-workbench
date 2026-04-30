@@ -329,7 +329,9 @@ def _adaptive_strategist_response_validator(text: str) -> Any:
     from genie_space_optimizer.optimization.evaluation import _extract_json
 
     try:
-        return _extract_json(text)
+        # ``strict=True`` preserves the legacy raise-on-error behavior so
+        # ``_traced_llm_call`` can retry true non-JSON refusals.
+        return _extract_json(text, strict=True)
     except json.JSONDecodeError:
         try:
             return _repair_truncated_strategy_json(text)

@@ -412,21 +412,27 @@ class TestPhase3AliasRebinding:
 
 
 class TestPhase3ExtractJsonEmptyHandling:
-    def test_empty_input_returns_empty_dict(self):
-        assert _extract_json("") == {}
-        assert _extract_json("   ") == {}
-        assert _extract_json("\n\t") == {}
+    def test_empty_input_returns_none(self):
+        # Task 8 — ``_extract_json`` now returns ``None`` for empty /
+        # whitespace-only input so callers can branch on a typed soft
+        # failure instead of catching a JSONDecodeError. Pass ``strict=True``
+        # to preserve the legacy raise-on-error behaviour.
+        assert _extract_json("") is None
+        assert _extract_json("   ") is None
+        assert _extract_json("\n\t") is None
 
-    def test_non_empty_invalid_still_raises(self):
-        """The empty-input short-circuit must not swallow real JSON
-        errors — non-empty malformed input should still raise so the
-        caller sees the real issue."""
+    def test_non_empty_invalid_returns_none_or_raises_under_strict(self):
+        """Task 8 — non-empty malformed input returns ``None`` by default
+        and raises only when ``strict=True``. Callers that want a hard
+        failure on garbage input opt in explicitly."""
         import json as _json
+
+        assert _extract_json("not json at all") is None
         try:
-            _extract_json("not json at all")
+            _extract_json("not json at all", strict=True)
         except _json.JSONDecodeError:
             return
-        raise AssertionError("expected JSONDecodeError on malformed input")
+        raise AssertionError("expected JSONDecodeError under strict=True")
 
     def test_extract_json_valid_dict_unchanged(self):
         result = _extract_json('{"changes": [{"x": 1}]}')
