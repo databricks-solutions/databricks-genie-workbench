@@ -375,3 +375,108 @@ def test_adaptive_strategist_validator_rejects_non_json_refusal() -> None:
         _adaptive_strategist_response_validator(
             "I'm sorry, I cannot help with that request."
         )
+
+
+# Soft cap on rendered raw-string length for any in-scope optimizer prompt.
+# 80 KB ≈ ~20K tokens at typical 4-chars-per-token English.
+_PROMPT_SIZE_BUDGET_CHARS = 80_000
+
+
+def test_optimizer_prompt_raw_lengths_within_budget() -> None:
+    from genie_space_optimizer.common import config
+
+    for name in OPTIMIZER_PROMPT_NAMES:
+        prompt = getattr(config, name)
+        assert len(prompt) < _PROMPT_SIZE_BUDGET_CHARS, (
+            f"{name} grew to {len(prompt)} chars (budget {_PROMPT_SIZE_BUDGET_CHARS})."
+        )
+
+
+def test_contract_appears_at_most_once_per_prompt() -> None:
+    from genie_space_optimizer.common import config
+
+    for name in FULL_RCA_PROMPT_NAMES:
+        prompt = getattr(config, name)
+        opens = prompt.count("<unified_rca_engine_contract>")
+        closes = prompt.count("</unified_rca_engine_contract>")
+        assert opens == 1, f"{name} has {opens} contract opens, expected 1"
+        assert closes == 1, f"{name} has {closes} contract closes, expected 1"
+
+    for name in SCOPED_EXAMPLE_SYNTHESIS_PROMPT_NAMES:
+        prompt = getattr(config, name)
+        opens = prompt.count("<leak_safe_example_synthesis_contract>")
+        closes = prompt.count("</leak_safe_example_synthesis_contract>")
+        assert opens == 1, f"{name} has {opens} scoped contract opens, expected 1"
+        assert closes == 1, f"{name} has {closes} scoped contract closes, expected 1"
+
+
+def test_adaptive_context_budget_reserves_template_overhead() -> None:
+    """Context truncation budget must leave room for the rendered prompt shell."""
+    import inspect
+
+    from genie_space_optimizer.common.config import PROMPT_TOKEN_BUDGET
+    from genie_space_optimizer.optimization import optimizer
+
+    source = inspect.getsource(optimizer._call_llm_for_adaptive_strategy)
+    assert "_truncate_context_to_budget(context_data, _adaptive_context_budget_tokens())" in source
+    assert "_truncate_context_to_budget(context_data, PROMPT_TOKEN_BUDGET)" not in source
+
+    reserved_budget = optimizer._adaptive_context_budget_tokens()
+    assert 1_000 <= reserved_budget < PROMPT_TOKEN_BUDGET
+
+
+def test_rendered_adaptive_prompt_with_truncated_low_priority_context_fits_budget() -> None:
+    """A realistic oversized low-priority context should render under budget."""
+    import json as _json
+
+    from genie_space_optimizer.common.config import (
+        ADAPTIVE_STRATEGIST_PROMPT,
+        PROMPT_TOKEN_BUDGET,
+        format_mlflow_template,
+    )
+    from genie_space_optimizer.optimization.optimizer import (
+        _adaptive_context_budget_tokens,
+        _estimate_tokens,
+        _truncate_context_to_budget,
+    )
+
+    context_data = {
+        "progress_summary": "20 of 22 benchmarks pass.",
+        "mandatory_regression_debt_qids": ["q001"],
+        "priority_analysis": [],
+        "failure_clusters": [
+            {"cluster_id": "H001", "question_ids": ["q001"], "root_cause": "missing filter"}
+        ],
+        "soft_signal_clusters": [
+            {"cluster_id": f"S{i:03d}", "notes": "x" * 4000}
+            for i in range(30)
+        ],
+        "schema": [
+            {
+                "table": f"cat.sch.table_{i}",
+                "columns": [f"col_{j}" for j in range(80)],
+            }
+            for i in range(20)
+        ],
+        "existing_example_sqls": [
+            {"question": f"Question {i}", "sql": "SELECT " + ", ".join(f"col_{j}" for j in range(40))}
+            for i in range(30)
+        ],
+        "blamed_column_values": {
+            f"cat.sch.table_{i}.col": {"values": [f"value_{j}" for j in range(100)]}
+            for i in range(20)
+        },
+    }
+
+    truncated = _truncate_context_to_budget(
+        context_data,
+        _adaptive_context_budget_tokens(),
+    )
+    prompt = format_mlflow_template(
+        ADAPTIVE_STRATEGIST_PROMPT,
+        context_json=_json.dumps(truncated, indent=2, default=str),
+        identifier_allowlist="cat.sch.table_0\ncat.sch.table_1",
+        instruction_char_budget=24_000,
+    )
+
+    assert _estimate_tokens(prompt) <= PROMPT_TOKEN_BUDGET

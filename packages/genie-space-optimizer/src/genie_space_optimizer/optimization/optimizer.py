@@ -7030,6 +7030,30 @@ def _extract_tables_from_clusters(clusters: list[dict]) -> set[str] | None:
     return tables if tables else None
 
 
+_ADAPTIVE_PROMPT_TOKEN_SAFETY_MARGIN = 500
+
+
+def _adaptive_context_budget_tokens() -> int:
+    """Return the per-iteration context budget for the adaptive strategist.
+
+    The adaptive prompt's rendered shell (role + RCA contract +
+    instructions + identifier allowlist + output schema) consumes
+    several thousand tokens before ``context_json`` is interpolated.
+    Reserve room for the rendered overhead (estimated from the static
+    template length plus a small safety margin) so context truncation
+    cannot push the final rendered prompt over ``PROMPT_TOKEN_BUDGET``.
+    """
+    from genie_space_optimizer.common.config import (
+        ADAPTIVE_STRATEGIST_PROMPT,
+        PROMPT_TOKEN_BUDGET,
+    )
+
+    template_tokens = _estimate_tokens(ADAPTIVE_STRATEGIST_PROMPT)
+    reserved = template_tokens + _ADAPTIVE_PROMPT_TOKEN_SAFETY_MARGIN
+    budget = max(1_000, int(PROMPT_TOKEN_BUDGET) - reserved)
+    return min(budget, int(PROMPT_TOKEN_BUDGET) - 1)
+
+
 def _truncate_context_to_budget(context: dict, budget_tokens: int) -> dict:
     """Truncate context dict to fit within token budget.
 
@@ -9264,7 +9288,7 @@ def _call_llm_for_adaptive_strategy(
         iq_scan_text=iq_scan_text,
         rca_theme_context=rca_theme_context,
     )
-    context_data = _truncate_context_to_budget(context_data, PROMPT_TOKEN_BUDGET)
+    context_data = _truncate_context_to_budget(context_data, _adaptive_context_budget_tokens())
     context_json = json.dumps(context_data, indent=2, default=str)
 
     format_kwargs: dict[str, Any] = {
