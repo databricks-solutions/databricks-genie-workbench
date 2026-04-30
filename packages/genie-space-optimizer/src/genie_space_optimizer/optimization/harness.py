@@ -12003,6 +12003,49 @@ def _run_lever_loop(
             ),
         )
 
+        try:
+            # Dry-run applyability gate. Drops patches with applyable=False
+            # before the causal-first cap can rank them.
+            from genie_space_optimizer.optimization.patch_applyability import (
+                filter_applyable_patches,
+            )
+
+            _patches_before_applyability = list(patches)
+            patches, _applyability_decisions = filter_applyable_patches(
+                patches=_patches_before_applyability,
+                metadata_snapshot=metadata_snapshot,
+                space_id=space_id,
+            )
+            _non_applyable_decisions = [
+                d for d in _applyability_decisions if not d.applyable
+            ]
+            if _non_applyable_decisions:
+                print(
+                    _section(f"[{ag_id}] PATCH APPLYABILITY GATE", "-") + "\n"
+                    + _kv("Input patches", len(_patches_before_applyability)) + "\n"
+                    + _kv("Applyable patches", len(patches)) + "\n"
+                    + _kv("Dropped patches", len(_non_applyable_decisions)) + "\n"
+                    + "\n".join(
+                        f"|  - {d.expanded_patch_id or d.proposal_id} "
+                        f"{d.patch_type} target={d.target or '(none)'} "
+                        f"table={d.table or '(none)'} column={d.column or '(none)'} "
+                        f"applyable={d.applyable} reason={d.reason}"
+                        for d in _non_applyable_decisions[:12]
+                    ) + "\n"
+                    + _bar("-")
+                )
+                logger.warning(
+                    "AG %s patch applyability gate dropped %d/%d patch(es)",
+                    ag_id,
+                    len(_non_applyable_decisions),
+                    len(_patches_before_applyability),
+                )
+        except Exception:
+            logger.debug(
+                "Patch applyability gate failed (non-fatal)",
+                exc_info=True,
+            )
+
         # Tier 2.6: cap AG patch-set size. A single failing patch in a
         # large batch rolls back everything — including the patches that
         # would have helped. If the cap is exceeded, keep the highest-

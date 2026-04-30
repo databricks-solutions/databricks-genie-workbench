@@ -161,3 +161,20 @@ def test_filter_applyable_patches_splits_kept_and_dropped() -> None:
         ("bad", False, "missing_table"),
         ("good", True, "applyable"),
     ]
+
+
+def test_harness_filters_applyable_patches_before_patch_cap() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    source = inspect.getsource(harness._run_lever_loop)
+    filter_idx = source.index("filter_applyable_patches(")
+    cap_idx = source.index("select_target_aware_causal_patch_cap(")
+    apply_idx = source.index("\n        apply_log = apply_patch_set(")
+
+    assert filter_idx < cap_idx < apply_idx
+    snippet = source[filter_idx - 600 : filter_idx + 1800]
+    assert "_applyability_decisions" in snippet
+    assert "PATCH APPLYABILITY GATE" in snippet
+    assert "applyable=False" in snippet
