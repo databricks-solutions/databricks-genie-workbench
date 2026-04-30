@@ -211,3 +211,34 @@ def test_lever_prompts_embed_contract_tag() -> None:
     ):
         assert "<unified_rca_engine_contract>" in prompt
         assert "</unified_rca_engine_contract>" in prompt
+
+
+def test_preflight_example_synthesis_prompt_renders_with_double_brace_substitution() -> None:
+    """Regression guard for the preflight prompt's ``{{ var }}`` syntax."""
+    from genie_space_optimizer.common.config import (
+        PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+        format_mlflow_template,
+    )
+
+    rendered = format_mlflow_template(
+        PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT,
+        slice_tables="cat.sch.sales",
+        slice_metric_views="(none)",
+        slice_join_spec="(none)",
+        slice_columns="cat.sch.sales.cy_sales",
+        slice_data_profile="(none)",
+        schema_example_identifier="cat.sch.sales",
+        metric_view_contract="",
+        archetype_name="top_n_by_metric",
+        archetype_prompt_template="(template)",
+        archetype_output_shape="{}",
+        identifier_allowlist="cat.sch.sales",
+        existing_questions_list="(none)",
+        retry_feedback="",
+    )
+    assert "<leak_safe_example_synthesis_contract>" in rendered
+    assert "<unified_rca_engine_contract>" not in rendered
+    assert "regression_debt_qids" not in rendered
+    assert "{{ slice_tables }}" not in rendered
+    assert "cat.sch.sales" in rendered
+    assert '"example_question"' in rendered

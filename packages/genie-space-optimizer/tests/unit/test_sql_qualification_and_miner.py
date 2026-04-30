@@ -2604,3 +2604,12 @@ class TestLever6StructuralCandidateBridge:
             warehouse_id="",
             benchmarks=[],
         ) is None
+
+
+def test_prose_rule_mining_prompt_includes_unified_rca_contract_tag() -> None:
+    """Structural guard. Phrasing assertions live on the contract constant."""
+    from genie_space_optimizer.common.config import PROSE_RULE_MINING_PROMPT
+
+    assert "<unified_rca_engine_contract>" in PROSE_RULE_MINING_PROMPT
+    assert "</unified_rca_engine_contract>" in PROSE_RULE_MINING_PROMPT
+    assert "{{ instructions_text }}" in PROSE_RULE_MINING_PROMPT

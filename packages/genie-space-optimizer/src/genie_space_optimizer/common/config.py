@@ -4671,7 +4671,7 @@ LEVER_6_SQL_EXPRESSION_PROMPT = _RCA_CONTRACT_HEADER + _LEVER_6_SQL_EXPRESSION_B
 # substring removal to strip promoted content from prose, so the LLM
 # must return spans that match the input byte-for-byte.
 
-PROSE_RULE_MINING_PROMPT = """\
+_PROSE_RULE_MINING_BODY = """\
 <role>
 You are a Databricks Genie Space configuration expert. You are given the \
 full text_instructions of a Genie Space and the space's schema. Your job \
@@ -4836,6 +4836,8 @@ Respond with a single JSON array. Each element:
 Respond with a single JSON array and nothing else.
 </output_schema>"""
 
+PROSE_RULE_MINING_PROMPT = _RCA_CONTRACT_HEADER + _PROSE_RULE_MINING_BODY
+
 # Backward-compat alias for call sites that haven't migrated yet. The
 # registry key also gets aliased so MLflow prompt history is preserved
 # across the rename.
@@ -4889,7 +4891,7 @@ rows keep deserialising. The seeding gate is now headroom-based; see
 ``SQL_EXPRESSION_SEEDING_LEVER_RESERVE``.
 """
 
-SQL_EXPRESSION_SEEDING_PROMPT = """Given these SQL patterns extracted from \
+_SQL_EXPRESSION_SEEDING_BODY = """Given these SQL patterns extracted from \
 proven benchmark queries for a Genie Space, generate business-friendly \
 metadata for each:
 
@@ -4917,6 +4919,8 @@ the correct snippet when several tables expose similar concepts.
 Output strict JSON array matching the input order. Each element:
 {{"display_name": "...", "synonyms": [...], "instruction": "...", "alias": "..."}}
 """
+
+SQL_EXPRESSION_SEEDING_PROMPT = _RCA_CONTRACT_HEADER + _SQL_EXPRESSION_SEEDING_BODY
 
 # ── 26. Pre-flight example_sql synthesis (Bug #4 follow-up; schema-driven) ──
 #
@@ -4986,7 +4990,7 @@ PREFLIGHT_PROFILE_VALUE_LEN_CAP = int(
 Longer values are truncated with ``…`` so one pathological row cannot
 blow up the prompt budget on its own."""
 
-PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT = """\
+_PREFLIGHT_EXAMPLE_SYNTHESIS_BODY = """\
 <role>
 You are generating ONE high-quality question + SQL pair to teach a \
 Databricks Genie Space. Your output will be stored as an example so \
@@ -5067,6 +5071,10 @@ allowlist — any unknown identifier is a hallucination.
 Respond with a SINGLE JSON object, no prose, no code fences:
 {{"example_question": "...", "example_sql": "...", "rationale": "..."}}
 </output_schema>"""
+
+PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT = (
+    _EXAMPLE_SYNTHESIS_CONTRACT_HEADER + _PREFLIGHT_EXAMPLE_SYNTHESIS_BODY
+)
 
 LEVER_PROMPTS["preflight_example_synthesis"] = PREFLIGHT_EXAMPLE_SYNTHESIS_PROMPT
 
