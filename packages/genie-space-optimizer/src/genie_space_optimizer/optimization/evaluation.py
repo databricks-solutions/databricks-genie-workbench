@@ -72,6 +72,11 @@ from genie_space_optimizer.common.config import (
     scoring_v2_is_shadow,
 )
 from genie_space_optimizer.common.delta_helpers import retry_delta_write
+from genie_space_optimizer.optimization.eval_progress import (
+    EvalProgressLogger,
+    eval_force_sequential,
+    slice_eval_records_for_debug,
+)
 from genie_space_optimizer.common.genie_client import (
     detect_asset_type,
     fetch_genie_result_df,
@@ -4668,6 +4673,13 @@ def make_predict_fn(
     known_functions = _load_known_functions(spark, catalog, schema)
     _mv_measures = metric_view_measures or {}
 
+    progress = EvalProgressLogger(
+        logger=logger,
+        run_id=optimization_run_id,
+        eval_scope=eval_scope,
+        iteration=iteration,
+    )
+
     @mlflow.trace
     def genie_predict_fn(question: str, expected_sql: str = "", **kwargs) -> dict:
         """Query Genie, fetch its results via Statement API, execute only GT SQL.
@@ -4680,6 +4692,11 @@ def make_predict_fn(
         limitations (e.g. METRIC_VIEW_JOIN_NOT_SUPPORTED).
         """
         _qid_for_span = kwargs.get("question_id", "")
+        progress.emit(
+            "predict_start",
+            question_id=_qid_for_span,
+            question=question,
+        )
         try:
             if instruction_prompt_name:
                 _link_prompt_to_trace(instruction_prompt_name)
@@ -4752,8 +4769,18 @@ def make_predict_fn(
         gt_sql = ""
         temporal_rewrite_meta: dict | None = None
         try:
-            time.sleep(RATE_LIMIT_SECONDS)
-            result = run_genie_query(w, space_id, question)
+            with progress.phase("rate_limit_sleep", question_id=_qid_for_span):
+                time.sleep(RATE_LIMIT_SECONDS)
+            with progress.phase("genie_query", question_id=_qid_for_span, question=question):
+                result = run_genie_query(w, space_id, question)
+            progress.emit(
+                "genie_query_result",
+                question_id=_qid_for_span,
+                genie_status=result.get("status"),
+                conversation_id=result.get("conversation_id"),
+                message_id=result.get("message_id"),
+                statement_id=result.get("statement_id"),
+            )
             genie_sql = sanitize_sql(result.get("sql") or "")
             gt_sql = resolve_sql(expected_sql, catalog, schema)
             from genie_space_optimizer.optimization.benchmarks import fix_mv_alias_sort_collision
@@ -4832,13 +4859,15 @@ def make_predict_fn(
                             else:
                                 try:
                                     if warehouse_id:
-                                        _execute_sql_via_warehouse(
-                                            w, warehouse_id, f"EXPLAIN {gt_sql}",
-                                            catalog=catalog, schema=schema,
-                                        )
+                                        with progress.phase("gt_explain", question_id=_qid_for_span):
+                                            _execute_sql_via_warehouse(
+                                                w, warehouse_id, f"EXPLAIN {gt_sql}",
+                                                catalog=catalog, schema=schema,
+                                            )
                                     else:
                                         _set_sql_context(spark, catalog, schema)
-                                        spark.sql(f"EXPLAIN {gt_sql}")
+                                        with progress.phase("gt_explain", question_id=_qid_for_span):
+                                            spark.sql(f"EXPLAIN {gt_sql}")
                                 except Exception as explain_exc:
                                     explain_msg = str(explain_exc)
                                     if "UNBOUND_SQL_PARAMETER" in explain_msg:
@@ -4854,18 +4883,25 @@ def make_predict_fn(
 
                                 if not comparison["error"]:
                                     if warehouse_id:
-                                        raw_gt_df = _execute_sql_via_warehouse(
-                                            w, warehouse_id, gt_sql,
-                                            catalog=catalog, schema=schema,
-                                        )
+                                        with progress.phase("gt_execute", question_id=_qid_for_span):
+                                            raw_gt_df = _execute_sql_via_warehouse(
+                                                w, warehouse_id, gt_sql,
+                                                catalog=catalog, schema=schema,
+                                            )
                                         gt_df = normalize_result_df(raw_gt_df)
                                     else:
                                         _set_sql_context(spark, catalog, schema)
-                                        gt_df = normalize_result_df(spark.sql(gt_sql).toPandas())
+                                        with progress.phase("gt_execute", question_id=_qid_for_span):
+                                            gt_df = normalize_result_df(spark.sql(gt_sql).toPandas())
 
                                 genie_df = None
                                 if statement_id:
-                                    raw_genie_df = fetch_genie_result_df(w, statement_id)
+                                    with progress.phase(
+                                        "genie_result_fetch",
+                                        question_id=_qid_for_span,
+                                        statement_id=statement_id,
+                                    ):
+                                        raw_genie_df = fetch_genie_result_df(w, statement_id)
                                     genie_df = normalize_result_df(raw_genie_df)
 
                                 if genie_df is None or genie_df.empty:
@@ -5277,6 +5313,12 @@ def make_predict_fn(
                 str(output.get("analysis_text") or "(none)")[:200],
             )
 
+        progress.emit(
+            "predict_done",
+            question_id=_qid_for_span,
+            match=comparison.get("match"),
+            error_type=comparison.get("error_type"),
+        )
         return output
 
     return genie_predict_fn
@@ -7156,6 +7198,13 @@ def run_evaluation(
         _tpl = BASELINE_RUN_NAME_TEMPLATE if iteration == 0 else RUN_NAME_TEMPLATE
         run_name = format_mlflow_template(_tpl, iteration=iteration, timestamp=ts)
 
+    progress = EvalProgressLogger(
+        logger=logger,
+        run_id=optimization_run_id or "",
+        eval_scope=eval_scope,
+        iteration=iteration,
+    )
+
     with _scorer_feedback_scope(), mlflow.start_run(run_name=run_name) as run:
         _version_tags: dict[str, str] = {
             "genie.space_id": space_id,
@@ -7177,9 +7226,18 @@ def run_evaluation(
             _version_tags.update({str(k): str(v) for k, v in extra_tags.items()})
         mlflow.set_tags(_version_tags)
 
+        progress.emit(
+            "eval_run_start",
+            space_id=space_id,
+            domain=domain,
+            scorer_count=len(scorers),
+            model_id=model_id or "",
+        )
+
         if model_creation_kwargs:
             from genie_space_optimizer.optimization.models import create_genie_model_version
-            _created_model_id = create_genie_model_version(**model_creation_kwargs)
+            with progress.phase("model_creation", space_id=space_id):
+                _created_model_id = create_genie_model_version(**model_creation_kwargs)
             if _created_model_id:
                 mlflow_model_id = _created_model_id
                 model_id = _created_model_id
@@ -7194,17 +7252,18 @@ def run_evaluation(
         _wh_id = warehouse_id or os.getenv("GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID", "")
         if spark is not None:
             known_functions = _load_known_functions(spark, catalog, gold_schema)
-            filtered, quarantined_benchmarks, precheck_counts = _precheck_benchmarks_for_eval(
-                benchmarks=scope_filtered,
-                spark=spark,
-                catalog=catalog,
-                gold_schema=gold_schema,
-                known_functions=known_functions,
-                metric_view_names=metric_view_names,
-                metric_view_measures=metric_view_measures,
-                w=w,
-                warehouse_id=_wh_id,
-            )
+            with progress.phase("benchmark_precheck", scoped_count=len(scope_filtered)):
+                filtered, quarantined_benchmarks, precheck_counts = _precheck_benchmarks_for_eval(
+                    benchmarks=scope_filtered,
+                    spark=spark,
+                    catalog=catalog,
+                    gold_schema=gold_schema,
+                    known_functions=known_functions,
+                    metric_view_names=metric_view_names,
+                    metric_view_measures=metric_view_measures,
+                    w=w,
+                    warehouse_id=_wh_id,
+                )
         else:
             filtered = list(scope_filtered)
             quarantined_benchmarks = []
@@ -7256,6 +7315,14 @@ def run_evaluation(
             )
             for r in eval_records:
                 r.pop("provenance", None)
+        original_eval_record_count = len(eval_records)
+        eval_records = slice_eval_records_for_debug(eval_records)
+        if len(eval_records) != original_eval_record_count:
+            progress.emit(
+                "debug_row_cap_applied",
+                original_count=original_eval_record_count,
+                capped_count=len(eval_records),
+            )
         eval_data = pd.DataFrame(eval_records)
 
         run_params = {
@@ -7334,9 +7401,30 @@ def run_evaluation(
         _predict_fn_start_ms = int(time.time() * 1000)
         eval_attempts: list[dict[str, Any]] = []
         try:
-            eval_result, eval_attempts = _run_evaluate_with_retries(
-                evaluate_kwargs=evaluate_kwargs,
+            progress.emit(
+                "mlflow_evaluate_start",
+                row_count=len(eval_data),
+                scorer_count=len(scorers),
+                force_sequential=eval_force_sequential(),
             )
+            if eval_force_sequential():
+                eval_result = _run_evaluate_sequential_fallback(
+                    evaluate_kwargs=evaluate_kwargs,
+                )
+                eval_attempts.append(
+                    {
+                        "attempt": 1,
+                        "workers": "1",
+                        "status": "success",
+                        "mode": "forced_sequential",
+                    }
+                )
+                mlflow.set_tag("evaluation_mode", "forced_sequential")
+            else:
+                eval_result, eval_attempts = _run_evaluate_with_retries(
+                    evaluate_kwargs=evaluate_kwargs,
+                )
+            progress.emit("mlflow_evaluate_done", row_count=len(eval_data))
         except Exception as exc:
             attempts_from_exc = getattr(exc, "_eval_attempts", None)
             if isinstance(attempts_from_exc, list):

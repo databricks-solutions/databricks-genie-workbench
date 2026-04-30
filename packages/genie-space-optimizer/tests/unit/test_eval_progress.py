@@ -73,3 +73,10 @@ def test_slice_eval_records_for_debug_caps_rows(monkeypatch) -> None:
     records = [{"id": "q1"}, {"id": "q2"}, {"id": "q3"}]
 
     assert slice_eval_records_for_debug(records) == [{"id": "q1"}, {"id": "q2"}]
+
+
+def test_slice_eval_records_for_debug_noops_when_unset(monkeypatch) -> None:
+    monkeypatch.delenv("GENIE_SPACE_OPTIMIZER_EVAL_MAX_ROWS_FOR_DEBUG", raising=False)
+    records = [{"id": "q1"}, {"id": "q2"}]
+
+    assert slice_eval_records_for_debug(records) is records
