@@ -107,6 +107,7 @@ from genie_space_optimizer.optimization.optimizer import (
     _call_llm_for_adaptive_strategy,
     _collect_blank_columns,
     _collect_insufficient_tables,
+    _diagnose_lever3_directive_emission,
     _enrich_blank_descriptions,
     _enrich_table_descriptions,
     _generate_holistic_strategy,
@@ -10154,10 +10155,12 @@ def _run_lever_loop(
                 # question that was already fixed by a prior accepted AG
                 # would otherwise become permanently quarantined and
                 # invisible to the next iteration's failure analysis.
-                # Trace AG1 fixing ``gs_021`` with +5.3pp accuracy in the
-                # 7now run; the next iteration soft-skipped ``gs_021``
-                # then hard-quarantined it, hiding the fact that the
-                # acceptance gate had already taken credit for the fix.
+                # Bug observed in production: an AG fixing a question
+                # with several percentage-points of accuracy gain was
+                # masked when the next iteration soft-skipped the same
+                # question and then hard-quarantined it, hiding the
+                # fact that the acceptance gate had already taken
+                # credit for the fix.
                 logger.debug(
                     "Soft-skip qids %s are iteration-local; only "
                     "_quarantine_qids %s flow into the persistent hard "
@@ -10405,6 +10408,15 @@ def _run_lever_loop(
                 strategy["_source_clusters"] = (
                     list(_strategy_hard_clusters) + list(_strategy_soft_clusters)
                 )
+                _l3_diagnostics = _diagnose_lever3_directive_emission(
+                    list(_strategy_hard_clusters), strategy,
+                )
+                if _l3_diagnostics:
+                    logger.warning(
+                        "Lever 3 directive diagnostics: %s",
+                        json.dumps(_l3_diagnostics, default=str),
+                    )
+                    strategy["lever3_directive_diagnostics"] = _l3_diagnostics
                 action_groups = strategy.get("action_groups", [])
                 # Task 8 — strategist coverage enforcement. Any patchable
                 # hard cluster the LLM dropped gets a deterministic
@@ -11037,9 +11049,10 @@ def _run_lever_loop(
         # and drop any proposal whose (patch_type, target) signature was
         # already rolled back. Without this the strategist routinely
         # re-proposes the same patch type against the same table after a
-        # content regression (iter-1 + iter-3 of the retail corpus both
-        # patched mv_7now_fact_sales.description → rolled back → iter-3
-        # re-proposed update_description on mv_7now_fact_sales).
+        # content regression (observed: iter-1 + iter-3 of a real run
+        # both patched ``mv_<domain>_fact_<entity>.description`` →
+        # rolled back → iter-3 re-proposed ``update_description`` on
+        # the same table).
         #
         # Escape hatch: a proposal carrying
         # ``escalation_justification: <non-empty>`` bypasses the filter,
@@ -12091,9 +12104,10 @@ def _run_lever_loop(
         )
 
         # Task 4 — surface cap-selected vs applier-applied disagreement at
-        # WARN level so silent applier drops (the AG2 cap selected
-        # ['P002#3','P004#1','P005#1'] but applied only the off-causal
-        # filter on mv_esr_dim_date) cannot recur unnoticed.
+        # WARN level so silent applier drops (an AG2 cap selecting
+        # ``['P002#3','P004#1','P005#1']`` but only applying the
+        # off-causal filter on a ``mv_<domain>_dim_<entity>`` patch)
+        # cannot recur unnoticed.
         try:
             from genie_space_optimizer.optimization.applier_audit import (
                 diff_selected_vs_applied,

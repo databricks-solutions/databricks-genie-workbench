@@ -11048,6 +11048,64 @@ def _lever6_reject_payload(
     }
 
 
+_LEVER3_ROOT_CAUSES = frozenset({
+    "missing_data_asset",
+    "wrong_function",
+    "incorrect_function_usage",
+    "tvf_parameter_error",
+})
+
+
+def _cluster_expects_lever3(cluster: dict[str, Any]) -> bool:
+    """Return True when a cluster looks like it should route to Lever 3.
+
+    Either the root cause is a known Lever-3 family, or the blame set names
+    a SQL routine (``fn_*`` or anything containing ``function``).
+    """
+    root_cause = str(cluster.get("root_cause") or "").strip().lower()
+    if root_cause in _LEVER3_ROOT_CAUSES:
+        return True
+    blame = cluster.get("asi_blame_set") or cluster.get("blame_set") or []
+    if isinstance(blame, str):
+        blame_items = [blame]
+    else:
+        blame_items = [str(item) for item in blame]
+    return any("fn_" in item.lower() or "function" in item.lower() for item in blame_items)
+
+
+def _diagnose_lever3_directive_emission(
+    clusters: list[dict[str, Any]],
+    strategy: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Report clusters that expect Lever 3 but lack a strategist action group.
+
+    Used after adaptive strategy generation so a missing Lever-3 directive is
+    visible in logs and trace metadata instead of silently dropping the RCA.
+    """
+    action_groups = strategy.get("action_groups") or []
+    diagnostics: list[dict[str, Any]] = []
+    for cluster in clusters:
+        if not _cluster_expects_lever3(cluster):
+            continue
+        qids = [str(q) for q in (cluster.get("question_ids") or [])]
+        has_l3 = False
+        for ag in action_groups:
+            lever = int(ag.get("target_lever") or ag.get("lever") or 0)
+            affected = {str(q) for q in (ag.get("affected_questions") or [])}
+            if lever == 3 and (not qids or affected.intersection(qids)):
+                has_l3 = True
+                break
+        if not has_l3:
+            diagnostics.append({
+                "cluster_id": str(cluster.get("cluster_id") or ""),
+                "expected_lever": 3,
+                "status": "missing_lever3_action_group",
+                "question_ids": qids,
+                "blame_set": cluster.get("asi_blame_set") or cluster.get("blame_set") or [],
+            })
+    return diagnostics
+
+
 def _generate_lever6_proposal(
     cluster: dict,
     metadata_snapshot: dict,
