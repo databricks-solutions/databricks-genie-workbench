@@ -21,6 +21,7 @@ from typing import Any
 
 import mlflow
 
+from genie_space_optimizer.common.delta_helpers import execute_delta_write_with_retry
 from genie_space_optimizer.common.mlflow_names import labeling_run_name
 
 logger = logging.getLogger(__name__)
@@ -614,7 +615,7 @@ def flag_for_human_review(
             _q_text_esc = q_text.replace("'", "''")
             _reason_esc = reason.replace("'", "''")
             _patches_esc = patches.replace("'", "''")
-            spark.sql(f"""
+            merge_stmt = f"""
                 MERGE INTO {fqn} AS t
                 USING (SELECT '{run_id}' AS run_id, '{domain}' AS domain,
                               '{qid}' AS question_id) AS s
@@ -633,7 +634,13 @@ def flag_for_human_review(
                     s.run_id, s.domain, s.question_id, '{_q_text_esc}',
                     '{_reason_esc}', {iters}, '{_patches_esc}', 'pending', '{now}'
                 )
-            """)
+            """
+            execute_delta_write_with_retry(
+                spark,
+                merge_stmt,
+                operation_name="flag_for_human_review",
+                table_name=fqn,
+            )
             flagged += 1
         except Exception:
             logger.warning("Failed to flag question %s", qid, exc_info=True)

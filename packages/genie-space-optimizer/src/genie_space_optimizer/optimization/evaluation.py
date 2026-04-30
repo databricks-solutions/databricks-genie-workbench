@@ -71,6 +71,7 @@ from genie_space_optimizer.common.config import (
     scoring_v2_is_on,
     scoring_v2_is_shadow,
 )
+from genie_space_optimizer.common.delta_helpers import retry_delta_write
 from genie_space_optimizer.common.genie_client import (
     detect_asset_type,
     fetch_genie_result_df,
@@ -6539,7 +6540,11 @@ def create_evaluation_dataset(
             )
             for r in records:
                 r.pop("provenance", None)
-        eval_dataset.merge_records(records)
+        retry_delta_write(
+            lambda: eval_dataset.merge_records(records),
+            operation_name="evaluation_dataset.merge_records",
+            table_name=uc_table_name,
+        )
         logger.info("UC Evaluation Dataset: %s (%d records merged)", uc_table_name, len(records))
         return eval_dataset
     except Exception:

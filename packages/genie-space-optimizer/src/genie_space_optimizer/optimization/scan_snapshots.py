@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from genie_space_optimizer.common.config import TABLE_SCAN_SNAPSHOTS
+from genie_space_optimizer.common.delta_helpers import execute_delta_write_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ def write_scan_snapshot(
     total_sql = "NULL" if total is None else str(int(total))
 
     try:
-        spark.sql(f"""
+        merge_stmt = f"""
             MERGE INTO {fqn} AS t
             USING (
                 SELECT '{run_id}' AS run_id,
@@ -138,7 +139,13 @@ def write_scan_snapshot(
                 s.run_id, s.space_id, s.phase, {score_sql}, {total_sql}, '{maturity_esc}',
                 '{checks_json}', '{findings_json}', '{warnings_json}', '{scanned_at}'
             )
-        """)
+        """
+        execute_delta_write_with_retry(
+            spark,
+            merge_stmt,
+            operation_name="write_scan_snapshot",
+            table_name=fqn,
+        )
         logger.info(
             "Wrote IQ scan snapshot run=%s space=%s phase=%s score=%s/%s",
             run_id, space_id, phase, score, total,
