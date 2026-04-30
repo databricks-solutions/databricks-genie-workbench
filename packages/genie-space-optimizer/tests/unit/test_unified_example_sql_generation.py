@@ -1821,3 +1821,25 @@ def test_sql_expression_seeding_summary_renders_validation_subbuckets() -> None:
 
     assert "mv_unsupported_usage" in out
     assert "SUM(cat.sch.mv_sales.total_sales)" in out
+
+
+class TestPhase6DiversifiedGenerationConfig:
+    def test_example_sql_prompt_accepts_profile_quota_variables(self):
+        from genie_space_optimizer.common.config import EXAMPLE_SQL_GENERATION_PROMPT
+
+        assert "{{ generation_profile_name }}" in EXAMPLE_SQL_GENERATION_PROMPT
+        assert "{{ generation_profile_focus }}" in EXAMPLE_SQL_GENERATION_PROMPT
+        assert "{{ generation_profile_quotas }}" in EXAMPLE_SQL_GENERATION_PROMPT
+        assert "{{ asset_coverage_guidance }}" in EXAMPLE_SQL_GENERATION_PROMPT
+        assert "Do NOT copy benchmark-style wording verbatim" in EXAMPLE_SQL_GENERATION_PROMPT
+
+    def test_example_sql_budget_config_defaults_are_importable(self):
+        from genie_space_optimizer.common.config import (
+            EXAMPLE_SQL_GENERATION_CALLS,
+            EXAMPLE_SQL_INITIAL_OVERDRAW,
+            PREFLIGHT_EXAMPLE_SQL_TARGET,
+        )
+
+        assert PREFLIGHT_EXAMPLE_SQL_TARGET == 20
+        assert EXAMPLE_SQL_INITIAL_OVERDRAW == 3.0
+        assert EXAMPLE_SQL_GENERATION_CALLS == 3

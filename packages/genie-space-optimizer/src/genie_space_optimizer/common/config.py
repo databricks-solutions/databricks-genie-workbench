@@ -1066,6 +1066,13 @@ EXAMPLE_SQL_GENERATION_PROMPT = (
     '## Join Specifications (how tables relate)\n'
     '{{ join_specs_context }}\n'
     '\n'
+    '## Generation Profile\n'
+    'Profile name: {{ generation_profile_name }}\n'
+    '{{ generation_profile_focus }}\n'
+    '\n'
+    '## Asset Coverage Guidance\n'
+    '{{ asset_coverage_guidance }}\n'
+    '\n'
     '## Genie Space Instructions\n'
     '{{ instructions_context }}\n'
     '\n'
@@ -1150,6 +1157,14 @@ EXAMPLE_SQL_GENERATION_PROMPT = (
     'Write the simplest correct SQL. Prefer fewer columns and filters. '
     'For multi-table questions JOINs are expected and encouraged, but only when '
     'the question really spans two assets.\n'
+    '\n'
+    '## Diversity Quotas For This Call\n'
+    '{{ generation_profile_quotas }}\n'
+    '\n'
+    'Avoid repeating the same question wording, exact intent, WHERE filters, '
+    'ORDER BY shape, or selected dimensions across examples in this call. '
+    'Do NOT copy benchmark-style wording verbatim. The examples should teach '
+    'useful business query patterns without echoing evaluation rows.\n'
     '\n'
     '## Diversity\n'
     'Cover different query shapes (aggregations, filters, temporal comparisons, '
@@ -4963,6 +4978,28 @@ PREFLIGHT_EXAMPLE_SQL_TARGET = int(
 Stage gates on ``need = max(0, TARGET - existing)`` — never produces more
 than required, idempotent across re-runs. 20 is a conservative upper
 cap; does not affect Genie's 200-snippet limit (example SQLs don't count).
+"""
+
+EXAMPLE_SQL_INITIAL_OVERDRAW = float(
+    os.getenv("GSO_EXAMPLE_SQL_INITIAL_OVERDRAW", "3.0") or "3.0"
+)
+"""Multiplier over ``PREFLIGHT_EXAMPLE_SQL_TARGET`` for the unified
+example-SQL generator's upfront candidate reservoir.
+
+This is intentionally separate from the final installed target. With the
+default target of 20 and overdraw of 3.0, the generator asks for about 60
+raw candidates across diversified LLM calls, validates them once, then
+selects at most 20 for persistence.
+"""
+
+EXAMPLE_SQL_GENERATION_CALLS = int(
+    os.getenv("GSO_EXAMPLE_SQL_GENERATION_CALLS", "3") or "3"
+)
+"""Number of independent diversified LLM calls made by unified example-SQL
+generation before final validation/selection.
+
+Clamped by the generator to the supported profile range. Defaults to 3 so
+the target=20, overdraw=3.0 path requests roughly 20 candidates per call.
 """
 
 PREFLIGHT_EXAMPLE_SQL_PER_ARCHETYPE = int(
