@@ -425,8 +425,11 @@ class TestPhase3FirewallDrops:
             target_count=5,
             leakage_oracle=oracle,
         )
-        assert len(survivors) == 0
-        assert counters["firewall_fingerprint"] >= 1
+        # Phase 6 relaxed firewall: SQL fingerprint overlap alone (with a
+        # meaningfully different question) is a warning, not a drop.
+        assert len(survivors) == 1
+        assert counters["firewall_sql_pattern_warning"] >= 1
+        assert counters["firewall_fingerprint"] == 0
 
     def test_firewall_drops_question_echo(
         self, patched_core, monkeypatch,
@@ -1911,3 +1914,49 @@ class TestPhase6DiversifiedGenerationProfiles:
         assert counters["generation_calls"] == 3
         assert counters["candidate_budget"] == 9
         assert all("## Generation Profile" in prompt for prompt in calls)
+
+
+class TestPhase6RelaxedFirewall:
+    def test_sql_fingerprint_overlap_is_warning_not_drop(
+        self, monkeypatch, patched_core,
+    ):
+        from genie_space_optimizer.optimization import evaluation as ev_mod
+
+        def _fake_llm(w, prompt, *, prompt_name=None):
+            return [
+                {
+                    "question": "Show regional revenue for training examples.",
+                    "expected_sql": (
+                        "SELECT region, SUM(revenue) AS total_revenue "
+                        "FROM cat.sch.sales GROUP BY region"
+                    ),
+                    "expected_asset": "TABLE",
+                    "required_tables": ["cat.sch.sales"],
+                    "required_columns": ["region", "revenue"],
+                    "expected_facts": ["region", "revenue"],
+                    "category": "aggregation",
+                }
+            ]
+
+        monkeypatch.setattr(ev_mod, "_call_llm_for_scoring", _fake_llm)
+        oracle = LeakageOracle(_mk_benchmark_corpus())
+
+        survivors, counters = ev_mod.generate_example_sqls(
+            w=None,
+            spark=None,
+            config=_mk_config(),
+            uc_columns=_mk_uc_columns(),
+            uc_tags=[],
+            uc_routines=[],
+            domain="sales",
+            catalog="cat",
+            schema="sch",
+            warehouse_id="",
+            target_count=1,
+            existing_example_sqls=[],
+            leakage_oracle=oracle,
+        )
+
+        assert len(survivors) == 1
+        assert counters["firewall_sql_pattern_warning"] == 1
+        assert counters["firewall_fingerprint"] == 0

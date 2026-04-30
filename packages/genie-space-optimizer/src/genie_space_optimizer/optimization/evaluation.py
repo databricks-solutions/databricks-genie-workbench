@@ -10106,6 +10106,8 @@ def generate_validated_sql_examples(
         "arbiter_row_capture_exec_failed": 0,
         "firewall_fingerprint": 0,
         "firewall_question_echo": 0,
+        "firewall_joint_similarity": 0,
+        "firewall_sql_pattern_warning": 0,
         "dedup_in_corpus": 0,
         "unfixable_after_correction": 0,
         # F8 — deterministic repairs applied inside
@@ -10633,14 +10635,39 @@ def generate_validated_sql_examples(
         shielded: list[dict] = []
         for cand in valid:
             try:
-                if leakage_oracle.contains_sql(
-                    cand["expected_sql"], w=w,
-                ):
-                    rejection_counters["firewall_fingerprint"] += 1
-                    continue
-                if leakage_oracle.contains_question(cand["question"]):
-                    rejection_counters["firewall_question_echo"] += 1
-                    continue
+                if hasattr(leakage_oracle, "evaluate_example_sql"):
+                    decision = leakage_oracle.evaluate_example_sql(
+                        question=cand["question"],
+                        sql=cand["expected_sql"],
+                        w=w,
+                    )
+                    if decision.block:
+                        if decision.reason == "benchmark_question_echo":
+                            rejection_counters["firewall_question_echo"] += 1
+                        else:
+                            rejection_counters["firewall_joint_similarity"] = (
+                                rejection_counters.get(
+                                    "firewall_joint_similarity", 0,
+                                ) + 1
+                            )
+                        continue
+                    if decision.warning:
+                        rejection_counters["firewall_sql_pattern_warning"] = (
+                            rejection_counters.get(
+                                "firewall_sql_pattern_warning", 0,
+                            ) + 1
+                        )
+                        cand["firewall_warning"] = decision.reason
+                else:
+                    if leakage_oracle.contains_question(cand["question"]):
+                        rejection_counters["firewall_question_echo"] += 1
+                        continue
+                    if leakage_oracle.contains_sql(cand["expected_sql"], w=w):
+                        rejection_counters["firewall_sql_pattern_warning"] = (
+                            rejection_counters.get(
+                                "firewall_sql_pattern_warning", 0,
+                            ) + 1
+                        )
             except Exception as exc:  # pragma: no cover — defensive
                 logger.warning(
                     "gvse: firewall oracle raised (fail-open): %s",

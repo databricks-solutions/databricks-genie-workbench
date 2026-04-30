@@ -701,3 +701,69 @@ def test_failed_row_structural_learning_allows_snippets_but_blocks_example_sql()
 
     assert is_benchmark_leak(snippet, "add_sql_snippet_expression", corpus)[0] is False
     assert is_benchmark_leak(example, "add_example_sql", corpus)[0] is True
+
+
+def test_example_sql_policy_warns_on_sql_fingerprint_with_different_question():
+    from genie_space_optimizer.optimization.leakage import (
+        BenchmarkCorpus,
+        LeakageOracle,
+    )
+
+    corpus = BenchmarkCorpus.from_benchmarks([
+        {
+            "id": "b1",
+            "question": "What is total revenue by region?",
+            "expected_sql": "SELECT region, SUM(revenue) FROM cat.sch.sales GROUP BY region",
+        }
+    ])
+    oracle = LeakageOracle(corpus)
+
+    decision = oracle.evaluate_example_sql(
+        question="Show sales grouped by region for an analyst sanity check.",
+        sql="SELECT region, SUM(revenue) FROM cat.sch.sales GROUP BY region",
+    )
+
+    assert decision.block is False
+    assert decision.warning is True
+    assert decision.reason == "sql_pattern_overlap_warning"
+
+
+def test_example_sql_policy_blocks_exact_question_and_exact_sql():
+    from genie_space_optimizer.optimization.leakage import (
+        BenchmarkCorpus,
+        LeakageOracle,
+    )
+
+    question = "What is total revenue by region?"
+    sql = "SELECT region, SUM(revenue) FROM cat.sch.sales GROUP BY region"
+    oracle = LeakageOracle(BenchmarkCorpus.from_benchmarks([
+        {"id": "b1", "question": question, "expected_sql": sql}
+    ]))
+
+    decision = oracle.evaluate_example_sql(question=question, sql=sql)
+
+    assert decision.block is True
+    assert decision.reason == "exact_question_and_sql"
+
+
+def test_example_sql_policy_blocks_high_question_and_sql_similarity():
+    from genie_space_optimizer.optimization.leakage import (
+        BenchmarkCorpus,
+        LeakageOracle,
+    )
+
+    oracle = LeakageOracle(BenchmarkCorpus.from_benchmarks([
+        {
+            "id": "b1",
+            "question": "What is total revenue by region?",
+            "expected_sql": "SELECT region, SUM(revenue) FROM cat.sch.sales GROUP BY region",
+        }
+    ]))
+
+    decision = oracle.evaluate_example_sql(
+        question="What is the total revenue by region?",
+        sql="SELECT region, SUM(revenue) AS total_revenue FROM cat.sch.sales GROUP BY region",
+    )
+
+    assert decision.block is True
+    assert decision.reason == "high_question_and_sql_similarity"

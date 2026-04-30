@@ -609,6 +609,23 @@ def _question_token_set_jaccard(a: str, b: str) -> float:
     return inter / union if union else 0.0
 
 
+@dataclass(frozen=True)
+class ExampleSqlLeakageDecision:
+    """Tiered leakage policy outcome for example-SQL generation.
+
+    ``block`` means the candidate must be rejected. ``warning`` means the
+    candidate is allowed but operators should know SQL pattern overlaps a
+    benchmark (typical case: same SELECT shape, different question intent).
+    Both flags can be False — that's the no-overlap path.
+    """
+
+    block: bool
+    warning: bool
+    reason: str
+    question_score: float = 0.0
+    sql_score: float = 0.0
+
+
 EXAMPLE_SQL_QUESTION_ECHO_THRESHOLD = float(
     os.environ.get("GSO_EXAMPLE_SQL_QUESTION_ECHO_THRESHOLD", "0.85")
 )
@@ -693,6 +710,93 @@ class LeakageOracle:
                     return True
         return False
 
+    def evaluate_example_sql(
+        self,
+        *,
+        question: str,
+        sql: str,
+        w: Any = None,
+    ) -> ExampleSqlLeakageDecision:
+        """Tiered leakage policy for example-SQL candidates.
+
+        SQL fingerprint or n-gram overlap alone is a *warning*, because
+        teaching examples often share aggregation/join patterns with
+        benchmarks. An exact-or-near question echo, joint high
+        question+SQL similarity, or exact question + exact SQL is a
+        block.
+        """
+        if not question or not isinstance(question, str):
+            question = ""
+        if not sql or not isinstance(sql, str):
+            sql = ""
+
+        best_question_score = 0.0
+        best_sql_score = 0.0
+        exact_sql = False
+
+        for corpus in self._corpora:
+            sql_fp = canonicalize_sql(sql)
+            exact_sql = exact_sql or bool(
+                sql_fp and sql_fp in corpus.sql_fingerprints
+            )
+
+            for benchmark_q in corpus.questions:
+                best_question_score = max(
+                    best_question_score,
+                    _question_token_set_jaccard(question, benchmark_q),
+                )
+
+            sql_shingles = _tokenize(sql)
+            if sql_shingles:
+                for shingles in corpus.sql_shingles:
+                    best_sql_score = max(
+                        best_sql_score, _jaccard(sql_shingles, shingles),
+                    )
+
+        exact_or_near_question = best_question_score >= self._question_threshold
+        high_joint_question = best_question_score >= 0.75
+        high_joint_sql = exact_sql or best_sql_score >= NGRAM_SIMILARITY_THRESHOLD
+
+        if exact_or_near_question and exact_sql:
+            return ExampleSqlLeakageDecision(
+                block=True,
+                warning=False,
+                reason="exact_question_and_sql",
+                question_score=best_question_score,
+                sql_score=1.0,
+            )
+        if high_joint_question and high_joint_sql:
+            return ExampleSqlLeakageDecision(
+                block=True,
+                warning=False,
+                reason="high_question_and_sql_similarity",
+                question_score=best_question_score,
+                sql_score=1.0 if exact_sql else best_sql_score,
+            )
+        if exact_or_near_question:
+            return ExampleSqlLeakageDecision(
+                block=True,
+                warning=False,
+                reason="benchmark_question_echo",
+                question_score=best_question_score,
+                sql_score=best_sql_score,
+            )
+        if exact_sql or best_sql_score >= NGRAM_SIMILARITY_THRESHOLD:
+            return ExampleSqlLeakageDecision(
+                block=False,
+                warning=True,
+                reason="sql_pattern_overlap_warning",
+                question_score=best_question_score,
+                sql_score=1.0 if exact_sql else best_sql_score,
+            )
+        return ExampleSqlLeakageDecision(
+            block=False,
+            warning=False,
+            reason="",
+            question_score=best_question_score,
+            sql_score=best_sql_score,
+        )
+
     # Deliberately absent — see class docstring for rationale. Any of
     # the following would re-open the side channel the wrapper exists
     # to close. Do not add them.
@@ -702,3 +806,26 @@ class LeakageOracle:
     # def questions(self): ...
     # @property
     # def expected_sqls(self): ...
+
+
+def is_example_sql_benchmark_leak(
+    proposal: dict,
+    benchmark_corpus: BenchmarkCorpus,
+    *,
+    w: Any = None,
+) -> tuple[bool, str]:
+    """Last-mile applier-side relaxed firewall for example-SQL proposals.
+
+    Mirrors :meth:`LeakageOracle.evaluate_example_sql` but accepts a raw
+    corpus (the applier has it directly) and returns ``(block, reason)``
+    so the existing applier flow can keep its tuple-shaped contract.
+    """
+    oracle = LeakageOracle(benchmark_corpus)
+    decision = oracle.evaluate_example_sql(
+        question=str(
+            proposal.get("example_question") or proposal.get("question") or ""
+        ),
+        sql=str(proposal.get("example_sql") or proposal.get("sql") or ""),
+        w=w,
+    )
+    return decision.block, decision.reason

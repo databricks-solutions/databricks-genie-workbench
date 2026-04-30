@@ -2389,7 +2389,12 @@ def _print_unified_example_summary(
         rc.get("arbiter_row_capture_exec_failed", 0),
     ))
     _lines.append(_kv(
-        "Firewall: SQL fingerprint match", rc.get("firewall_fingerprint", 0),
+        "Firewall: SQL pattern warnings",
+        rc.get("firewall_sql_pattern_warning", 0),
+    ))
+    _lines.append(_kv(
+        "Firewall: joint question+SQL block",
+        rc.get("firewall_joint_similarity", 0),
     ))
     _lines.append(_kv(
         "Firewall: question echo", rc.get("firewall_question_echo", 0),
@@ -2484,16 +2489,20 @@ def _apply_proactive_example_sqls(
         )
     else:
         from genie_space_optimizer.optimization.leakage import (
-            BenchmarkCorpus, is_benchmark_leak,
+            BenchmarkCorpus,
+            is_benchmark_leak,
+            is_example_sql_benchmark_leak,
         )
         from genie_space_optimizer.optimization.optimizer import _incr_bug4_counter
 
         corpus = BenchmarkCorpus.from_benchmarks(benchmarks)
         filtered: list[dict] = []
         for p in mined_proposals:
-            is_leak, reason = is_benchmark_leak(
-                p, p.get("patch_type", "add_example_sql"), corpus,
-            )
+            patch_type = p.get("patch_type", "add_example_sql")
+            if patch_type in {"add_example_sql", "update_example_sql"}:
+                is_leak, reason = is_example_sql_benchmark_leak(p, corpus)
+            else:
+                is_leak, reason = is_benchmark_leak(p, patch_type, corpus)
             if is_leak:
                 _incr_bug4_counter("firewall_rejections")
                 logger.info(
