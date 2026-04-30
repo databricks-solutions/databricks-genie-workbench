@@ -270,3 +270,96 @@ def test_target_aware_cap_dedupes_selected_and_dropped_by_expanded_patch_id() ->
 
     assert selected_identities.count("P001#2") <= 1
     assert decision_identities.count("P001#2") <= 1
+
+
+def test_behavior_failure_cap_preserves_direct_lever6_patch() -> None:
+    from genie_space_optimizer.optimization.patch_selection import (
+        select_target_aware_causal_patch_cap,
+    )
+
+    patches = [
+        {
+            "proposal_id": "P001#1",
+            "type": "update_column_description",
+            "lever": 1,
+            "relevance_score": 1.0,
+            "rca_id": "rca_q1",
+            "target_qids": ["q1"],
+            "root_cause": "missing_filter",
+        },
+        {
+            "proposal_id": "P002#1",
+            "type": "update_column_description",
+            "lever": 1,
+            "relevance_score": 1.0,
+            "rca_id": "rca_q1",
+            "target_qids": ["q1"],
+            "root_cause": "missing_filter",
+        },
+        {
+            "proposal_id": "P003#1",
+            "type": "update_column_description",
+            "lever": 1,
+            "relevance_score": 1.0,
+            "rca_id": "rca_q1",
+            "target_qids": ["q1"],
+            "root_cause": "missing_filter",
+        },
+        {
+            "proposal_id": "P023#1",
+            "type": "add_sql_snippet_filter",
+            "lever": 6,
+            "relevance_score": 0.9,
+            "target_qids": ["q1"],
+            "root_cause": "missing_filter",
+        },
+    ]
+
+    selected, decisions = select_target_aware_causal_patch_cap(
+        patches,
+        target_qids=("q1",),
+        max_patches=3,
+    )
+
+    selected_ids = {p["proposal_id"] for p in selected}
+    assert "P023#1" in selected_ids
+    selected_reasons = {
+        d["proposal_id"]: d["selection_reason"]
+        for d in decisions
+        if d["decision"] == "selected"
+    }
+    assert selected_reasons["P023#1"] == "behavior_direct_fix_reserved"
+
+
+def test_non_behavior_failure_keeps_existing_causal_ranking() -> None:
+    from genie_space_optimizer.optimization.patch_selection import (
+        select_target_aware_causal_patch_cap,
+    )
+
+    patches = [
+        {
+            "proposal_id": "P001#1",
+            "type": "update_column_description",
+            "lever": 1,
+            "relevance_score": 1.0,
+            "rca_id": "rca_q1",
+            "target_qids": ["q1"],
+            "root_cause": "column_disambiguation",
+        },
+        {
+            "proposal_id": "P006#1",
+            "type": "add_instruction",
+            "lever": 5,
+            "relevance_score": 0.1,
+            "target_qids": ["q1"],
+            "root_cause": "column_disambiguation",
+        },
+    ]
+
+    selected, _decisions = select_target_aware_causal_patch_cap(
+        patches,
+        target_qids=("q1",),
+        max_patches=1,
+    )
+
+    assert [p["proposal_id"] for p in selected] == ["P001#1"]

@@ -229,6 +229,36 @@ def _target_qids(patch: dict[str, Any]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(q) for q in raw if str(q)))
 
 
+_BEHAVIOR_ROOT_CAUSES = frozenset(
+    {
+        "missing_filter",
+        "wrong_filter_condition",
+        "wrong_aggregation",
+        "wrong_measure",
+    }
+)
+
+
+def _root_cause(patch: dict[str, Any]) -> str:
+    raw = patch.get("root_cause") or patch.get("rca_kind") or ""
+    return str(raw).strip().split(":", 1)[0]
+
+
+def _is_direct_behavior_patch(patch: dict[str, Any]) -> bool:
+    if _root_cause(patch) not in _BEHAVIOR_ROOT_CAUSES:
+        return False
+    if _lever(patch) in {5, 6}:
+        return True
+    patch_type = str(patch.get("type") or patch.get("patch_type") or "")
+    return patch_type in {
+        "add_instruction",
+        "update_instruction_section",
+        "add_sql_snippet_filter",
+        "add_sql_snippet_measure",
+        "add_sql_snippet_calculation",
+    }
+
+
 def select_target_aware_causal_patch_cap(
     patches: list[dict[str, Any]],
     *,
@@ -253,6 +283,29 @@ def select_target_aware_causal_patch_cap(
     target_set = tuple(dict.fromkeys(str(q) for q in target_qids if str(q)))
     selected: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
+
+    reserved_direct_fix_pids: set[str] = set()
+    if max_patches > 0:
+        direct_candidates = [
+            (idx, patch)
+            for idx, patch in enumerate(patches)
+            if _is_direct_behavior_patch(patch)
+        ]
+        if direct_candidates:
+            idx, patch = min(
+                direct_candidates,
+                key=lambda item: (
+                    -_score(item[1], "relevance_score"),
+                    -causal_attribution_tier(item[1]),
+                    _risk_rank(item[1]),
+                    -_score(item[1], "confidence"),
+                    item[0],
+                ),
+            )
+            selected.append(patch)
+            pid = _proposal_id(patch, idx)
+            selected_ids.add(pid)
+            reserved_direct_fix_pids.add(pid)
 
     for target in target_set:
         if len(selected) >= max_patches:
@@ -312,12 +365,16 @@ def select_target_aware_causal_patch_cap(
     for idx, patch in enumerate(patches):
         pid = _proposal_id(patch, idx)
         selected_flag = pid in selected_pid_set
+        if selected_flag and pid in reserved_direct_fix_pids:
+            selection_reason = "behavior_direct_fix_reserved"
+        elif selected_flag:
+            selection_reason = "target_coverage"
+        else:
+            selection_reason = "lower_causal_rank"
         decisions.append({
             "proposal_id": pid,
             "decision": "selected" if selected_flag else "dropped",
-            "selection_reason": (
-                "target_coverage" if selected_flag else "lower_causal_rank"
-            ),
+            "selection_reason": selection_reason,
             "rank": rank_by_pid.get(pid),
             "relevance_score": _score(patch, "relevance_score"),
             "lever": _lever(patch),
