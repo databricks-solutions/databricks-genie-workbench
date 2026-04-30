@@ -108,3 +108,17 @@ def test_mark_function_not_in_space_leaves_registered_candidate_valid() -> None:
     assert _mark_function_not_in_space_if_needed(candidate, config) is False
     assert candidate["validation_status"] == "valid"
     assert candidate["validation_reason_code"] == "ok"
+
+
+def test_benchmark_llm_calls_are_wrapped_in_named_chain_spans() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import evaluation
+
+    source = inspect.getsource(evaluation.generate_benchmarks)
+    correction_source = inspect.getsource(evaluation._attempt_sql_correction)
+
+    assert 'name="benchmark_generation"' in source
+    assert 'name="benchmark_correction"' in correction_source
+    assert "SpanType.CHAIN" in source
+    assert "SpanType.CHAIN" in correction_source

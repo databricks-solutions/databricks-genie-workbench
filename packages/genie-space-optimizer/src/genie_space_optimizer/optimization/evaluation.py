@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Iterator, Union
 
 import mlflow
 import pandas as pd
-from mlflow.entities import AssessmentSource, Feedback
+from mlflow.entities import AssessmentSource, Feedback, SpanType
 from mlflow.genai.scorers import scorer
 
 from genie_space_optimizer.optimization.genie_eval_taxonomy import (
@@ -9214,10 +9214,30 @@ def _attempt_sql_correction(
     )
 
     try:
-        response = _call_llm_for_scoring(
-            w, prompt,
-            prompt_name=get_registered_prompt_name(correction_prompt_registry_key),
-        )
+        with mlflow.start_span(
+            name="benchmark_correction", span_type=SpanType.CHAIN,
+        ) as _corr_span:
+            try:
+                _corr_span.set_inputs({
+                    "candidate_count": len(invalid_candidates),
+                    "prompt_registry_key": correction_prompt_registry_key,
+                    "prompt_name": get_registered_prompt_name(correction_prompt_registry_key),
+                })
+            except Exception:
+                pass
+            response = _call_llm_for_scoring(
+                w, prompt,
+                prompt_name=get_registered_prompt_name(correction_prompt_registry_key),
+            )
+            try:
+                _corr_span.set_outputs({
+                    "correction_count": (
+                        len(response) if isinstance(response, list)
+                        else len(response.get("benchmarks", []))
+                    ),
+                })
+            except Exception:
+                pass
         corrections: list[dict] = response if isinstance(response, list) else response.get("benchmarks", [])
     except Exception:
         logger.warning(
@@ -11352,10 +11372,29 @@ def generate_benchmarks(
         if existing_questions_context:
             prompt += existing_questions_context
 
-        response = _call_llm_for_scoring(
-            w, prompt,
-            prompt_name=get_registered_prompt_name("benchmark_generation"),
-        )
+        with mlflow.start_span(
+            name="benchmark_generation", span_type=SpanType.CHAIN,
+        ) as _bench_span:
+            try:
+                _bench_span.set_inputs({
+                    "domain": domain,
+                    "prompt_name": get_registered_prompt_name("benchmark_generation"),
+                })
+            except Exception:
+                pass
+            response = _call_llm_for_scoring(
+                w, prompt,
+                prompt_name=get_registered_prompt_name("benchmark_generation"),
+            )
+            try:
+                _bench_span.set_outputs({
+                    "raw_benchmark_count": (
+                        len(response) if isinstance(response, list)
+                        else len(response.get("benchmarks", []))
+                    ),
+                })
+            except Exception:
+                pass
         raw_benchmarks: list[dict] = response if isinstance(response, list) else response.get("benchmarks", [])
     else:
         logger.info(
