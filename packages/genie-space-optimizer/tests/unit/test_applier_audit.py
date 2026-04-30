@@ -103,3 +103,33 @@ def test_harness_emits_cap_vs_applied_reconciliation_after_apply() -> None:
     assert "logger.warning" in snippet
     assert "selected_but_not_applied" in snippet
     assert "applied_but_not_selected" in snippet
+
+
+def test_applier_decision_counts_groups_reasons() -> None:
+    from genie_space_optimizer.optimization.applier_audit import (
+        applier_decision_counts,
+    )
+
+    decisions = [
+        {"decision": "dropped_validation", "reason": "missing_table"},
+        {"decision": "dropped_validation", "reason": "missing_table"},
+        {"decision": "dropped_no_op", "reason": "apply_action_returned_false"},
+    ]
+
+    assert applier_decision_counts(decisions) == {
+        "dropped_validation:missing_table": 2,
+        "dropped_no_op:apply_action_returned_false": 1,
+    }
+
+
+def test_harness_prints_applier_decisions_on_skip_eval() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    source = inspect.getsource(harness._run_lever_loop)
+    skip_idx = source.index("_apply_skip = _should_skip_eval_for_patch_bundle(")
+    snippet = source[skip_idx : skip_idx + 2400]
+    assert "APPLIER DECISIONS" in snippet
+    assert "applier_decision_counts(" in snippet
+    assert "apply_log.get(\"applier_decisions\")" in snippet

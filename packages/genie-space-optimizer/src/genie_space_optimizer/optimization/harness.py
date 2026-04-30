@@ -12311,6 +12311,24 @@ def _run_lever_loop(
                 + _kv("Reason", _apply_skip.reason_detail) + "\n"
                 + _bar("!")
             )
+            try:
+                from genie_space_optimizer.optimization.applier_audit import (
+                    applier_decision_counts,
+                )
+
+                _applier_decisions = apply_log.get("applier_decisions") or []
+                _decision_counts = applier_decision_counts(_applier_decisions)
+                if _decision_counts:
+                    print(
+                        _section(f"[{ag_id}] APPLIER DECISIONS", "-") + "\n"
+                        + "\n".join(
+                            f"|  {key}: {value}"
+                            for key, value in sorted(_decision_counts.items())
+                        ) + "\n"
+                        + _bar("-")
+                    )
+            except Exception:
+                logger.debug("Failed to print applier decision counts", exc_info=True)
             write_stage(
                 spark,
                 run_id,

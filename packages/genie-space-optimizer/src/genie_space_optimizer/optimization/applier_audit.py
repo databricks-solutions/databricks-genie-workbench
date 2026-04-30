@@ -110,3 +110,14 @@ def diff_selected_vs_applied(
         applied_but_not_selected=extra,
         in_agreement=not missing and not extra,
     )
+
+
+def applier_decision_counts(decisions: list[dict]) -> dict[str, int]:
+    """Return grouped decision/reason counts for operator diagnostics."""
+    counts: dict[str, int] = {}
+    for row in decisions or []:
+        decision = str(row.get("decision") or "unknown")
+        reason = str(row.get("reason") or "unknown")
+        key = f"{decision}:{reason}"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
