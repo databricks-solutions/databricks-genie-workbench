@@ -18,6 +18,12 @@ Lever loop ordering: each iteration drains the per-run
 ``diagnostic_action_queue`` (coverage-gap AGs from
 ``uncovered_patchable_clusters``) before invoking the strategist; live
 clusters bypass diagnostics that have since resolved.
+
+Control-plane diagnostics: lever-loop iterations emit
+- ``Baseline source for control plane``
+- ``Pre row iteration id``
+- ``Post row iteration id``
+so operators can audit which baseline rows fed the acceptance gate.
 """
 
 from __future__ import annotations

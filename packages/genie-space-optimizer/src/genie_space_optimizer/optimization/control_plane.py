@@ -493,3 +493,39 @@ def decide_control_plane_acceptance(
         soft_to_hard_regressed_qids=soft_to_hard,
         passing_to_hard_regressed_qids=passing_to_hard,
     )
+
+
+@dataclass(frozen=True)
+class PreArbiterRegressionDecision:
+    accepted: bool
+    reason_code: str
+    delta_pp: float
+
+
+def decide_pre_arbiter_regression_guardrail(
+    *,
+    baseline_pre_arbiter_accuracy: float,
+    candidate_pre_arbiter_accuracy: float,
+    target_fixed_qids: tuple[str, ...],
+    max_pre_arbiter_regression_pp: float = 5.0,
+) -> PreArbiterRegressionDecision:
+    """Reject candidates that drop broad pre-arbiter accuracy without fixing any target.
+
+    A target fix is sufficient cause to accept the candidate (the regression
+    budget is in service of letting hard targets land). Without one, drops
+    larger than ``max_pre_arbiter_regression_pp`` are blocked so a wide
+    instruction edit cannot trade healthy questions for nothing.
+    """
+    delta = round(
+        float(candidate_pre_arbiter_accuracy) - float(baseline_pre_arbiter_accuracy),
+        1,
+    )
+    if target_fixed_qids:
+        return PreArbiterRegressionDecision(True, "target_fixed", delta)
+    if delta <= -abs(float(max_pre_arbiter_regression_pp)):
+        return PreArbiterRegressionDecision(
+            False,
+            "pre_arbiter_regression_without_target_fix",
+            delta,
+        )
+    return PreArbiterRegressionDecision(True, "within_pre_arbiter_regression_budget", delta)

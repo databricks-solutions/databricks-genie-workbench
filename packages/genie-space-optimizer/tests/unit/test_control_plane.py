@@ -847,3 +847,20 @@ def test_passing_to_hard_budget_can_be_tightened_below_overall_budget() -> None:
     assert decision.accepted is False
     assert decision.reason_code == "rejected_unbounded_collateral"
     assert decision.passing_to_hard_regressed_qids == ("q2",)
+
+
+def test_pre_arbiter_regression_without_target_fix_rejects_candidate():
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_pre_arbiter_regression_guardrail,
+    )
+
+    decision = decide_pre_arbiter_regression_guardrail(
+        baseline_pre_arbiter_accuracy=69.6,
+        candidate_pre_arbiter_accuracy=60.9,
+        target_fixed_qids=(),
+        max_pre_arbiter_regression_pp=5.0,
+    )
+
+    assert decision.accepted is False
+    assert decision.reason_code == "pre_arbiter_regression_without_target_fix"
+    assert decision.delta_pp == -8.7
