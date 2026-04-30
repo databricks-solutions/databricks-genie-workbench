@@ -31,7 +31,9 @@ from genie_space_optimizer.common.config import (
 )
 from genie_space_optimizer.common.delta_helpers import (
     _fqn,
+    execute_delta_write_with_retry,
     insert_row,
+    is_retryable_delta_write_conflict,
     read_table,
     run_query,
     update_row,
@@ -339,20 +341,6 @@ def create_run(
     logger.info("Created run %s for space %s", run_id, space_id)
 
 
-def _is_delta_concurrent_write_conflict(exc: BaseException) -> bool:
-    """Return True for Delta concurrent-write transaction conflicts.
-
-    Narrow on text markers used by Databricks Delta runtime so we don't
-    accidentally retry user-input or schema errors.
-    """
-    text = str(exc)
-    return (
-        "DELTA_CONCURRENT_APPEND" in text
-        or "ConcurrentAppendException" in text
-        or "Transaction conflict detected" in text
-    )
-
-
 def _update_row_with_delta_retry(
     spark: SparkSession,
     catalog: str,
@@ -369,12 +357,40 @@ def _update_row_with_delta_retry(
             update_row(spark, catalog, schema, table, keys, updates)
             return
         except Exception as exc:
-            if not _is_delta_concurrent_write_conflict(exc) or attempt == attempts - 1:
+            if not is_retryable_delta_write_conflict(exc) or attempt == attempts - 1:
                 raise
             last_exc = exc
             time.sleep(0.25 * (attempt + 1))
     if last_exc is not None:
         raise last_exc
+
+
+def _lookup_run_space_id(
+    spark: SparkSession,
+    run_id: str,
+    catalog: str,
+    schema: str,
+) -> str:
+    """Return the run's space_id for partition-pruned updates when possible."""
+    try:
+        df = read_table(
+            spark,
+            catalog,
+            schema,
+            TABLE_RUNS,
+            filters={"run_id": run_id},
+        )
+        if not df.empty and "space_id" in df.columns:
+            value = df.iloc[0]["space_id"]
+            if value is not None:
+                return str(value)
+    except Exception:
+        logger.debug(
+            "Could not look up space_id for run %s; falling back to run_id-only update",
+            run_id,
+            exc_info=True,
+        )
+    return ""
 
 
 def update_run_status(
@@ -397,6 +413,7 @@ def update_run_status(
     labeling_session_run_id: str | None = None,
     labeling_session_url: str | None = None,
     config_snapshot: dict | None = None,
+    space_id: str | None = None,
 ) -> None:
     """Update ``genie_opt_runs`` — only sets non-None fields."""
     now = datetime.now(timezone.utc).isoformat()
@@ -435,12 +452,17 @@ def update_run_status(
     if config_snapshot is not None:
         updates["config_snapshot"] = json.dumps(config_snapshot)
 
+    resolved_space_id = space_id or _lookup_run_space_id(spark, run_id, catalog, schema)
+    keys: dict[str, Any] = {"run_id": run_id}
+    if resolved_space_id:
+        keys["space_id"] = resolved_space_id
+
     _update_row_with_delta_retry(
         spark,
         catalog,
         schema,
         TABLE_RUNS,
-        {"run_id": run_id},
+        keys,
         updates,
     )
 
