@@ -109,3 +109,17 @@ def test_soft_skip_logs_iteration_local_label() -> None:
 
     assert "T4.3 CONVERGENCE QUARANTINE" in source
     assert "iteration-local; not persisted" in source
+
+
+def test_arbiter_rescue_rate_uses_consistent_scale() -> None:
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    source = inspect.getsource(harness._run_lever_loop)
+
+    diag_idx = source.index("Arbiter rescue rate")
+    snippet = source[diag_idx - 1200 : diag_idx + 400]
+
+    assert "_bcr_frac = float(_bcr) / 100.0 if float(_bcr) > 1.0 else float(_bcr)" in snippet
+    assert "_rescue = max(0.0, min(1.0, _bcr_frac - _alljudge))" in snippet

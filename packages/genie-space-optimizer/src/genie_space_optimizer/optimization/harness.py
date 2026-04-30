@@ -12909,7 +12909,12 @@ def _run_lever_loop(
                 _alljudge = float(
                     _full_scores.get("_pre_arbiter/result_correctness", 0.0)
                 ) / 100.0
-                _rescue = max(0.0, float(_bcr) - _alljudge)
+                # Task 2 — ``both_correct_rate`` may arrive as 0-100 or 0-1
+                # depending on producer. Normalise to a fraction before
+                # subtracting ``_alljudge`` and clamp to the valid
+                # probability range so the printed value cannot exceed 100%.
+                _bcr_frac = float(_bcr) / 100.0 if float(_bcr) > 1.0 else float(_bcr)
+                _rescue = max(0.0, min(1.0, _bcr_frac - _alljudge))
                 _diag_lines.append(
                     _kv("Arbiter rescue rate", f"{_rescue*100:.1f}%"),
                 )
