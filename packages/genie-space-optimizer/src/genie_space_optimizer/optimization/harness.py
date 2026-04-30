@@ -1747,6 +1747,41 @@ def _run_proactive_join_discovery(
 # ── Iterative join mining (runs after each accepted iteration) ────────
 
 
+def _collect_examples_for_join_mining(
+    *,
+    unified_example_result: dict,
+    preflight_example_result: dict,
+) -> list[dict]:
+    """Flatten accepted examples from unified + fallback paths into a
+    single list keyed for ``_mine_and_apply_joins_from_example_sqls``.
+    """
+    examples: list[dict] = []
+    for source, result in (
+        ("unified_example_sql", unified_example_result or {}),
+        ("preflight_example_synthesis", preflight_example_result or {}),
+    ):
+        for ex in result.get("accepted_examples", []) or []:
+            if not isinstance(ex, dict):
+                continue
+            question = str(
+                ex.get("question") or ex.get("example_question") or ""
+            ).strip()
+            sql = str(
+                ex.get("expected_sql")
+                or ex.get("example_sql")
+                or ex.get("sql")
+                or ""
+            ).strip()
+            if not sql:
+                continue
+            examples.append({
+                "question": question,
+                "expected_sql": sql,
+                "source": source,
+            })
+    return examples
+
+
 def _example_sqls_to_positive_eval_rows(examples: list[dict]) -> list[dict]:
     """Convert accepted example SQLs into synthetic eval rows for join mining.
 
@@ -4975,6 +5010,36 @@ def _run_enrichment(
                             exc_info=True,
                         )
 
+            example_join_result: dict = {}
+            try:
+                _example_join_inputs = _collect_examples_for_join_mining(
+                    unified_example_result=unified_example_result,
+                    preflight_example_result=preflight_example_result,
+                )
+                if _example_join_inputs:
+                    example_join_result = _mine_and_apply_joins_from_example_sqls(
+                        w=w,
+                        spark=spark,
+                        run_id=run_id,
+                        space_id=space_id,
+                        metadata_snapshot=metadata_snapshot,
+                        examples=_example_join_inputs,
+                        catalog=catalog,
+                        schema=schema,
+                    )
+                    if example_join_result.get("total_applied", 0) > 0:
+                        config, metadata_snapshot = _refresh_config_preserving_mv_state(
+                            w, space_id,
+                            uc_columns=uc_columns, data_profile=data_profile,
+                            yaml_cache=_yaml_cache_for_refresh,
+                            table_refs=_table_refs_for_refresh,
+                        )
+            except Exception:
+                logger.warning(
+                    "example-SQL join mining raised; continuing without it",
+                    exc_info=True,
+                )
+
             # ── 5d. SQL Expression REPAIR + SEEDING ───────────────────────
             # Repair runs unconditionally; seeding is headroom-gated.
             #
@@ -5027,6 +5092,7 @@ def _run_enrichment(
             total_enrichments = (
                 enrichment_result.get("total_enriched", 0)
                 + join_result.get("total_applied", 0)
+                + example_join_result.get("total_applied", 0)
                 + (1 if meta_result.get("description_generated") else 0)
                 + (1 if meta_result.get("questions_generated") else 0)
                 + (1 if instruction_result.get("instructions_seeded") else 0)
@@ -5042,6 +5108,10 @@ def _run_enrichment(
             _enr_summary = [_section("PROACTIVE ENRICHMENT — SUMMARY", "-")]
             _enr_summary.append(_kv("Descriptions enriched", enrichment_result.get("total_enriched", 0)))
             _enr_summary.append(_kv("Joins discovered", join_result.get("total_applied", 0)))
+            _enr_summary.append(_kv(
+                "Joins from accepted example SQLs",
+                example_join_result.get("total_applied", 0),
+            ))
             _enr_summary.append(_kv("Space metadata", "description=%s, questions=%s" % (
                 "generated" if meta_result.get("description_generated") else "unchanged",
                 "generated" if meta_result.get("questions_generated") else "unchanged",
@@ -5065,6 +5135,7 @@ def _run_enrichment(
                 "enrichment.columns_enriched": enrichment_result.get("total_enriched", 0),
                 "enrichment.tables_enriched": enrichment_result.get("tables_enriched", 0),
                 "enrichment.joins_discovered": join_result.get("total_applied", 0),
+                "enrichment.example_sql_joins_discovered": example_join_result.get("total_applied", 0),
                 "enrichment.sql_expressions_seeded": sql_expr_result.get("total_seeded", 0),
                 "enrichment.examples_mined": len(mined_example_proposals),
                 "enrichment.total": total_enrichments,

@@ -94,3 +94,32 @@ def test_mine_example_sql_joins_reuses_proven_join_pipeline(monkeypatch):
 
     assert result["total_applied"] == 1
     assert applied["rows"][0]["arbiter/value"] == "ground_truth_correct"
+
+
+def test_example_sql_join_mining_combines_unified_and_fallback_examples(monkeypatch):
+    from genie_space_optimizer.optimization import harness as h_mod
+
+    calls = {}
+
+    def _fake_mine(**kwargs):
+        calls["examples"] = kwargs["examples"]
+        return {"total_applied": 1, "joins_skipped_metric_view": 0}
+
+    monkeypatch.setattr(h_mod, "_mine_and_apply_joins_from_example_sqls", _fake_mine)
+
+    examples = h_mod._collect_examples_for_join_mining(
+        unified_example_result={
+            "accepted_examples": [
+                {"question": "Q1", "expected_sql": "SELECT * FROM a JOIN b ON a.id=b.id"}
+            ]
+        },
+        preflight_example_result={
+            "accepted_examples": [
+                {"example_question": "Q2", "example_sql": "SELECT * FROM c JOIN d ON c.id=d.id"}
+            ]
+        },
+    )
+
+    assert len(examples) == 2
+    assert examples[0]["expected_sql"].startswith("SELECT * FROM a")
+    assert examples[1]["expected_sql"].startswith("SELECT * FROM c")
