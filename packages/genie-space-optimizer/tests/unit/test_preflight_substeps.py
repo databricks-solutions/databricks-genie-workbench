@@ -578,3 +578,33 @@ class TestHarnessPreflightWarehouseID:
         mock_resolve.assert_called_once_with("")
         assert mock_safe_stage.call_args.args[-1] == "wh-env"
         assert out["model_id"] == "model-1"
+
+
+def test_update_run_status_retries_delta_concurrent_append(monkeypatch) -> None:
+    from genie_space_optimizer.optimization import state
+
+    calls: list[dict] = []
+
+    class ConcurrentAppendLike(Exception):
+        pass
+
+    def fake_update_row(_spark, _catalog, _schema, _table, _keys, updates):
+        calls.append(updates)
+        if len(calls) == 1:
+            raise ConcurrentAppendLike(
+                "[DELTA_CONCURRENT_APPEND.WITH_PARTITION_HINT] Transaction conflict detected"
+            )
+
+    monkeypatch.setattr(state, "update_row", fake_update_row)
+    monkeypatch.setattr(state.time, "sleep", lambda _seconds: None)
+
+    state.update_run_status(
+        spark=object(),
+        run_id="run_1",
+        catalog="cat",
+        schema="sch",
+        config_snapshot={"serialized_space": {"name": "snapshot"}},
+    )
+
+    assert len(calls) == 2
+    assert "config_snapshot" in calls[1]

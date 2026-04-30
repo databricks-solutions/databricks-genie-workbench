@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -338,6 +339,44 @@ def create_run(
     logger.info("Created run %s for space %s", run_id, space_id)
 
 
+def _is_delta_concurrent_write_conflict(exc: BaseException) -> bool:
+    """Return True for Delta concurrent-write transaction conflicts.
+
+    Narrow on text markers used by Databricks Delta runtime so we don't
+    accidentally retry user-input or schema errors.
+    """
+    text = str(exc)
+    return (
+        "DELTA_CONCURRENT_APPEND" in text
+        or "ConcurrentAppendException" in text
+        or "Transaction conflict detected" in text
+    )
+
+
+def _update_row_with_delta_retry(
+    spark: SparkSession,
+    catalog: str,
+    schema: str,
+    table: str,
+    keys: dict[str, Any],
+    updates: dict[str, Any],
+    *,
+    attempts: int = 3,
+) -> None:
+    last_exc: BaseException | None = None
+    for attempt in range(attempts):
+        try:
+            update_row(spark, catalog, schema, table, keys, updates)
+            return
+        except Exception as exc:
+            if not _is_delta_concurrent_write_conflict(exc) or attempt == attempts - 1:
+                raise
+            last_exc = exc
+            time.sleep(0.25 * (attempt + 1))
+    if last_exc is not None:
+        raise last_exc
+
+
 def update_run_status(
     spark: SparkSession,
     run_id: str,
@@ -396,7 +435,14 @@ def update_run_status(
     if config_snapshot is not None:
         updates["config_snapshot"] = json.dumps(config_snapshot)
 
-    update_row(spark, catalog, schema, TABLE_RUNS, {"run_id": run_id}, updates)
+    _update_row_with_delta_retry(
+        spark,
+        catalog,
+        schema,
+        TABLE_RUNS,
+        {"run_id": run_id},
+        updates,
+    )
 
 
 def write_stage(
