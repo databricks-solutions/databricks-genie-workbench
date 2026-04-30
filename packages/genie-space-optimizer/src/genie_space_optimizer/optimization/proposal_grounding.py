@@ -531,22 +531,42 @@ def select_patch_bundle(
     max_patches: int,
     min_relevance: float = 0.0,
     failing_rows_by_proposal: dict[str, list[dict]] | None = None,
+    clusters_by_proposal: dict[str, dict] | None = None,
 ) -> list[dict]:
     """Drop ungrounded proposals; keep up to ``max_patches`` survivors.
 
     Order: by relevance score DESC (stable within a tie). The harness
     is responsible for any upstream diversity sorting; this function
-    only enforces the relevance floor + size cap.
+    only enforces the relevance floor, the asset/blame alignment guard,
+    and the size cap.
 
     When a proposal does not carry a precomputed ``relevance_score``,
     we compute it from ``failing_rows_by_proposal[proposal['id']]``.
+    When ``clusters_by_proposal`` is supplied, any proposal whose
+    target assets are disjoint from its cluster's lineage and that
+    does not carry a ``cross_asset_justification`` is dropped with
+    ``_drop_reason="asset_not_in_cluster_lineage"``.
+
     Empty input is a no-op.
     """
     if not proposals:
         return []
+    from genie_space_optimizer.optimization.proposal_asset_alignment import (
+        proposal_aligns_with_cluster,
+    )
+
     rows_by_proposal = failing_rows_by_proposal or {}
+    clusters = clusters_by_proposal or {}
     scored: list[tuple[dict, float]] = []
     for p in proposals:
+        cluster = clusters.get(str(p.get("id", "")))
+        alignment = proposal_aligns_with_cluster(p, cluster)
+        if not alignment["aligned"]:
+            p["_drop_reason"] = alignment["reason"]
+            p["_alignment_proposal_assets"] = list(alignment["proposal_assets"])
+            p["_alignment_cluster_assets"] = list(alignment["cluster_assets"])
+            continue
+
         score = p.get("relevance_score")
         if score is None:
             failing = rows_by_proposal.get(str(p.get("id", "")), [])

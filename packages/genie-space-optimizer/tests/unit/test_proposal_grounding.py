@@ -746,3 +746,65 @@ def test_sql_filter_snippet_without_passing_dependents_is_safe() -> None:
 
     assert decision["safe"] is True
     assert decision["reason"] == "safe"
+
+
+def test_select_patch_bundle_drops_off_lineage_proposal() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        select_patch_bundle,
+    )
+
+    proposals = [
+        {
+            "id": "P002#3",
+            "type": "update_column_description",
+            "target_object": "main.demo.mv_7now_store_sales.time_window",
+            "relevance_score": 0.9,
+        },
+        {
+            "id": "P010#1",
+            "type": "add_sql_snippet_filter",
+            "target_object": "main.demo.mv_esr_dim_date",
+            "relevance_score": 0.95,
+        },
+    ]
+    clusters_by_proposal = {
+        "P002#3": {"blame_assets": ["main.demo.mv_7now_store_sales"]},
+        "P010#1": {"blame_assets": ["main.demo.mv_7now_store_sales"]},
+    }
+    selected = select_patch_bundle(
+        proposals,
+        max_patches=5,
+        min_relevance=0.0,
+        clusters_by_proposal=clusters_by_proposal,
+    )
+    selected_ids = [p["id"] for p in selected]
+    assert "P002#3" in selected_ids
+    assert "P010#1" not in selected_ids
+    p010 = next(p for p in proposals if p["id"] == "P010#1")
+    assert p010["_drop_reason"] == "asset_not_in_cluster_lineage"
+
+
+def test_select_patch_bundle_keeps_off_lineage_proposal_when_justified() -> None:
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        select_patch_bundle,
+    )
+
+    proposals = [
+        {
+            "id": "P011#1",
+            "type": "add_join_spec",
+            "target_object": "main.demo.mv_esr_dim_date",
+            "relevance_score": 0.5,
+            "cross_asset_justification": "join target dim required for the fact table fix",
+        },
+    ]
+    clusters_by_proposal = {
+        "P011#1": {"blame_assets": ["main.demo.mv_7now_store_sales"]},
+    }
+    selected = select_patch_bundle(
+        proposals,
+        max_patches=5,
+        min_relevance=0.0,
+        clusters_by_proposal=clusters_by_proposal,
+    )
+    assert [p["id"] for p in selected] == ["P011#1"]
