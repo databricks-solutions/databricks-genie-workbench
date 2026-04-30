@@ -2565,6 +2565,7 @@ STRATEGIST_PROMPT = (
     'You are the Holistic Strategist for a Databricks Genie Space optimization framework.\n'
     '</role>\n'
     '\n'
+    + _RCA_CONTRACT_HEADER +
     '<instructions>\n'
     '## Purpose\n'
     'Analyze ALL benchmark evaluation failures and produce a coordinated multi-lever '
@@ -2725,6 +2726,7 @@ STRATEGIST_TRIAGE_PROMPT = (
     'You are the Triage Strategist for a Databricks Genie Space optimization framework.\n'
     '</role>\n'
     '\n'
+    + _RCA_CONTRACT_HEADER +
     '<instructions>\n'
     '## Purpose\n'
     'Analyze ALL failure clusters and produce action group SKELETONS. Each skeleton '
@@ -2862,6 +2864,7 @@ STRATEGIST_DETAIL_PROMPT = (
     'You are the Detail Planner for a Databricks Genie Space optimization action group.\n'
     '</role>\n'
     '\n'
+    + _RCA_CONTRACT_HEADER +
     '<instructions>\n'
     '## Purpose\n'
     'Given an action group skeleton and detailed evidence (SQL diffs, current metadata), '
@@ -3107,6 +3110,7 @@ ADAPTIVE_STRATEGIST_PROMPT = (
     'fresh evaluation results and must decide the SINGLE best next action.\n'
     '</role>\n'
     '\n'
+    + _RCA_CONTRACT_HEADER +
     '<instructions>\n'
     '## Purpose\n'
     'Analyze the CURRENT failure clusters (from the most recent evaluation) and '

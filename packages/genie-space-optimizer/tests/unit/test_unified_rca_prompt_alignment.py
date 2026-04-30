@@ -143,3 +143,23 @@ def test_rca_contract_header_enabled_by_default() -> None:
         "<leak_safe_example_synthesis_contract>"
     )
     assert config._EXAMPLE_SYNTHESIS_CONTRACT_HEADER.endswith("\n\n")
+
+
+def test_strategy_prompts_embed_contract_tag() -> None:
+    """Each strategy prompt embeds the contract by structural tag."""
+    from genie_space_optimizer.common.config import (
+        ADAPTIVE_STRATEGIST_PROMPT,
+        STRATEGIST_DETAIL_PROMPT,
+        STRATEGIST_PROMPT,
+        STRATEGIST_TRIAGE_PROMPT,
+    )
+
+    for prompt in (
+        ADAPTIVE_STRATEGIST_PROMPT,
+        STRATEGIST_PROMPT,
+        STRATEGIST_TRIAGE_PROMPT,
+        STRATEGIST_DETAIL_PROMPT,
+    ):
+        assert "<unified_rca_engine_contract>" in prompt
+        assert "</unified_rca_engine_contract>" in prompt
+        assert prompt.index("<unified_rca_engine_contract>") < prompt.index("<instructions>")
