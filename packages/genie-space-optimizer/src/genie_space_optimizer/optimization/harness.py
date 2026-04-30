@@ -24,6 +24,10 @@ Control-plane diagnostics: lever-loop iterations emit
 - ``Pre row iteration id``
 - ``Post row iteration id``
 so operators can audit which baseline rows fed the acceptance gate.
+
+GT-correction diagnostics: the visible "GT correction candidates" line
+counts unique question ids via ``_gt_correction_candidate_qids`` set
+(see ``len(_gt_correction_candidate_qids)``) instead of raw row count.
 """
 
 from __future__ import annotations
