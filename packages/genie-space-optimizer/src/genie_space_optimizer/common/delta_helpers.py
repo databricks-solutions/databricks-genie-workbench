@@ -8,7 +8,10 @@ takes a ``spark`` session as its first argument.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any
+import random
+import time
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import pandas as pd
 
@@ -20,6 +23,113 @@ logger = logging.getLogger(__name__)
 _MISSING_OBJECT_ERRORS = ("TABLE_OR_VIEW_NOT_FOUND", "SCHEMA_NOT_FOUND")
 
 _REFRESH_SKIP: bool | None = None
+
+_DELTA_WRITE_CONFLICT_MARKERS = (
+    "DELTA_CONCURRENT_APPEND",
+    "ConcurrentAppendException",
+    "Transaction conflict detected",
+    "MetadataChangedException",
+    "ConcurrentTransactionException",
+)
+
+_DEFAULT_WRITE_RETRY_ATTEMPTS = 6
+_DEFAULT_WRITE_RETRY_BASE_DELAY_SECONDS = 0.25
+_DEFAULT_WRITE_RETRY_MAX_DELAY_SECONDS = 8.0
+
+_T = TypeVar("_T")
+
+
+def is_retryable_delta_write_conflict(exc: BaseException) -> bool:
+    """Return True only for transient Delta transaction conflicts."""
+    text = str(exc)
+    return any(marker in text for marker in _DELTA_WRITE_CONFLICT_MARKERS)
+
+
+def _delta_retry_delay_seconds(
+    attempt_index: int,
+    *,
+    base_delay_seconds: float,
+    max_delay_seconds: float,
+    jitter_func: Callable[[], float],
+) -> float:
+    """Return exponential backoff with a small jitter component."""
+    exponential = base_delay_seconds * (2 ** attempt_index)
+    jitter = base_delay_seconds * max(0.0, min(float(jitter_func()), 1.0))
+    return min(max_delay_seconds, exponential + jitter)
+
+
+def retry_delta_write(
+    operation: Callable[[], _T],
+    *,
+    operation_name: str,
+    table_name: str = "",
+    attempts: int = _DEFAULT_WRITE_RETRY_ATTEMPTS,
+    base_delay_seconds: float = _DEFAULT_WRITE_RETRY_BASE_DELAY_SECONDS,
+    max_delay_seconds: float = _DEFAULT_WRITE_RETRY_MAX_DELAY_SECONDS,
+    sleep_func: Callable[[float], None] = time.sleep,
+    jitter_func: Callable[[], float] = random.random,
+) -> _T:
+    """Run a Delta write operation with retry for transient conflicts.
+
+    Non-Delta errors are re-raised immediately so permission, schema, and SQL
+    bugs stay visible. The final retryable conflict is also re-raised after
+    the configured attempts are exhausted.
+    """
+    if attempts < 1:
+        raise ValueError("attempts must be >= 1")
+
+    for attempt_index in range(attempts):
+        try:
+            return operation()
+        except Exception as exc:
+            retryable = is_retryable_delta_write_conflict(exc)
+            final_attempt = attempt_index >= attempts - 1
+            if not retryable or final_attempt:
+                raise
+
+            delay = _delta_retry_delay_seconds(
+                attempt_index,
+                base_delay_seconds=base_delay_seconds,
+                max_delay_seconds=max_delay_seconds,
+                jitter_func=jitter_func,
+            )
+            logger.warning(
+                "Delta write conflict during %s%s; retrying attempt %d/%d in %.2fs: %s",
+                operation_name,
+                f" on {table_name}" if table_name else "",
+                attempt_index + 2,
+                attempts,
+                delay,
+                str(exc)[:500],
+            )
+            sleep_func(delay)
+
+    raise RuntimeError("retry_delta_write exhausted without returning or raising")
+
+
+def execute_delta_write_with_retry(
+    spark: "SparkSession",
+    sql: str,
+    *,
+    operation_name: str,
+    table_name: str = "",
+    attempts: int = _DEFAULT_WRITE_RETRY_ATTEMPTS,
+    base_delay_seconds: float = _DEFAULT_WRITE_RETRY_BASE_DELAY_SECONDS,
+    max_delay_seconds: float = _DEFAULT_WRITE_RETRY_MAX_DELAY_SECONDS,
+    sleep_func: Callable[[float], None] = time.sleep,
+    jitter_func: Callable[[], float] = random.random,
+) -> None:
+    """Execute a Delta DML statement with transient-conflict retry."""
+    retry_delta_write(
+        lambda: spark.sql(sql),
+        operation_name=operation_name,
+        table_name=table_name,
+        attempts=attempts,
+        base_delay_seconds=base_delay_seconds,
+        max_delay_seconds=max_delay_seconds,
+        sleep_func=sleep_func,
+        jitter_func=jitter_func,
+    )
 
 
 def _safe_refresh(spark: "SparkSession", table_name: str) -> None:
@@ -138,7 +248,12 @@ def insert_row(
     values = ", ".join(_sql_lit(v) for v in row_dict.values())
     stmt = f"INSERT INTO {fqn} ({columns}) VALUES ({values})"
     logger.debug("insert_row: %s", stmt)
-    spark.sql(stmt)
+    execute_delta_write_with_retry(
+        spark,
+        stmt,
+        operation_name="insert_row",
+        table_name=fqn,
+    )
 
 
 def update_row(
@@ -169,7 +284,12 @@ def update_row(
 
     stmt = f"UPDATE {fqn} SET {set_clause} WHERE {where_clause}"
     logger.debug("update_row: %s", stmt)
-    spark.sql(stmt)
+    execute_delta_write_with_retry(
+        spark,
+        stmt,
+        operation_name="update_row",
+        table_name=fqn,
+    )
 
 
 def run_query(spark: SparkSession, sql: str, _max_retries: int = 3) -> pd.DataFrame:
