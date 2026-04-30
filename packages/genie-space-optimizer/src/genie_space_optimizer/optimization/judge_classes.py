@@ -69,6 +69,8 @@ JUDGE_TO_SIGNAL_CLASS: dict[str, SignalClass] = {
     "response_quality":     SignalClass.NL_TEXT,
     "expected_response":    SignalClass.META,
     "syntax_validity":      SignalClass.INFRA,
+    "previous_sql":         SignalClass.META,
+    "repeatability":        SignalClass.META,
 }
 
 
@@ -88,6 +90,8 @@ JUDGE_WEIGHT_FOR_ROOT_CAUSE: dict[str, float] = {
     "response_quality":     0.1,
     "expected_response":    0.0,
     "syntax_validity":      0.0,
+    "previous_sql":         0.0,
+    "repeatability":        0.0,
 }
 
 _DEFAULT_UNKNOWN_JUDGE_WEIGHT: float = 0.5
