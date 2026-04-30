@@ -61,10 +61,16 @@ Security is preserved because:
 
 ## Prerequisites
 
+For the local terminal installer:
 * [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.297.2+ required)
 * [uv](https://docs.astral.sh/uv/) — Python package manager (used for dependency management and hash-verified installs)
 * Node.js (^20.19.0 or >=22.12.0) and npm
 * Python 3.11+
+
+For the Databricks notebook installer, clone the repo into a Databricks Git
+folder and run the notebook on Databricks compute; the notebook uses native
+workspace auth and the Databricks Apps build performs the frontend/Python
+dependency install.
 
 > **Registry access:** npm lockfiles are registry-neutral. Databricks internal users can keep `npm config set registry https://npm-proxy.dev.databricks.com/`; external users should use `npm config set registry https://registry.npmjs.org/`. Do not commit private registry hosts into lockfiles.
 
@@ -77,14 +83,16 @@ Security is preserved because:
 
 ## Quick Start
 
-### 1. Clone the repo
+### Option A: Local terminal installer
+
+#### 1. Clone the repo
 
 ```bash
 git clone <repo-url>
 cd databricks-genie-workbench
 ```
 
-### 2. Authenticate with Databricks CLI
+#### 2. Authenticate with Databricks CLI
 
 ```bash
 databricks auth login --profile <workspace-profile>
@@ -92,7 +100,7 @@ databricks auth login --profile <workspace-profile>
 
 > **Do NOT run `databricks bundle init`** — it overwrites the project configuration. The deploy scripts handle everything.
 
-### 3. Run the guided installer
+#### 3. Run the guided installer
 
 ```bash
 ./scripts/install.sh
@@ -111,6 +119,18 @@ The installer will:
 10. Run `scripts/deploy.sh` to build and deploy the app
 11. Resolve the app's service principal
 12. Optionally grant the SP access to your existing Genie Spaces
+
+### Option B: Databricks notebook installer
+
+If you are working inside Databricks, clone the repo into a Databricks Git
+folder and run `notebooks/install.py`. The notebook uses native Databricks
+workspace authentication, so it does not require a local Databricks CLI profile
+or local Node/uv setup.
+
+The notebook creates a generated deployment source folder under
+`/Workspace/Users/<you>/.genie-workbench-deploy/<app-name>/app`, renders a
+patched `app.yaml` there, provisions UC/Lakebase/GSO resources, and deploys the
+Databricks App from that generated folder. The Git clone remains unchanged.
 
 ### 4. Lakebase (optional project)
 
