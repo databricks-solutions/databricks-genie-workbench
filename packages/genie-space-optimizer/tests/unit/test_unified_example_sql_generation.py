@@ -1843,3 +1843,71 @@ class TestPhase6DiversifiedGenerationConfig:
         assert PREFLIGHT_EXAMPLE_SQL_TARGET == 20
         assert EXAMPLE_SQL_INITIAL_OVERDRAW == 3.0
         assert EXAMPLE_SQL_GENERATION_CALLS == 3
+
+
+class TestPhase6DiversifiedGenerationProfiles:
+    def test_generation_profiles_cover_requested_focus_areas(self):
+        from genie_space_optimizer.optimization.evaluation import (
+            _build_example_sql_generation_profiles,
+        )
+
+        profiles = _build_example_sql_generation_profiles(_mk_config(), call_count=4)
+        names = [p.name for p in profiles]
+
+        assert names == [
+            "common_business_examples",
+            "joins_dimensional_exploration",
+            "metric_views_time_windows_topn_ratios",
+            "asset_coverage_diversification",
+        ]
+        assert any("5 table-only examples" in p.quotas for p in profiles)
+        assert any("5 join examples" in p.quotas for p in profiles)
+        assert any("5 metric-view examples" in p.quotas for p in profiles)
+        assert any("at least 1 example per uncovered asset" in p.quotas for p in profiles)
+
+    def test_unified_generator_makes_upfront_diversified_calls(
+        self, monkeypatch, patched_core,
+    ):
+        from genie_space_optimizer.optimization import evaluation as ev_mod
+
+        calls = []
+
+        def _fake_llm(w, prompt, *, prompt_name=None):
+            calls.append(prompt)
+            return [
+                {
+                    **_clean_llm_candidate(),
+                    "question": f"Profile call {len(calls)} revenue by region?",
+                    "expected_sql": (
+                        "SELECT region, SUM(revenue) AS total_revenue "
+                        "FROM cat.sch.sales GROUP BY region "
+                        f"ORDER BY total_revenue DESC LIMIT {len(calls) + 4}"
+                    ),
+                }
+            ]
+
+        monkeypatch.setattr(ev_mod, "_call_llm_for_scoring", _fake_llm)
+        monkeypatch.setattr(ev_mod, "EXAMPLE_SQL_GENERATION_CALLS", 3, raising=False)
+        monkeypatch.setattr(ev_mod, "EXAMPLE_SQL_INITIAL_OVERDRAW", 3.0, raising=False)
+
+        survivors, counters = ev_mod.generate_example_sqls(
+            w=None,
+            spark=None,
+            config=_mk_config(),
+            uc_columns=_mk_uc_columns(),
+            uc_tags=[],
+            uc_routines=[],
+            domain="sales",
+            catalog="cat",
+            schema="sch",
+            warehouse_id="",
+            target_count=3,
+            existing_example_sqls=[],
+            leakage_oracle=LeakageOracle(),
+        )
+
+        assert len(calls) == 3
+        assert len(survivors) == 3
+        assert counters["generation_calls"] == 3
+        assert counters["candidate_budget"] == 9
+        assert all("## Generation Profile" in prompt for prompt in calls)

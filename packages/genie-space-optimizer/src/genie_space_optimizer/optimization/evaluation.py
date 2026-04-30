@@ -17,6 +17,7 @@ import contextvars
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -46,6 +47,8 @@ from genie_space_optimizer.common.config import (
     CODE_SOURCE_ID,
     COVERAGE_GAP_SOFT_CAP_FACTOR,
     DEFAULT_THRESHOLDS,
+    EXAMPLE_SQL_GENERATION_CALLS,
+    EXAMPLE_SQL_INITIAL_OVERDRAW,
     FAILURE_TAXONOMY,
     INFO_ONLY_JUDGES,
     INSTRUCTION_PROMPT_ALIAS,
@@ -9916,6 +9919,123 @@ def _capture_result_rows(
         return None, err_class, err_msg
 
 
+@dataclass(frozen=True)
+class ExampleSqlGenerationProfile:
+    name: str
+    focus: str
+    quotas: str
+
+
+def _build_asset_coverage_guidance(config: dict) -> str:
+    assets: list[str] = []
+    for key, label in (
+        ("_tables", "TABLE"),
+        ("_metric_views", "METRIC VIEW"),
+        ("_functions", "FUNCTION"),
+    ):
+        values = config.get(key, []) if isinstance(config, dict) else []
+        for value in values if isinstance(values, list) else []:
+            text = str(value or "").strip()
+            if text:
+                assets.append(f"- {label}: {text}")
+    if not assets:
+        return (
+            "No explicit asset list was available; use only the schema "
+            "context and identifier allowlist."
+        )
+    return (
+        "Try to maximize Genie asset coverage across the whole candidate "
+        "pool. Prefer examples that touch assets not already represented "
+        "by another candidate. The final selector will prefer at least "
+        "one example per asset when validation allows it.\n"
+        + "\n".join(assets[:40])
+    )
+
+
+def _build_example_sql_generation_profiles(
+    config: dict,
+    *,
+    call_count: int,
+) -> list[ExampleSqlGenerationProfile]:
+    profiles = [
+        ExampleSqlGenerationProfile(
+            name="common_business_examples",
+            focus=(
+                "Generate common analyst questions a business user would ask first. "
+                "Prefer simple filters, group-bys, ordered lists, and clear business wording."
+            ),
+            quotas=(
+                "- 5 table-only examples\n"
+                "- 5 aggregation or ranking examples\n"
+                "- 5 filter examples using realistic dimensions\n"
+                "- 3 date-aware examples when date columns exist\n"
+                "- 2 comparison examples"
+            ),
+        ),
+        ExampleSqlGenerationProfile(
+            name="joins_dimensional_exploration",
+            focus=(
+                "Generate examples that teach valid table-table dimensional exploration. "
+                "Use Join Specifications for valid join paths. Do not invent joins."
+            ),
+            quotas=(
+                "- 5 join examples\n"
+                "- 5 table-only examples that complement the join examples\n"
+                "- 3 examples grouping fact data by dimension attributes\n"
+                "- 3 examples filtering through dimension attributes\n"
+                "- 2 examples with top-N or ranking over joined results"
+            ),
+        ),
+        ExampleSqlGenerationProfile(
+            name="metric_views_time_windows_topn_ratios",
+            focus=(
+                "Generate examples around metric views, time windows, top-N, ratios, and comparisons. "
+                "Metric-view measures must use MEASURE(); direct JOINs on metric views are forbidden."
+            ),
+            quotas=(
+                "- 5 metric-view examples\n"
+                "- 3 time-window examples\n"
+                "- 3 top-N examples\n"
+                "- 2 ratio or comparison examples\n"
+                "- 2 CTE-first examples only when metric-view data must be combined with table dimensions"
+            ),
+        ),
+        ExampleSqlGenerationProfile(
+            name="asset_coverage_diversification",
+            focus=(
+                "Generate examples that maximize coverage of different Genie assets. "
+                "Prioritize assets not touched by the other profiles."
+            ),
+            quotas=(
+                "- at least 1 example per uncovered asset when validation can support it\n"
+                "- include different tables, metric views, and functions across the pool\n"
+                "- avoid using the same FROM asset in every example\n"
+                "- avoid repeated SQL shapes unless the asset is different"
+            ),
+        ),
+    ]
+    count = max(1, min(int(call_count or 1), len(profiles)))
+    if count == 3:
+        # Default path: keep the requested 3-call budget while preserving
+        # the asset-coverage intent by merging that guidance into the
+        # advanced profile.
+        advanced = profiles[2]
+        coverage = profiles[3]
+        profiles[2] = ExampleSqlGenerationProfile(
+            name=advanced.name,
+            focus=f"{advanced.focus} {coverage.focus}",
+            quotas=f"{advanced.quotas}\n{coverage.quotas}",
+        )
+    return profiles[:count]
+
+
+def _candidate_budget(target_count: int) -> int:
+    return max(
+        int(target_count),
+        int(math.ceil(float(target_count) * float(EXAMPLE_SQL_INITIAL_OVERDRAW))),
+    )
+
+
 def generate_validated_sql_examples(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -10061,24 +10181,21 @@ def generate_validated_sql_examples(
     # Arbiter / firewall remain a single post-loop pass; the dominant
     # rejection class in observed runs is the execute gate, so
     # over-drawing pre-arbiter is the highest-leverage knob.
-    ADAPTIVE_OVERDRAW_MAX_ROUNDS = 3
-    invalid_carry: list[dict] = []
-    for gen_round in range(ADAPTIVE_OVERDRAW_MAX_ROUNDS):
-        deficit = target_count - len(valid)
-        if deficit <= 0:
-            break
+    profile_count = max(1, int(EXAMPLE_SQL_GENERATION_CALLS or 1))
+    profiles = _build_example_sql_generation_profiles(
+        config, call_count=profile_count,
+    )
+    total_budget = _candidate_budget(target_count)
+    per_call = max(1, int(math.ceil(total_budget / max(len(profiles), 1))))
+    rejection_counters["generation_calls"] = len(profiles)
+    rejection_counters["candidate_budget"] = per_call * len(profiles)
+    asset_coverage_guidance = _build_asset_coverage_guidance(config)
 
+    invalid_carry: list[dict] = []
+    ADAPTIVE_OVERDRAW_MAX_ROUNDS = len(profiles)
+    for gen_round, profile in enumerate(profiles):
         rejection_counters["adaptive_overdraw_rounds_used"] = gen_round + 1
-        if gen_round == 0:
-            request_count = target_count
-        else:
-            request_count = deficit
-            logger.info(
-                "gvse adaptive overdraw round %d/%d: %d valid < target %d, "
-                "requesting %d more candidates",
-                gen_round + 1, ADAPTIVE_OVERDRAW_MAX_ROUNDS,
-                len(valid), target_count, request_count,
-            )
+        request_count = per_call
 
         excluded_questions: list[str] = list(existing_questions)
         excluded_questions.extend(sorted(accepted_q_lower))
@@ -10094,6 +10211,10 @@ def generate_validated_sql_examples(
             domain=domain,
             target_count=request_count,
             categories=json.dumps(BENCHMARK_CATEGORIES),
+            generation_profile_name=profile.name,
+            generation_profile_focus=profile.focus,
+            generation_profile_quotas=profile.quotas,
+            asset_coverage_guidance=asset_coverage_guidance,
             **ctx,
         )
         if excluded_questions_context:
@@ -10168,6 +10289,7 @@ def generate_validated_sql_examples(
                 "validation_reason_code": "ok",
                 "validation_error": None,
                 "correction_source": "",
+                "_generation_profile": profile.name,
             }
 
             metadata_ok, reason_code, reason_message = _enforce_metadata_constraints(
