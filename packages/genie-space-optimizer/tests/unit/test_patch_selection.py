@@ -152,3 +152,121 @@ def test_target_aware_cap_keeps_one_patch_per_target_before_global_rank() -> Non
     assert {
         d["proposal_id"]: d["selection_reason"] for d in decisions
     }["P_q008_column"] == "target_coverage"
+
+
+def test_target_aware_cap_prefers_explicit_rca_attribution_over_broad_ag_ties() -> None:
+    from genie_space_optimizer.optimization.patch_selection import (
+        select_target_aware_causal_patch_cap,
+    )
+
+    patches = [
+        {
+            "proposal_id": "P002_broad_location",
+            "type": "update_column_description",
+            "lever": 1,
+            "relevance_score": 1.0,
+            "risk_level": "low",
+            "target_qids": ["q007", "q005", "q002", "q009"],
+            "source_cluster_ids": ["H001", "H003", "H005", "H006"],
+        },
+        {
+            "proposal_id": "P008_rca_sales_day",
+            "type": "update_column_description",
+            "lever": 1,
+            "relevance_score": 1.0,
+            "risk_level": "low",
+            "target_qids": ["q007"],
+            "rca_id": "rca_q007_measure_swap",
+        },
+        {
+            "proposal_id": "P047_filter",
+            "type": "add_sql_snippet_filter",
+            "lever": 6,
+            "relevance_score": 1.0,
+            "risk_level": "low",
+            "_grounding_target_qids": ["q007"],
+            "rca_id": "rca_q007_filter_logic_mismatch",
+        },
+        {
+            "proposal_id": "P045_rewrite_instruction",
+            "type": "rewrite_instruction",
+            "lever": 5,
+            "relevance_score": 1.0,
+            "risk_level": "high",
+            "target_qids": ["q007", "q005", "q002", "q009"],
+        },
+    ]
+
+    selected, decisions = select_target_aware_causal_patch_cap(
+        patches,
+        target_qids=("q007", "q005", "q002", "q009"),
+        max_patches=3,
+    )
+
+    selected_ids = [p["proposal_id"] for p in selected]
+    assert "P008_rca_sales_day" in selected_ids
+    assert "P047_filter" in selected_ids
+    by_attribution = {d["proposal_id"]: d["causal_attribution_tier"] for d in decisions}
+    assert by_attribution["P008_rca_sales_day"] > by_attribution["P002_broad_location"]
+
+    by_id = {d["proposal_id"]: d for d in decisions}
+    rca_decision = by_id["P008_rca_sales_day"]
+    assert rca_decision["rca_id"] == "rca_q007_measure_swap"
+    assert rca_decision["target_qids"] == ["q007"]
+    assert rca_decision["lever"] == 1
+    assert rca_decision["patch_type"] == "update_column_description"
+    assert rca_decision["parent_proposal_id"] == "P008_rca_sales_day"
+    assert rca_decision["expanded_patch_id"] == "P008_rca_sales_day"
+    assert rca_decision["causal_attribution_tier"] == 3
+
+
+def test_target_aware_cap_dedupes_selected_and_dropped_by_expanded_patch_id() -> None:
+    from genie_space_optimizer.optimization.patch_selection import (
+        select_target_aware_causal_patch_cap,
+    )
+
+    patches = [
+        {
+            "proposal_id": "P001",
+            "expanded_patch_id": "P001#2",
+            "type": "update_column_description",
+            "lever": 1,
+            "relevance_score": 1.0,
+            "risk_level": "low",
+            "target_qids": ["q007"],
+        },
+        {
+            "proposal_id": "P001",
+            "expanded_patch_id": "P001#2",
+            "type": "update_column_description",
+            "lever": 1,
+            "relevance_score": 1.0,
+            "risk_level": "low",
+            "target_qids": ["q007"],
+        },
+        {
+            "proposal_id": "P002",
+            "expanded_patch_id": "P002#1",
+            "type": "update_column_description",
+            "lever": 1,
+            "relevance_score": 0.9,
+            "risk_level": "low",
+            "target_qids": ["q007"],
+        },
+    ]
+
+    selected, decisions = select_target_aware_causal_patch_cap(
+        patches,
+        target_qids=("q007",),
+        max_patches=1,
+    )
+
+    selected_identities = [
+        d.get("expanded_patch_id") or d.get("proposal_id") for d in selected
+    ]
+    decision_identities = [
+        d.get("expanded_patch_id") or d.get("proposal_id") for d in decisions
+    ]
+
+    assert selected_identities.count("P001#2") <= 1
+    assert decision_identities.count("P001#2") <= 1
