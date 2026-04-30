@@ -567,11 +567,13 @@ preflight_out = {
     "human_corrections": ctx_feedback["human_corrections"],
 }
 
+persisted_benchmark_count = int(ctx_exp.get("benchmark_count", len(_benchmarks)))
+
 _train_n = sum(1 for _b in _benchmarks if _b.get("split") != "held_out")
 _held_n = len(_benchmarks) - _train_n
 _log(
     "Preflight complete",
-    benchmark_count=len(_benchmarks),
+    benchmark_count=persisted_benchmark_count,
     train_count=_train_n,
     held_out_count=_held_n,
     held_out_ratio=f"{HELD_OUT_RATIO:.0%}",
@@ -612,7 +614,7 @@ dbutils.jobs.taskValues.set(key="catalog", value=catalog)
 dbutils.jobs.taskValues.set(key="schema", value=schema)
 dbutils.jobs.taskValues.set(key="experiment_name", value=preflight_out["experiment_name"])
 dbutils.jobs.taskValues.set(key="experiment_id", value=preflight_out.get("experiment_id", ""))
-dbutils.jobs.taskValues.set(key="benchmark_count", value=len(preflight_out["benchmarks"]))
+dbutils.jobs.taskValues.set(key="benchmark_count", value=persisted_benchmark_count)
 dbutils.jobs.taskValues.set(key="max_iterations", value=max_iterations)
 dbutils.jobs.taskValues.set(key="levers", value=json.dumps(levers))
 dbutils.jobs.taskValues.set(key="apply_mode", value=apply_mode)
@@ -625,13 +627,13 @@ dbutils.jobs.taskValues.set(key="max_benchmark_count", value=effective_max)
 _log(
     "Task values published",
     run_id=run_id,
-    benchmark_count=len(preflight_out["benchmarks"]),
+    benchmark_count=persisted_benchmark_count,
     model_creation="deferred to baseline eval",
 )
 _banner("Task 1 Completed")
 dbutils.notebook.exit(json.dumps({
     "run_id": run_id,
-    "benchmark_count": len(preflight_out["benchmarks"]),
+    "benchmark_count": persisted_benchmark_count,
 }, default=str))
 
 # COMMAND ----------

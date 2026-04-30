@@ -2541,18 +2541,21 @@ def preflight_setup_experiment(
     )
     _drop_benchmark_table(spark, _uc_table)
 
-    create_evaluation_dataset(
+    eval_dataset_write = create_evaluation_dataset(
         spark, benchmarks, uc_schema, domain,
         space_id=space_id, catalog=catalog, gold_schema=schema,
         experiment_id=experiment_id,
         max_benchmark_count=max_benchmark_count,
     )
+    if not isinstance(eval_dataset_write, dict):
+        eval_dataset_write = {}
+    benchmark_count = int(eval_dataset_write.get("record_count", len(benchmarks)))
 
     _lines = [_pf_section("PREFLIGHT — EXPERIMENT & MODEL SETUP")]
     _lines.append(_pf_kv("Experiment", experiment_name))
     _lines.append(_pf_kv("Experiment ID", experiment_id))
     _lines.append(_pf_kv("Model creation", "deferred to baseline eval"))
-    _lines.append(_pf_kv("Eval dataset", f"synced ({len(benchmarks)} benchmarks)"))
+    _lines.append(_pf_kv("Eval dataset", f"synced ({benchmark_count} persisted valid benchmarks)"))
     _lines.append(_pf_kv("Instructions", "registered" if initial_instructions else "none to register"))
     _lines.append(_pf_bar())
     print("\n".join(_lines))
@@ -2572,7 +2575,7 @@ def preflight_setup_experiment(
         detail={
             "table_count": len(genie_table_refs) if genie_table_refs else 0,
             "instruction_count": _instr_count,
-            "benchmark_count": len(benchmarks),
+            "benchmark_count": benchmark_count,
             "experiment_name": experiment_name,
             "model_id": None,
         },
@@ -2583,6 +2586,8 @@ def preflight_setup_experiment(
         "model_id": None,
         "experiment_name": experiment_name,
         "experiment_id": experiment_id,
+        "benchmark_count": benchmark_count,
+        "evaluation_dataset": eval_dataset_write,
     }
 
 

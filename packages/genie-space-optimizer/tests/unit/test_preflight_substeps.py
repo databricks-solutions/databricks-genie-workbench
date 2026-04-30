@@ -436,9 +436,27 @@ class TestPreflightSetupExperiment:
         )
         assert set(result.keys()) == {
             "model_id", "experiment_name", "experiment_id",
+            "benchmark_count", "evaluation_dataset",
         }
         assert result["model_id"] is None
         assert result["experiment_name"] == "/exp/path"
+
+    def test_returns_writer_benchmark_count_from_create_dataset(self):
+        """preflight_setup_experiment exposes writer count for downstream task values."""
+        writer_result = {
+            "dataset": object(),
+            "table_name": "cat.gold.genie_benchmarks_default",
+            "input_count": 30,
+            "record_count": 24,
+            "unique_question_id_count": 24,
+        }
+
+        result = self._call_setup(
+            create_ds_side_effect=lambda *a, **kw: writer_result,
+        )
+
+        assert result["benchmark_count"] == 24
+        assert result["evaluation_dataset"] == writer_result
 
     def test_sets_sql_context_with_use_catalog_and_schema(self):
         """USE CATALOG / USE SCHEMA must be issued with the correct values."""
