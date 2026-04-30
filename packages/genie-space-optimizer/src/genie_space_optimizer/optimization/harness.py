@@ -112,6 +112,7 @@ from genie_space_optimizer.optimization.optimizer import (
     _enrich_table_descriptions,
     _generate_holistic_strategy,
     _iq_scan_strategist_enabled,
+    _strategist_memo_key,
     cluster_failures,
     detect_regressions,
     enrich_metadata_with_uc_types,
@@ -9593,6 +9594,8 @@ def _run_lever_loop(
         except Exception:
             _best_blocking_excluded_count = 0
 
+    strategist_memo_cache: dict[str, dict[str, Any]] = {}
+
     for _iter_num in range(1, max_iterations + 1):
         # ── Exit checks ──────────────────────────────────────────────
         from genie_space_optimizer.optimization.acceptance_policy import (
@@ -10388,22 +10391,36 @@ def _run_lever_loop(
                         c for c in _strategy_hard_clusters
                         if str(c.get("cluster_id") or "") not in _debt_cluster_ids
                     ]
-                strategy = _call_llm_for_adaptive_strategy(
-                    clusters=_strategy_hard_clusters,
-                    soft_signal_clusters=_strategy_soft_clusters,
-                    metadata_snapshot=metadata_snapshot,
-                    reflection_buffer=reflection_buffer,
-                    priority_ranking=ranked,
-                    tried_patches=tried_patches,
-                    w=w,
-                    total_benchmarks=_total_q,
-                    passing_benchmarks=max(0, _passing_q),
-                    verdict_history=_verdict_history,
-                    skill_exemplars=skill_exemplars or None,
-                    human_suggestions=_human_suggestions or None,
-                    iq_scan_summary=(
-                        iq_scan_summary if _iq_scan_strategist_enabled() else None
-                    ),
+                _memo_key = _strategist_memo_key(
+                    list(_strategy_hard_clusters), metadata_snapshot,
+                )
+                if _memo_key in strategist_memo_cache:
+                    strategy = copy.deepcopy(strategist_memo_cache[_memo_key])
+                    strategy["_memoized"] = True
+                else:
+                    strategy = _call_llm_for_adaptive_strategy(
+                        clusters=_strategy_hard_clusters,
+                        soft_signal_clusters=_strategy_soft_clusters,
+                        metadata_snapshot=metadata_snapshot,
+                        reflection_buffer=reflection_buffer,
+                        priority_ranking=ranked,
+                        tried_patches=tried_patches,
+                        w=w,
+                        total_benchmarks=_total_q,
+                        passing_benchmarks=max(0, _passing_q),
+                        verdict_history=_verdict_history,
+                        skill_exemplars=skill_exemplars or None,
+                        human_suggestions=_human_suggestions or None,
+                        iq_scan_summary=(
+                            iq_scan_summary if _iq_scan_strategist_enabled() else None
+                        ),
+                    )
+                    strategist_memo_cache[_memo_key] = copy.deepcopy(strategy)
+                    strategy["_memoized"] = False
+                logger.info(
+                    "Strategist memoization: key=%s hit=%s",
+                    _memo_key[:120],
+                    strategy.get("_memoized"),
                 )
                 strategy["_source_clusters"] = (
                     list(_strategy_hard_clusters) + list(_strategy_soft_clusters)

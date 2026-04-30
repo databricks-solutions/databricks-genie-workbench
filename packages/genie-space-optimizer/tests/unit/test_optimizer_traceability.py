@@ -1,6 +1,7 @@
 from genie_space_optimizer.optimization.optimizer import (
     _diagnose_lever3_directive_emission,
     _lever6_reject_payload,
+    _strategist_memo_key,
 )
 
 
@@ -51,3 +52,19 @@ def test_diagnose_lever3_directive_emission_reports_missing_action_group() -> No
             "blame_set": ["fn_mtd_or_mtday"],
         }
     ]
+
+
+def test_strategist_memo_key_is_stable_for_same_cluster_signature() -> None:
+    cluster = {
+        "cluster_signature": "sig-abc",
+        "root_cause": "missing_data_asset",
+        "question_ids": ["gs_023", "gs_024"],
+        "asi_blame_set": ["fn_mtd_or_mtday"],
+    }
+
+    key1 = _strategist_memo_key([cluster], {"space_revision": "r1"})
+    key2 = _strategist_memo_key([dict(cluster)], {"space_revision": "r1"})
+
+    assert key1 == key2
+    assert "sig-abc" in key1
+    assert "r1" in key1

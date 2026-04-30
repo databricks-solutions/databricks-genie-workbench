@@ -11073,6 +11073,37 @@ def _cluster_expects_lever3(cluster: dict[str, Any]) -> bool:
     return any("fn_" in item.lower() or "function" in item.lower() for item in blame_items)
 
 
+def _strategist_memo_key(
+    clusters: list[dict[str, Any]],
+    metadata_snapshot: dict[str, Any],
+) -> str:
+    """Deterministic key for memoizing adaptive strategist results.
+
+    Same cluster signatures + same space revision produce the same key, so
+    repeated iterations against unchanged failure clusters can short-circuit
+    the strategist call.
+    """
+    cluster_parts: list[str] = []
+    for cluster in clusters:
+        sig = str(cluster.get("cluster_signature") or cluster.get("cluster_id") or "")
+        root = str(cluster.get("root_cause") or "")
+        qids = ",".join(sorted(str(q) for q in (cluster.get("question_ids") or [])))
+        blame = cluster.get("asi_blame_set") or cluster.get("blame_set") or []
+        if isinstance(blame, str):
+            blame_s = blame
+        else:
+            blame_s = ",".join(sorted(str(b) for b in blame))
+        cluster_parts.append(f"{sig}:{root}:{qids}:{blame_s}")
+    revision = str(
+        metadata_snapshot.get("space_revision")
+        or metadata_snapshot.get("config_version")
+        or metadata_snapshot.get("space_id")
+        or ""
+    )
+    raw = "|".join(sorted(cluster_parts)) + f"|revision={revision}"
+    return raw[:2000]
+
+
 def _diagnose_lever3_directive_emission(
     clusters: list[dict[str, Any]],
     strategy: dict[str, Any],
