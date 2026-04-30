@@ -25,7 +25,7 @@ from difflib import get_close_matches
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Iterator, Union
+from typing import TYPE_CHECKING, Any, Callable, Iterator, Union
 
 import mlflow
 import pandas as pd
@@ -11412,6 +11412,26 @@ def _needs_benchmark_top_up(benchmarks: list[dict]) -> bool:
     return train_n < MIN_TRAIN_BENCHMARK_COUNT or held_out_n < MIN_HELD_OUT_BENCHMARK_COUNT
 
 
+def _make_benchmark_id_allocator(existing_benchmarks: list[dict]) -> Callable[[str, int], str]:
+    """Return an allocator that never reuses benchmark IDs in this corpus."""
+    used_ids = {
+        str(b.get("id", "") or "").strip()
+        for b in existing_benchmarks
+        if str(b.get("id", "") or "").strip()
+    }
+
+    def allocate(prefix: str, start: int) -> str:
+        idx = max(int(start), 1)
+        while True:
+            candidate = f"{prefix}_{idx:03d}"
+            if candidate not in used_ids:
+                used_ids.add(candidate)
+                return candidate
+            idx += 1
+
+    return allocate
+
+
 def generate_benchmarks(
     w: WorkspaceClient,
     config: dict,
@@ -11806,6 +11826,7 @@ def generate_benchmarks(
         logger.warning("Alignment validation skipped: %s", _align_err)
 
     all_benchmarks: list[dict] = list(_existing)
+    allocate_benchmark_id = _make_benchmark_id_allocator(all_benchmarks)
 
     from genie_space_optimizer.common.config import REQUIRE_GROUND_TRUTH_SQL
 
@@ -11847,7 +11868,7 @@ def generate_benchmarks(
     effective_curated = curated_with_sql
 
     for idx, b in enumerate(effective_curated):
-        question_id = f"{domain}_gs_{idx + 1:03d}"
+        question_id = allocate_benchmark_id(f"{domain}_gs", idx + 1)
         priority = "P0"
         expected_sql = str(b.get("expected_sql", "") or "")
         curated_status = "question_only" if not expected_sql else str(
@@ -11881,7 +11902,7 @@ def generate_benchmarks(
 
     offset = len(effective_curated)
     for idx, b in enumerate(valid_benchmarks):
-        question_id = f"{domain}_{offset + idx + 1:03d}"
+        question_id = allocate_benchmark_id(domain, offset + idx + 1)
         priority = "P0" if idx < 3 else "P1"
         _b_esql = b.get("expected_sql", "")
         all_benchmarks.append(
@@ -11938,7 +11959,7 @@ def generate_benchmarks(
         )
     gap_fill_offset = len(curated) + len(valid_benchmarks)
     for idx, b in enumerate(gap_fill_benchmarks):
-        question_id = f"{domain}_gf_{gap_fill_offset + idx + 1:03d}"
+        question_id = allocate_benchmark_id(f"{domain}_gf", gap_fill_offset + idx + 1)
         _gf_esql = b.get("expected_sql", "")
         all_benchmarks.append(
             {
