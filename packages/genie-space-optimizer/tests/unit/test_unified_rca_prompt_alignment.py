@@ -110,3 +110,36 @@ def test_non_optimizer_prompts_do_not_include_unified_rca_contract() -> None:
         prompt = getattr(config, name)
         assert "<unified_rca_engine_contract>" not in prompt, name
         assert "<leak_safe_example_synthesis_contract>" not in prompt, name
+
+
+def test_rca_contract_header_disabled_when_env_flag_off(monkeypatch) -> None:
+    """Setting GSO_INCLUDE_UNIFIED_RCA_CONTRACT=false yields an empty header."""
+    import importlib
+
+    monkeypatch.setenv("GSO_INCLUDE_UNIFIED_RCA_CONTRACT", "false")
+
+    from genie_space_optimizer.common import config as live_config
+
+    fresh = importlib.reload(live_config)
+    try:
+        assert fresh._RCA_CONTRACT_HEADER == ""
+        assert fresh._EXAMPLE_SYNTHESIS_CONTRACT_HEADER == ""
+        assert "Unified RCA engine contract" in fresh.UNIFIED_RCA_ENGINE_CONTRACT_PROMPT
+        assert (
+            "Leak-safe example synthesis contract"
+            in fresh.LEAK_SAFE_EXAMPLE_SYNTHESIS_CONTRACT_PROMPT
+        )
+    finally:
+        monkeypatch.delenv("GSO_INCLUDE_UNIFIED_RCA_CONTRACT", raising=False)
+        importlib.reload(live_config)
+
+
+def test_rca_contract_header_enabled_by_default() -> None:
+    from genie_space_optimizer.common import config
+
+    assert config._RCA_CONTRACT_HEADER.startswith("<unified_rca_engine_contract>")
+    assert config._RCA_CONTRACT_HEADER.endswith("\n\n")
+    assert config._EXAMPLE_SYNTHESIS_CONTRACT_HEADER.startswith(
+        "<leak_safe_example_synthesis_contract>"
+    )
+    assert config._EXAMPLE_SYNTHESIS_CONTRACT_HEADER.endswith("\n\n")
