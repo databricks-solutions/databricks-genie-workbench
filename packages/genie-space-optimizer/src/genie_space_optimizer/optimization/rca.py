@@ -318,6 +318,27 @@ def _where_text(sql: str) -> str:
     return m.group(1).lower() if m else ""
 
 
+def _where_text_raw(sql: str) -> str:
+    """Return the WHERE clause text preserving case (for equality-filter extraction)."""
+    m = _WHERE_RE.search(sql or "")
+    return m.group(1) if m else ""
+
+
+_EQUALITY_FILTER_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*'([^']*)'",
+    re.IGNORECASE,
+)
+
+
+def _equality_filters(where_sql: str) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            f"{m.group(1)} = '{m.group(2)}'"
+            for m in _EQUALITY_FILTER_RE.finditer(where_sql or "")
+        )
+    )
+
+
 def _mk_id(qid: str, kind: RcaKind) -> str:
     safe_qid = re.sub(r"[^a-zA-Z0-9_]+", "_", qid or "unknown")
     return f"rca_{safe_qid}_{kind.value}"
@@ -518,7 +539,54 @@ def extract_rca_findings_from_row(
             target_qids=(qid,),
         ))
 
+    exp_where_raw = _where_text_raw(expected)
+    gen_where_raw = _where_text_raw(generated)
+    extra_equality_filters = tuple(
+        f for f in _equality_filters(gen_where_raw)
+        if f not in set(_equality_filters(exp_where_raw))
+    )
+    if extra_equality_filters:
+        kind = RcaKind.EXTRA_DEFENSIVE_FILTER
+        findings.append(RcaFinding(
+            rca_id=_mk_id(qid, kind),
+            question_id=qid,
+            rca_kind=kind,
+            confidence=0.85,
+            expected_objects=(),
+            actual_objects=extra_equality_filters,
+            evidence=(
+                RcaEvidence(
+                    source="sql_shape",
+                    detail=(
+                        "generated SQL adds equality filters absent from expected SQL: "
+                        + ", ".join(extra_equality_filters)
+                    ),
+                    confidence=0.85,
+                ),
+            ),
+            recommended_levers=recommended_levers_for_rca_kind(kind),
+            patch_family="avoid_unrequested_defensive_filters",
+            target_qids=(qid,),
+        ))
+
     return findings
+
+
+def rca_findings_from_eval_rows(rows: list[dict]) -> list[RcaFinding]:
+    """Aggregate RCA findings across multiple eval rows."""
+    out: list[RcaFinding] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        out.extend(extract_rca_findings_from_row(row))
+    return _dedupe_rca_findings(out)
+
+
+def rca_themes_from_findings(
+    findings: list[RcaFinding],
+) -> list["RcaPatchTheme"]:
+    """Compile findings into themes — public alias for ``compile_patch_themes``."""
+    return compile_patch_themes(list(findings))
 
 
 _CLUSTER_ROOT_TO_RCA_KIND: dict[str, RcaKind] = {
@@ -765,7 +833,13 @@ def compile_patch_themes(
                 "target": "QUERY CONSTRUCTION",
                 "instruction_section": "QUERY CONSTRUCTION",
                 "lever": 5,
-                "intent": "do not add IS NOT NULL filters unless requested",
+                "intent": (
+                    "do not add unrequested equality filters or IS NOT NULL filters; "
+                    "preserve null groups unless the user explicitly excludes them; "
+                    "when an amount column already encodes the measure, do not "
+                    "add a currency-code filter unless the question asks for that currency"
+                ),
+                "actual_objects": list(f.actual_objects),
             })
 
         elif f.rca_kind is RcaKind.JOIN_SPEC_MISSING_OR_WRONG:
