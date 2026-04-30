@@ -11557,12 +11557,21 @@ def _run_lever_loop(
         # caller); extras are dropped with a clear warning.
         if len(patches) > MAX_AG_PATCHES:
             from genie_space_optimizer.optimization.patch_selection import (
-                select_causal_patch_cap,
+                select_target_aware_causal_patch_cap,
+            )
+            from genie_space_optimizer.optimization.control_plane import (
+                target_qids_from_action_group as _target_qids_for_patch_cap,
+            )
+
+            _patch_cap_target_qids = tuple(
+                locals().get("_blast_target_qids")
+                or _target_qids_for_patch_cap(ag, strategy.get("_source_clusters", []))
             )
 
             _before_cap = list(patches)
-            patches, _patch_cap_decisions = select_causal_patch_cap(
+            patches, _patch_cap_decisions = select_target_aware_causal_patch_cap(
                 _before_cap,
+                target_qids=_patch_cap_target_qids,
                 max_patches=MAX_AG_PATCHES,
             )
             _selected_ids = {

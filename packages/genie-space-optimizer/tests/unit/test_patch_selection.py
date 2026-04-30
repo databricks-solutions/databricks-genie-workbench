@@ -106,3 +106,49 @@ def test_patch_selection_uses_source_proposal_id_fallback() -> None:
     assert selected == [patches[0]]
     assert decisions[0]["proposal_id"] == "PARENT_A"
     assert decisions[1]["proposal_id"] == "PARENT_B"
+
+
+def test_target_aware_cap_keeps_one_patch_per_target_before_global_rank() -> None:
+    from genie_space_optimizer.optimization.patch_selection import (
+        select_target_aware_causal_patch_cap,
+    )
+
+    patches = [
+        {
+            "proposal_id": "P_day",
+            "patch_type": "add_sql_snippet_filter",
+            "relevance_score": 0.95,
+            "target_qids": ["q002", "q005", "q009"],
+            "risk_level": "low",
+        },
+        {
+            "proposal_id": "P_instruction",
+            "patch_type": "add_instruction",
+            "relevance_score": 0.90,
+            "target_qids": ["q002", "q005", "q009"],
+            "risk_level": "medium",
+        },
+        {
+            "proposal_id": "P_q008_column",
+            "patch_type": "update_column_description",
+            "relevance_score": 0.62,
+            "target_qids": ["q008"],
+            "risk_level": "low",
+        },
+    ]
+
+    selected, decisions = select_target_aware_causal_patch_cap(
+        patches,
+        target_qids=("q002", "q005", "q008", "q009"),
+        max_patches=2,
+    )
+
+    assert [p["proposal_id"] for p in selected] == ["P_day", "P_q008_column"]
+    assert {d["proposal_id"]: d["decision"] for d in decisions} == {
+        "P_day": "selected",
+        "P_instruction": "dropped",
+        "P_q008_column": "selected",
+    }
+    assert {
+        d["proposal_id"]: d["selection_reason"] for d in decisions
+    }["P_q008_column"] == "target_coverage"

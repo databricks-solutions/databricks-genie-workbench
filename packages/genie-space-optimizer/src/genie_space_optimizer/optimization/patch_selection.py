@@ -128,3 +128,108 @@ def select_causal_patch_cap(
         })
 
     return [p for _idx, p, _reason in selected], decisions
+
+
+def _target_qids(patch: dict[str, Any]) -> tuple[str, ...]:
+    raw: list = []
+    raw.extend(patch.get("_grounding_target_qids") or [])
+    raw.extend(patch.get("target_qids") or [])
+    return tuple(dict.fromkeys(str(q) for q in raw if str(q)))
+
+
+def select_target_aware_causal_patch_cap(
+    patches: list[dict[str, Any]],
+    *,
+    target_qids: tuple[str, ...],
+    max_patches: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Cap patches while preserving at least one patch per target QID.
+
+    For each target QID in order, picks the highest-relevance patch
+    targeting that QID (by relevance, risk, confidence, then declaration
+    order). Remaining capacity is filled by the global causal-relevance
+    ranking from ``select_causal_patch_cap``. This prevents the cap from
+    dropping the only patch covering a secondary target QID just because
+    the primary target dominates the relevance leaderboard.
+    """
+    if max_patches <= 0:
+        return select_causal_patch_cap(patches, max_patches=max_patches)
+    if len(patches) <= max_patches:
+        return select_causal_patch_cap(patches, max_patches=max_patches)
+
+    target_set = tuple(dict.fromkeys(str(q) for q in target_qids if str(q)))
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[str] = set()
+
+    for target in target_set:
+        if len(selected) >= max_patches:
+            break
+        # Skip targets already covered by an already-selected patch.
+        if any(target in _target_qids(p) for p in selected):
+            continue
+        candidates = [
+            (idx, patch)
+            for idx, patch in enumerate(patches)
+            if target in _target_qids(patch)
+            and _proposal_id(patch, idx) not in selected_ids
+        ]
+        if not candidates:
+            continue
+        idx, patch = min(
+            candidates,
+            key=lambda item: (
+                -_score(item[1], "relevance_score"),
+                _risk_rank(item[1]),
+                -_score(item[1], "confidence"),
+                item[0],
+            ),
+        )
+        selected.append(patch)
+        selected_ids.add(_proposal_id(patch, idx))
+
+    remaining = [
+        patch
+        for idx, patch in enumerate(patches)
+        if _proposal_id(patch, idx) not in selected_ids
+    ]
+    if len(selected) < max_patches and remaining:
+        filler, _ = select_causal_patch_cap(
+            remaining,
+            max_patches=max_patches - len(selected),
+        )
+        selected.extend(filler)
+        for fp in filler:
+            try:
+                fp_idx = patches.index(fp)
+            except ValueError:
+                continue
+            selected_ids.add(_proposal_id(fp, fp_idx))
+
+    rank_by_pid: dict[str, int] = {}
+    for rank, patch in enumerate(selected, start=1):
+        try:
+            idx = patches.index(patch)
+        except ValueError:
+            idx = rank - 1
+        rank_by_pid[_proposal_id(patch, idx)] = rank
+
+    selected_pid_set = set(rank_by_pid)
+    decisions: list[dict[str, Any]] = []
+    for idx, patch in enumerate(patches):
+        pid = _proposal_id(patch, idx)
+        selected_flag = pid in selected_pid_set
+        decisions.append({
+            "proposal_id": pid,
+            "decision": "selected" if selected_flag else "dropped",
+            "selection_reason": (
+                "target_coverage" if selected_flag else "lower_causal_rank"
+            ),
+            "rank": rank_by_pid.get(pid),
+            "relevance_score": _score(patch, "relevance_score"),
+            "lever": _lever(patch),
+            "patch_type": patch.get("patch_type") or patch.get("type"),
+            "rca_id": patch.get("rca_id"),
+            "target_qids": list(_target_qids(patch)),
+        })
+
+    return selected, decisions
