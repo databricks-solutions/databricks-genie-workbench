@@ -551,6 +551,29 @@ def write_stage(
     logger.info("Stage %s/%s for run %s", stage, status, run_id)
 
 
+def write_eval_heartbeat(
+    spark: SparkSession,
+    run_id: str,
+    *,
+    phase: str,
+    detail: dict,
+    catalog: str,
+    schema: str,
+    task_key: str = "baseline_eval",
+) -> None:
+    """Append a lightweight heartbeat row for long-running evaluation."""
+    write_stage(
+        spark,
+        run_id,
+        "EVAL_HEARTBEAT",
+        "STARTED",
+        task_key=task_key,
+        detail={"phase": phase, **detail},
+        catalog=catalog,
+        schema=schema,
+    )
+
+
 def write_iteration(
     spark: SparkSession,
     run_id: str,

@@ -80,3 +80,27 @@ def test_slice_eval_records_for_debug_noops_when_unset(monkeypatch) -> None:
     records = [{"id": "q1"}, {"id": "q2"}]
 
     assert slice_eval_records_for_debug(records) is records
+
+
+def test_build_eval_heartbeat_detail_is_small_and_actionable() -> None:
+    from genie_space_optimizer.optimization.eval_progress import build_eval_heartbeat_detail
+
+    detail = build_eval_heartbeat_detail(
+        phase="gt_execute_start",
+        question_id="q1",
+        row_index=1,
+        row_count=14,
+        conversation_id="c1",
+        statement_id="stmt1",
+        elapsed_seconds=12.34,
+    )
+
+    assert detail == {
+        "phase": "gt_execute_start",
+        "question_id": "q1",
+        "row_index": 1,
+        "row_count": 14,
+        "conversation_id": "c1",
+        "statement_id": "stmt1",
+        "elapsed_seconds": 12.34,
+    }

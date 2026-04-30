@@ -74,6 +74,7 @@ from genie_space_optimizer.common.config import (
 from genie_space_optimizer.common.delta_helpers import retry_delta_write
 from genie_space_optimizer.optimization.eval_progress import (
     EvalProgressLogger,
+    build_eval_heartbeat_detail,
     eval_force_sequential,
     slice_eval_records_for_debug,
 )
@@ -4708,6 +4709,23 @@ def make_predict_fn(
             question_id=_qid_for_span,
             question=question,
         )
+        if optimization_run_id and spark is not None:
+            try:
+                from genie_space_optimizer.optimization.state import write_eval_heartbeat
+
+                write_eval_heartbeat(
+                    spark,
+                    optimization_run_id,
+                    phase="predict_start",
+                    detail=build_eval_heartbeat_detail(
+                        phase="predict_start",
+                        question_id=_qid_for_span,
+                    ),
+                    catalog=catalog,
+                    schema=schema,
+                )
+            except Exception:
+                logger.debug("Failed to write eval heartbeat", exc_info=True)
         try:
             if instruction_prompt_name:
                 _link_prompt_to_trace(instruction_prompt_name)

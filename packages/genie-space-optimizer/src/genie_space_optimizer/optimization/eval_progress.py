@@ -53,6 +53,33 @@ def slice_eval_records_for_debug(records: list[dict[str, Any]]) -> list[dict[str
     return records[:cap]
 
 
+def build_eval_heartbeat_detail(
+    *,
+    phase: str,
+    question_id: str = "",
+    row_index: int | None = None,
+    row_count: int | None = None,
+    conversation_id: str = "",
+    statement_id: str = "",
+    elapsed_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Return compact detail_json for long-running eval heartbeat stage rows."""
+    detail: dict[str, Any] = {"phase": phase}
+    if question_id:
+        detail["question_id"] = question_id
+    if row_index is not None:
+        detail["row_index"] = row_index
+    if row_count is not None:
+        detail["row_count"] = row_count
+    if conversation_id:
+        detail["conversation_id"] = conversation_id
+    if statement_id:
+        detail["statement_id"] = statement_id
+    if elapsed_seconds is not None:
+        detail["elapsed_seconds"] = elapsed_seconds
+    return detail
+
+
 class EvalProgressLogger:
     """Emit single-line JSON progress events for long-running evaluation."""
 
