@@ -1367,9 +1367,15 @@ def update_provenance_proposals(
         if not cid:
             continue
         try:
-            spark.sql(
+            stmt = (
                 f"UPDATE {fqn} SET proposal_id = '{pid}', patch_type = '{pt}' "
                 f"WHERE run_id = '{run_id}' AND iteration = {iteration} AND cluster_id = '{cid}'"
+            )
+            execute_delta_write_with_retry(
+                spark,
+                stmt,
+                operation_name="update_provenance_proposals",
+                table_name=fqn,
             )
         except Exception:
             logger.debug("Failed to update provenance proposals for cluster %s", cid, exc_info=True)
@@ -1393,9 +1399,15 @@ def update_provenance_gate(
     reg_json = json.dumps(gate_regression, default=str) if gate_regression else None
     reg_str = f"'{reg_json.replace(chr(39), chr(39)+chr(39))}'" if reg_json else "NULL"
     try:
-        spark.sql(
+        stmt = (
             f"UPDATE {fqn} SET gate_type = '{gt}', gate_result = '{gr}', gate_regression = {reg_str} "
             f"WHERE run_id = '{run_id}' AND iteration = {iteration} AND lever = {lever}"
+        )
+        execute_delta_write_with_retry(
+            spark,
+            stmt,
+            operation_name="update_provenance_gate",
+            table_name=fqn,
         )
     except Exception:
         logger.debug("Failed to update provenance gate for run %s iter %d lever %d", run_id, iteration, lever, exc_info=True)
@@ -1706,14 +1718,19 @@ def write_queued_patch(
     now = datetime.now(timezone.utc).isoformat()
     cov_json = json.dumps(coverage_analysis or {}).replace("'", "''")
     target_esc = target_identifier.replace("'", "''")
-    spark.sql(f"""
+    execute_delta_write_with_retry(
+        spark,
+        f"""
         INSERT INTO {fqn} (run_id, iteration, patch_type, target_identifier,
                            confidence_tier, coverage_analysis, blame_iterations,
                            status, created_at)
         VALUES ('{run_id}', {iteration}, '{patch_type}', '{target_esc}',
                 '{confidence_tier}', '{cov_json}', {blame_iterations},
                 'pending', '{now}')
-    """)
+        """,
+        operation_name="write_queued_patch",
+        table_name=fqn,
+    )
 
 
 def get_queued_patches(
@@ -1878,10 +1895,15 @@ def write_finalize_attestation_matrix(
     if not values:
         return
 
-    spark.sql(
-        f"INSERT INTO {fqn} "
-        f"(run_id, qid, iteration_idx, passed, is_heldout, logged_at) "
-        f"VALUES {', '.join(values)}"
+    execute_delta_write_with_retry(
+        spark,
+        (
+            f"INSERT INTO {fqn} "
+            f"(run_id, qid, iteration_idx, passed, is_heldout, logged_at) "
+            f"VALUES {', '.join(values)}"
+        ),
+        operation_name="write_finalize_attestation",
+        table_name=fqn,
     )
     logger.info(
         "Wrote %d finalize_attestation rows for run %s (marker=%s)",

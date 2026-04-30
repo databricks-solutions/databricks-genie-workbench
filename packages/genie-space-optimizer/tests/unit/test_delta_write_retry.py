@@ -133,3 +133,27 @@ def test_insert_and_update_row_use_retry_helper(monkeypatch: pytest.MonkeyPatch)
     )
     assert captured[1]["kwargs"]["operation_name"] == "update_row"
     assert captured[1]["kwargs"]["table_name"] == "cat.sch.tbl"
+
+
+def test_retry_delta_write_raises_final_conflict_after_attempts() -> None:
+    calls: list[int] = []
+    sleeps: list[float] = []
+
+    def operation() -> None:
+        calls.append(1)
+        raise RuntimeError("[DELTA_CONCURRENT_APPEND.WITH_PARTITION_HINT] Transaction conflict detected")
+
+    with pytest.raises(RuntimeError, match="DELTA_CONCURRENT_APPEND"):
+        delta_helpers.retry_delta_write(
+            operation,
+            operation_name="always-conflicts",
+            table_name="cat.sch.tbl",
+            attempts=3,
+            base_delay_seconds=0.1,
+            max_delay_seconds=1.0,
+            sleep_func=sleeps.append,
+            jitter_func=lambda: 0.0,
+        )
+
+    assert len(calls) == 3
+    assert sleeps == [0.1, 0.2]
