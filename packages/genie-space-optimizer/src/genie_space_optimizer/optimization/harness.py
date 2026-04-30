@@ -9575,6 +9575,9 @@ def _run_lever_loop(
     pending_action_groups: list[dict] = []
     pending_strategy: dict | None = None
 
+    _dead_on_arrival_patch_signatures: set[tuple[str, ...]] = set()
+    _dead_on_arrival_ag_ids: set[str] = set()
+
     # Track exclusion counts for the objective-complete check. These start
     # from the current baseline iteration and update each accepted candidate.
     from genie_space_optimizer.optimization.evaluation import (
@@ -12128,6 +12131,27 @@ def _run_lever_loop(
             except Exception:
                 logger.debug("Failed to persist patch-cap decision rows", exc_info=True)
 
+        _selected_patch_signature = tuple(sorted(
+            str(p.get("expanded_patch_id") or p.get("id") or p.get("proposal_id") or "")
+            for p in patches
+            if (p.get("expanded_patch_id") or p.get("id") or p.get("proposal_id"))
+        ))
+        if _selected_patch_signature in _dead_on_arrival_patch_signatures:
+            logger.warning(
+                "Skipping dead-on-arrival AG retry for %s with patch signature %s",
+                ag_id,
+                _selected_patch_signature,
+            )
+            print(
+                _section(f"[{ag_id}] DEAD-ON-ARRIVAL RETRY BLOCKED", "!") + "\n"
+                + _kv("Patch signature", _selected_patch_signature) + "\n"
+                + _kv("Reason", "same selected patch IDs already produced no applied patches") + "\n"
+                + _bar("!")
+            )
+            pending_action_groups = []
+            pending_strategy = None
+            continue
+
         # T3.3: shadow apply. When enabled, the intent is to clone the
         # space, apply patches to the clone, eval, and promote only on
         # pass. The Genie SDK fork/promote primitives aren't wired yet,
@@ -12259,6 +12283,24 @@ def _run_lever_loop(
             stage="post_apply",
         )
         if _apply_skip.skip:
+            if _apply_skip.reason_code == "no_applied_patches":
+                _dead_on_arrival_ag_ids.add(str(ag_id))
+                _dead_on_arrival_patch_signatures.add(_selected_patch_signature)
+                logger.warning(
+                    "AG %s deterministic_no_applied_patches: selected patch "
+                    "signature=%s recovery_reason=all_selected_patches_dropped_by_applier",
+                    ag_id,
+                    _selected_patch_signature,
+                )
+                print(
+                    _section(f"[{ag_id}] DETERMINISTIC REJECTION: NO APPLIED PATCHES", "!") + "\n"
+                    + _kv("Reason", "all_selected_patches_dropped_by_applier") + "\n"
+                    + _kv("Selected patch signature", _selected_patch_signature) + "\n"
+                    + _kv("Action", "discard buffered AG and force strategist recovery") + "\n"
+                    + _bar("!")
+                )
+                pending_action_groups = []
+                pending_strategy = None
             logger.warning(
                 "[%s] Skipping acceptance eval: %s",
                 ag_id,
