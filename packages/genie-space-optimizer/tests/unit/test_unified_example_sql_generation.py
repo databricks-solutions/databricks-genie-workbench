@@ -1960,3 +1960,57 @@ class TestPhase6RelaxedFirewall:
         assert len(survivors) == 1
         assert counters["firewall_sql_pattern_warning"] == 1
         assert counters["firewall_fingerprint"] == 0
+
+
+class TestPhase6FinalSelection:
+    def test_rank_examples_prefers_asset_and_shape_diversity(self):
+        from genie_space_optimizer.optimization.evaluation import (
+            _select_diverse_example_sqls,
+        )
+
+        candidates = [
+            {
+                "question": "Revenue by region",
+                "expected_sql": "SELECT region, SUM(revenue) FROM cat.sch.sales GROUP BY region",
+                "category": "aggregation",
+                "required_tables": ["cat.sch.sales"],
+            },
+            {
+                "question": "Revenue by region again",
+                "expected_sql": "SELECT region, SUM(revenue) FROM cat.sch.sales GROUP BY region ORDER BY 2 DESC",
+                "category": "aggregation",
+                "required_tables": ["cat.sch.sales"],
+            },
+            {
+                "question": "List regions",
+                "expected_sql": "SELECT region FROM cat.sch.region_dim LIMIT 20",
+                "category": "simple_enumerate",
+                "required_tables": ["cat.sch.region_dim"],
+            },
+        ]
+
+        selected = _select_diverse_example_sqls(candidates, target_count=2)
+
+        selected_sql = " ".join(c["expected_sql"] for c in selected)
+        assert "cat.sch.sales" in selected_sql
+        assert "cat.sch.region_dim" in selected_sql
+        assert len(selected) == 2
+
+    def test_selection_caps_at_target_after_large_pool(self):
+        from genie_space_optimizer.optimization.evaluation import (
+            _select_diverse_example_sqls,
+        )
+
+        candidates = [
+            {
+                "question": f"Question {idx}",
+                "expected_sql": f"SELECT region FROM cat.sch.table_{idx} LIMIT 10",
+                "category": "simple_enumerate",
+                "required_tables": [f"cat.sch.table_{idx}"],
+            }
+            for idx in range(10)
+        ]
+
+        selected = _select_diverse_example_sqls(candidates, target_count=3)
+
+        assert len(selected) == 3

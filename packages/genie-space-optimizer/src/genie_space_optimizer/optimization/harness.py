@@ -2399,6 +2399,11 @@ def _print_unified_example_summary(
     _lines.append(_kv(
         "Firewall: question echo", rc.get("firewall_question_echo", 0),
     ))
+    if rc.get("selection_input") or rc.get("selection_output"):
+        _lines.append(_kv(
+            "Final selection",
+            f"{rc.get('selection_output', 0)} of {rc.get('selection_input', 0)} candidates",
+        ))
     _lines.append(_kv("Dedup (in-corpus)", rc.get("dedup_in_corpus", 0)))
     # F8 — deterministic repairs applied inside the correction loop.
     # Shown only when non-zero so the banner stays terse when the LLM

@@ -10036,6 +10036,89 @@ def _candidate_budget(target_count: int) -> int:
     )
 
 
+def _example_assets(candidate: dict) -> set[str]:
+    assets = {
+        str(v).lower()
+        for v in candidate.get("required_tables", []) or []
+        if str(v).strip()
+    }
+    sql = str(candidate.get("expected_sql") or "")
+    assets.update(_extract_sql_asset_references(sql))
+    return assets
+
+
+def _example_shape(candidate: dict) -> str:
+    sql = str(candidate.get("expected_sql") or "").lower()
+    parts = []
+    if " join " in sql:
+        parts.append("join")
+    if "measure(" in sql:
+        parts.append("metric_view")
+    if " group by " in sql:
+        parts.append("group_by")
+    if " order by " in sql:
+        parts.append("order_by")
+    if " where " in sql:
+        parts.append("filter")
+    if " over " in sql:
+        parts.append("window")
+    if "/" in sql or " ratio" in str(candidate.get("question") or "").lower():
+        parts.append("ratio")
+    if not parts:
+        parts.append("simple")
+    category = str(candidate.get("category") or "").lower().strip()
+    if category:
+        parts.append(category)
+    return "+".join(sorted(set(parts)))
+
+
+def _select_diverse_example_sqls(
+    candidates: list[dict],
+    *,
+    target_count: int,
+) -> list[dict]:
+    selected: list[dict] = []
+    seen_questions: set[str] = set()
+    seen_sql: set[str] = set()
+    asset_counts: dict[str, int] = {}
+    shape_counts: dict[str, int] = {}
+
+    pool = []
+    for idx, cand in enumerate(candidates):
+        q = str(cand.get("question") or "").strip()
+        sql = str(cand.get("expected_sql") or "").strip()
+        if not q or not sql:
+            continue
+        q_key = re.sub(r"\s+", " ", q.lower())
+        sql_key = re.sub(r"\s+", " ", sql.lower().rstrip(";"))
+        if q_key in seen_questions or sql_key in seen_sql:
+            continue
+        pool.append((idx, cand, q_key, sql_key))
+
+    while pool and len(selected) < target_count:
+        def _score(item: tuple[int, dict, str, str]) -> tuple[int, int, int, int]:
+            idx, cand, _q_key, _sql_key = item
+            assets = _example_assets(cand)
+            shape = _example_shape(cand)
+            new_asset_score = sum(1 for asset in assets if asset_counts.get(asset, 0) == 0)
+            shape_score = 1 if shape_counts.get(shape, 0) == 0 else 0
+            warning_penalty = 1 if cand.get("firewall_warning") else 0
+            return (new_asset_score, shape_score, -warning_penalty, -idx)
+
+        best = max(pool, key=_score)
+        pool.remove(best)
+        _idx, cand, q_key, sql_key = best
+        selected.append(cand)
+        seen_questions.add(q_key)
+        seen_sql.add(sql_key)
+        for asset in _example_assets(cand):
+            asset_counts[asset] = asset_counts.get(asset, 0) + 1
+        shape = _example_shape(cand)
+        shape_counts[shape] = shape_counts.get(shape, 0) + 1
+
+    return selected
+
+
 def generate_validated_sql_examples(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -10108,6 +10191,8 @@ def generate_validated_sql_examples(
         "firewall_question_echo": 0,
         "firewall_joint_similarity": 0,
         "firewall_sql_pattern_warning": 0,
+        "selection_input": 0,
+        "selection_output": 0,
         "dedup_in_corpus": 0,
         "unfixable_after_correction": 0,
         # F8 — deterministic repairs applied inside
@@ -10675,6 +10760,12 @@ def generate_validated_sql_examples(
                 )
             shielded.append(cand)
         valid = shielded
+
+    if valid:
+        before_select = len(valid)
+        valid = _select_diverse_example_sqls(valid, target_count=target_count)
+        rejection_counters["selection_input"] = before_select
+        rejection_counters["selection_output"] = len(valid)
 
     # ── 6. Project to requested output fields ────────────────────
     if output_fields:
