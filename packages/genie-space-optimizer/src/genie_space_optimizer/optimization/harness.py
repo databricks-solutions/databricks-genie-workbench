@@ -9650,20 +9650,46 @@ def _run_lever_loop(
                 "Diminishing returns confirmed by RCA terminal state at iteration %d",
                 _iter_num,
             )
-            _reason = (
-                _prev_terminal_decision.reason
-                if _prev_terminal_decision is not None
-                else "diminishing returns (no improvement >= epsilon)"
+            # Task 6 — replace the legacy unknown plateau label with a
+            # typed status that distinguishes "hard failures still
+            # quarantined", "open regression debt", and "clean plateau".
+            from genie_space_optimizer.optimization.rca_terminal import (
+                resolve_terminal_on_plateau,
             )
-            _status_value = (
-                _prev_terminal_decision.status.value
-                if _prev_terminal_decision is not None
-                else "(unknown)"
+            from genie_space_optimizer.optimization.control_plane import (
+                hard_failure_qids as _hard_failure_qids_for_plateau,
+            )
+
+            _plateau_rows: list[dict] = []
+            try:
+                _plateau_rows = list(
+                    (full_result.get("rows", []) if isinstance(full_result, dict) else [])
+                    or []
+                )
+            except Exception:
+                _plateau_rows = []
+            _current_hard_qids = set(
+                _hard_failure_qids_for_plateau(_plateau_rows)
+            )
+            _regression_debt_qids = set(
+                _correction_state.get("regression_debt_qids", set()) or set()
+            )
+            _quarantined_qids = set(
+                _correction_state.get("quarantined_qids", set()) or set()
+            )
+            _resolved = resolve_terminal_on_plateau(
+                quarantined_qids=_quarantined_qids,
+                current_hard_qids=_current_hard_qids,
+                regression_debt_qids=_regression_debt_qids,
+            )
+            logger.info(
+                "Plateau terminal resolved at iteration %d: status=%s reason=%s",
+                _iter_num, _resolved.status.value, _resolved.reason,
             )
             print(
                 _section("LEVER LOOP — TERMINATION: plateau", "!") + "\n"
-                + _kv("Reason", _reason) + "\n"
-                + _kv("RCA terminal status", _status_value) + "\n"
+                + _kv("Reason", _resolved.reason) + "\n"
+                + _kv("RCA terminal status", _resolved.status.value) + "\n"
                 + _kv("Iteration", _iteration_label(_iter_num)) + "\n"
                 + _bar("!")
             )
