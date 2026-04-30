@@ -1,5 +1,6 @@
 from genie_space_optimizer.optimization.optimizer import (
     _diagnose_lever3_directive_emission,
+    _lever1_theme_key,
     _lever6_reject_payload,
     _strategist_memo_key,
 )
@@ -68,3 +69,17 @@ def test_strategist_memo_key_is_stable_for_same_cluster_signature() -> None:
     assert key1 == key2
     assert "sig-abc" in key1
     assert "r1" in key1
+
+
+def test_lever1_theme_key_groups_by_root_cause_and_blame() -> None:
+    cluster = {
+        "root_cause": "wrong_measure",
+        "patch_family": "contrastive_measure_disambiguation",
+        "asi_blame_set": ["mv_7now_store_sales._7now_cy_sales_mtd"],
+    }
+
+    assert _lever1_theme_key(cluster) == (
+        "wrong_measure",
+        "contrastive_measure_disambiguation",
+        ("mv_7now_store_sales._7now_cy_sales_mtd",),
+    )

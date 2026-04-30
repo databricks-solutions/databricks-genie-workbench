@@ -7393,6 +7393,26 @@ _RCA_LEVER1_PATCH_TYPES: frozenset[str] = frozenset({
 })
 
 
+def _lever1_theme_key(cluster: dict[str, Any]) -> tuple[str, str, tuple[str, ...]]:
+    """Stable theme key for grouping Lever-1 RCA work.
+
+    Tuple of (root_cause, patch_family, sorted_blame_set). Two clusters
+    with the same key are in the same RCA theme and can share metadata
+    proposals so we don't ask the LLM to rewrite the same description
+    once per cluster.
+    """
+    blame = cluster.get("asi_blame_set") or cluster.get("blame_set") or []
+    if isinstance(blame, str):
+        blame_items = [blame]
+    else:
+        blame_items = [str(item) for item in blame]
+    return (
+        str(cluster.get("root_cause") or "unknown"),
+        str(cluster.get("patch_family") or "unknown"),
+        tuple(sorted(item for item in blame_items if item)),
+    )
+
+
 def _rca_themes_requesting_lever1(
     themes: list[Any],
     target_qids: Iterable[str] | None = None,
