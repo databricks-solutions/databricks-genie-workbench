@@ -1,364 +1,110 @@
 # Genie Workbench
 
-Genie Workbench is a unified developer tool for creating, scoring, and optimizing Databricks Genie Spaces. The tool helps Genie developers by:
+Genie Workbench is a Databricks App for creating, scoring, and optimizing Databricks Genie Spaces. It combines a FastAPI backend, React/Vite frontend, Databricks On-Behalf-Of auth, Lakebase persistence, and the Genie Space Optimizer (GSO) benchmark pipeline.
 
-* Creating Genie spaces from scratch using an agent that gathers business logic, profiles data sources, and generates the initial configuration
-* Scoring space quality on a 0-100 rubric across categorized best-practice dimensions with a four-stage maturity model
-* Optimizing configurations through a benchmark-driven loop that compares Genie's generated SQL against expected answers and automatically recommends improvements
-* Tracking history of every configuration change and score over time, stored in Lakebase
-* Versioning and rollback of Genie space configurations, which Genie does not natively support
-* Managing multiple spaces across projects and stakeholders from a single dashboard
-* Providing scientific proof of lift via MLflow experiment tracking on every benchmark run
+Use it to:
 
-## Architecture
-
-The app is a FastAPI backend serving a React/Vite frontend, deployed as a [Databricks App](https://docs.databricks.com/aws/en/dev-tools/databricks-apps/). User identity flows via OBO (On-Behalf-Of) auth so each user operates under their own Databricks permissions. Score history and session state are persisted in Lakebase (PostgreSQL).
-
-## Permissions & Authentication Model
-
-Genie Workbench uses a **dual-identity model**: the signed-in user's token for interactive operations and the app's Service Principal for background jobs. This section summarizes how each identity is used and why.
-
-> For a full deep dive with code references, sequence diagrams, and GRANT statements, see [docs/03-authentication-and-permissions.md](docs/03-authentication-and-permissions.md).
-
-### OBO (On-Behalf-Of) Auth
-
-All interactive API calls use the signed-in user's identity. The Databricks Apps platform forwards the user's access token via the `x-forwarded-access-token` header. Middleware in `backend/main.py` stores a per-request `WorkspaceClient` in a Python `ContextVar`, so every downstream service call — browsing Unity Catalog, listing Genie Spaces, executing SQL, creating spaces — runs under the user's permissions. Users only see what they have access to.
-
-### Service Principal Fallback for Genie API
-
-Some user OAuth tokens lack the `dashboards.genie` scope. When the app detects a scope error (via `_is_scope_error()` in `backend/services/genie_client.py`), it transparently retries the call with the app's Service Principal. For this fallback to work, the SP must have **CAN_MANAGE** on each Genie Space.
-
-### Service Principal for Optimization Jobs
-
-The Auto-Optimize (GSO) pipeline runs as a **Lakeflow Job** — a long-running, multi-task DAG that can take minutes to complete. Lakeflow Jobs execute in a separate environment with a fixed `run_as` identity; there is no mechanism to forward the user's short-lived OAuth token into a background job. Therefore the optimization job runs as the app's Service Principal.
-
-Security is preserved because:
-
-1. **Authorization at trigger time** — the app verifies the user has `CAN_EDIT` or `CAN_MANAGE` on the Genie Space (via OBO) before submitting the job.
-2. **SP entitlement validated** — the app confirms the SP has `CAN_MANAGE` on the space before job submission.
-3. **Minimum-privilege SP** — the SP only needs read access to referenced data schemas and manage access to the optimization state schema.
-
-### SP Permissions Required
-
-| Scope | Permission | Purpose |
-|-------|-----------|---------|
-| Each Genie Space | `CAN_MANAGE` | API fallback + optimization patches |
-| Referenced data schemas | `SELECT`, `USE_SCHEMA`, `USE_CATALOG` | Data access during optimization benchmarks |
-| GSO optimizer schema | `USE_CATALOG`, `USE_SCHEMA`, `SELECT`, `MODIFY`, `CREATE_TABLE`, `CREATE_FUNCTION`, `CREATE_MODEL`, `CREATE_VOLUME`, `EXECUTE`, `MANAGE` | Optimizer state tables, MLflow models, prompt registry |
-
-### Permission Boundary Summary
-
-| Operation | Identity | Rationale |
-|-----------|----------|-----------|
-| Browse Genie Spaces, UC catalogs/schemas/tables | OBO (user) | User sees only what they have access to |
-| Genie API (fetch/list spaces) | OBO, SP fallback on scope error | User token may lack `dashboards.genie` scope |
-| Create Agent (tools, SQL, space creation) | OBO (user) | Space created under user's identity |
-| Quick Fix (generate + apply patches) | OBO (user) | Patches applied as the user |
-| Trigger optimization (permission check) | OBO (user) | Verifies user has CAN_EDIT/CAN_MANAGE |
-| Optimization job execution (6-task DAG) | SP | Lakeflow Jobs have no OBO; SP runs the pipeline |
-| GSO Delta table reads/writes | SP | Optimizer state tables owned by SP |
-| Lakebase persistence | SP | App-level storage, not user-scoped |
-
-## Prerequisites
-
-* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.297.2+ required)
-* [uv](https://docs.astral.sh/uv/) — Python package manager (used for dependency management and hash-verified installs)
-* Node.js (^20.19.0 or >=22.12.0) and npm
-* Python 3.11+
-
-> **Registry access:** npm lockfiles are registry-neutral. Databricks internal users can keep `npm config set registry https://npm-proxy.dev.databricks.com/`; external users should use `npm config set registry https://registry.npmjs.org/`. Do not commit private registry hosts into lockfiles.
-
-* A Databricks workspace with:
-  * Apps enabled
-  * A SQL Warehouse (Serverless recommended)
-  * A Unity Catalog with CREATE SCHEMA permission
-  * Permission to create or use a Lakebase Autoscaling project for persistent scan history and sessions
-  * MLflow Prompt Registry enabled (required for Auto-Optimize judge prompt traceability)
+- Create Genie Spaces from business requirements and Unity Catalog data sources
+- Score Genie Space quality with an instant rule-based IQ scan
+- Apply quick fixes to existing spaces
+- Run benchmark-driven optimization through the Auto-Optimize pipeline
+- Track scan history, starred spaces, sessions, and optimization state
 
 ## Quick Start
 
-### 1. Clone the repo
+The recommended install path is the Databricks notebook installer.
+
+### Databricks Notebook Installer
+
+1. Clone this repo into a Databricks Git folder.
+2. Open `notebooks/install.py`.
+3. Set the notebook widgets:
+   - `app_name`
+   - `catalog`
+   - `warehouse_id`
+   - `llm_model`
+   - `mlflow_experiment_id`
+   - `lakebase_mode`
+   - `lakebase_instance`
+   - `grant_genie_spaces`
+4. Run the notebook from the top.
+
+The notebook uses notebook-native `WorkspaceClient()` auth, creates a generated deployment source folder under `/Workspace/Users/<you>/.genie-workbench-deploy/<app-name>/app`, patches `app.yaml` there, provisions UC/Lakebase/GSO resources, and deploys the Databricks App from that generated source. The Git folder remains unchanged.
+
+For widget details, prerequisites, Lakebase behavior, updates, and troubleshooting, see [docs/08-deployment-guide.md](docs/08-deployment-guide.md).
+
+### Local Terminal Installer
+
+The local terminal path is still supported for users who want CLI-based deployment:
 
 ```bash
 git clone <repo-url>
 cd databricks-genie-workbench
-```
-
-### 2. Authenticate with Databricks CLI
-
-```bash
 databricks auth login --profile <workspace-profile>
-```
-
-> **Do NOT run `databricks bundle init`** — it overwrites the project configuration. The deploy scripts handle everything.
-
-### 3. Run the guided installer
-
-```bash
 ./scripts/install.sh
 ```
 
-The installer will:
-1. Check prerequisites (CLI, Node, Python, npm, uv)
-2. Ask for your Databricks CLI profile
-3. Ask for catalog (auto-discovered from your workspace)
-4. Ask for SQL warehouse (auto-discovered from your workspace)
-5. Ask for LLM model endpoint
-6. Optionally configure MLflow tracing (creates or links an experiment)
-7. Ask for app name
-8. Create a fresh Lakebase Autoscaling project, choose a different new name, skip persistence, or use advanced existing-project attachment
-9. Write `.env.deploy` with your configuration
-10. Run `scripts/deploy.sh` to build and deploy the app
-11. Resolve the app's service principal
-12. Optionally grant the SP access to your existing Genie Spaces
-
-### 4. Lakebase (optional project)
-
-Lakebase provides persistent storage for scan history, starred spaces, and agent sessions. Without it, the app uses in-memory storage (data lost on restart).
-
-The guided installer recommends creating a fresh Lakebase Autoscaling project
-for each new app instance. It defaults to `<app-name>-lakebase` and, if that
-name already exists, suggests a numbered fresh name instead. If you choose to
-skip Lakebase, the app still deploys but history and starred spaces are stored
-only in memory.
-
-**For a new or deliberately attached Lakebase project, setup is automated by `deploy.sh`:**
-- Creates the Lakebase Autoscaling project if it does not exist
-- Creates a Postgres role for the app's service principal
-- Grants database permissions (CONNECT, CREATE)
-- Attaches the `postgres` resource to the app
-
-The installer writes the project name as `GENIE_LAKEBASE_INSTANCE` in
-`.env.deploy`. If you skip Lakebase during install, set
-`GENIE_LAKEBASE_INSTANCE` later and run `./scripts/deploy.sh --update`.
-Attaching an existing Lakebase project is an advanced path that requires
-explicit confirmation because cross-app reuse can fail on object ownership.
-
-> **Note:** The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv sync`). If unavailable, the script prints the commands to run manually in the Lakebase SQL Editor.
-
-The app automatically creates a `genie` schema and tables on first startup within the `databricks_postgres` database. Tables: `scan_results`, `starred_spaces`, `seen_spaces`, `optimization_runs`, `agent_sessions`.
-
-#### Lakebase reuse and app identity
-
-Lakebase app state is tied to the Databricks App service principal that first
-created the `genie` schema. Normal updates should reuse the same app instance:
-keep `GENIE_APP_NAME` unchanged and run `./scripts/deploy.sh --update`.
-
-Do not point a new app instance at a Lakebase project that already has a
-`genie` schema from an older app. A new Databricks App gets a new service
-principal, so existing tables and sequences can remain owned by the old app
-principal. The app may start, but scans can fail with:
-
-```text
-permission denied for sequence scan_results_id_seq
-```
-
-If you need a new app instance, use a fresh `GENIE_LAKEBASE_INSTANCE`. Reusing
-an existing Lakebase project across app instances is not a supported install
-path unless a Lakebase project owner or workspace admin deliberately migrates
-ownership of the existing `genie` schema, tables, and sequences.
-
-In short:
-- Same app, same Lakebase: supported for updates.
-- New app, new Lakebase: supported for new installs.
-- New app, old Lakebase: avoid; admin migration required.
-
-## Manual Setup (without installer)
-
-If you prefer non-interactive setup:
-
-### 1. Create `.env.deploy` in the project root
+For subsequent local terminal updates:
 
 ```bash
-cat > .env.deploy <<'EOF'
-GENIE_WAREHOUSE_ID=<your-sql-warehouse-id>
-GENIE_CATALOG=<your-catalog-name>
-GENIE_APP_NAME=genie-workbench
-GENIE_DEPLOY_PROFILE=genie-workbench
-GENIE_LLM_MODEL=databricks-claude-sonnet-4-6
-GENIE_LAKEBASE_INSTANCE=genie-workbench-lakebase
-EOF
-```
-
-### 2. Deploy
-
-```bash
-./scripts/deploy.sh
-```
-
-### Configuration Reference
-
-Set these in `.env.deploy` or as environment variables:
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `GENIE_WAREHOUSE_ID` | Yes | — | SQL Warehouse ID (hex string from warehouse URL or detail page) |
-| `GENIE_CATALOG` | Yes | — | Unity Catalog name (you need CREATE SCHEMA permission) |
-| `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (must be unique in your workspace) |
-| `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
-| `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint for analysis |
-| `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project to use or create; installer defaults new installs to `<app-name>-lakebase`; keep stable for the same app, use a fresh project for a new app instance |
-
-## Deploy Commands
-
-```bash
-./scripts/deploy.sh                           # Full deploy: create app, sync code, configure, deploy
-./scripts/deploy.sh --update                  # Code-only update: sync + redeploy (faster)
-./scripts/deploy.sh --destroy                 # Tear down app and clean up jobs
-./scripts/deploy.sh --destroy --auto-approve  # Tear down without confirmation prompt
-```
-
-### What `--destroy` cleans up (and what it doesn't)
-
-`--destroy` deletes the Databricks App, runtime-created jobs, and the bundle-managed optimization job. It does **not** remove:
-- Lakebase data (the `genie` schema in `databricks_postgres`)
-- Unity Catalog schema/tables (`<catalog>.genie_space_optimizer` and its 8 tables)
-- Genie Space SP permissions granted during install
-- MLflow experiments created during install
-- Synced tables (if manually created)
-
-Clean these up manually if you want a full teardown.
-
-### What `deploy.sh` does
-
-**Full deploy (8 steps):**
-
-1. **Pre-flight checks** — validates tools, CLI profile, warehouse, catalog, app state
-2. **Build frontend** — `npm ci` + `npm run build` (strict lockfile)
-3. **Create app** — `databricks apps create` (skipped if app already exists)
-4. **Sync files** — `databricks sync --full` + explicit `frontend/dist/` upload
-5. **Grant UC permissions** — resolves app SP, creates GSO schema/tables, grants SP access, enables CDF
-6. **Set up optimization job** — builds GSO wheel, uploads notebooks, creates/finds the Databricks job, grants SP CAN_MANAGE
-7. **Redeploy app** — patches `app.yaml` with config values, configures scopes, deploys
-8. **Verify** — checks critical files, waits for deployment to succeed
-
-**Code update** (`--update`) skips step 3 (app creation) — use for iterating on code changes.
-
-### Typical workflow
-
-```bash
-# First time
-./scripts/deploy.sh
-
-# After code changes
 ./scripts/deploy.sh --update
-
-# Tear down
-./scripts/deploy.sh --destroy
 ```
 
-## Auto-Optimize (GSO Package)
+Do not run `databricks bundle init`; this project already has its bundle configuration.
 
-The Auto-Optimize optimization job is created automatically during deploy. The deploy script builds the GSO wheel, uploads job notebooks, and creates the Databricks job — no separate deployment step needed.
+## Prerequisites
 
-If the job already exists (from a previous deploy), it is reused. To force recreation, delete the job in the Databricks UI and re-run `./scripts/deploy.sh --update`.
+Notebook installer:
 
-## Post-Deploy: Genie Space Access
+- Databricks workspace with Apps enabled
+- SQL Warehouse
+- Unity Catalog with permission to create the GSO schema
+- Repo cloned into a Databricks Git folder
+- Databricks compute that can run `%pip install`
 
-> For a full explanation of when OBO vs SP auth is used, see [Permissions & Authentication Model](#permissions--authentication-model) above.
+Local terminal installer additionally requires:
 
-The app uses On-Behalf-Of (OBO) auth — users see only Genie Spaces they have permission to manage. The app's service principal also needs access for fallback operations:
+- Databricks CLI v0.297.2+
+- Python 3.11+
+- uv
+- Node.js and npm
 
-1. The installer grants SP access to your existing Genie Spaces
-2. For spaces created after install, share them with the app's service principal (CAN_MANAGE)
-3. The SP needs SELECT on schemas referenced by your Genie Spaces:
-   ```sql
-   GRANT SELECT ON SCHEMA <catalog>.<schema> TO `<service-principal-name>`
-   ```
+Auto-Optimize requires MLflow Prompt Registry to be enabled in the workspace. Lakebase is optional, but without it scan history, starred spaces, and agent sessions are stored in memory only.
 
-## Troubleshooting
+## Documentation
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| App shows blank page | `frontend/dist/` missing (gitignored) | Re-run `./scripts/deploy.sh --update` |
-| `Could not import module "backend.main"` | Source files missing on workspace | Re-run `./scripts/deploy.sh --update` (full-sync uploads everything) |
-| `No dependencies file found` | `requirements.txt` not on workspace | Same — `./scripts/deploy.sh --update` |
-| "Failed to list spaces" | Lakebase not attached | Set `GENIE_LAKEBASE_INSTANCE` and re-run `./scripts/deploy.sh --update` |
-| `permission denied for sequence scan_results_id_seq` | New app is reusing Lakebase objects owned by an older app SP | Reuse the original app instance or move the new app to a fresh Lakebase project |
-| `Catalog 'X' is not accessible` | Wrong catalog or missing permissions | `databricks catalogs list --profile <profile>` |
-| `Invalid SQL warehouse resource` | Warehouse doesn't exist or no CAN_USE | `databricks warehouses list --profile <profile>` |
-| `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps |
-| Auto-Optimize fails at "Baseline Evaluation" with `FEATURE_DISABLED` | Prompt Registry not enabled on workspace | Contact workspace admin to enable MLflow Prompt Registry |
-| Unresolved `__GSO_*__` placeholders | deploy.sh couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
-| GSO job creation fails during deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.297.2 and `pip install build` |
-| Notebook upload fails (`RESOURCE_DOES_NOT_EXIST`) | `/Workspace/Shared/` not writable by deployer | Check workspace-level permissions on the upload path |
+Start with [docs/00-index.md](docs/00-index.md) for the full documentation map.
 
-> **Note on MLflow tracing:** The `MLFLOW_EXPERIMENT_ID` in `app.yaml` is workspace-specific. The app validates it at startup and silently disables tracing if the experiment doesn't exist in your workspace. To enable tracing, create an MLflow experiment and update the value in `app.yaml` before deploying.
+Common references:
 
-**Debug commands:**
+- [Deployment Guide](docs/08-deployment-guide.md): notebook and local installer flows, Lakebase setup, updates, teardown
+- [Architecture Overview](docs/02-architecture-overview.md): backend, frontend, persistence, deployment design
+- [Authentication & Permissions](docs/03-authentication-and-permissions.md): OBO vs service principal behavior and required grants
+- [Auto-Optimize](docs/07-auto-optimize.md): GSO optimization pipeline
+- [Operations Guide](docs/09-operations-guide.md): Lakebase, MLflow, app logs, GSO job operations
+- [Troubleshooting](docs/appendices/B-troubleshooting.md): common install and runtime failures
+- [Environment Variables](docs/appendices/C-environment-variables.md): `app.yaml`, `.env.deploy`, and notebook widget variable flow
 
-```bash
-# View app logs
-databricks apps logs <app-name> --profile <profile>
+## Development Notes
 
-# Check app status
-databricks apps get <app-name> --profile <profile>
+This app runs only on Databricks Apps. Do not run a local `uvicorn` server for app testing; OBO auth, Lakebase, app resources, and serving endpoints are Databricks-managed runtime dependencies.
 
-# List workspace files to verify sync
-databricks workspace list /Workspace/Users/<email>/<app-name>/backend --profile <profile>
-```
+Dependency lock files are the source of truth and should be committed when changed:
 
-## Dependency Security
+- `uv.lock`
+- `packages/genie-space-optimizer/uv.lock`
+- `frontend/package-lock.json`
+- `packages/genie-space-optimizer/package-lock.json`
 
-All dependencies are pinned to exact versions to guard against supply chain attacks
-(e.g. [CVE-2026-33634 / TeamPCP](https://www.kaspersky.com/blog/critical-supply-chain-attack-trivy-litellm-checkmarx-teampcp/55510/),
-which targeted unpinned PyPI packages and GitHub Action tags).
+Do not edit `requirements.txt` manually. It is generated from `uv.lock` and excluded from Databricks App deployment so the platform uses `uv sync` from `pyproject.toml` and `uv.lock`.
 
-### Lock files (always commit these)
+## Help
 
-| File | Covers | Tool |
-|---|---|---|
-| `uv.lock` | All root Python transitive deps with SHA256 hashes | uv |
-| `packages/genie-space-optimizer/uv.lock` | GSO Python deps with SHA256 hashes | uv |
-| `frontend/package-lock.json` | All frontend npm deps with SHA-512 integrity hashes | npm |
-| `packages/genie-space-optimizer/package-lock.json` | GSO UI npm deps with SHA-512 integrity hashes | npm |
-
-### Updating Python dependencies
-
-```bash
-# Upgrade one package (resolves latest compatible, updates uv.lock with new hashes)
-uv lock --upgrade-package <package-name>
-
-# Regenerate requirements.txt from the updated lock file
-uv export --frozen --no-dev --no-hashes --format requirements-txt > requirements.txt
-
-# Commit both
-git add uv.lock requirements.txt
-```
-
-> **Do not edit `requirements.txt` manually.** It is generated from `uv.lock` and
-> includes all transitive dependencies pinned to exact `==` versions. The generation
-> command is documented at the top of the file.
-
-### Updating npm dependencies
-
-```bash
-cd frontend
-npm install <package>@<new-version>   # resolves and updates package-lock.json
-# Then update package.json to exact version (remove the ^ prefix)
-git add package.json package-lock.json  # always commit both together
-```
-
-Keep `omit-lockfile-registry-resolved=true` in project `.npmrc` files so future lockfile updates do not commit private registry hosts. Public `registry.npmjs.org` lockfile URLs are safe because npm can rewrite them to the configured registry; internal and external users should still select their registry in user/global npm config, not by editing committed lockfiles.
-
-### Why `npm ci` instead of `npm install` in deploys
-
-`scripts/deploy.sh` uses `npm ci` for the frontend build step. Unlike `npm install`,
-`npm ci`:
-- Reads `package-lock.json` as the single source of truth (never updates it)
-- Verifies SHA-512 integrity hashes for every installed package
-- Fails loudly if `package.json` and `package-lock.json` are out of sync
-
-If you update `frontend/package.json`, always run `npm install` locally to regenerate
-`package-lock.json`, then commit both files.
-
-## How to Get Help
-
-Databricks support doesn't cover this content. For questions or bugs, please open a GitHub issue and the team will help on a best effort basis.
+Databricks support does not cover this project. For questions or bugs, open a GitHub issue and the team will help on a best-effort basis.
 
 ## License
 
-&copy; 2025 Databricks, Inc. All rights reserved. The source in this notebook is provided subject to the Databricks License [https://databricks.com/db-license-source]. All included or referenced third party libraries are subject to the licenses set forth below.
+&copy; 2025 Databricks, Inc. All rights reserved. The source in this repository is provided subject to the Databricks License [https://databricks.com/db-license-source]. All included or referenced third party libraries are subject to the licenses set forth below.
 
 | library | description | license | source |
 |---|---|---|---|

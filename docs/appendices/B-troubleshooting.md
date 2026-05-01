@@ -4,16 +4,18 @@
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| App shows blank page | `frontend/dist/` missing (gitignored, not synced) | Re-run `./scripts/deploy.sh --update` |
-| `Could not import module "backend.main"` | Source files missing on workspace | Re-run `./scripts/deploy.sh --update` (full sync) |
-| `No dependencies file found` | `requirements.txt` not on workspace | Re-run `./scripts/deploy.sh --update` |
-| "Failed to list spaces" | Lakebase not attached | Set `GENIE_LAKEBASE_INSTANCE` and re-run `./scripts/deploy.sh --update` |
+| App shows blank page | `frontend/dist/` missing or stale | Re-run `./scripts/deploy.sh --update`, or rerun `notebooks/install.py` for notebook installs |
+| `Could not import module "backend.main"` | Source files missing on workspace | Re-run `./scripts/deploy.sh --update` (full sync), or rerun `notebooks/install.py` |
+| `No dependencies file found` | App source is missing `pyproject.toml`/`uv.lock` | Re-run the active deploy path and verify generated source includes `pyproject.toml` and `uv.lock` |
+| "Failed to list spaces" | Lakebase not attached | Set `GENIE_LAKEBASE_INSTANCE` and re-run `./scripts/deploy.sh --update`, or rerun `notebooks/install.py` with Lakebase enabled |
 | `Catalog 'X' is not accessible` | Wrong catalog or missing permissions | `databricks catalogs list --profile <profile>` |
 | `Invalid SQL warehouse resource` | Warehouse doesn't exist or no CAN_USE | `databricks warehouses list --profile <profile>` |
 | `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps |
 | Auto-Optimize fails at "Baseline Evaluation" with `FEATURE_DISABLED` | Prompt Registry not enabled | Contact workspace admin to enable MLflow Prompt Registry |
-| Unresolved `__GSO_*__` placeholders | `deploy.sh` couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
-| GSO job creation fails during deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.297.2 and `pip install build` |
+| Unresolved `__GSO_*__` placeholders | The active deploy path could not patch `app.yaml` | Ensure `GENIE_CATALOG` or notebook `catalog` is set; check deploy output for warnings |
+| GSO job creation fails during local deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.297.2 |
+| GSO job creation fails in notebook install | Generated GSO notebook/wheel upload or Jobs API reset failed | Review notebook status output; rerun from the top after pulling latest repo changes |
+| Notebook output appears stale | Databricks notebook session cached old Python modules | Pull latest changes, rerun `notebooks/install.py` from the top, and detach/restart the compute session if output still reflects old code |
 | Notebook upload fails (`RESOURCE_DOES_NOT_EXIST`) | `/Workspace/Shared/` not writable by deployer | Check workspace-level permissions on the upload path |
 
 ## Permission Errors
@@ -30,9 +32,9 @@
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Failed to list spaces" on first load | Lakebase not attached | Re-run `deploy.sh --update` to auto-attach the postgres resource |
+| "Failed to list spaces" on first load | Lakebase not attached | Re-run `deploy.sh --update` or rerun `notebooks/install.py` with Lakebase enabled |
 | Connection timeouts after ~1 hour | Credential refresh failed | Check logs for `generate_database_credential` errors |
-| Tables not created on startup | SP lacks CONNECT or CREATE ON DATABASE | Re-run `deploy.sh --update` to re-create the SP role and grants |
+| Tables not created on startup | SP lacks CONNECT or CREATE ON DATABASE | Re-run `deploy.sh --update` or rerun `notebooks/install.py` to re-create the SP role and grants |
 | `permission denied for sequence scan_results_id_seq` | New app is reusing a Lakebase `genie` schema owned by an older app SP | Reuse the original app instance or move the new app to a fresh Lakebase project |
 | Scan results not persisting | Lakebase write failed | Check logs for `Failed to persist scan result` |
 | Agent sessions lost on restart | Lakebase not configured | Without Lakebase, sessions use in-memory storage (ephemeral) |
@@ -60,13 +62,13 @@ the existing `genie` schema, tables, and sequences.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "GSO not configured" in health check | `GSO_JOB_ID` or `GSO_CATALOG` not set | Re-run `./scripts/deploy.sh` (patches `app.yaml` with values from bundle state) |
+| "GSO not configured" in health check | `GSO_JOB_ID` or `GSO_CATALOG` not set | Re-run the active deploy path so `app.yaml` is patched with GSO values |
 | Optimization job never starts | Job doesn't exist or SP can't run it | Check job exists in workspace; verify SP has CAN_MANAGE on job |
 | Job stuck in QUEUED | No available cluster or warehouse | Check cluster policies and warehouse availability |
 | "Baseline Evaluation" fails | Benchmark questions reference inaccessible tables | Grant SP `SELECT` on all referenced schemas |
 | "FEATURE_DISABLED" during preflight | MLflow Prompt Registry not enabled | Contact workspace admin to enable it |
 | Patches generated but accuracy doesn't improve | Optimization strategy exhausted | Run may reach `STALLED` status — review suggestions for manual improvements |
-| `__GSO_*__` values in running app | `deploy.sh` didn't patch `app.yaml` before deploy | Check `GENIE_CATALOG` in `.env.deploy`; re-run deploy |
+| `__GSO_*__` values in running app | The active deploy path did not patch `app.yaml` before deploy | Check `GENIE_CATALOG` in `.env.deploy` or notebook `catalog`; re-run deploy |
 
 ## Debug Commands
 

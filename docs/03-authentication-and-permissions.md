@@ -143,7 +143,6 @@ The `user_api_scopes` in `app.yaml` request these scopes for the user's OBO toke
 | `catalog.schemas:read` | Browse Unity Catalog schemas |
 | `catalog.tables:read` | Browse Unity Catalog tables |
 | `files.files` | Access workspace files |
-| `iam.access-control:read` | Read ACLs for permission checks |
 
 If the workspace or user's OAuth consent doesn't grant all scopes, the app degrades gracefully — the SP fallback handles the most common gap (`dashboards.genie`).
 
@@ -155,7 +154,7 @@ If the workspace or user's OAuth consent doesn't grant all scopes, the app degra
 |-----------|---------|
 | `CAN_MANAGE` | API fallback when user token lacks Genie scope; applying optimization patches during the GSO pipeline |
 
-Grant via the Genie Space sharing UI or the installer (`scripts/install.sh` automates this).
+Grant via the Genie Space sharing UI or through an installer. `scripts/install.sh` handles this for the local terminal path, and `notebooks/install.py` can optionally grant visible Genie Spaces for the Databricks notebook path.
 
 ### Per referenced data schema
 
@@ -188,7 +187,7 @@ The SP needs full access to the optimizer state schema (`<GSO_CATALOG>.genie_spa
 | `EXECUTE` | Execute functions |
 | `MANAGE` | Schema management |
 
-These are granted automatically by `scripts/grant_permissions.py` during deployment.
+These are granted automatically during deployment. The local terminal path uses `scripts/grant_permissions.py`; the notebook path uses the shared `scripts.deploy_lib.uc` implementation.
 
 ## Complete Permission Boundary
 

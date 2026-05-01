@@ -17,10 +17,11 @@ The app creates the `genie` schema and all tables on first startup (the SP owns 
 | `agent_sessions` | Create agent session persistence (message history, step state) |
 
 Lakebase state is tied to the Databricks App service principal that created
-these objects. For normal updates, keep the same app instance and run
-`./scripts/deploy.sh --update`. If you create a new app instance, use a fresh
-Lakebase project instead of pointing the new app at the old app's `genie`
-schema.
+these objects. For normal updates, keep the same app instance and update
+through the same install path: `./scripts/deploy.sh --update` for local
+terminal installs, or rerun `notebooks/install.py` for notebook installs. If
+you create a new app instance, use a fresh Lakebase project instead of pointing
+the new app at the old app's `genie` schema.
 
 ### Credential Refresh
 
@@ -39,9 +40,9 @@ If `LAKEBASE_HOST` is not configured (no Lakebase attached), the app falls back 
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Failed to list spaces" | Lakebase not attached | Re-run `deploy.sh --update` to auto-attach the postgres resource |
+| "Failed to list spaces" | Lakebase not attached | Re-run `deploy.sh --update` or rerun `notebooks/install.py` with Lakebase enabled |
 | Connection errors after ~1 hour | Token refresh failed | Check app logs for credential generation errors |
-| Tables not created | SP lacks CONNECT or CREATE ON DATABASE | Re-run `deploy.sh --update` to re-create the SP role and grants |
+| Tables not created | SP lacks CONNECT or CREATE ON DATABASE | Re-run `deploy.sh --update` or rerun `notebooks/install.py` to re-create the SP role and grants |
 | `permission denied for sequence scan_results_id_seq` | New app is reusing Lakebase objects owned by an older app SP | Reuse the original app instance or move the new app to a fresh Lakebase project |
 
 ## MLflow
@@ -68,7 +69,7 @@ Auto-Optimize requires MLflow Prompt Registry for versioned judge prompts. If Pr
   value: "<your-experiment-id>"
 ```
 
-The experiment ID is workspace-specific. The installer can create one during setup, or you can create one manually and update `app.yaml`.
+The experiment ID is workspace-specific. The local terminal installer can create one during setup; the notebook installer accepts an existing experiment ID in the `mlflow_experiment_id` widget. You can also create one manually and redeploy with the updated value.
 
 ## Monitoring
 
@@ -105,14 +106,14 @@ databricks workspace list /Workspace/Users/<email>/<app-name>/backend --profile 
 
 ### Job Creation
 
-The optimization job is created automatically during `deploy.sh` via `databricks bundle deploy -t app`. It uses Terraform state scoped to the deployer.
+The optimization job is created automatically by the active install path. Local terminal installs use `deploy.sh` and `databricks bundle deploy -t app`, with Terraform state scoped to the deployer. Notebook installs create or reset the same `gso-optimization-job` through the SDK/Jobs API from generated workspace assets.
 
 ### Job Reuse
 
 If the job already exists (from a previous deploy), it is reused. To force recreation:
 
 1. Delete the job in the Databricks UI
-2. Re-run `./scripts/deploy.sh --update`
+2. Re-run `./scripts/deploy.sh --update` for local terminal installs, or rerun `notebooks/install.py` for notebook installs
 
 ### `ensure_job_run_as` Self-Healing
 
@@ -120,7 +121,7 @@ At app startup, `_ensure_gso_job_run_as()` checks that the optimization job's `r
 
 ### Bundle Management
 
-The GSO job is managed by Databricks Asset Bundles (DABs):
+For local terminal installs, the GSO job is managed by Databricks Asset Bundles (DABs):
 
 ```bash
 # Deploy/update the job (done automatically by deploy.sh)
@@ -130,6 +131,8 @@ databricks bundle deploy -t app --profile <profile>
 **Important:** Do NOT run `databricks bundle deploy -t dev` for production deployments — it creates `[dev username]` prefixed orphan jobs with separate Terraform state.
 
 The `app` target uses `mode: development` for per-deployer Terraform state with `presets.name_prefix: ""` for clean job names.
+
+For notebook installs, the GSO job is managed by `scripts.deploy_lib.gso_job` with Jobs API reset/update semantics. It uploads notebooks under `/Workspace/Users/<user>/.genie-workbench-deploy/<app-name>/gso/jobs` and stores the GSO wheel in the UC volume under `/Volumes/<catalog>/genie_space_optimizer/app_artifacts/`.
 
 ### Post-Deploy: Genie Space Access
 

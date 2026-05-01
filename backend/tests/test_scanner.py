@@ -665,10 +665,12 @@ class TestUCEnrichment:
             },
         }
         ws = MagicMock()
-        ws.tables.get.side_effect = [
-            Exception("Permission denied"),
-            _mock_table_info(comment="Table 2 desc"),
-        ]
+        def _get_table(full_name):
+            if full_name == "cat.sch.t1":
+                raise Exception("Permission denied")
+            return _mock_table_info(comment="Table 2 desc")
+
+        ws.tables.get.side_effect = _get_table
         count = _enrich_with_uc_descriptions(space_data, ws)
         assert count == 1
         assert space_data["data_sources"]["tables"][0].get("comment") is None
