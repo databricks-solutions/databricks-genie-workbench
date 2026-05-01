@@ -11230,6 +11230,7 @@ def _run_lever_loop(
                         iq_scan_summary=(
                             iq_scan_summary if _iq_scan_strategist_enabled() else None
                         ),
+                        max_ag_patches=MAX_AG_PATCHES,
                     )
                     strategist_memo_cache[_memo_key] = copy.deepcopy(strategy)
                     strategy["_memoized"] = False

@@ -9224,6 +9224,7 @@ def _call_llm_for_adaptive_strategy(
     skill_exemplars: list[dict] | None = None,
     human_suggestions: list[dict] | None = None,
     iq_scan_summary: dict | None = None,
+    max_ag_patches: int | None = None,
 ) -> dict:
     """Single-call strategist that produces exactly ONE action group.
 
@@ -9236,6 +9237,21 @@ def _call_llm_for_adaptive_strategy(
     from genie_space_optimizer.optimization.evaluation import (
         _extract_json,
         _link_prompt_to_trace,
+    )
+
+    # ── Cap budget visibility (v2 Task 5) ────────────────────────────
+    # Surface MAX_AG_PATCHES to the strategist so it sizes ActionGroups
+    # against the cap. Without this, multi-cluster bundles emit N×3+
+    # patches and the cap drops most of them.
+    from genie_space_optimizer.common.config import (
+        MAX_AG_PATCHES as _CFG_MAX_AG_PATCHES,
+    )
+    _budget = int(max_ag_patches or _CFG_MAX_AG_PATCHES)
+    budget_text = (
+        f"PATCH BUDGET: each ActionGroup is capped at {_budget} applied patches. "
+        f"Active hard clusters: {len(clusters)}. "
+        f"Bundle clusters only when their root causes are truly defect-compatible — "
+        f"otherwise emit one ActionGroup per cluster so the cap does not collapse them."
     )
 
     _blame_items: list[str] = []
@@ -9357,6 +9373,9 @@ def _call_llm_for_adaptive_strategy(
     }
 
     prompt = format_mlflow_template(ADAPTIVE_STRATEGIST_PROMPT, **format_kwargs)
+    # v2 Task 5: prepend cap budget so the strategist sees it before any
+    # cluster bundling instructions in the templated prompt body.
+    prompt = budget_text + "\n\n" + prompt
 
     _W = 78
     _iter_label = len(reflection_buffer) + 1
