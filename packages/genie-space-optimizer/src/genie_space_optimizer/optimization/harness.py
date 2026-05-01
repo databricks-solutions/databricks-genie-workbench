@@ -13138,6 +13138,58 @@ def _run_lever_loop(
         # Task 4 — patch-survival snapshot: applyable gate.
         _survival_applyable = list(patches)
 
+        # Task 17 — L5/L6 asset alignment gate. SQL-shape (L5) and
+        # sql-snippet (L6) patches must touch an asset that is in the
+        # source cluster's lineage; otherwise they are dropped before the
+        # cap so non-aligned patches don't burn cap slots.
+        from genie_space_optimizer.optimization.proposal_asset_alignment import (
+            l5_l6_patch_requires_asset_alignment,
+            proposal_aligns_with_cluster,
+        )
+
+        _ag_source_cluster_ids = {
+            str(cid).strip()
+            for cid in (ag.get("source_cluster_ids") or [])
+            if str(cid).strip()
+        }
+        _source_clusters_by_id = {
+            str(c.get("cluster_id") or "").strip(): c
+            for c in (strategy.get("_source_clusters") or [])
+            if str(c.get("cluster_id") or "").strip()
+        }
+        _aligned_patches: list[dict] = []
+        _alignment_drops: list[dict] = []
+        for _p in patches:
+            if not l5_l6_patch_requires_asset_alignment(_p):
+                _aligned_patches.append(_p)
+                continue
+            _matched_cluster = next(
+                (
+                    _source_clusters_by_id[c]
+                    for c in _ag_source_cluster_ids
+                    if c in _source_clusters_by_id
+                ),
+                None,
+            )
+            _decision = proposal_aligns_with_cluster(_p, _matched_cluster)
+            if _decision.get("aligned"):
+                _aligned_patches.append(_p)
+                continue
+            _alignment_drops.append({
+                "proposal_id": str(_p.get("proposal_id") or _p.get("id") or ""),
+                "patch_type": str(_p.get("type") or _p.get("patch_type") or ""),
+                "reason": _decision.get("reason"),
+                "proposal_assets": list(_decision.get("proposal_assets") or ()),
+                "cluster_assets": list(_decision.get("cluster_assets") or ()),
+            })
+        if _alignment_drops:
+            logger.info(
+                "[%s] asset_alignment_dropped: %d patch(es); reasons=%s",
+                ag_id, len(_alignment_drops),
+                [d["reason"] for d in _alignment_drops],
+            )
+        patches = _aligned_patches
+
         # Tier 2.6: cap AG patch-set size. A single failing patch in a
         # large batch rolls back everything — including the patches that
         # would have helped. If the cap is exceeded, keep the highest-
