@@ -12792,12 +12792,22 @@ def _run_lever_loop(
                 locals().get("_blast_target_qids")
                 or _target_qids_for_patch_cap(ag, strategy.get("_source_clusters", []))
             )
+            _active_cluster_ids_for_cap = tuple(
+                str(cid).strip()
+                for cid in (ag.get("source_cluster_ids") or [])
+                if str(cid).strip()
+            )
+            _per_cluster_slot_floor = (
+                1 if len(_active_cluster_ids_for_cap) > 1 else 0
+            )
 
             _before_cap = list(patches)
             patches, _patch_cap_decisions = select_target_aware_causal_patch_cap(
                 _before_cap,
                 target_qids=_patch_cap_target_qids,
                 max_patches=MAX_AG_PATCHES,
+                active_cluster_ids=_active_cluster_ids_for_cap,
+                per_cluster_slot_floor=_per_cluster_slot_floor,
             )
             _selected_ids = {
                 str(p.get("proposal_id") or p.get("id") or "")
@@ -12807,6 +12817,18 @@ def _run_lever_loop(
                 d for d in _patch_cap_decisions
                 if d.get("decision") == "dropped"
             ]
+            for _d in _dropped_decisions:
+                logger.info(
+                    "[%s] cap_dropped pid=%s type=%s cluster=%s "
+                    "rel=%.3f cluster_tier=%d direct=%s",
+                    ag_id,
+                    _d.get("proposal_id"),
+                    _d.get("patch_type"),
+                    _d.get("cluster_id"),
+                    float(_d.get("relevance_score") or 0.0),
+                    int(_d.get("active_cluster_match_tier") or 0),
+                    _d.get("is_direct_behavior"),
+                )
             logger.warning(
                 "AG %s patch cap (causal-first): kept %d of %d. "
                 "Dropped proposal_ids=%s.",

@@ -285,21 +285,52 @@ def _is_direct_behavior_patch(patch: dict[str, Any]) -> bool:
     }
 
 
+def _patch_cluster(p: dict[str, Any]) -> str:
+    return str(p.get("cluster_id") or p.get("source_cluster_id") or "").strip()
+
+
+def _lever_diversity_tier(patch: dict[str, Any]) -> int:
+    """Return an impact tier for the patch's lever.
+
+    2 = behavior levers (5, 6) — instructions and SQL snippets
+    1 = direct asset levers (3, 4) — function/snippet edits
+    0 = description-only levers (1, 2) and unknown
+    """
+    lever = _lever(patch)
+    if lever in (5, 6):
+        return 2
+    if lever in (3, 4):
+        return 1
+    return 0
+
+
 def select_target_aware_causal_patch_cap(
     patches: list[dict[str, Any]],
     *,
     target_qids: tuple[str, ...],
     max_patches: int,
     active_cluster_ids: tuple[str, ...] = (),
+    per_cluster_slot_floor: int = 0,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Cap patches while preserving at least one patch per target QID.
 
-    For each target QID in order, picks the highest-relevance patch
-    targeting that QID (by relevance, risk, confidence, then declaration
-    order). Remaining capacity is filled by the global causal-relevance
-    ranking from ``select_causal_patch_cap``. This prevents the cap from
-    dropping the only patch covering a secondary target QID just because
-    the primary target dominates the relevance leaderboard.
+    Selection passes (in order):
+
+    1. **Per-cluster slot floor.** For each cluster in ``active_cluster_ids``,
+       reserve up to ``per_cluster_slot_floor`` patches assigned to that
+       cluster. Highest-tier direct-behavior patches win for that cluster
+       first; otherwise highest-relevance for that cluster wins.
+    2. **Direct-behavior reservation.** Globally reserve the highest-tier
+       direct-behavior patch (legacy behavior).
+    3. **Per-target QID coverage.** For each target QID in order, pick the
+       highest-relevance patch targeting that QID.
+    4. **Filler.** Fill remaining capacity from the global causal-relevance
+       ranking via ``select_causal_patch_cap``.
+
+    Decision rows for ALL input patches include score provenance —
+    ``relevance_score``, ``lever_diversity_tier``,
+    ``active_cluster_match_tier``, and ``is_direct_behavior`` — so the
+    next dropped patch is debuggable.
     """
     patches = _deduplicate_patches(patches)
     if max_patches <= 0:
@@ -308,22 +339,70 @@ def select_target_aware_causal_patch_cap(
         return select_causal_patch_cap(patches, max_patches=max_patches)
 
     target_set = tuple(dict.fromkeys(str(q) for q in target_qids if str(q)))
+    active_set = tuple(
+        dict.fromkeys(str(c).strip() for c in active_cluster_ids or () if str(c).strip())
+    )
     selected: list[dict[str, Any]] = []
     selected_ids: set[str] = set()
 
+    per_cluster_reserved_pids: set[str] = set()
     reserved_direct_fix_pids: set[str] = set()
     active_cluster_reserved_pids: set[str] = set()
-    if max_patches > 0:
+
+    # Pass 1: per-cluster slot floor.
+    if per_cluster_slot_floor > 0 and active_set:
+        for cluster_id in active_set:
+            if len(selected) >= max_patches:
+                break
+            # Already-reserved patches for this cluster count toward the floor.
+            already_reserved_for_cluster = sum(
+                1 for p in selected if _patch_cluster(p) == cluster_id
+            )
+            slots_needed = per_cluster_slot_floor - already_reserved_for_cluster
+            if slots_needed <= 0:
+                continue
+            # Candidates: patches assigned to this cluster, not yet selected.
+            cluster_candidates = [
+                (idx, patch)
+                for idx, patch in enumerate(patches)
+                if _patch_cluster(patch) == cluster_id
+                and _proposal_id(patch, idx) not in selected_ids
+            ]
+            for _ in range(slots_needed):
+                if not cluster_candidates or len(selected) >= max_patches:
+                    break
+                idx, patch = min(
+                    cluster_candidates,
+                    key=lambda item: (
+                        # Prefer direct-behavior fixes first.
+                        0 if _is_direct_behavior_patch(item[1]) else 1,
+                        -_lever_diversity_tier(item[1]),
+                        -_score(item[1], "relevance_score"),
+                        -causal_attribution_tier(item[1]),
+                        _risk_rank(item[1]),
+                        -_score(item[1], "confidence"),
+                        item[0],
+                    ),
+                )
+                cluster_candidates.remove((idx, patch))
+                pid = _proposal_id(patch, idx)
+                selected.append(patch)
+                selected_ids.add(pid)
+                per_cluster_reserved_pids.add(pid)
+
+    # Pass 2: direct-behavior reservation (legacy).
+    if max_patches > 0 and len(selected) < max_patches:
         direct_candidates = [
             (idx, patch)
             for idx, patch in enumerate(patches)
             if _is_direct_behavior_patch(patch)
+            and _proposal_id(patch, idx) not in selected_ids
         ]
         if direct_candidates:
             idx, patch = min(
                 direct_candidates,
                 key=lambda item: (
-                    -_active_cluster_match_tier(item[1], active_cluster_ids),
+                    -_active_cluster_match_tier(item[1], active_set),
                     -_score(item[1], "relevance_score"),
                     -causal_attribution_tier(item[1]),
                     _risk_rank(item[1]),
@@ -335,9 +414,10 @@ def select_target_aware_causal_patch_cap(
             pid = _proposal_id(patch, idx)
             selected_ids.add(pid)
             reserved_direct_fix_pids.add(pid)
-            if _active_cluster_match_tier(patch, active_cluster_ids) > 0:
+            if _active_cluster_match_tier(patch, active_set) > 0:
                 active_cluster_reserved_pids.add(pid)
 
+    # Pass 3: per-target QID coverage (legacy).
     for target in target_set:
         if len(selected) >= max_patches:
             break
@@ -355,7 +435,7 @@ def select_target_aware_causal_patch_cap(
         idx, patch = min(
             candidates,
             key=lambda item: (
-                -_active_cluster_match_tier(item[1], active_cluster_ids),
+                -_active_cluster_match_tier(item[1], active_set),
                 -_score(item[1], "relevance_score"),
                 -causal_attribution_tier(item[1]),
                 _risk_rank(item[1]),
@@ -366,6 +446,7 @@ def select_target_aware_causal_patch_cap(
         selected.append(patch)
         selected_ids.add(_proposal_id(patch, idx))
 
+    # Pass 4: filler from global causal ranking.
     remaining = [
         patch
         for idx, patch in enumerate(patches)
@@ -375,7 +456,7 @@ def select_target_aware_causal_patch_cap(
         filler, _ = select_causal_patch_cap(
             remaining,
             max_patches=max_patches - len(selected),
-            active_cluster_ids=active_cluster_ids,
+            active_cluster_ids=active_set,
         )
         selected.extend(filler)
         for fp in filler:
@@ -398,7 +479,9 @@ def select_target_aware_causal_patch_cap(
     for idx, patch in enumerate(patches):
         pid = _proposal_id(patch, idx)
         selected_flag = pid in selected_pid_set
-        if selected_flag and pid in active_cluster_reserved_pids:
+        if selected_flag and pid in per_cluster_reserved_pids:
+            selection_reason = "per_cluster_slot_floor_reserved"
+        elif selected_flag and pid in active_cluster_reserved_pids:
             selection_reason = "active_cluster_direct_behavior_reserved"
         elif selected_flag and pid in reserved_direct_fix_pids:
             selection_reason = "behavior_direct_fix_reserved"
@@ -408,11 +491,17 @@ def select_target_aware_causal_patch_cap(
             selection_reason = "lower_causal_rank"
         decisions.append({
             "proposal_id": pid,
+            "cluster_id": _patch_cluster(patch),
+            "patch_type": patch.get("patch_type") or patch.get("type"),
+            "target": patch.get("target"),
             "decision": "selected" if selected_flag else "dropped",
             "selection_reason": selection_reason,
             "rank": rank_by_pid.get(pid),
             "relevance_score": _score(patch, "relevance_score"),
             "lever": _lever(patch),
+            "lever_diversity_tier": _lever_diversity_tier(patch),
+            "active_cluster_match_tier": _active_cluster_match_tier(patch, active_set),
+            "is_direct_behavior": _is_direct_behavior_patch(patch),
             **_identity_fields(patch, pid),
         })
 
