@@ -41,7 +41,7 @@ def test_example_sql_rows_are_converted_to_positive_eval_rows():
         }
     ])
 
-    assert rows[0]["arbiter/value"] == "ground_truth_correct"
+    assert rows[0]["arbiter/value"] == "synthetic_example"
     assert rows[0]["request"]["expected_sql"].startswith("SELECT l.location_id")
     assert rows[0]["inputs/expected_sql"].startswith("SELECT l.location_id")
 
@@ -93,7 +93,7 @@ def test_mine_example_sql_joins_reuses_proven_join_pipeline(monkeypatch):
     )
 
     assert result["total_applied"] == 1
-    assert applied["rows"][0]["arbiter/value"] == "ground_truth_correct"
+    assert applied["rows"][0]["arbiter/value"] == "synthetic_example"
 
 
 def test_example_sql_join_mining_combines_unified_and_fallback_examples(monkeypatch):

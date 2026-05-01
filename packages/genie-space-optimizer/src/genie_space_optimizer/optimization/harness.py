@@ -1827,8 +1827,11 @@ def _example_sqls_to_positive_eval_rows(examples: list[dict]) -> list[dict]:
     """Convert accepted example SQLs into synthetic eval rows for join mining.
 
     Each example becomes a single row with ``arbiter/value`` set to
-    ``ground_truth_correct`` so the proven-joins pipeline treats the SQL
-    as known-good without invoking real arbiter scoring.
+    ``synthetic_example`` so downstream structural mining can require
+    explicit corroboration (UC FK or ``both_correct`` benchmark) before
+    promoting joins inferred from synthetic origin. The previous
+    ``ground_truth_correct`` tag is reserved for rows where the
+    ground-truth SQL was actually executed and matched.
     """
     rows: list[dict] = []
     for idx, ex in enumerate(examples or []):
@@ -1857,8 +1860,9 @@ def _example_sqls_to_positive_eval_rows(examples: list[dict]) -> list[dict]:
                 "expected_sql": sql,
             },
             "response": {"response": ""},
-            "arbiter/value": "ground_truth_correct",
-            "feedback/arbiter/value": "ground_truth_correct",
+            "arbiter/value": "synthetic_example",
+            "feedback/arbiter/value": "synthetic_example",
+            "_synthetic_origin": "accepted_example_sql",
         })
     return rows
 
