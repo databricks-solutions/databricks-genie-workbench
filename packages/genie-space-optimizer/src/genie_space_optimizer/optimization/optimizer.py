@@ -10610,7 +10610,19 @@ def _validate_lever5_proposals(
         name = (m.get("name") or m.get("identifier", "")).lower()
         known_assets.add(name)
         known_assets.add(name.rsplit(".", 1)[-1])
+    for t in _tables:
+        for c in t.get("column_configs", []) or t.get("columns", []) or []:
+            if not isinstance(c, dict):
+                continue
+            col_name = str(c.get("name") or c.get("identifier") or "").strip()
+            if col_name:
+                known_assets.add(col_name.lower())
+                known_assets.add(col_name.rsplit(".", 1)[-1].lower())
     known_assets.discard("")
+
+    from genie_space_optimizer.optimization.instruction_publishability import (
+        validate_publishable_instruction_text,
+    )
 
     id_allowlist = _build_identifier_allowlist(metadata_snapshot)
 
@@ -10662,10 +10674,21 @@ def _validate_lever5_proposals(
             ]
             if not found_sections:
                 logger.warning(
-                    "rewrite_instruction has no recognized structured sections "
-                    "(expected ALL-CAPS headers like PURPOSE:, ASSET ROUTING:, etc.). "
-                    "Content will still be accepted but may lack structure."
+                    "Rejecting rewrite_instruction with no recognized structured sections "
+                    "(expected ALL-CAPS headers like PURPOSE:, ASSET ROUTING:, etc.)."
                 )
+                continue
+            publishability = validate_publishable_instruction_text(
+                text,
+                known_assets=known_assets,
+            )
+            if not publishability.ok:
+                logger.warning(
+                    "Rejecting non-publishable rewrite_instruction (%s): %.120s",
+                    ",".join(publishability.reasons),
+                    text,
+                )
+                continue
             valid.append(p)
             continue
 
@@ -10685,6 +10708,17 @@ def _validate_lever5_proposals(
             if known_assets and not any(a in text_lower for a in known_assets):
                 logger.warning(
                     "Rejecting generic add_instruction (no known asset referenced): %.100s...",
+                    text,
+                )
+                continue
+            publishability = validate_publishable_instruction_text(
+                text,
+                known_assets=known_assets,
+            )
+            if not publishability.ok:
+                logger.warning(
+                    "Rejecting non-publishable add_instruction (%s): %.120s",
+                    ",".join(publishability.reasons),
                     text,
                 )
                 continue
