@@ -556,6 +556,15 @@ update_run_status(
     status="IN_PROGRESS",
     experiment_name=ctx_exp["experiment_name"],
     experiment_id=_experiment_id,
+    warehouse_id=warehouse_id,
+    human_corrections=ctx_feedback["human_corrections"],
+    max_benchmark_count=effective_max,
+)
+_log(
+    "Persisted handoff columns to genie_opt_runs",
+    warehouse_id=warehouse_id or "(unset)",
+    human_corrections=len(ctx_feedback["human_corrections"]),
+    max_benchmark_count=effective_max,
 )
 
 preflight_out = {
