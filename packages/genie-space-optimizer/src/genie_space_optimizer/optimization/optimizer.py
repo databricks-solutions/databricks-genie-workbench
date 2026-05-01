@@ -2325,15 +2325,7 @@ def cluster_failures(
             cause = f.get("_resolved_root_cause", "other")
             weighted[cause] += judge_weight_for_root_cause(f.get("judge", ""))
         if weighted:
-            profile["dominant_root_cause"] = max(
-                weighted.items(),
-                key=lambda kv: (
-                    kv[1],
-                    1 if kv[0] in _SQL_SHAPE_ROOT_CAUSES else 0,
-                    # deterministic final tiebreak so tests / logs are stable
-                    -len(kv[0]),
-                ),
-            )[0]
+            profile["dominant_root_cause"] = _select_dominant_root_cause(weighted)
             profile["dominant_root_cause_weight"] = round(
                 weighted[profile["dominant_root_cause"]], 3,
             )
@@ -7657,6 +7649,36 @@ _SQL_SHAPE_ROOT_CAUSES = frozenset({
     "column_disambiguation",
     "granularity_drop",
 })
+
+
+_ACTIONABLE_ROOT_CAUSES: frozenset[str] = _SQL_SHAPE_ROOT_CAUSES | frozenset({
+    "column_disambiguation",
+    "missing_filter",
+    "missing_temporal_filter",
+    "missing_join_spec",
+    "missing_scd_filter",
+    "wrong_filter_condition",
+})
+
+
+def _select_dominant_root_cause(weighted: dict[str, float]) -> str:
+    """Return the dominant root cause with actionability as the primary key.
+
+    A label is actionable when it routes to a non-zero lever via the lever
+    map and represents a fix the optimizer can ship. format_difference,
+    extra_columns_only, and select_star are explicitly non-actionable.
+    """
+    if not weighted:
+        return "other"
+    return max(
+        weighted.items(),
+        key=lambda kv: (
+            1 if kv[0] in _ACTIONABLE_ROOT_CAUSES else 0,
+            kv[1],
+            1 if kv[0] in _SQL_SHAPE_ROOT_CAUSES else 0,
+            -len(kv[0]),
+        ),
+    )[0]
 
 
 # ── Bug #4 (benchmark leakage) counters ────────────────────────────────
