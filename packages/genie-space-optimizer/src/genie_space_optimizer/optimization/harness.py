@@ -10621,8 +10621,10 @@ def _run_lever_loop(
     # state.
     _prev_passing_qids: set[str] = set()
     # Phase A — per-iteration input snapshots for the replay-fixture
-    # exporter. End-of-run, if ``GSO_DUMP_REPLAY_FIXTURE`` is set, this
-    # list is dumped to JSON via ``dump_replay_fixture``.
+    # exporter. End-of-run, this list is unconditionally serialized via
+    # ``serialize_replay_fixture`` and emitted to stderr (between
+    # PHASE_A_REPLAY_FIXTURE_JSON_BEGIN/END markers) plus MLflow when an
+    # active run exists.
     _replay_fixture_iterations: list[dict] = []
     _verdict_history: dict[str, list] = {}
     _last_full_mlflow_run_id: str = baseline_iter.get("mlflow_run_id", "") if baseline_iter else ""
@@ -15563,25 +15565,54 @@ def _run_lever_loop(
     _summary.append(_bar("="))
     print("\n".join(_summary))
 
-    # Phase A — End-of-run replay-fixture export. Gated by the
-    # ``GSO_DUMP_REPLAY_FIXTURE`` env var, which carries the destination
-    # path. Defensive: a fixture-export failure must never break a real
-    # optimization run.
+    # Phase A — Lossless contract: always emit replay fixture at end-of-run.
+    # Two channels:
+    #   1. stderr markers (always): user extracts with grep/sed.
+    #   2. MLflow artifact (when an active run exists): downloadable from UI.
+    # No env-var gating — Databricks Jobs makes that awkward.
     try:
-        _replay_dump_path = os.environ.get("GSO_DUMP_REPLAY_FIXTURE", "").strip()
-        if _replay_dump_path:
-            from genie_space_optimizer.optimization.journey_fixture_exporter import (
-                dump_replay_fixture,
-            )
-            dump_replay_fixture(
-                path=_replay_dump_path,
-                fixture_id=f"{space_id}__{run_id}",
-                iterations_data=_replay_fixture_iterations,
-            )
-            logger.info(
-                "Phase A: replay fixture written to %s (%d iterations)",
-                _replay_dump_path,
-                len(_replay_fixture_iterations),
+        import sys
+        from genie_space_optimizer.optimization.journey_fixture_exporter import (
+            serialize_replay_fixture,
+        )
+
+        _replay_fixture_id = f"airline_real_v1_run_{run_id}"
+        _replay_fixture_json = serialize_replay_fixture(
+            fixture_id=_replay_fixture_id,
+            iterations_data=list(_replay_fixture_iterations or []),
+        )
+
+        # Channel 1 — stderr markers.
+        # Use unique multi-segment markers that cannot collide with normal
+        # logger output. The user's extractor script greps on these.
+        sys.stderr.write("\n===PHASE_A_REPLAY_FIXTURE_JSON_BEGIN===\n")
+        sys.stderr.write(_replay_fixture_json)
+        sys.stderr.write("\n===PHASE_A_REPLAY_FIXTURE_JSON_END===\n")
+        sys.stderr.flush()
+        logger.info(
+            "Phase A: emitted replay fixture (%d iterations, %d bytes) to "
+            "stderr between markers PHASE_A_REPLAY_FIXTURE_JSON_BEGIN/END",
+            len(_replay_fixture_iterations or []),
+            len(_replay_fixture_json),
+        )
+
+        # Channel 2 — MLflow artifact (best-effort; skips if no active run).
+        try:
+            import mlflow  # type: ignore[import-not-found]
+            import json as _json
+            if mlflow.active_run() is not None:
+                mlflow.log_dict(
+                    _json.loads(_replay_fixture_json),
+                    artifact_file="phase_a/airline_real_v1.json",
+                )
+                logger.info(
+                    "Phase A: also logged replay fixture to MLflow "
+                    "artifact at phase_a/airline_real_v1.json",
+                )
+        except Exception:
+            logger.debug(
+                "Phase A: MLflow artifact log skipped (non-fatal)",
+                exc_info=True,
             )
     except Exception:
         logger.warning(
