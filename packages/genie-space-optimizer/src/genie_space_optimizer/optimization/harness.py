@@ -10529,9 +10529,6 @@ def _run_lever_loop(
             from genie_space_optimizer.optimization.control_plane import (
                 hard_failure_qids as _hard_failure_qids_for_plateau,
             )
-            from genie_space_optimizer.optimization.state import (
-                load_latest_state_iteration,
-            )
 
             # Task 20 — read the latest committed state iteration (fully
             # accepts both 'full' and 'enrichment' eval scopes) so the
