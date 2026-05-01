@@ -11858,6 +11858,14 @@ def _run_lever_loop(
                 )
 
         # ── 3B.5: Generate proposals + apply patches ─────────────────
+        # Task 4 — initialize per-AG patch-survival snapshots. They get
+        # filled in at each handoff gate (proposed → normalized →
+        # applyable → capped → applied) and printed after the applier so
+        # operators can see exactly where patches were dropped.
+        _survival_proposed: list[dict] = []
+        _survival_normalized: list[dict] = []
+        _survival_applyable: list[dict] = []
+        _survival_capped: list[dict] = []
         all_proposals: list[dict] = []
         for lever_key in lever_keys:
             lever_int = int(lever_key)
@@ -11876,6 +11884,9 @@ def _run_lever_loop(
                 benchmarks=benchmarks,
             )
             all_proposals.extend(lever_proposals)
+
+        # Task 4 — patch-survival snapshot: proposed gate.
+        _survival_proposed = list(all_proposals)
 
         # ── T2.2: Reflection-as-validator ────────────────────────────
         # Build a per-patch forbidden set from prior rolled-back iterations
@@ -12372,6 +12383,9 @@ def _run_lever_loop(
 
         patches = proposals_to_patches(all_proposals)
 
+        # Task 4 — patch-survival snapshot: normalized gate.
+        _survival_normalized = list(patches)
+
         # Phase 4.3: expand ``rewrite_instruction`` proposals into
         # ``update_instruction_section`` children BEFORE the cap so a
         # single rewrite_instruction proposal does not balloon past the
@@ -12862,6 +12876,9 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
+        # Task 4 — patch-survival snapshot: applyable gate.
+        _survival_applyable = list(patches)
+
         # Tier 2.6: cap AG patch-set size. A single failing patch in a
         # large batch rolls back everything — including the patches that
         # would have helped. If the cap is exceeded, keep the highest-
@@ -12969,6 +12986,11 @@ def _run_lever_loop(
             except Exception:
                 logger.debug("Failed to persist patch-cap decision rows", exc_info=True)
 
+        # Task 4 — patch-survival snapshot: capped gate. Capture in both
+        # branches so the ledger reflects the patch list that actually
+        # reaches the applier, regardless of whether the cap fired.
+        _survival_capped = list(patches)
+
         _selected_patch_signature = tuple(sorted(
             str(p.get("expanded_patch_id") or p.get("id") or p.get("proposal_id") or "")
             for p in patches
@@ -13055,6 +13077,35 @@ def _run_lever_loop(
         apply_log = apply_patch_set(
             w, space_id, patches, metadata_snapshot, apply_mode=apply_mode,
         )
+
+        # Task 4 (lever-loop-v2) — per-AG patch-survival ledger. Print a
+        # cluster-coverage table across the proposed → normalized →
+        # applyable → capped → applied gates so operators can see
+        # exactly where each cluster's patches were dropped.
+        try:
+            from genie_space_optimizer.optimization.patch_survival import (
+                PatchSurvivalSnapshot,
+                build_patch_survival_table,
+            )
+
+            _survival_applied = [
+                entry.get("patch", {})
+                for entry in (apply_log.get("applied") or [])
+                if isinstance(entry, dict) and entry.get("patch")
+            ]
+            _survival_snapshot = PatchSurvivalSnapshot(
+                ag_id=str(ag_id),
+                proposed=list(locals().get("_survival_proposed", []) or []),
+                normalized=list(locals().get("_survival_normalized", []) or []),
+                applyable=list(locals().get("_survival_applyable", []) or []),
+                capped=list(locals().get("_survival_capped", []) or []),
+                applied=_survival_applied,
+            )
+            _survival_table = build_patch_survival_table(_survival_snapshot)
+            if _survival_table:
+                print(_survival_table)
+        except Exception:
+            logger.debug("Patch-survival ledger failed (non-fatal)", exc_info=True)
 
         # Task 4 — surface cap-selected vs applier-applied disagreement at
         # WARN level so silent applier drops (an AG2 cap selecting
