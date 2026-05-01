@@ -7161,6 +7161,21 @@ def _iq_scan_strategist_enabled() -> bool:
     }
 
 
+def _format_strategist_budget_preamble(*, budget: int, n_clusters: int) -> str:
+    """Render the ``PATCH BUDGET`` preamble prepended to the strategist prompt.
+
+    Surfaces the per-AG patch cap and active-cluster count so the
+    strategist sizes ActionGroups within the cap rather than emitting
+    bundles the cap will collapse.
+    """
+    return (
+        f"PATCH BUDGET: each ActionGroup is capped at {budget} applied patches. "
+        f"Active hard clusters: {n_clusters}. "
+        f"Bundle clusters only when their root causes are truly defect-compatible — "
+        f"otherwise emit one ActionGroup per cluster so the cap does not collapse them."
+    )
+
+
 def _format_iq_scan_findings(scan_summary: dict | None) -> str:
     """Render the scan summary for the strategist prompt.
 
@@ -9247,11 +9262,8 @@ def _call_llm_for_adaptive_strategy(
         MAX_AG_PATCHES as _CFG_MAX_AG_PATCHES,
     )
     _budget = int(max_ag_patches or _CFG_MAX_AG_PATCHES)
-    budget_text = (
-        f"PATCH BUDGET: each ActionGroup is capped at {_budget} applied patches. "
-        f"Active hard clusters: {len(clusters)}. "
-        f"Bundle clusters only when their root causes are truly defect-compatible — "
-        f"otherwise emit one ActionGroup per cluster so the cap does not collapse them."
+    budget_text = _format_strategist_budget_preamble(
+        budget=_budget, n_clusters=len(clusters),
     )
 
     _blame_items: list[str] = []

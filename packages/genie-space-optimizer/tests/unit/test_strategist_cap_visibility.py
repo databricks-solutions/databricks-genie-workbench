@@ -5,6 +5,9 @@ from __future__ import annotations
 import inspect
 
 from genie_space_optimizer.optimization import optimizer
+from genie_space_optimizer.optimization.optimizer import (
+    _format_strategist_budget_preamble,
+)
 
 
 def test_call_llm_for_adaptive_strategy_passes_max_ag_patches() -> None:
@@ -15,8 +18,20 @@ def test_call_llm_for_adaptive_strategy_passes_max_ag_patches() -> None:
     )
 
 
-def test_strategist_prompt_mentions_cap_budget() -> None:
+def test_budget_preamble_renders_budget_and_cluster_count() -> None:
+    out = _format_strategist_budget_preamble(budget=3, n_clusters=5)
+    assert "PATCH BUDGET" in out
+    assert "3 applied patches" in out
+    assert "Active hard clusters: 5" in out
+
+
+def test_strategist_function_prepends_budget_preamble() -> None:
+    """The function source must call the helper, not duplicate the string."""
     src = inspect.getsource(optimizer._call_llm_for_adaptive_strategy)
-    assert "MAX_AG_PATCHES" in src or "patch budget" in src.lower(), (
-        "strategist prompt must surface the cap budget"
+    assert "_format_strategist_budget_preamble" in src, (
+        "_call_llm_for_adaptive_strategy must invoke the budget-preamble "
+        "formatter so the cap budget reaches the prompt"
+    )
+    assert "budget_text" in src and "+ prompt" in src, (
+        "the budget preamble must be prepended to the formatted prompt"
     )
