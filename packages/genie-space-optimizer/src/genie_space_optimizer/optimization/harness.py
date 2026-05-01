@@ -333,6 +333,27 @@ def _emit_ag_outcome_journey(
     emit(outcome, question_ids=qids, ag_id=ag_id)
 
 
+def _emit_ag_assignment_journey(
+    *,
+    emit,
+    ag_id: str,
+    affected_qids,
+) -> None:
+    """Stamp the ag_assigned event for every qid the AG targets.
+
+    Called immediately after the strategist response is consumed and the
+    AG's affected_questions list is finalized, before any 'proposed' event
+    fires for that AG. The contract requires AG_ASSIGNED between CLUSTERED
+    and PROPOSED.
+    """
+    if not ag_id:
+        return
+    qids = [str(q) for q in (affected_qids or []) if q]
+    if not qids:
+        return
+    emit("ag_assigned", question_ids=qids, ag_id=str(ag_id))
+
+
 def _validate_journeys_at_iteration_end(
     *,
     events,
