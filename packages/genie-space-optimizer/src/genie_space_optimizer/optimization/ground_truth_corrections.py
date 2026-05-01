@@ -120,6 +120,48 @@ def should_cluster_as_soft_signal(row: dict[str, Any]) -> bool:
     return bool(has_individual_judge_failure(row))
 
 
+def _extract_question_id(row: dict[str, Any]) -> str:
+    """Try every known eval-row shape for the question id.
+
+    Eval rows reach this module via several producer paths and arrive
+    in inconsistent shapes:
+
+    * Flattened MLflow eval (dot form):    ``inputs.question_id``
+    * Flattened MLflow eval (slash form):  ``inputs/question_id``
+    * Pre-flatten nested dict:             ``inputs: {question_id: ...}``
+    * Synthetic harness rows:              ``metadata: {question_id: ...}``
+    * Bare top-level (legacy):             ``question_id`` / ``id``
+
+    Returns an empty string when none of the shapes carry a value;
+    callers should treat empty as unidentifiable.
+    """
+    # Flat keys (dot or slash form)
+    for key in (
+        "inputs.question_id",
+        "inputs/question_id",
+        "question_id",
+        "id",
+    ):
+        val = row.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    # Nested inputs dict
+    inputs = row.get("inputs")
+    if isinstance(inputs, dict):
+        for key in ("question_id", "id"):
+            val = inputs.get(key)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+    # Nested metadata dict
+    meta = row.get("metadata")
+    if isinstance(meta, dict):
+        for key in ("question_id", "id"):
+            val = meta.get(key)
+            if val is not None and str(val).strip():
+                return str(val).strip()
+    return ""
+
+
 def build_gt_correction_candidate(
     row: dict[str, Any],
     *,
@@ -130,11 +172,21 @@ def build_gt_correction_candidate(
 
     Status starts at ``"pending_review"``; reviewers transition it via
     the four-state machine documented at the module level.
+
+    Raises ``ValueError`` when the row carries no extractable
+    ``question_id`` — the previous silent-empty behavior produced
+    un-reviewable rows that broke the corpus-review queue downstream.
     """
+    qid = _extract_question_id(row)
+    if not qid:
+        raise ValueError(
+            "GT correction candidate missing question_id; cannot persist a "
+            "reviewable row. Inspect the eval row payload for missing id keys."
+        )
     return {
         "run_id": run_id,
         "iteration": int(iteration),
-        "question_id": _value(row, "inputs.question_id", "question_id", "id"),
+        "question_id": qid,
         "question": _value(row, "inputs.question", "question"),
         "expected_sql": _value(row, "inputs.expected_sql", "expected_sql"),
         "genie_sql": _value(

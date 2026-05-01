@@ -7957,11 +7957,22 @@ def _analyze_and_distribute(
         # (rejected_keep_gt) or feeds Task 9's proactive mining
         # (accepted_corpus_fix).
         if is_gt_correction_candidate(row):
-            gt_correction_candidates.append(
-                build_gt_correction_candidate(
-                    row, run_id=run_id, iteration=iteration_counter
+            # Task 10: build_gt_correction_candidate now raises
+            # ``ValueError`` when the row carries no extractable
+            # question_id (the previous silent-empty behavior produced
+            # un-reviewable rows). Skip-and-warn rather than abort the
+            # whole analysis pass — a single malformed row should not
+            # tear down the corpus-review queue for the rest.
+            try:
+                gt_correction_candidates.append(
+                    build_gt_correction_candidate(
+                        row, run_id=run_id, iteration=iteration_counter
+                    )
                 )
-            )
+            except ValueError as exc:
+                logger.warning(
+                    "Skipping unidentifiable GT correction candidate: %s", exc,
+                )
             continue
 
         if row_is_hard_failure(row):
