@@ -10615,6 +10615,11 @@ def _run_lever_loop(
         resume_state.get("human_required_signatures", set()) or set()
     )
     prev_failure_qids: set[str] = set()
+    # Phase A — track the prior iteration's passing qid set so the
+    # post_eval emit can stamp was/is/transition. Initialised to the
+    # baseline's passing set so iteration 1's ``was`` reflects pre-loop
+    # state.
+    _prev_passing_qids: set[str] = set()
     _verdict_history: dict[str, list] = {}
     _last_full_mlflow_run_id: str = baseline_iter.get("mlflow_run_id", "") if baseline_iter else ""
 
@@ -15272,6 +15277,38 @@ def _run_lever_loop(
             logger.debug(
                 "Iterative join mining failed at iter %d (non-fatal)",
                 iteration_counter, exc_info=True,
+            )
+
+        # Phase A — Lossless contract: stamp post_eval for every qid
+        # that entered eval, with was/is/transition derived from the
+        # pre-iteration and post-iteration passing sets. The contract
+        # requires every evaluated qid to terminate in POST_EVAL.
+        try:
+            _post_eval_full_result = locals().get("full_result") or {}
+            _post_eval_eval_qids = list(
+                _post_eval_full_result.get("question_ids") or []
+            )
+            _post_eval_failure_set = set(
+                _post_eval_full_result.get("failure_question_ids") or []
+            )
+            _post_eval_is_passing = [
+                str(q)
+                for q in _post_eval_eval_qids
+                if str(q) and str(q) not in _post_eval_failure_set
+            ]
+            _emit_post_eval_journey(
+                emit=_journey_emit,
+                eval_qids=_post_eval_eval_qids,
+                was_passing_qids=list(_prev_passing_qids),
+                is_passing_qids=_post_eval_is_passing,
+            )
+            # Capture the post-iteration passing set as next iteration's
+            # was-passing baseline.
+            _prev_passing_qids = set(_post_eval_is_passing)
+        except Exception:
+            logger.debug(
+                "Phase A: post_eval journey emit failed (non-fatal)",
+                exc_info=True,
             )
 
         # Lossless contract Task 7 — warn-only journey-contract validator.
