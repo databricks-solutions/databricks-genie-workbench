@@ -333,6 +333,49 @@ def _emit_ag_outcome_journey(
     emit(outcome, question_ids=qids, ag_id=ag_id)
 
 
+def _validate_journeys_at_iteration_end(
+    *,
+    events,
+    eval_qids,
+    iteration: int,
+    raise_on_violation: bool,
+) -> None:
+    """Validate journey completeness; warn or raise per the toggle.
+
+    Phase 2 wires this with ``raise_on_violation=False`` so a real run logs
+    gaps without aborting. Phase 4 flips the toggle to True.
+    """
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        JourneyContractViolation,
+        validate_question_journeys,
+    )
+
+    report = validate_question_journeys(
+        events=events,
+        eval_qids=eval_qids,
+    )
+    if report.is_valid:
+        return
+
+    summary = (
+        f"Iteration {iteration}: {len(report.violations)} journey contract "
+        f"violations across {len(set(v.question_id for v in report.violations))} "
+        f"qid(s); missing_qids={list(report.missing_qids)}"
+    )
+    if raise_on_violation:
+        raise JourneyContractViolation(  # type: ignore[misc]
+            question_id="*",
+            kind="iteration_end",
+            detail=summary,
+        )
+    logger.warning(summary)
+    for v in report.violations[:20]:  # cap to keep logs readable
+        logger.warning(
+            "  qid=%s kind=%s detail=%s",
+            v.question_id, v.kind, v.detail,
+        )
+
+
 def _emit_post_eval_journey(
     *,
     emit,
@@ -14901,6 +14944,25 @@ def _run_lever_loop(
             logger.debug(
                 "Iterative join mining failed at iter %d (non-fatal)",
                 iteration_counter, exc_info=True,
+            )
+
+        # Lossless contract Task 7 — warn-only journey-contract validator.
+        # The hard gate flips this to raise in Phase 4. Defensive wrap so a
+        # validator bug never breaks the loop while we burn down warnings.
+        try:
+            _eval_qids_for_validator = list(
+                (locals().get("full_result") or {}).get("question_ids") or []
+            )
+            _validate_journeys_at_iteration_end(
+                events=_journey_events,
+                eval_qids=_eval_qids_for_validator,
+                iteration=iteration_counter,
+                raise_on_violation=False,
+            )
+        except Exception:
+            logger.debug(
+                "iteration-end journey validator failed (non-fatal)",
+                exc_info=True,
             )
 
         # Task 13 — render the per-question journey ledger at normal
