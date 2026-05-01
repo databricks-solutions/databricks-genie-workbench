@@ -181,7 +181,7 @@ class TestMetricViewClassification:
         assert args["metric_views"][0]["column_configs"] == [
             {"column_name": "AI Feature Adopter", "enable_format_assistance": True}
         ]
-        assert injected == ["metric_views(1)"]
+        assert injected == ["metric_views(1|describe_table)"]
 
     def test_reconcile_prefers_metric_view_entry_over_duplicate_table(self):
         config = {

@@ -318,7 +318,7 @@ def _gen_tables(shared: str, tables_context: list[dict]) -> dict:
     )
 
     try:
-        result = _call_llm_section(prompt, max_tokens=2048, section_name="tables")
+        result = _call_llm_section(prompt, max_tokens=4096, section_name="tables")
         return result if "tables" in result else {"tables": tables}
     except Exception:
         logger.warning("Table description enrichment failed, using raw metadata")

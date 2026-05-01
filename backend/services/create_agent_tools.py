@@ -2103,8 +2103,8 @@ def _assess_readiness(table_identifiers: list[str], business_questions: list[str
         cols_without = total_columns - columns_with_comments
         if cols_without > 0:
             recommendations.append(
-                f"Add descriptions to {cols_without} column(s) missing documentation "
-                f"({100 - col_doc_pct:.0f}% of columns)."
+                f"{cols_without} column(s) ({100 - col_doc_pct:.0f}%) have no descriptions — "
+                "these will be generated in the Genie Space configuration."
             )
     if semantic_band == "Low" and extracted.get("entities"):
         missing_dims = sorted(extracted["entities"] - set(corpus.split()))
@@ -2333,6 +2333,8 @@ def _generate_config(
     # ── data_sources.tables ──
     ds_tables = []
     for tbl in tables:
+        if isinstance(tbl, str):
+            tbl = {"identifier": tbl}
         entry: dict[str, Any] = {"identifier": tbl["identifier"]}
         if tbl.get("description"):
             entry["description"] = [tbl["description"]]

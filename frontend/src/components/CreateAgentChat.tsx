@@ -56,6 +56,7 @@ const TOOL_LABELS: Record<string, string> = {
   discover_tables: "Browsing tables",
   describe_table: "Inspecting table",
   assess_data_quality: "Assessing data quality",
+  assess_readiness: "Assessing data readiness",
   profile_table_usage: "Profiling table usage & lineage",
   profile_columns: "Profiling columns",
   test_sql: "Testing SQL",
@@ -502,6 +503,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
           case "discover_tables": return schema ? `Finding tables in ${schema}...` : "Discovering tables..."
           case "describe_table": return tableName ? `Inspecting ${tableName}...` : "Inspecting table..."
           case "assess_data_quality": return "Assessing data quality..."
+          case "assess_readiness": return "Assessing data readiness..."
           case "profile_table_usage": return "Checking table usage & lineage..."
           case "profile_columns": return tableName ? `Profiling ${tableName}...` : "Profiling data..."
           case "test_sql": return "Testing SQL..."
