@@ -104,6 +104,27 @@ def _normalise_one(
         out["target"] = table
         return out, "qualified_column_split"
 
+    # Metric-view-aware fallback: when the column is not present in
+    # uc_columns (e.g. it lives behind a metric view definition), check
+    # the proposal's own ``metric_view_columns`` enrichment payload.
+    if not table:
+        mv_columns = proposal.get("metric_view_columns") or []
+        for mv_entry in mv_columns:
+            if not isinstance(mv_entry, dict):
+                continue
+            mv_col = str(mv_entry.get("column_name") or "").strip()
+            mv_target = str(
+                mv_entry.get("metric_view_full_name")
+                or mv_entry.get("metric_view")
+                or ""
+            ).strip()
+            if mv_col == column and mv_target:
+                out = copy.deepcopy(proposal)
+                out["table"] = mv_target
+                out["column"] = column
+                out["target"] = mv_target
+                return out, "resolved_via_metric_view_fallback"
+
     if not table:
         matches = _uc_matches_for_column(column, uc_columns)
         if len(matches) == 1:
