@@ -133,17 +133,40 @@ from genie_space_optimizer._workspace_client import make_workspace_client
 w = make_workspace_client()
 spark = SparkSession.builder.getOrCreate()
 
-# Read task values from upstream
-run_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="run_id")
-space_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="space_id")
-domain = dbutils.jobs.taskValues.get(taskKey="preflight", key="domain")
-catalog = dbutils.jobs.taskValues.get(taskKey="preflight", key="catalog")
-schema = dbutils.jobs.taskValues.get(taskKey="preflight", key="schema")
-exp_name = dbutils.jobs.taskValues.get(taskKey="preflight", key="experiment_name")
-deploy_target = dbutils.jobs.taskValues.get(taskKey="preflight", key="deploy_target") or None
+dbutils.widgets.text("run_id", "")
+dbutils.widgets.text("catalog", "")
+dbutils.widgets.text("schema", "")
+_widget_run_id = dbutils.widgets.get("run_id").strip()
+_widget_catalog = dbutils.widgets.get("catalog").strip()
+_widget_schema = dbutils.widgets.get("schema").strip()
+
+from genie_space_optimizer.jobs._handoff import (
+    get_lever_loop_outputs,
+    get_run_context,
+)
+
+ctx = get_run_context(
+    spark,
+    run_id_widget=_widget_run_id,
+    catalog_widget=_widget_catalog,
+    schema_widget=_widget_schema,
+    dbutils=dbutils,
+)
+run_id = ctx["run_id"].value
+space_id = ctx["space_id"].value
+domain = ctx["domain"].value
+catalog = ctx["catalog"].value
+schema = ctx["schema"].value
+exp_name = ctx["experiment_name"].value
+# deploy_target is preflight-published but not yet in genie_opt_runs; fall
+# back to the legacy taskValue read until a future plan widens the schema.
+deploy_target = (
+    dbutils.jobs.taskValues.get(taskKey="preflight", key="deploy_target", default="")
+    or None
+)
 
 import os as _os
-_warehouse_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="warehouse_id", default="")
+_warehouse_id = ctx["warehouse_id"].value or ""
 if _warehouse_id:
     _os.environ["GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID"] = _warehouse_id
 
@@ -151,11 +174,12 @@ import mlflow
 mlflow.set_experiment(exp_name)
 mlflow.openai.autolog()
 
-# lever_loop always publishes model_id (enrichment-aware, even when skipped)
-prev_model_id = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="model_id")
-lever_skipped_raw = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="skipped")
-lever_skipped = str(lever_skipped_raw).lower() in ("true", "1")
-iteration_counter = 0 if lever_skipped else int(dbutils.jobs.taskValues.get(taskKey="lever_loop", key="iteration_counter"))
+ll = get_lever_loop_outputs(
+    spark, run_id=run_id, catalog=catalog, schema=schema, dbutils=dbutils,
+)
+prev_model_id = ll["model_id"].value
+lever_skipped = ll["skipped"].value
+iteration_counter = 0 if lever_skipped else (ll["iteration_counter"].value or 0)
 
 _banner("Resolved Upstream Task Values")
 _log(
@@ -170,6 +194,12 @@ _log(
     lever_skipped=bool(lever_skipped),
     prev_model_id=prev_model_id,
     iteration_counter=iteration_counter,
+)
+_log(
+    "Handoff sources",
+    run_id_source=ctx["run_id"].source.value,
+    lever_skipped_source=ll["skipped"].source.value,
+    model_id_source=ll["model_id"].source.value,
 )
 
 # COMMAND ----------
