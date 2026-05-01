@@ -14517,6 +14517,20 @@ def _run_lever_loop(
 
         if not gate_result.get("passed"):
             reason = gate_result.get("rollback_reason", "unknown")
+            # Phase A — Lossless contract: stamp rolled_back for every
+            # qid the AG targeted. Required transition from APPLIED.
+            try:
+                _emit_ag_outcome_journey(
+                    emit=_journey_emit,
+                    ag_id=str(ag_id),
+                    outcome="rolled_back",
+                    affected_qids=list(ag.get("affected_questions") or []),
+                )
+            except Exception:
+                logger.debug(
+                    "Phase A: AG-outcome journey emit (rolled_back) failed (non-fatal)",
+                    exc_info=True,
+                )
             _render_current_journey()
             rollback(apply_log, w, space_id, metadata_snapshot)
             # Task 7 — verify the Genie Space actually returned to its
@@ -14903,6 +14917,29 @@ def _run_lever_loop(
         ags_accepted.append(ag_id)
         for lk in lever_keys:
             levers_accepted.append(int(lk))
+
+        # Phase A — Lossless contract: stamp accepted (or accepted_with_
+        # regression_debt) for every qid the AG targeted. Required
+        # transition from APPLIED.
+        try:
+            _outcome_for_journey = (
+                "accepted_with_regression_debt"
+                if (
+                    gate_result.get("acceptance_decision", {}) or {}
+                ).get("reason_code") == "accepted_with_regression_debt"
+                else "accepted"
+            )
+            _emit_ag_outcome_journey(
+                emit=_journey_emit,
+                ag_id=str(ag_id),
+                outcome=_outcome_for_journey,
+                affected_qids=list(ag.get("affected_questions") or []),
+            )
+        except Exception:
+            logger.debug(
+                "Phase A: AG-outcome journey emit (accepted) failed (non-fatal)",
+                exc_info=True,
+            )
 
         full_scores = gate_result["full_scores"]
         full_accuracy = gate_result["full_accuracy"]
