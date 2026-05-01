@@ -337,6 +337,16 @@ CONSECUTIVE_ROLLBACK_LIMIT = 3
 the optimizer is stuck and further iterations are unlikely to help.
 Root causes are only marked as tried when the limit is about to be hit,
 giving the strategist a chance to retry with a different lever."""
+MAX_ACTION_GROUPS_PER_STRATEGY = int(os.getenv("GSO_MAX_ACTION_GROUPS_PER_STRATEGY", "5"))
+"""Maximum number of action groups the strategist may emit per iteration.
+
+Task 15 of the lever-loop convergence plan v2 replaced the hard-coded
+``action_groups[:1]`` slice (which forced the strategist to ship a
+single AG per iteration) with this config knob. Multi-AG output lets a
+single iteration attack independent failure clusters in parallel,
+while the per-AG patch survival ledger (Task 4) and the per-question
+journey ledger (Task 13) keep blast-radius accounting clean."""
+
 MAX_AG_PATCHES = int(os.getenv("GSO_MAX_AG_PATCHES", "3"))
 """Hard cap on the number of patches applied in a single action group.
 

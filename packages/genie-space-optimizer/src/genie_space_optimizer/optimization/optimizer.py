@@ -55,6 +55,7 @@ from genie_space_optimizer.common.config import (
     LLM_MAX_RETRIES,
     LLM_TEMPERATURE,
     LOW_RISK_PATCHES,
+    MAX_ACTION_GROUPS_PER_STRATEGY,
     MAX_HOLISTIC_INSTRUCTION_CHARS,
     MAX_PATCH_OBJECTS,
     MAX_VALUE_DICTIONARY_COLUMNS,
@@ -9881,7 +9882,7 @@ def _call_llm_for_adaptive_strategy(
     print("\n".join(_out_lines))
 
     return {
-        "action_groups": action_groups[:1],
+        "action_groups": action_groups[:MAX_ACTION_GROUPS_PER_STRATEGY],
         "global_instruction_rewrite": global_rewrite,
         "rationale": rationale,
     }
