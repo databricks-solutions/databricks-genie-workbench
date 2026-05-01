@@ -1,0 +1,69 @@
+{
+  "fixture_id": "airline_5cluster_v1",
+  "iterations": [
+    {
+      "iteration": 1,
+      "eval_rows": [
+        {"question_id": "fx_001", "result_correctness": "yes",
+         "arbiter": "both_correct"},
+        {"question_id": "fx_002", "result_correctness": "no",
+         "arbiter": "ground_truth_correct"},
+        {"question_id": "fx_003", "result_correctness": "no",
+         "arbiter": "ground_truth_correct"},
+        {"question_id": "fx_004", "result_correctness": "no",
+         "arbiter": "neither_correct"},
+        {"question_id": "fx_005", "result_correctness": "yes",
+         "arbiter": "genie_correct"},
+        {"question_id": "fx_006", "result_correctness": "yes",
+         "arbiter": "both_correct"},
+        {"question_id": "fx_007", "result_correctness": "no",
+         "arbiter": "ground_truth_correct"},
+        {"question_id": "fx_008", "result_correctness": "no",
+         "arbiter": "ground_truth_correct"},
+        {"question_id": "fx_009", "result_correctness": "yes",
+         "arbiter": "both_correct"},
+        {"question_id": "fx_010", "result_correctness": "no",
+         "arbiter": "ground_truth_correct"},
+        {"question_id": "fx_011", "result_correctness": "yes",
+         "arbiter": "both_correct"},
+        {"question_id": "fx_012", "result_correctness": "yes",
+         "arbiter": "both_correct"}
+      ],
+      "clusters": [
+        {"cluster_id": "H001", "root_cause": "missing_filter",
+         "question_ids": ["fx_002", "fx_003"]},
+        {"cluster_id": "H002", "root_cause": "wrong_aggregation",
+         "question_ids": ["fx_007"]},
+        {"cluster_id": "H003", "root_cause": "missing_join_spec",
+         "question_ids": ["fx_010"]}
+      ],
+      "soft_clusters": [
+        {"cluster_id": "S001", "root_cause": "format_difference",
+         "question_ids": ["fx_004", "fx_008"]}
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "id": "AG1",
+            "source_cluster_ids": ["H001"],
+            "affected_questions": ["fx_002", "fx_003"],
+            "lever_directives": {"6": ["add_sql_snippet_filter"]},
+            "patches": [
+              {"proposal_id": "P1",
+               "patch_type": "add_sql_snippet_filter",
+               "cluster_id": "H001",
+               "target_qids": ["fx_002", "fx_003"]}
+            ]
+          }
+        ]
+      },
+      "post_eval_passing_qids": [
+        "fx_001", "fx_002", "fx_003", "fx_005", "fx_006",
+        "fx_009", "fx_011", "fx_012"
+      ],
+      "ag_outcomes": {"AG1": "accepted"}
+    }
+  ],
+  "expected_canonical_journey": null,
+  "expected_violations": []
+}
