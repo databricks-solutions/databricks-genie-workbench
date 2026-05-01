@@ -222,11 +222,30 @@ def test_gso_job_settings_match_persistent_dag_shape():
 
     assert settings["name"] == "gso-optimization-job"
     assert settings["queue"]["enabled"] is True
+    assert settings["tags"]["app"] == "genie-workbench"
+    assert settings["tags"]["managed-by"] == "notebook-installer"
     assert settings["environments"][0]["spec"]["environment_version"] == "4"
     task_keys = [task["task_key"] for task in settings["tasks"]]
     assert task_keys == ["preflight", "baseline_eval", "enrichment", "lever_loop", "finalize", "deploy"]
     assert settings["tasks"][1]["depends_on"] == [{"task_key": "preflight"}]
     assert settings["tasks"][-1]["condition_task"]["right"] == "disabled"
+
+
+def test_gso_job_settings_tag_with_actual_app_name():
+    cfg = InstallConfig(
+        app_name="genie-workbench-dh2",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+    )
+    settings = build_job_settings(
+        cfg,
+        "/Workspace/Users/me/.genie-workbench-deploy/genie-workbench-dh2/gso/jobs",
+        "/Volumes/main/genie_space_optimizer/app_artifacts/genie_space_optimizer-0.0.0-py3-none-any.whl",
+    )
+
+    assert settings["tags"]["app"] == "genie-workbench-dh2"
+    assert settings["tags"]["managed-by"] == "notebook-installer"
 
 
 def test_uc_update_grants_uses_permissions_api():

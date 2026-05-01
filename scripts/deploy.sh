@@ -438,6 +438,7 @@ for j in (jobs if isinstance(jobs, list) else jobs.get('jobs', [])):
     jid = str(j.get('job_id', ''))
     if (tags.get('pattern') == 'persistent-dag'
         and tags.get('app') in ('genie-workbench', 'genie-space-optimizer')
+        and tags.get('managed-by') != 'notebook-installer'
         and jid != bundle_id):
         print(jid)
 " 2>/dev/null || true)

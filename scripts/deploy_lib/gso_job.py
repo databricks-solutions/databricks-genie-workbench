@@ -169,7 +169,7 @@ def build_job_settings(cfg: InstallConfig, notebooks_path: str, wheel_path: str)
         "max_concurrent_runs": 20,
         "queue": {"enabled": True},
         "tags": {
-            "app": "genie-workbench",
+            "app": cfg.app_name,
             "managed-by": "notebook-installer",
             "pattern": "persistent-dag",
         },
