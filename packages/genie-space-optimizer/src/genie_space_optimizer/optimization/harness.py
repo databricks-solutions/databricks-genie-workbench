@@ -12690,6 +12690,35 @@ def _run_lever_loop(
                 )
             all_proposals = _kept
 
+            # Phase A — Lossless contract: stamp dropped_at_reflection for
+            # patches the reflection retry signature filtered out. Per-qid
+            # attribution falls back to the AG's affected_questions because
+            # the reflection drop tuples carry only (ptype, target, reason).
+            try:
+                if _dropped:
+                    _ag_affected = [
+                        str(q) for q in (ag.get("affected_questions") or []) if q
+                    ]
+                    _emit_gate_drop_journey(
+                        emit=_journey_emit,
+                        gate="reflection",
+                        dropped=[
+                            {
+                                "proposal_id": "",
+                                "patch_type": str(_ptype or ""),
+                                "cluster_id": "",
+                                "target_qids": list(_ag_affected),
+                                "_drop_reason": str(_reason or ""),
+                            }
+                            for (_ptype, _target, _reason) in _dropped
+                        ],
+                    )
+            except Exception:
+                logger.debug(
+                    "Phase A: reflection-gate journey emit failed (non-fatal)",
+                    exc_info=True,
+                )
+
         # ── T2.4: Counterfactual asset-impact scan ───────────────────
         # Before applying, identify passing benchmarks that reference
         # each patch's target asset. If a patch touches an asset that
@@ -12949,6 +12978,9 @@ def _run_lever_loop(
                 if isinstance(metadata_snapshot, dict)
                 else []
             )
+            # Phase A — capture pre-normalize proposals so the journey
+            # emit can map dropped proposal_ids back to their target qids.
+            _pre_normalize_proposals = list(all_proposals)
             all_proposals, _shape_decisions = normalize_column_proposals(
                 all_proposals,
                 uc_columns=_uc_columns_for_shape,
@@ -13004,6 +13036,59 @@ def _run_lever_loop(
         except Exception:
             logger.debug(
                 "RCA column proposal normalization failed (non-fatal)",
+                exc_info=True,
+            )
+
+        # Phase A — Lossless contract: stamp dropped_at_normalize for
+        # every proposal that was filtered by normalize_column_proposals.
+        try:
+            _shape_dropped_ids = {
+                str(d.get("proposal_id") or "")
+                for d in (locals().get("_shape_decisions") or [])
+                if d.get("decision") == "dropped" and d.get("proposal_id")
+            }
+            if _shape_dropped_ids:
+                _proposals_by_id = {
+                    str(p.get("proposal_id") or p.get("id") or ""): p
+                    for p in (locals().get("_pre_normalize_proposals") or [])
+                }
+                _dropped_normalize_proposals = [
+                    {
+                        "proposal_id": pid,
+                        "patch_type": str(
+                            (_proposals_by_id.get(pid) or {}).get("patch_type")
+                            or (_proposals_by_id.get(pid) or {}).get("type")
+                            or ""
+                        ),
+                        "cluster_id": str(
+                            (_proposals_by_id.get(pid) or {}).get("cluster_id") or ""
+                        ),
+                        "target_qids": list(
+                            (_proposals_by_id.get(pid) or {}).get("target_qids") or []
+                        ),
+                        "_grounding_target_qids": list(
+                            (_proposals_by_id.get(pid) or {}).get("_grounding_target_qids") or []
+                        ),
+                        "_drop_reason": next(
+                            (
+                                str(d.get("reason") or "")
+                                for d in (_shape_decisions or [])
+                                if str(d.get("proposal_id") or "") == pid
+                                and d.get("decision") == "dropped"
+                            ),
+                            "",
+                        ),
+                    }
+                    for pid in _shape_dropped_ids
+                ]
+                _emit_gate_drop_journey(
+                    emit=_journey_emit,
+                    gate="normalize",
+                    dropped=_dropped_normalize_proposals,
+                )
+        except Exception:
+            logger.debug(
+                "Phase A: normalize-gate journey emit failed (non-fatal)",
                 exc_info=True,
             )
 
@@ -13217,6 +13302,33 @@ def _run_lever_loop(
                     + _bar("-")
                 )
             patches = _grounded
+
+            # Phase A — Lossless contract: stamp dropped_at_grounding for
+            # every dropped patch's target qids so the validator sees a
+            # legal proposed → dropped_at_grounding transition.
+            try:
+                _emit_gate_drop_journey(
+                    emit=_journey_emit,
+                    gate="grounding",
+                    dropped=[
+                        {
+                            "proposal_id": str(p.get("proposal_id") or p.get("id") or ""),
+                            "patch_type": str(p.get("patch_type") or p.get("type") or ""),
+                            "cluster_id": str(p.get("cluster_id") or ""),
+                            "target_qids": list(p.get("target_qids") or []),
+                            "_grounding_target_qids": list(
+                                p.get("_grounding_target_qids") or []
+                            ),
+                            "_drop_reason": "ungrounded",
+                        }
+                        for p in (_dropped_grounding_patches or [])
+                    ],
+                )
+            except Exception:
+                logger.debug(
+                    "Phase A: grounding-gate journey emit failed (non-fatal)",
+                    exc_info=True,
+                )
 
             try:
                 from genie_space_optimizer.optimization.rca_decision_trace import (
@@ -13564,6 +13676,35 @@ def _run_lever_loop(
         # Task 4 — patch-survival snapshot: applyable gate.
         _survival_applyable = list(patches)
 
+        # Phase A — Lossless contract: stamp dropped_at_applyability for
+        # every patch the applyability gate dropped.
+        try:
+            _non_applyable = locals().get("_non_applyable_decisions") or []
+            if _non_applyable:
+                _emit_gate_drop_journey(
+                    emit=_journey_emit,
+                    gate="applyability",
+                    dropped=[
+                        {
+                            "proposal_id": str(
+                                getattr(d, "expanded_patch_id", None)
+                                or getattr(d, "proposal_id", "")
+                                or ""
+                            ),
+                            "patch_type": str(getattr(d, "patch_type", "") or ""),
+                            "cluster_id": "",
+                            "target_qids": list(getattr(d, "target_qids", []) or []),
+                            "_drop_reason": str(getattr(d, "reason", "") or ""),
+                        }
+                        for d in _non_applyable
+                    ],
+                )
+        except Exception:
+            logger.debug(
+                "Phase A: applyability-gate journey emit failed (non-fatal)",
+                exc_info=True,
+            )
+
         # Task 17 — L5/L6 asset alignment gate. SQL-shape (L5) and
         # sql-snippet (L6) patches must touch an asset that is in the
         # source cluster's lineage; otherwise they are dropped before the
@@ -13615,6 +13756,63 @@ def _run_lever_loop(
                 [d["reason"] for d in _alignment_drops],
             )
         patches = _aligned_patches
+
+        # Phase A — Lossless contract: stamp dropped_at_alignment for
+        # every L5/L6 patch dropped by the asset-alignment gate.
+        try:
+            if _alignment_drops:
+                # _alignment_drops carries proposal_id but not target_qids;
+                # look them up in the pre-alignment patch list (the union
+                # of pre-cap patches captured into _aligned_patches +
+                # the dropped set).
+                _pre_alignment_patches_by_id = {
+                    str(_p.get("proposal_id") or _p.get("id") or ""): _p
+                    for _p in (
+                        list(_aligned_patches)
+                        + [
+                            _p
+                            for _p in (
+                                locals().get("_pre_normalize_proposals") or []
+                            )
+                            if isinstance(_p, dict)
+                        ]
+                    )
+                }
+                _emit_gate_drop_journey(
+                    emit=_journey_emit,
+                    gate="alignment",
+                    dropped=[
+                        {
+                            "proposal_id": str(d.get("proposal_id") or ""),
+                            "patch_type": str(d.get("patch_type") or ""),
+                            "cluster_id": str(
+                                (
+                                    _pre_alignment_patches_by_id.get(
+                                        str(d.get("proposal_id") or "")
+                                    )
+                                    or {}
+                                ).get("cluster_id")
+                                or ""
+                            ),
+                            "target_qids": list(
+                                (
+                                    _pre_alignment_patches_by_id.get(
+                                        str(d.get("proposal_id") or "")
+                                    )
+                                    or {}
+                                ).get("target_qids")
+                                or []
+                            ),
+                            "_drop_reason": str(d.get("reason") or ""),
+                        }
+                        for d in _alignment_drops
+                    ],
+                )
+        except Exception:
+            logger.debug(
+                "Phase A: alignment-gate journey emit failed (non-fatal)",
+                exc_info=True,
+            )
 
         # Tier 2.6: cap AG patch-set size. A single failing patch in a
         # large batch rolls back everything — including the patches that
