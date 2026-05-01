@@ -391,6 +391,38 @@ def test_instruction_fallback_declines_sql_shape_counterfactuals() -> None:
     assert proposal is None
 
 
+def test_instruction_fallback_keeps_diagnostics_in_provenance_only() -> None:
+    afs = {
+        "cluster_id": "C_non_structural",
+        "failure_type": "missing_instruction",
+        "blame_set": ["PAYMENT_AMT", "PAYMENT_CURRENCY_CD"],
+        "suggested_fix_summary": (
+            "Root cause: missing_instruction; Blamed: PAYMENT_AMT; "
+            "1 question(s) affected"
+        ),
+        "publishable_instruction_candidates": [
+            {
+                "section_name": "DATA QUALITY NOTES",
+                "text": (
+                    "PAYMENT_AMT is USD-denominated; avoid adding "
+                    "PAYMENT_CURRENCY_CD filters unless the user explicitly "
+                    "asks to compare source currencies."
+                ),
+                "assets": ["PAYMENT_AMT", "PAYMENT_CURRENCY_CD"],
+            }
+        ],
+    }
+
+    proposal = instruction_only_fallback(afs)
+
+    assert proposal is not None
+    assert "Root cause" not in proposal["new_text"]
+    assert "Blamed" not in proposal["new_text"]
+    assert "question(s) affected" not in proposal["new_text"]
+    assert proposal["provenance"]["failure_type"] == "missing_instruction"
+    assert proposal["provenance"]["cluster_id"] == "C_non_structural"
+
+
 def test_instruction_fallback_publishes_only_explicit_instruction_candidate() -> None:
     afs = {
         "cluster_id": "C_fallback",

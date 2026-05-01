@@ -190,6 +190,8 @@ def compile_publishable_fallback(afs: dict[str, Any]) -> dict[str, Any] | None:
                 "cluster_id": afs.get("cluster_id", "?"),
                 "failure_type": failure_type,
                 "tier": "publishability_contract_v1",
+                "suggested_fix_summary": afs.get("suggested_fix_summary", ""),
+                "blame_set": list(afs.get("blame_set") or []),
             },
         }
 
