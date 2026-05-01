@@ -524,6 +524,66 @@ def _format_difference_example_sql_template(
     )
 
 
+def _build_rca_forced_instruction_body(
+    *,
+    root_cause: str,
+    grounding_terms: list[str],
+    question: str,
+    expected_sql: str,
+) -> str | None:
+    """Render the RCA-forced instruction body keyed on structured root_cause.
+
+    Returns None for non-actionable root causes; the caller skips emission.
+    Replaces the legacy substring-keyed dispatch (``"rank" in joined`` etc.)
+    that produced incorrect bodies for column-disambiguation clusters.
+    """
+    if root_cause == "plural_top_n_collapse":
+        return (
+            "QUERY PATTERNS:\n"
+            "- For plural highest/lowest ranking questions, group by the requested "
+            "entity and ORDER BY the metric. Do not collapse to a single row with "
+            "WHERE rank = 1 or LIMIT 1 unless the user explicitly asks for one."
+        )
+    if root_cause == "time_window_pivot":
+        return (
+            "QUERY PATTERNS:\n"
+            "- When comparing day vs MTD metrics, query each time_window separately "
+            "and join the results into columns at the requested grain. Do not return "
+            "one row per time_window unless asked."
+        )
+    if root_cause == "missing_temporal_filter":
+        return (
+            "QUERY PATTERNS:\n"
+            "- For 'last N days/weeks/months' questions, add a "
+            "DATE_SUB(CURRENT_DATE(), N)-bounded filter on the dated column. Do not "
+            "rely on prose like 'recent' or 'last_30_days' as a column value."
+        )
+    if root_cause == "column_disambiguation":
+        terms = ", ".join(t for t in grounding_terms if t)[:200]
+        return (
+            "COLUMN DISAMBIGUATION:\n"
+            f"- The terms [{terms}] map to specific columns. Use the canonical column "
+            "for each business term as documented in the column descriptions; do not "
+            "substitute a different column when the description disagrees."
+        )
+    if root_cause == "missing_filter":
+        return (
+            "QUERY PATTERNS:\n"
+            "- The expected answer requires a filter that is not in the user's prose. "
+            "Add the documented default filter (see column description) before "
+            "aggregating."
+        )
+    if root_cause == "format_difference":
+        if not expected_sql or not question:
+            return None
+        return (
+            "EXAMPLE SQL — canonical shape for this question family:\n"
+            f"-- Question: {question.strip()}\n"
+            f"{expected_sql.strip()}\n"
+        )
+    return None
+
+
 def _map_to_lever(
     root_cause: str,
     asi_failure_type: str | None = None,
@@ -13111,7 +13171,8 @@ def generate_proposals_from_strategy(
         When the strategist routed the AG to Lever 5 via the RCA execution
         contract but did not emit a native ``instruction_sections`` directive,
         produce a causal instruction patch from the RCA grounding terms so the
-        forced lever can still ground.
+        forced lever can still ground. Dispatch keyed on structured
+        ``root_cause`` rather than substring search across grounding terms.
         """
         if target_lever != 5 or not _rca_forces_lever:
             return None
@@ -13120,34 +13181,41 @@ def generate_proposals_from_strategy(
             for t in (_rca_execution.get("grounding_terms") or [])
             if str(t).strip()
         ]
-        joined = " ".join(terms).lower()
-        if "rank" in joined or "top_n" in joined or "plural" in joined:
-            body = (
-                "QUERY PATTERNS:\n"
-                "- For plural highest/lowest ranking questions, group by the requested "
-                "entity and ORDER BY the metric. Do not collapse to a single row with "
-                "WHERE rank = 1 or LIMIT 1 unless the user explicitly asks for one."
-            )
-        elif "time_window" in joined:
-            body = (
-                "QUERY PATTERNS:\n"
-                "- When comparing day vs MTD metrics, query each time_window separately "
-                "and join the results into columns at the requested grain. Do not return "
-                "one row per time_window unless asked."
-            )
-        else:
+        cluster_root_cause = str(
+            _rca_execution.get("root_cause")
+            or (action_group or {}).get("root_cause")
+            or ""
+        ).strip()
+        question_text = str(
+            (action_group or {}).get("representative_question") or ""
+        )
+        expected_sql_text = str(
+            (action_group or {}).get("representative_expected_sql") or ""
+        )
+        body = _build_rca_forced_instruction_body(
+            root_cause=cluster_root_cause,
+            grounding_terms=terms,
+            question=question_text,
+            expected_sql=expected_sql_text,
+        )
+        if body is None:
             return None
+        patch_type = (
+            "add_example_sql"
+            if cluster_root_cause == "format_difference"
+            else "add_instruction"
+        )
         return {
             "proposal_id": f"P{len(proposals) + 1:03d}",
             "cluster_id": ag_id,
             "lever": 5,
             "scope": "genie_config",
-            "patch_type": "add_instruction",
-            "change_description": f"[{ag_id}] RCA forced instruction bridge",
+            "patch_type": patch_type,
+            "change_description": f"[{ag_id}] RCA forced bridge ({cluster_root_cause})",
             "proposed_value": body,
             "rationale": _per_target_rationale(
                 "rca_forced_instruction",
-                extra="deterministic RCA bridge for forced Lever 5",
+                extra=f"deterministic RCA bridge for {cluster_root_cause}",
             ),
             "dual_persistence": DUAL_PERSIST_PATHS.get(5, DUAL_PERSIST_PATHS[5]),
             "confidence": 0.75,
@@ -13167,7 +13235,7 @@ def generate_proposals_from_strategy(
             ),
             "target_qids": affected_qs,
             "_rca_grounding_terms": terms,
-            "provenance": {**provenance_base, "patch_type": "add_instruction"},
+            "provenance": {**provenance_base, "patch_type": patch_type},
         }
 
     from mlflow.entities import SpanType as _SpanType

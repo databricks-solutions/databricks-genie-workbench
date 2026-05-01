@@ -238,8 +238,33 @@ def uncovered_patchable_clusters(
     return uncovered
 
 
+_DIAGNOSTIC_AG_DIRECTIVES: dict[str, dict[str, str]] = {
+    "plural_top_n_collapse":     {"lever": "L5", "kind": "sql_shape"},
+    "missing_temporal_filter":   {"lever": "L5", "kind": "sql_shape"},
+    "time_window_pivot":         {"lever": "L5", "kind": "sql_shape"},
+    "missing_filter":            {"lever": "L5", "kind": "sql_shape"},
+    "wrong_filter_condition":    {"lever": "L6", "kind": "sql_snippet_filter"},
+    "missing_scd_filter":        {"lever": "L6", "kind": "sql_snippet_filter"},
+    "wrong_aggregation":         {"lever": "L5", "kind": "sql_shape"},
+    "missing_aggregation":       {"lever": "L5", "kind": "sql_shape"},
+    "missing_dimension":         {"lever": "L5", "kind": "sql_shape"},
+    "wrong_grouping":            {"lever": "L5", "kind": "sql_shape"},
+    "missing_join_spec":         {"lever": "L4", "kind": "join_specification"},
+    "wrong_join_spec":           {"lever": "L4", "kind": "join_specification"},
+    "wrong_join":                {"lever": "L4", "kind": "join_specification"},
+    "wrong_join_type":           {"lever": "L5", "kind": "sql_shape"},
+    "column_disambiguation":     {"lever": "L1", "kind": "column_metadata"},
+    "format_difference":         {"lever": "L5", "kind": "example_sql"},
+}
+
+
 def diagnostic_action_group_for_cluster(cluster: dict) -> dict:
-    """Build a deterministic AG when the strategist omits a hard cluster."""
+    """Build a deterministic AG when the strategist omits a hard cluster.
+
+    Dispatches the lever directive on the cluster's structured ``root_cause``
+    rather than instruction-text substrings, so AG_COVERAGE AGs do not ship
+    "do not collapse rank=1" bodies for column disambiguation clusters.
+    """
     cid = str(cluster.get("cluster_id") or "H_UNKNOWN")
     qids = [str(q) for q in cluster.get("question_ids", []) or [] if str(q)]
     root = str(cluster.get("root_cause") or cluster.get("asi_failure_type") or "unknown")
@@ -247,14 +272,26 @@ def diagnostic_action_group_for_cluster(cluster: dict) -> dict:
         str(f) for f in cluster.get("asi_counterfactual_fixes", []) or []
         if str(f)
     ]
-    fix_text = fixes[0] if fixes else "Use the cluster RCA evidence to produce a targeted metadata change."
+    fix_text = (
+        fixes[0] if fixes
+        else "Use the cluster RCA evidence to produce a targeted metadata change."
+    )
+    lever_directives: dict[str, dict] = {}
+    if root in _DIAGNOSTIC_AG_DIRECTIVES:
+        spec = _DIAGNOSTIC_AG_DIRECTIVES[root]
+        lever_directives[spec["lever"]] = {
+            "kind": spec["kind"],
+            "root_cause": root,
+            "guidance": fix_text,
+            "target_qids": qids,
+        }
     return {
         "id": f"AG_COVERAGE_{cid}",
         "root_cause_summary": f"{root}: {fix_text}",
         "affected_questions": qids,
         "source_cluster_ids": [cid],
         "coverage_reason": "strategist_omitted_patchable_hard_cluster",
-        "lever_directives": {},
+        "lever_directives": lever_directives,
     }
 
 

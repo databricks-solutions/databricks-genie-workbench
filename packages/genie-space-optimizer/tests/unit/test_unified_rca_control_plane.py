@@ -154,6 +154,9 @@ def test_rca_forced_lever5_emits_instruction_bridge_without_strategist_directive
             "rca_ids": ["rca_topn"],
             "required_levers": [5],
             "grounding_terms": ["rank_filter", "where rank 1", "plural_top_n_collapse"],
+            # v2 Task 8: dispatch is now keyed on structured root_cause, not
+            # substring match across grounding terms.
+            "root_cause": "plural_top_n_collapse",
         },
     }
 
