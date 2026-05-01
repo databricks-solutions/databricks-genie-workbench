@@ -208,3 +208,118 @@ def get_run_context(
         source=HandoffSource.TASK_VALUES,
     )
     return out
+
+
+from genie_space_optimizer.common.delta_helpers import _fqn, run_query
+
+
+def _load_baseline_iteration_row(
+    spark: "SparkSession", run_id: str, catalog: str, schema: str,
+) -> dict | None:
+    """Latest iteration=0, eval_scope='full' row for ``run_id``.
+
+    Distinct from ``load_latest_full_iteration`` which orders by iteration
+    DESC — the baseline is uniquely the iteration=0 row.
+    """
+    fqn = _fqn(catalog, schema, "genie_opt_iterations")
+    df = run_query(
+        spark,
+        f"SELECT * FROM {fqn} WHERE run_id = '{run_id}' "
+        f"AND iteration = 0 AND eval_scope = 'full' "
+        f"AND (rolled_back IS NULL OR rolled_back = false) "
+        f"ORDER BY timestamp DESC LIMIT 1",
+    )
+    if df.empty:
+        return None
+    row = df.iloc[0].to_dict()
+    if row.get("scores_json") and isinstance(row["scores_json"], str):
+        try:
+            row["scores_json"] = json.loads(row["scores_json"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return row
+
+
+def get_baseline_eval_state(
+    spark: "SparkSession",
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    dbutils,
+) -> dict[str, HandoffValue]:
+    """Read baseline_eval task values, falling back to genie_opt_iterations.
+
+    Returns ``HandoffValue`` for: ``scores``, ``overall_accuracy``,
+    ``thresholds_met``, ``model_id``, ``mlflow_run_id``.
+
+    Raises:
+        RuntimeError: if neither taskValues nor a Delta iteration=0 row
+            is available — the baseline never ran.
+    """
+    delta_query = (
+        f"SELECT * FROM {catalog}.{schema}.genie_opt_iterations "
+        f"WHERE run_id = '{run_id}' AND iteration = 0 "
+        f"AND eval_scope = 'full' LIMIT 1"
+    )
+
+    raw_scores = _tv_get(dbutils, "baseline_eval", "scores")
+    raw_acc = _tv_get(dbutils, "baseline_eval", "overall_accuracy")
+    raw_thr = _tv_get(dbutils, "baseline_eval", "thresholds_met")
+    raw_mid = _tv_get(dbutils, "baseline_eval", "model_id")
+    raw_mlid = _tv_get(dbutils, "baseline_eval", "mlflow_run_id")
+
+    delta_row = None
+    if raw_scores in ("", None) or raw_acc in ("", None):
+        delta_row = _load_baseline_iteration_row(
+            spark, run_id, catalog, schema,
+        )
+
+    if (
+        raw_scores in ("", None)
+        and raw_acc in ("", None)
+        and delta_row is None
+    ):
+        raise RuntimeError(
+            f"get_baseline_eval_state: no baseline state available for "
+            f"run_id={run_id!r}. taskValues empty AND no row in "
+            f"{catalog}.{schema}.genie_opt_iterations at iteration=0. "
+            f"baseline_eval task must complete before lever_loop / finalize."
+        )
+
+    def _bool(s: str) -> bool:
+        return str(s).lower() in ("true", "1")
+
+    out = {
+        "scores": _resolve(
+            raw_scores,
+            delta_value=(delta_row or {}).get("scores_json"),
+            parser=json.loads,
+            key="scores", delta_query=delta_query,
+        ),
+        "overall_accuracy": _resolve(
+            raw_acc,
+            delta_value=(delta_row or {}).get("overall_accuracy"),
+            parser=float,
+            key="overall_accuracy", delta_query=delta_query,
+        ),
+        "thresholds_met": _resolve(
+            raw_thr,
+            delta_value=(delta_row or {}).get("thresholds_met"),
+            parser=_bool,
+            key="thresholds_met", delta_query=delta_query,
+        ),
+        "model_id": _resolve(
+            raw_mid,
+            delta_value=(delta_row or {}).get("model_id"),
+            parser=str,
+            key="model_id", delta_query=delta_query,
+        ),
+        "mlflow_run_id": _resolve(
+            raw_mlid,
+            delta_value=(delta_row or {}).get("mlflow_run_id"),
+            parser=str,
+            key="mlflow_run_id", delta_query=delta_query,
+        ),
+    }
+    return out
