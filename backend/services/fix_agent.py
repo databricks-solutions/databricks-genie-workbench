@@ -63,6 +63,8 @@ class FixAgent:
         Yields dicts with:
             - {"status": "thinking", "message": str}
             - {"status": "patch", "field_path": str, "old_value": any, "new_value": any, "rationale": str}
+            - {"status": "skipped", "field_path": "", "old_value": None, "new_value": None, "rationale": str}
+              (emitted when the agent declines a patch — e.g., the fix would erase a canonical GSL section header)
             - {"status": "applying", "message": str}
             - {"status": "complete", "patches_applied": int, "summary": str, "diff": dict}
             - {"status": "error", "message": str}
@@ -113,6 +115,38 @@ class FixAgent:
                         "old_value": None,
                         "new_value": None,
                         "rationale": "No fix needed or could not determine a patch",
+                    }
+                    continue
+
+                # Agent declined to patch (e.g., fix would erase a canonical GSL
+                # section header in text_instructions). Emit a "skipped" event
+                # carrying the LLM's rationale instead of attempting to apply.
+                if patches[0].get("declined"):
+                    rationale = patches[0].get("rationale") or "Patch declined by agent."
+                    logger.info(f"Fix declined for finding: {finding[:80]} — {rationale[:120]}")
+                    yield {
+                        "status": "skipped",
+                        "field_path": "",
+                        "old_value": None,
+                        "new_value": None,
+                        "rationale": rationale,
+                    }
+                    continue
+
+                # Defense-in-depth: the prompt also authorizes a legacy
+                # "not addressable via config" shape ({"field_path": "",
+                # "new_value": null, "rationale": "..."}) that lacks the
+                # `declined` flag. Treat it the same as a decline so the UI
+                # shows a skipped row with rationale instead of a fake fix.
+                if len(patches) == 1 and not patches[0].get("field_path"):
+                    rationale = patches[0].get("rationale") or "No applicable config patch."
+                    logger.info(f"No applicable patch for finding: {finding[:80]} — {rationale[:120]}")
+                    yield {
+                        "status": "skipped",
+                        "field_path": "",
+                        "old_value": None,
+                        "new_value": None,
+                        "rationale": rationale,
                     }
                     continue
 
@@ -220,6 +254,13 @@ def _parse_patches(content: str) -> list[dict]:
     except (json.JSONDecodeError, ValueError) as e:
         logger.warning(f"Failed to parse patch JSON: {e}. Content preview: {content[:300]}")
         return []
+
+    # Handle {"decline": true, "rationale": "..."} — agent refuses to patch because
+    # the fix would erase a canonical GSL section header. Return a single marker
+    # "patch" with declined=True so the caller can emit a skipped event.
+    if result.get("decline") is True:
+        rationale = result.get("rationale") or "Patch declined by agent (no rationale provided)."
+        return [{"field_path": "", "new_value": None, "rationale": rationale, "declined": True}]
 
     # Handle {"patches": [{...}, {...}]} format
     if "patches" in result and isinstance(result["patches"], list):

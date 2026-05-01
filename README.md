@@ -61,14 +61,18 @@ Security is preserved because:
 
 ## Prerequisites
 
-* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.239.0+ required)
+* [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html) (v0.297.2+ required)
 * [uv](https://docs.astral.sh/uv/) — Python package manager (used for dependency management and hash-verified installs)
-* Node.js (18+ recommended) and npm
+* Node.js (^20.19.0 or >=22.12.0) and npm
 * Python 3.11+
+
+> **Registry access:** npm lockfiles are registry-neutral. Databricks internal users can keep `npm config set registry https://npm-proxy.dev.databricks.com/`; external users should use `npm config set registry https://registry.npmjs.org/`. Do not commit private registry hosts into lockfiles.
+
 * A Databricks workspace with:
   * Apps enabled
   * A SQL Warehouse (Serverless recommended)
   * A Unity Catalog with CREATE SCHEMA permission
+  * Permission to create or use a Lakebase Autoscaling project for persistent scan history and sessions
   * MLflow Prompt Registry enabled (required for Auto-Optimize judge prompt traceability)
 
 ## Quick Start
@@ -101,28 +105,63 @@ The installer will:
 4. Ask for SQL warehouse (auto-discovered from your workspace)
 5. Ask for LLM model endpoint
 6. Optionally configure MLflow tracing (creates or links an experiment)
-7. Ask for Lakebase Autoscaling project name
-8. Ask for app name
+7. Ask for app name
+8. Create a fresh Lakebase Autoscaling project, choose a different new name, skip persistence, or use advanced existing-project attachment
 9. Write `.env.deploy` with your configuration
 10. Run `scripts/deploy.sh` to build and deploy the app
 11. Resolve the app's service principal
 12. Optionally grant the SP access to your existing Genie Spaces
 
-### 4. Lakebase (automated)
+### 4. Lakebase (optional project)
 
 Lakebase provides persistent storage for scan history, starred spaces, and agent sessions. Without it, the app uses in-memory storage (data lost on restart).
 
-**Lakebase setup is automated by `deploy.sh`:**
-- Creates a Lakebase Autoscaling project (if it doesn't exist)
+The guided installer recommends creating a fresh Lakebase Autoscaling project
+for each new app instance. It defaults to `<app-name>-lakebase` and, if that
+name already exists, suggests a numbered fresh name instead. If you choose to
+skip Lakebase, the app still deploys but history and starred spaces are stored
+only in memory.
+
+**For a new or deliberately attached Lakebase project, setup is automated by `deploy.sh`:**
+- Creates the Lakebase Autoscaling project if it does not exist
 - Creates a Postgres role for the app's service principal
 - Grants database permissions (CONNECT, CREATE)
 - Attaches the `postgres` resource to the app
 
-The installer asks for a Lakebase project name (defaults to the app name). The deploy script calls `scripts/setup_lakebase.py` to provision everything, then attaches the resource via the Apps API. No manual steps required.
+The installer writes the project name as `GENIE_LAKEBASE_INSTANCE` in
+`.env.deploy`. If you skip Lakebase during install, set
+`GENIE_LAKEBASE_INSTANCE` later and run `./scripts/deploy.sh --update`.
+Attaching an existing Lakebase project is an advanced path that requires
+explicit confirmation because cross-app reuse can fail on object ownership.
 
 > **Note:** The GRANT step requires `psycopg[binary]` in the project venv (installed by `uv sync`). If unavailable, the script prints the commands to run manually in the Lakebase SQL Editor.
 
 The app automatically creates a `genie` schema and tables on first startup within the `databricks_postgres` database. Tables: `scan_results`, `starred_spaces`, `seen_spaces`, `optimization_runs`, `agent_sessions`.
+
+#### Lakebase reuse and app identity
+
+Lakebase app state is tied to the Databricks App service principal that first
+created the `genie` schema. Normal updates should reuse the same app instance:
+keep `GENIE_APP_NAME` unchanged and run `./scripts/deploy.sh --update`.
+
+Do not point a new app instance at a Lakebase project that already has a
+`genie` schema from an older app. A new Databricks App gets a new service
+principal, so existing tables and sequences can remain owned by the old app
+principal. The app may start, but scans can fail with:
+
+```text
+permission denied for sequence scan_results_id_seq
+```
+
+If you need a new app instance, use a fresh `GENIE_LAKEBASE_INSTANCE`. Reusing
+an existing Lakebase project across app instances is not a supported install
+path unless a Lakebase project owner or workspace admin deliberately migrates
+ownership of the existing `genie` schema, tables, and sequences.
+
+In short:
+- Same app, same Lakebase: supported for updates.
+- New app, new Lakebase: supported for new installs.
+- New app, old Lakebase: avoid; admin migration required.
 
 ## Manual Setup (without installer)
 
@@ -137,7 +176,7 @@ GENIE_CATALOG=<your-catalog-name>
 GENIE_APP_NAME=genie-workbench
 GENIE_DEPLOY_PROFILE=genie-workbench
 GENIE_LLM_MODEL=databricks-claude-sonnet-4-6
-GENIE_LAKEBASE_INSTANCE=genie-workbench
+GENIE_LAKEBASE_INSTANCE=genie-workbench-lakebase
 EOF
 ```
 
@@ -158,7 +197,7 @@ Set these in `.env.deploy` or as environment variables:
 | `GENIE_APP_NAME` | No | `genie-workbench` | Databricks App name (must be unique in your workspace) |
 | `GENIE_DEPLOY_PROFILE` | No | `DEFAULT` | Databricks CLI profile name |
 | `GENIE_LLM_MODEL` | No | `databricks-claude-sonnet-4-6` | LLM serving endpoint for analysis |
-| `GENIE_LAKEBASE_INSTANCE` | No | `<app-name>` | Lakebase Autoscaling project name (auto-provisioned by deploy) |
+| `GENIE_LAKEBASE_INSTANCE` | No | empty | Lakebase Autoscaling project to use or create; installer defaults new installs to `<app-name>-lakebase`; keep stable for the same app, use a fresh project for a new app instance |
 
 ## Deploy Commands
 
@@ -185,7 +224,7 @@ Clean these up manually if you want a full teardown.
 **Full deploy (8 steps):**
 
 1. **Pre-flight checks** — validates tools, CLI profile, warehouse, catalog, app state
-2. **Build frontend** — `npm ci` + `npm run build`
+2. **Build frontend** — `npm ci` + `npm run build` (strict lockfile)
 3. **Create app** — `databricks apps create` (skipped if app already exists)
 4. **Sync files** — `databricks sync --full` + explicit `frontend/dist/` upload
 5. **Grant UC permissions** — resolves app SP, creates GSO schema/tables, grants SP access, enables CDF
@@ -234,13 +273,14 @@ The app uses On-Behalf-Of (OBO) auth — users see only Genie Spaces they have p
 | App shows blank page | `frontend/dist/` missing (gitignored) | Re-run `./scripts/deploy.sh --update` |
 | `Could not import module "backend.main"` | Source files missing on workspace | Re-run `./scripts/deploy.sh --update` (full-sync uploads everything) |
 | `No dependencies file found` | `requirements.txt` not on workspace | Same — `./scripts/deploy.sh --update` |
-| "Failed to list spaces" | Lakebase not attached | Attach a `postgres` resource in Apps UI (see step 4 above) |
+| "Failed to list spaces" | Lakebase not attached | Set `GENIE_LAKEBASE_INSTANCE` and re-run `./scripts/deploy.sh --update` |
+| `permission denied for sequence scan_results_id_seq` | New app is reusing Lakebase objects owned by an older app SP | Reuse the original app instance or move the new app to a fresh Lakebase project |
 | `Catalog 'X' is not accessible` | Wrong catalog or missing permissions | `databricks catalogs list --profile <profile>` |
 | `Invalid SQL warehouse resource` | Warehouse doesn't exist or no CAN_USE | `databricks warehouses list --profile <profile>` |
 | `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps |
 | Auto-Optimize fails at "Baseline Evaluation" with `FEATURE_DISABLED` | Prompt Registry not enabled on workspace | Contact workspace admin to enable MLflow Prompt Registry |
 | Unresolved `__GSO_*__` placeholders | deploy.sh couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
-| GSO job creation fails during deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.239.0 and `pip install build` |
+| GSO job creation fails during deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.297.2 and `pip install build` |
 | Notebook upload fails (`RESOURCE_DOES_NOT_EXIST`) | `/Workspace/Shared/` not writable by deployer | Check workspace-level permissions on the upload path |
 
 > **Note on MLflow tracing:** The `MLFLOW_EXPERIMENT_ID` in `app.yaml` is workspace-specific. The app validates it at startup and silently disables tracing if the experiment doesn't exist in your workspace. To enable tracing, create an MLflow experiment and update the value in `app.yaml` before deploying.
@@ -271,7 +311,7 @@ which targeted unpinned PyPI packages and GitHub Action tags).
 | `uv.lock` | All root Python transitive deps with SHA256 hashes | uv |
 | `packages/genie-space-optimizer/uv.lock` | GSO Python deps with SHA256 hashes | uv |
 | `frontend/package-lock.json` | All frontend npm deps with SHA-512 integrity hashes | npm |
-| `packages/genie-space-optimizer/bun.lock` | GSO UI deps | bun |
+| `packages/genie-space-optimizer/package-lock.json` | GSO UI npm deps with SHA-512 integrity hashes | npm |
 
 ### Updating Python dependencies
 
@@ -280,9 +320,7 @@ which targeted unpinned PyPI packages and GitHub Action tags).
 uv lock --upgrade-package <package-name>
 
 # Regenerate requirements.txt from the updated lock file
-uv export --frozen --no-dev --no-hashes --format requirements-txt \
-  | grep -v "^-e " > requirements.txt
-echo "-e ./packages/genie-space-optimizer" >> requirements.txt
+uv export --frozen --no-dev --no-hashes --format requirements-txt > requirements.txt
 
 # Commit both
 git add uv.lock requirements.txt
@@ -300,6 +338,8 @@ npm install <package>@<new-version>   # resolves and updates package-lock.json
 # Then update package.json to exact version (remove the ^ prefix)
 git add package.json package-lock.json  # always commit both together
 ```
+
+Keep `omit-lockfile-registry-resolved=true` in project `.npmrc` files so future lockfile updates do not commit private registry hosts. Public `registry.npmjs.org` lockfile URLs are safe because npm can rewrite them to the configured registry; internal and external users should still select their registry in user/global npm config, not by editing committed lockfiles.
 
 ### Why `npm ci` instead of `npm install` in deploys
 

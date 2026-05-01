@@ -7,13 +7,13 @@
 | App shows blank page | `frontend/dist/` missing (gitignored, not synced) | Re-run `./scripts/deploy.sh --update` |
 | `Could not import module "backend.main"` | Source files missing on workspace | Re-run `./scripts/deploy.sh --update` (full sync) |
 | `No dependencies file found` | `requirements.txt` not on workspace | Re-run `./scripts/deploy.sh --update` |
-| "Failed to list spaces" | Lakebase not attached | Attach a `postgres` resource in Apps UI |
+| "Failed to list spaces" | Lakebase not attached | Set `GENIE_LAKEBASE_INSTANCE` and re-run `./scripts/deploy.sh --update` |
 | `Catalog 'X' is not accessible` | Wrong catalog or missing permissions | `databricks catalogs list --profile <profile>` |
 | `Invalid SQL warehouse resource` | Warehouse doesn't exist or no CAN_USE | `databricks warehouses list --profile <profile>` |
 | `Maximum number of apps` | Workspace hit the 300-app limit | Delete unused apps |
 | Auto-Optimize fails at "Baseline Evaluation" with `FEATURE_DISABLED` | Prompt Registry not enabled | Contact workspace admin to enable MLflow Prompt Registry |
 | Unresolved `__GSO_*__` placeholders | `deploy.sh` couldn't patch `app.yaml` | Ensure `GENIE_CATALOG` is set; check deploy output for warnings |
-| GSO job creation fails during deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.239.0 and `pip install build` |
+| GSO job creation fails during deploy | Bundle deploy failed (CLI version, auth, or build issue) | Check `databricks bundle deploy -t app` output; ensure CLI >= 0.297.2 and `pip install build` |
 | Notebook upload fails (`RESOURCE_DOES_NOT_EXIST`) | `/Workspace/Shared/` not writable by deployer | Check workspace-level permissions on the upload path |
 
 ## Permission Errors
@@ -33,8 +33,28 @@
 | "Failed to list spaces" on first load | Lakebase not attached | Re-run `deploy.sh --update` to auto-attach the postgres resource |
 | Connection timeouts after ~1 hour | Credential refresh failed | Check logs for `generate_database_credential` errors |
 | Tables not created on startup | SP lacks CONNECT or CREATE ON DATABASE | Re-run `deploy.sh --update` to re-create the SP role and grants |
+| `permission denied for sequence scan_results_id_seq` | New app is reusing a Lakebase `genie` schema owned by an older app SP | Reuse the original app instance or move the new app to a fresh Lakebase project |
 | Scan results not persisting | Lakebase write failed | Check logs for `Failed to persist scan result` |
 | Agent sessions lost on restart | Lakebase not configured | Without Lakebase, sessions use in-memory storage (ephemeral) |
+
+### Cross-App Lakebase Reuse
+
+Lakebase persistence is app-instance scoped in normal operation. The app
+service principal that first creates the `genie` schema owns its tables and
+sequences. If a different Databricks App instance is later pointed at that
+same Lakebase project, the new app service principal may not be able to write
+to the existing sequences.
+
+For product updates, keep `GENIE_APP_NAME` unchanged and run:
+
+```bash
+./scripts/deploy.sh --update
+```
+
+For a new app instance, use a fresh `GENIE_LAKEBASE_INSTANCE`. Cross-app reuse
+of an existing Lakebase project is not a supported install path unless a
+Lakebase project owner or workspace admin deliberately migrates ownership of
+the existing `genie` schema, tables, and sequences.
 
 ## GSO / Auto-Optimize Issues
 

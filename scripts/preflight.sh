@@ -29,19 +29,36 @@ _preflight_check_tools() {
     fi
     echo "  ✓ All required tools available (databricks, python3, node, npm, uv)"
 
+    local node_version
+    node_version=$(node --version 2>/dev/null || echo "unknown")
+    if ! node -e '
+const [major, minor] = process.versions.node.split(".").map(Number);
+const supported = (major === 20 && minor >= 19) || (major === 22 && minor >= 12) || major > 22;
+process.exit(supported ? 0 : 1);
+'; then
+        echo ""
+        echo "  ✗ Node.js $node_version is not supported by the frontend toolchain."
+        echo ""
+        echo "  Vite requires Node.js ^20.19.0 or >=22.12.0."
+        echo ""
+        echo "  Remediation: install Node.js 22 LTS or newer, then re-run scripts/deploy.sh"
+        exit 1
+    fi
+    echo "  ✓ Node.js version $node_version"
+
     # Verify Databricks CLI version meets minimum for bundle app/job support
-    local cli_version
+    local cli_version min_cli_version="0.297.2"
     cli_version=$(databricks --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
     if [ -n "$cli_version" ]; then
-        local minor
-        minor=$(echo "$cli_version" | cut -d. -f2)
-        if [ "$(echo "$cli_version" | cut -d. -f1)" -eq 0 ] && [ "$minor" -lt 239 ]; then
+        local lowest
+        lowest=$(printf '%s\n%s\n' "$min_cli_version" "$cli_version" | sort -V | head -1)
+        if [ "$lowest" != "$min_cli_version" ]; then
             echo ""
-            echo "  ✗ Databricks CLI version $cli_version is too old (minimum: 0.239.0)."
+            echo "  ✗ Databricks CLI version $cli_version is too old (minimum: $min_cli_version)."
             echo ""
             echo "  Remediation:"
-            echo "    pip install --upgrade databricks-cli"
-            echo "    or: brew upgrade databricks"
+            echo "    brew upgrade databricks"
+            echo "    or: curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh"
             exit 1
         fi
         echo "  ✓ Databricks CLI version $cli_version"
@@ -50,15 +67,58 @@ _preflight_check_tools() {
 
 _preflight_check_venv() {
     echo "  Syncing Python venv (uv sync --frozen)..."
-    if uv sync --frozen --quiet 2>/dev/null; then
+    if uv sync --frozen --quiet; then
         echo "  ✓ Python venv ready (pinned dependencies)"
     else
         echo ""
         echo "  ✗ uv sync --frozen failed. The Python venv could not be created."
         echo ""
-        echo "  Remediation: run 'uv sync --frozen' manually and check for errors."
+        echo "  See uv's error output above for the root cause."
+        echo "  Common causes:"
+        echo "    - Internal PyPI mirror missing a package (unset UV_INDEX_URL or set to https://pypi.org/simple)"
+        echo "    - Python 3.11+ not available (try: uv python install 3.11)"
+        echo "    - Corrupt .venv (try: rm -rf .venv && uv sync --frozen)"
         exit 1
     fi
+}
+
+_preflight_check_npm_lockfiles() {
+    echo "  Checking npm lockfiles for private registry URLs..."
+    local private_host="npm-proxy.dev.databricks.com"
+    local lockfiles=(
+        "$PROJECT_DIR/package-lock.json"
+        "$PROJECT_DIR/frontend/package-lock.json"
+        "$PROJECT_DIR/packages/genie-space-optimizer/package-lock.json"
+    )
+    local offenders=()
+    local lockfile
+
+    for lockfile in "${lockfiles[@]}"; do
+        if [ -f "$lockfile" ] && grep -q "$private_host" "$lockfile"; then
+            offenders+=("${lockfile#$PROJECT_DIR/}")
+        fi
+    done
+
+    if [ ${#offenders[@]} -gt 0 ]; then
+        echo ""
+        echo "  ✗ Committed npm lockfiles contain private Databricks registry URLs:"
+        local offender
+        for offender in "${offenders[@]}"; do
+            echo "    - $offender"
+        done
+        echo ""
+        echo "  Lockfiles must be registry-neutral so both internal and external users can install."
+        echo ""
+        echo "  Remediation:"
+        echo "    1. Keep your preferred npm registry in user/global npm config only:"
+        echo "       Databricks internal: npm config set registry https://npm-proxy.dev.databricks.com/"
+        echo "       External/customer:  npm config set registry https://registry.npmjs.org/"
+        echo "    2. Regenerate lockfiles with omit-lockfile-registry-resolved=true"
+        echo "       or normalize private resolved URLs to https://registry.npmjs.org/"
+        echo "    3. Commit the registry-neutral lockfiles"
+        exit 1
+    fi
+    echo "  ✓ npm lockfiles are registry-neutral"
 }
 
 _preflight_check_npm_registry() {
@@ -76,8 +136,9 @@ _preflight_check_npm_registry() {
         echo ""
         echo "  Remediation:"
         echo "    1. Check your internet connection"
-        echo "    2. If behind a corporate firewall/VPN, try setting a reachable registry:"
-        echo "       npm config set registry <your-registry-url>"
+        echo "    2. Use a registry reachable from your network:"
+        echo "       Databricks internal: npm config set registry https://npm-proxy.dev.databricks.com/"
+        echo "       External/customer:  npm config set registry https://registry.npmjs.org/"
         echo "    3. If using an HTTP proxy: npm config set proxy <proxy-url>"
         echo ""
         exit 1

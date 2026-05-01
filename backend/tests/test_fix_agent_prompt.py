@@ -135,6 +135,73 @@ class TestSinglePromptStructure:
 
 
 # ---------------------------------------------------------------------------
+# GSL section-header preservation (near-term, epic #87)
+# ---------------------------------------------------------------------------
+# The Fix Agent must preserve canonical `## Section` headers in
+# text_instructions content and must know how to decline a patch that would
+# erase one. See docs/gsl-instruction-schema.md.
+
+CANONICAL_GSL_SECTIONS = [
+    "## PURPOSE",
+    "## DISAMBIGUATION",
+    "## DATA QUALITY NOTES",
+    "## CONSTRAINTS",
+    "## Instructions you must follow when providing summaries",
+]
+
+
+class TestFixAgentGslSectionPreservation:
+    """Both Fix Agent prompts must teach the LLM to preserve canonical GSL section headers."""
+
+    def test_single_prompt_mentions_all_canonical_sections(self, single_prompt):
+        for section in CANONICAL_GSL_SECTIONS:
+            assert section in single_prompt, (
+                f"Single-finding fix prompt missing canonical GSL section header: {section!r}. "
+                f"See docs/gsl-instruction-schema.md."
+            )
+
+    def test_batch_prompt_mentions_canonical_sections(self, sample_prompt):
+        # The batch prompt only needs to reference the existence of canonical
+        # sections via the _VALID_FIELD_PATHS_BLOCK and its rules block.
+        assert "## PURPOSE" in sample_prompt
+        assert "## CONSTRAINTS" in sample_prompt
+        assert "preserve" in sample_prompt.lower()
+
+    def test_single_prompt_teaches_decline_shape(self, single_prompt):
+        """When a fix would erase a canonical section, the agent must decline, not apply."""
+        assert '"decline": true' in single_prompt
+        assert "DECLINE" in single_prompt
+
+    def test_single_prompt_explains_section_order(self, single_prompt):
+        """The canonical order must be spelled out so the LLM can insert new sections correctly."""
+        assert "PURPOSE" in single_prompt
+        assert "CONSTRAINTS" in single_prompt
+        # The ordering should appear as a sequence (either arrow-separated or similar)
+        idx_purpose = single_prompt.find("PURPOSE")
+        idx_constraints = single_prompt.find("CONSTRAINTS")
+        assert idx_purpose < idx_constraints, (
+            "Canonical ordering should present PURPOSE before CONSTRAINTS in the prompt"
+        )
+
+    def test_batch_prompt_allows_skipping_when_section_would_be_erased(self, sample_prompt):
+        """Batch prompt uses empty field_path + rationale as its skip mechanism."""
+        assert '"field_path"' in sample_prompt
+        # It should explicitly acknowledge that skipping is an option for the section-preservation rule.
+        assert "SKIP" in sample_prompt or "skip the patch" in sample_prompt.lower()
+
+    def test_valid_paths_block_documents_section_preservation(self, single_prompt):
+        """The valid-paths list entry for text_instructions[N].content should remind
+        the LLM to preserve headers (belt-and-suspenders so the rule lands even if
+        the Rules block gets truncated)."""
+        # Find the text_instructions entry and check it explains preservation
+        lines = single_prompt.split("\n")
+        ti_lines = [l for l in lines if "text_instructions[N].content" in l]
+        assert len(ti_lines) >= 1, "Expected text_instructions[N].content path entry"
+        combined = " ".join(ti_lines)
+        assert "preserve" in combined.lower() or "Section" in combined
+
+
+# ---------------------------------------------------------------------------
 # Field path validation
 # ---------------------------------------------------------------------------
 

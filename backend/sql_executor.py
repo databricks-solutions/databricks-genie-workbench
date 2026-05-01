@@ -91,7 +91,8 @@ def _auto_detect_warehouse() -> str | None:
         if state != "RUNNING":
             continue
         is_serverless = getattr(wh, "enable_serverless_compute", False)
-        wh_type_str = str(getattr(wh, "warehouse_type", ""))
+        warehouse_type = getattr(wh, "warehouse_type", "")
+        wh_type_str = getattr(warehouse_type, "value", warehouse_type)
         is_pro = wh_type_str == "PRO"
         if is_serverless or is_pro:
             running.append((is_serverless, wh))

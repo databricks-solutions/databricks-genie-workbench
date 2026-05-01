@@ -85,7 +85,7 @@ export interface FixPatch {
 }
 
 export interface FixAgentEvent {
-  status: "thinking" | "patch" | "applying" | "complete" | "error"
+  status: "thinking" | "patch" | "skipped" | "applying" | "complete" | "error"
   message?: string
   field_path?: string
   old_value?: unknown
@@ -167,6 +167,7 @@ export interface BenchmarkQuestion {
 export interface UcCatalog {
   name: string
   comment?: string
+  is_home?: boolean
 }
 
 export interface UcSchema {
