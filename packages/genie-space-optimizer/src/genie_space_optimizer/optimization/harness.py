@@ -14019,6 +14019,74 @@ def _run_lever_loop(
                 root_cause_summary=str(ag.get("root_cause_summary", "")),
                 accuracy_delta_pp=float(_rb_acc_delta),
             )
+
+            # Task 19 — record SQL-shape deltas on the rolled-back AG
+            # so the strategist can see what the candidate accomplished
+            # vs. ground truth, and where shape work still remains.
+            from genie_space_optimizer.optimization.sql_shape_delta import (
+                compute_sql_shape_delta,
+            )
+
+            def _row_qid(row: dict) -> str:
+                return str(
+                    row.get("inputs.question_id")
+                    or row.get("inputs/question_id")
+                    or row.get("question_id")
+                    or (row.get("inputs") or {}).get("question_id", "")
+                )
+
+            def _row_sql(row: dict) -> str:
+                return str(
+                    row.get("outputs.predictions.sql")
+                    or row.get("outputs/predictions/sql")
+                    or row.get("generated_sql")
+                    or row.get("genie_sql")
+                    or (row.get("outputs") or {}).get("genie_sql", "")
+                    or ""
+                )
+
+            def _row_count(row: dict) -> int | None:
+                for k in ("genie_row_count", "outputs.genie_row_count", "outputs/genie_row_count"):
+                    v = row.get(k)
+                    if isinstance(v, (int, float)):
+                        return int(v)
+                v = (row.get("outputs") or {}).get("genie_row_count")
+                return int(v) if isinstance(v, (int, float)) else None
+
+            _accepted_by_qid = {
+                _row_qid(r): r
+                for r in (_accepted_baseline_rows_for_control_plane or [])
+                if _row_qid(r)
+            }
+            _candidate_by_qid_for_delta = {
+                _row_qid(r): r
+                for r in (_failed_eval.get("rows") or [])
+                if _row_qid(r)
+            }
+            try:
+                _gt_by_qid = dict(reference_sqls or {})
+            except Exception:
+                _gt_by_qid = {}
+            _sql_deltas: list[dict] = []
+            for _qid, _cand_row in _candidate_by_qid_for_delta.items():
+                _gt_sql = str(_gt_by_qid.get(_qid, ""))
+                if not _gt_sql:
+                    continue
+                _acc_row = _accepted_by_qid.get(_qid, {})
+                try:
+                    _delta = compute_sql_shape_delta(
+                        target_qid=_qid,
+                        accepted_sql=_row_sql(_acc_row),
+                        candidate_sql=_row_sql(_cand_row),
+                        ground_truth_sql=_gt_sql,
+                        accepted_row_count=_row_count(_acc_row),
+                        candidate_row_count=_row_count(_cand_row),
+                    )
+                except Exception:
+                    continue
+                if _delta.get("improved") or _delta.get("remaining"):
+                    _sql_deltas.append(_delta)
+
             reflection = _build_reflection_entry(
                 iteration=iteration_counter, ag_id=ag_id, accepted=False,
                 levers=[int(lk) for lk in lever_keys],
@@ -14032,6 +14100,7 @@ def _run_lever_loop(
                 refinement_mode=_rb_refinement,
                 **_ag_identity_kwargs,
             )
+            reflection["sql_shape_deltas"] = _sql_deltas
             _attach_rca_theme_attribution(
                 spark=spark,
                 run_id=run_id,
