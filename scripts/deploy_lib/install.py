@@ -16,7 +16,7 @@ from .verify import verify_app_deployment
 from .workspace_source import prepare_workspace_source
 
 
-def _status(message: str) -> None:
+def _default_status(message: str) -> None:
     print(f"[genie-workbench install] {message}", flush=True)
 
 
@@ -31,45 +31,46 @@ def get_deployer_user(w) -> str:
     raise RuntimeError("Could not resolve current Databricks user")
 
 
-def run_install(w, cfg: InstallConfig) -> dict[str, Any]:
+def run_install(w, cfg: InstallConfig, status_fn=None) -> dict[str, Any]:
+    status = status_fn or _default_status
     cfg = cfg.normalized()
     cfg.validate()
 
-    _status("Resolving current Databricks user...")
+    status("Resolving current Databricks user...")
     deployer_user = get_deployer_user(w)
-    _status(f"Using deployer: {deployer_user}")
+    status(f"Using deployer: {deployer_user}")
 
-    _status(f"Creating or reusing Databricks App '{cfg.app_name}'...")
+    status(f"Creating or reusing Databricks App '{cfg.app_name}'...")
     ensure_app(w, cfg)
-    _status("Waiting for app service principal...")
+    status("Waiting for app service principal...")
     sp = get_app_service_principal(w, cfg.app_name)
     app_sp_client_id = sp["client_id"]
-    _status(f"Resolved app service principal: {app_sp_client_id}")
+    status(f"Resolved app service principal: {app_sp_client_id}")
 
-    _status("Generating curated workspace source folder...")
+    status("Generating curated workspace source folder...")
     source_path = prepare_workspace_source(w, cfg, deployer_user)
-    _status(f"Workspace source ready: {source_path}")
+    status(f"Workspace source ready: {source_path}")
 
-    _status(f"Provisioning Unity Catalog objects in {cfg.catalog}.{cfg.gso_schema}...")
+    status(f"Provisioning Unity Catalog objects in {cfg.catalog}.{cfg.gso_schema}...")
     uc_verification = ensure_uc_objects_and_grants(w, cfg, app_sp_client_id)
-    _status("Unity Catalog objects and grants processed.")
+    status("Unity Catalog objects and grants processed.")
 
     lakebase: LakebaseInfo | None = None
     if cfg.lakebase_mode != "skip" and cfg.lakebase_instance:
-        _status(f"Provisioning Lakebase project '{cfg.lakebase_instance}'...")
+        status(f"Provisioning Lakebase project '{cfg.lakebase_instance}'...")
         lakebase = ensure_lakebase(w, cfg, app_sp_client_id)
-        _status(
+        status(
             "Lakebase processed "
             f"(database={lakebase.database_resource or 'unresolved'}, grants={lakebase.grants_applied})."
         )
     else:
-        _status("Skipping Lakebase provisioning.")
+        status("Skipping Lakebase provisioning.")
 
-    _status("Uploading GSO job notebooks, building wheel, and creating/updating job...")
+    status("Uploading GSO job notebooks, building wheel, and creating/updating job...")
     gso_job = ensure_gso_job(w, cfg, app_sp_client_id, deployer_user)
-    _status(f"GSO job ready: {gso_job.job_id}")
+    status(f"GSO job ready: {gso_job.job_id}")
 
-    _status("Rendering patched app.yaml into generated workspace source...")
+    status("Rendering patched app.yaml into generated workspace source...")
     render_app_yaml(
         template_path=Path(cfg.repo_root or "") / "app.yaml",
         output_workspace_path=f"{source_path}/app.yaml",
@@ -84,18 +85,18 @@ def run_install(w, cfg: InstallConfig) -> dict[str, Any]:
         workspace_client=w,
     )
 
-    _status("Configuring app scopes and resources...")
+    status("Configuring app scopes and resources...")
     resources_payload = patch_app_resources(w, cfg, lakebase)
-    _status("Triggering Databricks App deployment...")
+    status("Triggering Databricks App deployment...")
     deployment = deploy_app_from_workspace(w, cfg.app_name, source_path)
-    _status("Waiting for app deployment status...")
+    status("Waiting for app deployment status...")
     wait_for_deployment(w, cfg.app_name, timeout_seconds=180, poll_seconds=10)
 
-    _status("Processing optional Genie Space grants...")
+    status("Processing optional Genie Space grants...")
     genie_spaces_granted = optionally_grant_genie_spaces(w, cfg, app_sp_client_id)
-    _status(f"Genie Space grants applied: {genie_spaces_granted}")
+    status(f"Genie Space grants applied: {genie_spaces_granted}")
 
-    _status("Verifying deployment...")
+    status("Verifying deployment...")
     verification = verify_app_deployment(w, cfg.app_name, source_path)
     verification["uc_grants"] = uc_verification
     verification["app_resources"] = resources_payload
@@ -111,5 +112,5 @@ def run_install(w, cfg: InstallConfig) -> dict[str, Any]:
         deployment=deployment or {},
         verification=verification,
     )
-    _status("Install flow complete.")
+    status("Install flow complete.")
     return result.to_dict()

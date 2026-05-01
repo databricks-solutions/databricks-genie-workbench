@@ -143,7 +143,6 @@ The `user_api_scopes` in `app.yaml` request these scopes for the user's OBO toke
 | `catalog.schemas:read` | Browse Unity Catalog schemas |
 | `catalog.tables:read` | Browse Unity Catalog tables |
 | `files.files` | Access workspace files |
-| `iam.access-control:read` | Read ACLs for permission checks |
 
 If the workspace or user's OAuth consent doesn't grant all scopes, the app degrades gracefully — the SP fallback handles the most common gap (`dashboards.genie`).
 

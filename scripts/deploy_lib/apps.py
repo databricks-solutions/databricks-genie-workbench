@@ -16,7 +16,6 @@ APP_SCOPES = [
     "catalog.schemas:read",
     "catalog.tables:read",
     "files.files",
-    "iam.access-control:read",
 ]
 
 

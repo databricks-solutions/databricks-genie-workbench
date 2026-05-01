@@ -3,7 +3,9 @@
 
 # COMMAND ----------
 from pathlib import Path
+import importlib
 import sys
+from datetime import datetime
 
 
 def find_repo_root(start: Path) -> Path:
@@ -37,8 +39,39 @@ dbutils.widgets.dropdown("grant_genie_spaces", "false", ["false", "true"])
 # COMMAND ----------
 from databricks.sdk import WorkspaceClient
 
+import scripts.deploy_lib.app_yaml
+import scripts.deploy_lib.apps
+import scripts.deploy_lib.config
+import scripts.deploy_lib.genie_spaces
+import scripts.deploy_lib.gso_job
+import scripts.deploy_lib.install
+import scripts.deploy_lib.lakebase
+import scripts.deploy_lib.uc
+import scripts.deploy_lib.verify
+import scripts.deploy_lib.workspace_source
+
+for module in [
+    scripts.deploy_lib.workspace_source,
+    scripts.deploy_lib.app_yaml,
+    scripts.deploy_lib.apps,
+    scripts.deploy_lib.config,
+    scripts.deploy_lib.genie_spaces,
+    scripts.deploy_lib.lakebase,
+    scripts.deploy_lib.uc,
+    scripts.deploy_lib.verify,
+    scripts.deploy_lib.gso_job,
+    scripts.deploy_lib.install,
+]:
+    importlib.reload(module)
+
 from scripts.deploy_lib.config import InstallConfig
 from scripts.deploy_lib.install import run_install
+
+
+def notebook_status(message: str) -> None:
+    line = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
+    print(f"[genie-workbench install] {line}", flush=True)
+    displayHTML(f"<div style='font-family:monospace'>{line}</div>")
 
 
 app_name = dbutils.widgets.get("app_name").strip()
@@ -65,5 +98,7 @@ cfg = InstallConfig(
 )
 
 w = WorkspaceClient()
-result = run_install(w, cfg)
+notebook_status("Starting Genie Workbench notebook install")
+result = run_install(w, cfg, status_fn=notebook_status)
+notebook_status("Notebook install finished")
 result
