@@ -9801,10 +9801,33 @@ def _run_lever_loop(
     # This is updated only after an AG is accepted, never after a
     # rejected candidate full eval. Falling back to Delta latest-full
     # makes the source visible in logs as a diagnostic risk.
+    #
+    # v2 Task 22 — clustering reads ``load_latest_state_iteration``
+    # (eval_scope ∈ {full, enrichment}). The control-plane guardrail
+    # must use the same source so a candidate is not flagged a
+    # regression against a stale pre-enrichment baseline.
     _accepted_baseline_rows_for_control_plane: list[dict] = []
+    _accepted_baseline_eval_scope: str = "unknown"
     try:
-        _accepted_baseline_rows_for_control_plane = _rows_from_iteration_payload(
-            load_latest_full_iteration(spark, run_id, catalog, schema)
+        from genie_space_optimizer.optimization.control_plane import (
+            select_control_plane_baseline_rows,
+        )
+        _state_iter_baseline = load_latest_state_iteration(
+            spark, run_id, catalog, schema,
+        )
+        _full_iter_baseline = load_latest_full_iteration(
+            spark, run_id, catalog, schema,
+        )
+        _accepted_baseline_rows_for_control_plane, _accepted_baseline_eval_scope = (
+            select_control_plane_baseline_rows(
+                latest_state_iteration=_state_iter_baseline,
+                latest_full_iteration=_full_iter_baseline,
+            )
+        )
+        logger.info(
+            "Control-plane baseline seeded: rows=%d eval_scope=%s",
+            len(_accepted_baseline_rows_for_control_plane),
+            _accepted_baseline_eval_scope,
         )
     except Exception:
         logger.warning("Failed to initialize accepted baseline rows", exc_info=True)

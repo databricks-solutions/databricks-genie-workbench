@@ -566,3 +566,29 @@ def decide_pre_arbiter_regression_guardrail(
             delta,
         )
     return PreArbiterRegressionDecision(True, "within_pre_arbiter_regression_budget", delta)
+
+
+def select_control_plane_baseline_rows(
+    *,
+    latest_state_iteration: dict | None,
+    latest_full_iteration: dict | None,
+) -> tuple[list[dict], str]:
+    """Pick baseline rows for the pre-arbiter regression guardrail.
+
+    Clustering reads ``load_latest_state_iteration`` (eval_scope ∈ {full,
+    enrichment}). The control-plane guardrail must use the same source
+    so a candidate is not flagged a regression against a stale
+    pre-enrichment baseline.
+
+    Returns ``(rows, eval_scope)`` where ``eval_scope`` is one of
+    ``"full"``, ``"enrichment"``, or ``"unknown"``.
+    """
+    state = latest_state_iteration or {}
+    state_rows = list(state.get("rows") or [])
+    if state_rows:
+        return state_rows, str(state.get("eval_scope") or "full")
+    full = latest_full_iteration or {}
+    full_rows = list(full.get("rows") or [])
+    if full_rows:
+        return full_rows, str(full.get("eval_scope") or "full")
+    return [], "unknown"
