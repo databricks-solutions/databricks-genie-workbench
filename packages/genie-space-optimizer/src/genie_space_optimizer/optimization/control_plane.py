@@ -239,22 +239,22 @@ def uncovered_patchable_clusters(
 
 
 _DIAGNOSTIC_AG_DIRECTIVES: dict[str, dict[str, str]] = {
-    "plural_top_n_collapse":     {"lever": "L5", "kind": "sql_shape"},
-    "missing_temporal_filter":   {"lever": "L5", "kind": "sql_shape"},
-    "time_window_pivot":         {"lever": "L5", "kind": "sql_shape"},
-    "missing_filter":            {"lever": "L5", "kind": "sql_shape"},
-    "wrong_filter_condition":    {"lever": "L6", "kind": "sql_snippet_filter"},
-    "missing_scd_filter":        {"lever": "L6", "kind": "sql_snippet_filter"},
-    "wrong_aggregation":         {"lever": "L5", "kind": "sql_shape"},
-    "missing_aggregation":       {"lever": "L5", "kind": "sql_shape"},
-    "missing_dimension":         {"lever": "L5", "kind": "sql_shape"},
-    "wrong_grouping":            {"lever": "L5", "kind": "sql_shape"},
-    "missing_join_spec":         {"lever": "L4", "kind": "join_specification"},
-    "wrong_join_spec":           {"lever": "L4", "kind": "join_specification"},
-    "wrong_join":                {"lever": "L4", "kind": "join_specification"},
-    "wrong_join_type":           {"lever": "L5", "kind": "sql_shape"},
-    "column_disambiguation":     {"lever": "L1", "kind": "column_metadata"},
-    "format_difference":         {"lever": "L5", "kind": "example_sql"},
+    "plural_top_n_collapse":     {"lever": "5", "kind": "sql_shape"},
+    "missing_temporal_filter":   {"lever": "5", "kind": "sql_shape"},
+    "time_window_pivot":         {"lever": "5", "kind": "sql_shape"},
+    "missing_filter":            {"lever": "5", "kind": "sql_shape"},
+    "wrong_filter_condition":    {"lever": "6", "kind": "sql_snippet_filter"},
+    "missing_scd_filter":        {"lever": "6", "kind": "sql_snippet_filter"},
+    "wrong_aggregation":         {"lever": "5", "kind": "sql_shape"},
+    "missing_aggregation":       {"lever": "5", "kind": "sql_shape"},
+    "missing_dimension":         {"lever": "5", "kind": "sql_shape"},
+    "wrong_grouping":            {"lever": "5", "kind": "sql_shape"},
+    "missing_join_spec":         {"lever": "4", "kind": "join_specification"},
+    "wrong_join_spec":           {"lever": "4", "kind": "join_specification"},
+    "wrong_join":                {"lever": "4", "kind": "join_specification"},
+    "wrong_join_type":           {"lever": "5", "kind": "sql_shape"},
+    "column_disambiguation":     {"lever": "1", "kind": "column_metadata"},
+    "format_difference":         {"lever": "5", "kind": "example_sql"},
 }
 
 

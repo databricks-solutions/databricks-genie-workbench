@@ -864,3 +864,49 @@ def test_pre_arbiter_regression_without_target_fix_rejects_candidate():
     assert decision.accepted is False
     assert decision.reason_code == "pre_arbiter_regression_without_target_fix"
     assert decision.delta_pp == -8.7
+
+
+def test_diagnostic_ag_directives_keys_are_numeric_strings() -> None:
+    """Pin the lever-key contract: every directive lever id must be a digit-only string.
+
+    Consumers (_ag_collision_key in harness.py, union_execution_levers in
+    rca_execution.py, generate_metadata_proposals lookup tables) all assume
+    numeric-string keys. A single producer drifting to "L5"/"L6" hard-crashes
+    the loop the first time a coverage AG fires.
+    """
+    from genie_space_optimizer.optimization.control_plane import (
+        _DIAGNOSTIC_AG_DIRECTIVES,
+    )
+
+    bad = {
+        root: spec["lever"]
+        for root, spec in _DIAGNOSTIC_AG_DIRECTIVES.items()
+        if not str(spec["lever"]).isdigit()
+    }
+    assert not bad, (
+        "Diagnostic AG directives must use numeric-string lever ids "
+        f"(e.g. '5', '6'); found non-digit values: {bad}"
+    )
+
+
+def test_diagnostic_action_group_emits_numeric_lever_directive_keys() -> None:
+    """Every diagnostic AG must round-trip through int(lever_key) without raising."""
+    from genie_space_optimizer.optimization.control_plane import (
+        _DIAGNOSTIC_AG_DIRECTIVES,
+        diagnostic_action_group_for_cluster,
+    )
+
+    for cluster_root in _DIAGNOSTIC_AG_DIRECTIVES:
+        ag = diagnostic_action_group_for_cluster({
+            "cluster_id": "H_TEST",
+            "root_cause": cluster_root,
+            "question_ids": ["q1"],
+            "asi_counterfactual_fixes": ["test fix"],
+        })
+        keys = list(ag["lever_directives"].keys())
+        assert keys, f"diagnostic AG for {cluster_root!r} must have a directive"
+        assert all(k.isdigit() for k in keys), (
+            f"diagnostic AG for {cluster_root!r} emitted non-digit keys: {keys}"
+        )
+        # Must round-trip cleanly through the harness collision-key path.
+        assert all(int(k) >= 1 for k in keys)

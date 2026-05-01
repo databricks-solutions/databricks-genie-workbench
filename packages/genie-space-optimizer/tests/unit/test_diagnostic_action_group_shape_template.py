@@ -15,8 +15,8 @@ def test_diagnostic_ag_for_temporal_window_includes_l5_directive() -> None:
         "asi_counterfactual_fixes": ["use DATE_SUB(CURRENT_DATE(), 30)"],
     }
     ag = diagnostic_action_group_for_cluster(cluster)
-    assert "L5" in ag["lever_directives"]
-    assert ag["lever_directives"]["L5"]["root_cause"] == "missing_temporal_filter"
+    assert "5" in ag["lever_directives"]
+    assert ag["lever_directives"]["5"]["root_cause"] == "missing_temporal_filter"
 
 
 def test_diagnostic_ag_for_column_disambiguation_includes_l1_directive() -> None:
@@ -27,8 +27,8 @@ def test_diagnostic_ag_for_column_disambiguation_includes_l1_directive() -> None
         "asi_counterfactual_fixes": ["region means region_name not region_combination"],
     }
     ag = diagnostic_action_group_for_cluster(cluster)
-    assert "L1" in ag["lever_directives"]
-    assert ag["lever_directives"]["L1"]["root_cause"] == "column_disambiguation"
+    assert "1" in ag["lever_directives"]
+    assert ag["lever_directives"]["1"]["root_cause"] == "column_disambiguation"
 
 
 def test_diagnostic_ag_for_unknown_root_cause_keeps_legacy_shape() -> None:
