@@ -5022,6 +5022,34 @@ pre-tightening behaviour, which is what caused the regressions
 documented in 2026-04-30-enrichment-validation-tightening-plan.md."""
 
 
+EXAMPLE_SQL_SMOKE_TEST_ENABLED = os.environ.get(
+    "GSO_EXAMPLE_SQL_SMOKE_TEST", "true",
+).lower() in {"1", "true", "yes", "on"}
+"""When True (default), every batch of accepted example SQLs goes
+through a pre-promotion smoke test against baseline ``both_correct``
+questions before the actual apply. The whole batch is rejected if any
+baseline-correct question regresses by more than
+``GSO_EXAMPLE_SQL_SMOKE_REGRESSION_TOLERANCE_PP`` percentage points.
+Disable only for debugging."""
+
+
+EXAMPLE_SQL_SMOKE_REGRESSION_TOLERANCE_PP = float(
+    os.environ.get("GSO_EXAMPLE_SQL_SMOKE_REGRESSION_TOLERANCE_PP", "0.0")
+)
+"""Tolerance (in percentage points) for the smoke test. ``0.0`` means
+any regression on baseline both_correct questions rejects the patch.
+Raise carefully — non-zero values knowingly accept the risk that
+enrichment can degrade known-good behaviour."""
+
+
+EXAMPLE_SQL_SMOKE_MAX_QUESTIONS = int(
+    os.environ.get("GSO_EXAMPLE_SQL_SMOKE_MAX_QUESTIONS", "20")
+)
+"""Cap on the number of baseline both_correct questions sent to the
+smoke test, to keep wall time bounded. Sampled randomly with a fixed
+seed when the baseline pool is larger than this cap."""
+
+
 EXAMPLE_SQL_TEACHING_SAFETY_PROMPT = (
     "You are a senior data engineer auditing example SQL pairs that "
     "will be permanently installed as teaching context inside a "
