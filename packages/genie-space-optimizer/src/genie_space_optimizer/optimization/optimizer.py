@@ -11339,12 +11339,19 @@ def _cluster_expects_lever3(cluster: dict[str, Any]) -> bool:
 def _strategist_memo_key(
     clusters: list[dict[str, Any]],
     metadata_snapshot: dict[str, Any],
+    *,
+    sql_shape_deltas: list[dict[str, Any]] | None = None,
 ) -> str:
     """Deterministic key for memoizing adaptive strategist results.
 
     Same cluster signatures + same space revision produce the same key, so
     repeated iterations against unchanged failure clusters can short-circuit
     the strategist call.
+
+    v2 Task 23 — once Tasks 19/20 land, rejected AGs carry
+    ``sql_shape_deltas``. Including a fingerprint of those deltas in the
+    key prevents the strategist memo cache from returning a stale
+    strategy after a rollback whose only signal was a SQL-shape change.
     """
     cluster_parts: list[str] = []
     for cluster in clusters:
@@ -11361,9 +11368,21 @@ def _strategist_memo_key(
         metadata_snapshot.get("space_revision")
         or metadata_snapshot.get("config_version")
         or metadata_snapshot.get("space_id")
+        or metadata_snapshot.get("revision")
         or ""
     )
-    raw = "|".join(sorted(cluster_parts)) + f"|revision={revision}"
+    delta_parts: list[str] = []
+    for delta in sql_shape_deltas or []:
+        target = str(delta.get("target_qid") or "")
+        improved = ",".join(sorted(str(x) for x in (delta.get("improved") or [])))
+        remaining = ",".join(sorted(str(x) for x in (delta.get("remaining") or [])))
+        delta_parts.append(f"{target}:{improved}:{remaining}")
+    raw = (
+        "|".join(sorted(cluster_parts))
+        + f"|revision={revision}"
+        + "|deltas="
+        + "|".join(sorted(delta_parts))
+    )
     return raw[:2000]
 
 

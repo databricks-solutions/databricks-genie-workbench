@@ -11402,8 +11402,16 @@ def _run_lever_loop(
                         + _bar("-")
                     )
 
+                # v2 Task 23 — fingerprint sql_shape_deltas accumulated in
+                # reflection_buffer so rollbacks invalidate the memo cache.
+                _memo_sql_deltas = [
+                    _delta
+                    for _rb in reflection_buffer
+                    for _delta in (_rb.get("sql_shape_deltas") or [])
+                ]
                 _memo_key = _strategist_memo_key(
                     list(_strategy_hard_clusters), metadata_snapshot,
+                    sql_shape_deltas=_memo_sql_deltas,
                 )
                 from genie_space_optimizer.optimization.intent_disambiguation import (
                     detect_intent_collisions,
