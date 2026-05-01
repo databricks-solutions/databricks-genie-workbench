@@ -5012,6 +5012,47 @@ warn-only relaxed policy. Strict mode is a methodological guard
 against benchmark leakage; regression prevention lives in the
 pre-promotion smoke test (see GSO_EXAMPLE_SQL_SMOKE_TEST)."""
 
+EXAMPLE_SQL_TEACHING_SAFETY_ENABLED = os.environ.get(
+    "GSO_EXAMPLE_SQL_TEACHING_SAFETY", "true",
+).lower() in {"1", "true", "yes", "on"}
+"""When True (default), every example-SQL candidate that survived the
+correctness arbiter is run through the teaching-safety judge before
+the apply step. Disable only for debugging — turning it off restores
+pre-tightening behaviour, which is what caused the regressions
+documented in 2026-04-30-enrichment-validation-tightening-plan.md."""
+
+
+EXAMPLE_SQL_TEACHING_SAFETY_PROMPT = (
+    "You are a senior data engineer auditing example SQL pairs that "
+    "will be permanently installed as teaching context inside a "
+    "Databricks Genie space. The arbiter has already verified the "
+    "SQL is self-consistent (it answers its own question on its own "
+    "data). Your job is different: judge whether installing this "
+    "example would BIAS Genie's future answers in a HARMFUL way.\n\n"
+    "REJECT (verdict ``no``) when ANY of these apply:\n"
+    "- KPI over-teaching: the SQL hard-codes one metric variant when "
+    "  multiple equally valid forms exist (will bias Genie toward "
+    "  this one form on similar questions).\n"
+    "- Grain mismatch: question grain (monthly/daily/yearly) does "
+    "  not match SQL grain.\n"
+    "- Routing bias: the SQL uses an asset that is plausible but "
+    "  NOT the most canonical for the question (e.g. counting via a "
+    "  metric view when a dim table is the canonical source).\n"
+    "- Surprising defaults: ORDER BY/LIMIT/HAVING/CASE that the "
+    "  question did not ask for and that future variants will not "
+    "  want.\n"
+    "- Over-specification: extra columns or filters not asked for.\n"
+    "- Wrong column choice: uses an obscure or DQ-suffix column "
+    "  (``*_combination``, ``*_v2``, ``*_legacy``) when a plain "
+    "  column exists.\n\n"
+    "ACCEPT (verdict ``yes``) only when the example is canonical, "
+    "minimal, schema-safe, and grain-correct.\n\n"
+    "Use ``uncertain`` when the schema context is too thin to judge.\n\n"
+    "OUTPUT FORMAT (strict JSON, no prose):\n"
+    '{"value": "yes" | "no" | "uncertain", '
+    '"rationale": "<one sentence>"}'
+)
+
 PREFLIGHT_EXAMPLE_SQL_PER_ARCHETYPE = int(
     os.getenv("GENIE_SPACE_OPTIMIZER_PREFLIGHT_PER_ARCHETYPE", "2") or "2"
 )

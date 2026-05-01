@@ -635,6 +635,65 @@ def score_example_sql_correctness(
     }
 
 
+def score_example_sql_teaching_safety(
+    question: str,
+    sql: str,
+    *,
+    w: "WorkspaceClient",
+    metadata_snapshot: dict | None = None,
+) -> dict:
+    """LLM judge: would installing this example bias Genie harmfully?
+
+    Independent of the correctness arbiter. Prerequisite is that
+    ``score_example_sql_correctness`` already returned ``"yes"`` —
+    this judge then asks whether the *teaching* effect is canonical,
+    minimal, and schema-safe.
+
+    Returns ``{"value": "yes"|"no"|"uncertain", "rationale": "..."}``.
+    Defaults to ``"uncertain"`` on LLM failure.
+    """
+    from genie_space_optimizer.common.config import (
+        EXAMPLE_SQL_TEACHING_SAFETY_PROMPT,
+    )
+
+    schema_block = _render_schema_for_arbiter(metadata_snapshot)
+    parts = [EXAMPLE_SQL_TEACHING_SAFETY_PROMPT]
+    if schema_block:
+        parts.append(schema_block)
+    parts.extend([
+        f"Question: {question}",
+        f"SQL:\n{sql}",
+    ])
+    prompt = "\n\n".join(parts)
+    prompt_name = (
+        get_registered_prompt_name("example_sql_teaching_safety")
+        or "example_sql_teaching_safety"
+    )
+    try:
+        result = _call_llm_for_scoring(w, prompt, prompt_name=prompt_name)
+    except Exception as exc:
+        logger.warning(
+            "score_example_sql_teaching_safety LLM call failed: %s", exc,
+        )
+        return {
+            "value": "uncertain",
+            "rationale": f"teaching-safety LLM unavailable: {exc}",
+        }
+    if not isinstance(result, dict):
+        return {"value": "uncertain", "rationale": "non-dict judge response"}
+    raw = str(result.get("value") or result.get("verdict") or "").strip().lower()
+    if raw in ("yes", "pass", "safe", "true"):
+        value = "yes"
+    elif raw in ("no", "fail", "unsafe", "false"):
+        value = "no"
+    else:
+        value = "uncertain"
+    return {
+        "value": value,
+        "rationale": str(result.get("rationale") or "")[:500],
+    }
+
+
 # Legacy alias — ``synthesis.py:_gate_arbiter`` imports this name via a
 # try/except, so exporting it wires the reactive synthesis path's
 # arbiter gate as well. Signature-compatible with the new function.
