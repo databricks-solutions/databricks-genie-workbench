@@ -13009,6 +13009,35 @@ def _run_lever_loop(
 
         patches = proposals_to_patches(all_proposals)
 
+        # Phase A — Lossless contract: stamp ag_assigned for every qid
+        # this AG targets, before any 'proposed' event fires. The
+        # contract requires AG_ASSIGNED between CLUSTERED and PROPOSED.
+        try:
+            _ag_assigned_qids = sorted({
+                str(q)
+                for _p in (all_proposals or [])
+                for q in (
+                    _p.get("_grounding_target_qids")
+                    or _p.get("target_qids")
+                    or []
+                )
+                if q
+            })
+            if not _ag_assigned_qids:
+                _ag_assigned_qids = [
+                    str(q) for q in (ag.get("affected_questions") or []) if q
+                ]
+            _emit_ag_assignment_journey(
+                emit=_journey_emit,
+                ag_id=str(ag_id),
+                affected_qids=_ag_assigned_qids,
+            )
+        except Exception:
+            logger.debug(
+                "Phase A: ag_assigned journey emit failed (non-fatal)",
+                exc_info=True,
+            )
+
         # Task 13 — emit ``proposed`` events for every proposal that
         # survived to ``proposals_to_patches``. Use both
         # ``_grounding_target_qids`` and ``target_qids`` so we capture
