@@ -449,6 +449,81 @@ _JUDGE_TO_LEVER: dict[str, int] = {
 }
 
 
+# Module-level lever map. Extracted from ``_map_to_lever`` so tests and other
+# call sites can introspect the routing table without invoking the function.
+# ``format_difference`` routes to Lever 5: the arbiter saw two SQL shapes that
+# produced similar results but didn't match the expected canonical form.
+# Surfacing the expected_sql as an example_sql teaches the canonical shape.
+_ROOT_CAUSE_LEVER_MAP: dict[str, int] = {
+    "wrong_column": 1,
+    "wrong_table": 1,
+    "description_mismatch": 1,
+    "missing_synonym": 1,
+    # Phase A1: SQL-shape aggregation/filter causes now route to Lever 6
+    # (sql_snippet_* primitives). Lever 2 could only update MV descriptions,
+    # which cannot add a measure, filter, or dimension. Example routing
+    # lookup: missing_filter -> sql_snippet_filter, wrong_aggregation ->
+    # sql_snippet_measure.
+    "wrong_aggregation": 6,
+    "wrong_measure": 6,
+    "missing_filter": 6,
+    "missing_scd_filter": 6,
+    "wrong_filter_condition": 6,
+    "missing_temporal_filter": 6,
+    "wrong_join_type": 5,
+    "tvf_parameter_error": 3,
+    "wrong_join": 4,
+    "missing_join_spec": 4,
+    "wrong_join_spec": 4,
+    "asset_routing_error": 5,
+    "missing_instruction": 5,
+    "ambiguous_question": 5,
+    # v2 Task 7: format_difference now routes to Lever 5 with a templated
+    # example_sql body so the strategist has a concrete patch to emit.
+    # Was 0 (no lever) which left the strategist without any actionable
+    # routing for canonical-shape mismatches.
+    "format_difference": 5,
+    "extra_columns_only": 0,
+    "select_star": 0,
+    "missing_dimension": 6,
+    "wrong_grouping": 6,
+    # P1 pattern labels (Phase 2). Without explicit entries here these
+    # labels fall through to ``_JUDGE_TO_LEVER[judge]``, which routes
+    # plural_top_n_collapse / granularity_drop / time_window_pivot to
+    # Lever 2 (Metric Views) on logical_accuracy failures. Lever 2 can
+    # only update MV descriptions and cannot reshape SQL — exactly the
+    # pathology the Phase A1 reroute fixed for wrong_aggregation et al.
+    # Routing the SQL-shape patterns to Lever 5 lets the structural gate
+    # force example_sql synthesis. Filter literal mismatches go to
+    # Lever 6 (sql_snippet_filter); column ambiguity goes to Lever 1
+    # (column synonyms / descriptions).
+    "plural_top_n_collapse": 5,
+    "time_window_pivot": 5,
+    "granularity_drop": 5,
+    "value_format_mismatch": 6,
+    "column_disambiguation": 1,
+}
+
+
+def _format_difference_example_sql_template(
+    *,
+    question: str,
+    expected_sql: str,
+) -> str:
+    """Render a Lever-5 example_sql body for a format_difference cluster.
+
+    format_difference means the arbiter saw two SQL shapes that produced
+    similar results but didn't match the expected canonical form. Surfacing
+    the expected_sql as a teaching example lets the strategist learn the
+    canonical shape without rewriting the user's question.
+    """
+    return (
+        "EXAMPLE SQL — canonical shape for this question family:\n"
+        f"-- Question: {question.strip()}\n"
+        f"{expected_sql.strip()}\n"
+    )
+
+
 def _map_to_lever(
     root_cause: str,
     asi_failure_type: str | None = None,
@@ -470,51 +545,7 @@ def _map_to_lever(
 
     # RCA-themed planning may override this coarse map. This fallback is
     # only for clusters that have no typed RCA findings.
-    mapping = {
-        "wrong_column": 1,
-        "wrong_table": 1,
-        "description_mismatch": 1,
-        "missing_synonym": 1,
-        # Phase A1: SQL-shape aggregation/filter causes now route to Lever 6
-        # (sql_snippet_* primitives). Lever 2 could only update MV descriptions,
-        # which cannot add a measure, filter, or dimension. Example routing
-        # lookup: missing_filter -> sql_snippet_filter, wrong_aggregation ->
-        # sql_snippet_measure.
-        "wrong_aggregation": 6,
-        "wrong_measure": 6,
-        "missing_filter": 6,
-        "missing_scd_filter": 6,
-        "wrong_filter_condition": 6,
-        "missing_temporal_filter": 6,
-        "wrong_join_type": 5,
-        "tvf_parameter_error": 3,
-        "wrong_join": 4,
-        "missing_join_spec": 4,
-        "wrong_join_spec": 4,
-        "asset_routing_error": 5,
-        "missing_instruction": 5,
-        "ambiguous_question": 5,
-        "format_difference": 0,
-        "extra_columns_only": 0,
-        "select_star": 0,
-        "missing_dimension": 6,
-        "wrong_grouping": 6,
-        # P1 pattern labels (Phase 2). Without explicit entries here these
-        # labels fall through to ``_JUDGE_TO_LEVER[judge]``, which routes
-        # plural_top_n_collapse / granularity_drop / time_window_pivot to
-        # Lever 2 (Metric Views) on logical_accuracy failures. Lever 2 can
-        # only update MV descriptions and cannot reshape SQL — exactly the
-        # pathology the Phase A1 reroute fixed for wrong_aggregation et al.
-        # Routing the SQL-shape patterns to Lever 5 lets the structural gate
-        # force example_sql synthesis. Filter literal mismatches go to
-        # Lever 6 (sql_snippet_filter); column ambiguity goes to Lever 1
-        # (column synonyms / descriptions).
-        "plural_top_n_collapse": 5,
-        "time_window_pivot": 5,
-        "granularity_drop": 5,
-        "value_format_mismatch": 6,
-        "column_disambiguation": 1,
-    }
+    mapping = _ROOT_CAUSE_LEVER_MAP
 
     if asi_failure_type and asi_failure_type in mapping:
         return mapping[asi_failure_type]
