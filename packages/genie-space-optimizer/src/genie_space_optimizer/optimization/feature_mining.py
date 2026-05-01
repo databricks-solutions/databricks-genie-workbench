@@ -298,6 +298,26 @@ def _diff(genie: tuple[str, ...], gt: tuple[str, ...]) -> tuple[tuple[str, ...],
 
 
 _STRUCTURAL_SAFE_VERDICTS = frozenset({"ground_truth_correct", "both_correct"})
+
+
+_TRUSTED_SIDES_BY_VERDICT: dict[str, tuple[str, ...]] = {
+    "both_correct": ("genie", "ground_truth"),
+    "genie_correct": ("genie",),
+    "ground_truth_correct": ("ground_truth",),
+}
+
+
+def trusted_sql_sides_for_verdict(verdict: str) -> tuple[str, ...]:
+    """Return the SQL sides the arbiter said are trustworthy for a row.
+
+    Used by structural mining to avoid extracting joins from SQL the
+    arbiter explicitly distrusted (e.g. mining joins from Genie's SQL
+    on a ``ground_truth_correct`` row would teach Genie back the same
+    mistake the arbiter caught). Returns an empty tuple for synthetic
+    or unrecognised verdicts; callers must require corroboration in
+    that case.
+    """
+    return _TRUSTED_SIDES_BY_VERDICT.get(str(verdict or ""), ())
 _AGG_EXPR_RE = re.compile(
     r"\b(?:SUM|COUNT|AVG|MIN|MAX)\s*\([^)]{1,240}\)",
     re.IGNORECASE,
