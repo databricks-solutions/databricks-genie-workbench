@@ -10967,6 +10967,52 @@ def _run_lever_loop(
         soft_signal_clusters = _analysis["soft_signal_clusters"]
         rca_ledger = _analysis.get("rca_ledger") or {}
 
+        # Phase A — Lossless contract: stamp the eval-entry events for
+        # every qid that entered this iteration's eval. This eliminates
+        # the validator's missing_qid violations (one per qid) and the
+        # illegal-transition violations that would otherwise arise from
+        # qids that begin their journey at 'clustered' or 'soft_signal'
+        # without a preceding 'evaluated' event.
+        try:
+            _eval_qids_for_entry = list(
+                (locals().get("full_result") or {}).get("question_ids") or []
+            )
+            _hard_qid_set = {
+                str(q)
+                for c in (clusters or [])
+                for q in (c.get("question_ids") or [])
+                if q
+            }
+            _soft_qid_set = {
+                str(q)
+                for c in (soft_signal_clusters or [])
+                for q in (c.get("question_ids") or [])
+                if q
+            } - _hard_qid_set
+            _gt_corr_qid_set = {
+                str(c.get("question_id") or "")
+                for c in (_analysis.get("gt_correction_candidates") or [])
+                if c.get("question_id")
+            }
+            _all_classified = _hard_qid_set | _soft_qid_set | _gt_corr_qid_set
+            _already_passing_set = (
+                {str(q) for q in _eval_qids_for_entry if q}
+                - _all_classified
+            )
+            _emit_eval_entry_journey(
+                emit=_journey_emit,
+                eval_qids=_eval_qids_for_entry,
+                already_passing_qids=sorted(_already_passing_set),
+                hard_qids=sorted(_hard_qid_set),
+                soft_qids=sorted(_soft_qid_set),
+                gt_correction_qids=sorted(_gt_corr_qid_set),
+            )
+        except Exception:
+            logger.debug(
+                "Phase A: eval-entry journey emit failed (non-fatal)",
+                exc_info=True,
+            )
+
         # Task 16 — scale max_iterations by initial hard cluster count.
         # Computed once on the first iteration (when ``clusters`` first
         # binds) and held for the rest of the run.
