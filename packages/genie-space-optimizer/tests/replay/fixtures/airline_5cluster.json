@@ -4,66 +4,146 @@
     {
       "iteration": 1,
       "eval_rows": [
-        {"question_id": "fx_001", "result_correctness": "yes",
-         "arbiter": "both_correct"},
-        {"question_id": "fx_002", "result_correctness": "no",
-         "arbiter": "ground_truth_correct"},
-        {"question_id": "fx_003", "result_correctness": "no",
-         "arbiter": "ground_truth_correct"},
-        {"question_id": "fx_004", "result_correctness": "no",
-         "arbiter": "neither_correct"},
-        {"question_id": "fx_005", "result_correctness": "yes",
-         "arbiter": "genie_correct"},
-        {"question_id": "fx_006", "result_correctness": "yes",
-         "arbiter": "both_correct"},
-        {"question_id": "fx_007", "result_correctness": "no",
-         "arbiter": "ground_truth_correct"},
-        {"question_id": "fx_008", "result_correctness": "no",
-         "arbiter": "ground_truth_correct"},
-        {"question_id": "fx_009", "result_correctness": "yes",
-         "arbiter": "both_correct"},
-        {"question_id": "fx_010", "result_correctness": "no",
-         "arbiter": "ground_truth_correct"},
-        {"question_id": "fx_011", "result_correctness": "yes",
-         "arbiter": "both_correct"},
-        {"question_id": "fx_012", "result_correctness": "yes",
-         "arbiter": "both_correct"}
+        {
+          "question_id": "fx_001",
+          "result_correctness": "yes",
+          "arbiter": "both_correct"
+        },
+        {
+          "question_id": "fx_002",
+          "result_correctness": "no",
+          "arbiter": "ground_truth_correct"
+        },
+        {
+          "question_id": "fx_003",
+          "result_correctness": "no",
+          "arbiter": "ground_truth_correct"
+        },
+        {
+          "question_id": "fx_004",
+          "result_correctness": "no",
+          "arbiter": "neither_correct"
+        },
+        {
+          "question_id": "fx_005",
+          "result_correctness": "yes",
+          "arbiter": "genie_correct"
+        },
+        {
+          "question_id": "fx_006",
+          "result_correctness": "yes",
+          "arbiter": "both_correct"
+        },
+        {
+          "question_id": "fx_007",
+          "result_correctness": "no",
+          "arbiter": "ground_truth_correct"
+        },
+        {
+          "question_id": "fx_008",
+          "result_correctness": "no",
+          "arbiter": "ground_truth_correct"
+        },
+        {
+          "question_id": "fx_009",
+          "result_correctness": "yes",
+          "arbiter": "both_correct"
+        },
+        {
+          "question_id": "fx_010",
+          "result_correctness": "no",
+          "arbiter": "ground_truth_correct"
+        },
+        {
+          "question_id": "fx_011",
+          "result_correctness": "yes",
+          "arbiter": "both_correct"
+        },
+        {
+          "question_id": "fx_012",
+          "result_correctness": "yes",
+          "arbiter": "both_correct"
+        }
       ],
       "clusters": [
-        {"cluster_id": "H001", "root_cause": "missing_filter",
-         "question_ids": ["fx_002", "fx_003"]},
-        {"cluster_id": "H002", "root_cause": "wrong_aggregation",
-         "question_ids": ["fx_007"]},
-        {"cluster_id": "H003", "root_cause": "missing_join_spec",
-         "question_ids": ["fx_010"]}
+        {
+          "cluster_id": "H001",
+          "root_cause": "missing_filter",
+          "question_ids": [
+            "fx_002",
+            "fx_003"
+          ]
+        },
+        {
+          "cluster_id": "H002",
+          "root_cause": "wrong_aggregation",
+          "question_ids": [
+            "fx_007"
+          ]
+        },
+        {
+          "cluster_id": "H003",
+          "root_cause": "missing_join_spec",
+          "question_ids": [
+            "fx_010"
+          ]
+        }
       ],
       "soft_clusters": [
-        {"cluster_id": "S001", "root_cause": "format_difference",
-         "question_ids": ["fx_004", "fx_008"]}
+        {
+          "cluster_id": "S001",
+          "root_cause": "format_difference",
+          "question_ids": [
+            "fx_004",
+            "fx_008"
+          ]
+        }
       ],
       "strategist_response": {
         "action_groups": [
           {
             "id": "AG1",
-            "source_cluster_ids": ["H001"],
-            "affected_questions": ["fx_002", "fx_003"],
-            "lever_directives": {"6": ["add_sql_snippet_filter"]},
+            "source_cluster_ids": [
+              "H001"
+            ],
+            "affected_questions": [
+              "fx_002",
+              "fx_003"
+            ],
+            "lever_directives": {
+              "6": [
+                "add_sql_snippet_filter"
+              ]
+            },
             "patches": [
-              {"proposal_id": "P1",
-               "patch_type": "add_sql_snippet_filter",
-               "cluster_id": "H001",
-               "target_qids": ["fx_002", "fx_003"]}
+              {
+                "proposal_id": "P1",
+                "patch_type": "add_sql_snippet_filter",
+                "cluster_id": "H001",
+                "target_qids": [
+                  "fx_002",
+                  "fx_003"
+                ]
+              }
             ]
           }
         ]
       },
       "post_eval_passing_qids": [
-        "fx_001", "fx_002", "fx_003", "fx_005", "fx_006",
-        "fx_009", "fx_011", "fx_012"
+        "fx_001",
+        "fx_002",
+        "fx_003",
+        "fx_005",
+        "fx_006",
+        "fx_009",
+        "fx_011",
+        "fx_012"
       ],
-      "ag_outcomes": {"AG1": "accepted"}
+      "ag_outcomes": {
+        "AG1": "accepted"
+      }
     }
   ],
-  "expected_canonical_journey": null,
+  "expected_canonical_journey": "[{\"question_id\":\"fx_001\",\"stage\":\"evaluated\"},{\"question_id\":\"fx_001\",\"stage\":\"already_passing\"},{\"is_passing\":true,\"question_id\":\"fx_001\",\"stage\":\"post_eval\",\"transition\":\"hold_pass\",\"was_passing\":true},{\"question_id\":\"fx_002\",\"stage\":\"evaluated\"},{\"cluster_id\":\"H001\",\"question_id\":\"fx_002\",\"root_cause\":\"missing_filter\",\"stage\":\"clustered\"},{\"ag_id\":\"AG1\",\"question_id\":\"fx_002\",\"stage\":\"ag_assigned\"},{\"cluster_id\":\"H001\",\"patch_type\":\"add_sql_snippet_filter\",\"proposal_id\":\"P1\",\"question_id\":\"fx_002\",\"stage\":\"proposed\"},{\"patch_type\":\"add_sql_snippet_filter\",\"proposal_id\":\"P1\",\"question_id\":\"fx_002\",\"stage\":\"applied\"},{\"ag_id\":\"AG1\",\"question_id\":\"fx_002\",\"stage\":\"accepted\"},{\"is_passing\":true,\"question_id\":\"fx_002\",\"stage\":\"post_eval\",\"transition\":\"fail_to_pass\",\"was_passing\":false},{\"question_id\":\"fx_003\",\"stage\":\"evaluated\"},{\"cluster_id\":\"H001\",\"question_id\":\"fx_003\",\"root_cause\":\"missing_filter\",\"stage\":\"clustered\"},{\"ag_id\":\"AG1\",\"question_id\":\"fx_003\",\"stage\":\"ag_assigned\"},{\"cluster_id\":\"H001\",\"patch_type\":\"add_sql_snippet_filter\",\"proposal_id\":\"P1\",\"question_id\":\"fx_003\",\"stage\":\"proposed\"},{\"patch_type\":\"add_sql_snippet_filter\",\"proposal_id\":\"P1\",\"question_id\":\"fx_003\",\"stage\":\"applied\"},{\"ag_id\":\"AG1\",\"question_id\":\"fx_003\",\"stage\":\"accepted\"},{\"is_passing\":true,\"question_id\":\"fx_003\",\"stage\":\"post_eval\",\"transition\":\"fail_to_pass\",\"was_passing\":false},{\"question_id\":\"fx_004\",\"stage\":\"evaluated\"},{\"question_id\":\"fx_004\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"fx_004\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"fx_005\",\"stage\":\"evaluated\"},{\"question_id\":\"fx_005\",\"stage\":\"gt_correction_candidate\"},{\"is_passing\":true,\"question_id\":\"fx_005\",\"stage\":\"post_eval\",\"transition\":\"fail_to_pass\",\"was_passing\":false},{\"question_id\":\"fx_006\",\"stage\":\"evaluated\"},{\"question_id\":\"fx_006\",\"stage\":\"already_passing\"},{\"is_passing\":true,\"question_id\":\"fx_006\",\"stage\":\"post_eval\",\"transition\":\"hold_pass\",\"was_passing\":true},{\"question_id\":\"fx_007\",\"stage\":\"evaluated\"},{\"cluster_id\":\"H002\",\"question_id\":\"fx_007\",\"root_cause\":\"wrong_aggregation\",\"stage\":\"clustered\"},{\"is_passing\":false,\"question_id\":\"fx_007\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"fx_008\",\"stage\":\"evaluated\"},{\"question_id\":\"fx_008\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"fx_008\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"fx_009\",\"stage\":\"evaluated\"},{\"question_id\":\"fx_009\",\"stage\":\"already_passing\"},{\"is_passing\":true,\"question_id\":\"fx_009\",\"stage\":\"post_eval\",\"transition\":\"hold_pass\",\"was_passing\":true},{\"question_id\":\"fx_010\",\"stage\":\"evaluated\"},{\"cluster_id\":\"H003\",\"question_id\":\"fx_010\",\"root_cause\":\"missing_join_spec\",\"stage\":\"clustered\"},{\"is_passing\":false,\"question_id\":\"fx_010\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"fx_011\",\"stage\":\"evaluated\"},{\"question_id\":\"fx_011\",\"stage\":\"already_passing\"},{\"is_passing\":true,\"question_id\":\"fx_011\",\"stage\":\"post_eval\",\"transition\":\"hold_pass\",\"was_passing\":true},{\"question_id\":\"fx_012\",\"stage\":\"evaluated\"},{\"question_id\":\"fx_012\",\"stage\":\"already_passing\"},{\"is_passing\":true,\"question_id\":\"fx_012\",\"stage\":\"post_eval\",\"transition\":\"hold_pass\",\"was_passing\":true}]",
   "expected_violations": []
 }

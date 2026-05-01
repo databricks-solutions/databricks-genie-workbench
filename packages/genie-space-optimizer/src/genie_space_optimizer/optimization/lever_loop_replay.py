@@ -68,6 +68,19 @@ def _replay_iteration(
 
     already_passing, hard, soft, gt_corr = _classify_eval_rows(rows)
 
+    # Fixtures declare soft_clusters explicitly; promote those qids out of
+    # the row-level hard partition so the journey reflects the cluster's
+    # intended classification rather than the row-level rc/arbiter heuristic.
+    fixture_soft_qids: set[str] = set()
+    for c in iteration_plan.get("soft_clusters") or []:
+        for q in c.get("question_ids") or []:
+            qstr = str(q)
+            if qstr:
+                fixture_soft_qids.add(qstr)
+    if fixture_soft_qids:
+        soft.update(fixture_soft_qids)
+        hard -= fixture_soft_qids
+
     def _emit(stage, **fields):
         qids = fields.pop("question_ids", None) or []
         qid = fields.pop("question_id", None)
