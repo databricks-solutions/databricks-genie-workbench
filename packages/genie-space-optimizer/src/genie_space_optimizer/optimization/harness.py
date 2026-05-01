@@ -9434,39 +9434,13 @@ def _run_gate_checks(
         suppressed_qids=_suppressed_qids,
     )
 
-    # Persist non-hold_pass transitions and emit per-qid audit rows.
-    try:
-        _t4_rows = build_question_regression_rows(
-            run_id=run_id,
-            iteration=iteration_counter,
-            ag_id=ag_id,
-            verdict=_t4_verdict,
-            suppressed_qids=_suppressed_qids,
-        )
-        if _t4_rows:
-            from genie_space_optimizer.optimization.state import (
-                write_question_regressions,
-            )
-            write_question_regressions(spark, _t4_rows, catalog=catalog, schema=schema)
-        for _row in _t4_rows:
-            _audit_emit(
-                stage_letter="M",
-                gate_name="per_question_regression",
-                decision=(
-                    "fail" if _row["transition"] == "pass_to_fail" and not _row["suppressed"]
-                    else "pass"
-                ),
-                reason_code=_row["transition"],
-                affected_qids=[_row["question_id"]],
-                metrics={
-                    "transition": _row["transition"],
-                    "was_passing": _row["was_passing"],
-                    "is_passing": _row["is_passing"],
-                    "suppressed": _row["suppressed"],
-                },
-            )
-    except Exception:
-        logger.debug("Failed to persist per-question regression rows", exc_info=True)
+    # v2 Task 21 — persistence of per-question regression rows (with
+    # cluster/proposal/applied-patch attribution) is now owned by
+    # ``_run_lever_loop``, which has direct access to ``strategy``,
+    # ``all_proposals`` and the apply log. Surface the verdict and
+    # suppressed-qid set in the gate result so the caller can build the
+    # attribution dicts and call ``build_question_regression_rows`` once
+    # with full provenance.
 
     # Task 5B — diagnostic only. The control-plane decision below now owns
     # acceptance with a tiered policy (bounded debt vs unbounded collateral).
@@ -9601,7 +9575,14 @@ def _run_gate_checks(
             },
         )
         _audit_persist()
-        return {"passed": False, "rollback_reason": f"full_eval: {regressions[0]['judge']}", "failed_eval_result": full_result, "regressions": regressions}
+        return {
+            "passed": False,
+            "rollback_reason": f"full_eval: {regressions[0]['judge']}",
+            "failed_eval_result": full_result,
+            "regressions": regressions,
+            "_t4_verdict": _t4_verdict,
+            "_suppressed_qids": _suppressed_qids,
+        }
 
     # ── PASSED ────────────────────────────────────────────────────────
     _score_delta = ", ".join(
@@ -9671,6 +9652,8 @@ def _run_gate_checks(
         "acceptance_delta_pp": _strict_decision.delta_pp,
         "new_model_id": new_model_id,
         "full_result": full_result,
+        "_t4_verdict": _t4_verdict,
+        "_suppressed_qids": _suppressed_qids,
         # Task 9 — surface acceptance tiering so the loop can carry debt
         # forward without re-running ``decide_control_plane_acceptance``.
         "acceptance_decision": {
@@ -13901,6 +13884,68 @@ def _run_lever_loop(
                 _accepted_baseline_rows_for_control_plane
             ),
         )
+
+        # v2 Task 21 — Per-question regression rows with full attribution.
+        # The gate returns the verdict and suppressed-qid set; the lever
+        # loop owns persistence here because ``strategy`` (cluster
+        # provenance), ``all_proposals`` (proposal IDs by qid), and
+        # ``apply_log`` (which patches actually deployed) are all in
+        # scope at this level.
+        try:
+            _t4_verdict_for_persist = gate_result.get("_t4_verdict")
+            _t4_suppressed_for_persist = gate_result.get("_suppressed_qids") or set()
+            if _t4_verdict_for_persist is not None:
+                from genie_space_optimizer.optimization.per_question_regression import (
+                    build_question_regression_rows,
+                )
+                _cluster_ids_by_qid: dict[str, list[str]] = {}
+                for _c in (strategy.get("_source_clusters") or []) if strategy else []:
+                    _cid = str(_c.get("cluster_id") or "").strip()
+                    if not _cid:
+                        continue
+                    for _q in _c.get("question_ids") or []:
+                        _cluster_ids_by_qid.setdefault(str(_q), []).append(_cid)
+                _proposal_ids_by_qid: dict[str, list[str]] = {}
+                for _p in (all_proposals or []):
+                    _pid = str(_p.get("proposal_id") or _p.get("id") or "").strip()
+                    if not _pid:
+                        continue
+                    for _q in _p.get("target_qids") or []:
+                        _proposal_ids_by_qid.setdefault(str(_q), []).append(_pid)
+                _applied_patch_entries = apply_log.get("applied", []) or []
+                _applied_patch_ids: list[str] = []
+                for _entry in _applied_patch_entries:
+                    _ap = _entry.get("patch", {}) or {}
+                    _ap_pid = str(
+                        _ap.get("proposal_id")
+                        or _ap.get("expanded_patch_id")
+                        or _ap.get("id")
+                        or ""
+                    )
+                    if _ap_pid:
+                        _applied_patch_ids.append(_ap_pid)
+                _t4_rows = build_question_regression_rows(
+                    run_id=run_id,
+                    iteration=iteration_counter,
+                    ag_id=ag_id,
+                    verdict=_t4_verdict_for_persist,
+                    suppressed_qids=_t4_suppressed_for_persist,
+                    cluster_ids_by_qid=_cluster_ids_by_qid,
+                    proposal_ids_by_qid=_proposal_ids_by_qid,
+                    applied_patch_ids=_applied_patch_ids,
+                )
+                if _t4_rows:
+                    from genie_space_optimizer.optimization.state import (
+                        write_question_regressions,
+                    )
+                    write_question_regressions(
+                        spark, _t4_rows, catalog=catalog, schema=schema,
+                    )
+        except Exception:
+            logger.debug(
+                "Failed to persist per-question regression rows", exc_info=True,
+            )
+
         # After the gate finishes, this iteration's pre-acceptance
         # baseline becomes the reference for the next iteration's
         # drift diagnostic.
