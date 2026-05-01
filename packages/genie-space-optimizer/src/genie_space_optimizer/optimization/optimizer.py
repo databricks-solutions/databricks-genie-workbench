@@ -7664,9 +7664,12 @@ _ACTIONABLE_ROOT_CAUSES: frozenset[str] = _SQL_SHAPE_ROOT_CAUSES | frozenset({
 def _select_dominant_root_cause(weighted: dict[str, float]) -> str:
     """Return the dominant root cause with actionability as the primary key.
 
-    A label is actionable when it routes to a non-zero lever via the lever
-    map and represents a fix the optimizer can ship. format_difference,
-    extra_columns_only, and select_star are explicitly non-actionable.
+    Actionable labels are members of ``_ACTIONABLE_ROOT_CAUSES`` — the
+    SQL-shape causes plus explicit filter/join/disambiguation labels.
+    Non-actionable labels (notably ``format_difference`` and
+    ``extra_columns_only``) reflect cosmetic output differences the
+    optimizer cannot ship as a lever-shaped fix and therefore lose to
+    any actionable label even at lower weight.
     """
     if not weighted:
         return "other"
