@@ -12724,6 +12724,43 @@ def _run_lever_loop(
                     ) + "\n"
                     + _bar("-")
                 )
+                _rca_shape_drop_reasons = {
+                    "missing_table_for_column",
+                    "missing_column",
+                    "invalid_column_target",
+                    "ambiguous_table_for_column",
+                }
+                _rca_shape_drops = [
+                    d for d in _shape_decisions
+                    if d.get("decision") == "dropped"
+                    and d.get("reason") in _rca_shape_drop_reasons
+                ]
+                if _rca_shape_drops:
+                    logger.warning(
+                        "[%s] rca_theme_shape_dropped: %d malformed column "
+                        "proposal(s) dropped during normalization; reasons=%s",
+                        ag_id,
+                        len(_rca_shape_drops),
+                        sorted({str(d.get("reason")) for d in _rca_shape_drops}),
+                    )
+                    for _drop in _rca_shape_drops:
+                        _audit_emit(
+                            stage_letter="G",
+                            gate_name="rca_column_shape_normalization",
+                            decision="reject",
+                            reason_code="rca_theme_shape_dropped",
+                            reason_detail=(
+                                f"proposal_id={_drop.get('proposal_id')} "
+                                f"reason={_drop.get('reason')}"
+                            ),
+                            affected_qids=[],
+                            metrics={
+                                "proposal_id": _drop.get("proposal_id"),
+                                "patch_type": _drop.get("patch_type"),
+                                "reason": _drop.get("reason"),
+                                "output_count": _drop.get("output_count"),
+                            },
+                        )
         except Exception:
             logger.debug(
                 "RCA column proposal normalization failed (non-fatal)",
