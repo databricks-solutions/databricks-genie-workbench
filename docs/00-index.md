@@ -13,7 +13,7 @@ Genie Workbench is a unified developer tool for creating, scoring, and optimizin
 | 05 | [IQ Scanner](05-iq-scanner.md) | Rule-based quality scoring: 12 checks, 3 maturity tiers |
 | 06 | [Fix Agent](06-fix-agent.md) | Scan-to-patch pipeline: findings to JSON patches to Genie API |
 | 07 | [Auto-Optimize (GSO)](07-auto-optimize.md) | Benchmark-driven optimization: 6-stage DAG, levers, gates |
-| 08 | [Deployment Guide](08-deployment-guide.md) | install.sh, deploy.sh, Lakebase setup, configuration reference |
+| 08 | [Deployment Guide](08-deployment-guide.md) | Local terminal installer, Databricks notebook installer, Lakebase setup, configuration reference |
 | 09 | [Operations Guide](09-operations-guide.md) | Lakebase management, MLflow, monitoring, GSO job ops |
 
 ### Appendices
@@ -22,15 +22,15 @@ Genie Workbench is a unified developer tool for creating, scoring, and optimizin
 |---|----------|-------------|
 | A | [API Reference](appendices/A-api-reference.md) | All API endpoints with auth identity and purpose |
 | B | [Troubleshooting](appendices/B-troubleshooting.md) | Common issues, causes, and fixes |
-| C | [Environment Variables](appendices/C-environment-variables.md) | Full reference for app.yaml and .env.deploy variables |
+| C | [Environment Variables](appendices/C-environment-variables.md) | Full reference for app.yaml, .env.deploy, and notebook widget variable flow |
 
 ## Quick Reference
 
 ```bash
-# Deploy (first time)
+# Local terminal install (first time)
 ./scripts/install.sh
 
-# Deploy (subsequent)
+# Local terminal deploy (subsequent)
 ./scripts/deploy.sh
 
 # Code-only update
@@ -39,6 +39,8 @@ Genie Workbench is a unified developer tool for creating, scoring, and optimizin
 # Tear down
 ./scripts/deploy.sh --destroy
 ```
+
+For the Databricks-native install path, clone the repo into a Databricks Git folder and run `notebooks/install.py`.
 
 ## Start Here
 

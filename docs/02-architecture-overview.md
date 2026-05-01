@@ -154,7 +154,7 @@ Lakebase degrades gracefully to in-memory dictionaries when `LAKEBASE_HOST` is n
 
 1. **No local dev server** — the app depends on Databricks OBO auth, Lakebase, and model serving endpoints that are only available inside a Databricks App environment. All testing is done by deploying to a real workspace.
 
-2. **Two deployment mechanisms** — `deploy.sh` manages the app (create, sync, `databricks apps deploy`); the GSO optimization job is managed by DABs (`databricks bundle deploy -t app`). They coexist but are independent.
+2. **Two install paths** — the local terminal path uses `scripts/install.sh` and `scripts/deploy.sh` to manage app creation, sync, `databricks apps deploy`, and the DAB-managed GSO job. The Databricks notebook path uses `notebooks/install.py`, notebook-native `WorkspaceClient()` auth, a generated workspace source folder, and SDK/Jobs API management for the GSO job.
 
 3. **Pydantic/TypeScript model sync** — `backend/models.py` and `frontend/src/types/index.ts` must be kept in sync manually. There is no code generation step.
 

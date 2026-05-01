@@ -71,7 +71,6 @@ from scripts.deploy_lib.install import run_install
 def notebook_status(message: str) -> None:
     line = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
     print(f"[genie-workbench install] {line}", flush=True)
-    displayHTML(f"<div style='font-family:monospace'>{line}</div>")
 
 
 app_name = dbutils.widgets.get("app_name").strip()

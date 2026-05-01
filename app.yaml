@@ -110,9 +110,12 @@ resources:
 # ---------------------------------------------------------------------------
 # Deployment
 # ---------------------------------------------------------------------------
-# Recommended:
+# Recommended local terminal path:
 #   ./scripts/install.sh        # Guided first-time setup
 #   ./scripts/deploy.sh          # Subsequent deploys
+#
+# Recommended Databricks notebook path:
+#   notebooks/install.py         # Run from a Databricks Git folder
 #
 # deploy.sh handles:
 #   - App creation/sync/deploy
@@ -120,4 +123,9 @@ resources:
 #   - GSO optimization job via `databricks bundle deploy -t app`
 #   - Injects GSO_JOB_ID into this file before running `apps deploy`
 #   - UC permissions and job permissions
+#
+# notebooks/install.py handles the same app/resource setup with notebook-native
+# auth. It treats this app.yaml as a template, writes a patched copy into
+# /Workspace/Users/<user>/.genie-workbench-deploy/<app-name>/app, and deploys
+# from that generated workspace source folder.
 # ---------------------------------------------------------------------------
