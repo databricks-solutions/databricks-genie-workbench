@@ -782,6 +782,20 @@ class LeakageOracle:
                 sql_score=best_sql_score,
             )
         if exact_sql or best_sql_score >= NGRAM_SIMILARITY_THRESHOLD:
+            # Read at call time so tests / runtime overrides via
+            # ``GSO_EXAMPLE_SQL_FIREWALL_STRICT`` take effect without
+            # needing to re-import :mod:`common.config`.
+            strict = os.environ.get(
+                "GSO_EXAMPLE_SQL_FIREWALL_STRICT", "true",
+            ).lower() in {"1", "true", "yes", "on"}
+            if strict:
+                return ExampleSqlLeakageDecision(
+                    block=True,
+                    warning=False,
+                    reason="sql_pattern_overlap_strict",
+                    question_score=best_question_score,
+                    sql_score=1.0 if exact_sql else best_sql_score,
+                )
             return ExampleSqlLeakageDecision(
                 block=False,
                 warning=True,

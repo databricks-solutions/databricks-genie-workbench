@@ -415,6 +415,10 @@ class TestPhase3FirewallDrops:
                 "category": "agg",
             }]
         monkeypatch.setattr(ev_mod, "_call_llm_for_scoring", _fake_llm)
+        # Relaxed-mode test: SQL fingerprint overlap alone produces a
+        # warning, not a drop. Default is now strict (Task 1 of the
+        # enrichment-validation-tightening plan).
+        monkeypatch.setenv("GSO_EXAMPLE_SQL_FIREWALL_STRICT", "false")
 
         oracle = LeakageOracle(_mk_benchmark_corpus())
         survivors, counters = generate_example_sqls(
@@ -1939,6 +1943,8 @@ class TestPhase6RelaxedFirewall:
             ]
 
         monkeypatch.setattr(ev_mod, "_call_llm_for_scoring", _fake_llm)
+        # Relaxed-mode test: default is strict after Task 1.
+        monkeypatch.setenv("GSO_EXAMPLE_SQL_FIREWALL_STRICT", "false")
         oracle = LeakageOracle(_mk_benchmark_corpus())
 
         survivors, counters = ev_mod.generate_example_sqls(

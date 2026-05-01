@@ -703,7 +703,11 @@ def test_failed_row_structural_learning_allows_snippets_but_blocks_example_sql()
     assert is_benchmark_leak(example, "add_example_sql", corpus)[0] is True
 
 
-def test_example_sql_policy_warns_on_sql_fingerprint_with_different_question():
+def test_example_sql_policy_warns_on_sql_fingerprint_with_different_question(
+    monkeypatch,
+):
+    # Relaxed-mode behaviour preserved when GSO_EXAMPLE_SQL_FIREWALL_STRICT=false.
+    monkeypatch.setenv("GSO_EXAMPLE_SQL_FIREWALL_STRICT", "false")
     from genie_space_optimizer.optimization.leakage import (
         BenchmarkCorpus,
         LeakageOracle,

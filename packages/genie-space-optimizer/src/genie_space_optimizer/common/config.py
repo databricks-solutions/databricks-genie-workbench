@@ -5002,6 +5002,16 @@ Clamped by the generator to the supported profile range. Defaults to 3 so
 the target=20, overdraw=3.0 path requests roughly 20 candidates per call.
 """
 
+EXAMPLE_SQL_FIREWALL_STRICT = os.environ.get(
+    "GSO_EXAMPLE_SQL_FIREWALL_STRICT", "true",
+).lower() in {"1", "true", "yes", "on"}
+"""When True (default), the example-SQL leakage firewall blocks any
+candidate whose SQL fingerprint or n-gram overlap matches a benchmark.
+Set GSO_EXAMPLE_SQL_FIREWALL_STRICT=false to fall back to the
+warn-only relaxed policy. Strict mode is a methodological guard
+against benchmark leakage; regression prevention lives in the
+pre-promotion smoke test (see GSO_EXAMPLE_SQL_SMOKE_TEST)."""
+
 PREFLIGHT_EXAMPLE_SQL_PER_ARCHETYPE = int(
     os.getenv("GENIE_SPACE_OPTIMIZER_PREFLIGHT_PER_ARCHETYPE", "2") or "2"
 )
