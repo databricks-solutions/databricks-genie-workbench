@@ -431,3 +431,174 @@ def get_enrichment_state(
         key="post_enrichment_thresholds_met", delta_query=delta_query,
     )
     return out
+
+
+from genie_space_optimizer.optimization.state import (
+    load_iterations,
+    load_latest_full_iteration,
+)
+
+
+def get_lever_loop_outputs(
+    spark: "SparkSession",
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    dbutils,
+) -> dict[str, HandoffValue]:
+    """Read lever_loop task values, falling back to Delta state."""
+    delta_query = (
+        f"SELECT * FROM {catalog}.{schema}.genie_opt_iterations "
+        f"WHERE run_id = '{run_id}' AND eval_scope = 'full' "
+        f"ORDER BY iteration DESC LIMIT 1"
+    )
+
+    _run_row = None
+    _latest_iter = None
+    _iters_df = None
+
+    def _need_delta() -> bool:
+        return any(
+            _tv_get(dbutils, "lever_loop", k) in ("", None)
+            for k in (
+                "scores", "accuracy", "model_id", "iteration_counter",
+                "best_iteration", "skipped",
+                "all_eval_mlflow_run_ids", "all_failure_question_ids",
+            )
+        )
+
+    if _need_delta():
+        _run_row = load_run(spark, run_id, catalog, schema)
+        _latest_iter = load_latest_full_iteration(
+            spark, run_id, catalog, schema,
+        )
+        if _run_row is None and _latest_iter is None and not any(
+            _tv_get(dbutils, "lever_loop", k) for k in ("scores", "model_id")
+        ):
+            raise RuntimeError(
+                f"get_lever_loop_outputs: no state available for run_id="
+                f"{run_id!r}. taskValues empty AND no rows in "
+                f"{catalog}.{schema}.genie_opt_runs / genie_opt_iterations. "
+                f"lever_loop task must complete before finalize / deploy."
+            )
+        _iters_df = load_iterations(spark, run_id, catalog, schema)
+
+    def _bool(s: str) -> bool:
+        return str(s).lower() in ("true", "1")
+
+    delta_skipped = (
+        _latest_iter is not None and int(_latest_iter.get("iteration", 0)) == 0
+    )
+
+    delta_eval_ids: list[str] | None = None
+    if _iters_df is not None and not _iters_df.empty:
+        col = _iters_df.get("mlflow_run_id")
+        if col is not None:
+            delta_eval_ids = [
+                x for x in col.dropna().tolist() if x
+            ]
+
+    out = {
+        "scores": _resolve(
+            _tv_get(dbutils, "lever_loop", "scores"),
+            delta_value=(_latest_iter or {}).get("scores_json"),
+            parser=json.loads,
+            key="scores", delta_query=delta_query,
+        ),
+        "accuracy": _resolve(
+            _tv_get(dbutils, "lever_loop", "accuracy"),
+            delta_value=(_latest_iter or {}).get("overall_accuracy"),
+            parser=float,
+            key="accuracy", delta_query=delta_query,
+        ),
+        "model_id": _resolve(
+            _tv_get(dbutils, "lever_loop", "model_id"),
+            delta_value=(_latest_iter or {}).get("model_id")
+            or (_run_row or {}).get("best_model_id"),
+            parser=str,
+            key="model_id", delta_query=delta_query,
+        ),
+        "iteration_counter": _resolve(
+            _tv_get(dbutils, "lever_loop", "iteration_counter"),
+            delta_value=(_latest_iter or {}).get("iteration"),
+            parser=int,
+            key="iteration_counter", delta_query=delta_query,
+        ),
+        "best_iteration": _resolve(
+            _tv_get(dbutils, "lever_loop", "best_iteration"),
+            delta_value=(_run_row or {}).get("best_iteration"),
+            parser=int,
+            key="best_iteration", delta_query=delta_query,
+        ),
+        "skipped": _resolve(
+            _tv_get(dbutils, "lever_loop", "skipped"),
+            delta_value=delta_skipped if _latest_iter is not None else None,
+            parser=_bool,
+            key="skipped", delta_query=delta_query,
+        ),
+        "all_eval_mlflow_run_ids": _resolve(
+            _tv_get(dbutils, "lever_loop", "all_eval_mlflow_run_ids"),
+            delta_value=delta_eval_ids,
+            parser=json.loads,
+            key="all_eval_mlflow_run_ids", delta_query=delta_query,
+        ),
+        "all_failure_question_ids": _resolve(
+            _tv_get(dbutils, "lever_loop", "all_failure_question_ids"),
+            delta_value=(_latest_iter or {}).get("failures_json"),
+            parser=json.loads,
+            key="all_failure_question_ids", delta_query=delta_query,
+        ),
+    }
+    return out
+
+
+def assert_lever_loop_inputs_sane(state: dict[str, HandoffValue]) -> None:
+    """Refuse to run the lever loop with degenerate baseline inputs.
+
+    The fingerprint of a Repair Run that lost taskValues is:
+    ``overall_accuracy`` is 0.0/None AND ``scores`` is empty AND both
+    are sourced from MISSING (Delta also empty). When this happens, the
+    loop will silently terminate as ``plateau_no_open_failures`` and
+    publish a misleading "Final accuracy: 0.0%" summary.
+
+    This guard is loud-failure replaces silent-success: raise immediately
+    with an actionable message instead.
+
+    Args:
+        state: dict of HandoffValue. Must contain
+            ``overall_accuracy`` and ``scores``.
+
+    Raises:
+        RuntimeError: if inputs are degenerate AND not from taskValues.
+    """
+    acc_hv = state["overall_accuracy"]
+    scores_hv = state["scores"]
+    acc_val = acc_hv.value
+    scores_val = scores_hv.value
+
+    is_acc_empty = acc_val in (0.0, 0, None)
+    is_scores_empty = (
+        scores_val is None
+        or (isinstance(scores_val, dict) and not scores_val)
+    )
+
+    if not (is_acc_empty and is_scores_empty):
+        return
+
+    both_real = (
+        acc_hv.source is HandoffSource.TASK_VALUES
+        and scores_hv.source is HandoffSource.TASK_VALUES
+    )
+    if both_real:
+        return
+
+    raise RuntimeError(
+        f"assert_lever_loop_inputs_sane: degenerate baseline state "
+        f"detected (overall_accuracy={acc_val!r} from {acc_hv.source.value}, "
+        f"scores={scores_val!r} from {scores_hv.source.value}). "
+        f"This is the Repair Run silent-success fingerprint: taskValues "
+        f"did not propagate AND Delta has no row to fall back to. "
+        f"Re-run the full DAG, or pass --override-baseline-from-delta "
+        f"with a known-good run_id."
+    )
