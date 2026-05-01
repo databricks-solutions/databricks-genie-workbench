@@ -8,7 +8,7 @@ from scripts.deploy_lib.config import InstallConfig, LakebaseInfo
 from scripts.deploy_lib.gso_job import build_job_settings
 from scripts.deploy_lib.lakebase import get_database_resource
 from scripts.deploy_lib.uc import update_grants
-from scripts.deploy_lib.workspace_source import should_copy
+from scripts.deploy_lib.workspace_source import mkdirs, should_copy, upload_source_notebook, workspace_api_path
 
 
 class FakeApiClient:
@@ -120,6 +120,34 @@ def test_workspace_source_inclusion_rules(tmp_path):
     assert not should_copy(repo / "notebooks/install.py", repo)
     assert not should_copy(repo / "frontend/node_modules/pkg/index.js", repo)
     assert not should_copy(repo / "packages/genie-space-optimizer/tests/test_x.py", repo)
+
+
+def test_workspace_api_path_normalizes_workspace_prefix():
+    assert workspace_api_path("/Workspace/Users/me/app") == "/Users/me/app"
+    assert workspace_api_path("/Users/me/app") == "/Users/me/app"
+
+
+def test_workspace_import_uses_object_path_for_workspace_prefixed_paths(tmp_path):
+    src = tmp_path / "run_preflight.py"
+    src.write_text("print('ok')")
+    w = FakeWorkspaceClient()
+
+    upload_source_notebook(w, src, "/Workspace/Users/me/app/gso/jobs/run_preflight")
+
+    assert w.api_client.calls[0] == (
+        "POST",
+        "/api/2.0/workspace/mkdirs",
+        {"path": "/Users/me/app/gso/jobs"},
+    )
+    assert w.api_client.calls[1][2]["path"] == "/Users/me/app/gso/jobs/run_preflight"
+
+
+def test_mkdirs_uses_object_path_for_workspace_prefixed_paths():
+    w = FakeWorkspaceClient()
+    mkdirs(w, "/Workspace/Users/me/app")
+    assert w.api_client.calls == [
+        ("POST", "/api/2.0/workspace/mkdirs", {"path": "/Users/me/app"})
+    ]
 
 
 def test_patch_app_resources_preserves_existing_and_adds_postgres():

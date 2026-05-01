@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote
 
+from .workspace_source import workspace_api_path
+
 
 APP_SOURCE_REQUIRED = [
     "backend/main.py",
@@ -23,7 +25,11 @@ def _api_do(w, method: str, path: str, body: dict[str, Any] | None = None) -> An
 
 def workspace_path_exists(w, path: str) -> bool:
     try:
-        _api_do(w, "GET", f"/api/2.0/workspace/get-status?path={quote(path, safe='')}")
+        _api_do(
+            w,
+            "GET",
+            f"/api/2.0/workspace/get-status?path={quote(workspace_api_path(path), safe='')}",
+        )
         return True
     except Exception:
         return False

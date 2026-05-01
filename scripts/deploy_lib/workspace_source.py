@@ -118,11 +118,20 @@ def _api_do(w, method: str, path: str, body: dict | None = None) -> dict:
     return w.api_client.do(method=method, path=path, body=body)
 
 
+def workspace_api_path(path: str) -> str:
+    """Convert /Workspace paths to Workspace API object paths."""
+    if path == "/Workspace":
+        return "/"
+    if path.startswith("/Workspace/"):
+        return path[len("/Workspace") :]
+    return path
+
+
 def mkdirs(w, workspace_path: str) -> None:
     if _can_use_local_path(workspace_path):
         Path(workspace_path).mkdir(parents=True, exist_ok=True)
         return
-    _api_do(w, "POST", "/api/2.0/workspace/mkdirs", {"path": workspace_path})
+    _api_do(w, "POST", "/api/2.0/workspace/mkdirs", {"path": workspace_api_path(workspace_path)})
 
 
 def delete_workspace_path(w, workspace_path: str) -> None:
@@ -133,7 +142,7 @@ def delete_workspace_path(w, workspace_path: str) -> None:
             w,
             "POST",
             "/api/2.0/workspace/delete",
-            {"path": workspace_path, "recursive": True},
+            {"path": workspace_api_path(workspace_path), "recursive": True},
         )
     except Exception:
         # Deleting a missing generated folder should be idempotent.
@@ -165,7 +174,7 @@ def write_workspace_file(w, workspace_path: str, content: bytes) -> None:
         "POST",
         "/api/2.0/workspace/import",
         {
-            "path": workspace_path,
+            "path": workspace_api_path(workspace_path),
             "format": "AUTO",
             "overwrite": True,
             "content": base64.b64encode(content).decode("ascii"),
@@ -180,7 +189,7 @@ def upload_source_notebook(w, src_path: Path, workspace_path_without_ext: str) -
         "POST",
         "/api/2.0/workspace/import",
         {
-            "path": workspace_path_without_ext,
+            "path": workspace_api_path(workspace_path_without_ext),
             "format": "SOURCE",
             "language": "PYTHON",
             "overwrite": True,
@@ -201,4 +210,3 @@ def prepare_workspace_source(w, cfg: InstallConfig, deployer_user: str) -> str:
         write_workspace_file(w, f"{source_path}/{rel}", src.read_bytes())
 
     return source_path
-

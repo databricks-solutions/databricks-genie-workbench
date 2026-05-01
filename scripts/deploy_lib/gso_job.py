@@ -11,7 +11,13 @@ from typing import Any
 from urllib.parse import quote
 
 from .config import GsoJobInfo, InstallConfig
-from .workspace_source import default_gso_path, mkdirs, upload_source_notebook, write_workspace_file
+from .workspace_source import (
+    default_gso_path,
+    mkdirs,
+    upload_source_notebook,
+    workspace_api_path,
+    write_workspace_file,
+)
 
 
 TASKS = [
@@ -219,7 +225,7 @@ def grant_directory_permissions(w, workspace_dir: str, app_sp_client_id: str) ->
         status = _api_do(
             w,
             "GET",
-            f"/api/2.0/workspace/get-status?path={quote(workspace_dir, safe='')}",
+            f"/api/2.0/workspace/get-status?path={quote(workspace_api_path(workspace_dir), safe='')}",
         )
         object_id = status.get("object_id")
         if object_id:
