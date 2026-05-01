@@ -3428,6 +3428,41 @@ def _format_data_profile_for_prompt(data_profile: dict | None) -> str:
     return "\n".join(lines)
 
 
+def _select_metric_view_columns(*sources: dict | None) -> list[dict]:
+    """Pick the first non-empty ``metric_view_columns`` payload from any
+    candidate dict. Used by every column proposal builder so the
+    metric-view-aware fallback in :func:`proposal_shape._normalise_one`
+    can resolve MV-backed columns. Each entry must be a dict with
+    ``column_name`` plus a metric-view target key (``metric_view_full_name``
+    or ``metric_view``); other shapes are filtered out so a malformed
+    upstream payload fails closed."""
+    # NOTE: this helper is dormant until ASI cluster enrichment populates
+    # ``metric_view_columns`` on the cluster / action_group / col_entry
+    # payload. The shape contract is stable so the upstream enrichment task
+    # can land independently without re-touching every builder.
+    for src in sources:
+        if not isinstance(src, dict):
+            continue
+        raw = src.get("metric_view_columns")
+        if not raw:
+            continue
+        cleaned: list[dict] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            col = str(entry.get("column_name") or "").strip()
+            tgt = str(
+                entry.get("metric_view_full_name")
+                or entry.get("metric_view")
+                or ""
+            ).strip()
+            if col and tgt:
+                cleaned.append(entry)
+        if cleaned:
+            return cleaned
+    return []
+
+
 def _enrich_blank_descriptions(
     metadata_snapshot: dict,
     w: WorkspaceClient | None = None,
@@ -3545,12 +3580,6 @@ def _enrich_blank_descriptions(
                 "lever": 0,
                 "risk_level": "low",
                 "source": "proactive_enrichment",
-                # Carry empty metric_view_columns so proposal_shape's
-                # MV-aware fallback shape is preserved end-to-end. The
-                # proactive enrichment path operates on blank columns
-                # without an upstream cluster, so the list is empty here
-                # by design — table is already concrete from batch_lookup.
-                "metric_view_columns": [],
             })
 
     logger.info(
@@ -13114,15 +13143,6 @@ def generate_proposals_from_strategy(
                 col_sections = col_entry.get("sections", {})
                 col_etype = col_entry.get("entity_type", "")
                 if tbl and col and isinstance(col_sections, dict) and col_sections:
-                    # Source metric_view_columns from the strategist directive
-                    # first, then fall back to the action group (source ASI
-                    # cluster). This lets columns that live behind a metric
-                    # view definition survive proposal_shape normalization.
-                    _mv_cols = (
-                        col_entry.get("metric_view_columns")
-                        or action_group.get("metric_view_columns")
-                        or []
-                    )
                     proposals.append({
                         "proposal_id": f"P{len(proposals) + 1:03d}",
                         "cluster_id": ag_id,
@@ -13151,7 +13171,9 @@ def generate_proposals_from_strategy(
                         "column": col,
                         "column_sections": col_sections,
                         "column_entity_type": col_etype,
-                        "metric_view_columns": list(_mv_cols),
+                        "metric_view_columns": _select_metric_view_columns(
+                            col_entry, action_group,
+                        ),
                     })
 
             if target_lever == 1 and ENABLE_RCA_LEVER1_BRIDGE:
@@ -13224,16 +13246,6 @@ def generate_proposals_from_strategy(
                                     "rca_synonym_themes", [],
                                 ).append(_theme_id)
                             continue
-                        # Source metric_view_columns from the RCA patch,
-                        # then the generated proposal, then the action
-                        # group (source ASI cluster), so MV-only columns
-                        # survive proposal_shape normalization.
-                        _mv_cols_l1 = (
-                            _p.get("metric_view_columns")
-                            or _gen.get("metric_view_columns")
-                            or action_group.get("metric_view_columns")
-                            or []
-                        )
                         _proposal = {
                             "proposal_id": f"P{len(proposals) + 1:03d}",
                             "cluster_id": _theme_id,
@@ -13286,7 +13298,9 @@ def generate_proposals_from_strategy(
                                 "rca_id": _theme_id,
                                 "patch_family": _theme_family,
                             },
-                            "metric_view_columns": list(_mv_cols_l1),
+                            "metric_view_columns": _select_metric_view_columns(
+                                _p, _gen, action_group,
+                            ),
                         }
                         proposals.append(_proposal)
                         _l1_index[_key] = _proposal
