@@ -6638,7 +6638,10 @@ def _compute_forbidden_ag_set(
         rc = r.get("root_cause") or ""
         if not rc:
             continue
-        blame = r.get("blame_set") or ""
+        # Defense in depth: persisted reflections JSON-decode tuples back to
+        # lists. Normalize on read so resumed entries produce the same
+        # forbidden tuple as _ag_collision_key produces on the live path.
+        blame = _normalise_blame(r.get("blame_set"))
         lever_set = r.get("lever_set") or []
         if not lever_set:
             continue
@@ -15760,12 +15763,17 @@ def _resume_lever_loop(
     all_iters = load_all_full_iterations(spark, run_id, catalog, schema)
     restored_reflections: list[dict] = []
     restored_tried_patches: set[tuple[str, str]] = set()
-    restored_tried_root_causes: set[tuple[str, str]] = set()
+    restored_tried_root_causes: set[tuple] = set()
     restored_skill_exemplars: list[dict] = []
     for it in all_iters:
         rj = it.get("reflection_json")
         if not isinstance(rj, dict):
             continue
+        # Normalize blame in-place so downstream readers (forbidden-set
+        # computation, resume display) see the same tuple shape the live
+        # writer persisted before JSON round-trip flattened it to a list.
+        rj = dict(rj)
+        rj["blame_set"] = _normalise_blame(rj.get("blame_set"))
         restored_reflections.append(rj)
         for dnr in rj.get("do_not_retry", []):
             parts = dnr.split(" on ", 1)
@@ -15775,7 +15783,19 @@ def _resume_lever_loop(
             root_cause = rj.get("root_cause", "")
             blame = rj.get("blame_set", "")
             if root_cause and blame:
+                # Always-hashable 2-tuple (legacy contract) for back-compat
+                # with consumers that test the 2-tuple form.
                 restored_tried_root_causes.add((root_cause, blame))
+                # Add the live-path 3-tuple shape too, when the persisted
+                # reflection carries the lever set. Mirrors harness.py:14348.
+                lever_raw = rj.get("lever_set") or []
+                lever_set = frozenset(
+                    int(x) for x in lever_raw if str(x).isdigit()
+                )
+                if lever_set:
+                    restored_tried_root_causes.add(
+                        (root_cause, blame, lever_set)
+                    )
         if rj.get("accepted") and rj.get("accuracy_delta", 0.0) >= 1.0:
             restored_skill_exemplars.append({
                 "root_cause": rj.get("root_cause", ""),
