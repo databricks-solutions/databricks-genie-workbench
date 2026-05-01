@@ -122,3 +122,159 @@ _LEGAL_NEXT: dict[JourneyStage, frozenset[JourneyStage]] = {
 def is_legal_next_stage(*, prev: JourneyStage, nxt: JourneyStage) -> bool:
     """Return True if a question may transition from prev to nxt in one iteration."""
     return nxt in _LEGAL_NEXT.get(prev, frozenset())
+
+
+@dataclass(frozen=True)
+class JourneyContractViolation:
+    """One reportable defect found by validate_question_journeys."""
+
+    question_id: str
+    kind: str  # "missing_qid" | "unknown_stage" | "illegal_transition" | "no_terminal_state"
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class JourneyValidationReport:
+    is_valid: bool
+    missing_qids: tuple[str, ...]
+    violations: list[JourneyContractViolation]
+    terminal_state_by_qid: dict[str, JourneyTerminalState]
+
+
+def _classify_terminal_state(
+    *,
+    events: list[QuestionJourneyEvent],
+) -> JourneyTerminalState:
+    """Reduce a qid's event list to one terminal-state classification.
+
+    Order of resolution matches the expected information flow:
+      1. already_passing → ALREADY_PASSING
+      2. gt_correction_candidate → GT_CORRECTION_CANDIDATE
+      3. accepted/accepted_with_regression_debt + post_eval is_passing → HARD_FAILURE_RESOLVED
+      4. rolled_back → ROLLED_BACK_NO_PROGRESS
+      5. soft_signal only (no clustered) → SOFT_SIGNAL_ONLY
+      6. clustered but no ag_assigned/diagnostic_ag → TERMINAL_UNACTIONABLE
+      7. otherwise → HARD_FAILURE_UNRESOLVED
+    """
+    stages = {ev.stage for ev in events}
+    if "already_passing" in stages:
+        return JourneyTerminalState.ALREADY_PASSING
+    if "gt_correction_candidate" in stages:
+        return JourneyTerminalState.GT_CORRECTION_CANDIDATE
+    is_passing_after = any(
+        ev.stage == "post_eval" and ev.is_passing is True for ev in events
+    )
+    if (
+        ("accepted" in stages or "accepted_with_regression_debt" in stages)
+        and is_passing_after
+    ):
+        return JourneyTerminalState.HARD_FAILURE_RESOLVED
+    if "rolled_back" in stages:
+        return JourneyTerminalState.ROLLED_BACK_NO_PROGRESS
+    if "soft_signal" in stages and "clustered" not in stages:
+        return JourneyTerminalState.SOFT_SIGNAL_ONLY
+    if (
+        "clustered" in stages
+        and "ag_assigned" not in stages
+        and "diagnostic_ag" not in stages
+    ):
+        return JourneyTerminalState.TERMINAL_UNACTIONABLE
+    return JourneyTerminalState.HARD_FAILURE_UNRESOLVED
+
+
+def _ordered_stages_for_qid(events: list[QuestionJourneyEvent]) -> list[str]:
+    """Return a qid's events in the canonical order used by the renderer.
+
+    Mirrors question_journey._STAGE_ORDER ordering with proposal_id as tiebreak.
+    """
+    from genie_space_optimizer.optimization.question_journey import _stage_rank
+
+    return [
+        ev.stage
+        for ev in sorted(events, key=lambda e: (_stage_rank(e.stage), e.proposal_id))
+    ]
+
+
+def validate_question_journeys(
+    *,
+    events: list[QuestionJourneyEvent],
+    eval_qids: Iterable[str],
+) -> JourneyValidationReport:
+    """Assert every evaluated qid has a complete, legal journey.
+
+    A journey is *complete* when:
+      - the qid appears in at least one event,
+      - every adjacent pair of stages is in the legal-transition map, and
+      - the event list resolves to a JourneyTerminalState.
+    """
+    legal_stages = {s.value for s in JourneyStage}
+    eval_qid_set = {str(q) for q in eval_qids if q}
+
+    # Group events per-qid, preserving canonical ordering.
+    by_qid: dict[str, list[QuestionJourneyEvent]] = {}
+    for ev in events:
+        if ev.question_id:
+            by_qid.setdefault(ev.question_id, []).append(ev)
+
+    violations: list[JourneyContractViolation] = []
+    terminal_state_by_qid: dict[str, JourneyTerminalState] = {}
+
+    missing_qids = tuple(sorted(eval_qid_set - by_qid.keys()))
+    for missing in missing_qids:
+        violations.append(
+            JourneyContractViolation(
+                question_id=missing,
+                kind="missing_qid",
+                detail="qid in eval set has no journey events",
+            )
+        )
+
+    for qid, qevents in by_qid.items():
+        ordered = _ordered_stages_for_qid(qevents)
+
+        # 1. Unknown-stage check.
+        for s in ordered:
+            if s not in legal_stages:
+                violations.append(
+                    JourneyContractViolation(
+                        question_id=qid,
+                        kind="unknown_stage",
+                        detail=f"stage={s!r} not in JourneyStage enum",
+                    )
+                )
+
+        # 2. Adjacent-transition check.
+        for prev_s, next_s in zip(ordered, ordered[1:]):
+            if prev_s not in legal_stages or next_s not in legal_stages:
+                continue  # already reported as unknown_stage
+            if not is_legal_next_stage(
+                prev=JourneyStage(prev_s),
+                nxt=JourneyStage(next_s),
+            ):
+                violations.append(
+                    JourneyContractViolation(
+                        question_id=qid,
+                        kind="illegal_transition",
+                        detail=f"{prev_s} -> {next_s}",
+                    )
+                )
+
+        # 3. Terminal-state check: classification must succeed AND post_eval must
+        # exist for any qid that entered eval.
+        if qid in eval_qid_set and "post_eval" not in {ev.stage for ev in qevents}:
+            violations.append(
+                JourneyContractViolation(
+                    question_id=qid,
+                    kind="no_terminal_state",
+                    detail="qid has no post_eval event",
+                )
+            )
+        else:
+            terminal_state_by_qid[qid] = _classify_terminal_state(events=qevents)
+
+    return JourneyValidationReport(
+        is_valid=not violations and not missing_qids,
+        missing_qids=missing_qids,
+        violations=violations,
+        terminal_state_by_qid=terminal_state_by_qid,
+    )

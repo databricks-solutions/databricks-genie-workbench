@@ -7,10 +7,12 @@ from typing import Any
 
 
 _STAGE_ORDER: list[str] = [
+    "evaluated",
     "clustered",
     "soft_signal",
     "gt_correction_candidate",
     "intent_collision_detected",
+    "already_passing",
     "diagnostic_ag",
     "ag_assigned",
     "proposed",
@@ -22,6 +24,8 @@ _STAGE_ORDER: list[str] = [
     "dropped_at_cap",
     "applied",
     "rolled_back",
+    "accepted",
+    "accepted_with_regression_debt",
     "post_eval",
 ]
 

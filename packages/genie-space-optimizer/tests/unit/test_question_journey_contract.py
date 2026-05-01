@@ -77,3 +77,108 @@ def test_legal_transitions_map_allows_dropped_at_cap_after_proposed() -> None:
         prev=JourneyStage.PROPOSED,
         nxt=JourneyStage.DROPPED_AT_CAP,
     )
+
+
+def test_validate_reports_missing_qids() -> None:
+    from genie_space_optimizer.optimization.question_journey import (
+        QuestionJourneyEvent,
+    )
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        validate_question_journeys,
+    )
+
+    events = [
+        QuestionJourneyEvent(question_id="gs_001", stage="evaluated"),
+        QuestionJourneyEvent(question_id="gs_001", stage="already_passing"),
+        QuestionJourneyEvent(question_id="gs_001", stage="post_eval"),
+    ]
+    report = validate_question_journeys(
+        events=events,
+        eval_qids={"gs_001", "gs_002"},
+    )
+
+    assert report.is_valid is False
+    assert "gs_002" in report.missing_qids
+    assert "gs_001" not in report.missing_qids
+
+
+def test_validate_reports_illegal_transition() -> None:
+    from genie_space_optimizer.optimization.question_journey import (
+        QuestionJourneyEvent,
+    )
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        validate_question_journeys,
+    )
+
+    events = [
+        QuestionJourneyEvent(question_id="gs_001", stage="evaluated"),
+        QuestionJourneyEvent(question_id="gs_001", stage="applied"),  # illegal
+    ]
+    report = validate_question_journeys(
+        events=events,
+        eval_qids={"gs_001"},
+    )
+
+    assert report.is_valid is False
+    assert any(
+        v.question_id == "gs_001" and v.kind == "illegal_transition"
+        for v in report.violations
+    )
+
+
+def test_validate_reports_no_terminal_state() -> None:
+    from genie_space_optimizer.optimization.question_journey import (
+        QuestionJourneyEvent,
+    )
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        validate_question_journeys,
+    )
+
+    events = [
+        QuestionJourneyEvent(question_id="gs_001", stage="evaluated"),
+        QuestionJourneyEvent(question_id="gs_001", stage="clustered"),
+        # no post_eval, no terminal
+    ]
+    report = validate_question_journeys(
+        events=events,
+        eval_qids={"gs_001"},
+    )
+
+    assert report.is_valid is False
+    assert any(
+        v.question_id == "gs_001" and v.kind == "no_terminal_state"
+        for v in report.violations
+    )
+
+
+def test_validate_passes_for_complete_journey() -> None:
+    from genie_space_optimizer.optimization.question_journey import (
+        QuestionJourneyEvent,
+    )
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        validate_question_journeys,
+    )
+
+    events = [
+        QuestionJourneyEvent(question_id="gs_001", stage="evaluated"),
+        QuestionJourneyEvent(question_id="gs_001", stage="clustered",
+                             cluster_id="H001", root_cause="missing_filter"),
+        QuestionJourneyEvent(question_id="gs_001", stage="ag_assigned",
+                             ag_id="AG1"),
+        QuestionJourneyEvent(question_id="gs_001", stage="proposed",
+                             proposal_id="P1", patch_type="add_sql_snippet"),
+        QuestionJourneyEvent(question_id="gs_001", stage="applied",
+                             proposal_id="P1"),
+        QuestionJourneyEvent(question_id="gs_001", stage="accepted"),
+        QuestionJourneyEvent(question_id="gs_001", stage="post_eval",
+                             was_passing=False, is_passing=True,
+                             transition="fail_to_pass"),
+    ]
+    report = validate_question_journeys(
+        events=events,
+        eval_qids={"gs_001"},
+    )
+
+    assert report.is_valid is True
+    assert report.violations == []
+    assert report.terminal_state_by_qid["gs_001"].value == "hard_failure_resolved"
