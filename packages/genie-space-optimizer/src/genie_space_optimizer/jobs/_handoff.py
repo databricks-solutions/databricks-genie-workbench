@@ -323,3 +323,111 @@ def get_baseline_eval_state(
         ),
     }
     return out
+
+
+def _load_enrichment_iteration_row(
+    spark: "SparkSession", run_id: str, catalog: str, schema: str,
+) -> dict | None:
+    """Latest eval_scope='enrichment' row for ``run_id``.
+
+    Returns ``None`` if enrichment was skipped (no row written).
+    """
+    fqn = _fqn(catalog, schema, "genie_opt_iterations")
+    df = run_query(
+        spark,
+        f"SELECT * FROM {fqn} WHERE run_id = '{run_id}' "
+        f"AND eval_scope = 'enrichment' "
+        f"AND (rolled_back IS NULL OR rolled_back = false) "
+        f"ORDER BY timestamp DESC LIMIT 1",
+    )
+    if df.empty:
+        return None
+    row = df.iloc[0].to_dict()
+    if row.get("scores_json") and isinstance(row["scores_json"], str):
+        try:
+            row["scores_json"] = json.loads(row["scores_json"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return row
+
+
+def get_enrichment_state(
+    spark: "SparkSession",
+    *,
+    run_id: str,
+    catalog: str,
+    schema: str,
+    dbutils,
+) -> dict[str, HandoffValue]:
+    """Read enrichment task values, falling back to genie_opt_iterations.
+
+    Returns ``HandoffValue`` for: ``enrichment_model_id``,
+    ``enrichment_skipped``, ``post_enrichment_accuracy``,
+    ``post_enrichment_scores``, ``post_enrichment_model_id``,
+    ``post_enrichment_thresholds_met``.
+
+    Absence of a Delta enrichment row -> ``enrichment_skipped=True`` with
+    source=DELTA_FALLBACK; all post_* values are MISSING. This is a valid
+    state and does NOT raise.
+    """
+    delta_query = (
+        f"SELECT * FROM {catalog}.{schema}.genie_opt_iterations "
+        f"WHERE run_id = '{run_id}' AND eval_scope = 'enrichment' LIMIT 1"
+    )
+
+    raw_skipped = _tv_get(dbutils, "enrichment", "enrichment_skipped")
+    if raw_skipped not in ("", None):
+        # Operator-supplied skip signal -- trust it.
+        skipped_val = str(raw_skipped).lower() in ("true", "1")
+        skipped_hv = HandoffValue(
+            key="enrichment_skipped", value=skipped_val,
+            source=HandoffSource.TASK_VALUES,
+        )
+        delta_row = None
+    else:
+        delta_row = _load_enrichment_iteration_row(
+            spark, run_id, catalog, schema,
+        )
+        skipped_val = delta_row is None
+        skipped_hv = HandoffValue(
+            key="enrichment_skipped", value=skipped_val,
+            source=HandoffSource.DELTA_FALLBACK,
+            delta_query=delta_query,
+        )
+
+    def _bool(s: str) -> bool:
+        return str(s).lower() in ("true", "1")
+
+    out: dict[str, HandoffValue] = {"enrichment_skipped": skipped_hv}
+
+    out["enrichment_model_id"] = _resolve(
+        _tv_get(dbutils, "enrichment", "enrichment_model_id"),
+        delta_value=(delta_row or {}).get("model_id"),
+        parser=str,
+        key="enrichment_model_id", delta_query=delta_query,
+    )
+    out["post_enrichment_accuracy"] = _resolve(
+        _tv_get(dbutils, "enrichment", "post_enrichment_accuracy"),
+        delta_value=(delta_row or {}).get("overall_accuracy"),
+        parser=float,
+        key="post_enrichment_accuracy", delta_query=delta_query,
+    )
+    out["post_enrichment_scores"] = _resolve(
+        _tv_get(dbutils, "enrichment", "post_enrichment_scores"),
+        delta_value=(delta_row or {}).get("scores_json"),
+        parser=json.loads,
+        key="post_enrichment_scores", delta_query=delta_query,
+    )
+    out["post_enrichment_model_id"] = _resolve(
+        _tv_get(dbutils, "enrichment", "post_enrichment_model_id"),
+        delta_value=(delta_row or {}).get("model_id"),
+        parser=str,
+        key="post_enrichment_model_id", delta_query=delta_query,
+    )
+    out["post_enrichment_thresholds_met"] = _resolve(
+        _tv_get(dbutils, "enrichment", "post_enrichment_thresholds_met"),
+        delta_value=(delta_row or {}).get("thresholds_met"),
+        parser=_bool,
+        key="post_enrichment_thresholds_met", delta_query=delta_query,
+    )
+    return out
