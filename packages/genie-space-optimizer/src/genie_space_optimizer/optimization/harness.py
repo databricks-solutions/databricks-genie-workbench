@@ -11215,6 +11215,23 @@ def _run_lever_loop(
                 _memo_key = _strategist_memo_key(
                     list(_strategy_hard_clusters), metadata_snapshot,
                 )
+                from genie_space_optimizer.optimization.intent_disambiguation import (
+                    detect_intent_collisions,
+                )
+
+                _intent_collisions = detect_intent_collisions(_strategy_hard_clusters)
+                if _intent_collisions:
+                    logger.warning(
+                        "Detected %d intent collision(s) across active clusters: %s",
+                        len(_intent_collisions),
+                        [
+                            {
+                                "term": c["term"],
+                                "columns": sorted(c["column_choices"]),
+                            }
+                            for c in _intent_collisions
+                        ],
+                    )
                 if _diag_preempt is not None:
                     strategy = {
                         "action_groups": [_diag_preempt],
@@ -11242,6 +11259,7 @@ def _run_lever_loop(
                             iq_scan_summary if _iq_scan_strategist_enabled() else None
                         ),
                         max_ag_patches=MAX_AG_PATCHES,
+                        intent_collisions=_intent_collisions,
                     )
                     strategist_memo_cache[_memo_key] = copy.deepcopy(strategy)
                     strategy["_memoized"] = False

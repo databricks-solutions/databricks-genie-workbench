@@ -9356,6 +9356,7 @@ def _call_llm_for_adaptive_strategy(
     human_suggestions: list[dict] | None = None,
     iq_scan_summary: dict | None = None,
     max_ag_patches: int | None = None,
+    intent_collisions: list[dict] | None = None,
 ) -> dict:
     """Single-call strategist that produces exactly ONE action group.
 
@@ -9381,6 +9382,11 @@ def _call_llm_for_adaptive_strategy(
     budget_text = _format_strategist_budget_preamble(
         budget=_budget, n_clusters=len(clusters),
     )
+
+    # v2 Task 11 — accept intent collisions for downstream prompt surfacing
+    # (Task 12 wires these into the strategist instructions). Reference the
+    # parameter so static analysis does not flag it as unused.
+    _ = intent_collisions
 
     _blame_items: list[str] = []
     for c in clusters:
