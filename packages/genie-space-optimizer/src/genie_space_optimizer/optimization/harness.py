@@ -10620,6 +10620,10 @@ def _run_lever_loop(
     # baseline's passing set so iteration 1's ``was`` reflects pre-loop
     # state.
     _prev_passing_qids: set[str] = set()
+    # Phase A — per-iteration input snapshots for the replay-fixture
+    # exporter. End-of-run, if ``GSO_DUMP_REPLAY_FIXTURE`` is set, this
+    # list is dumped to JSON via ``dump_replay_fixture``.
+    _replay_fixture_iterations: list[dict] = []
     _verdict_history: dict[str, list] = {}
     _last_full_mlflow_run_id: str = baseline_iter.get("mlflow_run_id", "") if baseline_iter else ""
 
@@ -10882,6 +10886,19 @@ def _run_lever_loop(
 
         iteration_counter += 1
 
+        # Phase A — fresh per-iteration input snapshot for the replay-
+        # fixture exporter. Populated as the iteration progresses; appended
+        # to ``_replay_fixture_iterations`` at iteration end.
+        _current_iter_inputs: dict = {
+            "iteration": int(iteration_counter),
+            "eval_rows": [],
+            "clusters": [],
+            "soft_clusters": [],
+            "strategist_response": {"action_groups": []},
+            "ag_outcomes": {},
+            "post_eval_passing_qids": [],
+        }
+
         # ── Per-question journey ledger accumulator (Task 13) ────────
         # Stamp every stage that touches a question so the end-of-
         # iteration ledger can reconstruct each qid's full timeline.
@@ -11015,6 +11032,49 @@ def _run_lever_loop(
         except Exception:
             logger.debug(
                 "Phase A: eval-entry journey emit failed (non-fatal)",
+                exc_info=True,
+            )
+
+        # Phase A — populate replay-fixture iteration snapshot fields
+        # eval_rows / clusters / soft_clusters from the analysis result.
+        try:
+            _fr = locals().get("full_result") or {}
+            _scores = _fr.get("scores") or {}
+            _arbiter_map = _fr.get("arbiter_verdicts") or {}
+            _failure_set = {str(q) for q in (_fr.get("failure_question_ids") or [])}
+            _fixture_eval_rows: list[dict] = []
+            for _qid in (_eval_qids_for_entry or []):
+                _qstr = str(_qid)
+                _correctness: str
+                if isinstance(_scores, dict) and _qstr in _scores:
+                    _v = _scores[_qstr]
+                    _correctness = "yes" if str(_v).lower() in ("yes", "true", "1", "pass") else "no"
+                else:
+                    _correctness = "no" if _qstr in _failure_set else "yes"
+                _row: dict = {"question_id": _qstr, "result_correctness": _correctness}
+                if isinstance(_arbiter_map, dict) and _qstr in _arbiter_map:
+                    _row["arbiter"] = str(_arbiter_map[_qstr])
+                _fixture_eval_rows.append(_row)
+            _current_iter_inputs["eval_rows"] = _fixture_eval_rows
+            _current_iter_inputs["clusters"] = [
+                {
+                    "cluster_id": str(c.get("cluster_id") or ""),
+                    "root_cause": str(c.get("root_cause") or ""),
+                    "question_ids": [str(q) for q in (c.get("question_ids") or []) if q],
+                }
+                for c in (clusters or [])
+            ]
+            _current_iter_inputs["soft_clusters"] = [
+                {
+                    "cluster_id": str(c.get("cluster_id") or ""),
+                    "root_cause": str(c.get("root_cause") or ""),
+                    "question_ids": [str(q) for q in (c.get("question_ids") or []) if q],
+                }
+                for c in (soft_signal_clusters or [])
+            ]
+        except Exception:
+            logger.debug(
+                "Phase A: replay-fixture iteration capture failed (non-fatal)",
                 exc_info=True,
             )
 
@@ -11987,6 +12047,21 @@ def _run_lever_loop(
         ag_id = ag.get("id", f"AG{iteration_counter}")
         ags_attempted.append(ag_id)
         lever_keys = sorted(ag.get("lever_directives", {}).keys())
+
+        # Phase A — capture strategist AG snapshot for replay-fixture export.
+        try:
+            _current_iter_inputs["strategist_response"]["action_groups"].append({
+                "id": str(ag_id),
+                "affected_questions": [
+                    str(q) for q in (ag.get("affected_questions") or []) if q
+                ],
+                "patches": [],
+            })
+        except Exception:
+            logger.debug(
+                "Phase A: strategist AG capture failed (non-fatal)",
+                exc_info=True,
+            )
 
         # Tier 3.3: relabel header so the scorecard is clearly identified
         # as "best (post last accepted iter)" rather than conflated with
@@ -13098,6 +13173,39 @@ def _run_lever_loop(
             )
 
         patches = proposals_to_patches(all_proposals)
+
+        # Phase A — populate ``patches`` on the matching AG snapshot for
+        # replay-fixture export. Match by ag_id; use the most recent
+        # snapshot (this iteration's append).
+        try:
+            _ag_snapshots = (
+                _current_iter_inputs["strategist_response"]["action_groups"]
+            )
+            for _snap in reversed(_ag_snapshots):
+                if str(_snap.get("id")) == str(ag_id):
+                    _snap["patches"] = [
+                        {
+                            "proposal_id": str(_p.get("proposal_id") or _p.get("id") or ""),
+                            "patch_type": str(_p.get("patch_type") or _p.get("type") or ""),
+                            "target_qids": [
+                                str(q)
+                                for q in (
+                                    _p.get("_grounding_target_qids")
+                                    or _p.get("target_qids")
+                                    or []
+                                )
+                                if q
+                            ],
+                            "cluster_id": str(_p.get("cluster_id") or ""),
+                        }
+                        for _p in (all_proposals or [])
+                    ]
+                    break
+        except Exception:
+            logger.debug(
+                "Phase A: patch capture for replay fixture failed (non-fatal)",
+                exc_info=True,
+            )
 
         # Phase A — Lossless contract: stamp ag_assigned for every qid
         # this AG targets, before any 'proposed' event fires. The
@@ -14531,9 +14639,10 @@ def _run_lever_loop(
                     outcome="rolled_back",
                     affected_qids=list(ag.get("affected_questions") or []),
                 )
+                _current_iter_inputs["ag_outcomes"][str(ag_id)] = "rolled_back"
             except Exception:
                 logger.debug(
-                    "Phase A: AG-outcome journey emit (rolled_back) failed (non-fatal)",
+                    "Phase A: AG-outcome (rolled_back) emit/capture failed (non-fatal)",
                     exc_info=True,
                 )
             _render_current_journey()
@@ -14945,6 +15054,13 @@ def _run_lever_loop(
                 "Phase A: AG-outcome journey emit (accepted) failed (non-fatal)",
                 exc_info=True,
             )
+        try:
+            _current_iter_inputs["ag_outcomes"][str(ag_id)] = _outcome_for_journey
+        except Exception:
+            logger.debug(
+                "Phase A: ag_outcome capture (accepted) failed (non-fatal)",
+                exc_info=True,
+            )
 
         full_scores = gate_result["full_scores"]
         full_accuracy = gate_result["full_accuracy"]
@@ -15305,9 +15421,32 @@ def _run_lever_loop(
             # Capture the post-iteration passing set as next iteration's
             # was-passing baseline.
             _prev_passing_qids = set(_post_eval_is_passing)
+            # Phase A — capture the post-eval passing set in the replay
+            # fixture iteration snapshot.
+            try:
+                _current_iter_inputs["post_eval_passing_qids"] = sorted(
+                    _post_eval_is_passing
+                )
+            except Exception:
+                logger.debug(
+                    "Phase A: post_eval_passing_qids capture failed (non-fatal)",
+                    exc_info=True,
+                )
         except Exception:
             logger.debug(
                 "Phase A: post_eval journey emit failed (non-fatal)",
+                exc_info=True,
+            )
+
+        # Phase A — append this iteration's input snapshot to the run's
+        # collected list so the end-of-run replay-fixture exporter can
+        # serialize it. Defensive — replay-fixture export is observability,
+        # never a loop-breaking error.
+        try:
+            _replay_fixture_iterations.append(_current_iter_inputs)
+        except Exception:
+            logger.debug(
+                "Phase A: replay-fixture iteration append failed (non-fatal)",
                 exc_info=True,
             )
 
@@ -15423,6 +15562,32 @@ def _run_lever_loop(
         _summary.append(f"|  {sname + ':':<28s} {sval:.1f}")
     _summary.append(_bar("="))
     print("\n".join(_summary))
+
+    # Phase A — End-of-run replay-fixture export. Gated by the
+    # ``GSO_DUMP_REPLAY_FIXTURE`` env var, which carries the destination
+    # path. Defensive: a fixture-export failure must never break a real
+    # optimization run.
+    try:
+        _replay_dump_path = os.environ.get("GSO_DUMP_REPLAY_FIXTURE", "").strip()
+        if _replay_dump_path:
+            from genie_space_optimizer.optimization.journey_fixture_exporter import (
+                dump_replay_fixture,
+            )
+            dump_replay_fixture(
+                path=_replay_dump_path,
+                fixture_id=f"{space_id}__{run_id}",
+                iterations_data=_replay_fixture_iterations,
+            )
+            logger.info(
+                "Phase A: replay fixture written to %s (%d iterations)",
+                _replay_dump_path,
+                len(_replay_fixture_iterations),
+            )
+    except Exception:
+        logger.warning(
+            "Phase A: replay-fixture export failed (non-fatal)",
+            exc_info=True,
+        )
 
     return {
         "scores": best_scores,
