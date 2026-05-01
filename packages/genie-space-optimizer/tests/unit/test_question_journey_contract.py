@@ -182,3 +182,53 @@ def test_validate_passes_for_complete_journey() -> None:
     assert report.is_valid is True
     assert report.violations == []
     assert report.terminal_state_by_qid["gs_001"].value == "hard_failure_resolved"
+
+
+def test_canonical_journey_strips_extra_dict_and_sorts_events() -> None:
+    import json
+    from genie_space_optimizer.optimization.question_journey import (
+        QuestionJourneyEvent,
+    )
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        canonical_journey_json,
+    )
+
+    events_a = [
+        QuestionJourneyEvent(
+            question_id="gs_002", stage="evaluated",
+            extra={"timestamp": 12345, "duration_ms": 7},
+        ),
+        QuestionJourneyEvent(
+            question_id="gs_001", stage="evaluated",
+            extra={"timestamp": 99999, "duration_ms": 1},
+        ),
+    ]
+    events_b = list(reversed(events_a))  # different insertion order
+
+    a = canonical_journey_json(events=events_a)
+    b = canonical_journey_json(events=events_b)
+
+    assert a == b
+    parsed = json.loads(a)
+    assert [ev["question_id"] for ev in parsed] == ["gs_001", "gs_002"]
+    # extra is stripped (volatile by definition).
+    assert "extra" not in parsed[0]
+
+
+def test_canonical_journey_is_stable_across_runs() -> None:
+    """Two identical event lists must produce the same canonical bytes."""
+    from genie_space_optimizer.optimization.question_journey import (
+        QuestionJourneyEvent,
+    )
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        canonical_journey_json,
+    )
+
+    events = [
+        QuestionJourneyEvent(question_id="gs_001", stage="evaluated"),
+        QuestionJourneyEvent(question_id="gs_001", stage="clustered",
+                             cluster_id="H001"),
+    ]
+    a = canonical_journey_json(events=events)
+    b = canonical_journey_json(events=list(events))
+    assert a == b

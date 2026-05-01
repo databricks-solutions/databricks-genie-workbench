@@ -278,3 +278,53 @@ def validate_question_journeys(
         violations=violations,
         terminal_state_by_qid=terminal_state_by_qid,
     )
+
+
+import json
+
+
+_CANONICAL_FIELDS: tuple[str, ...] = (
+    "question_id",
+    "stage",
+    "cluster_id",
+    "ag_id",
+    "proposal_id",
+    "patch_type",
+    "root_cause",
+    "reason",
+    "transition",
+    "was_passing",
+    "is_passing",
+)
+
+
+def canonical_journey_json(*, events: list[QuestionJourneyEvent]) -> str:
+    """Return a byte-stable JSON serialization of a journey event list.
+
+    Volatile fields (the ``extra`` dict, any timestamps or durations a producer
+    chose to attach) are stripped. Events are sorted by
+    (question_id, stage_rank, proposal_id) so insertion order is irrelevant.
+    The output is sorted-key JSON with no whitespace, suitable for byte-equal
+    fixture diffs.
+    """
+    from genie_space_optimizer.optimization.question_journey import _stage_rank
+
+    rows: list[dict] = []
+    for ev in events:
+        row: dict = {}
+        for name in _CANONICAL_FIELDS:
+            val = getattr(ev, name, None)
+            if val in (None, "", False):
+                # Skip falsy values to avoid presence-vs-absence noise across
+                # producers; keep True booleans because they carry signal.
+                if val is False:
+                    row[name] = False
+                continue
+            row[name] = val
+        rows.append(row)
+    rows.sort(key=lambda r: (
+        r.get("question_id", ""),
+        _stage_rank(r.get("stage", "")),
+        r.get("proposal_id", ""),
+    ))
+    return json.dumps(rows, sort_keys=True, separators=(",", ":"))
