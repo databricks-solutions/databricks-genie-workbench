@@ -137,6 +137,13 @@ from genie_space_optimizer.optimization.optimizer import (
     generate_proposals_from_strategy,
     rank_clusters,
 )
+from genie_space_optimizer.optimization.example_safety import (
+    check_teaching_safety,
+)
+from genie_space_optimizer.optimization.example_smoke_test import (
+    SmokeTestResult,
+    run_pre_promotion_smoke_test,
+)
 from genie_space_optimizer.optimization.preflight import run_preflight
 from genie_space_optimizer.optimization.repeatability import run_repeatability_test
 from genie_space_optimizer.optimization.report import generate_report
@@ -2372,6 +2379,129 @@ def _run_space_metadata_enrichment(
         return result
 
 
+# ── High-risk lane gate helpers (deterministic + smoke test) ────────
+
+
+def _filter_candidates_by_teaching_safety(
+    *,
+    candidates: list[dict],
+    metadata_snapshot: dict,
+) -> list[dict]:
+    """Drop candidates that fail any deterministic teaching-safety gate.
+
+    Returns survivors. Callers should keep their own counter for the
+    drop count (the banner in :func:`_print_enrichment_risk_lane_banner`
+    expects an integer)."""
+    survivors: list[dict] = []
+    for cand in candidates or []:
+        question = str(
+            cand.get("question") or cand.get("example_question") or ""
+        )
+        sql = str(
+            cand.get("expected_sql")
+            or cand.get("example_sql")
+            or cand.get("sql")
+            or ""
+        )
+        result = check_teaching_safety(
+            question=question, sql=sql, metadata_snapshot=metadata_snapshot,
+        )
+        if result.safe:
+            survivors.append(cand)
+        else:
+            logger.info(
+                "[teaching-safety] dropped candidate q=%r reasons=%s",
+                question[:80], result.reasons,
+            )
+    return survivors
+
+
+def _build_staged_config(
+    *,
+    base_config: dict,
+    candidate_examples: list[dict],
+) -> dict:
+    """Produce an in-memory copy of ``base_config`` with candidates merged.
+
+    Used by the pre-promotion smoke test. Does NOT call patch APIs —
+    the staged config is consumed by the local evaluator only and is
+    discarded after the smoke verdict is computed.
+    """
+    staged = copy.deepcopy(base_config or {})
+    parsed = staged.get("_parsed_space") or staged
+    existing = list(parsed.get("example_question_sqls") or [])
+    for cand in candidate_examples or []:
+        existing.append({
+            "example_question": str(
+                cand.get("question") or cand.get("example_question") or ""
+            ),
+            "example_sql": str(
+                cand.get("expected_sql") or cand.get("example_sql") or ""
+            ),
+        })
+    parsed["example_question_sqls"] = existing
+    return staged
+
+
+def _gate_candidates_with_smoke_test(
+    *,
+    candidates: list[dict],
+    baseline_both_correct_rows: list[dict],
+    metadata_snapshot: dict,
+    staged_config_builder,
+    w,
+    spark,
+    catalog: str,
+    schema: str,
+    space_id: str,
+) -> list[dict]:
+    """Run the pre-promotion smoke test on the candidate batch.
+
+    Returns the candidate list unchanged when the smoke test accepts
+    or is disabled. Returns an empty list when the smoke test rejects
+    the batch (atomic: the entire batch is dropped to keep the
+    apply-step idempotent — partial promotion is not supported)."""
+    enabled = os.environ.get(
+        "GSO_EXAMPLE_SQL_SMOKE_TEST_ENABLED", "true",
+    ).lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return list(candidates or [])
+    if not candidates:
+        return []
+    if not baseline_both_correct_rows:
+        logger.info("[smoke-test] skipped: no baseline both_correct pool")
+        return list(candidates)
+
+    staged_config = staged_config_builder(candidates)
+
+    def _eval_runner(**kwargs):
+        from genie_space_optimizer.optimization.evaluation import (
+            run_evaluation,
+        )
+        return run_evaluation(
+            staged_config=kwargs["staged_config"],
+            question_ids=kwargs["question_ids"],
+            baseline_rows=kwargs["baseline_rows"],
+            w=w, spark=spark, catalog=catalog, schema=schema,
+            space_id=space_id, smoke_test=True,
+        )
+
+    result = run_pre_promotion_smoke_test(
+        candidates=candidates,
+        baseline_both_correct_rows=baseline_both_correct_rows,
+        staged_config=staged_config,
+        run_eval_fn=_eval_runner,
+    )
+    if not result.accept:
+        logger.warning(
+            "[smoke-test] REJECTED batch: %s (regressions=%d/%d, pp=%.2f)",
+            result.reason, result.regressions,
+            result.sample_size, result.regression_pp,
+        )
+        return []
+    return list(candidates)
+
+
 # ── Unified example-SQL generation (Phase 4.R4) ─────────────────────
 
 
@@ -2389,6 +2519,7 @@ def _run_unified_example_sql_generation(
     schema: str,
     full_firewall_corpus: list[dict],
     data_profile: dict | None = None,
+    baseline_both_correct_rows: list[dict] | None = None,
 ) -> dict:
     """Run the unified (benchmark-engine-based) example-SQL generator.
 
@@ -2472,6 +2603,112 @@ def _run_unified_example_sql_generation(
             config=config,
         )
         return out
+
+    # ── High-risk lane gates ────────────────────────────────────────
+    # Operators see the funnel via ``_print_enrichment_risk_lane_banner``;
+    # each gate decrements survivors and increments its own counter.
+    from genie_space_optimizer.common.config import (
+        EXAMPLE_SQL_SMOKE_MAX_QUESTIONS,
+        EXAMPLE_SQL_TEACHING_SAFETY_ENABLED,
+    )
+
+    candidates_in = len(candidates)
+
+    # Gate 1: deterministic teaching safety
+    survivors = _filter_candidates_by_teaching_safety(
+        candidates=candidates,
+        metadata_snapshot=metadata_snapshot,
+    )
+    deterministic_safety_rejected = candidates_in - len(survivors)
+
+    # Gate 2: teaching-safety LLM judge (skipped if knob off)
+    teaching_safety_rejected = 0
+    if EXAMPLE_SQL_TEACHING_SAFETY_ENABLED and survivors:
+        from genie_space_optimizer.optimization.scorers.arbiter import (
+            score_example_sql_teaching_safety,
+        )
+        kept: list[dict] = []
+        for cand in survivors:
+            q = str(
+                cand.get("question") or cand.get("example_question") or ""
+            )
+            s = str(
+                cand.get("expected_sql") or cand.get("example_sql") or ""
+            )
+            try:
+                verdict = score_example_sql_teaching_safety(
+                    question=q, sql=s, w=w,
+                    metadata_snapshot=metadata_snapshot,
+                )
+            except Exception:
+                logger.debug(
+                    "[teaching-safety-judge] judge crashed, defaulting to reject",
+                    exc_info=True,
+                )
+                verdict = {"value": "uncertain", "rationale": "judge_crashed"}
+            if (verdict or {}).get("value") == "yes":
+                kept.append(cand)
+            else:
+                teaching_safety_rejected += 1
+                logger.info(
+                    "[teaching-safety-judge] rejected q=%r v=%s rationale=%s",
+                    q[:80], (verdict or {}).get("value"),
+                    str((verdict or {}).get("rationale") or "")[:200],
+                )
+        survivors = kept
+
+    # Gate 3: pre-promotion smoke test
+    pre_smoke_count = len(survivors)
+    survivors = _gate_candidates_with_smoke_test(
+        candidates=survivors,
+        baseline_both_correct_rows=list(baseline_both_correct_rows or []),
+        metadata_snapshot=metadata_snapshot,
+        staged_config_builder=lambda cs: _build_staged_config(
+            base_config=config, candidate_examples=cs,
+        ),
+        w=w, spark=spark,
+        catalog=catalog, schema=schema, space_id=space_id,
+    )
+    smoke_test_rejected_batch = (
+        pre_smoke_count > 0 and len(survivors) == 0
+    )
+
+    rc = rejection_counters or {}
+    _print_enrichment_risk_lane_banner(
+        candidates_in=candidates_in,
+        firewall_blocked=int(
+            (rc.get("firewall_joint_similarity") or 0)
+            + (rc.get("firewall_question_echo") or 0)
+            + (rc.get("firewall_block") or 0)
+        ),
+        firewall_warned=int(
+            (rc.get("firewall_sql_pattern_warning") or 0)
+            + (rc.get("firewall_warning") or 0)
+        ),
+        correctness_rejected=int(rc.get("arbiter_no") or 0),
+        deterministic_safety_rejected=deterministic_safety_rejected,
+        teaching_safety_rejected=teaching_safety_rejected,
+        smoke_test_rejected_batch=smoke_test_rejected_batch,
+        smoke_test_regressions=0,
+        smoke_test_sample_size=min(
+            len(baseline_both_correct_rows or []),
+            EXAMPLE_SQL_SMOKE_MAX_QUESTIONS,
+        ),
+        applied=len(survivors),
+    )
+
+    if not survivors:
+        _print_unified_example_summary(
+            run_id=run_id,
+            target=PREFLIGHT_EXAMPLE_SQL_TARGET,
+            existing=len(existing_sqls),
+            applied_examples=[],
+            rejection_counters=rejection_counters or {},
+            config=config,
+        )
+        return out
+
+    candidates = survivors
 
     # ── Apply via the shared pipeline (runs last-mile firewall) ─────
     proposals = [
@@ -5008,6 +5245,7 @@ def _run_enrichment(
     optimization_run_id: str = "",
     *,
     held_out_benchmarks: list[dict] | None = None,
+    baseline_both_correct_rows: list[dict] | None = None,
 ) -> dict:
     """Stage 2.5: Config preparation + proactive enrichment + LoggedModel snapshot.
 
@@ -5202,6 +5440,7 @@ def _run_enrichment(
                         catalog=catalog, schema=schema,
                         full_firewall_corpus=_full_firewall_corpus,
                         data_profile=data_profile,
+                        baseline_both_correct_rows=baseline_both_correct_rows,
                     )
                     if unified_example_result.get("applied", 0) > 0:
                         config, metadata_snapshot = _refresh_config_preserving_mv_state(
@@ -5264,6 +5503,9 @@ def _run_enrichment(
                         examples=_example_join_inputs,
                         catalog=catalog,
                         schema=schema,
+                        baseline_both_correct_rows=list(
+                            baseline_both_correct_rows or []
+                        ),
                     )
                     if example_join_result.get("total_applied", 0) > 0:
                         config, metadata_snapshot = _refresh_config_preserving_mv_state(
@@ -15044,6 +15286,24 @@ def optimize_genie_space(
         prev_accuracy = float(baseline_out["overall_accuracy"])
         thresholds_met = bool(baseline_out["thresholds_met"])
 
+        # Extract baseline ``both_correct`` rows for the high-risk lane
+        # smoke test in enrichment. Synthetic example SQLs are gated on
+        # not regressing this set when staged.
+        _baseline_eval_result = baseline_out.get("eval_result") or {}
+        _baseline_rows = (
+            _baseline_eval_result.get("rows") or []
+            if isinstance(_baseline_eval_result, dict) else []
+        )
+        _baseline_both_correct = [
+            r for r in _baseline_rows
+            if str(
+                ((r.get("arbiter") or {}).get("value")
+                 if isinstance(r.get("arbiter"), dict)
+                 else r.get("arbiter/value")
+                 or r.get("feedback/arbiter/value") or "")
+            ) == "both_correct"
+        ]
+
         # Stage 2.5: Proactive Enrichment (always runs)
         _enrichment_out = None
         _effective_model_id = model_id
@@ -15053,6 +15313,7 @@ def optimize_genie_space(
                 catalog, schema,
                 baseline_model_id=model_id,
                 held_out_benchmarks=held_out_benchmarks,
+                baseline_both_correct_rows=_baseline_both_correct,
             )
             if not _enrichment_out["enrichment_skipped"]:
                 _effective_model_id = _enrichment_out["enrichment_model_id"]
