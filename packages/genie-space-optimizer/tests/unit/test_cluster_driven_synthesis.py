@@ -485,18 +485,16 @@ class TestLever5Intercept:
         fb = instruction_only_fallback(format_afs(cluster))
         assert fb is None
 
-        # Case 2: actionable counterfactuals present — fallback emits
-        # an add_instruction whose body starts with guidance.
+        # Case 2: SQL-shape counterfactuals present — under the new
+        # instruction publishability contract, the fallback declines for
+        # SQL-shape failures (``missing_aggregation`` here). Counterfactual
+        # text is optimizer-facing and must not enter ``text_instructions``.
         afs_with_fix = format_afs(cluster)
         afs_with_fix["counterfactual_fixes"] = [
             "Aggregate sales by region using SUM(amount) and GROUP BY region",
         ]
         fb2 = instruction_only_fallback(afs_with_fix)
-        assert fb2 is not None
-        assert fb2["patch_type"] == "add_instruction"
-        assert fb2["new_text"]
-        # The actionable guidance must appear before any trailing metadata.
-        assert "Aggregate sales by region" in fb2["new_text"]
+        assert fb2 is None
 
     def test_teaching_kit_primary_proposal_carries_target_qids_and_kit_provenance(self, monkeypatch):
         from genie_space_optimizer.optimization import optimizer

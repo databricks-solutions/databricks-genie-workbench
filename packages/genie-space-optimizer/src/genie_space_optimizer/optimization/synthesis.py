@@ -824,67 +824,37 @@ def validate_synthesis_proposal(
 def instruction_only_fallback(afs: dict) -> dict | None:
     """Deterministic fallback proposal when synthesis fails for a cluster.
 
-    Tier 2.9: we no longer emit diagnostic prose as a Genie Space
-    instruction. Previously this produced ``add_instruction`` patches
-    whose body was metadata like ``- Failure type: missing_aggregation``
-    — not guidance, just a serialised failure signature that polluted
-    every subsequent Genie prompt.
-
-    The new contract: this fallback only returns a proposal when the AFS
-    carries at least one *actionable* counterfactual fix (a suggested SQL
-    shape, column substitution, etc.). If not, the cluster is left for a
-    future iteration's strategist to retry with a different lever, or for
-    escalation to human review if ``tried_root_causes`` already has this
-    signature locked out.
+    Contract v1: fallback text may only be published when the AFS carries an
+    explicit ``publishable_instruction_candidates`` entry that is already
+    written as Genie-facing guidance. ``counterfactual_fixes`` remain
+    optimizer-facing diagnostics and are never directly published.
     """
-    counterfactual_fixes = afs.get("counterfactual_fixes") or []
-    if isinstance(counterfactual_fixes, str):
-        counterfactual_fixes = [counterfactual_fixes]
-    actionable_fixes = [
-        str(f).strip() for f in counterfactual_fixes
-        if f and str(f).strip() and len(str(f).strip()) > 20
-    ]
-    if not actionable_fixes:
+    from genie_space_optimizer.optimization.instruction_publishability import (
+        compile_publishable_fallback,
+        is_sql_shape_failure,
+    )
+
+    failure_type = str(afs.get("failure_type") or "").strip()
+    if is_sql_shape_failure(failure_type):
         logger.info(
-            "instruction_only_fallback: no actionable counterfactual fixes for "
-            "cluster %s (failure_type=%s) — skipping (no diagnostic-prose "
-            "patches will be written into text_instructions)",
+            "instruction_only_fallback: declining SQL-shape failure for "
+            "cluster %s (failure_type=%s); use example_sql/sql_snippet or retry",
             afs.get("cluster_id", "?"),
-            afs.get("failure_type", "?"),
+            failure_type,
         )
         return None
 
-    failure_type = str(afs.get("failure_type") or "").strip()
-    blame = ", ".join(afs.get("blame_set") or [])[:200]
-    summary = str(afs.get("suggested_fix_summary") or "").strip()
+    proposal = compile_publishable_fallback(afs)
+    if proposal is None:
+        logger.info(
+            "instruction_only_fallback: no publishable instruction candidate "
+            "for cluster %s (failure_type=%s); skipping text fallback",
+            afs.get("cluster_id", "?"),
+            failure_type,
+        )
+        return None
 
-    # Parts start with the actionable fixes (the part Genie can act on);
-    # diagnostic metadata is relegated to a trailing note.
-    parts: list[str] = []
-    parts.append(f"Guidance for {failure_type or 'this pattern'}:")
-    for fix in actionable_fixes[:3]:
-        parts.append(f"- {fix}")
-    if summary:
-        parts.append(f"- Summary: {summary}")
-    if blame:
-        parts.append(f"- Affected: {blame}")
-
-    return {
-        "patch_type": "add_instruction",
-        "new_text": "\n".join(parts),
-        "proposed_value": "\n".join(parts),
-        "rationale": (
-            "Actionable instruction-only fallback: synthesis failed but the "
-            "AFS carries a concrete counterfactual fix. Retained rather than "
-            "dropped because the fix-text itself is guidance Genie can act on."
-        ),
-        "provenance": {
-            "source": "synthesis_fallback",
-            "cluster_id": afs.get("cluster_id", "?"),
-            "failure_type": failure_type,
-            "tier": "2.9_actionable_only",
-        },
-    }
+    return proposal
 
 
 def synthesize_example_sqls(

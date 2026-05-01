@@ -370,19 +370,58 @@ def test_synthesis_budget_fallback_after_repeated_failures() -> None:
     assert budget.should_fallback()
 
 
-def test_instruction_fallback_emits_usable_proposal() -> None:
+def test_instruction_fallback_declines_sql_shape_counterfactuals() -> None:
     afs = {
         "cluster_id": "C_fallback",
-        "failure_type": "missing_filter",
-        "blame_set": ["sales.quarter"],
-        "counterfactual_fixes": ["add WHERE quarter = 'Q3'"],
-        "suggested_fix_summary": "Missing WHERE quarter filter in sales aggregation",
+        "failure_type": "wrong_aggregation",
+        "blame_set": ["PAYMENT_CURRENCY_CD", "PAYMENT_AMT"],
+        "counterfactual_fixes": [
+            "Add an instruction in the Genie Space metadata clarifying that "
+            "PAYMENT_AMT is already in USD and does not require filtering by "
+            "PAYMENT_CURRENCY_CD = USD.",
+        ],
+        "suggested_fix_summary": (
+            "Root cause: wrong_aggregation; Blamed: PAYMENT_CURRENCY_CD; "
+            "1 question(s) affected"
+        ),
     }
+
     proposal = instruction_only_fallback(afs)
+
+    assert proposal is None
+
+
+def test_instruction_fallback_publishes_only_explicit_instruction_candidate() -> None:
+    afs = {
+        "cluster_id": "C_fallback",
+        "failure_type": "missing_instruction",
+        "blame_set": ["PAYMENT_AMT", "PAYMENT_CURRENCY_CD"],
+        "counterfactual_fixes": [
+            "Add an instruction in the Genie Space metadata clarifying that "
+            "PAYMENT_AMT is already in USD.",
+        ],
+        "publishable_instruction_candidates": [
+            {
+                "section_name": "DATA QUALITY NOTES",
+                "text": (
+                    "PAYMENT_AMT is USD-denominated; do not infer a "
+                    "PAYMENT_CURRENCY_CD = 'USD' filter from a request for "
+                    "total payment amount in USD."
+                ),
+                "assets": ["PAYMENT_AMT", "PAYMENT_CURRENCY_CD"],
+            }
+        ],
+    }
+
+    proposal = instruction_only_fallback(afs)
+
     assert proposal is not None
-    assert proposal["patch_type"] == "add_instruction"
-    assert "missing_filter" in proposal["new_text"]
-    assert proposal["provenance"]["source"] == "synthesis_fallback"
+    assert proposal["patch_type"] == "update_instruction_section"
+    assert proposal["section_name"] == "DATA QUALITY NOTES"
+    assert "PAYMENT_AMT is USD-denominated" in proposal["new_text"]
+    assert "Guidance for" not in proposal["new_text"]
+    assert "Root cause" not in proposal["new_text"]
+    assert "Affected:" not in proposal["new_text"]
 
 
 # ── End-to-end: synthesize + firewall ──────────────────────────────────
