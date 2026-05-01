@@ -100,3 +100,27 @@ def build_question_journey_ledger(
             lines.append(f"│    └─ {_format_event(ev)}")
     lines.append(f"└{bar}")
     return "\n".join(lines)
+
+
+def render_question_journey_once(
+    *,
+    events: list[QuestionJourneyEvent],
+    iteration: int,
+    render_state: dict[str, bool],
+    printer=print,
+) -> bool:
+    """Render the journey ledger at most once for an AG iteration.
+
+    ``render_state`` is a mutable one-key dict owned by the harness loop.
+    Returning ``True`` means the render opportunity was consumed, even when
+    there are no events and therefore no stdout text. This prevents duplicate
+    ledgers when rollback paths call the renderer and the bottom-of-loop hook
+    also executes.
+    """
+    if render_state.get("rendered"):
+        return True
+    ledger = build_question_journey_ledger(events=events, iteration=iteration)
+    if ledger:
+        printer(ledger)
+    render_state["rendered"] = True
+    return True

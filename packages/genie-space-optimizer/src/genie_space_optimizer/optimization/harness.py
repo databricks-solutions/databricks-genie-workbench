@@ -10686,8 +10686,10 @@ def _run_lever_loop(
         from genie_space_optimizer.optimization.question_journey import (
             QuestionJourneyEvent as _JourneyEvent,
             build_question_journey_ledger as _build_journey_ledger,
+            render_question_journey_once as _render_journey_once,
         )
         _journey_events: list[_JourneyEvent] = []
+        _journey_render_state: dict[str, bool] = {"rendered": False}
 
         def _journey_emit(stage: str, **fields):
             """Append journey event(s); fail-safe for any caller."""
@@ -10707,6 +10709,20 @@ def _run_lever_loop(
             except Exception:
                 logger.debug(
                     "journey_emit failed (non-fatal) stage=%s", stage,
+                    exc_info=True,
+                )
+
+        def _render_current_journey() -> None:
+            """Render this AG iteration's journey ledger exactly once."""
+            try:
+                _render_journey_once(
+                    events=_journey_events,
+                    iteration=iteration_counter,
+                    render_state=_journey_render_state,
+                )
+            except Exception:
+                logger.debug(
+                    "Task 13: journey ledger render failed (non-fatal)",
                     exc_info=True,
                 )
 
@@ -11840,6 +11856,7 @@ def _run_lever_loop(
                 new_failure_qids=prev_failure_qids,
                 **_ag_identity_kwargs,
             ))
+            _render_current_journey()
             continue
 
         _ag_cluster_info["rationale"] = ag.get("rationale", strategy.get("rationale", "") if strategy else "")
@@ -12631,6 +12648,7 @@ def _run_lever_loop(
                 new_failure_qids=prev_failure_qids,
                 **_ag_identity_kwargs,
             ))
+            _render_current_journey()
             continue
 
         # Task 6A — RCA/patch-type compatibility gate. Drop proposals
@@ -13039,6 +13057,7 @@ def _run_lever_loop(
                 },
                 **_ag_identity_kwargs,
             ))
+            _render_current_journey()
             continue
 
         # Task 2 — Blast-radius gate. The counterfactual scan above stamps
@@ -13694,6 +13713,7 @@ def _run_lever_loop(
                 new_failure_qids=prev_failure_qids,
                 **_ag_identity_kwargs,
             ))
+            _render_current_journey()
             continue
 
         _fallback_lever = int(lever_keys[0]) if lever_keys else 0
@@ -13850,6 +13870,7 @@ def _run_lever_loop(
                         catalog=catalog, schema=schema,
                     )
                     break
+            _render_current_journey()
             continue
 
         # ── Applied Patches Detail ───────────────────────────────────
@@ -13989,6 +14010,7 @@ def _run_lever_loop(
 
         if not gate_result.get("passed"):
             reason = gate_result.get("rollback_reason", "unknown")
+            _render_current_journey()
             rollback(apply_log, w, space_id, metadata_snapshot)
             # Task 7 — verify the Genie Space actually returned to its
             # pre-AG state. If not, halt subsequent AGs because clustering
@@ -14708,22 +14730,10 @@ def _run_lever_loop(
                 iteration_counter, exc_info=True,
             )
 
-        # Task 13 — render the per-question journey ledger at the end of
-        # each iteration. This is observability-only: a stdout-first
-        # diagnostic that lets operators read the timeline of every
-        # question that the loop touched in this iteration.
-        try:
-            _ledger = _build_journey_ledger(
-                events=_journey_events,
-                iteration=iteration_counter,
-            )
-            if _ledger:
-                print(_ledger)
-        except Exception:
-            logger.debug(
-                "Task 13: journey ledger render failed (non-fatal)",
-                exc_info=True,
-            )
+        # Task 13 — render the per-question journey ledger at normal
+        # iteration end. Early-exit paths call the same idempotent helper
+        # before continuing.
+        _render_current_journey()
 
     write_stage(
         spark, run_id, "LEVER_LOOP_STARTED", "COMPLETE",
