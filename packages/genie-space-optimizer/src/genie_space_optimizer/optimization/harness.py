@@ -9686,6 +9686,29 @@ def _run_gate_checks(
     }
 
 
+def compute_iteration_budget(
+    *,
+    hard_cluster_count: int,
+    requested_max_iterations: int,
+) -> int:
+    """Return the iteration budget, scaled by initial hard cluster count.
+
+    Each hard cluster gets at least ``MAX_ITERATIONS_PER_CLUSTER`` attempts,
+    floored at ``MAX_ITERATIONS`` and capped at ``MAX_ITERATIONS_HARD_CEILING``.
+    An explicit caller request wins when greater than the scaled value.
+    """
+    from genie_space_optimizer.common.config import (
+        MAX_ITERATIONS as _MAX_ITERATIONS,
+        MAX_ITERATIONS_HARD_CEILING as _CEILING,
+        MAX_ITERATIONS_PER_CLUSTER as _PER_CLUSTER,
+    )
+    requested = int(requested_max_iterations or _MAX_ITERATIONS)
+    scaled = max(int(_MAX_ITERATIONS), int(hard_cluster_count or 0) * int(_PER_CLUSTER))
+    capped_scaled = min(scaled, int(_CEILING))
+    # An explicit caller request wins when greater than the capped scaled value.
+    return max(capped_scaled, requested) if requested > int(_MAX_ITERATIONS) else capped_scaled
+
+
 def _run_lever_loop(
     w: WorkspaceClient,
     spark: SparkSession,
@@ -10686,6 +10709,29 @@ def _run_lever_loop(
         clusters = _analysis["all_clusters"]
         soft_signal_clusters = _analysis["soft_signal_clusters"]
         rca_ledger = _analysis.get("rca_ledger") or {}
+
+        # Task 16 — scale max_iterations by initial hard cluster count.
+        # Computed once on the first iteration (when ``clusters`` first
+        # binds) and held for the rest of the run.
+        if _iter_num == 1:
+            _scaled_max_iterations = compute_iteration_budget(
+                hard_cluster_count=len(clusters or []),
+                requested_max_iterations=max_iterations or MAX_ITERATIONS,
+            )
+            if _scaled_max_iterations != max_iterations:
+                logger.info(
+                    "Iteration budget set to %d (hard_clusters=%d, requested=%d)",
+                    _scaled_max_iterations,
+                    len(clusters or []),
+                    int(max_iterations or MAX_ITERATIONS),
+                )
+            else:
+                logger.info(
+                    "Iteration budget set to %d (hard_clusters=%d)",
+                    _scaled_max_iterations,
+                    len(clusters or []),
+                )
+            max_iterations = _scaled_max_iterations
 
         # Task 13 — emit ``clustered`` events per qid in each hard cluster
         # and ``soft_signal`` events for soft clusters.

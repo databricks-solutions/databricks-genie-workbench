@@ -165,6 +165,8 @@ CONNECTION_POOL_SIZE = 20
 # ── 3. Iteration and Convergence ───────────────────────────────────────
 
 MAX_ITERATIONS = 5
+MAX_ITERATIONS_PER_CLUSTER = 1
+MAX_ITERATIONS_HARD_CEILING = 15
 SLICE_GATE_TOLERANCE = 15.0
 ENABLE_SLICE_GATE: bool = True
 """T2.15: re-enabled after iteration-1 log showed a 3-patch / 3-lever AG
