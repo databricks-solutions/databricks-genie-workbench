@@ -6032,6 +6032,11 @@ def _build_reflection_entry(
 
     patch_summary_parts: list[str] = []
     do_not_retry: list[str] = []
+    # Task 18 — keep a copy of the rolled-back patch dicts so the
+    # reflection-as-validator gate can compute precise retry
+    # signatures (column / instruction-section level) instead of the
+    # coarse ``(patch_type, target)`` tuples.
+    do_not_retry_patches: list[dict] = []
     # T3.1: minimum-viable leave-one-out attribution. Without running
     # actual re-evals (expensive, would need full harness wiring), we
     # heuristically rank patch suspicion by the T2.4 collateral-risk
@@ -6057,6 +6062,9 @@ def _build_reflection_entry(
         patch_summary_parts.append(f"{ptype} on {target}")
         if not accepted and (ptype, target) in _suspicious_keys:
             do_not_retry.append(f"{ptype} on {target}")
+            # Task 18 — capture the patch dict for precise signature
+            # computation in the reflection gate.
+            do_not_retry_patches.append(dict(p))
 
     action = ", ".join(patch_summary_parts[:8])
     if len(patch_summary_parts) > 8:
@@ -6092,6 +6100,8 @@ def _build_reflection_entry(
         "rollback_reason": rollback_reason,
         "rollback_class": classify_rollback_reason(rollback_reason).value,
         "do_not_retry": do_not_retry,
+        # Task 18 — precise retry signatures over the rolled-back patches.
+        "do_not_retry_patches": do_not_retry_patches,
         "affected_question_ids": affected_question_ids or [],
         "fixed_questions": sorted(_prev - _new),
         "still_failing": sorted(_prev & _new),
@@ -12134,7 +12144,21 @@ def _run_lever_loop(
         # dropped and why. The existing cluster-level DO-NOT-RETRY
         # (_compute_forbidden_ag_set) covers lever/root-cause combos;
         # this new per-patch guard covers patch-type/target combos.
+        # Task 18 — precise reflection retry. Build the forbidden set
+        # using ``patch_retry_signature`` (column-/section-level) so a
+        # rolled-back patch on column ``A`` of table ``T`` does not
+        # block a fresh patch on column ``B`` of the same table. The
+        # coarse ``(ptype, target)`` set is kept in parallel for the
+        # rewrite-bypass emission below.
+        from genie_space_optimizer.optimization.reflection_retry import (
+            patch_retry_signature,
+            retry_allowed_after_rollback,
+        )
+
         _patch_forbidden: set[tuple[str, str]] = set()
+        _patch_forbidden_signatures: set[tuple] = set()
+        _rolled_back_patches_for_retry: list[dict] = []
+        _content_rollback_cause: str = ""
         for _rb in reflection_buffer:
             if _rb.get("accepted"):
                 continue
@@ -12147,12 +12171,21 @@ def _run_lever_loop(
             )
             if _rb.get("rollback_class") != _RC.CONTENT_REGRESSION.value:
                 continue
+            _content_rollback_cause = str(_rb.get("rollback_class") or "")
             for _dnr in _rb.get("do_not_retry", []):
                 _s = str(_dnr).strip()
                 if " on " not in _s:
                     continue
                 _ptype, _target = _s.split(" on ", 1)
                 _patch_forbidden.add((_ptype.strip(), _target.strip()))
+            # Task 18 — precise patch signatures for the rolled-back
+            # patches stored on the reflection entry.
+            for _rb_patch in _rb.get("do_not_retry_patches", []) or []:
+                if isinstance(_rb_patch, dict):
+                    _rolled_back_patches_for_retry.append(_rb_patch)
+                    _patch_forbidden_signatures.add(
+                        patch_retry_signature(_rb_patch)
+                    )
 
         # B1.3 — diagnostics so an empty ``_patch_forbidden`` is
         # debuggable: distinguish (a) no rollbacks yet, (b) all
@@ -12218,6 +12251,29 @@ def _run_lever_loop(
                 )
                 _key = (_ptype, _target)
                 _justification = str(_p.get("escalation_justification") or "").strip()
+                # Task 18 — precise signature short-circuit. If the
+                # patch's column-/section-level ``patch_retry_signature``
+                # is NOT in the rolled-back set, ``retry_allowed_after_rollback``
+                # returns ``allowed=True`` and we keep the proposal even if
+                # the coarse ``(ptype, target)`` key matches.
+                _precise_sig = patch_retry_signature(_p)
+                if (
+                    _key in _patch_forbidden
+                    and _precise_sig not in _patch_forbidden_signatures
+                ):
+                    _retry_decision = retry_allowed_after_rollback(
+                        current_patch=_p,
+                        rolled_back_patches=_rolled_back_patches_for_retry,
+                        rollback_cause=_content_rollback_cause,
+                    )
+                    if _retry_decision.allowed:
+                        logger.info(
+                            "[%s] T2.2 precise retry allowed: ptype=%s target=%s "
+                            "reason=%s",
+                            ag_id, _ptype, _target, _retry_decision.reason,
+                        )
+                        _kept.append(_p)
+                        continue
                 if _key in _patch_forbidden:
                     if not _justification:
                         _dropped.append((_ptype, _target,
