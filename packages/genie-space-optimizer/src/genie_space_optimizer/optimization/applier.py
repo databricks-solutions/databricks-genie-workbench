@@ -2840,7 +2840,17 @@ def render_patch(patch: dict, space_id: str, space_config: dict) -> dict:
     column_name = patch.get("column", "")
 
     # ── Instructions ──────────────────────────────────────────────
-    if patch_type == "add_instruction":
+    # v2 Task 12: ``add_conditional_disambiguation_instruction`` aliases
+    # ``add_instruction`` for application — its ``proposed_value`` body
+    # is plain instruction text (rendered by
+    # ``build_conditional_disambiguation_patch``). The discriminator is
+    # preserved on ``patch_type`` for audit / retry-signature semantics.
+    if patch_type in (
+        "add_instruction",
+        "add_conditional_disambiguation_instruction",
+    ):
+        if not new_text:
+            new_text = patch.get("proposed_value", "")
         return action(
             json.dumps({"op": "add", "section": "instructions", "new_text": new_text}),
             json.dumps({"op": "remove", "section": "instructions", "old_text": new_text}),
@@ -3926,6 +3936,7 @@ def apply_patch_set(
         "update_instruction_section":  (["instructions"], ["instructions"]),
         "update_instruction":          (["instructions"], ["instructions"]),
         "add_instruction":             (["instructions"], ["instructions"]),
+        "add_conditional_disambiguation_instruction": (["instructions"], ["instructions"]),
         "remove_instruction":          (["instructions"], ["instructions"]),
         "update_join_spec":            (["column"], ["join_spec"]),
         "add_join_spec":               (["column"], ["join_spec"]),

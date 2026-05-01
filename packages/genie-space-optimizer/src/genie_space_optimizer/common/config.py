@@ -3445,6 +3445,9 @@ LOW_RISK_PATCHES = {
     "hide_column",
     "unhide_column",
     "add_instruction",
+    # v2 Task 12: conditional disambiguation rule renders as an
+    # add_instruction-style append; classify with the same risk level.
+    "add_conditional_disambiguation_instruction",
     "enable_example_values",
     "disable_example_values",
     "enable_value_dictionary",

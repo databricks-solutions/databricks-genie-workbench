@@ -57,3 +57,69 @@ def detect_intent_collisions(clusters: list[dict[str, Any]]) -> list[dict[str, A
             "questions_by_column": {col: list(d["questions"]) for col, d in columns.items()},
         })
     return collisions
+
+
+def _intent_phrase_for_questions(questions: list[str]) -> str:
+    """Render a short phrase characterising the intent of a question group."""
+    if not questions:
+        return ""
+    sample = " | ".join(q.lower() for q in questions[:3])
+    keywords = [
+        ("flow", "sales flow / hierarchy queries"),
+        ("hierarchy", "sales flow / hierarchy queries"),
+        ("trend", "trend / time-series queries"),
+        ("ticket", "per-transaction questions"),
+        ("avg", "average / mean questions"),
+        ("by region", "simple slice-by-region queries"),
+        ("by market", "simple slice-by-market queries"),
+        ("top", "top-N ranking questions"),
+    ]
+    for keyword, phrase in keywords:
+        if keyword in sample:
+            return phrase
+    return f"queries like: {questions[0]}"
+
+
+def build_conditional_disambiguation_patch(
+    *,
+    collision: dict,
+    representatives: dict[str, str],
+    proposal_id: str,
+) -> dict:
+    """Render a deterministic conditional-disambiguation patch.
+
+    The patch's ``proposed_value`` body is a numbered rule that names the
+    business term, the per-intent column mapping, and the question phrasing
+    that triggers each branch. Designed to be applied via Lever 5.
+    """
+    term = str(collision["term"])
+    mappings: dict[str, str] = {}
+    target_qids: list[str] = []
+    body_lines = [f"COLUMN DISAMBIGUATION — '{term}':"]
+    for column, qids in sorted(collision["questions_by_column"].items()):
+        intent_questions = [representatives.get(q, "") for q in qids if representatives.get(q)]
+        intent_phrase = _intent_phrase_for_questions(intent_questions)
+        mappings[column] = intent_phrase
+        target_qids.extend(qids)
+        body_lines.append(
+            f"- For {intent_phrase}, '{term}' refers to column '{column}'."
+        )
+    body_lines.append(
+        "When the question's phrasing matches one of the above intents, use the "
+        "corresponding column. When ambiguous, prefer the most specific match."
+    )
+    return {
+        "proposal_id": proposal_id,
+        "type": "add_conditional_disambiguation_instruction",
+        "patch_type": "add_conditional_disambiguation_instruction",
+        "lever": 5,
+        "scope": "genie_config",
+        "term": term,
+        "mappings": mappings,
+        "target_qids": sorted(set(target_qids)),
+        "proposed_value": "\n".join(body_lines),
+        "change_description": (
+            f"Conditional disambiguation rule for term '{term}' "
+            f"({len(mappings)} intent branches)"
+        ),
+    }

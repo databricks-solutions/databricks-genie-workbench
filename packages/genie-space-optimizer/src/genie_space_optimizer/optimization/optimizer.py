@@ -9383,10 +9383,22 @@ def _call_llm_for_adaptive_strategy(
         budget=_budget, n_clusters=len(clusters),
     )
 
-    # v2 Task 11 — accept intent collisions for downstream prompt surfacing
-    # (Task 12 wires these into the strategist instructions). Reference the
-    # parameter so static analysis does not flag it as unused.
-    _ = intent_collisions
+    # v2 Task 12 — surface cross-cluster intent collisions to the
+    # strategist prompt. When the LLM omits the corresponding
+    # ``add_conditional_disambiguation_instruction`` patch, we emit a
+    # deterministic one in the post-processing block below.
+    intent_collision_text = ""
+    if intent_collisions:
+        intent_collision_text = (
+            "INTENT COLLISIONS DETECTED — emit add_conditional_disambiguation_instruction "
+            "patches for each collision below; do not pick a single global mapping:\n"
+        )
+        for c in intent_collisions:
+            intent_collision_text += (
+                f"  - term '{c['term']}' resolves to "
+                f"{sorted(c['column_choices'])} across clusters "
+                f"{sorted({cid for cids in c['clusters_by_column'].values() for cid in cids})}\n"
+            )
 
     _blame_items: list[str] = []
     for c in clusters:
@@ -9509,7 +9521,10 @@ def _call_llm_for_adaptive_strategy(
     prompt = format_mlflow_template(ADAPTIVE_STRATEGIST_PROMPT, **format_kwargs)
     # v2 Task 5: prepend cap budget so the strategist sees it before any
     # cluster bundling instructions in the templated prompt body.
-    prompt = budget_text + "\n\n" + prompt
+    # v2 Task 12: intent_collision_text follows the budget so collisions
+    # are surfaced before the cluster narrative; it is empty when no
+    # collisions were detected.
+    prompt = budget_text + "\n\n" + intent_collision_text + "\n" + prompt
 
     _W = 78
     _iter_label = len(reflection_buffer) + 1
@@ -9802,6 +9817,45 @@ def _call_llm_for_adaptive_strategy(
                 "(%d base_question_id(s))",
                 list(_source_cids), len(_qids),
             )
+
+    # ── v2 Task 12: deterministic conditional-disambiguation emission ──
+    # When the strategist LLM did not surface a collision the detector
+    # found, attach a deterministic conditional-disambiguation patch to
+    # the AG whose affected questions overlap the collision; otherwise
+    # fall back to the first AG so the rule is never silently dropped.
+    if intent_collisions:
+        from genie_space_optimizer.optimization.intent_disambiguation import (
+            build_conditional_disambiguation_patch,
+        )
+        addressed_terms = {
+            str(p.get("term") or "").strip()
+            for ag in action_groups for p in (ag.get("proposed_patches") or [])
+            if p.get("type") == "add_conditional_disambiguation_instruction"
+        }
+        representatives_by_qid: dict[str, str] = {}
+        for c in clusters:
+            rep = c.get("representative_question") or ""
+            for q in c.get("question_ids") or []:
+                if rep and q not in representatives_by_qid:
+                    representatives_by_qid[str(q)] = str(rep)
+        for collision in intent_collisions:
+            if collision["term"] in addressed_terms:
+                continue
+            patch = build_conditional_disambiguation_patch(
+                collision=collision,
+                representatives=representatives_by_qid,
+                proposal_id=f"P_INTENT_{collision['term']}",
+            )
+            for ag in action_groups:
+                shared_qids = set(patch["target_qids"]) & set(
+                    ag.get("affected_questions") or []
+                )
+                if shared_qids:
+                    ag.setdefault("proposed_patches", []).append(patch)
+                    break
+            else:
+                if action_groups:
+                    action_groups[0].setdefault("proposed_patches", []).append(patch)
 
     _out_lines = [
         f"\n{'=' * _W}",
