@@ -163,18 +163,43 @@ from genie_space_optimizer.common.config import CONNECTION_POOL_SIZE
 configure_connection_pool(w, CONNECTION_POOL_SIZE)
 configure_mlflow_connection_pool(CONNECTION_POOL_SIZE)
 
-# Read task values from upstream
-run_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="run_id")
-space_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="space_id")
-domain = dbutils.jobs.taskValues.get(taskKey="preflight", key="domain")
-catalog = dbutils.jobs.taskValues.get(taskKey="preflight", key="catalog")
-schema = dbutils.jobs.taskValues.get(taskKey="preflight", key="schema")
-exp_name = dbutils.jobs.taskValues.get(taskKey="preflight", key="experiment_name")
-max_iterations = int(dbutils.jobs.taskValues.get(taskKey="preflight", key="max_iterations"))
-deploy_target = dbutils.jobs.taskValues.get(taskKey="preflight", key="deploy_target") or None
+dbutils.widgets.text("run_id", "")
+dbutils.widgets.text("catalog", "")
+dbutils.widgets.text("schema", "")
+_widget_run_id = dbutils.widgets.get("run_id").strip()
+_widget_catalog = dbutils.widgets.get("catalog").strip()
+_widget_schema = dbutils.widgets.get("schema").strip()
+
+from genie_space_optimizer.jobs._handoff import (
+    get_baseline_eval_state,
+    get_lever_loop_outputs,
+    get_run_context,
+)
+
+ctx = get_run_context(
+    spark,
+    run_id_widget=_widget_run_id,
+    catalog_widget=_widget_catalog,
+    schema_widget=_widget_schema,
+    dbutils=dbutils,
+)
+run_id = ctx["run_id"].value
+space_id = ctx["space_id"].value
+domain = ctx["domain"].value
+catalog = ctx["catalog"].value
+schema = ctx["schema"].value
+exp_name = ctx["experiment_name"].value
+max_iterations = ctx["max_iterations"].value
+# deploy_target is preflight-published but not yet in genie_opt_runs;
+# fall back to the legacy taskValue read until a future plan widens the
+# schema for it.
+deploy_target = (
+    dbutils.jobs.taskValues.get(taskKey="preflight", key="deploy_target", default="")
+    or None
+)
 
 import os as _os
-_warehouse_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="warehouse_id", default="")
+_warehouse_id = ctx["warehouse_id"].value or ""
 if _warehouse_id:
     _os.environ["GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID"] = _warehouse_id
 
@@ -182,28 +207,33 @@ import mlflow
 mlflow.set_experiment(exp_name)
 mlflow.openai.autolog()
 
-# lever_loop always publishes model_id (enrichment-aware, even when skipped)
-prev_model_id = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="model_id")
-lever_skipped_raw = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="skipped")
-lever_skipped = str(lever_skipped_raw).lower() in ("true", "1")
+ll = get_lever_loop_outputs(
+    spark, run_id=run_id, catalog=catalog, schema=schema, dbutils=dbutils,
+)
+prev_model_id = ll["model_id"].value
+lever_skipped = ll["skipped"].value
+iteration_counter = ll["iteration_counter"].value or 0
+
+baseline = get_baseline_eval_state(
+    spark, run_id=run_id, catalog=catalog, schema=schema, dbutils=dbutils,
+)
+_baseline_mlflow_run_id = baseline["mlflow_run_id"].value or ""
+
 if lever_skipped:
-    scores_json = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="scores")
-    iteration_counter = 0
-    _baseline_mlflow_run_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="mlflow_run_id", default="")
-    all_eval_mlflow_run_ids = [_baseline_mlflow_run_id] if _baseline_mlflow_run_id else []
+    prev_scores = baseline["scores"].value
+    all_eval_mlflow_run_ids = (
+        [_baseline_mlflow_run_id] if _baseline_mlflow_run_id else []
+    )
     all_failure_question_ids = []
 else:
-    scores_json = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="scores")
-    iteration_counter = int(dbutils.jobs.taskValues.get(taskKey="lever_loop", key="iteration_counter"))
-    _baseline_mlflow_run_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="mlflow_run_id", default="")
-    _lever_eval_ids_raw = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="all_eval_mlflow_run_ids", default="[]")
-    all_eval_mlflow_run_ids = json.loads(_lever_eval_ids_raw) if _lever_eval_ids_raw else []
-    if _baseline_mlflow_run_id and _baseline_mlflow_run_id not in all_eval_mlflow_run_ids:
-        all_eval_mlflow_run_ids.insert(0, _baseline_mlflow_run_id)
-    _failure_qids_raw = dbutils.jobs.taskValues.get(taskKey="lever_loop", key="all_failure_question_ids", default="[]")
-    all_failure_question_ids = json.loads(_failure_qids_raw) if _failure_qids_raw else []
-
-prev_scores = json.loads(scores_json)
+    prev_scores = ll["scores"].value
+    all_eval_mlflow_run_ids = list(ll["all_eval_mlflow_run_ids"].value or [])
+    all_failure_question_ids = list(ll["all_failure_question_ids"].value or [])
+    if (
+        _baseline_mlflow_run_id
+        and _baseline_mlflow_run_id not in all_eval_mlflow_run_ids
+    ):
+        all_eval_mlflow_run_ids = [_baseline_mlflow_run_id, *all_eval_mlflow_run_ids]
 
 _banner("Resolved Upstream Task Values")
 _log(
@@ -219,6 +249,13 @@ _log(
     prev_model_id=prev_model_id,
     iteration_counter=iteration_counter,
     score_keys=sorted(list(prev_scores.keys())) if isinstance(prev_scores, dict) else [],
+)
+_log(
+    "Handoff sources",
+    run_id_source=ctx["run_id"].source.value,
+    lever_skipped_source=ll["skipped"].source.value,
+    model_id_source=ll["model_id"].source.value,
+    iteration_counter_source=ll["iteration_counter"].source.value,
 )
 
 # COMMAND ----------
