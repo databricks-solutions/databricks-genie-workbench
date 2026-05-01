@@ -541,23 +541,24 @@ def _build_rca_forced_instruction_body(
     if root_cause == "plural_top_n_collapse":
         return (
             "QUERY PATTERNS:\n"
-            "- For plural highest/lowest ranking questions, group by the requested "
-            "entity and ORDER BY the metric. Do not collapse to a single row with "
-            "WHERE rank = 1 or LIMIT 1 unless the user explicitly asks for one."
+            "- For plural highest/lowest ranking questions, return one ranked row "
+            "per requested entity sorted by the metric. Do not collapse the result "
+            "to a single top-1 row unless the user explicitly asks for one entity."
         )
     if root_cause == "time_window_pivot":
         return (
             "QUERY PATTERNS:\n"
-            "- When comparing day vs MTD metrics, query each time_window separately "
-            "and join the results into columns at the requested grain. Do not return "
-            "one row per time_window unless asked."
+            "- When comparing day vs MTD metrics, query each time window separately "
+            "and pivot the results into side-by-side columns at the requested grain. "
+            "Do not return one row per time window unless the user asks for that."
         )
     if root_cause == "missing_temporal_filter":
         return (
             "QUERY PATTERNS:\n"
-            "- For 'last N days/weeks/months' questions, add a "
-            "DATE_SUB(CURRENT_DATE(), N)-bounded filter on the dated column. Do not "
-            "rely on prose like 'recent' or 'last_30_days' as a column value."
+            "- For 'last N days/weeks/months' questions, restrict to rows whose "
+            "dated column falls within the last N days/weeks/months relative to "
+            "today. Do not rely on prose like 'recent' or 'last_30_days' as a "
+            "column value."
         )
     if root_cause == "column_disambiguation":
         terms = ", ".join(t for t in grounding_terms if t)[:200]
