@@ -1,16 +1,24 @@
 """Export real-run iteration inputs as a deterministic-replay fixture.
 
-The Lever Loop's `_run_lever_loop` calls ``dump_replay_fixture`` at end-
-of-run when ``GSO_DUMP_REPLAY_FIXTURE`` is set in the environment. The
-output JSON matches the shape consumed by
+The Lever Loop's ``_run_lever_loop`` always emits the fixture at end-of-
+run via two channels:
+  1. ``serialize_replay_fixture(...)`` returns a compact single-line
+     JSON string, which the harness prints to stderr between
+     ``===PHASE_A_REPLAY_FIXTURE_JSON_BEGIN===`` and
+     ``===PHASE_A_REPLAY_FIXTURE_JSON_END===`` markers. The user
+     extracts the fixture from job logs.
+  2. When an MLflow run is active, the harness also calls
+     ``mlflow.log_dict(...)`` so the fixture is downloadable from the
+     MLflow UI without any log-grep work.
+
+The output JSON matches the shape consumed by
 ``optimization.lever_loop_replay.run_replay`` (see
 ``tests/replay/fixtures/airline_5cluster.json`` for a worked example).
-
 This is **inputs-only**, not events. The replay engine re-synthesizes
 events from these inputs using its own deterministic emit logic, which
-is decoupled from harness.py's `_journey_emit`. That decoupling is what
-lets Phase D extract bits of harness.py without breaking the replay
-test.
+is decoupled from harness.py's ``_journey_emit``. That decoupling is
+what lets Phase D extract bits of harness.py without breaking the
+replay test.
 """
 
 from __future__ import annotations
@@ -90,26 +98,47 @@ def _strip_iteration(it: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _build_fixture(
+    *,
+    fixture_id: str,
+    iterations_data: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "fixture_id": str(fixture_id),
+        "iterations": [_strip_iteration(it) for it in (iterations_data or [])],
+    }
+
+
+def serialize_replay_fixture(
+    *,
+    fixture_id: str,
+    iterations_data: list[dict[str, Any]],
+) -> str:
+    """Return a compact single-line JSON serialization of the fixture.
+
+    This is the primary runtime API. The single-line shape is what the
+    user's log-extractor script (and any ad-hoc grep) relies on.
+    """
+    fixture = _build_fixture(
+        fixture_id=fixture_id, iterations_data=iterations_data,
+    )
+    return json.dumps(fixture, sort_keys=True, separators=(",", ":"))
+
+
 def dump_replay_fixture(
     *,
     path: str,
     fixture_id: str,
     iterations_data: list[dict[str, Any]],
 ) -> None:
-    """Write a replay fixture JSON file from collected iteration inputs.
+    """Write a pretty-printed replay fixture JSON file.
 
-    Strips volatile fields (timestamps, durations, MLflow run IDs, any
-    underscore-prefixed key) so the fixture is byte-stable across runs
-    that produce identical inputs.
-
-    ``iterations_data`` is the list captured by
-    ``_collect_iteration_inputs`` inside ``_run_lever_loop`` — one dict
-    per iteration with the keys listed in ``_ALLOWED_ITERATION_KEYS``.
+    Used by unit tests. Not called at runtime — the harness uses
+    ``serialize_replay_fixture`` and emits via stderr + MLflow.
     """
-    fixture: dict[str, Any] = {
-        "fixture_id": str(fixture_id),
-        "iterations": [_strip_iteration(it) for it in (iterations_data or [])],
-    }
+    fixture = _build_fixture(
+        fixture_id=fixture_id, iterations_data=iterations_data,
+    )
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(fixture, indent=2, sort_keys=True) + "\n")

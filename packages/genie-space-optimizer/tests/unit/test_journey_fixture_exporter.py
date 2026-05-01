@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 
 def _sample_iteration_input() -> dict:
     """Return one iteration's worth of input data in the exporter's input shape."""
@@ -40,7 +38,23 @@ def _sample_iteration_input() -> dict:
     }
 
 
-def test_exporter_writes_well_formed_fixture(tmp_path: Path) -> None:
+def test_serialize_returns_compact_single_line_json() -> None:
+    from genie_space_optimizer.optimization.journey_fixture_exporter import (
+        serialize_replay_fixture,
+    )
+
+    out = serialize_replay_fixture(
+        fixture_id="test_v1",
+        iterations_data=[_sample_iteration_input()],
+    )
+    assert isinstance(out, str)
+    assert "\n" not in out, "Compact JSON must be single-line for log extraction"
+    parsed = json.loads(out)
+    assert parsed["fixture_id"] == "test_v1"
+    assert len(parsed["iterations"]) == 1
+
+
+def test_dump_writes_well_formed_fixture(tmp_path: Path) -> None:
     from genie_space_optimizer.optimization.journey_fixture_exporter import (
         dump_replay_fixture,
     )
@@ -65,22 +79,42 @@ def test_exporter_writes_well_formed_fixture(tmp_path: Path) -> None:
     assert "q_001" in it0["post_eval_passing_qids"]
 
 
-def test_exporter_round_trip_via_replay_engine(tmp_path: Path) -> None:
-    """Exporter output must be loadable by run_replay and produce zero violations."""
+def test_serialize_and_dump_produce_equivalent_data(tmp_path: Path) -> None:
+    """The disk-dump and the string-serialize must encode identical content."""
     from genie_space_optimizer.optimization.journey_fixture_exporter import (
         dump_replay_fixture,
+        serialize_replay_fixture,
+    )
+
+    iterations = [_sample_iteration_input()]
+    out = tmp_path / "fixture.json"
+    dump_replay_fixture(
+        path=str(out),
+        fixture_id="equiv_v1",
+        iterations_data=iterations,
+    )
+    on_disk = json.loads(out.read_text())
+    in_string = json.loads(serialize_replay_fixture(
+        fixture_id="equiv_v1",
+        iterations_data=iterations,
+    ))
+    assert on_disk == in_string
+
+
+def test_round_trip_via_replay_engine() -> None:
+    """Exporter output must be loadable by run_replay and produce zero violations."""
+    from genie_space_optimizer.optimization.journey_fixture_exporter import (
+        serialize_replay_fixture,
     )
     from genie_space_optimizer.optimization.lever_loop_replay import (
         run_replay,
     )
 
-    out = tmp_path / "fixture.json"
-    dump_replay_fixture(
-        path=str(out),
+    raw = serialize_replay_fixture(
         fixture_id="test_round_trip_v1",
         iterations_data=[_sample_iteration_input()],
     )
-    fixture = json.loads(out.read_text())
+    fixture = json.loads(raw)
     result = run_replay(fixture)
     assert result.validation.is_valid, (
         f"Replay should produce zero violations on a clean exporter output; "
@@ -92,25 +126,22 @@ def test_exporter_round_trip_via_replay_engine(tmp_path: Path) -> None:
     )
 
 
-def test_exporter_handles_empty_iterations_list(tmp_path: Path) -> None:
+def test_handles_empty_iterations_list() -> None:
     from genie_space_optimizer.optimization.journey_fixture_exporter import (
-        dump_replay_fixture,
+        serialize_replay_fixture,
     )
 
-    out = tmp_path / "empty.json"
-    dump_replay_fixture(
-        path=str(out),
+    parsed = json.loads(serialize_replay_fixture(
         fixture_id="empty_v1",
         iterations_data=[],
-    )
-    parsed = json.loads(out.read_text())
+    ))
     assert parsed == {"fixture_id": "empty_v1", "iterations": []}
 
 
-def test_exporter_strips_volatile_fields(tmp_path: Path) -> None:
+def test_strips_volatile_fields() -> None:
     """Timestamps, durations, MLflow run IDs must not enter the fixture."""
     from genie_space_optimizer.optimization.journey_fixture_exporter import (
-        dump_replay_fixture,
+        serialize_replay_fixture,
     )
 
     inp = _sample_iteration_input()
@@ -118,14 +149,11 @@ def test_exporter_strips_volatile_fields(tmp_path: Path) -> None:
     inp["_duration_ms"] = 1234
     inp["_mlflow_run_id"] = "abc123"
     inp["eval_rows"][0]["_response_time_ms"] = 500
-    out = tmp_path / "fixture.json"
-    dump_replay_fixture(
-        path=str(out),
+    out = serialize_replay_fixture(
         fixture_id="strip_v1",
         iterations_data=[inp],
     )
-    text = out.read_text()
-    assert "_timestamp" not in text
-    assert "_duration_ms" not in text
-    assert "_mlflow_run_id" not in text
-    assert "_response_time_ms" not in text
+    assert "_timestamp" not in out
+    assert "_duration_ms" not in out
+    assert "_mlflow_run_id" not in out
+    assert "_response_time_ms" not in out
