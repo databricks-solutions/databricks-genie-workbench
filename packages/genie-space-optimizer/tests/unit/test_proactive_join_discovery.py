@@ -21,6 +21,16 @@ def _join_metadata_snapshot() -> dict:
             "metric_views": [],
         },
         "instructions": {"join_specs": []},
+        # Corroborate the example join via UC FK so Task 4's
+        # corroboration gate accepts the example-derived join.
+        "_uc_foreign_keys": [
+            {
+                "left_table": "cat.sch.fact_sales",
+                "right_table": "cat.sch.dim_location",
+                "left_columns": ["location_id"],
+                "right_columns": ["location_id"],
+            },
+        ],
     }
 
 
@@ -93,7 +103,11 @@ def test_mine_example_sql_joins_reuses_proven_join_pipeline(monkeypatch):
     )
 
     assert result["total_applied"] == 1
-    assert applied["rows"][0]["arbiter/value"] == "synthetic_example"
+    # Corroboration flow stamps pseudo rows with both_correct so
+    # _extract_proven_joins accepts them; the synthetic origin is
+    # tracked separately via _synthetic_origin.
+    assert applied["rows"][0]["arbiter/value"] == "both_correct"
+    assert applied["rows"][0]["_synthetic_origin"] == "accepted_example_sql"
 
 
 def test_example_sql_join_mining_combines_unified_and_fallback_examples(monkeypatch):

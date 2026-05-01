@@ -36,6 +36,7 @@ import copy
 import json
 import logging
 import os
+import re
 import time
 import traceback
 import uuid
@@ -1867,6 +1868,30 @@ def _example_sqls_to_positive_eval_rows(examples: list[dict]) -> list[dict]:
     return rows
 
 
+_EXAMPLE_SQL_JOIN_PAIR_RE = re.compile(
+    r"FROM\s+([A-Za-z_][\w\.]*)(?:\s+\w+)?\s+JOIN\s+([A-Za-z_][\w\.]*)",
+    re.IGNORECASE,
+)
+
+
+def _example_sql_join_pairs(sql: str) -> set[tuple[str, str]]:
+    """Extract (left, right) table pairs from a SQL string.
+
+    Used for corroboration: identifies which join pairs the example SQL
+    teaches so we can compare against UC FKs and ``both_correct`` baseline
+    pairs without round-tripping through the full proven-join extractor.
+    """
+    pairs: set[tuple[str, str]] = set()
+    if not sql:
+        return pairs
+    for match in _EXAMPLE_SQL_JOIN_PAIR_RE.finditer(sql):
+        left = str(match.group(1) or "").strip()
+        right = str(match.group(2) or "").strip()
+        if left and right:
+            pairs.add(tuple(sorted((left, right))))
+    return pairs
+
+
 def _mine_and_apply_joins_from_example_sqls(
     *,
     w: "WorkspaceClient",
@@ -1877,54 +1902,128 @@ def _mine_and_apply_joins_from_example_sqls(
     examples: list[dict],
     catalog: str,
     schema: str,
+    baseline_both_correct_rows: list[dict] | None = None,
 ) -> dict:
-    """Mine table-table joins from accepted example SQLs.
+    """Mine table-table joins from accepted example SQLs, corroborated.
 
-    Reuses the proven-joins pipeline (``_mine_and_apply_proven_joins``)
-    by converting each accepted example into a positive synthetic eval
-    row and feeding the result into the same extraction → corroboration
-    → spec-build → semantics-filter → applier flow used after a passing
-    iteration.
+    A join pair (A, B) is promoted only when corroborated by either
+    (a) a UC foreign key between A and B, or (b) a ``both_correct``
+    baseline row whose SQL contains the same join pair. Uncorroborated
+    pairs are dropped — they fall under high-risk lane and require
+    independent evidence before they reach the Genie space.
     """
-    rows = _example_sqls_to_positive_eval_rows(examples)
+    from genie_space_optimizer.optimization.optimizer import (
+        _extract_proven_joins,
+    )
+
+    baseline_rows = list(baseline_both_correct_rows or [])
+    examples = list(examples or [])
+
     result: dict = {
         "total_applied": 0,
-        "examples_scanned": len(examples or []),
-        "synthetic_rows": len(rows),
+        "examples_scanned": len(examples),
+        "synthetic_rows": 0,
         "source": "accepted_example_sqls",
         "extraction_diagnostics": {},
+        "dropped_uncorroborated": 0,
+        "corroboration_source": "",
     }
-    if not rows:
+    if not examples:
         return result
 
+    fk_pairs: set[tuple[str, str]] = set()
+    for fk in metadata_snapshot.get("_uc_foreign_keys", []) or []:
+        if not isinstance(fk, dict):
+            continue
+        a = str(fk.get("left_table") or "")
+        b = str(fk.get("right_table") or "")
+        if a and b:
+            fk_pairs.add(tuple(sorted((a, b))))
+
+    baseline_pairs: set[tuple[str, str]] = set()
+    for row in baseline_rows:
+        if not isinstance(row, dict):
+            continue
+        verdict = str(
+            (row.get("arbiter") or {}).get("value")
+            if isinstance(row.get("arbiter"), dict)
+            else row.get("arbiter/value")
+            or row.get("feedback/arbiter/value")
+            or ""
+        )
+        if verdict != "both_correct":
+            continue
+        sql = str(
+            (row.get("request") or {}).get("expected_sql")
+            or (row.get("response") or {}).get("response")
+            or ""
+        )
+        baseline_pairs.update(_example_sql_join_pairs(sql))
+
+    corroboration_set = fk_pairs | baseline_pairs
+    if not corroboration_set:
+        result["dropped_uncorroborated"] = len(examples)
+        result["corroboration_source"] = "none_available"
+        return result
+
+    pseudo_rows: list[dict] = []
+    pair_to_row: dict[tuple[str, str], dict] = {}
+    dropped = 0
+    for idx, ex in enumerate(examples):
+        if not isinstance(ex, dict):
+            continue
+        question = str(ex.get("question") or ex.get("example_question") or "").strip()
+        sql = str(
+            ex.get("expected_sql") or ex.get("example_sql") or ex.get("sql") or ""
+        ).strip()
+        if not sql:
+            continue
+        row = {
+            "question_id": f"example_sql_{idx + 1}",
+            "arbiter/value": "both_correct",
+            "request": {"question": question, "expected_sql": sql},
+            "response": {"response": sql},
+            "_synthetic_origin": "accepted_example_sql",
+        }
+        pairs = _example_sql_join_pairs(sql)
+        if not pairs:
+            continue
+        any_corroborated = False
+        for pair in pairs:
+            if pair in corroboration_set:
+                pair_to_row.setdefault(pair, row)
+                any_corroborated = True
+            else:
+                dropped += 1
+        if any_corroborated:
+            pseudo_rows.append(row)
+    result["synthetic_rows"] = len(pseudo_rows)
+    result["dropped_uncorroborated"] = dropped
+    if not pseudo_rows:
+        return result
+
+    seen_qids: set[str] = set()
+    apply_rows: list[dict] = []
+    for row in pseudo_rows:
+        qid = str(row.get("question_id") or "")
+        if qid in seen_qids:
+            continue
+        seen_qids.add(qid)
+        apply_rows.append(row)
+
     mined = _mine_and_apply_proven_joins(
-        w,
-        spark,
-        run_id,
-        space_id,
-        metadata_snapshot,
-        rows,
-        catalog,
-        schema,
-        iteration=0,
+        w, spark, run_id, space_id, metadata_snapshot, apply_rows,
+        catalog, schema, iteration=0,
     )
     result.update(mined or {})
-    result["examples_scanned"] = len(examples or [])
-    result["synthetic_rows"] = len(rows)
-    result["source"] = "accepted_example_sqls"
-
-    _jm_lines = [_section("EXAMPLE SQL JOIN MINING", "-")]
-    _jm_lines.append(_kv("Accepted examples scanned", result["examples_scanned"]))
-    _jm_lines.append(_kv("Synthetic positive rows", result["synthetic_rows"]))
-    _diag = result.get("extraction_diagnostics", {}) or {}
-    if _diag:
-        _jm_lines.append(_kv("  SQL with JOIN", _diag.get("sql_with_join", "?")))
-        _jm_lines.append(_kv("  FROM unresolved", _diag.get("no_from_resolved", "?")))
-        _jm_lines.append(_kv("  Joined unresolved", _diag.get("no_joined_resolved", "?")))
-    _jm_lines.append(_kv("Skipped (metric_view)", result.get("joins_skipped_metric_view", 0)))
-    _jm_lines.append(_kv("New joins applied", result.get("total_applied", 0)))
-    _jm_lines.append(_bar("-"))
-    print("\n".join(_jm_lines))
+    sources: list[str] = []
+    if fk_pairs:
+        sources.append("uc_fk")
+    if baseline_pairs:
+        sources.append("baseline_both_correct")
+    result["corroboration_source"] = (
+        "mixed" if len(sources) > 1 else (sources[0] if sources else "")
+    )
     return result
 
 
