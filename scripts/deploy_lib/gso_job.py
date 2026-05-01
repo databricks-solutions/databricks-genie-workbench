@@ -69,17 +69,19 @@ def build_gso_wheel(repo_root: Path) -> Path:
         cmd = [
             sys.executable,
             "-m",
-            "build",
-            "--wheel",
-            "--no-isolation",
-            "--outdir",
+            "pip",
+            "wheel",
+            "--no-deps",
+            "--no-build-isolation",
+            "--wheel-dir",
             str(tmp_dir),
+            ".",
         ]
         result = subprocess.run(cmd, cwd=package_dir, capture_output=True, text=True, check=False)
         if result.returncode != 0:
             raise RuntimeError(
-                "Could not build GSO wheel. Install the 'build' package in the notebook "
-                f"environment and retry.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+                "Could not build GSO wheel. Ensure hatchling and uv-dynamic-versioning "
+                f"are installed in the notebook environment.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
             )
         wheels = sorted(tmp_dir.glob("genie_space_optimizer-*.whl"))
         if not wheels:

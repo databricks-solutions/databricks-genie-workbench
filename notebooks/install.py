@@ -1,5 +1,5 @@
 # Databricks notebook source
-# MAGIC %pip install databricks-sdk==0.102.0 pyyaml==6.0.3 "psycopg[binary]==3.3.3" build==1.4.0 hatchling==1.29.0 uv-dynamic-versioning==0.13.0
+# MAGIC %pip install databricks-sdk==0.102.0 pyyaml==6.0.3 "psycopg[binary]==3.3.3" hatchling==1.29.0 uv-dynamic-versioning==0.13.0
 
 # COMMAND ----------
 from pathlib import Path
@@ -15,8 +15,12 @@ def find_repo_root(start: Path) -> Path:
 
 
 repo_root = find_repo_root(Path.cwd())
-if str(repo_root) not in sys.path:
-    sys.path.insert(0, str(repo_root))
+for path in [
+    repo_root,
+    repo_root / "packages" / "genie-space-optimizer" / "src",
+]:
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 print(f"Repo root: {repo_root}")
 
