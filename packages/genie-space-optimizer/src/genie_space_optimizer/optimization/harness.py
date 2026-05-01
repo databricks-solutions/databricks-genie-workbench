@@ -198,6 +198,45 @@ def _bar(char: str = "-") -> str:
     return char * _W
 
 
+def format_evaluation_summary_block(
+    *,
+    iteration: int,
+    ag_id: str,
+    baseline_pre_arbiter: float,
+    candidate_pre_arbiter: float,
+    baseline_post_arbiter: float,
+    candidate_post_arbiter: float,
+    target_fixed_qids: tuple[str, ...],
+) -> str:
+    """Render the evaluation summary block with pre-arbiter delta and regression flag.
+
+    The ``regressed_only_pre_arbiter`` flag is ``yes`` when the candidate's
+    pre-arbiter accuracy regressed but its post-arbiter accuracy did not,
+    AND no target question id was fixed by the candidate. This catches
+    the pathological case where Genie's NL→SQL routing degraded but the
+    arbiter masked the regression by rescuing rows post-hoc.
+    """
+    pre_delta = round(candidate_pre_arbiter - baseline_pre_arbiter, 1)
+    post_delta = round(candidate_post_arbiter - baseline_post_arbiter, 1)
+    pre_regressed = pre_delta < 0
+    post_regressed = post_delta < 0
+    has_target_fix = bool(target_fixed_qids)
+    only_pre_regressed = (
+        "yes" if (pre_regressed and not post_regressed and not has_target_fix) else "no"
+    )
+    bar = "─" * 88
+    return "\n".join([
+        f"┌{bar}",
+        f"│  EVALUATION SUMMARY  iter={iteration}  ag={ag_id}",
+        f"├{bar}",
+        f"│  pre_arbiter  baseline={baseline_pre_arbiter:.1f}%  candidate={candidate_pre_arbiter:.1f}%  delta={pre_delta:+.1f}pp",
+        f"│  post_arbiter baseline={baseline_post_arbiter:.1f}%  candidate={candidate_post_arbiter:.1f}%  delta={post_delta:+.1f}pp",
+        f"│  target_fixed_qids: {sorted(target_fixed_qids) if target_fixed_qids else 'none'}",
+        f"│  regressed_only_pre_arbiter: {only_pre_regressed}",
+        f"└{bar}",
+    ])
+
+
 def _merge_bug4_counters(eval_result: dict) -> dict:
     """Inject Bug #4 (benchmark leakage) counters into an eval_result before
     it is written via ``write_iteration`` for the 'full' scope.
