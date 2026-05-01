@@ -278,38 +278,65 @@ from genie_space_optimizer._workspace_client import make_workspace_client
 w = make_workspace_client()
 spark = SparkSession.builder.getOrCreate()
 
-# Read task values from upstream
-run_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="run_id")
-space_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="space_id")
-domain = dbutils.jobs.taskValues.get(taskKey="preflight", key="domain")
-catalog = dbutils.jobs.taskValues.get(taskKey="preflight", key="catalog")
-schema = dbutils.jobs.taskValues.get(taskKey="preflight", key="schema")
-exp_name = dbutils.jobs.taskValues.get(taskKey="preflight", key="experiment_name")
-max_iterations = int(dbutils.jobs.taskValues.get(taskKey="preflight", key="max_iterations"))
-levers = json.loads(dbutils.jobs.taskValues.get(taskKey="preflight", key="levers"))
-apply_mode = dbutils.jobs.taskValues.get(taskKey="preflight", key="apply_mode")
+# Widgets — Databricks Jobs guarantees these survive Repair Run.
+dbutils.widgets.text("run_id", "")
+dbutils.widgets.text("catalog", "")
+dbutils.widgets.text("schema", "")
+_widget_run_id = dbutils.widgets.get("run_id").strip()
+_widget_catalog = dbutils.widgets.get("catalog").strip()
+_widget_schema = dbutils.widgets.get("schema").strip()
+
+from genie_space_optimizer.jobs._handoff import (
+    HandoffSource,
+    assert_lever_loop_inputs_sane,
+    get_baseline_eval_state,
+    get_enrichment_state,
+    get_run_context,
+)
+
+ctx = get_run_context(
+    spark,
+    run_id_widget=_widget_run_id,
+    catalog_widget=_widget_catalog,
+    schema_widget=_widget_schema,
+    dbutils=dbutils,
+)
+
+run_id = ctx["run_id"].value
+space_id = ctx["space_id"].value
+domain = ctx["domain"].value
+catalog = ctx["catalog"].value
+schema = ctx["schema"].value
+exp_name = ctx["experiment_name"].value
+max_iterations = ctx["max_iterations"].value
+levers = ctx["levers"].value
+apply_mode = ctx["apply_mode"].value
+triggered_by = ctx["triggered_by"].value or ""
+human_corrections = ctx["human_corrections"].value or []
+max_benchmark_count = ctx["max_benchmark_count"].value
 
 import os as _os
-_warehouse_id = dbutils.jobs.taskValues.get(taskKey="preflight", key="warehouse_id", default="")
+_warehouse_id = ctx["warehouse_id"].value or ""
 if _warehouse_id:
     _os.environ["GENIE_SPACE_OPTIMIZER_WAREHOUSE_ID"] = _warehouse_id
 
-triggered_by = dbutils.jobs.taskValues.get(taskKey="preflight", key="triggered_by", default="")
-human_corrections = json.loads(dbutils.jobs.taskValues.get(taskKey="preflight", key="human_corrections", default="[]"))
+baseline = get_baseline_eval_state(
+    spark, run_id=run_id, catalog=catalog, schema=schema, dbutils=dbutils,
+)
+_baseline_scores = baseline["scores"].value
+_baseline_accuracy = baseline["overall_accuracy"].value
+_baseline_thresholds_met = baseline["thresholds_met"].value
+baseline_model_id = baseline["model_id"].value
 
-from genie_space_optimizer.common.config import MAX_BENCHMARK_COUNT
-max_benchmark_count = int(dbutils.jobs.taskValues.get(taskKey="preflight", key="max_benchmark_count", default=str(MAX_BENCHMARK_COUNT)))
-
-scores_json = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="scores")
-_baseline_scores = json.loads(scores_json)
-_baseline_accuracy = float(dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="overall_accuracy"))
-thresholds_met_raw = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="thresholds_met")
-_baseline_thresholds_met = str(thresholds_met_raw).lower() in ("true", "1")
-baseline_model_id = dbutils.jobs.taskValues.get(taskKey="baseline_eval", key="model_id")
-
-enrichment_model_id = dbutils.jobs.taskValues.get(taskKey="enrichment", key="enrichment_model_id")
-enrichment_skipped_raw = dbutils.jobs.taskValues.get(taskKey="enrichment", key="enrichment_skipped")
-enrichment_skipped = str(enrichment_skipped_raw).lower() in ("true", "1")
+enrichment = get_enrichment_state(
+    spark, run_id=run_id, catalog=catalog, schema=schema, dbutils=dbutils,
+)
+enrichment_model_id = enrichment["enrichment_model_id"].value or ""
+enrichment_skipped = enrichment["enrichment_skipped"].value
+post_enrichment_accuracy = enrichment["post_enrichment_accuracy"].value
+post_enrichment_scores = enrichment["post_enrichment_scores"].value
+post_enrichment_model_id = enrichment["post_enrichment_model_id"].value
+post_enrichment_thresholds_met = enrichment["post_enrichment_thresholds_met"].value
 
 # Tier 1.3: prefer post-enrichment eval values when present. Enrichment
 # mutates the Genie Space, so the baseline scorecard can be arbitrarily
@@ -317,37 +344,26 @@ enrichment_skipped = str(enrichment_skipped_raw).lower() in ("true", "1")
 # against the pre-enrichment baseline while clustering reads post-
 # enrichment rows — the mismatch is the cause of the ghost-ceiling
 # regression loop.
-_post_enr_acc_raw = dbutils.jobs.taskValues.get(
-    taskKey="enrichment", key="post_enrichment_accuracy", default=""
-)
-_post_enr_scores_raw = dbutils.jobs.taskValues.get(
-    taskKey="enrichment", key="post_enrichment_scores", default=""
-)
-_post_enr_model_raw = dbutils.jobs.taskValues.get(
-    taskKey="enrichment", key="post_enrichment_model_id", default=""
-)
-_post_enr_thresholds_raw = dbutils.jobs.taskValues.get(
-    taskKey="enrichment", key="post_enrichment_thresholds_met", default=""
-)
-
 prev_scores = _baseline_scores
 prev_accuracy = _baseline_accuracy
 thresholds_met = _baseline_thresholds_met
 prev_model_id = baseline_model_id
 _accuracy_source = "baseline_eval"
 
-if _post_enr_acc_raw not in ("", None):
-    try:
-        prev_accuracy = float(_post_enr_acc_raw)
-        if _post_enr_scores_raw:
-            prev_scores = json.loads(_post_enr_scores_raw)
-        if _post_enr_model_raw:
-            prev_model_id = _post_enr_model_raw
-        if _post_enr_thresholds_raw not in ("", None):
-            thresholds_met = str(_post_enr_thresholds_raw).lower() in ("true", "1")
-        _accuracy_source = "enrichment.post_enrichment_accuracy"
-    except (TypeError, ValueError, json.JSONDecodeError):
-        pass
+if post_enrichment_accuracy is not None:
+    prev_accuracy = post_enrichment_accuracy
+    if post_enrichment_scores is not None:
+        prev_scores = post_enrichment_scores
+    if post_enrichment_model_id:
+        prev_model_id = post_enrichment_model_id
+    if post_enrichment_thresholds_met is not None:
+        thresholds_met = post_enrichment_thresholds_met
+    _accuracy_source = "enrichment.post_enrichment_accuracy"
+
+# Loud-failure guard — refuse to start the loop with degenerate inputs.
+assert_lever_loop_inputs_sane(
+    {"overall_accuracy": baseline["overall_accuracy"], "scores": baseline["scores"]}
+)
 
 import mlflow
 mlflow.set_experiment(exp_name)
@@ -373,6 +389,16 @@ _log(
     enrichment_model_id=enrichment_model_id,
     enrichment_skipped=enrichment_skipped,
     triggered_by=triggered_by,
+)
+_log(
+    "Handoff sources (TASK_VALUES = healthy, DELTA_FALLBACK = repaired)",
+    run_id_source=ctx["run_id"].source.value,
+    space_id_source=ctx["space_id"].source.value,
+    levers_source=ctx["levers"].source.value,
+    baseline_accuracy_source=baseline["overall_accuracy"].source.value,
+    baseline_scores_source=baseline["scores"].source.value,
+    enrichment_skipped_source=enrichment["enrichment_skipped"].source.value,
+    enrichment_model_id_source=enrichment["enrichment_model_id"].source.value,
 )
 
 # COMMAND ----------
