@@ -189,6 +189,101 @@ def test_strategist_allows_instruction_when_example_sql_attached() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Lever 5 instruction_guidance branch — regression for UnboundLocalError
+# ---------------------------------------------------------------------------
+
+
+def _instruction_guidance_only_ag() -> dict:
+    """AG with free-form ``instruction_guidance`` but no ``instruction_sections``.
+
+    Reproduces the strategist output shape that crashed iter 4 of the
+    airline-ticketing run (AG4 levers 2/5 against soft clusters): the
+    strategist returned free-form text guidance and the Lever 5 directive
+    therefore had no structured ``instruction_sections`` dict.
+    """
+    return {
+        "id": "AG_GUIDANCE_ONLY",
+        "root_cause_summary": "Genie generates non-deterministic SQL",
+        "affected_questions": ["q1"],
+        "source_cluster_ids": ["S001"],
+        "lever_directives": {
+            "5": {
+                "instruction_guidance": (
+                    "Always include a deterministic ORDER BY when emitting "
+                    "results so repeated runs return identical row order."
+                ),
+            },
+        },
+    }
+
+
+def test_strategist_lever5_instruction_guidance_only_does_not_crash() -> None:
+    """Pin against UnboundLocalError on the instruction_guidance-only path.
+
+    ``invoked_levers`` was computed only inside the
+    ``if isinstance(instruction_sections, dict) and instruction_sections:``
+    branch. Python treats the name as local for the entire function, so
+    when the strategist emits only free-form ``instruction_guidance``
+    (no structured sections), control falls into the sibling
+    ``elif instruction_guidance:`` branch — which references
+    ``invoked_levers`` and raises ``UnboundLocalError``.
+
+    Use a non-SQL-shape root cause (``asset_routing_error``) so the A3a
+    structural gate does not null out ``instruction_guidance`` before the
+    elif fires; the regression must reproduce the bug, not the gate.
+    """
+    reset_bug4_counters()
+
+    proposals = generate_proposals_from_strategy(
+        strategy={},
+        action_group=_instruction_guidance_only_ag(),
+        metadata_snapshot=_metadata_snapshot_with_cluster("asset_routing_error"),
+        target_lever=5,
+        apply_mode="genie_config",
+    )
+
+    rewrite = [p for p in proposals if p.get("patch_type") == "rewrite_instruction"]
+    assert rewrite, (
+        "instruction_guidance-only AG must produce at least one "
+        f"rewrite_instruction proposal; got {proposals!r}"
+    )
+    assert rewrite[0]["invoked_levers"] == [5], (
+        f"invoked_levers must reflect AG lever_directives keys; "
+        f"got {rewrite[0].get('invoked_levers')!r}"
+    )
+
+
+def test_strategist_lever5_invoked_levers_includes_co_invoked_levers() -> None:
+    """When the AG declares directives for multiple levers, the Lever 5
+    proposal payload must record every numeric lever id, not just lever 5.
+
+    Pins the contract that section-ownership re-routing depends on: if
+    Lever 4 co-owns a section that landed under Lever 5, the re-routing
+    logic at optimizer.py needs ``invoked_levers`` to contain Lever 4's
+    id so the section can be handed off.
+    """
+    reset_bug4_counters()
+
+    ag = _instruction_guidance_only_ag()
+    ag["lever_directives"]["4"] = {"kind": "join_specification"}
+
+    proposals = generate_proposals_from_strategy(
+        strategy={},
+        action_group=ag,
+        metadata_snapshot=_metadata_snapshot_with_cluster("asset_routing_error"),
+        target_lever=5,
+        apply_mode="genie_config",
+    )
+
+    rewrite = [p for p in proposals if p.get("patch_type") == "rewrite_instruction"]
+    assert rewrite, proposals
+    assert rewrite[0]["invoked_levers"] == [4, 5], (
+        f"invoked_levers must include every numeric lever id from the AG "
+        f"directives; got {rewrite[0].get('invoked_levers')!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # P1 pattern labels: gate must treat each as SQL-shape
 # ---------------------------------------------------------------------------
 

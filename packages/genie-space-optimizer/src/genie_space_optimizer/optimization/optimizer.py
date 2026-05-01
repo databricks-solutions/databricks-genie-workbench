@@ -13935,6 +13935,17 @@ def generate_proposals_from_strategy(
                 instruction_sections = None
                 instruction_guidance = ""
 
+            # Computed once for the whole Lever 5 block so both the
+            # instruction_sections branch and the instruction_guidance
+            # branch can reference it. Previously assigned only inside
+            # the if-branch, which made the elif raise UnboundLocalError
+            # whenever the strategist emitted free-form instruction
+            # guidance with no structured sections.
+            invoked_levers = {
+                int(k) for k in action_group.get("lever_directives", {}).keys()
+                if str(k).isdigit()
+            }
+
             if isinstance(instruction_sections, dict) and instruction_sections:
                 from genie_space_optimizer.optimization.applier import _get_general_instructions
 
@@ -13959,10 +13970,6 @@ def generate_proposals_from_strategy(
                 # GUIDANCE (Lever 4) and TEMPORAL FILTERS (Lever 2) were
                 # dumped into Lever 5's CONSTRAINTS.
                 allowed_sections = set(LEVER_TO_SECTIONS.get(target_lever, []))
-                invoked_levers = {
-                    int(k) for k in action_group.get("lever_directives", {}).keys()
-                    if str(k).isdigit()
-                }
                 if allowed_sections:
                     unauthorized = {
                         k for k in instruction_sections if k not in allowed_sections
