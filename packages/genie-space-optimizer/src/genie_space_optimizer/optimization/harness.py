@@ -9241,6 +9241,93 @@ def _run_gate_checks(
         protected_qids=_protected_qids,
     )
 
+    # v2 Task 2 — Pre-arbiter regression guardrail. A candidate that drops
+    # broad pre-arbiter accuracy without flipping any declared target qid
+    # is the symptom of a wide instruction edit trading healthy questions
+    # for nothing — the Q011 silent-regression pattern. Block at acceptance
+    # so the AG cannot be carried forward as a "no-op" win.
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_pre_arbiter_regression_guardrail,
+    )
+
+    def _pre_arbiter_correct_count(rows: list[dict]) -> int:
+        count = 0
+        for r in rows or []:
+            if not isinstance(r, dict):
+                continue
+            v = (
+                r.get("feedback/pre_arbiter_correctness/value")
+                or r.get("feedback/result_correctness/value")
+                or r.get("result_correctness/value")
+                or ""
+            )
+            if str(v).strip().lower() in {"yes", "true", "1", "1.0"}:
+                count += 1
+        return count
+
+    _baseline_pre_arbiter_pct = (
+        100.0
+        * _pre_arbiter_correct_count(_baseline_rows_for_control_plane)
+        / max(1, len(_baseline_rows_for_control_plane or []))
+    )
+    _candidate_pre_arbiter_pct = (
+        100.0
+        * _pre_arbiter_correct_count(_after_rows)
+        / max(1, len(_after_rows or []))
+    )
+    _target_fixed_qids_for_guardrail = tuple(
+        sorted(set(_control_plane_decision.target_fixed_qids or ()))
+    )
+    _pre_arbiter_decision = decide_pre_arbiter_regression_guardrail(
+        baseline_pre_arbiter_accuracy=_baseline_pre_arbiter_pct,
+        candidate_pre_arbiter_accuracy=_candidate_pre_arbiter_pct,
+        target_fixed_qids=_target_fixed_qids_for_guardrail,
+        max_pre_arbiter_regression_pp=5.0,
+    )
+    if not _pre_arbiter_decision.accepted:
+        logger.warning(
+            "[%s] pre_arbiter_regression_blocked: baseline=%.1f%% "
+            "candidate=%.1f%% delta=%.1fpp reason=%s",
+            ag_id,
+            _baseline_pre_arbiter_pct,
+            _candidate_pre_arbiter_pct,
+            _pre_arbiter_decision.delta_pp,
+            _pre_arbiter_decision.reason_code,
+        )
+        try:
+            _audit_emit(
+                stage_letter="M",
+                gate_name="pre_arbiter_regression_guardrail",
+                decision="fail",
+                reason_code="pre_arbiter_regression_blocked",
+                reason_detail=(
+                    f"baseline_pre_arbiter={_baseline_pre_arbiter_pct:.1f}% "
+                    f"candidate_pre_arbiter={_candidate_pre_arbiter_pct:.1f}% "
+                    f"delta_pp={_pre_arbiter_decision.delta_pp:+.1f} "
+                    f"reason={_pre_arbiter_decision.reason_code}"
+                ),
+                metrics={
+                    "baseline_pre_arbiter_pct": _baseline_pre_arbiter_pct,
+                    "candidate_pre_arbiter_pct": _candidate_pre_arbiter_pct,
+                    "delta_pp": _pre_arbiter_decision.delta_pp,
+                },
+            )
+        except Exception:
+            logger.debug(
+                "Failed to emit pre_arbiter_regression_blocked audit row",
+                exc_info=True,
+            )
+        # Force the control-plane acceptance decision to reject so the
+        # downstream regression block rolls the AG back. We synthesize a
+        # new ControlPlaneAcceptance using ``replace`` — the existing
+        # rejection block reads ``.accepted`` and the reason fields.
+        from dataclasses import replace as _dc_replace
+        _control_plane_decision = _dc_replace(
+            _control_plane_decision,
+            accepted=False,
+            reason_code="pre_arbiter_regression_blocked",
+        )
+
     # Task 6 — instrument the case where eval-row deltas imply a fix on
     # a target QID but the control-plane gate reports none.
     try:
