@@ -9,6 +9,46 @@ from typing import Any
 _COLUMN_PATCH_TYPES = frozenset({"update_column_description", "add_column_synonym"})
 
 
+class ProposalShapeError(ValueError):
+    """Raised when a producer emits a malformed proposal shape."""
+
+
+def _is_list_shaped_string(value: str) -> bool:
+    s = str(value or "").strip()
+    return (s.startswith("[") and s.endswith("]")) or "," in s
+
+
+def validate_column_proposal_shape(proposal: dict[str, Any]) -> None:
+    """Validate producer-side shape for column proposals.
+
+    This is intentionally stricter than ``normalize_column_proposals``.
+    Producers must emit one proposal per concrete table/column target; the
+    normalizer remains tolerant only as a compatibility backstop.
+    """
+    patch_type = _patch_type(proposal)
+    if patch_type not in _COLUMN_PATCH_TYPES:
+        return
+    table = proposal.get("table") or proposal.get("target_table")
+    column = proposal.get("column") or proposal.get("column_name")
+    pid = _proposal_id(proposal) or "<unknown>"
+    if not isinstance(table, str) or not table.strip():
+        raise ProposalShapeError(
+            f"{pid}: column proposal missing scalar table"
+        )
+    if not isinstance(column, str) or not column.strip():
+        raise ProposalShapeError(
+            f"{pid}: column proposal missing scalar column"
+        )
+    if _is_list_shaped_string(column):
+        raise ProposalShapeError(
+            f"{pid}: column proposal has list-shaped column target {column!r}"
+        )
+    if _is_list_shaped_string(table):
+        raise ProposalShapeError(
+            f"{pid}: column proposal has list-shaped table target {table!r}"
+        )
+
+
 def _proposal_id(proposal: dict[str, Any]) -> str:
     return str(proposal.get("proposal_id") or proposal.get("id") or "")
 

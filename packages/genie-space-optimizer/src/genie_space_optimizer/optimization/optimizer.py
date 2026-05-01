@@ -11059,6 +11059,28 @@ def _generate_lever1_rca_proposal(
         if not column:
             return None
         is_table_level = False
+        # Producer-side strict shape contract (Task 5). Reject malformed
+        # column targets at the producer so they never burn cap budget
+        # downstream, and so any future regression is visible in logs.
+        from genie_space_optimizer.optimization.proposal_shape import (
+            ProposalShapeError,
+            validate_column_proposal_shape,
+        )
+        try:
+            validate_column_proposal_shape({
+                "proposal_id": rca_id or "rca_theme",
+                "patch_type": ptype,
+                "table": table,
+                "column": column,
+            })
+        except ProposalShapeError:
+            logger.info(
+                "Rejected malformed Lever-1 RCA target rca_id=%s patch_type=%s "
+                "table=%r column=%r",
+                rca_id, ptype, table, column,
+                exc_info=True,
+            )
+            return None
 
     failure_clusters = (
         metadata_snapshot.get("_failure_clusters")
