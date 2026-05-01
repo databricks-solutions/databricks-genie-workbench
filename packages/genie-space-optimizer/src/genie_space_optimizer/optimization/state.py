@@ -416,6 +416,9 @@ def update_run_status(
     labeling_session_run_id: str | None = None,
     labeling_session_url: str | None = None,
     config_snapshot: dict | None = None,
+    warehouse_id: str | None = None,
+    human_corrections: list[dict] | None = None,
+    max_benchmark_count: int | None = None,
     space_id: str | None = None,
 ) -> None:
     """Update ``genie_opt_runs`` — only sets non-None fields."""
@@ -454,6 +457,12 @@ def update_run_status(
         updates["labeling_session_url"] = labeling_session_url
     if config_snapshot is not None:
         updates["config_snapshot"] = json.dumps(config_snapshot)
+    if warehouse_id is not None:
+        updates["warehouse_id"] = warehouse_id
+    if human_corrections is not None:
+        updates["human_corrections_json"] = json.dumps(human_corrections, default=str)
+    if max_benchmark_count is not None:
+        updates["max_benchmark_count"] = int(max_benchmark_count)
 
     resolved_space_id = space_id or _lookup_run_space_id(spark, run_id, catalog, schema)
     keys: dict[str, Any] = {"run_id": run_id}
