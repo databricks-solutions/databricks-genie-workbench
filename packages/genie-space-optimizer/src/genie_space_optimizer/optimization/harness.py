@@ -2752,6 +2752,56 @@ def _print_unified_example_summary(
     print("\n".join(_lines))
 
 
+def _print_enrichment_risk_lane_banner(
+    *,
+    candidates_in: int,
+    firewall_blocked: int,
+    firewall_warned: int,
+    correctness_rejected: int,
+    deterministic_safety_rejected: int,
+    teaching_safety_rejected: int,
+    smoke_test_rejected_batch: bool,
+    smoke_test_regressions: int,
+    smoke_test_sample_size: int,
+    applied: int,
+) -> None:
+    """Per-gate funnel banner for the example-SQL high-risk enrichment lane.
+
+    Operators reading the log should be able to attribute yield
+    shortfall to a specific gate (firewall vs correctness vs
+    deterministic safety vs teaching-safety judge vs smoke test)
+    rather than seeing one opaque "rejected N" number.
+    """
+    _lines = [_section("ENRICHMENT — HIGH-RISK LANE", "=")]
+    _lines.append(_kv("Candidates considered", candidates_in))
+    _lines.append(_kv(
+        "Firewall: blocked",
+        f"{firewall_blocked} (warned: {firewall_warned})",
+    ))
+    _lines.append(_kv("Correctness arbiter: rejected", correctness_rejected))
+    _lines.append(_kv(
+        "Deterministic safety: rejected", deterministic_safety_rejected,
+    ))
+    _lines.append(_kv(
+        "Teaching-safety judge: rejected", teaching_safety_rejected,
+    ))
+    if smoke_test_rejected_batch:
+        _lines.append(_kv(
+            "Smoke test",
+            f"REJECTED batch — {smoke_test_regressions}/{smoke_test_sample_size} regressions",
+        ))
+    elif smoke_test_sample_size:
+        _lines.append(_kv(
+            "Smoke test",
+            f"accepted — {smoke_test_regressions}/{smoke_test_sample_size} regressions",
+        ))
+    else:
+        _lines.append(_kv("Smoke test", "skipped (no baseline pool)"))
+    _lines.append(_kv("Applied (gold standard)", applied))
+    _lines.append(_bar("="))
+    print("\n".join(_lines))
+
+
 # ── Proactive Benchmark Example SQL Application ─────────────────────
 
 
