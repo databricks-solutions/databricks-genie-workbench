@@ -10523,13 +10523,20 @@ def _run_lever_loop(
             from genie_space_optimizer.optimization.control_plane import (
                 hard_failure_qids as _hard_failure_qids_for_plateau,
             )
+            from genie_space_optimizer.optimization.state import (
+                load_latest_state_iteration,
+            )
 
+            # Task 20 — read the latest committed state iteration (fully
+            # accepts both 'full' and 'enrichment' eval scopes) so the
+            # plateau resolver sees the live row set rather than a stale
+            # ``full_result`` snapshot from before recent rollbacks.
+            _state_iter = load_latest_state_iteration(
+                spark, run_id, catalog, schema,
+            ) or {}
             _plateau_rows: list[dict] = []
             try:
-                _plateau_rows = list(
-                    (full_result.get("rows", []) if isinstance(full_result, dict) else [])
-                    or []
-                )
+                _plateau_rows = list(_state_iter.get("rows") or [])
             except Exception:
                 _plateau_rows = []
             _current_hard_qids = set(
@@ -10541,15 +10548,36 @@ def _run_lever_loop(
             _quarantined_qids = set(
                 _correction_state.get("quarantined_qids", set()) or set()
             )
+            # Task 20 — collect target qids for which any rejected AG
+            # produced an SQL-shape delta. The resolver routes these to
+            # UNRESOLVED_HARD_FAILURE_WITH_UNTRIED_SQL_DELTA so the loop
+            # keeps iterating instead of declaring a clean plateau.
+            _sql_delta_qids: set[str] = set()
+            for _rb in reflection_buffer:
+                for _delta in _rb.get("sql_shape_deltas", []) or []:
+                    _qid = str(_delta.get("target_qid") or "")
+                    if _qid and (_delta.get("remaining") or _delta.get("improved")):
+                        _sql_delta_qids.add(_qid)
+
             _resolved = resolve_terminal_on_plateau(
                 quarantined_qids=_quarantined_qids,
                 current_hard_qids=_current_hard_qids,
                 regression_debt_qids=_regression_debt_qids,
+                sql_delta_qids=_sql_delta_qids,
             )
             logger.info(
-                "Plateau terminal resolved at iteration %d: status=%s reason=%s",
+                "Plateau terminal at iter %d: status=%s reason=%s "
+                "(hard=%d quarantined=%d debt=%d sql_delta=%d)",
                 _iter_num, _resolved.status.value, _resolved.reason,
+                len(_current_hard_qids), len(_quarantined_qids),
+                len(_regression_debt_qids), len(_sql_delta_qids),
             )
+            if _resolved.should_continue:
+                logger.info(
+                    "Plateau suppressed because RCA terminal status is %s",
+                    _resolved.status.value,
+                )
+                continue
             print(
                 _section("LEVER LOOP — TERMINATION: plateau", "!") + "\n"
                 + _kv("Reason", _resolved.reason) + "\n"
