@@ -837,3 +837,39 @@ def test_plural_top_n_archetype_routes_to_ordered_list_without_limit() -> None:
     assert "plural" in archetype.prompt_template.lower()
     assert "do not filter to rank = 1" in archetype.prompt_template.lower()
     assert "LIMIT" not in archetype.output_shape["requires_constructs"]
+
+
+def test_instruction_fallback_declines_payment_currency_pollution_regression() -> None:
+    afs = {
+        "cluster_id": "C_payment_currency",
+        "failure_type": "wrong_aggregation",
+        "blame_set": [
+            "PAYMENT_CURRENCY_CD",
+            "PAYMENT_CURRENCY_CD = USD filter",
+            [
+                "PAYMENT_CURRENCY_CD",
+                "CREDIT_CARD_PAYMENT_VENDOR_CD",
+                "FORM_OF_PAYMENT_CD",
+                "VCR_CREATE_DT",
+            ],
+        ],
+        "counterfactual_fixes": [
+            (
+                "Remove the PAYMENT_CURRENCY_CD = USD filter since the user "
+                "asked for total payment amount in USD which likely refers to "
+                "the label/alias of the amount column rather than filtering by "
+                "currency code."
+            ),
+            (
+                "Add an instruction in the Genie Space metadata clarifying "
+                "that PAYMENT_AMT is already in USD and does not require "
+                "filtering by PAYMENT_CURRENCY_CD = USD."
+            ),
+        ],
+        "suggested_fix_summary": (
+            "Root cause: wrong_aggregation; Blamed: PAYMENT_CURRENCY_CD, "
+            "PAYMENT_CURRENCY_CD = USD filter; 1 question(s) affected"
+        ),
+    }
+
+    assert instruction_only_fallback(afs) is None

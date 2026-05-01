@@ -71,3 +71,29 @@ def test_validate_lever5_accepts_publishable_instruction() -> None:
 
     assert len(valid) == 1
     assert valid[0]["patch_type"] == "add_instruction"
+
+
+def test_validate_lever5_rejects_payment_currency_pollution_regression() -> None:
+    polluted = (
+        "INSTRUCTIONS YOU MUST FOLLOW WHEN PROVIDING SUMMARIES:\n"
+        "- Always state the currency code alongside any monetary amount.\n"
+        "\n"
+        "Guidance for wrong_aggregation:\n"
+        "- Remove the PAYMENT_CURRENCY_CD = USD filter since the user asked "
+        "for total payment amount in USD which likely refers to the label/alias "
+        "of the amount column rather than filtering by currency code.\n"
+        "- Add an instruction in the Genie Space metadata clarifying that "
+        "PAYMENT_AMT is already in USD and does not require filtering by "
+        "PAYMENT_CURRENCY_CD = USD.\n"
+        "- Summary: Root cause: wrong_aggregation; Blamed: PAYMENT_CURRENCY_CD; "
+        "1 question(s) affected\n"
+        "- Affected: PAYMENT_CURRENCY_CD, PAYMENT_CURRENCY_CD = USD filter"
+    )
+
+    valid = _validate_lever5_proposals(
+        [{"patch_type": "add_instruction", "new_text": polluted}],
+        _snapshot(),
+        benchmarks=[],
+    )
+
+    assert valid == []
