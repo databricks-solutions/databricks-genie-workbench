@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from scripts.deploy_lib.app_yaml import render_text
-from scripts.deploy_lib.apps import patch_app_resources
+from scripts.deploy_lib.apps import get_app_service_principal, patch_app_resources
 from scripts.deploy_lib.config import InstallConfig, LakebaseInfo
 from scripts.deploy_lib.gso_job import build_job_settings
 from scripts.deploy_lib.lakebase import get_database_resource
@@ -20,7 +20,12 @@ class FakeApiClient:
         self.calls.append((method, path, body))
         key = (method, path)
         if key in self.responses:
-            return self.responses[key]
+            response = self.responses[key]
+            if isinstance(response, list):
+                if len(response) > 1:
+                    return response.pop(0)
+                return response[0]
+            return response
         return {}
 
 
@@ -151,6 +156,29 @@ def test_patch_app_resources_preserves_existing_and_adds_postgres():
     assert any(call[0] == "PATCH" and call[1] == "/api/2.0/apps/genie-workbench" for call in w.api_client.calls)
 
 
+def test_get_app_service_principal_waits_for_async_app_create(monkeypatch):
+    w = FakeWorkspaceClient(
+        {
+            ("GET", "/api/2.0/apps/genie-workbench"): [
+                {"name": "genie-workbench"},
+                {"name": "genie-workbench", "service_principal_client_id": "sp-client-id"},
+            ]
+        }
+    )
+    monkeypatch.setattr("scripts.deploy_lib.apps.time.sleep", lambda _seconds: None)
+
+    sp = get_app_service_principal(
+        w,
+        "genie-workbench",
+        timeout_seconds=1,
+        poll_seconds=0,
+    )
+
+    assert sp["client_id"] == "sp-client-id"
+    get_calls = [call for call in w.api_client.calls if call[0] == "GET"]
+    assert len(get_calls) == 2
+
+
 def test_gso_job_settings_match_persistent_dag_shape():
     cfg = InstallConfig(
         app_name="genie-workbench",
@@ -208,4 +236,3 @@ def test_lakebase_get_database_resource_reads_first_database_name():
         get_database_resource(w, "lb")
         == "projects/lb/branches/production/databases/databricks_postgres"
     )
-

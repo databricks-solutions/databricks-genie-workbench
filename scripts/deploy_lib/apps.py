@@ -49,21 +49,80 @@ def ensure_app(w, cfg: InstallConfig) -> dict[str, Any]:
     )
 
 
-def get_app_service_principal(w, app_name: str) -> dict[str, str]:
-    app = get_app(w, app_name)
-    if not app:
-        raise RuntimeError(f"Databricks App '{app_name}' does not exist")
+def _extract_service_principal(app: dict[str, Any]) -> dict[str, str] | None:
     client_id = (
         app.get("service_principal_client_id")
         or app.get("service_principal_name")
         or ""
-    ).strip()
-    if not client_id:
-        raise RuntimeError(f"Could not resolve service principal for app '{app_name}'")
-    return {
-        "client_id": client_id,
-        "display_name": str(app.get("service_principal_display_name") or client_id),
-    }
+    )
+    client_id = str(client_id).strip()
+    if client_id:
+        return {
+            "client_id": client_id,
+            "display_name": str(app.get("service_principal_display_name") or client_id),
+        }
+
+    nested = app.get("service_principal")
+    if isinstance(nested, dict):
+        nested_id = (
+            nested.get("client_id")
+            or nested.get("application_id")
+            or nested.get("service_principal_client_id")
+            or nested.get("service_principal_name")
+            or nested.get("id")
+            or nested.get("name")
+            or ""
+        )
+        nested_id = str(nested_id).strip()
+        if nested_id:
+            display_name = (
+                nested.get("display_name")
+                or nested.get("displayName")
+                or nested.get("service_principal_display_name")
+                or nested_id
+            )
+            return {"client_id": nested_id, "display_name": str(display_name)}
+    return None
+
+
+def get_app_service_principal(
+    w,
+    app_name: str,
+    *,
+    timeout_seconds: int = 300,
+    poll_seconds: int = 5,
+) -> dict[str, str]:
+    deadline = time.time() + timeout_seconds
+    last_app: dict[str, Any] | None = None
+
+    while True:
+        app = get_app(w, app_name)
+        if not app:
+            raise RuntimeError(f"Databricks App '{app_name}' does not exist")
+        last_app = app
+
+        sp = _extract_service_principal(app)
+        if sp:
+            return sp
+
+        if time.time() >= deadline:
+            break
+
+        # App creation is asynchronous; the service principal may lag the
+        # create response by minutes in fresh workspaces.
+        time.sleep(poll_seconds)
+
+    known_keys = sorted(last_app.keys()) if last_app else []
+    client_id = (
+        (last_app or {}).get("service_principal_client_id")
+        or (last_app or {}).get("service_principal_name")
+        or ""
+    )
+    raise RuntimeError(
+        f"Could not resolve service principal for app '{app_name}' after "
+        f"{timeout_seconds}s. Last app keys={known_keys}, "
+        f"service_principal_client_id={client_id!r}."
+    )
 
 
 def start_app_if_needed(w, app_name: str) -> None:
@@ -149,4 +208,3 @@ def wait_for_deployment(
             return last_app
         time.sleep(poll_seconds)
     return last_app
-
