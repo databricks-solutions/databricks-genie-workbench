@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS {catalog}.{schema}.genie_opt_runs (
     labeling_session_name STRING               COMMENT 'MLflow labeling session name for human review',
     labeling_session_run_id STRING             COMMENT 'MLflow run ID associated with the labeling session',
     labeling_session_url STRING                COMMENT 'URL to the MLflow Review App labeling session',
+    warehouse_id        STRING                 COMMENT 'SQL warehouse ID resolved at preflight; used by lever_loop / finalize / deploy as a Delta-fallback for the preflight taskValue when Repair Run drops in-memory state',
+    human_corrections_json STRING              COMMENT 'JSON array of carry-forward human corrections loaded by preflight; Delta-fallback for the preflight.human_corrections taskValue',
+    max_benchmark_count INT                    COMMENT 'Effective max benchmark count computed by preflight (target_benchmark_count adjusted for held-out ratio); Delta-fallback for the preflight.max_benchmark_count taskValue',
     updated_at          TIMESTAMP     NOT NULL COMMENT 'Last update timestamp'
 )
 USING DELTA

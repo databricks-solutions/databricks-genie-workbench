@@ -153,6 +153,9 @@ def _migrate_add_columns(spark: SparkSession, catalog: str, schema: str) -> None
         (TABLE_ITERATIONS, "both_correct_rate", "DOUBLE COMMENT 'Tier 1.7: both_correct_count / evaluated_count * 100. Stricter than overall_accuracy (which counts arbiter override rows as correct). Lever loop anchors acceptance to this to avoid ghost-ceiling rejections.'"),
         (TABLE_PATCHES, "applied_patch_type", "STRING COMMENT 'T2.13: actual patch_type that was applied after any applier-side transformations (e.g. update_instruction_section emitted by the rewrite_instruction downgrade splitter). May differ from patch_type (the proposal type).'"),
         (TABLE_PATCHES, "applied_patch_detail", "STRING COMMENT 'T2.13: human-readable detail describing the applied transformation (e.g. section_name for update_instruction_section, or a note when a rewrite_instruction was split into children).'"),
+        (TABLE_RUNS, "warehouse_id", "STRING COMMENT 'SQL warehouse ID resolved at preflight; Delta-fallback for the preflight.warehouse_id taskValue'"),
+        (TABLE_RUNS, "human_corrections_json", "STRING COMMENT 'JSON array of carry-forward human corrections; Delta-fallback for the preflight.human_corrections taskValue'"),
+        (TABLE_RUNS, "max_benchmark_count", "INT COMMENT 'Effective max benchmark count; Delta-fallback for the preflight.max_benchmark_count taskValue'"),
     ]
     for table, col, col_def in migrations:
         fqn = _fqn(catalog, schema, table)
