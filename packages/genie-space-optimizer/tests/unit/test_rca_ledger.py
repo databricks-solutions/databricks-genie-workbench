@@ -124,7 +124,14 @@ def test_build_rca_ledger_from_failure_rows_compiles_themes():
         "feedback/arbiter/value": "ground_truth_correct",
     }]
 
-    ledger = build_rca_ledger(rows, metadata_snapshot={})
+    ledger = build_rca_ledger(rows, metadata_snapshot={
+        "_uc_columns": [
+            {
+                "table_full_name": "mv_esr_dim_date",
+                "column_name": "calendar_month",
+            }
+        ]
+    })
 
     assert ledger["finding_count"] == 1
     assert ledger["theme_count"] == 1

@@ -668,11 +668,73 @@ def _patch_intent(base: dict, *, ptype: str, lever: int, intent: str, **fields: 
     }
 
 
+def _looks_list_shaped(value: str) -> bool:
+    s = str(value or "").strip()
+    return (s.startswith("[") and s.endswith("]")) or "," in s
+
+
 def _split_table_column(obj: str) -> tuple[str, str]:
-    parts = str(obj or "").split(".")
-    if len(parts) >= 2:
-        return parts[-2], parts[-1]
-    return "", str(obj or "")
+    """Return ``(table_fqn_or_name, column)`` for scalar table.column input.
+
+    Reject list-shaped strings because they represent multiple targets and
+    must be fanned out by the producer, not stringified into one fake column.
+    """
+    raw = str(obj or "").strip()
+    if not raw or _looks_list_shaped(raw):
+        return "", ""
+    if "." not in raw:
+        return "", raw
+    table, column = raw.rsplit(".", 1)
+    table = table.strip()
+    column = column.strip()
+    if not table or not column:
+        return "", ""
+    return table, column
+
+
+def _bind_column_targets(
+    objects: tuple[str, ...],
+    *,
+    metadata_snapshot: dict | None,
+) -> tuple[tuple[str, str], ...]:
+    """Bind raw RCA object strings to concrete ``(table, column)`` pairs.
+
+    Fully qualified ``table.column`` strings bind directly. Unqualified
+    columns bind only when UC metadata contains exactly one matching table.
+    Ambiguous or list-shaped inputs are dropped so malformed RCA targets do
+    not become fake Lever-1 proposals.
+    """
+    uc_columns = []
+    if isinstance(metadata_snapshot, dict):
+        uc_columns = list(metadata_snapshot.get("_uc_columns") or [])
+    by_column: dict[str, list[str]] = {}
+    for row in uc_columns:
+        if not isinstance(row, dict):
+            continue
+        col = str(row.get("column_name") or "").strip()
+        table = str(
+            row.get("table_full_name")
+            or row.get("table")
+            or row.get("table_name")
+            or ""
+        ).strip()
+        if col and table and table not in by_column.setdefault(col, []):
+            by_column[col].append(table)
+
+    out: list[tuple[str, str]] = []
+    for obj in objects or ():
+        table, column = _split_table_column(obj)
+        if not column:
+            continue
+        if not table:
+            matches = by_column.get(column, [])
+            if len(matches) != 1:
+                continue
+            table = matches[0]
+        pair = (table, column)
+        if pair not in out:
+            out.append(pair)
+    return tuple(out)
 
 
 def _example_synthesis_intent(base: dict, finding: "RcaFinding", root_cause: str) -> dict:
@@ -723,15 +785,21 @@ def compile_patch_themes(
     This function proposes patch intent only. Existing validators,
     grounding, leakage checks, and appliers still decide what persists.
     """
-    del metadata_snapshot  # Reserved for catalog-aware patch shaping.
+    metadata_snapshot = metadata_snapshot or {}
     themes: list[RcaPatchTheme] = []
     for f in findings:
         base = _theme_patch_base(f)
         patches: list[dict] = []
 
         if f.rca_kind is RcaKind.METRIC_VIEW_ROUTING_CONFUSION:
+            # Bare ``mv_*`` identifiers (no ``.``) are asset-level targets;
+            # everything else is treated as a column-level target and bound
+            # via UC metadata or a fully qualified ``table.column`` form.
+            def _is_asset_only(o: str) -> bool:
+                return o.startswith("mv_") and "." not in o
+
             for obj in f.expected_objects:
-                if obj.startswith("mv_"):
+                if _is_asset_only(obj):
                     patches.append({
                         **base,
                         "type": "update_description",
@@ -741,16 +809,20 @@ def compile_patch_themes(
                             "mark as default asset for unqualified business term"
                         ),
                     })
-                elif obj:
-                    patches.append({
-                        **base,
-                        "type": "update_column_description",
-                        "column": obj,
-                        "lever": 1,
-                        "intent": "strengthen intended measure semantics",
-                    })
+            for table, column in _bind_column_targets(
+                tuple(o for o in f.expected_objects if not _is_asset_only(o)),
+                metadata_snapshot=metadata_snapshot,
+            ):
+                patches.append(_patch_intent(
+                    base,
+                    ptype="update_column_description",
+                    lever=1,
+                    intent="strengthen intended measure semantics",
+                    table=table,
+                    column=column,
+                ))
             for obj in f.actual_objects:
-                if obj.startswith("mv_"):
+                if _is_asset_only(obj):
                     patches.append({
                         **base,
                         "type": "update_description",
@@ -758,27 +830,33 @@ def compile_patch_themes(
                         "lever": 1,
                         "intent": "clarify narrower channel-specific use",
                     })
-                elif obj:
-                    patches.append({
-                        **base,
-                        "type": "update_column_description",
-                        "column": obj,
-                        "lever": 1,
-                        "intent": (
-                            "clarify do-not-use-unless-explicit semantics"
-                        ),
-                    })
+            for table, column in _bind_column_targets(
+                tuple(o for o in f.actual_objects if not _is_asset_only(o)),
+                metadata_snapshot=metadata_snapshot,
+            ):
+                patches.append(_patch_intent(
+                    base,
+                    ptype="update_column_description",
+                    lever=1,
+                    intent=(
+                        "clarify do-not-use-unless-explicit semantics"
+                    ),
+                    table=table,
+                    column=column,
+                ))
 
         elif f.rca_kind is RcaKind.MEASURE_SWAP:
-            for obj in f.expected_objects:
-                table, column = _split_table_column(obj)
+            for table, column in _bind_column_targets(
+                f.expected_objects,
+                metadata_snapshot=metadata_snapshot,
+            ):
                 patches.append(_patch_intent(
                     base,
                     ptype="update_column_description",
                     lever=1,
                     intent="strengthen intended measure description and contrast it with confused measures",
                     table=table,
-                    column=column or obj,
+                    column=column,
                 ))
                 patches.append(_patch_intent(
                     base,
@@ -786,8 +864,14 @@ def compile_patch_themes(
                     lever=1,
                     intent="add business aliases that route users to the intended measure",
                     table=table,
-                    column=column or obj,
+                    column=column,
                 ))
+            for obj in f.expected_objects:
+                # L6 measure snippets keep using ``target_object`` and can
+                # accept either qualified or unqualified scalars; the
+                # downstream snippet builder is structurally tolerant.
+                if not obj or _looks_list_shaped(obj):
+                    continue
                 patches.append(_patch_intent(
                     base,
                     ptype="add_sql_snippet_measure",
@@ -803,28 +887,36 @@ def compile_patch_themes(
             ))
 
         elif f.rca_kind is RcaKind.CANONICAL_DIMENSION_MISSED:
-            for obj in f.expected_objects:
-                patches.append({
-                    **base,
-                    "type": "update_column_description",
-                    "column": obj,
-                    "lever": 1,
-                    "intent": (
+            for table, column in _bind_column_targets(
+                f.expected_objects,
+                metadata_snapshot=metadata_snapshot,
+            ):
+                patches.append(_patch_intent(
+                    base,
+                    ptype="update_column_description",
+                    lever=1,
+                    intent=(
                         "use canonical dimension instead of derived expression"
                     ),
-                })
+                    table=table,
+                    column=column,
+                ))
 
         elif f.rca_kind is RcaKind.MISSING_REQUIRED_DIMENSION:
-            for obj in f.expected_objects:
-                patches.append({
-                    **base,
-                    "type": "update_column_description",
-                    "column": obj,
-                    "lever": 1,
-                    "intent": (
+            for table, column in _bind_column_targets(
+                f.expected_objects,
+                metadata_snapshot=metadata_snapshot,
+            ):
+                patches.append(_patch_intent(
+                    base,
+                    ptype="update_column_description",
+                    lever=1,
+                    intent=(
                         "required grouping dimension for comparison questions"
                     ),
-                })
+                    table=table,
+                    column=column,
+                ))
 
         elif f.rca_kind is RcaKind.EXTRA_DEFENSIVE_FILTER:
             patches.append({
@@ -876,15 +968,17 @@ def compile_patch_themes(
             patches.append(_example_synthesis_intent(base, f, root_cause="missing_filter"))
 
         elif f.rca_kind is RcaKind.GRAIN_OR_GROUPING_MISMATCH:
-            for obj in f.expected_objects:
-                table, column = _split_table_column(obj)
+            for table, column in _bind_column_targets(
+                f.expected_objects,
+                metadata_snapshot=metadata_snapshot,
+            ):
                 patches.append(_patch_intent(
                     base,
                     ptype="update_column_description",
                     lever=1,
                     intent="clarify required grain and grouping semantics",
                     table=table,
-                    column=column or obj,
+                    column=column,
                 ))
             patches.append(_patch_intent(
                 base,
@@ -897,15 +991,17 @@ def compile_patch_themes(
             patches.append(_example_synthesis_intent(base, f, root_cause="wrong_grouping"))
 
         elif f.rca_kind is RcaKind.SYNONYM_OR_ENTITY_MATCH_MISSING:
-            for obj in f.expected_objects:
-                table, column = _split_table_column(obj)
+            for table, column in _bind_column_targets(
+                f.expected_objects,
+                metadata_snapshot=metadata_snapshot,
+            ):
                 patches.append(_patch_intent(
                     base,
                     ptype="add_column_synonym",
                     lever=1,
                     intent="add missing business synonym or entity-match hint",
                     table=table,
-                    column=column or obj,
+                    column=column,
                 ))
 
         elif f.rca_kind is RcaKind.SQL_EXPRESSION_MISSING:
@@ -956,19 +1052,21 @@ def compile_patch_themes(
 
         elif f.rca_kind is RcaKind.TOP_N_CARDINALITY_COLLAPSE:
             objects = f.expected_objects or f.actual_objects
-            for obj in objects:
-                if not obj:
-                    continue
-                patches.append({
-                    **base,
-                    "type": "update_column_description",
-                    "lever": 1,
-                    "target": obj,
-                    "intent": (
+            for table, column in _bind_column_targets(
+                objects,
+                metadata_snapshot=metadata_snapshot,
+            ):
+                patches.append(_patch_intent(
+                    base,
+                    ptype="update_column_description",
+                    lever=1,
+                    intent=(
                         "Clarify that this object participates in grouped ordered-list "
                         "questions where plural wording preserves all grouped entities."
                     ),
-                })
+                    table=table,
+                    column=column,
+                ))
             patches.append({
                 **base,
                 "type": "add_instruction",
