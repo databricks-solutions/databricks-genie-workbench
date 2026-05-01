@@ -1,5 +1,5 @@
 # Databricks notebook source
-# MAGIC %pip install databricks-sdk pyyaml "psycopg[binary]" build hatchling==1.29.0 uv-dynamic-versioning==0.13.0
+# MAGIC %pip install databricks-sdk==0.102.0 pyyaml==6.0.3 "psycopg[binary]==3.3.3" build==1.4.0 hatchling==1.29.0 uv-dynamic-versioning==0.13.0
 
 # COMMAND ----------
 from pathlib import Path
