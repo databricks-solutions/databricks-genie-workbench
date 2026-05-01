@@ -343,10 +343,11 @@ def _validate_journeys_at_iteration_end(
     """Validate journey completeness; warn or raise per the toggle.
 
     Phase 2 wires this with ``raise_on_violation=False`` so a real run logs
-    gaps without aborting. Phase 4 flips the toggle to True.
+    gaps without aborting. Phase 4 flips the toggle to True after Task 8 has
+    burned the real-run violation count to zero.
     """
     from genie_space_optimizer.optimization.question_journey_contract import (
-        JourneyContractViolation,
+        JourneyContractViolationError,
         validate_question_journeys,
     )
 
@@ -363,11 +364,7 @@ def _validate_journeys_at_iteration_end(
         f"qid(s); missing_qids={list(report.missing_qids)}"
     )
     if raise_on_violation:
-        raise JourneyContractViolation(  # type: ignore[misc]
-            question_id="*",
-            kind="iteration_end",
-            detail=summary,
-        )
+        raise JourneyContractViolationError(report)
     logger.warning(summary)
     for v in report.violations[:20]:  # cap to keep logs readable
         logger.warning(

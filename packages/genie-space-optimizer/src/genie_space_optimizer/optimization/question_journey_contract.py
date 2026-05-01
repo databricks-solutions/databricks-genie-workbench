@@ -328,3 +328,20 @@ def canonical_journey_json(*, events: list[QuestionJourneyEvent]) -> str:
         r.get("proposal_id", ""),
     ))
     return json.dumps(rows, sort_keys=True, separators=(",", ":"))
+
+
+class JourneyContractViolationError(RuntimeError):
+    """Raised when a Lever Loop iteration produces journey contract violations.
+
+    Carries the validation report so callers can log specifics. Raised at end
+    of iteration when raise_on_violation=True (Phase 4 hard gate).
+    """
+
+    def __init__(self, report: JourneyValidationReport) -> None:
+        self.report = report
+        summary = (
+            f"{len(report.violations)} journey contract violations across "
+            f"{len(set(v.question_id for v in report.violations))} qid(s); "
+            f"missing_qids={list(report.missing_qids)}"
+        )
+        super().__init__(summary)
