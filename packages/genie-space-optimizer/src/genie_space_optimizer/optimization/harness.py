@@ -10574,6 +10574,36 @@ def _run_lever_loop(
 
         iteration_counter += 1
 
+        # ── Per-question journey ledger accumulator (Task 13) ────────
+        # Stamp every stage that touches a question so the end-of-
+        # iteration ledger can reconstruct each qid's full timeline.
+        from genie_space_optimizer.optimization.question_journey import (
+            QuestionJourneyEvent as _JourneyEvent,
+            build_question_journey_ledger as _build_journey_ledger,
+        )
+        _journey_events: list[_JourneyEvent] = []
+
+        def _journey_emit(stage: str, **fields):
+            """Append journey event(s); fail-safe for any caller."""
+            try:
+                qids = fields.pop("question_ids", None)
+                qid = fields.pop("question_id", None)
+                target_qids = list(qids) if qids else (
+                    [qid] if qid else []
+                )
+                for q in target_qids:
+                    qstr = str(q).strip()
+                    if not qstr:
+                        continue
+                    _journey_events.append(_JourneyEvent(
+                        question_id=qstr, stage=stage, **fields,
+                    ))
+            except Exception:
+                logger.debug(
+                    "journey_emit failed (non-fatal) stage=%s", stage,
+                    exc_info=True,
+                )
+
         # ── 3B.1b: Per-iteration arbiter corrections ─────────────────
         _iter_corr = _run_arbiter_corrections(
             w, spark, run_id, catalog, schema, domain,
@@ -10617,6 +10647,37 @@ def _run_lever_loop(
         clusters = _analysis["all_clusters"]
         soft_signal_clusters = _analysis["soft_signal_clusters"]
         rca_ledger = _analysis.get("rca_ledger") or {}
+
+        # Task 13 — emit ``clustered`` events per qid in each hard cluster
+        # and ``soft_signal`` events for soft clusters.
+        try:
+            for _c in (clusters or []):
+                _cid = str(_c.get("cluster_id") or "")
+                _rc = str(_c.get("root_cause") or _c.get("asi_failure_type") or "")
+                _qids = [str(q) for q in (_c.get("question_ids") or []) if q]
+                if _qids:
+                    _journey_emit(
+                        "clustered",
+                        question_ids=_qids,
+                        cluster_id=_cid,
+                        root_cause=_rc,
+                    )
+            for _sc in (soft_signal_clusters or []):
+                _scid = str(_sc.get("cluster_id") or "")
+                _src = str(_sc.get("root_cause") or _sc.get("asi_failure_type") or "")
+                _sqids = [str(q) for q in (_sc.get("question_ids") or []) if q]
+                if _sqids:
+                    _journey_emit(
+                        "soft_signal",
+                        question_ids=_sqids,
+                        cluster_id=_scid,
+                        root_cause=_src,
+                    )
+        except Exception:
+            logger.debug(
+                "Task 13: cluster journey emit failed (non-fatal)",
+                exc_info=True,
+            )
         metadata_snapshot["_rca_ledger"] = rca_ledger
         try:
             from genie_space_optimizer.optimization.rca import (
@@ -11232,6 +11293,28 @@ def _run_lever_loop(
                             for c in _intent_collisions
                         ],
                     )
+                    # Task 13 — record collision touches for every qid
+                    # implicated in any column branch of the collision.
+                    try:
+                        for _coll in _intent_collisions:
+                            _term = str(_coll.get("term") or "")
+                            _qbycol = _coll.get("questions_by_column") or {}
+                            _all_qids: list[str] = []
+                            for _qids_list in _qbycol.values():
+                                _all_qids.extend(
+                                    str(q) for q in (_qids_list or []) if q
+                                )
+                            if _all_qids:
+                                _journey_emit(
+                                    "intent_collision_detected",
+                                    question_ids=list(dict.fromkeys(_all_qids)),
+                                    reason=f"term={_term}",
+                                )
+                    except Exception:
+                        logger.debug(
+                            "Task 13: intent collision journey emit failed",
+                            exc_info=True,
+                        )
                 if _diag_preempt is not None:
                     strategy = {
                         "action_groups": [_diag_preempt],
@@ -11346,6 +11429,38 @@ def _run_lever_loop(
                             _diag_ag = diagnostic_action_group_for_cluster(_c)
                             action_groups.append(_diag_ag)
                             diagnostic_action_queue.append(_diag_ag)
+                            # Task 13 — diagnostic AG covers all qids in
+                            # the uncovered cluster.
+                            try:
+                                _diag_qids = [
+                                    str(q)
+                                    for q in (_c.get("question_ids") or [])
+                                    if q
+                                ]
+                                _diag_ag_id = str(
+                                    _diag_ag.get("id")
+                                    or _diag_ag.get("ag_id")
+                                    or ""
+                                )
+                                if _diag_qids:
+                                    _journey_emit(
+                                        "diagnostic_ag",
+                                        question_ids=_diag_qids,
+                                        ag_id=_diag_ag_id,
+                                        cluster_id=str(
+                                            _c.get("cluster_id") or ""
+                                        ),
+                                        root_cause=str(
+                                            _c.get("root_cause")
+                                            or _c.get("asi_failure_type")
+                                            or ""
+                                        ),
+                                    )
+                            except Exception:
+                                logger.debug(
+                                    "Task 13: diagnostic_ag journey emit failed",
+                                    exc_info=True,
+                                )
                 except Exception:
                     logger.debug(
                         "Strategist coverage enforcement raised (non-fatal)",
@@ -12413,6 +12528,35 @@ def _run_lever_loop(
 
         patches = proposals_to_patches(all_proposals)
 
+        # Task 13 — emit ``proposed`` events for every proposal that
+        # survived to ``proposals_to_patches``. Use both
+        # ``_grounding_target_qids`` and ``target_qids`` so we capture
+        # the full causal target set even when one is empty.
+        try:
+            for _p in (all_proposals or []):
+                _ptids = list(_p.get("_grounding_target_qids") or [])
+                if not _ptids:
+                    _ptids = list(_p.get("target_qids") or [])
+                _ptids = [str(q) for q in _ptids if q]
+                if not _ptids:
+                    continue
+                _journey_emit(
+                    "proposed",
+                    question_ids=_ptids,
+                    proposal_id=str(
+                        _p.get("proposal_id") or _p.get("id") or ""
+                    ),
+                    patch_type=str(
+                        _p.get("patch_type") or _p.get("type") or ""
+                    ),
+                    cluster_id=str(_p.get("cluster_id") or ""),
+                )
+        except Exception:
+            logger.debug(
+                "Task 13: proposed journey emit failed (non-fatal)",
+                exc_info=True,
+            )
+
         # Task 4 — patch-survival snapshot: normalized gate.
         _survival_normalized = list(patches)
 
@@ -12963,6 +13107,47 @@ def _run_lever_loop(
                     int(_d.get("active_cluster_match_tier") or 0),
                     _d.get("is_direct_behavior"),
                 )
+
+            # Task 13 — emit ``dropped_at_cap`` per drop, looking up the
+            # target_qids of the original proposal in ``_before_cap``.
+            # The drop reason is derived from the active-cluster match
+            # tier (0 = not in active cluster).
+            try:
+                _by_pid: dict[str, dict] = {}
+                for _bp in (_before_cap or []):
+                    _bpid = str(
+                        _bp.get("proposal_id") or _bp.get("id") or ""
+                    )
+                    if _bpid:
+                        _by_pid[_bpid] = _bp
+                for _d in _dropped_decisions:
+                    _dpid = str(_d.get("proposal_id") or "")
+                    _orig = _by_pid.get(_dpid, {})
+                    _dt_qids = list(
+                        _orig.get("_grounding_target_qids") or []
+                    )
+                    if not _dt_qids:
+                        _dt_qids = list(_orig.get("target_qids") or [])
+                    _dt_qids = [str(q) for q in _dt_qids if q]
+                    _tier = int(_d.get("active_cluster_match_tier") or 0)
+                    _drop_reason = (
+                        "not_in_active_cluster" if _tier == 0
+                        else f"cap_overflow_tier={_tier}"
+                    )
+                    if _dt_qids:
+                        _journey_emit(
+                            "dropped_at_cap",
+                            question_ids=_dt_qids,
+                            proposal_id=_dpid,
+                            patch_type=str(_d.get("patch_type") or ""),
+                            cluster_id=str(_d.get("cluster_id") or ""),
+                            reason=_drop_reason,
+                        )
+            except Exception:
+                logger.debug(
+                    "Task 13: dropped_at_cap journey emit failed",
+                    exc_info=True,
+                )
             logger.warning(
                 "AG %s patch cap (causal-first): kept %d of %d. "
                 "Dropped proposal_ids=%s.",
@@ -13284,6 +13469,34 @@ def _run_lever_loop(
                 _build_patch_record(entry, _patch_lever, apply_mode),
                 catalog, schema,
             )
+            # Task 13 — emit ``applied`` per applied patch, scoped to
+            # the proposal's target_qids.
+            try:
+                _ap = entry.get("patch", {}) or {}
+                _ap_pid = str(
+                    _ap.get("proposal_id")
+                    or _ap.get("expanded_patch_id")
+                    or _ap.get("id")
+                    or ""
+                )
+                _ap_qids = list(_ap.get("_grounding_target_qids") or [])
+                if not _ap_qids:
+                    _ap_qids = list(_ap.get("target_qids") or [])
+                _ap_qids = [str(q) for q in _ap_qids if q]
+                if _ap_qids:
+                    _journey_emit(
+                        "applied",
+                        question_ids=_ap_qids,
+                        proposal_id=_ap_pid,
+                        patch_type=str(
+                            _ap.get("patch_type") or _ap.get("type") or ""
+                        ),
+                    )
+            except Exception:
+                logger.debug(
+                    "Task 13: applied journey emit failed (non-fatal)",
+                    exc_info=True,
+                )
 
         _queued = apply_log.get("queued_high", [])
         if _queued:
@@ -14127,6 +14340,23 @@ def _run_lever_loop(
             logger.debug(
                 "Iterative join mining failed at iter %d (non-fatal)",
                 iteration_counter, exc_info=True,
+            )
+
+        # Task 13 — render the per-question journey ledger at the end of
+        # each iteration. This is observability-only: a stdout-first
+        # diagnostic that lets operators read the timeline of every
+        # question that the loop touched in this iteration.
+        try:
+            _ledger = _build_journey_ledger(
+                events=_journey_events,
+                iteration=iteration_counter,
+            )
+            if _ledger:
+                print(_ledger)
+        except Exception:
+            logger.debug(
+                "Task 13: journey ledger render failed (non-fatal)",
+                exc_info=True,
             )
 
     write_stage(
