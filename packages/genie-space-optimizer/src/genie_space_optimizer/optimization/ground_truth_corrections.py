@@ -44,6 +44,10 @@ from typing import Any
 
 _RC_FALSE_VALUES: frozenset[str] = frozenset({"no", "false", "0", "0.0"})
 _GT_CORRECTION_ARBITER: str = "genie_correct"
+_ARBITER_RESCUE_VERDICTS: frozenset[str] = frozenset({
+    "both_correct",
+    "genie_correct",
+})
 
 
 def _value(row: dict[str, Any], *keys: str) -> str:
@@ -84,22 +88,35 @@ def is_gt_correction_candidate(row: dict[str, Any]) -> bool:
     )
 
 
+def is_arbiter_rescued(row: dict[str, Any]) -> bool:
+    """Return True when the arbiter overrode at least one judge to mark the row correct.
+
+    Such rows must never enter hard or soft clusters: the arbiter has already
+    declared Genie's answer acceptable. They become GT-correction candidates
+    (when ``rc=no``) or simply pass (when ``rc=yes``).
+    """
+    return _arbiter(row) in _ARBITER_RESCUE_VERDICTS
+
+
 def should_cluster_as_soft_signal(row: dict[str, Any]) -> bool:
     """Return ``True`` when the row should enter the soft-signal cluster.
 
-    Guard: a GT-correction candidate is *never* a soft signal even if
-    individual judges disagree — the disagreement is downstream of a
-    defective GT, not of a Genie issue. Otherwise defer to the same
-    individual-judge-failure check used by ``has_individual_judge_failure``.
+    Guards:
+      * GT-correction candidates (``rc=no`` AND ``arbiter=genie_correct``) are
+        diverted to the corpus-review queue.
+      * Any arbiter-rescued row (``arbiter ∈ {both_correct, genie_correct}``)
+        is filtered out — the arbiter has overridden judge dissent.
     """
+    if is_gt_correction_candidate(row):
+        return False
+    if is_arbiter_rescued(row):
+        return False
     # Local import keeps this module leaf-level. ``evaluation`` is the
     # canonical home for the predicate after Task 0's relocation.
     from genie_space_optimizer.optimization.evaluation import (
         has_individual_judge_failure,
     )
 
-    if is_gt_correction_candidate(row):
-        return False
     return bool(has_individual_judge_failure(row))
 
 

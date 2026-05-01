@@ -119,12 +119,14 @@ def test_genie_correct_row_is_not_soft_signal_even_with_judge_failures():
     assert should_cluster_as_soft_signal(row) is False
 
 
-def test_arbiter_rescued_row_with_judge_failures_is_soft_signal():
-    # rc=yes (or arbiter=both_correct) AND a judge said no → legitimate
-    # soft signal worth learning from.
+def test_arbiter_rescued_row_with_judge_failures_is_not_soft_signal():
+    # Task 9 broadens the soft-signal exclusion to *any* arbiter-rescued row
+    # (``arbiter ∈ {both_correct, genie_correct}``), not just GT-correction
+    # candidates. The arbiter has overridden judge dissent, so the row must
+    # not feed clustering — Q009 H001 ghost-cluster pattern.
     row = _retail_q011_row(rc="yes", arbiter="both_correct", schema_judge="no")
 
-    assert should_cluster_as_soft_signal(row) is True
+    assert should_cluster_as_soft_signal(row) is False
 
 
 def test_fully_correct_row_is_not_soft_signal():
