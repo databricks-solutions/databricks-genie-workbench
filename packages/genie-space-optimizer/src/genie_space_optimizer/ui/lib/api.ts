@@ -114,6 +114,7 @@ export type PipelineRun = Record<string, unknown>;
 export type PipelineStep = Record<string, unknown>;
 export type ProvenanceRecord = Record<string, unknown>;
 export type ProvenanceSummary = Record<string, unknown>;
+export type QuarantinedBenchmark = Record<string, unknown>;
 export type QuestionResult = Record<string, unknown>;
 export type ReflectionEntry = Record<string, unknown>;
 export type RunStatusResponse = Record<string, unknown>;
