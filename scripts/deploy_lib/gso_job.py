@@ -187,17 +187,36 @@ def build_job_settings(cfg: InstallConfig, notebooks_path: str, wheel_path: str)
     }
 
 
-def find_existing_job(w, job_name: str) -> int | None:
-    data = _api_do(w, "GET", "/api/2.1/jobs/list?limit=100&expand_tasks=false")
-    for job in data.get("jobs") or []:
-        settings = job.get("settings") or {}
-        if settings.get("name") == job_name:
-            return int(job["job_id"])
+def _job_matches_settings(job: dict[str, Any], settings: dict[str, Any]) -> bool:
+    job_settings = job.get("settings") or {}
+    job_tags = job_settings.get("tags") or {}
+    tags = settings.get("tags") or {}
+    return (
+        job_settings.get("name") == settings.get("name")
+        and job_tags.get("app") == tags.get("app")
+        and job_tags.get("managed-by") == tags.get("managed-by")
+        and job_tags.get("pattern") == tags.get("pattern")
+    )
+
+
+def find_existing_job(w, settings: dict[str, Any]) -> int | None:
+    page_token: str | None = None
+    while True:
+        path = "/api/2.1/jobs/list?limit=100&expand_tasks=false"
+        if page_token:
+            path += f"&page_token={quote(page_token, safe='')}"
+        data = _api_do(w, "GET", path)
+        for job in data.get("jobs") or []:
+            if _job_matches_settings(job, settings):
+                return int(job["job_id"])
+        page_token = data.get("next_page_token")
+        if not page_token:
+            break
     return None
 
 
 def upsert_job(w, settings: dict[str, Any]) -> int:
-    existing_id = find_existing_job(w, settings["name"])
+    existing_id = find_existing_job(w, settings)
     if existing_id:
         _api_do(w, "POST", "/api/2.1/jobs/reset", {"job_id": existing_id, "new_settings": settings})
         return existing_id

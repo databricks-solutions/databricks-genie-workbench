@@ -190,6 +190,27 @@ def deploy_app_from_workspace(w, app_name: str, source_path: str) -> dict[str, A
     )
 
 
+DEPLOYMENT_SUCCESS_STATES = {"SUCCEEDED", "SUCCESS"}
+DEPLOYMENT_PENDING_STATES = {"", "UNKNOWN", "IN_PROGRESS", "PENDING", "QUEUED", "RUNNING"}
+
+
+def app_deployment(app: dict[str, Any]) -> dict[str, Any]:
+    return app.get("pending_deployment") or app.get("active_deployment") or {}
+
+
+def app_deployment_state(app: dict[str, Any]) -> str:
+    deployment = app_deployment(app)
+    return str(((deployment.get("status") or {}).get("state") or "UNKNOWN")).upper()
+
+
+def require_successful_deployment(app_name: str, app: dict[str, Any]) -> dict[str, Any]:
+    deployment = app_deployment(app)
+    state = app_deployment_state(app)
+    if state in DEPLOYMENT_SUCCESS_STATES:
+        return deployment
+    raise RuntimeError(f"Databricks App '{app_name}' deployment did not succeed (state={state}).")
+
+
 def wait_for_deployment(
     w,
     app_name: str,
@@ -201,9 +222,8 @@ def wait_for_deployment(
     last_app: dict[str, Any] = {}
     while time.time() < deadline:
         last_app = get_app(w, app_name) or {}
-        deployment = last_app.get("pending_deployment") or last_app.get("active_deployment") or {}
-        state = ((deployment.get("status") or {}).get("state") or "UNKNOWN").upper()
-        if state and state != "IN_PROGRESS":
+        state = app_deployment_state(last_app)
+        if state not in DEPLOYMENT_PENDING_STATES:
             return last_app
         time.sleep(poll_seconds)
     return last_app

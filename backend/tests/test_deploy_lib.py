@@ -3,9 +3,10 @@ from pathlib import Path
 import pytest
 
 from scripts.deploy_lib.app_yaml import render_text
-from scripts.deploy_lib.apps import get_app_service_principal, patch_app_resources
+from scripts.deploy_lib.apps import get_app_service_principal, patch_app_resources, require_successful_deployment
 from scripts.deploy_lib.config import InstallConfig, LakebaseInfo
-from scripts.deploy_lib.gso_job import build_job_settings
+from scripts.deploy_lib.genie_spaces import optionally_grant_genie_spaces
+from scripts.deploy_lib.gso_job import build_job_settings, find_existing_job, upsert_job
 from scripts.deploy_lib.lakebase import get_database_resource
 from scripts.deploy_lib.uc import update_grants
 from scripts.deploy_lib.workspace_source import mkdirs, should_copy, upload_source_notebook, workspace_api_path
@@ -23,8 +24,11 @@ class FakeApiClient:
             response = self.responses[key]
             if isinstance(response, list):
                 if len(response) > 1:
-                    return response.pop(0)
-                return response[0]
+                    response = response.pop(0)
+                else:
+                    response = response[0]
+            if isinstance(response, Exception):
+                raise response
             return response
         return {}
 
@@ -246,6 +250,200 @@ def test_gso_job_settings_tag_with_actual_app_name():
 
     assert settings["tags"]["app"] == "genie-workbench-dh2"
     assert settings["tags"]["managed-by"] == "notebook-installer"
+
+
+def test_genie_space_grant_patches_can_manage_without_replacing_acl():
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+        grant_genie_spaces=True,
+    )
+    w = FakeWorkspaceClient(
+        {
+            ("GET", "/api/2.0/genie/spaces"): {
+                "spaces": [{"space_id": "space-1"}]
+            }
+        }
+    )
+
+    assert optionally_grant_genie_spaces(w, cfg, "sp-client-id") == 1
+
+    grant_call = w.api_client.calls[1]
+    assert grant_call == (
+        "PATCH",
+        "/api/2.0/permissions/dashboards.genie/space-1",
+        {
+            "access_control_list": [
+                {
+                    "service_principal_name": "sp-client-id",
+                    "permission_level": "CAN_MANAGE",
+                }
+            ]
+        },
+    )
+    assert all(call[0] != "PUT" for call in w.api_client.calls)
+
+
+def test_genie_space_grants_count_successes_and_skip_failures():
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+        grant_genie_spaces=True,
+    )
+    w = FakeWorkspaceClient(
+        {
+            ("GET", "/api/2.0/genie/spaces"): {
+                "spaces": [{"space_id": "space-ok"}, {"space_id": "space-fail"}]
+            },
+            ("PATCH", "/api/2.0/permissions/dashboards.genie/space-fail"): RuntimeError("denied"),
+        }
+    )
+
+    assert optionally_grant_genie_spaces(w, cfg, "sp-client-id") == 1
+
+
+def test_find_existing_job_scopes_reuse_to_current_notebook_app():
+    cfg = InstallConfig(
+        app_name="genie-workbench-dh2",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+    )
+    settings = build_job_settings(cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl")
+    w = FakeWorkspaceClient(
+        {
+            ("GET", "/api/2.1/jobs/list?limit=100&expand_tasks=false"): {
+                "jobs": [
+                    {
+                        "job_id": 100,
+                        "settings": {
+                            "name": "gso-optimization-job",
+                            "tags": {
+                                "app": "genie-workbench",
+                                "managed-by": "notebook-installer",
+                                "pattern": "persistent-dag",
+                            },
+                        },
+                    },
+                    {
+                        "job_id": 101,
+                        "settings": {
+                            "name": "gso-optimization-job",
+                            "tags": {
+                                "app": "genie-workbench-dh2",
+                                "managed-by": "databricks-bundle",
+                                "pattern": "persistent-dag",
+                            },
+                        },
+                    },
+                    {
+                        "job_id": 102,
+                        "settings": {
+                            "name": "gso-optimization-job",
+                            "tags": settings["tags"],
+                        },
+                    },
+                ]
+            }
+        }
+    )
+
+    assert find_existing_job(w, settings) == 102
+
+
+def test_find_existing_job_paginates_to_matching_job():
+    cfg = InstallConfig(
+        app_name="genie-workbench",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+    )
+    settings = build_job_settings(cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl")
+    w = FakeWorkspaceClient(
+        {
+            ("GET", "/api/2.1/jobs/list?limit=100&expand_tasks=false"): {
+                "jobs": [
+                    {
+                        "job_id": 100,
+                        "settings": {
+                            "name": "gso-optimization-job",
+                            "tags": {
+                                "app": "other-app",
+                                "managed-by": "notebook-installer",
+                                "pattern": "persistent-dag",
+                            },
+                        },
+                    }
+                ],
+                "next_page_token": "page 2",
+            },
+            ("GET", "/api/2.1/jobs/list?limit=100&expand_tasks=false&page_token=page%202"): {
+                "jobs": [
+                    {
+                        "job_id": 200,
+                        "settings": {
+                            "name": "gso-optimization-job",
+                            "tags": settings["tags"],
+                        },
+                    }
+                ]
+            },
+        }
+    )
+
+    assert find_existing_job(w, settings) == 200
+
+
+def test_upsert_job_creates_when_same_name_job_is_not_current_app():
+    cfg = InstallConfig(
+        app_name="genie-workbench-dh2",
+        catalog="main",
+        warehouse_id="wh",
+        repo_root="/tmp",
+    )
+    settings = build_job_settings(cfg, "/Workspace/Users/me/gso/jobs", "/Volumes/main/schema/wheel.whl")
+    w = FakeWorkspaceClient(
+        {
+            ("GET", "/api/2.1/jobs/list?limit=100&expand_tasks=false"): {
+                "jobs": [
+                    {
+                        "job_id": 100,
+                        "settings": {
+                            "name": "gso-optimization-job",
+                            "tags": {
+                                "app": "genie-workbench",
+                                "managed-by": "notebook-installer",
+                                "pattern": "persistent-dag",
+                            },
+                        },
+                    }
+                ]
+            },
+            ("POST", "/api/2.1/jobs/create"): {"job_id": 300},
+        }
+    )
+
+    assert upsert_job(w, settings) == 300
+    assert not any(call[1] == "/api/2.1/jobs/reset" for call in w.api_client.calls)
+
+
+def test_require_successful_deployment_raises_on_failed_state():
+    app = {"pending_deployment": {"status": {"state": "FAILED"}}}
+
+    with pytest.raises(RuntimeError, match="genie-workbench.*FAILED"):
+        require_successful_deployment("genie-workbench", app)
+
+
+def test_require_successful_deployment_returns_successful_deployment():
+    deployment = {"status": {"state": "SUCCEEDED"}, "deployment_id": "dep-1"}
+    assert require_successful_deployment(
+        "genie-workbench",
+        {"active_deployment": deployment},
+    ) == deployment
 
 
 def test_uc_update_grants_uses_permissions_api():

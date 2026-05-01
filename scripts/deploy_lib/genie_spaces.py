@@ -18,16 +18,16 @@ def list_visible_genie_spaces(w) -> list[dict[str, Any]]:
     return data.get("spaces") or data.get("genie_spaces") or []
 
 
-def grant_can_edit_on_space(w, space_id: str, app_sp_client_id: str) -> None:
+def grant_can_manage_on_space(w, space_id: str, app_sp_client_id: str) -> None:
     _api_do(
         w,
-        "PUT",
+        "PATCH",
         f"/api/2.0/permissions/dashboards.genie/{space_id}",
         {
             "access_control_list": [
                 {
                     "service_principal_name": app_sp_client_id,
-                    "permission_level": "CAN_EDIT",
+                    "permission_level": "CAN_MANAGE",
                 }
             ]
         },
@@ -43,9 +43,8 @@ def optionally_grant_genie_spaces(w, cfg: InstallConfig, app_sp_client_id: str) 
         if not space_id:
             continue
         try:
-            grant_can_edit_on_space(w, str(space_id), app_sp_client_id)
+            grant_can_manage_on_space(w, str(space_id), app_sp_client_id)
             granted += 1
         except Exception:
             continue
     return granted
-
