@@ -506,6 +506,57 @@ _EXAMPLE_SQL_CORRECTNESS_PROMPT = (
 )
 
 
+def _render_schema_for_arbiter(
+    metadata_snapshot: dict | None,
+    max_tables: int = 12,
+    max_cols: int = 6,
+) -> str:
+    """Compact schema block for the example-SQL arbiter prompt.
+
+    Includes asset_type per FQN and up to ``max_cols`` representative
+    columns / measures+dimensions so the judge can detect MV-vs-table
+    routing errors and obviously-wrong column references without
+    blowing up the context window.
+    """
+    if not isinstance(metadata_snapshot, dict):
+        return ""
+    semantics = metadata_snapshot.get("_asset_semantics") or {}
+    if not isinstance(semantics, dict) or not semantics:
+        return ""
+    lines: list[str] = ["Asset semantics (FQN | asset_type | sample fields):"]
+    for fqn, info in list(semantics.items())[:max_tables]:
+        if not isinstance(info, dict):
+            continue
+        asset_type = str(info.get("asset_type") or "unknown")
+        if asset_type == "metric_view":
+            measures = [
+                m.get("name") for m in (info.get("measures") or [])
+                if isinstance(m, dict) and m.get("name")
+            ][:max_cols]
+            dims = [
+                d.get("name") for d in (info.get("dimensions") or [])
+                if isinstance(d, dict) and d.get("name")
+            ][:max_cols]
+            fields = (
+                f"measures=[{', '.join(measures)}] "
+                f"dimensions=[{', '.join(dims)}]"
+            )
+        else:
+            cols = [
+                c.get("name") for c in (info.get("columns") or [])
+                if isinstance(c, dict) and c.get("name")
+            ][:max_cols]
+            fields = f"cols=[{', '.join(cols)}]"
+        lines.append(f"- {fqn} | {asset_type} | {fields}")
+    lines.append("")
+    lines.append(
+        "RULES: metric_view rows MUST be queried via MEASURE(measure_name) "
+        "and only allow declared dimensions in GROUP BY. Tables MUST NOT "
+        "use MEASURE(). If the SQL violates either rule, answer ``no``."
+    )
+    return "\n".join(lines)
+
+
 def score_example_sql_correctness(
     question: str,
     sql: str,
@@ -545,14 +596,17 @@ def score_example_sql_correctness(
         Defaults to ``"uncertain"`` on any LLM or parse failure — never
         silently promotes a doubtful candidate.
     """
-    _ = metadata_snapshot  # reserved for future schema-quoting
     rows_block = _truncate_rows_for_prompt(result_rows)
-    prompt = (
-        f"{_EXAMPLE_SQL_CORRECTNESS_PROMPT}\n\n"
-        f"Question: {question}\n\n"
-        f"SQL:\n{sql}\n\n"
-        f"Result sample (first rows):\n{rows_block}\n"
-    )
+    schema_block = _render_schema_for_arbiter(metadata_snapshot)
+    prompt_parts = [_EXAMPLE_SQL_CORRECTNESS_PROMPT]
+    if schema_block:
+        prompt_parts.append(schema_block)
+    prompt_parts.extend([
+        f"Question: {question}",
+        f"SQL:\n{sql}",
+        f"Result sample (first rows):\n{rows_block}",
+    ])
+    prompt = "\n\n".join(prompt_parts)
     try:
         result = _call_llm_for_scoring(
             w, prompt,
