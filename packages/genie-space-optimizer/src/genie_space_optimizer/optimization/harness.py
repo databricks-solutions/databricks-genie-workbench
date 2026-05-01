@@ -237,6 +237,139 @@ def format_evaluation_summary_block(
     ])
 
 
+# ── Journey-contract emit helpers ───────────────────────────────────
+# Each helper is pure: it takes an emit callback (typically the
+# ``_journey_emit`` closure inside ``_run_lever_loop``) and stamps the
+# canonical contract events for one stage of the loop. Defining them at
+# module scope keeps harness call sites one-liners and makes the helpers
+# unit-testable without standing up a full lever-loop scope.
+
+
+def _emit_eval_entry_journey(
+    *,
+    emit,
+    eval_qids,
+    already_passing_qids,
+    hard_qids,
+    soft_qids,
+    gt_correction_qids,
+) -> None:
+    """Stamp the evaluated + classification events for every benchmark row.
+
+    Called once per AG iteration immediately after _analyze_and_distribute.
+    The hard set is *not* classified at entry — it gets a 'clustered' event
+    later in the same iteration.
+    """
+    seen = {str(q) for q in eval_qids if q}
+    if not seen:
+        return
+    emit("evaluated", question_ids=sorted(seen))
+    for q in already_passing_qids or []:
+        if str(q) in seen:
+            emit("already_passing", question_id=str(q))
+    for q in soft_qids or []:
+        if str(q) in seen:
+            emit("soft_signal", question_id=str(q))
+    for q in gt_correction_qids or []:
+        if str(q) in seen:
+            emit("gt_correction_candidate", question_id=str(q))
+
+
+_GATE_TO_STAGE: dict[str, str] = {
+    "grounding": "dropped_at_grounding",
+    "normalize": "dropped_at_normalize",
+    "applyability": "dropped_at_applyability",
+    "alignment": "dropped_at_alignment",
+    "reflection": "dropped_at_reflection",
+}
+
+
+def _emit_gate_drop_journey(*, emit, gate: str, dropped: list[dict]) -> None:
+    """Stamp dropped_at_<gate> events for proposals filtered by a gate.
+
+    ``dropped`` is the list of proposal dicts the gate removed. Each dict must
+    carry either ``_grounding_target_qids`` or ``target_qids``, and may carry
+    ``_drop_reason`` for diagnostics.
+    """
+    stage = _GATE_TO_STAGE.get(gate)
+    if not stage:
+        return
+    for prop in dropped or []:
+        qids = list(prop.get("_grounding_target_qids") or [])
+        if not qids:
+            qids = list(prop.get("target_qids") or [])
+        qids = [str(q) for q in qids if q]
+        if not qids:
+            continue
+        emit(
+            stage,
+            question_ids=qids,
+            proposal_id=str(prop.get("proposal_id") or ""),
+            patch_type=str(prop.get("patch_type") or ""),
+            cluster_id=str(prop.get("cluster_id") or ""),
+            reason=str(prop.get("_drop_reason") or ""),
+        )
+
+
+def _emit_ag_outcome_journey(
+    *,
+    emit,
+    ag_id: str,
+    outcome: str,
+    affected_qids,
+) -> None:
+    """Stamp the AG-level outcome event for every qid the AG targeted.
+
+    ``outcome`` must be one of ``accepted``, ``accepted_with_regression_debt``,
+    or ``rolled_back``.
+    """
+    if outcome not in (
+        "accepted", "accepted_with_regression_debt", "rolled_back",
+    ):
+        return
+    qids = [str(q) for q in (affected_qids or []) if q]
+    if not qids:
+        return
+    emit(outcome, question_ids=qids, ag_id=ag_id)
+
+
+def _emit_post_eval_journey(
+    *,
+    emit,
+    eval_qids,
+    was_passing_qids,
+    is_passing_qids,
+) -> None:
+    """Stamp the closing post_eval event for every qid that entered eval.
+
+    The transition is ``fail_to_pass``, ``pass_to_fail``, ``hold_pass``, or
+    ``hold_fail``.
+    """
+    was = {str(q) for q in (was_passing_qids or []) if q}
+    is_now = {str(q) for q in (is_passing_qids or []) if q}
+    for q in eval_qids or []:
+        qid = str(q)
+        if not qid:
+            continue
+        prior = qid in was
+        after = qid in is_now
+        if prior and after:
+            transition = "hold_pass"
+        elif not prior and after:
+            transition = "fail_to_pass"
+        elif prior and not after:
+            transition = "pass_to_fail"
+        else:
+            transition = "hold_fail"
+        emit(
+            "post_eval",
+            question_id=qid,
+            was_passing=prior,
+            is_passing=after,
+            transition=transition,
+        )
+
+
 def _merge_bug4_counters(eval_result: dict) -> dict:
     """Inject Bug #4 (benchmark leakage) counters into an eval_result before
     it is written via ``write_iteration`` for the 'full' scope.
