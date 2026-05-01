@@ -1,0 +1,23 @@
+name: GSO Lever Loop Replay
+
+on:
+  pull_request:
+    paths:
+      - "packages/genie-space-optimizer/src/**"
+      - "packages/genie-space-optimizer/tests/**"
+      - "packages/genie-space-optimizer/pyproject.toml"
+      - "packages/genie-space-optimizer/uv.lock"
+
+jobs:
+  replay:
+    name: GSO Lever Loop Replay
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/genie-space-optimizer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv sync --frozen
+      - name: Run replay tests
+        run: uv run pytest tests/replay -v --maxfail=1
