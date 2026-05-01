@@ -9003,14 +9003,6 @@ def _run_gate_checks(
     full_result = full_result_1
     full_pre_arbiter_accuracy = pre_arbiter_accuracy_1
 
-    print(
-        _kv("Eval accuracy (post-arbiter)", f"{full_accuracy:.1f}%") + "\n"
-        + _kv(
-            "Pre-arbiter accuracy (diagnostic)",
-            f"{full_pre_arbiter_accuracy:.1f}%",
-        )
-    )
-
     full_result = _merge_bug4_counters(full_result)
     # Stamp pre-arbiter accuracy on ``full_scores`` so downstream
     # diagnostics (audit rows, MLflow) can read it via the standard
@@ -9346,6 +9338,17 @@ def _run_gate_checks(
         candidate_pre_arbiter_accuracy=_candidate_pre_arbiter_pct,
         target_fixed_qids=_target_fixed_qids_for_guardrail,
         max_pre_arbiter_regression_pp=5.0,
+    )
+    print(
+        format_evaluation_summary_block(
+            iteration=iteration_counter,
+            ag_id=ag_id,
+            baseline_pre_arbiter=_baseline_pre_arbiter_pct,
+            candidate_pre_arbiter=_candidate_pre_arbiter_pct,
+            baseline_post_arbiter=float(best_accuracy),
+            candidate_post_arbiter=float(full_accuracy),
+            target_fixed_qids=_target_fixed_qids_for_guardrail,
+        )
     )
     if not _pre_arbiter_decision.accepted:
         logger.warning(
