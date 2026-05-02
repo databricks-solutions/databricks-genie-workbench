@@ -1,0 +1,44 @@
+{
+  "fixture_id": "synthetic_two_iter_one_intra_violation_v1",
+  "iterations": [
+    {
+      "iteration": 1,
+      "eval_rows": [
+        {"question_id": "syn_q1", "result_correctness": "no", "arbiter": "ground_truth_correct"}
+      ],
+      "clusters": [
+        {"cluster_id": "H001", "question_ids": ["syn_q1"], "root_cause": "missing_filter"}
+      ],
+      "soft_clusters": [],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "id": "AG1",
+            "affected_questions": ["syn_q1"],
+            "patches": [
+              {
+                "cluster_id": "H001",
+                "patch_type": "add_sql_snippet_filter",
+                "proposal_id": "P001",
+                "target_qids": ["syn_q1"]
+              }
+            ]
+          }
+        ]
+      },
+      "ag_outcomes": {"AG1": "accepted"},
+      "post_eval_passing_qids": ["syn_q1"]
+    },
+    {
+      "iteration": 2,
+      "eval_rows": [
+        {"question_id": "syn_q2", "result_correctness": "no", "arbiter": "neither_correct"}
+      ],
+      "clusters": [],
+      "soft_clusters": [],
+      "strategist_response": {"action_groups": []},
+      "ag_outcomes": {},
+      "post_eval_passing_qids": []
+    }
+  ]
+}
