@@ -345,6 +345,117 @@ def compute_ag_stable_signature(
     return (sigs, qids, root_cause)
 
 
+def ag_root_cause_families(
+    ag: dict,
+    clusters: Iterable[dict],
+) -> frozenset[str]:
+    """Return the set of distinct root_cause values across the AG's
+    source clusters.
+
+    Track 4 (Phase A burn-down): an AG with two or more distinct
+    families is heterogeneous and triggers the decomposition
+    guardrail unless it carries a shared direct fix.
+    """
+    cluster_lookup = {
+        str(c.get("cluster_id") or ""): str(c.get("root_cause") or "").strip()
+        for c in clusters or []
+        if c.get("cluster_id")
+    }
+    src_ids = [str(cid) for cid in (ag.get("source_cluster_ids") or []) if str(cid)]
+    families = {
+        cluster_lookup.get(cid, "")
+        for cid in src_ids
+    }
+    families.discard("")
+    return frozenset(families)
+
+
+def ag_table_families(
+    ag: dict,
+    clusters: Iterable[dict],
+) -> frozenset[str]:
+    """Return the set of distinct blame-asset table names across the
+    AG's source clusters.
+
+    Track 4: an AG that spans unrelated tables is heterogeneous even
+    when the root_cause family matches (e.g., two missing_filter
+    clusters for two different tables compete for one cap slot).
+    """
+    cluster_lookup = {
+        str(c.get("cluster_id") or ""): list(c.get("blame_assets") or [])
+        for c in clusters or []
+        if c.get("cluster_id")
+    }
+    src_ids = [str(cid) for cid in (ag.get("source_cluster_ids") or []) if str(cid)]
+    tables: set[str] = set()
+    for cid in src_ids:
+        for asset in cluster_lookup.get(cid, []):
+            asset_str = str(asset or "").strip()
+            if asset_str:
+                tables.add(asset_str)
+    return frozenset(tables)
+
+
+def ag_has_shared_direct_fix(
+    ag: dict,
+    clusters: Iterable[dict],
+) -> bool:
+    """Return True when the AG's patch bundle contains at least one
+    direct-fix patch whose target_qids cover every source cluster's
+    question_ids.
+
+    Track 4: a heterogeneous multi-cluster AG is allowed when this
+    predicate is True. Direct-fix here means a behavior-shape patch
+    type with a non-empty root_cause — see
+    ``patch_selection._is_direct_behavior_patch`` for the canonical
+    definition. We duplicate the type set rather than importing
+    patch_selection because control_plane already owns the diagnostic-
+    AG dispatcher and we keep the dependency direction one-way.
+    """
+    direct_behavior_types = {
+        "add_instruction",
+        "update_instruction_section",
+        "add_sql_snippet_filter",
+        "add_sql_snippet_measure",
+        "add_sql_snippet_calculation",
+        "add_sql_snippet_expression",
+        "add_example_sql",
+    }
+    behavior_root_causes = {
+        "missing_filter",
+        "wrong_filter_condition",
+        "wrong_aggregation",
+        "wrong_measure",
+        "plural_top_n_collapse",
+        "missing_temporal_filter",
+        "time_window_pivot",
+        "missing_aggregation",
+        "missing_dimension",
+        "wrong_grouping",
+        "wrong_join_type",
+    }
+
+    cluster_lookup = {
+        str(c.get("cluster_id") or ""): {
+            str(q) for q in (c.get("question_ids") or []) if str(q)
+        }
+        for c in clusters or []
+        if c.get("cluster_id")
+    }
+    src_ids = [str(cid) for cid in (ag.get("source_cluster_ids") or []) if str(cid)]
+    cluster_qid_sets = [cluster_lookup.get(cid, set()) for cid in src_ids]
+
+    for patch in ag.get("patches") or []:
+        ptype = str(patch.get("type") or patch.get("patch_type") or "")
+        root = str(patch.get("root_cause") or patch.get("rca_kind") or "").strip()
+        if ptype not in direct_behavior_types or root not in behavior_root_causes:
+            continue
+        target_qids = {str(q) for q in (patch.get("target_qids") or []) if str(q)}
+        if all(qid_set & target_qids for qid_set in cluster_qid_sets if qid_set):
+            return True
+    return False
+
+
 def patchable_hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
     """Rows where GT is confirmed correct and Genie should be patched."""
     qids: list[str] = []
