@@ -60,8 +60,11 @@ class ReasonCode(str, Enum):
     SOFT_SIGNAL = "soft_signal"
     GT_CORRECTION = "gt_correction"
     CLUSTERED = "clustered"
+    RCA_GROUNDED = "rca_grounded"
+    RCA_UNGROUNDED = "rca_ungrounded"
     STRATEGIST_SELECTED = "strategist_selected"
     PROPOSAL_EMITTED = "proposal_emitted"
+    NO_CAUSAL_TARGET = "no_causal_target"
     PATCH_CAP_SELECTED = "patch_cap_selected"
     PATCH_CAP_DROPPED = "patch_cap_dropped"
     PATCH_APPLIED = "patch_applied"
@@ -110,6 +113,18 @@ class DecisionRecord:
     gate: str = ""
     reason_detail: str = ""
     affected_qids: tuple[str, ...] = ()
+    # RCA-grounding contract fields (Phase B): every applicable decision must
+    # carry the chain "evidence -> RCA -> causal target qids -> expected effect
+    # -> observed effect -> next action" (regression_qids when applicable).
+    # See `docs/2026-05-02-unified-trace-and-operator-transcript-plan.md`
+    # `## Required Decision Fields`.
+    evidence_refs: tuple[str, ...] = ()
+    root_cause: str = ""
+    target_qids: tuple[str, ...] = ()
+    expected_effect: str = ""
+    observed_effect: str = ""
+    regression_qids: tuple[str, ...] = ()
+    next_action: str = ""
     source_cluster_ids: tuple[str, ...] = ()
     proposal_ids: tuple[str, ...] = ()
     metrics: Mapping[str, Any] = field(default_factory=dict)
@@ -131,12 +146,22 @@ class DecisionRecord:
             "patch_id": self.patch_id,
             "gate": self.gate,
             "reason_detail": self.reason_detail,
+            "root_cause": self.root_cause,
+            "expected_effect": self.expected_effect,
+            "observed_effect": self.observed_effect,
+            "next_action": self.next_action,
         }
         for key, value in optional.items():
             if value:
                 row[key] = str(value)
         if self.affected_qids:
             row["affected_qids"] = list(self.affected_qids)
+        if self.evidence_refs:
+            row["evidence_refs"] = list(self.evidence_refs)
+        if self.target_qids:
+            row["target_qids"] = list(self.target_qids)
+        if self.regression_qids:
+            row["regression_qids"] = list(self.regression_qids)
         if self.source_cluster_ids:
             row["source_cluster_ids"] = list(self.source_cluster_ids)
         if self.proposal_ids:
@@ -162,6 +187,13 @@ class DecisionRecord:
             gate=str(row.get("gate") or ""),
             reason_detail=str(row.get("reason_detail") or ""),
             affected_qids=_clean_str_tuple(row.get("affected_qids") or ()),
+            evidence_refs=_clean_str_tuple(row.get("evidence_refs") or ()),
+            root_cause=str(row.get("root_cause") or ""),
+            target_qids=_clean_str_tuple(row.get("target_qids") or ()),
+            expected_effect=str(row.get("expected_effect") or ""),
+            observed_effect=str(row.get("observed_effect") or ""),
+            regression_qids=_clean_str_tuple(row.get("regression_qids") or ()),
+            next_action=str(row.get("next_action") or ""),
             source_cluster_ids=_clean_str_tuple(row.get("source_cluster_ids") or ()),
             proposal_ids=_clean_str_tuple(row.get("proposal_ids") or ()),
             metrics=dict(row.get("metrics") or {}),
