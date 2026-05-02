@@ -362,8 +362,12 @@ def _validate_journeys_at_iteration_end(
     eval_qids,
     iteration: int,
     raise_on_violation: bool,
-) -> None:
+):
     """Validate journey completeness; warn or raise per the toggle.
+
+    Returns the ``JourneyValidationReport`` regardless of validity so the
+    caller can persist it (fixture, MLflow, future telemetry sinks). The
+    warn/raise behaviour for invalid reports is unchanged.
 
     Phase 2 wires this with ``raise_on_violation=False`` so a real run logs
     gaps without aborting. Phase 4 flips the toggle to True after Task 8 has
@@ -379,7 +383,7 @@ def _validate_journeys_at_iteration_end(
         eval_qids=eval_qids,
     )
     if report.is_valid:
-        return
+        return report
 
     summary = (
         f"Iteration {iteration}: {len(report.violations)} journey contract "
@@ -394,6 +398,7 @@ def _validate_journeys_at_iteration_end(
             "  qid=%s kind=%s detail=%s",
             v.question_id, v.kind, v.detail,
         )
+    return report
 
 
 def _emit_post_eval_journey(
