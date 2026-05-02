@@ -11426,6 +11426,42 @@ def _run_lever_loop(
             logger.info("No actionable clusters remain — stopping at iteration %d", _iter_num)
             break
 
+        # Track H — quarantine attribution audit. The strategist must
+        # never receive a quarantine that includes a currently-passing
+        # qid (attribution drift) or a singleton-hard qid (the only
+        # remaining target). Both invariants raise on violation so the
+        # loop stops with a clear traceback rather than silently
+        # soft-skipping the wrong qid.
+        from genie_space_optimizer.optimization.control_plane import (
+            assert_quarantine_attribution_sound,
+        )
+
+        _quarantined_for_audit = {
+            str(q)
+            for q in _correction_state.get("quarantined_qids", set()) or set()
+            if str(q)
+        }
+        _all_eval_qids_for_audit = {
+            str(q)
+            for q in (_latest_eval_result or {}).get("question_ids") or []
+            if str(q)
+        }
+        # Hard clusters list every currently-failing qid; the complement
+        # against the universe is the currently-passing set.
+        _live_hard_for_audit = {
+            str(q)
+            for cluster in (clusters or [])
+            for q in cluster.get("question_ids") or []
+            if str(q)
+        }
+        _live_passing_for_audit = _all_eval_qids_for_audit - _live_hard_for_audit
+
+        assert_quarantine_attribution_sound(
+            quarantined_qids=_quarantined_for_audit,
+            currently_passing_qids=_live_passing_for_audit,
+            currently_hard_qids=_live_hard_for_audit,
+        )
+
         # ── Cluster-driven synthesis iteration-scoped state ──────────
         # Stamp clusters on the snapshot so
         # ``_resolve_source_cluster_for_ag`` (optimizer.py) can look up
