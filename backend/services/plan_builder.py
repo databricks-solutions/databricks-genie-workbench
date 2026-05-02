@@ -119,6 +119,54 @@ def _table_id(t: dict) -> str:
     return t.get("table") or t.get("table_name") or t.get("identifier", "?")
 
 
+def _is_metric_view_context(t: dict) -> bool:
+    return "METRIC_VIEW" in str(t.get("table_type") or "").upper()
+
+
+def _table_plan_entry(t: dict) -> dict:
+    """Convert a describe_table result into a plan table entry."""
+    name = _table_id(t)
+    cols = t.get("columns", [])
+    recs = t.get("recommendations", {})
+    exclude = set(recs.get("exclude_etl", []))
+
+    column_configs = []
+    for c in cols:
+        col_name = c.get("name", "?")
+        entry: dict = {"column_name": col_name}
+        if c.get("description"):
+            entry["description"] = c["description"]
+        if col_name in exclude:
+            entry["excluded"] = True
+        column_configs.append(entry)
+
+    return {
+        "identifier": name,
+        "description": t.get("comment", ""),
+        "column_configs": column_configs,
+    }
+
+
+def _metric_view_plan_entry(t: dict) -> dict:
+    """Convert a describe_table result into a plan metric-view entry."""
+    cols = t.get("columns", [])
+    column_configs = []
+    for c in cols:
+        entry: dict = {
+            "column_name": c.get("name", "?"),
+            "enable_format_assistance": True,
+        }
+        if c.get("description"):
+            entry["description"] = c["description"]
+        column_configs.append(entry)
+
+    return {
+        "identifier": _table_id(t),
+        "description": t.get("comment", ""),
+        "column_configs": column_configs,
+    }
+
+
 def _call_llm_section(prompt: str, max_tokens: int, section_name: str) -> dict:
     """Call the LLM serving endpoint and parse the JSON response.
 
@@ -154,8 +202,7 @@ def _build_shared_context(
         name = _table_id(t)
         comment = t.get("comment", "")
         cols = t.get("columns", [])
-        table_type = str(t.get("table_type") or "").upper()
-        is_metric_view = "METRIC_VIEW" in table_type
+        is_metric_view = _is_metric_view_context(t)
         has_metric_view = has_metric_view or is_metric_view
         col_summary = ", ".join(c.get("name", "?") for c in cols[:20])
         if len(cols) > 20:
@@ -294,30 +341,15 @@ def _gen_tables(shared: str, tables_context: list[dict]) -> dict:
     Falls back to raw metadata on LLM failure — table configs are optional enrichment.
     """
     tables = []
+    metric_views = []
     for t in tables_context:
-        name = _table_id(t)
-        cols = t.get("columns", [])
-        recs = t.get("recommendations", {})
-        exclude = set(recs.get("exclude_etl", []))
-
-        column_configs = []
-        for c in cols:
-            col_name = c.get("name", "?")
-            entry: dict = {"column_name": col_name}
-            if c.get("description"):
-                entry["description"] = c["description"]
-            if col_name in exclude:
-                entry["excluded"] = True
-            column_configs.append(entry)
-
-        tables.append({
-            "identifier": name,
-            "description": t.get("comment", ""),
-            "column_configs": column_configs,
-        })
+        if _is_metric_view_context(t):
+            metric_views.append(_metric_view_plan_entry(t))
+        else:
+            tables.append(_table_plan_entry(t))
 
     if not tables:
-        return {"tables": []}
+        return {"tables": [], "metric_views": metric_views}
 
     prompt = (
         "You are enriching table and column metadata for a Databricks Genie Space.\n\n"
@@ -337,10 +369,17 @@ def _gen_tables(shared: str, tables_context: list[dict]) -> dict:
 
     try:
         result = _call_llm_section(prompt, max_tokens=4096, section_name="tables")
-        return result if "tables" in result else {"tables": tables}
+        if "tables" not in result:
+            result = {"tables": tables}
+        if metric_views:
+            result["metric_views"] = metric_views
+        return result
     except Exception:
         logger.warning("Table description enrichment failed, using raw metadata")
-        return {"tables": tables}
+        result = {"tables": tables}
+        if metric_views:
+            result["metric_views"] = metric_views
+        return result
 
 
 def _gen_questions_instructions(shared: str) -> dict:
@@ -923,18 +962,19 @@ def _assemble(results: dict[str, dict], tables_context: list[dict]) -> dict:
 
     tables_result = results.get("tables", {})
     plan["tables"] = tables_result.get("tables", [])
+    plan["metric_views"] = tables_result.get("metric_views", [])
 
     if not plan["tables"] and tables_context:
         plan["tables"] = [
-            {
-                "identifier": _table_id(t),
-                "description": t.get("comment", ""),
-                "column_configs": [
-                    {"column_name": c.get("name", "?")}
-                    for c in t.get("columns", [])
-                ],
-            }
+            _table_plan_entry(t)
             for t in tables_context
+            if not _is_metric_view_context(t)
+        ]
+    if not plan["metric_views"] and tables_context:
+        plan["metric_views"] = [
+            _metric_view_plan_entry(t)
+            for t in tables_context
+            if _is_metric_view_context(t)
         ]
 
     qi = results.get("questions", {})

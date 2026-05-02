@@ -43,6 +43,64 @@ def test_example_sql_prompt_includes_metric_view_rules(monkeypatch):
     assert "query it in a CTE first" in captured["prompt"]
 
 
+def test_gen_tables_splits_metric_views_out_of_tables(monkeypatch):
+    def fake_call(prompt, *, max_tokens, section_name):
+        assert "cat.sch.mv_sales" not in prompt
+        return {
+            "tables": [{
+                "identifier": "cat.sch.sales",
+                "description": "Sales facts.",
+                "column_configs": [{"column_name": "sale_id"}],
+            }]
+        }
+
+    monkeypatch.setattr(plan_builder, "_call_llm_section", fake_call)
+
+    result = plan_builder._gen_tables(
+        "shared context",
+        [
+            {
+                "table": "cat.sch.sales",
+                "table_type": "MANAGED",
+                "columns": [{"name": "sale_id"}],
+            },
+            {
+                "table": "cat.sch.mv_sales",
+                "table_type": "METRIC_VIEW",
+                "columns": [{"name": "Product Category"}, {"name": "Net Sales"}],
+            },
+        ],
+    )
+
+    assert [t["identifier"] for t in result["tables"]] == ["cat.sch.sales"]
+    assert [mv["identifier"] for mv in result["metric_views"]] == ["cat.sch.mv_sales"]
+    assert result["metric_views"][0]["column_configs"] == [
+        {"column_name": "Product Category", "enable_format_assistance": True},
+        {"column_name": "Net Sales", "enable_format_assistance": True},
+    ]
+
+
+def test_assemble_fallback_keeps_metric_views_separate_from_tables():
+    plan = plan_builder._assemble(
+        results={"tables": {}},
+        tables_context=[
+            {
+                "table": "cat.sch.sales",
+                "table_type": "MANAGED",
+                "columns": [{"name": "sale_id"}],
+            },
+            {
+                "table": "cat.sch.mv_sales",
+                "table_type": "METRIC_VIEW",
+                "columns": [{"name": "Net Sales"}],
+            },
+        ],
+    )
+
+    assert [t["identifier"] for t in plan["tables"]] == ["cat.sch.sales"]
+    assert [mv["identifier"] for mv in plan["metric_views"]] == ["cat.sch.mv_sales"]
+
+
 def test_validate_plan_sqls_repairs_metric_view_example_sql(monkeypatch):
     calls = []
 

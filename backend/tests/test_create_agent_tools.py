@@ -216,6 +216,17 @@ class TestMetricViewClassification:
         assert [t["identifier"] for t in data_sources["tables"]] == ["cat.sch.accounts"]
         assert [mv["identifier"] for mv in data_sources["metric_views"]] == ["cat.sch.mv_churn_risk"]
 
+    def test_generate_config_allows_metric_view_only_space(self):
+        result = _generate_config(
+            metric_views=[
+                {"identifier": "cat.sch.mv_churn_risk", "column_configs": [{"column_name": "risk"}]},
+            ],
+        )
+
+        data_sources = result["config"]["data_sources"]
+        assert data_sources["tables"] == []
+        assert [mv["identifier"] for mv in data_sources["metric_views"]] == ["cat.sch.mv_churn_risk"]
+
     def test_validate_detects_cross_section_column_duplicates_when_not_reconciled(self):
         config = {
             "version": 2,

@@ -2309,13 +2309,18 @@ def _generate_config(
     Use this for INITIAL creation only. For post-creation modifications,
     use update_config instead.
     """
-    if not tables:
+    if tables is None:
+        tables = []
+    if metric_views is None:
+        metric_views = []
+
+    if not tables and not metric_views:
         return {
-            "error": "tables is required and must contain at least one table",
+            "error": "At least one table or metric view is required",
             "hint": (
-                "Pass tables as a list of objects with at least 'identifier' "
-                "(catalog.schema.table). Review describe_table results for the "
-                "identifiers you inspected earlier."
+                "Pass tables and/or metric_views as lists of objects with at "
+                "least 'identifier'. Review describe_table results for the "
+                "data sources you inspected earlier."
             ),
         }
     if sample_questions is None:

@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import time
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -17,6 +18,107 @@ from backend.services.auth import get_workspace_client, get_service_principal_cl
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+def _enum_value_upper(value: Any) -> str:
+    """Normalize SDK enum-like values for stable comparisons."""
+    raw = getattr(value, "value", value)
+    return str(raw or "").upper()
+
+
+def _identifier_leaf(identifier: str) -> str:
+    return identifier.replace("`", "").split(".")[-1].lower()
+
+
+def _entry_declares_metric_view(entry: dict) -> bool:
+    for key in ("table_type", "type", "object_type"):
+        if "METRIC_VIEW" in _enum_value_upper(entry.get(key)):
+            return True
+    return False
+
+
+def _uc_metric_view_status(client, identifier: str) -> bool | None:
+    """Return whether UC says *identifier* is a metric view, or None if unknown."""
+    if not client or not identifier:
+        return None
+    try:
+        info = client.tables.get(full_name=identifier)
+    except Exception as exc:
+        logger.debug("Unable to fetch UC table type for %s: %s", identifier, exc)
+        return None
+
+    table_type = _enum_value_upper(getattr(info, "table_type", None))
+    if not table_type:
+        return None
+    return "METRIC_VIEW" in table_type
+
+
+def normalize_metric_view_sources(space_data: dict, client=None) -> dict:
+    """Move metric-view entries returned under data_sources.tables into metric_views.
+
+    Some Genie API responses flatten metric views into ``data_sources.tables`` even
+    when the submitted serialized_space used ``data_sources.metric_views``. The
+    Workbench UI and scorer expect the schema shape documented for serialized_space,
+    so normalize fetched configs back to that shape.
+    """
+    data_sources = space_data.get("data_sources")
+    if not isinstance(data_sources, dict):
+        return space_data
+
+    tables = data_sources.get("tables", [])
+    metric_views = data_sources.get("metric_views", [])
+    if not isinstance(tables, list):
+        return space_data
+    if not isinstance(metric_views, list):
+        metric_views = []
+
+    normalized_tables: list[Any] = []
+    normalized_metric_views = [
+        mv for mv in metric_views if isinstance(mv, dict)
+    ]
+    metric_view_ids = {
+        mv.get("identifier")
+        for mv in normalized_metric_views
+        if isinstance(mv.get("identifier"), str)
+    }
+    moved = 0
+
+    for table in tables:
+        if not isinstance(table, dict):
+            normalized_tables.append(table)
+            continue
+
+        identifier = table.get("identifier")
+        if not isinstance(identifier, str) or not identifier:
+            normalized_tables.append(table)
+            continue
+
+        if identifier in metric_view_ids:
+            moved += 1
+            continue
+
+        uc_status = _uc_metric_view_status(client, identifier)
+        is_metric_view = (
+            _entry_declares_metric_view(table)
+            or uc_status is True
+            or (uc_status is None and _identifier_leaf(identifier).startswith("mv_"))
+        )
+
+        if is_metric_view:
+            normalized_metric_views.append(table)
+            metric_view_ids.add(identifier)
+            moved += 1
+        else:
+            normalized_tables.append(table)
+
+    if moved:
+        normalized_tables.sort(key=lambda x: x.get("identifier", "") if isinstance(x, dict) else "")
+        normalized_metric_views.sort(key=lambda x: x.get("identifier", "") if isinstance(x, dict) else "")
+        data_sources["tables"] = normalized_tables
+        data_sources["metric_views"] = normalized_metric_views
+        logger.info("Normalized %d metric view(s) from data_sources.tables", moved)
+
+    return space_data
 
 
 def _is_scope_error(e: Exception) -> bool:
@@ -132,7 +234,12 @@ def get_serialized_space(genie_space_id: str | None = None) -> dict:
         Parsed serialized space configuration as a dictionary
     """
     data = get_genie_space(genie_space_id=genie_space_id)
-    return json.loads(data["serialized_space"])
+    space_data = json.loads(data["serialized_space"])
+    try:
+        client = get_workspace_client()
+    except Exception:
+        client = None
+    return normalize_metric_view_sources(space_data, client=client)
 
 
 def query_genie_for_sql(

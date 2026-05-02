@@ -180,6 +180,7 @@ interface EditableTable {
 
 interface EditablePlan {
   tables: EditableTable[]
+  metric_views: EditableTable[]
   sample_questions: string[]
   text_instructions: string
   join_specs: Record<string, string>[]
@@ -194,17 +195,20 @@ function planFromResult(result: Record<string, unknown>): EditablePlan {
   const s = (result.sections as Record<string, unknown[]>) || {}
   const tiArr = (s.text_instructions as string[]) || []
   const rawTables = (s.tables as Record<string, unknown>[]) || []
-  return {
-    tables: rawTables.map((t) => ({
-      identifier: (t.identifier as string) || "",
-      description: (t.description as string) || "",
-      column_configs: ((t.column_configs as Record<string, unknown>[]) || []).map((c) => ({
-        column_name: (c.column_name as string) || "",
-        description: (c.description as string) || undefined,
-        type_hint: (c.type_hint as string) || undefined,
-        excluded: (c.excluded as boolean) || false,
-      })),
+  const rawMetricViews = (s.metric_views as Record<string, unknown>[]) || []
+  const mapSource = (t: Record<string, unknown>): EditableTable => ({
+    identifier: (t.identifier as string) || "",
+    description: (t.description as string) || "",
+    column_configs: ((t.column_configs as Record<string, unknown>[]) || []).map((c) => ({
+      column_name: (c.column_name as string) || "",
+      description: (c.description as string) || undefined,
+      type_hint: (c.type_hint as string) || undefined,
+      excluded: (c.excluded as boolean) || false,
     })),
+  })
+  return {
+    tables: rawTables.map(mapSource),
+    metric_views: rawMetricViews.map(mapSource),
     sample_questions: [...((s.sample_questions as string[]) || [])],
     text_instructions: tiArr.join("\n"),
     join_specs: (((s.join_specs || s.joins) as Record<string, string>[]) || []).map((j) => ({ ...j })),
@@ -272,6 +276,10 @@ function loadState(): PersistedState | null {
     // Migrate editedPlan: ensure tables array exists
     if (parsed.editedPlan && !Array.isArray(parsed.editedPlan.tables)) {
       parsed.editedPlan.tables = []
+    }
+    // Migrate editedPlan: ensure metric_views array exists
+    if (parsed.editedPlan && !Array.isArray(parsed.editedPlan.metric_views)) {
+      parsed.editedPlan.metric_views = []
     }
     // Migrate text_instructions from string[] to single string
     if (parsed.editedPlan && Array.isArray((parsed.editedPlan as any).text_instructions)) {
@@ -1422,6 +1430,7 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
     if (!plan) return null
 
     const sqlExpressionCount = plan.measures.length + plan.filters.length + plan.expressions.length
+    const dataSourceCount = plan.tables.length + plan.metric_views.length
 
     const PLAN_SECTIONS: { key: string; label: string; description: string; Icon: typeof MessageSquare; count: number }[] = [
       { key: "sample_questions", label: "Sample Questions", description: "Click-to-ask suggestions shown to users in the Genie Space UI", Icon: MessageSquare, count: plan.sample_questions.length },
@@ -1472,7 +1481,10 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
             }`}
           >
             Data Schema
-            <span className="ml-1.5 text-[10px] text-muted">{plan.tables.length} tables</span>
+            <span className="ml-1.5 text-[10px] text-muted">
+              {plan.tables.length} table{plan.tables.length !== 1 ? "s" : ""}
+              {plan.metric_views.length > 0 ? ` · ${plan.metric_views.length} metric view${plan.metric_views.length !== 1 ? "s" : ""}` : ""}
+            </span>
           </button>
           <button
             onClick={() => setPlanTab("instructions")}
@@ -1491,6 +1503,11 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
         {planTab === "schema" && (
           expandedTableId === null ? (
             <div className="divide-y divide-[var(--border-color)]">
+              {plan.tables.length > 0 && plan.metric_views.length > 0 && (
+                <div className="px-3 py-1.5 text-[10px] font-semibold text-muted uppercase tracking-wide bg-surface-secondary">
+                  Tables
+                </div>
+              )}
               {plan.tables.map((table) => {
                 const includedCols = table.column_configs.filter(c => !c.excluded)
                 const excludedCols = table.column_configs.filter(c => c.excluded)
@@ -1536,8 +1553,43 @@ export function CreateAgentChat({ onCreated }: CreateAgentChatProps) {
                   </div>
                 )
               })}
-              {plan.tables.length === 0 && (
-                <div className="px-3 py-4 text-center text-muted text-[11px]">No tables in plan</div>
+              {plan.metric_views.length > 0 && (
+                <div className="px-3 py-1.5 text-[10px] font-semibold text-muted uppercase tracking-wide bg-surface-secondary">
+                  Metric Views
+                </div>
+              )}
+              {plan.metric_views.map((metricView) => {
+                const shortName = metricView.identifier.split(".").pop() || metricView.identifier
+                return (
+                  <div key={metricView.identifier} className="px-3 py-3">
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="font-medium text-primary text-xs">{shortName}</span>
+                      <span className="text-[10px] bg-blue-500/15 text-blue-400 px-1.5 py-0.5 rounded">Metric view</span>
+                    </div>
+                    <input
+                      className="w-full text-[11px] text-muted bg-transparent border-b border-transparent hover:border-default focus:border-accent focus:outline-none py-0.5 mb-1.5"
+                      value={metricView.description}
+                      placeholder="Add metric view description..."
+                      onChange={(e) => {
+                        const updated = { ...plan, metric_views: plan.metric_views.map(mv =>
+                          mv.identifier === metricView.identifier ? { ...mv, description: e.target.value } : mv
+                        )}
+                        setEditedPlan(updated)
+                      }}
+                    />
+                    <div className="flex flex-wrap gap-1 mb-1.5">
+                      {metricView.column_configs.slice(0, 10).map(c => (
+                        <span key={c.column_name} className="text-[10px] bg-elevated px-1.5 py-0.5 rounded text-secondary">{c.column_name}</span>
+                      ))}
+                      {metricView.column_configs.length > 10 && (
+                        <span className="text-[10px] text-muted">+{metricView.column_configs.length - 10} more</span>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+              {dataSourceCount === 0 && (
+                <div className="px-3 py-4 text-center text-muted text-[11px]">No data sources in plan</div>
               )}
             </div>
           ) : (
