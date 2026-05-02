@@ -109,3 +109,51 @@ def test_predict_fn_output_carries_eval_row_provenance() -> None:
     assert '"provenance"' in src, (
         'predict_fn output dict missing the "provenance" key'
     )
+
+
+def test_recovery_log_suppressed_when_primary_path_succeeds() -> None:
+    """When the primary path produces a non-empty trace_map for every
+    row, the ``[Eval] Recovered N/N trace IDs via fallback strategies``
+    line must NOT print and the fallback counter must not increment.
+    """
+    import inspect
+
+    from genie_space_optimizer.optimization import evaluation
+
+    src = inspect.getsource(evaluation)
+    anchor = "Recovered"
+    idx = src.find(anchor)
+    assert idx >= 0, (
+        "evaluation.py no longer contains the Recovered anchor; "
+        "did the recovery block move?"
+    )
+    pre = src[max(0, idx - 1200) : idx]
+    assert "if not trace_map" in pre, (
+        "Recovered log line is no longer guarded by 'if not trace_map'; "
+        "the line will print on every iteration regardless of fallback"
+    )
+    assert "record_fallback_recovery" in src, (
+        "evaluation.py does not call record_fallback_recovery; the "
+        "trace_id_fallback_rate counter cannot increment"
+    )
+    block_after = src[idx : idx + 600]
+    assert "logger.warning" in block_after or "logger.warn" in block_after, (
+        "Recovery line still uses print(); spec requires logger.warning"
+    )
+
+
+def test_record_fallback_recovery_increments_counter() -> None:
+    """``record_fallback_recovery`` must update the in-memory counter."""
+    from genie_space_optimizer.optimization.eval_provenance import (
+        record_fallback_recovery,
+        reset_fallback_counter,
+        trace_id_fallback_rate,
+    )
+
+    reset_fallback_counter()
+    assert trace_id_fallback_rate() == 0.0
+
+    record_fallback_recovery(recovered_count=3, total_rows=10)
+    rate = trace_id_fallback_rate()
+    assert 0.0 < rate <= 1.0, f"unexpected rate: {rate}"
+    assert abs(rate - 0.3) < 1e-9, f"expected 0.3, got {rate}"
