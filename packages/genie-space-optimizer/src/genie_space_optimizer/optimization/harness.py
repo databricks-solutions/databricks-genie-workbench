@@ -16109,6 +16109,35 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
+        # L4a — best-effort MLflow per-iteration journey-validation artifact
+        # and tags. Skipped silently if MLflow is unavailable, no active run
+        # is set, or the validator did not produce a report this iteration.
+        if _journey_report is not None:
+            try:
+                import mlflow as _mlflow_iter  # type: ignore[import-not-found]
+                if _mlflow_iter.active_run() is not None:
+                    _mlflow_iter.log_dict(
+                        _journey_report.to_dict(),
+                        artifact_file=(
+                            f"phase_a/journey_validation/"
+                            f"iter_{iteration_counter}.json"
+                        ),
+                    )
+                    _mlflow_iter.set_tags({
+                        f"journey_validation.iter_{iteration_counter}.violations": (
+                            str(len(_journey_report.violations))
+                        ),
+                        f"journey_validation.iter_{iteration_counter}.is_valid": (
+                            str(_journey_report.is_valid).lower()
+                        ),
+                    })
+            except Exception:
+                logger.debug(
+                    "L4a: MLflow per-iteration journey persistence skipped "
+                    "(non-fatal)",
+                    exc_info=True,
+                )
+
         # Task 13 — render the per-question journey ledger at normal
         # iteration end. Early-exit paths call the same idempotent helper
         # before continuing.
