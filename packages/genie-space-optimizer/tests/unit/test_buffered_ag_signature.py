@@ -80,3 +80,85 @@ def test_signature_stable_across_iterations_when_cluster_id_renumbers() -> None:
         compute_ag_stable_signature(ag_iter1, clusters_iter1)
         == compute_ag_stable_signature(ag_iter2, clusters_iter2)
     ), "signature drifted across iterations despite identical semantics"
+
+
+def test_signature_match_accepts_buffered_ag_when_cluster_id_changed() -> None:
+    """End-to-end smoke: an AG buffered with signature S, when revalidated
+    against a cluster set where cluster_id has re-numbered but
+    cluster_signature is still S, must be accepted as reusable.
+    """
+    from genie_space_optimizer.optimization.control_plane import (
+        compute_ag_stable_signature,
+    )
+
+    buffered_ag = {
+        "id": "AG_PRIMARY_H001",
+        "source_cluster_ids": ["H001"],
+        "affected_questions": ["q1"],
+        "lever_directives": {"6": {"root_cause": "missing_filter"}},
+    }
+    clusters_at_buffering = [{
+        "cluster_id": "H001",
+        "cluster_signature": "missing_filter|cat.sch.fact|year",
+        "question_ids": ["q1"],
+        "root_cause": "missing_filter",
+    }]
+    buffered_ag["_stable_signature"] = compute_ag_stable_signature(
+        buffered_ag, clusters_at_buffering
+    )
+
+    # Iter-2: the same cluster signature now lives at H002.
+    iter2_clusters = [{
+        "cluster_id": "H002",
+        "cluster_signature": "missing_filter|cat.sch.fact|year",
+        "question_ids": ["q1"],
+        "root_cause": "missing_filter",
+    }]
+    live_signatures = {c["cluster_signature"] for c in iter2_clusters}
+
+    candidate_sig_set = set(buffered_ag["_stable_signature"][0])
+    assert candidate_sig_set & live_signatures, (
+        "buffered AG signature should match iter-2 live signatures even "
+        "though cluster_id renumbered from H001 to H002"
+    )
+
+
+def test_signature_drift_rejects_buffered_ag_when_cluster_resolved() -> None:
+    """An AG buffered against cluster_signature S, when iter-2's clusters
+    no longer carry S (because the underlying problem was fixed), must
+    fail revalidation. The harness will drop and audit it.
+    """
+    from genie_space_optimizer.optimization.control_plane import (
+        compute_ag_stable_signature,
+    )
+
+    buffered_ag = {
+        "id": "AG_PRIMARY_H001",
+        "source_cluster_ids": ["H001"],
+        "affected_questions": ["q1"],
+        "lever_directives": {"6": {"root_cause": "missing_filter"}},
+    }
+    clusters_at_buffering = [{
+        "cluster_id": "H001",
+        "cluster_signature": "missing_filter|cat.sch.fact|year",
+        "question_ids": ["q1"],
+        "root_cause": "missing_filter",
+    }]
+    buffered_ag["_stable_signature"] = compute_ag_stable_signature(
+        buffered_ag, clusters_at_buffering
+    )
+
+    # Iter-2: signature S no longer appears anywhere — cluster resolved.
+    iter2_clusters = [{
+        "cluster_id": "H001",
+        "cluster_signature": "wrong_aggregation|cat.sch.fact|year",
+        "question_ids": ["q2"],
+        "root_cause": "wrong_aggregation",
+    }]
+    live_signatures = {c["cluster_signature"] for c in iter2_clusters}
+
+    candidate_sig_set = set(buffered_ag["_stable_signature"][0])
+    assert not (candidate_sig_set & live_signatures), (
+        "buffered AG must NOT match iter-2 live signatures when the "
+        "underlying cluster_signature drifted"
+    )
