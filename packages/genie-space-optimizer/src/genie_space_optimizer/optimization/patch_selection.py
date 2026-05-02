@@ -398,7 +398,28 @@ def _is_direct_behavior_patch(patch: dict[str, Any]) -> bool:
 
 
 def _patch_cluster(p: dict[str, Any]) -> str:
-    return str(p.get("cluster_id") or p.get("source_cluster_id") or "").strip()
+    """Return the canonical cluster id for decision-row attribution.
+
+    Track 2 (Phase A burn-down): reads the same four fields as
+    ``_cluster_ids`` so a patch with lineage in ``source_cluster_ids``
+    or ``primary_cluster_id`` is not invisible to the per-cluster slot
+    floor or the decision-row ``cluster_id`` field. Priority order
+    matches ``_cluster_ids`` so the canonical id is the first entry of
+    the tuple ``_cluster_ids`` would produce.
+    """
+    ids = _cluster_ids(p)
+    return ids[0] if ids else ""
+
+
+def _patch_belongs_to_cluster(p: dict[str, Any], cluster_id: str) -> bool:
+    """Return True when ``cluster_id`` appears in any of the patch's
+    cluster-identity fields. Used by the per-cluster slot floor so a
+    patch with lineage only in ``source_cluster_ids`` still counts.
+    """
+    cid = str(cluster_id or "").strip()
+    if not cid:
+        return False
+    return cid in _cluster_ids(p)
 
 
 def _lever_diversity_tier(patch: dict[str, Any]) -> int:
@@ -473,7 +494,7 @@ def select_target_aware_causal_patch_cap(
                 break
             # Already-reserved patches for this cluster count toward the floor.
             already_reserved_for_cluster = sum(
-                1 for p in selected if _patch_cluster(p) == cluster_id
+                1 for p in selected if _patch_belongs_to_cluster(p, cluster_id)
             )
             slots_needed = per_cluster_slot_floor - already_reserved_for_cluster
             if slots_needed <= 0:
@@ -482,7 +503,7 @@ def select_target_aware_causal_patch_cap(
             cluster_candidates = [
                 (idx, patch)
                 for idx, patch in enumerate(patches)
-                if _patch_cluster(patch) == cluster_id
+                if _patch_belongs_to_cluster(patch, cluster_id)
                 and _proposal_id(patch, idx) not in selected_ids
             ]
             for _ in range(slots_needed):
