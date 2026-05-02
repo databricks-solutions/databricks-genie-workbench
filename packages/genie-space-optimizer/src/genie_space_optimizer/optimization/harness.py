@@ -12120,6 +12120,24 @@ def _run_lever_loop(
                         action_groups[1:_MAX_AGS_PER_STRATEGIST_CALL]
                     )
                     pending_strategy = strategy
+                    # Track D — stamp the stable signature on every
+                    # buffered AG before queueing. The signature is
+                    # computed against the clusters present at
+                    # buffering time so revalidation in later
+                    # iterations checks "does this AG's signature
+                    # still appear in the live cluster set" rather
+                    # than "does the H00N label still match".
+                    from genie_space_optimizer.optimization.control_plane import (
+                        compute_ag_stable_signature,
+                    )
+
+                    _all_clusters_for_signature = list(clusters or []) + list(
+                        soft_signal_clusters or []
+                    )
+                    for _buffered_ag in pending_action_groups:
+                        _buffered_ag["_stable_signature"] = compute_ag_stable_signature(
+                            _buffered_ag, _all_clusters_for_signature
+                        )
                     print(
                         _section(
                             f"BUFFERING {len(pending_action_groups)} ADDITIONAL AG(S) "
