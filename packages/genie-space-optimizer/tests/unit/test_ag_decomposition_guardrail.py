@@ -115,3 +115,130 @@ def test_ag_has_shared_direct_fix_returns_false_when_no_patch_covers_all_cluster
         {"cluster_id": "H002", "question_ids": ["q2"]},
     ]
     assert ag_has_shared_direct_fix(ag, clusters) is False
+
+
+def test_decompose_overbroad_ag_splits_into_per_cluster_diagnostic_ags() -> None:
+    """When an AG spans multiple root-cause families AND the patch
+    bundle has no shared direct fix, ``decompose_overbroad_ag`` must
+    return a list of per-cluster diagnostic AGs, one for each source
+    cluster.
+    """
+    from genie_space_optimizer.optimization.control_plane import (
+        decompose_overbroad_ag,
+    )
+
+    ag = {
+        "id": "AG_OVERBROAD",
+        "source_cluster_ids": ["H001", "H002"],
+        "affected_questions": ["q1", "q2"],
+        "patches": [
+            {
+                "type": "add_sql_snippet_filter",
+                "lever": 6,
+                "root_cause": "missing_filter",
+                "target_qids": ["q1"],
+            },
+            {
+                "type": "update_column_description",
+                "lever": 1,
+                "target_qids": ["q2"],
+            },
+        ],
+        "lever_directives": {
+            "5": {"root_cause": "plural_top_n_collapse"},
+        },
+    }
+    clusters = [
+        {
+            "cluster_id": "H001",
+            "cluster_signature": "plural_top_n_collapse|fact_a|year",
+            "question_ids": ["q1"],
+            "root_cause": "plural_top_n_collapse",
+        },
+        {
+            "cluster_id": "H002",
+            "cluster_signature": "missing_filter|fact_b|month",
+            "question_ids": ["q2"],
+            "root_cause": "missing_filter",
+        },
+    ]
+
+    decomposed = decompose_overbroad_ag(ag, clusters)
+    assert isinstance(decomposed, list)
+    assert len(decomposed) == 2, (
+        f"expected one per-cluster diagnostic AG per source cluster; "
+        f"got {len(decomposed)}: {[a.get('id') for a in decomposed]}"
+    )
+
+    cluster_ids_in_decomposed = {
+        cid
+        for a in decomposed
+        for cid in a.get("source_cluster_ids") or []
+    }
+    assert cluster_ids_in_decomposed == {"H001", "H002"}
+
+    # Every decomposed AG must carry a stable signature (Track D).
+    for a in decomposed:
+        assert "_stable_signature" in a, (
+            f"decomposed AG {a.get('id')} missing _stable_signature"
+        )
+
+    # Every decomposed AG must have its qids scoped to its own cluster,
+    # not the broad union.
+    for a in decomposed:
+        if "H001" in (a.get("source_cluster_ids") or []):
+            assert set(a.get("affected_questions") or []) == {"q1"}
+        if "H002" in (a.get("source_cluster_ids") or []):
+            assert set(a.get("affected_questions") or []) == {"q2"}
+
+
+def test_decompose_overbroad_ag_returns_unchanged_when_shared_direct_fix_covers_heterogeneous_clusters() -> None:
+    """A heterogeneous AG (two distinct root_cause families) is allowed
+    UNCHANGED when its patch bundle has a shared direct fix whose
+    target_qids cover every cluster's question_ids.
+    """
+    from genie_space_optimizer.optimization.control_plane import (
+        decompose_overbroad_ag,
+    )
+
+    ag = {
+        "id": "AG_BROAD_BUT_OK",
+        "source_cluster_ids": ["H001", "H002"],
+        "affected_questions": ["q1", "q2"],
+        "patches": [
+            {
+                "type": "add_sql_snippet_calculation",
+                "lever": 5,
+                "root_cause": "plural_top_n_collapse",
+                "target_qids": ["q1", "q2"],
+            },
+        ],
+    }
+    # Heterogeneous clusters — two distinct root_cause families.
+    clusters = [
+        {"cluster_id": "H001", "question_ids": ["q1"], "root_cause": "plural_top_n_collapse"},
+        {"cluster_id": "H002", "question_ids": ["q2"], "root_cause": "missing_filter"},
+    ]
+    result = decompose_overbroad_ag(ag, clusters)
+    assert result == [ag], (
+        f"AG with shared direct fix was incorrectly decomposed; "
+        f"got {len(result)} AGs: {[a.get('id') for a in result]}"
+    )
+
+
+def test_decompose_overbroad_ag_returns_unchanged_for_single_cluster_ag() -> None:
+    """A single-cluster AG can never be over-broad; return unchanged."""
+    from genie_space_optimizer.optimization.control_plane import (
+        decompose_overbroad_ag,
+    )
+
+    ag = {
+        "id": "AG_SINGLE",
+        "source_cluster_ids": ["H001"],
+        "affected_questions": ["q1"],
+        "patches": [],
+    }
+    clusters = [
+        {"cluster_id": "H001", "question_ids": ["q1"], "root_cause": "missing_filter"},
+    ]
+    assert decompose_overbroad_ag(ag, clusters) == [ag]
