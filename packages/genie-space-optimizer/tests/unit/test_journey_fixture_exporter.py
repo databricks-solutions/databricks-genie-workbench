@@ -157,3 +157,153 @@ def test_strips_volatile_fields() -> None:
     assert "_duration_ms" not in out
     assert "_mlflow_run_id" not in out
     assert "_response_time_ms" not in out
+
+
+def test_begin_iteration_capture_appends_immediately_and_mutates_in_place() -> None:
+    """Append-on-begin: snapshot enters the run-level list before any
+    early-exit (continue/break) can drop it; subsequent in-place
+    mutation via the returned ref is reflected in the list entry.
+    """
+    from genie_space_optimizer.optimization.journey_fixture_exporter import (
+        begin_iteration_capture,
+    )
+
+    iters: list[dict] = []
+
+    snap1 = begin_iteration_capture(iterations_data=iters, iteration=1)
+    assert len(iters) == 1, "snapshot must be registered immediately"
+    assert iters[0] is snap1, "list entry must be the same dict reference"
+    assert snap1["iteration"] == 1
+    assert snap1["eval_rows"] == []
+    assert snap1["clusters"] == []
+    assert snap1["soft_clusters"] == []
+    assert snap1["strategist_response"] == {"action_groups": []}
+    assert snap1["ag_outcomes"] == {}
+    assert snap1["post_eval_passing_qids"] == []
+
+    snap1["eval_rows"].append({"question_id": "q1", "result_correctness": "yes"})
+    snap1["clusters"].append(
+        {"cluster_id": "c1", "root_cause": "x", "question_ids": ["q1"]}
+    )
+    snap1["strategist_response"]["action_groups"].append(
+        {"id": "AG1", "affected_questions": ["q1"], "patches": []}
+    )
+    snap1["ag_outcomes"]["AG1"] = "accepted"
+    snap1["post_eval_passing_qids"].append("q1")
+
+    assert iters[0]["eval_rows"][0]["question_id"] == "q1"
+    assert iters[0]["clusters"][0]["cluster_id"] == "c1"
+    assert iters[0]["strategist_response"]["action_groups"][0]["id"] == "AG1"
+    assert iters[0]["ag_outcomes"]["AG1"] == "accepted"
+    assert iters[0]["post_eval_passing_qids"] == ["q1"]
+
+    snap2 = begin_iteration_capture(iterations_data=iters, iteration=2)
+    assert len(iters) == 2
+    assert iters[1] is snap2
+    assert snap2["iteration"] == 2
+    assert snap1 is not snap2, "each iteration must be a fresh dict"
+    assert iters[0] is snap1, "earlier snapshot must remain unchanged"
+
+
+def test_early_exit_path_preserves_partial_iteration() -> None:
+    """Even if a code path bails before populating every field, the
+    partial snapshot still reaches the fixture because it was appended
+    at iteration begin (this models the airline iter_02 rollback
+    scenario where post_eval / cap-drop paths bypassed the late append).
+    """
+    from genie_space_optimizer.optimization.journey_fixture_exporter import (
+        begin_iteration_capture,
+        serialize_replay_fixture,
+    )
+
+    iters: list[dict] = []
+
+    snap = begin_iteration_capture(iterations_data=iters, iteration=1)
+    snap["clusters"].append(
+        {"cluster_id": "h1", "root_cause": "x", "question_ids": ["q1"]}
+    )
+    snap["strategist_response"]["action_groups"].append(
+        {"id": "AG1", "affected_questions": ["q1"], "patches": []}
+    )
+    snap["ag_outcomes"]["AG1"] = "rolled_back"
+
+    raw = serialize_replay_fixture(
+        fixture_id="early_exit_v1",
+        iterations_data=iters,
+    )
+    parsed = json.loads(raw)
+    assert len(parsed["iterations"]) == 1
+    it0 = parsed["iterations"][0]
+    assert it0["iteration"] == 1
+    assert it0["clusters"][0]["cluster_id"] == "h1"
+    assert it0["strategist_response"]["action_groups"][0]["id"] == "AG1"
+    assert it0["ag_outcomes"]["AG1"] == "rolled_back"
+    assert it0["eval_rows"] == []
+    assert it0["post_eval_passing_qids"] == []
+
+
+def test_summarize_replay_fixture_counts_iterations_and_key_fields() -> None:
+    """Operator-facing summary log must count iterations and per-iter
+    key fields so a missing-iteration or empty-eval_rows run is
+    triagable without parsing the fixture body.
+    """
+    from genie_space_optimizer.optimization.journey_fixture_exporter import (
+        begin_iteration_capture,
+        summarize_replay_fixture,
+    )
+
+    iters: list[dict] = []
+
+    s1 = begin_iteration_capture(iterations_data=iters, iteration=1)
+    s1["eval_rows"] = [
+        {"question_id": "q1", "result_correctness": "yes"},
+        {"question_id": "q2", "result_correctness": "no"},
+        {"question_id": "q3", "result_correctness": "yes"},
+    ]
+    s1["clusters"] = [
+        {"cluster_id": "h1", "root_cause": "x", "question_ids": ["q2"]},
+    ]
+    s1["soft_clusters"] = [
+        {"cluster_id": "s1", "root_cause": "y", "question_ids": ["q1"]},
+        {"cluster_id": "s2", "root_cause": "y", "question_ids": ["q3"]},
+    ]
+    s1["strategist_response"]["action_groups"].append(
+        {"id": "AG1", "affected_questions": ["q2"], "patches": []}
+    )
+    s1["ag_outcomes"]["AG1"] = "accepted"
+    s1["post_eval_passing_qids"] = ["q1", "q2", "q3"]
+
+    s2 = begin_iteration_capture(iterations_data=iters, iteration=2)
+    s2["ag_outcomes"]["AG2"] = "rolled_back"
+
+    summary = summarize_replay_fixture(iterations_data=iters)
+
+    assert summary["iterations"] == 2
+    assert len(summary["per_iter"]) == 2
+
+    p1 = summary["per_iter"][0]
+    assert p1["iteration"] == 1
+    assert p1["eval_rows"] == 3
+    assert p1["clusters"] == 1
+    assert p1["soft_clusters"] == 2
+    assert p1["action_groups"] == 1
+    assert p1["ag_outcomes"] == 1
+    assert p1["post_eval_passing_qids"] == 3
+
+    p2 = summary["per_iter"][1]
+    assert p2["iteration"] == 2
+    assert p2["eval_rows"] == 0
+    assert p2["clusters"] == 0
+    assert p2["action_groups"] == 0
+    assert p2["ag_outcomes"] == 1
+    assert p2["post_eval_passing_qids"] == 0
+
+
+def test_summarize_replay_fixture_handles_empty_list() -> None:
+    """Empty iteration list must produce iterations=0 and empty per_iter."""
+    from genie_space_optimizer.optimization.journey_fixture_exporter import (
+        summarize_replay_fixture,
+    )
+
+    summary = summarize_replay_fixture(iterations_data=[])
+    assert summary == {"iterations": 0, "per_iter": []}

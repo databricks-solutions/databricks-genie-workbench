@@ -142,3 +142,67 @@ def dump_replay_fixture(
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(fixture, indent=2, sort_keys=True) + "\n")
+
+
+def begin_iteration_capture(
+    *,
+    iterations_data: list[dict[str, Any]],
+    iteration: int,
+) -> dict[str, Any]:
+    """Allocate a fresh iteration snapshot, append it, and return its ref.
+
+    Append-on-begin is the contract: the snapshot enters the run-level
+    ``iterations_data`` list immediately, before any code path can
+    ``continue`` or ``break`` past a late-append site. The returned dict
+    is the exact reference appended, so subsequent in-place mutation of
+    its ``eval_rows``, ``clusters``, ``soft_clusters``,
+    ``strategist_response``, ``ag_outcomes``, and
+    ``post_eval_passing_qids`` keys is automatically reflected in the
+    list. This is what makes rollback paths, cap drops, and diagnostic
+    AG paths unable to silently drop an iteration from the replay
+    fixture.
+    """
+    snapshot: dict[str, Any] = {
+        "iteration": int(iteration),
+        "eval_rows": [],
+        "clusters": [],
+        "soft_clusters": [],
+        "strategist_response": {"action_groups": []},
+        "ag_outcomes": {},
+        "post_eval_passing_qids": [],
+    }
+    iterations_data.append(snapshot)
+    return snapshot
+
+
+def summarize_replay_fixture(
+    *,
+    iterations_data: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return a compact summary of the replay fixture for log emission.
+
+    Operators use this to validate a real run's fixture without parsing
+    the JSON body — if ``iterations`` is 0 or any iteration's
+    ``eval_rows`` is 0, fixture capture failed and the run should be
+    triaged before extraction.
+    """
+    per_iter: list[dict[str, int]] = []
+    for it in iterations_data or []:
+        sr = (it.get("strategist_response") or {})
+        per_iter.append(
+            {
+                "iteration": int(it.get("iteration") or 0),
+                "eval_rows": len(it.get("eval_rows") or []),
+                "clusters": len(it.get("clusters") or []),
+                "soft_clusters": len(it.get("soft_clusters") or []),
+                "action_groups": len(sr.get("action_groups") or []),
+                "ag_outcomes": len(it.get("ag_outcomes") or {}),
+                "post_eval_passing_qids": len(
+                    it.get("post_eval_passing_qids") or []
+                ),
+            }
+        )
+    return {
+        "iterations": len(iterations_data or []),
+        "per_iter": per_iter,
+    }

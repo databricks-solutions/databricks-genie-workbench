@@ -10626,6 +10626,61 @@ def _run_lever_loop(
     # PHASE_A_REPLAY_FIXTURE_JSON_BEGIN/END markers) plus MLflow when an
     # active run exists.
     _replay_fixture_iterations: list[dict] = []
+
+    # Phase A — deterministic carrier for the most recent full-eval
+    # result. Replaces opportunistic ``locals().get("full_result")``
+    # reads in the eval-entry / post-eval / validator blocks below.
+    # The eval-entry block at iteration N uses iteration N-1's eval
+    # result (or this baseline-derived seed for N=1) so the replay
+    # fixture has real ``eval_rows`` even on the first iteration.
+    # Updated immediately after every ``full_result = ...`` assignment
+    # inside the loop body.
+    _latest_eval_result: dict[str, Any] = {}
+    try:
+        _baseline_rows_seed = _rows_from_iteration_payload(baseline_iter)
+        if _baseline_rows_seed:
+            _seed_qids: list[str] = []
+            _seed_scores: dict[str, str] = {}
+            _seed_arbiter: dict[str, str] = {}
+            _seed_failures: list[str] = []
+            for _r in _baseline_rows_seed:
+                _qid = str(_r.get("question_id") or _r.get("id") or "")
+                if not _qid:
+                    continue
+                _seed_qids.append(_qid)
+                _rc = str(
+                    _r.get("result_correctness/value")
+                    or _r.get("result_correctness")
+                    or ""
+                ).lower()
+                _seed_scores[_qid] = (
+                    "yes" if _rc in ("yes", "true", "1", "pass") else "no"
+                )
+                _arb = str(
+                    _r.get("arbiter/value") or _r.get("arbiter") or ""
+                ).lower()
+                if _arb:
+                    _seed_arbiter[_qid] = _arb
+                if _seed_scores[_qid] == "no":
+                    _seed_failures.append(_qid)
+            _latest_eval_result = {
+                "question_ids": _seed_qids,
+                "scores": _seed_scores,
+                "arbiter_verdicts": _seed_arbiter,
+                "failure_question_ids": _seed_failures,
+            }
+            logger.info(
+                "Phase A: seeded _latest_eval_result from baseline "
+                "(%d qids, %d failures)",
+                len(_seed_qids),
+                len(_seed_failures),
+            )
+    except Exception:
+        logger.debug(
+            "Phase A: failed to seed _latest_eval_result from baseline "
+            "(non-fatal)",
+            exc_info=True,
+        )
     _verdict_history: dict[str, list] = {}
     _last_full_mlflow_run_id: str = baseline_iter.get("mlflow_run_id", "") if baseline_iter else ""
 
@@ -10888,18 +10943,20 @@ def _run_lever_loop(
 
         iteration_counter += 1
 
-        # Phase A — fresh per-iteration input snapshot for the replay-
-        # fixture exporter. Populated as the iteration progresses; appended
-        # to ``_replay_fixture_iterations`` at iteration end.
-        _current_iter_inputs: dict = {
-            "iteration": int(iteration_counter),
-            "eval_rows": [],
-            "clusters": [],
-            "soft_clusters": [],
-            "strategist_response": {"action_groups": []},
-            "ag_outcomes": {},
-            "post_eval_passing_qids": [],
-        }
+        # Phase A — append-on-begin: allocate the per-iteration snapshot
+        # AND register it in ``_replay_fixture_iterations`` immediately,
+        # so any subsequent ``continue`` / ``break`` (rollback paths,
+        # cap drops, diagnostic-AG paths, plateau exits, etc.) cannot
+        # silently drop this iteration from the replay fixture.
+        # Subsequent code mutates this dict in place; the list entry is
+        # the same reference, so mutations are reflected automatically.
+        from genie_space_optimizer.optimization.journey_fixture_exporter import (
+            begin_iteration_capture as _begin_iteration_capture,
+        )
+        _current_iter_inputs: dict = _begin_iteration_capture(
+            iterations_data=_replay_fixture_iterations,
+            iteration=iteration_counter,
+        )
 
         # ── Per-question journey ledger accumulator (Task 13) ────────
         # Stamp every stage that touches a question so the end-of-
@@ -10999,7 +11056,7 @@ def _run_lever_loop(
         # without a preceding 'evaluated' event.
         try:
             _eval_qids_for_entry = list(
-                (locals().get("full_result") or {}).get("question_ids") or []
+                (_latest_eval_result or {}).get("question_ids") or []
             )
             _hard_qid_set = {
                 str(q)
@@ -11040,7 +11097,7 @@ def _run_lever_loop(
         # Phase A — populate replay-fixture iteration snapshot fields
         # eval_rows / clusters / soft_clusters from the analysis result.
         try:
-            _fr = locals().get("full_result") or {}
+            _fr = _latest_eval_result or {}
             _scores = _fr.get("scores") or {}
             _arbiter_map = _fr.get("arbiter_verdicts") or {}
             _failure_set = {str(q) for q in (_fr.get("failure_question_ids") or [])}
@@ -15068,6 +15125,12 @@ def _run_lever_loop(
         full_accuracy = gate_result["full_accuracy"]
         new_model_id = gate_result["new_model_id"]
         full_result = gate_result["full_result"]
+        # Phase A — refresh the deterministic eval-result carrier
+        # immediately on every full-eval result assignment. Subsequent
+        # post_eval / validator reads (and the next iteration's eval-
+        # entry block) will see this rather than relying on
+        # ``locals().get("full_result")``.
+        _latest_eval_result = full_result or {}
         _last_full_mlflow_run_id = full_result.get("mlflow_run_id") or full_result.get("run_id", "")
 
         _full_trace_map = full_result.get("trace_map", {})
@@ -15402,7 +15465,7 @@ def _run_lever_loop(
         # pre-iteration and post-iteration passing sets. The contract
         # requires every evaluated qid to terminate in POST_EVAL.
         try:
-            _post_eval_full_result = locals().get("full_result") or {}
+            _post_eval_full_result = _latest_eval_result or {}
             _post_eval_eval_qids = list(
                 _post_eval_full_result.get("question_ids") or []
             )
@@ -15440,24 +15503,17 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
-        # Phase A — append this iteration's input snapshot to the run's
-        # collected list so the end-of-run replay-fixture exporter can
-        # serialize it. Defensive — replay-fixture export is observability,
-        # never a loop-breaking error.
-        try:
-            _replay_fixture_iterations.append(_current_iter_inputs)
-        except Exception:
-            logger.debug(
-                "Phase A: replay-fixture iteration append failed (non-fatal)",
-                exc_info=True,
-            )
+        # Phase A — note: the iteration snapshot was appended at
+        # iteration begin via ``begin_iteration_capture``. No late append
+        # is needed; mutations to ``_current_iter_inputs`` above already
+        # reach ``_replay_fixture_iterations`` because they share a ref.
 
         # Lossless contract Task 7 — warn-only journey-contract validator.
         # The hard gate flips this to raise in Phase 4. Defensive wrap so a
         # validator bug never breaks the loop while we burn down warnings.
         try:
             _eval_qids_for_validator = list(
-                (locals().get("full_result") or {}).get("question_ids") or []
+                (_latest_eval_result or {}).get("question_ids") or []
             )
             _validate_journeys_at_iteration_end(
                 events=_journey_events,
@@ -15574,6 +15630,7 @@ def _run_lever_loop(
         import sys
         from genie_space_optimizer.optimization.journey_fixture_exporter import (
             serialize_replay_fixture,
+            summarize_replay_fixture,
         )
 
         _replay_fixture_id = f"airline_real_v1_run_{run_id}"
@@ -15581,6 +15638,27 @@ def _run_lever_loop(
             fixture_id=_replay_fixture_id,
             iterations_data=list(_replay_fixture_iterations or []),
         )
+
+        # Operator sanity-check log line: per-iteration counts so a real
+        # run can be triaged without parsing the JSON body. If
+        # ``iterations`` is 0 or any per-iter ``eval_rows`` is 0,
+        # extraction should be paused and the run triaged.
+        try:
+            import json as _summary_json
+            _replay_fixture_summary = summarize_replay_fixture(
+                iterations_data=list(_replay_fixture_iterations or []),
+            )
+            logger.info(
+                "Phase A: replay fixture summary %s",
+                _summary_json.dumps(
+                    _replay_fixture_summary, separators=(",", ":")
+                ),
+            )
+        except Exception:
+            logger.debug(
+                "Phase A: replay fixture summary log failed (non-fatal)",
+                exc_info=True,
+            )
 
         # Channel 1 — stderr markers.
         # Use unique multi-segment markers that cannot collide with normal
