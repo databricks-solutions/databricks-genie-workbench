@@ -5305,12 +5305,63 @@ def make_predict_fn(
         if temporal_rewrite_meta:
             comparison["temporal_rewrite"] = temporal_rewrite_meta
 
+        # Track I (Phase A burn-down) — persist trace lineage on the
+        # output row at predict_fn time so downstream consumers do not
+        # have to recover it via fallback strategies. The active span
+        # holds the canonical trace id for this Genie call.
+        from genie_space_optimizer.optimization.eval_provenance import (
+            EvalRowProvenance,
+            record_primary_provenance,
+        )
+
+        _primary_trace_id = ""
+        try:
+            _active_span = mlflow.get_current_active_span()
+            if _active_span is not None:
+                # MLflow tracing v2 exposes ``trace_id`` directly on the
+                # active span (LiveSpan). Older versions used
+                # ``request_id`` as an alias; read the first non-empty.
+                _primary_trace_id = str(
+                    getattr(_active_span, "trace_id", None)
+                    or getattr(_active_span, "request_id", None)
+                    or ""
+                ).strip()
+        except Exception:
+            logger.debug(
+                "Track I: failed to read active span trace id; "
+                "fallback recovery will fire downstream",
+                exc_info=True,
+            )
+            _primary_trace_id = ""
+
+        _provenance: EvalRowProvenance | None = None
+        if _primary_trace_id:
+            try:
+                _provenance = EvalRowProvenance(
+                    mlflow_trace_id=_primary_trace_id,
+                    genie_conversation_id=str(
+                        result.get("conversation_id") or ""
+                    ),
+                    source="primary",
+                )
+                record_primary_provenance()
+            except ValueError:
+                # Defensive: empty trace id slipped through. Leave
+                # _provenance unset so downstream fallback fires.
+                logger.debug(
+                    "Track I: EvalRowProvenance construction rejected "
+                    "an empty trace id; falling through to recovery",
+                    exc_info=True,
+                )
+                _provenance = None
+
         output = {
             "response": genie_sql,
             "status": result.get("status", "ERROR"),
             "conversation_id": result.get("conversation_id", ""),
             "comparison": comparison,
             "analysis_text": result.get("analysis_text"),
+            "provenance": _provenance,
         }
 
         if EVAL_DEBUG:
