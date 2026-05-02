@@ -201,6 +201,12 @@ def test_validate_decisions_against_journey_catches_missing_proposed_event() -> 
                 outcome=DecisionOutcome.ACCEPTED,
                 reason_code=ReasonCode.PROPOSAL_EMITTED,
                 question_id="q1",
+                evidence_refs=("eval:q1", "cluster:H001"),
+                rca_id="rca_q1_missing_filter",
+                root_cause="missing_filter",
+                target_qids=("q1",),
+                expected_effect="Proposal should produce a targeted filter patch.",
+                next_action="Emit proposal journey event before applying.",
                 proposal_id="P001",
             )
         ],
@@ -230,6 +236,13 @@ def test_validate_decisions_against_journey_accepts_matching_post_eval_resolutio
                 outcome=DecisionOutcome.RESOLVED,
                 reason_code=ReasonCode.POST_EVAL_FAIL_TO_PASS,
                 question_id="q1",
+                evidence_refs=("post_eval:q1",),
+                rca_id="rca_q1_missing_filter",
+                root_cause="missing_filter",
+                target_qids=("q1",),
+                expected_effect="q1 should pass after patch.",
+                observed_effect="q1 passed after patch.",
+                next_action="Keep the accepted patch.",
             )
         ],
         events=[

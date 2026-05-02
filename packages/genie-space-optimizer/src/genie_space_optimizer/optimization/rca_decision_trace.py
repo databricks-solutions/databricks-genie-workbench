@@ -272,18 +272,61 @@ def validate_decisions_against_journey(
 ) -> list[str]:
     """Cross-check decision records against the journey events.
 
-    For decision types that imply a particular journey stage must exist
-    (proposal_generated -> proposed, patch_applied -> applied,
-    qid_resolution -> post_eval), return a violation string per missing
-    expected event. Empty list = clean cross-check.
+    Two layers of checks:
+
+    1. **RCA-required fields** — every applicable decision_type must
+       carry the chain ``evidence_refs -> rca_id -> root_cause ->
+       target_qids``. ``EVAL_CLASSIFIED`` is exempt from rca_id /
+       root_cause (the event hasn't been routed to an RCA yet).
+       Decisions whose reason_code is ``MISSING_TARGET_QIDS`` are
+       allowed to omit ``target_qids`` (that's exactly what the reason
+       code says).
+    2. **Journey-stage cross-check** — decision types that imply a
+       particular journey stage must have a matching event for each
+       affected qid (proposal_generated -> proposed, patch_applied ->
+       applied, qid_resolution -> post_eval).
+
+    Empty list = clean cross-check.
     """
     violations: list[str] = []
+    rca_required = {
+        DecisionType.CLUSTER_SELECTED,
+        DecisionType.RCA_FORMED,
+        DecisionType.STRATEGIST_AG_EMITTED,
+        DecisionType.PROPOSAL_GENERATED,
+        DecisionType.GATE_DECISION,
+        DecisionType.PATCH_APPLIED,
+        DecisionType.PATCH_SKIPPED,
+        DecisionType.ACCEPTANCE_DECIDED,
+        DecisionType.QID_RESOLUTION,
+    }
     stage_requirements = {
         DecisionType.PROPOSAL_GENERATED: "proposed",
         DecisionType.PATCH_APPLIED: "applied",
         DecisionType.QID_RESOLUTION: "post_eval",
     }
     for record in records:
+        if record.decision_type in rca_required:
+            if not record.evidence_refs:
+                violations.append(
+                    f"decision {record.decision_type.value} qid={record.question_id or '-'} "
+                    "has no evidence_refs"
+                )
+            if not record.rca_id and record.decision_type not in {DecisionType.EVAL_CLASSIFIED}:
+                violations.append(
+                    f"decision {record.decision_type.value} qid={record.question_id or '-'} "
+                    "has no rca_id"
+                )
+            if not record.root_cause and record.decision_type not in {DecisionType.EVAL_CLASSIFIED}:
+                violations.append(
+                    f"decision {record.decision_type.value} qid={record.question_id or '-'} "
+                    "has no root_cause"
+                )
+            if not record.target_qids and record.reason_code != ReasonCode.MISSING_TARGET_QIDS:
+                violations.append(
+                    f"decision {record.decision_type.value} qid={record.question_id or '-'} "
+                    "has no target_qids"
+                )
         required_stage = stage_requirements.get(record.decision_type)
         if not required_stage:
             continue
