@@ -121,10 +121,13 @@ def test_recovery_log_suppressed_when_primary_path_succeeds() -> None:
     from genie_space_optimizer.optimization import evaluation
 
     src = inspect.getsource(evaluation)
-    anchor = "Recovered"
+    # Use a uniquely-tagged anchor that matches the recovery log call
+    # specifically (not the docstring elsewhere in the file that
+    # happens to mention "Recovered").
+    anchor = "Recovered %d/%d trace IDs via fallback"
     idx = src.find(anchor)
     assert idx >= 0, (
-        "evaluation.py no longer contains the Recovered anchor; "
+        "evaluation.py no longer contains the recovery log anchor; "
         "did the recovery block move?"
     )
     pre = src[max(0, idx - 1200) : idx]
@@ -136,8 +139,10 @@ def test_recovery_log_suppressed_when_primary_path_succeeds() -> None:
         "evaluation.py does not call record_fallback_recovery; the "
         "trace_id_fallback_rate counter cannot increment"
     )
-    block_after = src[idx : idx + 600]
-    assert "logger.warning" in block_after or "logger.warn" in block_after, (
+    # The ``logger.warning(`` call sits a few lines BEFORE the format-
+    # string anchor, so check the immediate window on both sides.
+    window = src[max(0, idx - 200) : idx + 600]
+    assert "logger.warning" in window or "logger.warn" in window, (
         "Recovery line still uses print(); spec requires logger.warning"
     )
 

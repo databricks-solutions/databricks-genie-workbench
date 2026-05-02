@@ -8184,9 +8184,27 @@ def run_evaluation(
                     eval_result=eval_result,
                 )
                 if trace_map:
-                    print(
-                        f"[Eval] Recovered {len(trace_map)}/{len(rows_for_output)} "
-                        f"trace IDs via fallback strategies"
+                    # Track I (Phase A burn-down) — demote the
+                    # recovery line to WARNING and increment the
+                    # trace_id_fallback_rate counter so the operator
+                    # scoreboard can read it as a measurable signal.
+                    # The line stays inside the ``if not trace_map``
+                    # branch, so a clean iteration produces zero
+                    # recovery output.
+                    from genie_space_optimizer.optimization.eval_provenance import (
+                        record_fallback_recovery,
+                    )
+
+                    logger.warning(
+                        "[Eval] Recovered %d/%d trace IDs via fallback "
+                        "strategies (primary path lost trace context "
+                        "during Genie API calls)",
+                        len(trace_map),
+                        len(rows_for_output),
+                    )
+                    record_fallback_recovery(
+                        recovered_count=len(trace_map),
+                        total_rows=len(rows_for_output),
                     )
         elif _rows_without_tid:
             logger.info(
