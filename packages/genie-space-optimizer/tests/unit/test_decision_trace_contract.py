@@ -132,3 +132,61 @@ def test_optimization_trace_serializes_decisions_and_renders_transcript() -> Non
     assert "Decision records: 1" in transcript
     assert "cluster_selected" in transcript
     assert "q1" in transcript
+
+
+def test_validate_decisions_against_journey_catches_missing_proposed_event() -> None:
+    from genie_space_optimizer.optimization.question_journey import QuestionJourneyEvent
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionOutcome,
+        DecisionRecord,
+        DecisionType,
+        ReasonCode,
+        validate_decisions_against_journey,
+    )
+
+    violations = validate_decisions_against_journey(
+        records=[
+            DecisionRecord(
+                iteration=1,
+                decision_type=DecisionType.PROPOSAL_GENERATED,
+                outcome=DecisionOutcome.ACCEPTED,
+                reason_code=ReasonCode.PROPOSAL_EMITTED,
+                question_id="q1",
+                proposal_id="P001",
+            )
+        ],
+        events=[QuestionJourneyEvent(question_id="q1", stage="evaluated")],
+    )
+
+    assert violations == [
+        "decision proposal_generated qid=q1 proposal=P001 has no matching journey stage proposed"
+    ]
+
+
+def test_validate_decisions_against_journey_accepts_matching_post_eval_resolution() -> None:
+    from genie_space_optimizer.optimization.question_journey import QuestionJourneyEvent
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionOutcome,
+        DecisionRecord,
+        DecisionType,
+        ReasonCode,
+        validate_decisions_against_journey,
+    )
+
+    violations = validate_decisions_against_journey(
+        records=[
+            DecisionRecord(
+                iteration=1,
+                decision_type=DecisionType.QID_RESOLUTION,
+                outcome=DecisionOutcome.RESOLVED,
+                reason_code=ReasonCode.POST_EVAL_FAIL_TO_PASS,
+                question_id="q1",
+            )
+        ],
+        events=[
+            QuestionJourneyEvent(question_id="q1", stage="evaluated"),
+            QuestionJourneyEvent(question_id="q1", stage="post_eval", is_passing=True),
+        ],
+    )
+
+    assert violations == []

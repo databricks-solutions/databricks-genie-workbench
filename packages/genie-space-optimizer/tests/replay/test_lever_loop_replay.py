@@ -323,3 +323,69 @@ def test_airline_real_v1_replay_completes_in_under_thirty_seconds() -> None:
     run_replay(fixture)
     elapsed = time.perf_counter() - started
     assert elapsed < 30.0, f"Replay took {elapsed:.2f}s (>30s budget)."
+
+
+def test_run_replay_exposes_decision_trace_outputs() -> None:
+    from genie_space_optimizer.optimization.lever_loop_replay import run_replay
+
+    fixture = {
+        "fixture_id": "decision_replay_v1",
+        "iterations": [
+            {
+                "iteration": 1,
+                "eval_rows": [
+                    {
+                        "question_id": "q1",
+                        "result_correctness": "no",
+                        "arbiter": "ground_truth_correct",
+                    }
+                ],
+                "clusters": [
+                    {
+                        "cluster_id": "H001",
+                        "root_cause": "missing_filter",
+                        "question_ids": ["q1"],
+                    }
+                ],
+                "soft_clusters": [],
+                "strategist_response": {
+                    "action_groups": [
+                        {
+                            "id": "AG1",
+                            "affected_questions": ["q1"],
+                            "patches": [
+                                {
+                                    "proposal_id": "P001",
+                                    "patch_type": "add_sql_snippet_filter",
+                                    "target_qids": ["q1"],
+                                    "cluster_id": "H001",
+                                }
+                            ],
+                        }
+                    ]
+                },
+                "ag_outcomes": {"AG1": "accepted"},
+                "post_eval_passing_qids": ["q1"],
+                "decision_records": [
+                    {
+                        "run_id": "fixture",
+                        "iteration": 1,
+                        "decision_type": "proposal_generated",
+                        "outcome": "accepted",
+                        "reason_code": "proposal_emitted",
+                        "question_id": "q1",
+                        "ag_id": "AG1",
+                        "proposal_id": "P001",
+                        "affected_qids": ["q1"],
+                    }
+                ],
+            }
+        ],
+    }
+
+    result = run_replay(fixture)
+
+    assert result.decision_records[0].proposal_id == "P001"
+    assert "proposal_generated" in result.canonical_decision_json
+    assert "OPERATOR TRANSCRIPT  iteration=1" in result.operator_transcript
+    assert result.decision_validation == []

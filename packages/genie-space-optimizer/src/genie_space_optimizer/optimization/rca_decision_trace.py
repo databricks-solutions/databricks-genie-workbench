@@ -207,6 +207,71 @@ class OptimizationTrace:
         return render_operator_transcript(trace=self, iteration=iteration)
 
 
+def _record_qids(record: DecisionRecord) -> tuple[str, ...]:
+    if record.affected_qids:
+        return record.affected_qids
+    if record.question_id:
+        return (record.question_id,)
+    return ()
+
+
+def _has_event(
+    *,
+    events: Sequence[Any],
+    qid: str,
+    stage: str,
+    proposal_id: str = "",
+) -> bool:
+    for ev in events:
+        if getattr(ev, "question_id", "") != qid:
+            continue
+        if getattr(ev, "stage", "") != stage:
+            continue
+        if proposal_id and getattr(ev, "proposal_id", "") != proposal_id:
+            continue
+        return True
+    return False
+
+
+def validate_decisions_against_journey(
+    *,
+    records: Sequence[DecisionRecord],
+    events: Sequence[Any],
+) -> list[str]:
+    """Cross-check decision records against the journey events.
+
+    For decision types that imply a particular journey stage must exist
+    (proposal_generated -> proposed, patch_applied -> applied,
+    qid_resolution -> post_eval), return a violation string per missing
+    expected event. Empty list = clean cross-check.
+    """
+    violations: list[str] = []
+    stage_requirements = {
+        DecisionType.PROPOSAL_GENERATED: "proposed",
+        DecisionType.PATCH_APPLIED: "applied",
+        DecisionType.QID_RESOLUTION: "post_eval",
+    }
+    for record in records:
+        required_stage = stage_requirements.get(record.decision_type)
+        if not required_stage:
+            continue
+        for qid in _record_qids(record):
+            if _has_event(
+                events=events,
+                qid=qid,
+                stage=required_stage,
+                proposal_id=record.proposal_id if required_stage in {"proposed", "applied"} else "",
+            ):
+                continue
+            violations.append(
+                "decision "
+                f"{record.decision_type.value} qid={qid} "
+                f"proposal={record.proposal_id or '-'} "
+                f"has no matching journey stage {required_stage}"
+            )
+    return violations
+
+
 def render_operator_transcript(
     *,
     trace: OptimizationTrace,

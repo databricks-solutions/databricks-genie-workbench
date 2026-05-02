@@ -18,6 +18,13 @@ from genie_space_optimizer.optimization.question_journey_contract import (
     canonical_journey_json,
     validate_question_journeys,
 )
+from genie_space_optimizer.optimization.rca_decision_trace import (
+    DecisionRecord,
+    OptimizationTrace,
+    canonical_decision_json,
+    render_operator_transcript,
+    validate_decisions_against_journey,
+)
 
 
 @dataclass(frozen=True)
@@ -25,6 +32,17 @@ class ReplayResult:
     events: list[QuestionJourneyEvent]
     canonical_json: str
     validation: JourneyValidationReport
+    decision_records: list[DecisionRecord]
+    canonical_decision_json: str
+    operator_transcript: str
+    decision_validation: list[str]
+
+
+def _decision_records_from_iteration(it: dict) -> list[DecisionRecord]:
+    return [
+        DecisionRecord.from_dict(r)
+        for r in (it.get("decision_records") or [])
+    ]
 
 
 def _classify_eval_rows(
@@ -206,6 +224,8 @@ def run_replay(fixture: dict) -> ReplayResult:
     combined_violations: list[JourneyContractViolation] = []
     combined_missing_qids: list[str] = []
     combined_terminals: dict[str, JourneyTerminalState] = {}
+    decision_records: list[DecisionRecord] = []
+    transcript_parts: list[str] = []
 
     for it in fixture.get("iterations") or []:
         iter_events: list[QuestionJourneyEvent] = []
@@ -226,14 +246,36 @@ def run_replay(fixture: dict) -> ReplayResult:
         combined_terminals.update(report.terminal_state_by_qid)
         events.extend(iter_events)
 
+        iter_decisions = _decision_records_from_iteration(it)
+        decision_records.extend(iter_decisions)
+        if iter_decisions:
+            trace = OptimizationTrace(
+                journey_events=tuple(iter_events),
+                decision_records=tuple(iter_decisions),
+            )
+            transcript_parts.append(
+                render_operator_transcript(
+                    trace=trace,
+                    iteration=int(it.get("iteration") or 0),
+                )
+            )
+
     composite = JourneyValidationReport(
         is_valid=not combined_violations and not combined_missing_qids,
         missing_qids=tuple(combined_missing_qids),
         violations=combined_violations,
         terminal_state_by_qid=combined_terminals,
     )
+    decision_validation = validate_decisions_against_journey(
+        records=decision_records,
+        events=events,
+    )
     return ReplayResult(
         events=events,
         canonical_json=canonical_journey_json(events=events),
         validation=composite,
+        decision_records=decision_records,
+        canonical_decision_json=canonical_decision_json(decision_records),
+        operator_transcript="\n".join(transcript_parts),
+        decision_validation=decision_validation,
     )
