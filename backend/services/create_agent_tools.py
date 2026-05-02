@@ -2985,8 +2985,6 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
         _check_sorted(tables, lambda x: x.get("identifier", ""), "identifier", "data_sources.tables", error)
         if len(tables) > _MAX_TABLES:
             error("data_sources.tables", f"Maximum {_MAX_TABLES} tables allowed (found {len(tables)})")
-        elif len(tables) >= 9:
-            warning("data_sources.tables", f"{len(tables)} tables — consider splitting into focused rooms for >8 tables")
         for i, tbl in enumerate(tables):
             ident = tbl.get("identifier", "")
             if not _TABLE_ID_PATTERN.match(ident):
@@ -3190,10 +3188,10 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 "instructions.text_instructions",
                 f"Text instructions only {ti_total_chars} chars — add more business context (>50 chars recommended)"
             )
-        if ti_total_chars > 2000:
+        if ti_total_chars > 2500:
             warning(
                 "instructions.text_instructions",
-                f"Text instructions are {ti_total_chars:,} chars — keep under 2,000 to avoid pushing out higher-value SQL context"
+                f"Text instructions are {ti_total_chars:,} chars — keep under 2,500 to avoid pushing out higher-value SQL context"
             )
         if _SQL_IN_TEXT_RE.search(ti_all_text):
             warning(
@@ -3208,16 +3206,16 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
             f"No join specs for {len(tables)} tables — add join specifications to help Genie correctly join your tables"
         )
 
-    # 5. Table count: 9-12 warning already handled above (structural check changed to warn at >=9)
+    # 5. Table count: hard structural limits are handled above.
 
-    # 6. Example SQLs: warn if <8; warn at 8-14; warn if >50% lack usage_guidance
+    # 6. Example SQLs: warn if <8; warn at 8-9; warn if >50% lack usage_guidance
     n_examples = len(eqs)
     if n_examples < 8:
         warning(
             "instructions.example_question_sqls",
             f"Only {n_examples} example SQLs — 8+ required for good accuracy"
         )
-    elif n_examples < 15:
+    elif n_examples < 10:
         warning(
             "instructions.example_question_sqls",
             f"{n_examples} example SQLs — 10-15 is the sweet spot for largest accuracy jump"

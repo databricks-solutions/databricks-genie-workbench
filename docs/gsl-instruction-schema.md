@@ -43,7 +43,7 @@ sections** — do not leave an empty header.
   expressions and measures) or `example_question_sqls` (full query
   patterns). This is the scanner's rule — see `_SQL_IN_TEXT_RE` in
   `backend/services/scanner.py`.
-- **Keep total content ≤ 2,000 characters** — the IQ Scanner's soft
+- **Keep total content ≤ 2,500 characters** — the IQ Scanner's soft
   threshold in check #4 (text-instructions length). Longer blocks push
   out higher-value SQL context in the Genie prompt window.
 - **Each bullet should reference a concrete asset** (table, column,

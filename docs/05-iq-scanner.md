@@ -75,7 +75,7 @@ The scanner returns:
   ],
   "findings": ["No join specifications for multi-source space", ...],
   "next_steps": ["Add join specifications to help Genie correctly join your tables", ...],
-  "warnings": ["Instructions total 2,500 chars — keep under 2,000", ...],
+  "warnings": ["Instructions total 2,501 chars — keep under 2,500", ...],
   "warning_next_steps": ["Restructure text instructions for optimal LLM context usage", ...],
   "scanned_at": "2026-04-08T12:00:00+00:00"
 }
@@ -93,10 +93,9 @@ Beyond the 12 scored checks, the scanner emits additional warnings for edge case
 |-----------|---------|
 | Column descriptions at 50–80% | "Higher coverage improves SQL generation accuracy" |
 | No column synonyms defined | "Add synonyms for columns with abbreviated or technical names" |
-| Text instructions > 2,000 chars | "Keep under 2,000 to avoid pushing out higher-value SQL context" |
+| Text instructions > 2,500 chars | "Keep under 2,500 to avoid pushing out higher-value SQL context" |
 | SQL patterns in text instructions | "Move to Example SQLs or SQL Expressions" |
-| Data source count 9–12 | "Consider splitting into focused rooms for >8 data sources" |
-| Example SQLs 8–14 | "10-15 is the sweet spot for largest accuracy jump" |
+| Example SQLs 8–9 | "10-15 is the sweet spot for largest accuracy jump" |
 | Missing `usage_guidance` on >50% of example SQLs | "Add descriptions of when each example should be applied" |
 | Missing measures or filters in SQL snippets | "Add missing SQL snippet types for better coverage" |
 | Entity matching columns > 100 | "Approaching 120/space limit" |
