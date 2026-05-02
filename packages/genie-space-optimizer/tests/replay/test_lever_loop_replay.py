@@ -157,7 +157,13 @@ def test_run_replay_airline_real_v1_within_burndown_budget() -> None:
 
     # Updated by Phase 5 Task 14 Step 6 each time a fresh cycle lands.
     # Never increase this number without explicit triage in the burn-down log.
-    BURNDOWN_BUDGET = 44
+    #
+    # Cycle 8 (2026-05-02): hard-closed at 0. The replay-engine fix at
+    # lever_loop_replay.py:80-86 (commit abd0716) eliminated the dominant
+    # `soft_signal -> already_passing` double-emit pattern, and Cycle 8's
+    # harness-side improvements zeroed the remaining harness emit-gap
+    # patterns. See docs/2026-05-02-phase-a-burndown-log.md cycle 8 row.
+    BURNDOWN_BUDGET = 0
 
     fx = json.loads((FIXTURES / "airline_real_v1.json").read_text())
     result = run_replay(fx)

@@ -50,6 +50,34 @@ Reference: `docs/2026-05-02-run-replay-per-iteration-fix-plan.md` Phase 4.
 | Cycle | Date | Iters | Violations | Composition (by_kind) | Notes |
 |---|---|---|---|---|---|
 | 7 | 2026-05-02 | 5 | 44 | `{illegal_transition: 44}` | Per-iter validator landed; Track D `_baseline_row_qid` fix in place; cross-iter noise eliminated. Initial CI budget set to 44. |
+| 8 | 2026-05-02 | 5 | **0** | `{}` (clean) | **Phase A airline burn-down hard-closed.** Cycle 8 measured 45 violations pre-fix — every single one was the `soft_signal -> already_passing` replay-engine double-emit (9 overlap qids × 5 iters). Fix at `lever_loop_replay.py:80-86` (commit `abd0716`) demotes `already_passing` and `gt_corr` qids when the fixture's `soft_clusters` claim them. Post-fix Cycle 8 measures **0 violations**. Cycle 7 also retroactively dropped from 44 → 11 under the same fix; the residual 11 (5 `evaluated->post_eval`, 5 `clustered->soft_signal`, 1 `ag_assigned->rolled_back`) were genuine harness/exporter emit gaps that Cycle 8's harness-side improvements fully resolved. CI budget tightened from 44 → 0. |
+
+## 2026-05-02 — Replay-engine `soft_signal -> already_passing` fix (Cycle 8 dominant pattern)
+
+The Cycle 7 burn-down log (above) hypothesised that `soft_signal -> already_passing` (30 violations) was a replay-engine bug at `lever_loop_replay.py:74-82` where the fixture-soft-promotion added a qid to the `soft` partition without removing it from `already_passing`. Cycle 8 confirmed the hypothesis exactly: every Cycle 8 violation was this pattern (9 overlap qids × 5 iters = 45). The fix (commit `abd0716`) is a two-line addition to the promotion block:
+
+```python
+if fixture_soft_qids:
+    soft.update(fixture_soft_qids)
+    hard -= fixture_soft_qids
+    already_passing -= fixture_soft_qids   # <-- NEW
+    gt_corr -= fixture_soft_qids           # <-- NEW (symmetric, defensive)
+```
+
+`_classify_eval_rows` returns mutually-exclusive row-level partitions, but a fixture-level soft cluster can claim any qid regardless of its row classification — the cluster wins. Verified by `test_run_replay_demotes_already_passing_when_qid_in_soft_cluster` and the new `synthetic_already_passing_in_soft_cluster.json` fixture.
+
+**Retroactive impact on Cycle 7 baseline:**
+
+| Cycle 7 violation class | Pre-fix | Post-fix | Δ |
+|---|---:|---:|---:|
+| `soft_signal -> already_passing` | 30 | 0 | −30 |
+| `evaluated -> post_eval` | 5 | 5 | 0 |
+| `clustered -> soft_signal` | 5 | 5 | 0 |
+| `applied -> post_eval` | 3 | 0 | −3 |
+| `ag_assigned -> rolled_back` | 1 | 1 | 0 |
+| **Total** | **44** | **11** | **−33** |
+
+The unexpected `applied -> post_eval` drop (−3) was the same overlap qids reaching `applied` later in the journey under the old (broken) emit order; eliminating the double-emit fixed both transitions simultaneously.
 
 ## 2026-05-02 — L4a: per-iteration `JourneyValidationReport` persistence
 
