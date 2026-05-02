@@ -295,6 +295,56 @@ def diagnostic_action_group_for_cluster(cluster: dict) -> dict:
     }
 
 
+def compute_ag_stable_signature(
+    ag: dict,
+    clusters: Iterable[dict],
+) -> tuple[tuple[str, ...], tuple[str, ...], str]:
+    """Return a hashable signature stable across iterations.
+
+    Track D (Phase A burn-down): buffered and diagnostic AGs are keyed
+    by ``H00N`` cluster ids today, and those ids re-number every
+    iteration. The May-01 ESR / 23:04 7Now runs reused buffered AGs
+    against the wrong target as a result. The signature here is
+    derived from properties that survive re-clustering:
+
+    * ``cluster_signatures`` — stable hashes produced by the clusterer
+      (e.g., ``plural_top_n_collapse|cat.sch.fact|cy_sales``).
+    * ``qid_set`` — sorted tuple of qids the AG claims to fix; survives
+      re-clustering even when ``cluster_id`` changes.
+    * ``root_cause_family`` — first lever_directive's root cause if
+      present, else empty.
+
+    Returns ``(signatures, qids, root_cause)``. Hashable (tuple-of-tuples)
+    so callers can use it as a dict key or store it in a set.
+    """
+    cluster_lookup = {
+        str(c.get("cluster_id") or ""): str(c.get("cluster_signature") or "")
+        for c in clusters or []
+        if c.get("cluster_id")
+    }
+    src_ids = [str(cid) for cid in (ag.get("source_cluster_ids") or []) if str(cid)]
+    sigs = tuple(
+        dict.fromkeys(
+            cluster_lookup.get(cid, "")
+            for cid in src_ids
+            if cluster_lookup.get(cid, "")
+        )
+    )
+    qids = tuple(
+        sorted(
+            str(q) for q in (ag.get("affected_questions") or []) if str(q)
+        )
+    )
+    root_cause = ""
+    for lever_dir in (ag.get("lever_directives") or {}).values():
+        if isinstance(lever_dir, dict):
+            rc = str(lever_dir.get("root_cause") or "").strip()
+            if rc:
+                root_cause = rc
+                break
+    return (sigs, qids, root_cause)
+
+
 def patchable_hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
     """Rows where GT is confirmed correct and Genie should be patched."""
     qids: list[str] = []
