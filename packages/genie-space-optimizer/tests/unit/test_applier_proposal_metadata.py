@@ -153,3 +153,25 @@ def test_proposals_to_patches_preserves_risk_and_cluster_metadata() -> None:
     assert patch["high_collateral_risk"] is True
     assert patch["primary_cluster_id"] == "H001"
     assert patch["relevance_score"] == 0.91
+
+
+def test_audit_warns_when_high_risk_proposal_loses_passing_dependents(caplog) -> None:
+    """If the allowlist is ever pruned to remove passing_dependents, the audit
+    must surface the leak loudly."""
+    import logging
+    from genie_space_optimizer.optimization import applier
+
+    caplog.set_level(logging.WARNING, logger=applier.logger.name)
+
+    proposal_without_deps = {
+        "proposal_id": "P_NO_DEPS",
+        "patch_type": "update_column_description",
+        "table": "cat.sch.mv_fact",
+        "column": "tkt_coupon",
+        "description": "Coupon.",
+        "high_collateral_risk": True,
+    }
+
+    applier.proposals_to_patches([proposal_without_deps])
+    messages = [r.message for r in caplog.records if "metadata leak" in r.message]
+    assert messages, f"expected metadata-leak warning; got: {[r.message for r in caplog.records]!r}"

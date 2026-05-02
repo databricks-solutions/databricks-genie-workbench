@@ -2314,6 +2314,25 @@ PROPOSAL_METADATA_ALLOWLIST: tuple[str, ...] = (
 )
 
 
+def _audit_scanned_proposal_metadata(proposal: dict, patch: dict) -> None:
+    """Log when a proposal carrying scan metadata produced a patch missing it.
+
+    A proposal flagged ``high_collateral_risk`` without ``passing_dependents``
+    on the resulting patch means the counterfactual scan ran but the patch
+    will be implicitly safe at the blast-radius gate. Track 1 makes this
+    visible rather than silent.
+    """
+    if proposal.get("high_collateral_risk") and patch.get("passing_dependents") is None:
+        logger.warning(
+            "proposal-to-patch metadata leak: proposal_id=%s flagged high_collateral_risk "
+            "but resulting patch has no passing_dependents (lever=%s type=%s); "
+            "blast-radius gate will treat it as safe. Inspect _copy_proposal_metadata.",
+            proposal.get("proposal_id"),
+            patch.get("lever"),
+            patch.get("type") or patch.get("patch_type"),
+        )
+
+
 def _copy_proposal_metadata(patch: dict, proposal: dict) -> dict:
     """Copy provenance, risk, and lineage fields from proposal to patch.
 
@@ -2331,6 +2350,7 @@ def _copy_proposal_metadata(patch: dict, proposal: dict) -> dict:
     for meta_key in PROPOSAL_METADATA_ALLOWLIST:
         if meta_key in proposal:
             patch[meta_key] = proposal[meta_key]
+    _audit_scanned_proposal_metadata(proposal, patch)
     return patch
 
 
