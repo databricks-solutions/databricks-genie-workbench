@@ -171,6 +171,67 @@ def test_run_replay_airline_real_v1_within_burndown_budget() -> None:
     )
 
 
+def test_run_replay_demotes_already_passing_when_qid_in_soft_cluster() -> None:
+    """A qid that is row-level `already_passing` (rc=yes, arbiter=both_correct)
+    AND listed in `soft_clusters[*].question_ids` must NOT receive both an
+    `already_passing` and a `soft_signal` event in the same iteration. The
+    explicit fixture-soft-promotion at `lever_loop_replay.py:74-82` declares
+    the cluster's classification authoritative, so the qid must be demoted
+    out of every other row-level partition it might also belong to.
+
+    Reproducer for the Cycle 8 dominant violation pattern:
+    `soft_signal -> already_passing` × 9 overlap qids × 5 iterations = 45.
+    All 45 vanish after this fix; that is the entire Cycle 8 burn-down.
+    """
+    from genie_space_optimizer.optimization.lever_loop_replay import run_replay
+
+    fixture_path = (
+        Path(__file__).parent
+        / "fixtures"
+        / "synthetic_already_passing_in_soft_cluster.json"
+    )
+    fixture = json.loads(fixture_path.read_text())
+
+    result = run_replay(fixture)
+
+    # The whole 3-qid fixture must validate cleanly.
+    assert result.validation.is_valid, (
+        f"expected clean validation, got "
+        f"{len(result.validation.violations)} violations: "
+        f"{[(v.question_id, v.kind, v.detail) for v in result.validation.violations]}"
+    )
+
+    # Direct stage-set checks per qid (semantic, not order-dependent).
+    stages_by_qid: dict[str, set[str]] = {}
+    for ev in result.events:
+        stages_by_qid.setdefault(ev.question_id, set()).add(ev.stage)
+
+    overlap_stages = stages_by_qid.get("syn_overlap_q", set())
+    assert "soft_signal" in overlap_stages, (
+        "syn_overlap_q is in soft_clusters[*] so it MUST receive a "
+        f"soft_signal event; got stages={overlap_stages}"
+    )
+    assert "already_passing" not in overlap_stages, (
+        "syn_overlap_q is row-level already_passing AND in a soft_cluster; "
+        "the fixture-soft-promotion makes the cluster authoritative, so "
+        "already_passing must be demoted. "
+        f"got stages={overlap_stages}"
+    )
+
+    # Pure already_passing (not in any soft_cluster) is unchanged.
+    pure_passing_stages = stages_by_qid.get("syn_pure_passing_q", set())
+    assert "already_passing" in pure_passing_stages, (
+        f"syn_pure_passing_q must keep already_passing; got "
+        f"stages={pure_passing_stages}"
+    )
+    assert "soft_signal" not in pure_passing_stages
+
+    # Pure soft (not row-level already_passing) is unchanged.
+    pure_soft_stages = stages_by_qid.get("syn_pure_soft_q", set())
+    assert "soft_signal" in pure_soft_stages
+    assert "already_passing" not in pure_soft_stages
+
+
 def test_run_replay_recognizes_skipped_ag_outcomes() -> None:
     """Cycle 8 introduced two new AG outcomes (skipped_no_applied_patches,
     skipped_dead_on_arrival). The replay engine must recognize them

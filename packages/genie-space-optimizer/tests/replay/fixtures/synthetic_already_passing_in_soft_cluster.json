@@ -1,0 +1,24 @@
+{
+  "fixture_id": "synthetic_already_passing_in_soft_cluster_v1",
+  "iterations": [
+    {
+      "iteration": 1,
+      "eval_rows": [
+        {"question_id": "syn_overlap_q", "arbiter": "both_correct", "result_correctness": "yes"},
+        {"question_id": "syn_pure_passing_q", "arbiter": "both_correct", "result_correctness": "yes"},
+        {"question_id": "syn_pure_soft_q", "arbiter": "neither_correct", "result_correctness": "no"}
+      ],
+      "clusters": [],
+      "soft_clusters": [
+        {
+          "cluster_id": "S001",
+          "question_ids": ["syn_overlap_q", "syn_pure_soft_q"],
+          "root_cause": "wrong_filter_condition"
+        }
+      ],
+      "post_eval_passing_qids": ["syn_overlap_q", "syn_pure_passing_q"],
+      "ag_outcomes": {},
+      "strategist_response": {"action_groups": []}
+    }
+  ]
+}
