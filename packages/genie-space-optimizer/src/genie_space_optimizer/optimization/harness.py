@@ -493,6 +493,35 @@ def _build_fixture_eval_rows(eval_result: dict) -> list[dict]:
     return rows
 
 
+def _patch_snapshot_target_qids(
+    proposal: dict,
+    ag_affected_qids: list[str],
+) -> list[str]:
+    """Return the ``target_qids`` to record on a replay-fixture patch entry.
+
+    Mirrors the same defaulting chain used by
+    ``_backfill_patch_causal_metadata`` so the fixture captures the patch's
+    *effective* causal scope at apply time, not the proposal's pre-backfill
+    scope. Cycle 8 lesson: standard L1-L4 proposal-construction sites do
+    not stamp ``target_qids``, but the backfill helper later defaults them
+    to the AG's ``affected_questions``. Capturing the same default here
+    keeps the fixture honest.
+
+    Lookup order:
+      1. ``proposal._grounding_target_qids`` (RCA-bridge / cluster-driven
+         narrowing wins).
+      2. ``proposal.target_qids`` (explicit narrow scope).
+      3. ``ag_affected_qids`` (AG-scoped fallback — the conservative
+         default the applier and acceptance-gate already use).
+    """
+    raw = (
+        proposal.get("_grounding_target_qids")
+        or proposal.get("target_qids")
+        or ag_affected_qids
+    )
+    return [str(q) for q in (raw or []) if q]
+
+
 def _baseline_row_qid(row: dict) -> str:
     """Extract the question identifier from a persisted baseline eval row.
 
@@ -13704,19 +13733,16 @@ def _run_lever_loop(
             )
             for _snap in reversed(_ag_snapshots):
                 if str(_snap.get("id")) == str(ag_id):
+                    _ag_affected_qids = [
+                        str(q) for q in (ag.get("affected_questions") or []) if q
+                    ]
                     _snap["patches"] = [
                         {
                             "proposal_id": str(_p.get("proposal_id") or _p.get("id") or ""),
                             "patch_type": str(_p.get("patch_type") or _p.get("type") or ""),
-                            "target_qids": [
-                                str(q)
-                                for q in (
-                                    _p.get("_grounding_target_qids")
-                                    or _p.get("target_qids")
-                                    or []
-                                )
-                                if q
-                            ],
+                            "target_qids": _patch_snapshot_target_qids(
+                                _p, _ag_affected_qids,
+                            ),
                             "cluster_id": str(_p.get("cluster_id") or ""),
                         }
                         for _p in (all_proposals or [])
