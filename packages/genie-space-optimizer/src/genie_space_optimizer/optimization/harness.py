@@ -491,13 +491,19 @@ def _build_fixture_eval_rows(eval_result: dict) -> list[dict]:
 def _baseline_row_qid(row: dict) -> str:
     """Extract the question identifier from a persisted baseline eval row.
 
-    Handles three observed row shapes:
+    Lookup order (canonical-qid sources first, trace-id aliases last):
 
-    * Replay-fixture / canonical eval shape: ``question_id`` or ``id``.
-    * MLflow per-eval-row shape: ``client_request_id`` (the request ID column
-      surfaced by the MLflow eval table — it carries the qid for our predict
-      function) or ``request_id`` (legacy alias).
-    * Inputs-namespaced shape some judges emit: ``inputs/question_id``.
+    * ``question_id``: replay-fixture / canonical eval shape.
+    * ``id``: alternative canonical key.
+    * ``inputs/question_id`` (flat): some judges' inputs-namespaced shape.
+    * ``inputs.question_id`` (nested): MLflow eval-table inputs payload.
+    * ``request.kwargs.question_id`` (nested or JSON-encoded): the
+      predict_fn request envelope.
+    * ``client_request_id``: MLflow eval-table request column. CYCLE 7
+      LESSON: this is an MLflow trace ID like ``tr-...``, NOT a benchmark
+      qid. Try canonical sources first; only use this as a last-resort
+      fallback so the carrier doesn't go empty silently.
+    * ``request_id``: legacy alias for client_request_id.
 
     Returns "" when none of those keys is present. The diagnostic warning
     Phase A burn-down cycle 5 added ("baseline payload had N rows but 0
@@ -505,12 +511,47 @@ def _baseline_row_qid(row: dict) -> str:
     every row, so a future row shape with yet another id key will be visible
     immediately rather than producing a silent empty fixture.
     """
-    return str(
+    import json as _json
+
+    canonical = (
         row.get("question_id")
         or row.get("id")
-        or row.get("client_request_id")
-        or row.get("request_id")
         or row.get("inputs/question_id")
+    )
+    if canonical:
+        return str(canonical)
+
+    inputs = row.get("inputs")
+    if isinstance(inputs, dict):
+        nested = inputs.get("question_id")
+        if nested:
+            return str(nested)
+
+    request = row.get("request")
+    request_dict: dict | None = None
+    if isinstance(request, dict):
+        request_dict = request
+    elif isinstance(request, str):
+        try:
+            parsed = _json.loads(request)
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            request_dict = parsed
+    if request_dict is not None:
+        kwargs = request_dict.get("kwargs")
+        if isinstance(kwargs, dict):
+            kw_qid = kwargs.get("question_id")
+            if kw_qid:
+                return str(kw_qid)
+        # Some shapes put question_id at the top level of request itself.
+        top_qid = request_dict.get("question_id")
+        if top_qid:
+            return str(top_qid)
+
+    return str(
+        row.get("client_request_id")
+        or row.get("request_id")
         or ""
     )
 
