@@ -139,3 +139,33 @@ def test_run_replay_single_iter_5cluster_fixture_still_validates_cleanly() -> No
             for v in result.validation.violations
         )
     )
+
+
+def test_run_replay_airline_real_v1_within_burndown_budget() -> None:
+    """The current canonical airline fixture must validate with no more than
+    BURNDOWN_BUDGET violations.
+
+    Tighten the budget in this test each time a real intra-iteration violation
+    is fixed in the harness/exporter. When the budget reaches 0, Phase A
+    burn-down has closed hard against the airline corpus.
+
+    See `docs/2026-05-02-phase-a-burndown-log.md` for the per-cycle history
+    and `docs/2026-05-02-run-replay-per-iteration-fix-plan.md` Phase 5 for
+    the per-cycle intake runbook.
+    """
+    from genie_space_optimizer.optimization.lever_loop_replay import run_replay
+
+    # Updated by Phase 5 Task 14 Step 6 each time a fresh cycle lands.
+    # Never increase this number without explicit triage in the burn-down log.
+    BURNDOWN_BUDGET = 44
+
+    fx = json.loads((FIXTURES / "airline_real_v1.json").read_text())
+    result = run_replay(fx)
+    summary = [
+        (v.question_id, v.kind, v.detail)
+        for v in result.validation.violations[:5]
+    ]
+    assert len(result.validation.violations) <= BURNDOWN_BUDGET, (
+        f"airline_real_v1 produced {len(result.validation.violations)} "
+        f"violations (budget={BURNDOWN_BUDGET}). First 5: {summary}"
+    )
