@@ -78,3 +78,34 @@ def test_eval_row_provenance_source_is_constrained() -> None:
             genie_conversation_id="conv_123",
             source="bogus",
         )
+
+
+def test_predict_fn_output_carries_eval_row_provenance() -> None:
+    """The predict_fn at ``evaluation.py:4699-5354`` must construct an
+    ``EvalRowProvenance`` from the active MLflow span's trace id and
+    attach it to the output dict under ``provenance``. This is the
+    primary-path persistence Track I requires.
+    """
+    import inspect
+
+    from genie_space_optimizer.optimization import evaluation
+
+    src = inspect.getsource(evaluation.make_predict_fn)
+    # Must import and reference EvalRowProvenance.
+    assert "EvalRowProvenance" in src, (
+        "predict_fn does not import or reference EvalRowProvenance"
+    )
+    # Must read the active span's trace id (or last active trace id)
+    # at predict_fn time.
+    assert (
+        "get_current_active_span" in src
+        or "get_last_active_trace_id" in src
+    ), (
+        "predict_fn must read the active span's trace id; "
+        "neither mlflow.get_current_active_span nor "
+        "mlflow.get_last_active_trace_id appears in the source"
+    )
+    # Must attach provenance to the returned output dict.
+    assert '"provenance"' in src, (
+        'predict_fn output dict missing the "provenance" key'
+    )
