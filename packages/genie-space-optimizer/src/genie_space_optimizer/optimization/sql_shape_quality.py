@@ -129,6 +129,15 @@ def prefer_scoped_instruction_over_weak_snippet(
     Callers (proposal_grounding) demote the snippet only when the
     function returns ``True`` — i.e., a real replacement exists.
     """
+    # Only SQL-snippet patch types can be flagged as "weak SQL snippets".
+    # Instruction patches and column-description patches whose
+    # ``value`` / ``new_text`` happens to mention SQL keywords as
+    # natural-language guidance must not be classified as weak.
+    snippet_ptype = str(
+        snippet_patch.get("type") or snippet_patch.get("patch_type") or ""
+    )
+    if not snippet_ptype.startswith("add_sql_snippet"):
+        return False
     if not (
         is_unrequested_is_not_null_filter(snippet_patch)
         or is_unrequested_currency_filter(snippet_patch)

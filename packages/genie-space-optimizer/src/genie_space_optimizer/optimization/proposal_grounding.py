@@ -584,6 +584,31 @@ def select_patch_bundle(
             score = relevance_score(p, failing)
         scored.append((p, float(score)))
 
+    # Track 5 (Phase A burn-down) — demote weak SQL snippets when a
+    # scoped instruction patch exists that covers the same root_cause
+    # and target_qids. Cap budget should fund the durable fix
+    # (instruction) over the brittle one (defensive snippet).
+    from genie_space_optimizer.optimization.sql_shape_quality import (
+        prefer_scoped_instruction_over_weak_snippet,
+    )
+
+    _scored_proposals = [p for p, _s in scored]
+    _instruction_candidates = [
+        p
+        for p in _scored_proposals
+        if str(p.get("type") or p.get("patch_type") or "")
+        in {"add_instruction", "update_instruction_section"}
+    ]
+    _kept: list[tuple[dict, float]] = []
+    for p, s in scored:
+        if prefer_scoped_instruction_over_weak_snippet(
+            p, _instruction_candidates
+        ):
+            p["_drop_reason"] = "weak_sql_shape_quality"
+            continue
+        _kept.append((p, s))
+    scored = _kept
+
     grounded = [(p, s) for p, s in scored if s >= min_relevance]
     # Stable sort: Python's sort is stable, so equal-relevance
     # proposals retain their incoming order.
