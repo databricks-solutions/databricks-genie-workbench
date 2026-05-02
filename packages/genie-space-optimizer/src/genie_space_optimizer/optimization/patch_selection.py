@@ -530,6 +530,11 @@ def select_target_aware_causal_patch_cap(
     per_cluster_reserved_pids: set[str] = set()
     reserved_direct_fix_pids: set[str] = set()
     active_cluster_reserved_pids: set[str] = set()
+    # Track C: families already accounted for in cap decisions. A
+    # rewrite_instruction expanded into K split-children counts as one
+    # family, not K. Used to skip families whose representative was
+    # already picked in an earlier pass.
+    selected_families: set[str] = set()
 
     # Pass 1: per-cluster slot floor.
     if per_cluster_slot_floor > 0 and active_set:
@@ -543,12 +548,14 @@ def select_target_aware_causal_patch_cap(
             slots_needed = per_cluster_slot_floor - already_reserved_for_cluster
             if slots_needed <= 0:
                 continue
-            # Candidates: patches assigned to this cluster, not yet selected.
+            # Candidates: patches assigned to this cluster, not yet selected,
+            # and whose family has not already won a slot (Track C).
             cluster_candidates = [
                 (idx, patch)
                 for idx, patch in enumerate(patches)
                 if _patch_belongs_to_cluster(patch, cluster_id)
                 and _proposal_id(patch, idx) not in selected_ids
+                and _patch_family(patch) not in selected_families
             ]
             for _ in range(slots_needed):
                 if not cluster_candidates or len(selected) >= max_patches:
@@ -571,6 +578,7 @@ def select_target_aware_causal_patch_cap(
                 selected.append(patch)
                 selected_ids.add(pid)
                 per_cluster_reserved_pids.add(pid)
+                selected_families.add(_patch_family(patch))
 
     # Pass 2: direct-behavior reservation (legacy).
     if max_patches > 0 and len(selected) < max_patches:
@@ -579,6 +587,7 @@ def select_target_aware_causal_patch_cap(
             for idx, patch in enumerate(patches)
             if _is_direct_behavior_patch(patch)
             and _proposal_id(patch, idx) not in selected_ids
+            and _patch_family(patch) not in selected_families
         ]
         if direct_candidates:
             idx, patch = min(
@@ -598,6 +607,7 @@ def select_target_aware_causal_patch_cap(
             reserved_direct_fix_pids.add(pid)
             if _active_cluster_match_tier(patch, active_set) > 0:
                 active_cluster_reserved_pids.add(pid)
+            selected_families.add(_patch_family(patch))
 
     # Pass 3: per-target QID coverage (legacy).
     for target in target_set:
@@ -611,6 +621,7 @@ def select_target_aware_causal_patch_cap(
             for idx, patch in enumerate(patches)
             if target in _target_qids(patch)
             and _proposal_id(patch, idx) not in selected_ids
+            and _patch_family(patch) not in selected_families
         ]
         if not candidates:
             continue
@@ -627,12 +638,14 @@ def select_target_aware_causal_patch_cap(
         )
         selected.append(patch)
         selected_ids.add(_proposal_id(patch, idx))
+        selected_families.add(_patch_family(patch))
 
     # Pass 4: filler from global causal ranking.
     remaining = [
         patch
         for idx, patch in enumerate(patches)
         if _proposal_id(patch, idx) not in selected_ids
+        and _patch_family(patch) not in selected_families
     ]
     if len(selected) < max_patches and remaining:
         filler, _ = select_causal_patch_cap(
@@ -647,6 +660,7 @@ def select_target_aware_causal_patch_cap(
             except ValueError:
                 continue
             selected_ids.add(_proposal_id(fp, fp_idx))
+            selected_families.add(_patch_family(fp))
 
     rank_by_pid: dict[str, int] = {}
     for rank, patch in enumerate(selected, start=1):
