@@ -22,7 +22,14 @@ _STAGE_ORDER: list[str] = [
     "dropped_at_alignment",
     "dropped_at_reflection",
     "dropped_at_cap",
+    # Track 3/E (Phase A burn-down) — apply emit splits into:
+    #   applied_targeted        — qid in patch.target_qids
+    #   applied_broad_ag_scope  — qid in AG.affected_questions \ patch.target_qids
+    # The bare ``applied`` stage is retained for replay compatibility
+    # with snapshots written before this PR.
     "applied",
+    "applied_targeted",
+    "applied_broad_ag_scope",
     "rolled_back",
     "accepted",
     "accepted_with_regression_debt",
