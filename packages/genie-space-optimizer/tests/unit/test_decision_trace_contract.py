@@ -135,6 +135,11 @@ def test_optimization_trace_serializes_decisions_and_renders_transcript() -> Non
                 reason_code=ReasonCode.CLUSTERED,
                 question_id="q1",
                 cluster_id="H001",
+                evidence_refs=("eval:q1",),
+                root_cause="missing_filter",
+                target_qids=("q1",),
+                expected_effect="Cluster should receive a targeted filter patch.",
+                next_action="Generate proposals for H001.",
                 reason_detail="missing_filter",
             ),
         ),
@@ -146,6 +151,36 @@ def test_optimization_trace_serializes_decisions_and_renders_transcript() -> Non
     assert "Decision records: 1" in transcript
     assert "cluster_selected" in transcript
     assert "q1" in transcript
+    assert "missing_filter" in transcript
+    assert "Generate proposals for H001." in transcript
+
+
+def test_operator_transcript_has_fixed_diagnostic_sections() -> None:
+    """The transcript schema is a stable contract — these nine section
+    headings always appear so operators can scan for any section even when
+    empty. Per the plan's '## Observability Contract'."""
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        OptimizationTrace,
+        render_operator_transcript,
+    )
+
+    transcript = render_operator_transcript(
+        trace=OptimizationTrace(),
+        iteration=3,
+    )
+
+    for heading in [
+        "Iteration Summary",
+        "Hard Failures And QID State",
+        "RCA Cards With Evidence",
+        "AG Decisions And Rationale",
+        "Proposal Survival And Gate Drops",
+        "Applied Patches And Acceptance",
+        "Observed Results And Regressions",
+        "Unresolved QID Buckets",
+        "Next Suggested Action",
+    ]:
+        assert heading in transcript
 
 
 def test_validate_decisions_against_journey_catches_missing_proposed_event() -> None:

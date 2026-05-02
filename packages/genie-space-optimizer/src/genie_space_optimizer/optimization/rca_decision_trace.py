@@ -309,6 +309,14 @@ def render_operator_transcript(
     trace: OptimizationTrace,
     iteration: int,
 ) -> str:
+    """Render the deterministic stdout projection of OptimizationTrace.
+
+    The transcript follows the fixed nine-section schema defined in the
+    plan's `## Observability Contract`. Section headings always appear so
+    operators can scan for any section even when empty (which itself is a
+    diagnostic signal — e.g., empty 'AG Decisions And Rationale' on an
+    iteration that should have produced AGs is a wiring bug).
+    """
     records = [
         r for r in trace.decision_records
         if int(r.iteration) == int(iteration)
@@ -318,7 +326,24 @@ def render_operator_transcript(
         f"+{bar}",
         f"|  OPERATOR TRANSCRIPT  iteration={iteration}",
         f"+{bar}",
+        "|  Iteration Summary",
         f"|  Decision records: {len(records)}",
+        "|",
+        "|  Hard Failures And QID State",
+        "|",
+        "|  RCA Cards With Evidence",
+        "|",
+        "|  AG Decisions And Rationale",
+        "|",
+        "|  Proposal Survival And Gate Drops",
+        "|",
+        "|  Applied Patches And Acceptance",
+        "|",
+        "|  Observed Results And Regressions",
+        "|",
+        "|  Unresolved QID Buckets",
+        "|",
+        "|  Next Suggested Action",
     ]
     by_type: dict[str, list[DecisionRecord]] = {}
     for rec in sorted(records, key=_decision_sort_key):
@@ -344,6 +369,14 @@ def render_operator_transcript(
                 parts.append(f"gate={rec.gate}")
             if rec.reason_detail:
                 parts.append(f"detail={rec.reason_detail}")
+            if rec.root_cause:
+                parts.append(f"root={rec.root_cause}")
+            if rec.expected_effect:
+                parts.append(f"expected={rec.expected_effect}")
+            if rec.observed_effect:
+                parts.append(f"observed={rec.observed_effect}")
+            if rec.next_action:
+                parts.append(f"next={rec.next_action}")
             lines.append("|    - " + "  ".join(parts))
     lines.append(f"+{bar}")
     return "\n".join(lines)
