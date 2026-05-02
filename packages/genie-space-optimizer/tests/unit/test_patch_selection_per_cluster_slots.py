@@ -60,3 +60,55 @@ def test_decision_rows_include_score_provenance() -> None:
     for d in dropped:
         for key in ("relevance_score", "lever_diversity_tier", "active_cluster_match_tier"):
             assert key in d, f"dropped decision missing {key}"
+
+
+def test_per_cluster_floor_recognizes_source_cluster_ids_only() -> None:
+    """Track 2 — a patch whose only cluster lineage lives in
+    ``source_cluster_ids`` (no scalar ``cluster_id``) must still count
+    toward its cluster's slot floor. Without this, the cap silently
+    drops the higher-relevance direct fix for an active cluster
+    because the per-cluster floor cannot see it.
+
+    Test design: with ``max_patches=1`` only Pass 1 (per-cluster slot
+    floor) gets to pick. P_GOOD has the higher relevance and is
+    attributed to H001 via ``source_cluster_ids`` (this is the shape
+    a section-split child gets after Track B propagation). P_BAD has
+    the lower relevance but a scalar ``cluster_id``. Without Track 2,
+    only P_BAD is visible to the floor and it wins. With Track 2, both
+    are visible and P_GOOD wins on relevance.
+    """
+    patches = [
+        # P_BAD has scalar cluster_id but lower relevance.
+        {
+            "proposal_id": "P_BAD",
+            "type": "update_column_description",
+            "lever": 1,
+            "cluster_id": "H001",
+            "target_qids": ["q1"],
+            "relevance_score": 0.50,
+        },
+        # P_GOOD carries cluster lineage only in source_cluster_ids
+        # (no scalar cluster_id) — the shape a split-child gets via
+        # the MVP plan's PROPOSAL_METADATA_ALLOWLIST. Higher relevance.
+        {
+            "proposal_id": "P_GOOD",
+            "type": "add_sql_snippet_filter",
+            "lever": 6,
+            "source_cluster_ids": ["H001"],
+            "target_qids": ["q1"],
+            "relevance_score": 0.95,
+        },
+    ]
+    selected, decisions = select_target_aware_causal_patch_cap(
+        patches,
+        target_qids=("q_unrelated",),
+        max_patches=1,
+        active_cluster_ids=("H001",),
+        per_cluster_slot_floor=1,
+    )
+
+    selected_ids = {p["proposal_id"] for p in selected}
+    assert selected_ids == {"P_GOOD"}, (
+        f"per-cluster floor failed to see source_cluster_ids lineage; "
+        f"got {selected_ids}, expected {{'P_GOOD'}}"
+    )
