@@ -10857,11 +10857,18 @@ def _run_lever_loop(
                     if _qid and (_delta.get("remaining") or _delta.get("improved")):
                         _sql_delta_qids.add(_qid)
 
+            # Track G — combine the buffered + diagnostic queues so the
+            # plateau resolver can refuse to terminate while either
+            # queue still covers a live hard qid.
+            _pending_diag_ags_for_plateau = (
+                list(pending_action_groups) + list(diagnostic_action_queue)
+            )
             _resolved = resolve_terminal_on_plateau(
                 quarantined_qids=_quarantined_qids,
                 current_hard_qids=_current_hard_qids,
                 regression_debt_qids=_regression_debt_qids,
                 sql_delta_qids=_sql_delta_qids,
+                pending_diagnostic_ags=_pending_diag_ags_for_plateau,
             )
             logger.info(
                 "Plateau terminal at iter %d: status=%s reason=%s "
@@ -10872,8 +10879,10 @@ def _run_lever_loop(
             )
             if _resolved.should_continue:
                 logger.info(
-                    "Plateau suppressed because RCA terminal status is %s",
+                    "Plateau suppressed because RCA terminal status is %s "
+                    "(reason=%s)",
                     _resolved.status.value,
+                    _resolved.reason,
                 )
                 continue
             print(
