@@ -170,3 +170,170 @@ def test_carrier_helpers_compose_to_recover_rolled_back_iter_data() -> None:
     assert by_qid["airline_gs_001"]["result_correctness"] == "yes"
     assert by_qid["airline_gs_002"]["result_correctness"] == "no"
     assert by_qid["airline_gs_002"]["arbiter"] == "ground_truth_correct"
+
+
+# ---------------------------------------------------------------------------
+# _seed_eval_result_from_baseline_iter — Phase A burn-down cycle 4 follow-up.
+#
+# Cycle 4 (run 4fc43ffe) revealed a second failure mode: every iteration's AG
+# hit the applier blast-radius gate, which dropped 7/7 patches and forced a
+# `continue` BEFORE `_run_gate_checks` was called. The cycle-3 carrier-refresh
+# fix runs after the gate, so it never fires for these iterations. Solution:
+# lazy-seed the carrier from `baseline_iter` at iteration start whenever the
+# carrier is empty. These tests pin the helper that powers that fallback.
+# ---------------------------------------------------------------------------
+
+
+def test_seed_eval_result_handles_list_rows_json() -> None:
+    """The realistic shape: load_latest_full_iteration may return rows_json
+    already deserialised as a list of dicts."""
+    from genie_space_optimizer.optimization.harness import (
+        _seed_eval_result_from_baseline_iter,
+    )
+
+    baseline_iter = {
+        "rows_json": [
+            {"question_id": "q_001", "result_correctness": "yes",
+             "arbiter": "both_correct"},
+            {"question_id": "q_002", "result_correctness": "no",
+             "arbiter": "ground_truth_correct"},
+            {"question_id": "q_003", "result_correctness": "yes"},
+        ],
+    }
+    out = _seed_eval_result_from_baseline_iter(baseline_iter)
+    assert out["question_ids"] == ["q_001", "q_002", "q_003"]
+    assert out["scores"] == {"q_001": "yes", "q_002": "no", "q_003": "yes"}
+    assert out["arbiter_verdicts"] == {
+        "q_001": "both_correct",
+        "q_002": "ground_truth_correct",
+    }
+    assert out["failure_question_ids"] == ["q_002"]
+
+
+def test_seed_eval_result_handles_string_rows_json() -> None:
+    """The other realistic shape: rows_json is a JSON-encoded string column."""
+    import json
+
+    from genie_space_optimizer.optimization.harness import (
+        _seed_eval_result_from_baseline_iter,
+    )
+
+    baseline_iter = {
+        "rows_json": json.dumps([
+            {"question_id": "qid_a", "result_correctness": "no"},
+            {"id": "qid_b", "result_correctness": "yes"},
+        ]),
+    }
+    out = _seed_eval_result_from_baseline_iter(baseline_iter)
+    assert out["question_ids"] == ["qid_a", "qid_b"]
+    assert out["scores"] == {"qid_a": "no", "qid_b": "yes"}
+    assert out["failure_question_ids"] == ["qid_a"]
+
+
+def test_seed_eval_result_returns_empty_for_unusable_inputs() -> None:
+    """Empty-dict sentinel is the contract caller relies on to fall through."""
+    from genie_space_optimizer.optimization.harness import (
+        _seed_eval_result_from_baseline_iter,
+    )
+
+    assert _seed_eval_result_from_baseline_iter(None) == {}
+    assert _seed_eval_result_from_baseline_iter({}) == {}
+    assert _seed_eval_result_from_baseline_iter({"rows_json": None}) == {}
+    assert _seed_eval_result_from_baseline_iter({"rows_json": "[]"}) == {}
+    assert _seed_eval_result_from_baseline_iter({"rows_json": "not json"}) == {}
+    assert _seed_eval_result_from_baseline_iter({"rows_json": []}) == {}
+
+
+def test_seed_eval_result_returns_empty_when_rows_lack_question_ids() -> None:
+    """Cycle 4 specific failure mode: rows present but no question_id/id key.
+
+    The new module logs a warning when this happens; the helper returns {} so
+    the caller (lazy seed at iteration start) treats it as "no usable
+    baseline" rather than emitting a degenerate `_latest_eval_result` with an
+    empty `question_ids` list.
+    """
+    from genie_space_optimizer.optimization.harness import (
+        _seed_eval_result_from_baseline_iter,
+    )
+
+    baseline_iter = {
+        "rows_json": [
+            {"result_correctness": "yes", "some_other_field": "abc"},
+            {"arbiter": "both_correct"},
+        ],
+    }
+    assert _seed_eval_result_from_baseline_iter(baseline_iter) == {}
+
+
+def test_seed_eval_result_handles_supported_correctness_synonyms() -> None:
+    """`_rc_str` returns lowercased values; the seed treats yes/true/1/pass as PASS."""
+    from genie_space_optimizer.optimization.harness import (
+        _seed_eval_result_from_baseline_iter,
+    )
+
+    baseline_iter = {
+        "rows_json": [
+            {"question_id": "q1", "result_correctness": "yes"},
+            {"question_id": "q2", "result_correctness": "true"},
+            {"question_id": "q3", "result_correctness": "1"},
+            {"question_id": "q4", "result_correctness": "pass"},
+            {"question_id": "q5", "result_correctness": "no"},
+            {"question_id": "q6", "result_correctness": "FAIL"},
+            {"question_id": "q7", "result_correctness": "anything_else"},
+        ],
+    }
+    out = _seed_eval_result_from_baseline_iter(baseline_iter)
+    assert out["scores"] == {
+        "q1": "yes", "q2": "yes", "q3": "yes", "q4": "yes",
+        "q5": "no", "q6": "no", "q7": "no",
+    }
+    assert set(out["failure_question_ids"]) == {"q5", "q6", "q7"}
+
+
+def test_seed_eval_result_skips_non_dict_entries() -> None:
+    """Defensive: rows_json that contains stray strings/None entries should be
+    silently skipped rather than crashing the seed."""
+    from genie_space_optimizer.optimization.harness import (
+        _seed_eval_result_from_baseline_iter,
+    )
+
+    baseline_iter = {
+        "rows_json": [
+            "not_a_dict",
+            None,
+            {"question_id": "q_only", "result_correctness": "yes"},
+            42,
+        ],
+    }
+    out = _seed_eval_result_from_baseline_iter(baseline_iter)
+    assert out["question_ids"] == ["q_only"]
+    assert out["scores"] == {"q_only": "yes"}
+
+
+def test_seed_eval_result_powers_lazy_snapshot_fallback() -> None:
+    """End-to-end shape test for the cycle 4 fix.
+
+    Setup mirrors the real failure: the AG decision skips the gate (applier
+    drops all patches), so `_extract_eval_result_from_gate` never fires.
+    The lazy seed at iteration start must produce a populated payload that
+    `_build_fixture_eval_rows` then formats for the replay fixture.
+    """
+    from genie_space_optimizer.optimization.harness import (
+        _build_fixture_eval_rows,
+        _seed_eval_result_from_baseline_iter,
+    )
+
+    baseline_iter = {
+        "rows_json": [
+            {"question_id": "7now_gs_001", "result_correctness": "no",
+             "arbiter": "ground_truth_correct"},
+            {"question_id": "7now_gs_002", "result_correctness": "yes"},
+        ],
+    }
+    seeded = _seed_eval_result_from_baseline_iter(baseline_iter)
+    rows = _build_fixture_eval_rows(seeded)
+    assert {r["question_id"] for r in rows} == {"7now_gs_001", "7now_gs_002"}
+    by_qid = {r["question_id"]: r for r in rows}
+    assert by_qid["7now_gs_001"]["result_correctness"] == "no"
+    assert by_qid["7now_gs_001"]["arbiter"] == "ground_truth_correct"
+    assert by_qid["7now_gs_002"]["result_correctness"] == "yes"

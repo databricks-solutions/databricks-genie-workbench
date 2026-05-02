@@ -100,7 +100,9 @@ from genie_space_optimizer.optimization.applier import (
     rollback,
 )
 from genie_space_optimizer.optimization.evaluation import (
+    _arbiter_str as _eval_arbiter_str,
     _extract_genie_sql_from_trace,
+    _rc_str as _eval_rc_str,
     all_thresholds_met,
     extract_reference_sqls,
     extract_reference_result_hashes,
@@ -484,6 +486,63 @@ def _build_fixture_eval_rows(eval_result: dict) -> list[dict]:
             row["arbiter"] = str(arbiter[qid])
         rows.append(row)
     return rows
+
+
+def _seed_eval_result_from_baseline_iter(baseline_iter: dict | None) -> dict:
+    """Build an `_latest_eval_result`-shaped dict from a persisted baseline row.
+
+    Reads `baseline_iter["rows_json"]` (the persisted per-question eval result
+    rows from iter_00) and returns the carrier shape:
+    ``{question_ids, scores, arbiter_verdicts, failure_question_ids}``.
+
+    Returns ``{}`` when `baseline_iter` is None, has no `rows_json`, or
+    `rows_json` contains no rows with extractable question IDs. Caller treats
+    `{}` as "no baseline data available" and falls through.
+
+    Centralized so the carrier seed at `_run_lever_loop` setup AND the
+    iteration-snapshot fallback at iteration-start can share the same logic.
+    Without the snapshot fallback, runs where every iteration short-circuits
+    before `_run_gate_checks` (e.g. all patches dropped by the applier
+    blast-radius gate, dead-on-arrival AG retry blocked) produce empty
+    `eval_rows` in the replay fixture.
+    """
+    if not isinstance(baseline_iter, dict) or not baseline_iter:
+        return {}
+    rows_json = baseline_iter.get("rows_json")
+    if isinstance(rows_json, str):
+        try:
+            rows_json = json.loads(rows_json)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    if not isinstance(rows_json, list) or not rows_json:
+        return {}
+    rows = [r for r in rows_json if isinstance(r, dict)]
+    if not rows:
+        return {}
+    qids: list[str] = []
+    scores: dict[str, str] = {}
+    arbiter: dict[str, str] = {}
+    failures: list[str] = []
+    for r in rows:
+        qid = str(r.get("question_id") or r.get("id") or "")
+        if not qid:
+            continue
+        qids.append(qid)
+        rc = _eval_rc_str(r)
+        scores[qid] = "yes" if rc in ("yes", "true", "1", "pass") else "no"
+        arb = _eval_arbiter_str(r)
+        if arb:
+            arbiter[qid] = arb
+        if scores[qid] == "no":
+            failures.append(qid)
+    if not qids:
+        return {}
+    return {
+        "question_ids": qids,
+        "scores": scores,
+        "arbiter_verdicts": arbiter,
+        "failure_question_ids": failures,
+    }
 
 
 def _merge_bug4_counters(eval_result: dict) -> dict:
@@ -10715,60 +10774,44 @@ def _run_lever_loop(
     # last accepted (or seeded) baseline.
     _latest_eval_result: dict[str, Any] = {}
     try:
-        # Reuse the canonical row-extractors so that flattened MLflow
-        # keys (``feedback/result_correctness/value``,
-        # ``feedback/arbiter/value``) and legacy keys
-        # (``result_correctness/value`` / ``result_correctness`` /
-        # ``arbiter/value`` / ``arbiter``) are handled identically to
-        # downstream eval consumers. Without this, baseline rows that
-        # only carry the ``feedback/...`` flattened form would seed
-        # every score as ``"no"`` and overstate failure_question_ids.
-        from genie_space_optimizer.optimization.evaluation import (
-            _arbiter_str as _seed_arbiter_str,
-            _rc_str as _seed_rc_str,
-        )
+        # Centralised baseline-seed helper: extracts rows_json, dedups by
+        # qid, and returns a carrier-shaped dict. Returns {} for any
+        # unusable input so this branch falls through to the next-gate
+        # refresh path. Same helper is reused at iteration start as a
+        # snapshot fallback, so iterations that short-circuit before
+        # `_run_gate_checks` (applier-skip-eval, dead-on-arrival retry)
+        # still capture the baseline state in the replay fixture.
         _baseline_rows_seed = _rows_from_iteration_payload(baseline_iter)
         if not _baseline_rows_seed:
-            # Silent zero-rows is the actual failure mode that caused the
-            # Phase A burn-down empty fixtures: the synthetic baseline
-            # payload doesn't always carry per-row data in the expected
-            # shape. Log loudly so operators see it.
             logger.warning(
                 "Phase A: baseline payload yielded 0 extractable eval rows "
                 "(_latest_eval_result will rely on first gate result instead "
                 "of baseline seed). baseline_iter keys=%s",
                 sorted((baseline_iter or {}).keys()) if isinstance(baseline_iter, dict) else type(baseline_iter).__name__,
             )
-        if _baseline_rows_seed:
-            _seed_qids: list[str] = []
-            _seed_scores: dict[str, str] = {}
-            _seed_arbiter: dict[str, str] = {}
-            _seed_failures: list[str] = []
-            for _r in _baseline_rows_seed:
-                _qid = str(_r.get("question_id") or _r.get("id") or "")
-                if not _qid:
-                    continue
-                _seed_qids.append(_qid)
-                _rc = _seed_rc_str(_r)
-                _seed_scores[_qid] = (
-                    "yes" if _rc in ("yes", "true", "1", "pass") else "no"
-                )
-                _arb = _seed_arbiter_str(_r)
-                if _arb:
-                    _seed_arbiter[_qid] = _arb
-                if _seed_scores[_qid] == "no":
-                    _seed_failures.append(_qid)
-            _latest_eval_result = {
-                "question_ids": _seed_qids,
-                "scores": _seed_scores,
-                "arbiter_verdicts": _seed_arbiter,
-                "failure_question_ids": _seed_failures,
-            }
+        _seeded = _seed_eval_result_from_baseline_iter(baseline_iter)
+        if _seeded:
+            _latest_eval_result = _seeded
             logger.info(
                 "Phase A: seeded _latest_eval_result from baseline "
                 "(%d qids, %d failures)",
-                len(_seed_qids),
-                len(_seed_failures),
+                len(_seeded.get("question_ids") or []),
+                len(_seeded.get("failure_question_ids") or []),
+            )
+        elif _baseline_rows_seed:
+            # Rows extracted but none had a question_id/id key — the seed
+            # call walked them and produced 0 qids. Without this branch the
+            # absence of "Phase A: seeded ..." is silent and operators
+            # cannot tell the difference between "no rows" and "rows but
+            # no identifiers". Both states leave the carrier empty.
+            logger.warning(
+                "Phase A: baseline payload had %d rows but 0 carried a "
+                "question_id/id key (_latest_eval_result stays empty). "
+                "Sample row keys=%s",
+                len(_baseline_rows_seed),
+                sorted((_baseline_rows_seed[0] or {}).keys())[:20]
+                if isinstance(_baseline_rows_seed[0], dict)
+                else type(_baseline_rows_seed[0]).__name__,
             )
     except Exception:
         # Promoted from debug → warning: a silent seed failure here was the
@@ -11157,6 +11200,45 @@ def _run_lever_loop(
         clusters = _analysis["all_clusters"]
         soft_signal_clusters = _analysis["soft_signal_clusters"]
         rca_ledger = _analysis.get("rca_ledger") or {}
+
+        # Phase A — Defensive carrier seed at iteration start. The
+        # primary seed (lever-loop pre-loop block) populates
+        # `_latest_eval_result` from `baseline_iter`, and the per-gate
+        # refresh (`_extract_eval_result_from_gate`) keeps it fresh on
+        # every accept/rollback. But two skip-eval `continue` paths
+        # bypass the gate entirely:
+        #   * applier blast-radius gate dropped all patches
+        #     ("deterministic_no_applied_patches" → SKIP EVAL: NO
+        #     APPLIED PATCHES)
+        #   * dead-on-arrival AG retry blocked (same selected patch
+        #     IDs already produced no applied patches)
+        # When every iteration in a run takes one of those paths, the
+        # carrier never refreshes and — if the seed silently produced
+        # 0 qids — the replay fixture's `eval_rows` end up empty for
+        # every iteration. Lazy-seed here as a last line of defence so
+        # the snapshot below always has at least the baseline state.
+        if not (_latest_eval_result or {}).get("question_ids"):
+            try:
+                _lazy_seed = _seed_eval_result_from_baseline_iter(
+                    baseline_iter
+                )
+                if _lazy_seed:
+                    _latest_eval_result = _lazy_seed
+                    logger.warning(
+                        "Phase A: lazy-seeded _latest_eval_result from "
+                        "baseline at iteration_counter=%d (carrier was "
+                        "empty — primary seed produced 0 qids and no "
+                        "gate result has refreshed it yet). %d qids, "
+                        "%d failures.",
+                        iteration_counter,
+                        len(_lazy_seed.get("question_ids") or []),
+                        len(_lazy_seed.get("failure_question_ids") or []),
+                    )
+            except Exception:
+                logger.debug(
+                    "Phase A: lazy baseline seed failed (non-fatal)",
+                    exc_info=True,
+                )
 
         # Phase A — Lossless contract: stamp the eval-entry events for
         # every qid that entered this iteration's eval. This eliminates
@@ -14483,6 +14565,19 @@ def _run_lever_loop(
                 + _kv("Reason", "same selected patch IDs already produced no applied patches") + "\n"
                 + _bar("!")
             )
+            # Phase A — Replay-fixture capture: the AG never reached the
+            # gate, so no accept/rollback path runs. Without this entry
+            # the iteration's ag_outcomes dict stays empty and the
+            # fixture loses the signal that an AG was even attempted.
+            try:
+                _current_iter_inputs["ag_outcomes"][str(ag_id)] = (
+                    "skipped_dead_on_arrival"
+                )
+            except Exception:
+                logger.debug(
+                    "Phase A: ag_outcome capture (dead-on-arrival) failed (non-fatal)",
+                    exc_info=True,
+                )
             pending_action_groups = []
             pending_strategy = None
             continue
@@ -14719,6 +14814,20 @@ def _run_lever_loop(
                 new_failure_qids=prev_failure_qids,
                 **_ag_identity_kwargs,
             ))
+            # Phase A — Replay-fixture capture: like the dead-on-arrival
+            # branch above, the AG short-circuits before the gate and
+            # neither the rollback nor the accept paths fire. Stamp the
+            # outcome so the fixture surfaces "AG was attempted but the
+            # applier produced no applied entries".
+            try:
+                _current_iter_inputs["ag_outcomes"][str(ag_id)] = (
+                    "skipped_no_applied_patches"
+                )
+            except Exception:
+                logger.debug(
+                    "Phase A: ag_outcome capture (no_applied_patches) failed (non-fatal)",
+                    exc_info=True,
+                )
             _render_current_journey()
             continue
 
