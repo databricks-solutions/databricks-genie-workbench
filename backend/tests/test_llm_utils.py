@@ -104,12 +104,19 @@ class TestParseJsonFromLlmResponse:
         with pytest.raises(json.JSONDecodeError):
             parse_json_from_llm_response(content)
 
-    def test_text_after_json_not_handled_when_starts_with_brace(self):
-        """When content starts with '{', brace-matching is skipped.
-        Text after JSON causes a parse error (known limitation)."""
+    def test_text_after_json_is_ignored_when_starts_with_brace(self):
         content = '{"key": "value"}\nThat is the result.'
-        with pytest.raises(json.JSONDecodeError):
-            parse_json_from_llm_response(content)
+        result = parse_json_from_llm_response(content)
+        assert result == {"key": "value"}
+
+    def test_multiple_json_objects_returns_first(self):
+        content = (
+            '{"needs_repair": false}\n'
+            'Wait, let me reconsider and return valid JSON only.\n'
+            '{"needs_repair": true}'
+        )
+        result = parse_json_from_llm_response(content)
+        assert result == {"needs_repair": False}
 
     def test_text_before_and_after_json_extracted(self):
         """When text precedes JSON, brace-matching extracts just the JSON."""

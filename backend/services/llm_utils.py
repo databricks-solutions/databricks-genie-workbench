@@ -144,6 +144,38 @@ def _repair_json(content: str) -> str:
     return content
 
 
+def _extract_first_json_object(content: str) -> str:
+    """Return the first balanced JSON object from content, if one exists."""
+    json_start = content.find("{")
+    if json_start == -1:
+        return content
+
+    brace_count = 0
+    in_string = False
+    escaped = False
+
+    for i, char in enumerate(content[json_start:], json_start):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and in_string:
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "{":
+            brace_count += 1
+        elif char == "}":
+            brace_count -= 1
+            if brace_count == 0:
+                return content[json_start:i + 1]
+
+    return content
+
+
 def parse_json_from_llm_response(content: str) -> dict:
     """Parse JSON from an LLM response, handling markdown code blocks.
 
@@ -176,23 +208,10 @@ def parse_json_from_llm_response(content: str) -> dict:
                 break
         content = "\n".join(lines[start_idx:end_idx])
 
-    # Handle case where response might have text before JSON
-    if not content.startswith("{"):
-        json_start = content.find("{")
-        if json_start != -1:
-            # Find matching closing brace
-            brace_count = 0
-            json_end = -1
-            for i, char in enumerate(content[json_start:], json_start):
-                if char == "{":
-                    brace_count += 1
-                elif char == "}":
-                    brace_count -= 1
-                    if brace_count == 0:
-                        json_end = i + 1
-                        break
-            if json_end != -1:
-                content = content[json_start:json_end]
+    # Handle text before/after JSON, including multiple JSON objects.
+    # LLMs sometimes answer with a valid object followed by "Wait..." and
+    # another object; downstream callers expect the first complete object.
+    content = _extract_first_json_object(content)
 
     if not content:
         raise ValueError("LLM returned empty response after parsing")
