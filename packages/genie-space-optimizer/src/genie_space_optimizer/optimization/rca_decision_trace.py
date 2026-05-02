@@ -1,8 +1,18 @@
-"""Structured trace helpers for RCA lever-loop decisions."""
+"""Structured trace helpers for RCA lever-loop decisions.
+
+Phase B (`docs/2026-05-02-unified-trace-and-operator-transcript-plan.md`)
+extends this module into the canonical optimizer-decision trace owner:
+``DecisionRecord`` is the source-of-truth row model, ``OptimizationTrace``
+is the in-memory container, and the existing legacy Delta rows + scoreboard
++ operator transcript are deterministic projections over the same trace.
+"""
 
 from __future__ import annotations
 
-from typing import Any
+import json
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Mapping, Sequence
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -17,6 +27,164 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+class DecisionType(str, Enum):
+    EVAL_CLASSIFIED = "eval_classified"
+    CLUSTER_SELECTED = "cluster_selected"
+    RCA_FORMED = "rca_formed"
+    STRATEGIST_AG_EMITTED = "strategist_ag_emitted"
+    PROPOSAL_GENERATED = "proposal_generated"
+    GATE_DECISION = "gate_decision"
+    PATCH_APPLIED = "patch_applied"
+    PATCH_SKIPPED = "patch_skipped"
+    ACCEPTANCE_DECIDED = "acceptance_decided"
+    QID_RESOLUTION = "qid_resolution"
+
+
+class DecisionOutcome(str, Enum):
+    INFO = "info"
+    ACCEPTED = "accepted"
+    DROPPED = "dropped"
+    APPLIED = "applied"
+    SKIPPED = "skipped"
+    ROLLED_BACK = "rolled_back"
+    RESOLVED = "resolved"
+    UNRESOLVED = "unresolved"
+
+
+class ReasonCode(str, Enum):
+    NONE = "none"
+    ALREADY_PASSING = "already_passing"
+    HARD_FAILURE = "hard_failure"
+    SOFT_SIGNAL = "soft_signal"
+    GT_CORRECTION = "gt_correction"
+    CLUSTERED = "clustered"
+    STRATEGIST_SELECTED = "strategist_selected"
+    PROPOSAL_EMITTED = "proposal_emitted"
+    PATCH_CAP_SELECTED = "patch_cap_selected"
+    PATCH_CAP_DROPPED = "patch_cap_dropped"
+    PATCH_APPLIED = "patch_applied"
+    PATCH_SKIPPED = "patch_skipped"
+    MISSING_TARGET_QIDS = "missing_target_qids"
+    NO_APPLIED_PATCHES = "no_applied_patches"
+    POST_EVAL_HOLD_PASS = "post_eval_hold_pass"
+    POST_EVAL_FAIL_TO_PASS = "post_eval_fail_to_pass"
+    POST_EVAL_HOLD_FAIL = "post_eval_hold_fail"
+    POST_EVAL_PASS_TO_FAIL = "post_eval_pass_to_fail"
+
+
+def _enum_value(value: Any) -> str:
+    if isinstance(value, Enum):
+        return str(value.value)
+    return str(value or "")
+
+
+def _clean_str_tuple(values: Sequence[Any] | None) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(str(v) for v in (values or ()) if str(v)))
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Mapping):
+        return {str(k): _json_safe(v) for k, v in sorted(value.items())}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+@dataclass(frozen=True)
+class DecisionRecord:
+    run_id: str = ""
+    iteration: int = 0
+    decision_type: DecisionType = DecisionType.EVAL_CLASSIFIED
+    outcome: DecisionOutcome = DecisionOutcome.INFO
+    reason_code: ReasonCode = ReasonCode.NONE
+    question_id: str = ""
+    cluster_id: str = ""
+    rca_id: str = ""
+    ag_id: str = ""
+    proposal_id: str = ""
+    patch_id: str = ""
+    gate: str = ""
+    reason_detail: str = ""
+    affected_qids: tuple[str, ...] = ()
+    source_cluster_ids: tuple[str, ...] = ()
+    proposal_ids: tuple[str, ...] = ()
+    metrics: Mapping[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "run_id": str(self.run_id),
+            "iteration": int(self.iteration),
+            "decision_type": self.decision_type.value,
+            "outcome": self.outcome.value,
+            "reason_code": self.reason_code.value,
+        }
+        optional = {
+            "question_id": self.question_id,
+            "cluster_id": self.cluster_id,
+            "rca_id": self.rca_id,
+            "ag_id": self.ag_id,
+            "proposal_id": self.proposal_id,
+            "patch_id": self.patch_id,
+            "gate": self.gate,
+            "reason_detail": self.reason_detail,
+        }
+        for key, value in optional.items():
+            if value:
+                row[key] = str(value)
+        if self.affected_qids:
+            row["affected_qids"] = list(self.affected_qids)
+        if self.source_cluster_ids:
+            row["source_cluster_ids"] = list(self.source_cluster_ids)
+        if self.proposal_ids:
+            row["proposal_ids"] = list(self.proposal_ids)
+        if self.metrics:
+            row["metrics"] = _json_safe(dict(self.metrics))
+        return row
+
+    @classmethod
+    def from_dict(cls, row: Mapping[str, Any]) -> "DecisionRecord":
+        return cls(
+            run_id=str(row.get("run_id") or ""),
+            iteration=_as_int(row.get("iteration")),
+            decision_type=DecisionType(str(row.get("decision_type") or "eval_classified")),
+            outcome=DecisionOutcome(str(row.get("outcome") or "info")),
+            reason_code=ReasonCode(str(row.get("reason_code") or "none")),
+            question_id=str(row.get("question_id") or ""),
+            cluster_id=str(row.get("cluster_id") or ""),
+            rca_id=str(row.get("rca_id") or ""),
+            ag_id=str(row.get("ag_id") or ""),
+            proposal_id=str(row.get("proposal_id") or ""),
+            patch_id=str(row.get("patch_id") or ""),
+            gate=str(row.get("gate") or ""),
+            reason_detail=str(row.get("reason_detail") or ""),
+            affected_qids=_clean_str_tuple(row.get("affected_qids") or ()),
+            source_cluster_ids=_clean_str_tuple(row.get("source_cluster_ids") or ()),
+            proposal_ids=_clean_str_tuple(row.get("proposal_ids") or ()),
+            metrics=dict(row.get("metrics") or {}),
+        )
+
+
+def _decision_sort_key(rec: DecisionRecord) -> tuple:
+    return (
+        int(rec.iteration),
+        rec.decision_type.value,
+        rec.question_id,
+        rec.cluster_id,
+        rec.ag_id,
+        rec.proposal_id,
+        rec.patch_id,
+        rec.gate,
+        rec.reason_code.value,
+    )
+
+
+def canonical_decision_json(records: Sequence[DecisionRecord]) -> str:
+    rows = [r.to_dict() for r in sorted(records, key=_decision_sort_key)]
+    return json.dumps(rows, sort_keys=True, separators=(",", ":"))
 
 
 def summarize_patch_for_trace(patch: dict[str, Any]) -> dict[str, Any]:
