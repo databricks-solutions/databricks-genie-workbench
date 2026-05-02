@@ -14783,6 +14783,26 @@ def generate_proposals_from_strategy(
         proposals = _filter_no_op_proposals(proposals, metadata_snapshot)
         proposals.sort(key=lambda p: p.get("net_impact", 0), reverse=True)
 
+        # Cycle 8 Bug 1 Phase 2 — stamp ``target_qids`` on every proposal
+        # before it leaves this function. Standard L1-L4 paths build
+        # proposal dicts without ``target_qids``; ``_backfill_patch_causal_metadata``
+        # later defaults them to ``ag.affected_questions`` on the patch side
+        # (harness.py:6663-6668), but anywhere downstream that reads
+        # ``proposal.target_qids`` between proposal-emit and patch-backfill
+        # (a 600-line gap, including the replay-fixture snapshot) used to
+        # see ``[]``. The RCA-bridge / cluster-driven / RCA-forced L5 paths
+        # already stamp explicit narrower ``target_qids`` (often via
+        # ``_theme_qids``); the defaulting below preserves those narrower
+        # values and only fills in for the standard-lever proposals.
+        _ag_default_target_qids = [str(q) for q in (affected_qs or []) if q]
+        if _ag_default_target_qids:
+            for _proposal in proposals:
+                _existing = _proposal.get("target_qids") or _proposal.get(
+                    "_grounding_target_qids"
+                ) or []
+                if not [q for q in _existing if q]:
+                    _proposal["target_qids"] = list(_ag_default_target_qids)
+
         span.set_outputs({
             "proposal_count": len(proposals),
             "proposal_types": [p.get("patch_type", "?") for p in proposals],
