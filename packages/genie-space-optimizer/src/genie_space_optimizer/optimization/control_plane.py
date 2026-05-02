@@ -641,3 +641,27 @@ def assert_quarantine_attribution_sound(
             f"quarantined={sorted(quarantined)}; the only remaining hard "
             f"target must be available to the strategist"
         )
+
+
+def assert_soft_cluster_currency(
+    *,
+    soft_cluster_qids: Iterable[str],
+    currently_passing_qids: Iterable[str],
+) -> None:
+    """Track H — soft-clustering must read the current eval row state.
+
+    A qid that is currently passing all judges cannot legitimately appear
+    in any soft cluster on the same iteration. The May-01 23:04 7Now
+    run had ``gs_001`` (a just-fixed target) listed in soft cluster
+    ``S003 wrong_table`` because the soft-clusterer read stale ASI rather
+    than current eval rows. This helper makes that defect loud.
+    """
+    soft = {str(q) for q in soft_cluster_qids if str(q)}
+    passing = {str(q) for q in currently_passing_qids if str(q)}
+    bad = sorted(soft & passing)
+    if bad:
+        raise AssertionError(
+            f"soft-cluster currency drift: currently-passing qids appear in soft "
+            f"clusters: {bad}; soft-clusterer must read current eval rows, not "
+            f"stale ASI"
+        )

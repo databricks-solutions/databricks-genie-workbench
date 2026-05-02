@@ -11500,6 +11500,38 @@ def _run_lever_loop(
             list(clusters or []),
             list(soft_signal_clusters or []),
         )
+
+        # Track H — soft-cluster currency invariant. The clusterer must
+        # have read the latest eval, not stale ASI, so a currently-passing
+        # qid cannot legitimately appear in a soft cluster on this
+        # iteration. Same invariant for hard clusters: the qid set there
+        # MUST be a subset of the qids that just failed.
+        from genie_space_optimizer.optimization.control_plane import (
+            assert_soft_cluster_currency,
+        )
+
+        _all_eval_qids = {
+            str(q) for q in (_latest_eval_result or {}).get("question_ids") or [] if str(q)
+        }
+        _live_hard_qids = {
+            str(q)
+            for cluster in (_strategy_hard_clusters or [])
+            for q in cluster.get("question_ids") or []
+            if str(q)
+        }
+        _live_passing_qids = _all_eval_qids - _live_hard_qids
+
+        _soft_qids_in_strategy = {
+            str(q)
+            for cluster in (_strategy_soft_clusters or [])
+            for q in cluster.get("question_ids") or []
+            if str(q)
+        }
+        assert_soft_cluster_currency(
+            soft_cluster_qids=_soft_qids_in_strategy,
+            currently_passing_qids=_live_passing_qids,
+        )
+
         ranked = rank_clusters(
             list(_strategy_hard_clusters) + list(_strategy_soft_clusters),
             recommended_levers=_scan_levers,

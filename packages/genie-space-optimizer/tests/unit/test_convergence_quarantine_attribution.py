@@ -52,3 +52,26 @@ def test_assert_quarantine_attribution_accepts_empty_quarantine() -> None:
         currently_passing_qids={"gs_001"},
         currently_hard_qids={"gs_026"},
     )
+
+
+def test_assert_soft_cluster_currency_rejects_passing_qid_in_soft_cluster() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        assert_soft_cluster_currency,
+    )
+
+    with pytest.raises(AssertionError, match="soft-cluster currency drift"):
+        assert_soft_cluster_currency(
+            soft_cluster_qids={"gs_001", "gs_028"},
+            currently_passing_qids={"gs_001", "gs_002", "gs_003"},
+        )
+
+
+def test_assert_soft_cluster_currency_accepts_clean_state() -> None:
+    from genie_space_optimizer.optimization.control_plane import (
+        assert_soft_cluster_currency,
+    )
+
+    assert_soft_cluster_currency(
+        soft_cluster_qids={"gs_028"},
+        currently_passing_qids={"gs_001", "gs_002"},
+    )
