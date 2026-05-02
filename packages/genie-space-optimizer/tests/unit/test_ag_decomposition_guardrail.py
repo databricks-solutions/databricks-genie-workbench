@@ -242,3 +242,25 @@ def test_decompose_overbroad_ag_returns_unchanged_for_single_cluster_ag() -> Non
         {"cluster_id": "H001", "question_ids": ["q1"], "root_cause": "missing_filter"},
     ]
     assert decompose_overbroad_ag(ag, clusters) == [ag]
+
+
+def test_harness_calls_decompose_overbroad_ag_before_sort() -> None:
+    """Track 4 wiring — the harness must call ``decompose_overbroad_ag``
+    on the merged action_groups list before sorting them into the
+    priority queue.
+    """
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness._run_lever_loop)
+    sort_anchor = "action_groups = sorted(action_groups, key=_ag_sort_key)"
+    assert src.count(sort_anchor) >= 1, (
+        "harness sort line missing; did the AG-construction site move?"
+    )
+    sort_idx = src.find(sort_anchor)
+    pre_sort = src[:sort_idx]
+    assert "decompose_overbroad_ag" in pre_sort[-2500:], (
+        "harness does not call decompose_overbroad_ag before sorting "
+        "action_groups"
+    )

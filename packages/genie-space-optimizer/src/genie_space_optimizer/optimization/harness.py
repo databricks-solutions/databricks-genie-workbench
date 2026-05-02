@@ -12198,6 +12198,45 @@ def _run_lever_loop(
                     )
                     return (_pri_v, -_impact)
 
+                # Track 4 (Phase A burn-down) — decompose any
+                # heterogeneous AG spanning multiple root-cause
+                # families or tables when the bundle lacks a shared
+                # direct fix. Per-cluster diagnostic AGs replace the
+                # parent so cap budget can preserve a direct fix per
+                # cluster.
+                from genie_space_optimizer.optimization.control_plane import (
+                    decompose_overbroad_ag,
+                )
+                _all_clusters_for_decomposition = list(clusters or []) + list(
+                    soft_signal_clusters or []
+                )
+                _decomposed_action_groups: list[dict] = []
+                for _ag_in in action_groups:
+                    _decomposed_action_groups.extend(
+                        decompose_overbroad_ag(
+                            _ag_in, _all_clusters_for_decomposition
+                        )
+                    )
+                if len(_decomposed_action_groups) != len(action_groups):
+                    print(
+                        _section(
+                            f"AG DECOMPOSITION GUARDRAIL — {len(action_groups)} -> "
+                            f"{len(_decomposed_action_groups)} AGs",
+                            "-",
+                        ) + "\n"
+                        + _kv(
+                            "Original AG ids",
+                            ", ".join(_a.get("id", "?") for _a in action_groups),
+                        ) + "\n"
+                        + _kv(
+                            "Decomposed AG ids",
+                            ", ".join(
+                                _a.get("id", "?") for _a in _decomposed_action_groups
+                            ),
+                        ) + "\n"
+                        + _bar("-")
+                    )
+                action_groups = _decomposed_action_groups
                 action_groups = sorted(action_groups, key=_ag_sort_key)
                 ag = action_groups[0] if action_groups else None
                 if _process_all_ags and len(action_groups) > 1:
