@@ -55,12 +55,16 @@ ran, and it needs the Spark Delta fallback path. To produce
 
 1. Save the cycle 7 raw stderr fixture to
    `tests/replay/fixtures/airline_real_v1_cycle7_raw.json` (Phase 1 Task 1).
-2. Open a Databricks notebook attached to the workspace, sync the branch,
-   and call `main(...)` with the run-specific parameters
-   (`experiment_id`, `optimization_run_id`, `catalog`, `schema`).
-3. Download the corrected fixture and run the canonical-overlap sanity
-   check (Phase 3 Task 8 Steps 6-7).
-4. Commit the corrected fixture.
+   *(Already committed at `8950077`.)*
+2. Sync the branch into the workspace and open
+   `packages/genie-space-optimizer/notebooks/reconstruct_cycle7_fixture.py`
+   as a Databricks notebook. It is a thin wrapper around `main(...)` with
+   widget parameters, dep installs, and pre/post sanity checks.
+3. Set the widgets (`experiment_id`, `optimization_run_id` defaults to the
+   cycle 7 UUID, `catalog`, `schema`, `repo_root`) and run all cells.
+4. Download the corrected fixture from
+   `<repo_root>/packages/genie-space-optimizer/tests/replay/fixtures/airline_real_v1.json`
+   and commit it.
 
 The Track D fix shipped in this PR ensures cycle 8 (or any future cycle)
 will write canonical qids directly — no reconstruction needed
