@@ -389,3 +389,38 @@ def test_run_replay_exposes_decision_trace_outputs() -> None:
     assert "proposal_generated" in result.canonical_decision_json
     assert "OPERATOR TRANSCRIPT  iteration=1" in result.operator_transcript
     assert result.decision_validation == []
+
+
+def test_airline_real_v1_replay_decision_trace_is_byte_stable() -> None:
+    """Phase B Task 8 — pin the canonical decision-trace JSON for the
+    real-run airline fixture once it carries decision_records. Skips
+    until the next real cycle refreshes the fixture (the run that
+    produces this fixture is also the first one running with the
+    Phase B harness wiring from Task 7)."""
+    from genie_space_optimizer.optimization.lever_loop_replay import run_replay
+
+    fixture = _load("airline_real_v1.json")
+    expected = fixture.get("expected_canonical_decisions")
+    if not expected:
+        pytest.skip(
+            "expected_canonical_decisions not yet recorded; seed it after "
+            "Phase B decision_records are present in airline_real_v1.json."
+        )
+    result = run_replay(fixture)
+    assert result.canonical_decision_json == expected
+
+
+def test_airline_real_v1_operator_transcript_is_byte_stable() -> None:
+    """Phase B Task 8 — pin the rendered operator transcript so any
+    drift in render_operator_transcript fails CI."""
+    from genie_space_optimizer.optimization.lever_loop_replay import run_replay
+
+    fixture = _load("airline_real_v1.json")
+    expected = fixture.get("expected_operator_transcript")
+    if not expected:
+        pytest.skip(
+            "expected_operator_transcript not yet recorded; seed it after "
+            "Phase B decision_records are present in airline_real_v1.json."
+        )
+    result = run_replay(fixture)
+    assert result.operator_transcript == expected
