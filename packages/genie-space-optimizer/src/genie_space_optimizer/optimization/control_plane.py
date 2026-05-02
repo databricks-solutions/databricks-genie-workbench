@@ -427,6 +427,7 @@ def decide_control_plane_acceptance(
       post_arbiter_not_improved         — global accuracy did not move
       rejected_no_gain                  — gain below min_gain_pp threshold
       target_qids_not_improved          — none of the declared causal targets flipped
+      accepted_with_attribution_drift   — net global gain, zero regressions, target unchanged
       accepted_with_regression_debt     — net gain with bounded collateral debt
       out_of_target_hard_regression     — at least one prior-passing qid went hard
       rejected_unbounded_collateral     — collateral exceeds debt budget
@@ -498,6 +499,22 @@ def decide_control_plane_acceptance(
     elif not has_gain:
         reason = "rejected_no_gain" if float(min_gain_pp) > 0 else "post_arbiter_not_improved"
         accepted = False
+    elif (
+        not has_causal_fix
+        and not out_of_target_regressed
+        and not protected_regressed
+        and not soft_to_hard
+        and not passing_to_hard
+    ):
+        # Track F (Phase A burn-down MVP): a candidate that improves
+        # overall accuracy with zero regressions on every budget axis
+        # must accept even when the named target qid did not specifically
+        # move. The rationale is that the optimizer's RCA, clustering,
+        # cap, applier, and rollback all worked; the only reason the
+        # candidate looks "wrong" is attribution drift between the
+        # named target qid set and the qids that actually flipped.
+        reason = "accepted_with_attribution_drift"
+        accepted = True
     elif not has_causal_fix:
         reason = "target_qids_not_improved"
         accepted = False
