@@ -2284,21 +2284,51 @@ def _single_column_target(value: Any) -> str:
     return ""
 
 
+PROPOSAL_METADATA_ALLOWLIST: tuple[str, ...] = (
+    # Identity / RCA lineage
+    "rca_id",
+    "patch_family",
+    "target_qids",
+    "_grounding_target_qids",
+    "source",
+    "confidence",
+    "provenance",
+    # Risk lineage (counterfactual scan output) — must survive into the
+    # patch so blast-radius and instruction-scope gates see what the
+    # scan saw.
+    "passing_dependents",
+    "passing_dependents_outside_target",
+    "high_collateral_risk",
+    "target_dependents",
+    # Cluster lineage — must survive so cap reservation, survival
+    # ledger, and journey events see consistent cluster identity.
+    "cluster_id",
+    "source_cluster_id",
+    "source_cluster_ids",
+    "primary_cluster_id",
+    # Causal classification — drives cap ranking and bucketing.
+    "root_cause",
+    "rca_kind",
+    "relevance_score",
+    "causal_attribution_tier",
+)
+
+
 def _copy_proposal_metadata(patch: dict, proposal: dict) -> dict:
+    """Copy provenance, risk, and lineage fields from proposal to patch.
+
+    Tracks 1, B (Phase A burn-down MVP): the allowlist is canonical so
+    every helper that reads risk or cluster lineage downstream sees the
+    same shape it saw at proposal time. ``_split_rewrite_instruction_patch``
+    and ``_stamp_split_child_identity`` reuse this allowlist when stamping
+    children so split-children also retain risk lineage.
+    """
     proposal_id = proposal.get("proposal_id") or proposal.get("id")
     if proposal_id:
         patch["proposal_id"] = str(proposal_id)
         patch.setdefault("source_proposal_id", str(proposal_id))
 
-    for meta_key in (
-        "rca_id",
-        "patch_family",
-        "target_qids",
-        "_grounding_target_qids",
-        "source",
-        "confidence",
-        "provenance",
-    ):
+    for meta_key in PROPOSAL_METADATA_ALLOWLIST:
         if meta_key in proposal:
             patch[meta_key] = proposal[meta_key]
     return patch
