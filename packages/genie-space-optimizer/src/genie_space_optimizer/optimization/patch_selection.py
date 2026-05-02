@@ -345,10 +345,27 @@ def _target_qids(patch: dict[str, Any]) -> tuple[str, ...]:
 
 _BEHAVIOR_ROOT_CAUSES = frozenset(
     {
+        # Existing: filter/aggregation/measure shape errors.
         "missing_filter",
         "wrong_filter_condition",
         "wrong_aggregation",
         "wrong_measure",
+        # Track 2 (Phase A burn-down): SQL-shape failures observed in
+        # the May-01 7Now and 23:04 7Now runs. The strategist's direct
+        # fix for these is an instruction or snippet that pins the
+        # canonical SQL shape (LIMIT N, ROW_NUMBER, ts_filter), so the
+        # patch must qualify for global direct-behavior reservation
+        # alongside filter/aggregation fixes. The set is aligned with
+        # ``control_plane._DIAGNOSTIC_AG_DIRECTIVES`` entries whose
+        # ``kind == "sql_shape"`` so any cluster the diagnostic-AG
+        # dispatcher recognizes as SQL-shape also earns cap reservation.
+        "plural_top_n_collapse",
+        "missing_temporal_filter",
+        "time_window_pivot",
+        "missing_aggregation",
+        "missing_dimension",
+        "wrong_grouping",
+        "wrong_join_type",
     }
 )
 
