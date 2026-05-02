@@ -159,19 +159,56 @@ def _replay_iteration(
 
 
 def run_replay(fixture: dict) -> ReplayResult:
-    """Replay every iteration in the fixture and return events + report."""
+    """Replay every iteration in the fixture and return events + report.
+
+    Validation is per-iteration: each iteration's events and ``eval_qids``
+    are validated independently, then the per-iteration reports are merged
+    into a single composite ``JourneyValidationReport``. This mirrors the
+    harness production contract at ``harness.py:16039-16056``, where
+    ``_validate_journeys_at_iteration_end`` is called once per iteration
+    boundary.
+
+    The flat ``events`` list is preserved across iterations for
+    ``canonical_journey_json``, whose output is order-insensitive (it sorts
+    by ``(question_id, stage_rank, proposal_id)``).
+    """
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        JourneyContractViolation,
+        JourneyTerminalState,
+    )
+
     events: list[QuestionJourneyEvent] = []
-    all_eval_qids: set[str] = set()
+    combined_violations: list[JourneyContractViolation] = []
+    combined_missing_qids: list[str] = []
+    combined_terminals: dict[str, JourneyTerminalState] = {}
+
     for it in fixture.get("iterations") or []:
-        _replay_iteration(iteration_plan=it, events=events)
-        for r in it.get("eval_rows") or []:
-            qid = str(r.get("question_id") or "")
-            if qid:
-                all_eval_qids.add(qid)
+        iter_events: list[QuestionJourneyEvent] = []
+        _replay_iteration(iteration_plan=it, events=iter_events)
+        iter_eval_qids = {
+            str(r.get("question_id") or "")
+            for r in (it.get("eval_rows") or [])
+            if r.get("question_id")
+        }
+        report = validate_question_journeys(
+            events=iter_events, eval_qids=iter_eval_qids,
+        )
+        combined_violations.extend(report.violations)
+        combined_missing_qids.extend(report.missing_qids)
+        # Later iterations' terminal states overwrite earlier ones for the
+        # same qid, matching how the harness re-classifies a qid at each
+        # iteration boundary.
+        combined_terminals.update(report.terminal_state_by_qid)
+        events.extend(iter_events)
+
+    composite = JourneyValidationReport(
+        is_valid=not combined_violations and not combined_missing_qids,
+        missing_qids=tuple(combined_missing_qids),
+        violations=combined_violations,
+        terminal_state_by_qid=combined_terminals,
+    )
     return ReplayResult(
         events=events,
         canonical_json=canonical_journey_json(events=events),
-        validation=validate_question_journeys(
-            events=events, eval_qids=all_eval_qids,
-        ),
+        validation=composite,
     )
