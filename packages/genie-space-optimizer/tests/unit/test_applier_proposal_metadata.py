@@ -90,3 +90,66 @@ def test_expanded_column_description_children_keep_parent_proposal_id() -> None:
     assert {p["parent_proposal_id"] for p in patches} == {"AG1_COL1"}
     assert all(p["proposal_id"].startswith("AG1_COL1#") for p in patches)
     assert all(p["expanded_patch_id"].startswith("AG1_COL1#") for p in patches)
+
+
+def test_proposals_to_patches_preserves_risk_and_cluster_metadata() -> None:
+    """A scanned high-risk proposal must become a patch carrying every risk
+    and cluster field the cap, gates, and survival ledger consume."""
+    from genie_space_optimizer.optimization.applier import (
+        PROPOSAL_METADATA_ALLOWLIST,
+        proposals_to_patches,
+    )
+
+    proposal = {
+        "proposal_id": "P_RISKY",
+        "patch_type": "update_column_description",
+        "table": "cat.sch.mv_fact",
+        "column": "tkt_coupon",
+        "description": "Coupon code applied to the ticket.",
+        "target_qids": ["q005"],
+        "_grounding_target_qids": ["q005"],
+        "passing_dependents": ["q010", "q011", "q012", "q013", "q014", "q015"],
+        "passing_dependents_outside_target": ["q010", "q011", "q012", "q013", "q014", "q015"],
+        "high_collateral_risk": True,
+        "target_dependents": ["q005"],
+        "cluster_id": "H001",
+        "source_cluster_id": "H001",
+        "source_cluster_ids": ["H001"],
+        "primary_cluster_id": "H001",
+        "root_cause": "wrong_filter_condition",
+        "rca_kind": "filter_drift",
+        "relevance_score": 0.91,
+        "causal_attribution_tier": 3,
+        "rca_id": "rca_q005_filter",
+    }
+
+    patches = proposals_to_patches([proposal])
+
+    assert len(patches) >= 1
+    patch = patches[0]
+    expected_fields = (
+        "passing_dependents",
+        "passing_dependents_outside_target",
+        "high_collateral_risk",
+        "target_dependents",
+        "cluster_id",
+        "source_cluster_id",
+        "source_cluster_ids",
+        "primary_cluster_id",
+        "root_cause",
+        "rca_kind",
+        "relevance_score",
+        "causal_attribution_tier",
+        "rca_id",
+        "target_qids",
+        "_grounding_target_qids",
+    )
+    for field in expected_fields:
+        assert field in patch, (
+            f"proposal-to-patch contract violated: '{field}' missing from patch; "
+            f"allowlist={PROPOSAL_METADATA_ALLOWLIST!r}"
+        )
+    assert patch["passing_dependents"] == proposal["passing_dependents"]
+    assert patch["high_collateral_risk"] is True
+    assert patch["primary_cluster_id"] == "H001"
+    assert patch["relevance_score"] == 0.91
