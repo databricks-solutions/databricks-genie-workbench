@@ -456,6 +456,83 @@ def ag_has_shared_direct_fix(
     return False
 
 
+def decompose_overbroad_ag(
+    ag: dict,
+    clusters: Iterable[dict],
+) -> list[dict]:
+    """Return either ``[ag]`` (unchanged) or per-cluster diagnostic AGs.
+
+    Track 4 (Phase A burn-down): the decomposition guardrail. An AG
+    is considered over-broad when ALL of these hold:
+
+      * It spans two or more source clusters, AND
+      * Those clusters span two or more root-cause families OR two or
+        more table families, AND
+      * The patch bundle has no single direct-fix patch covering every
+        cluster (``ag_has_shared_direct_fix`` returns False).
+
+    When over-broad, the AG is split into one diagnostic AG per source
+    cluster — each new AG inherits the parent's metadata but scopes
+    ``source_cluster_ids`` and ``affected_questions`` to its own
+    cluster. Each new AG carries a stable signature stamped at
+    construction (Track D) so the buffered-AG reuse path treats them
+    as distinct entries.
+
+    When not over-broad, the AG is returned unchanged in a single-
+    element list. Callers can splice the result back into
+    ``action_groups`` without distinguishing the two cases.
+    """
+    clusters_list = list(clusters or [])
+    src_ids = [str(cid) for cid in (ag.get("source_cluster_ids") or []) if str(cid)]
+    if len(src_ids) < 2:
+        return [ag]
+
+    families = ag_root_cause_families(ag, clusters_list)
+    tables = ag_table_families(ag, clusters_list)
+    if len(families) < 2 and len(tables) < 2:
+        return [ag]
+
+    if ag_has_shared_direct_fix(ag, clusters_list):
+        return [ag]
+
+    cluster_lookup = {
+        str(c.get("cluster_id") or ""): c
+        for c in clusters_list
+        if c.get("cluster_id")
+    }
+
+    decomposed: list[dict] = []
+    for cid in src_ids:
+        cluster = cluster_lookup.get(cid)
+        if not cluster:
+            continue
+        cluster_qids = [
+            str(q) for q in (cluster.get("question_ids") or []) if str(q)
+        ]
+        # Build a per-cluster diagnostic AG using the same dispatcher
+        # the strategist coverage-gap path uses, so the lever directive
+        # is consistent with diagnostic AGs from any other source.
+        new_ag = diagnostic_action_group_for_cluster(cluster)
+        # Tag the decomposition so operators can trace the split.
+        new_ag["id"] = f"AG_DECOMPOSED_{cid}"
+        new_ag["coverage_reason"] = "decomposed_overbroad_parent_ag"
+        new_ag["_decomposed_from"] = str(ag.get("id") or "")
+        # Stamp the stable signature (Track D) so revalidation in
+        # later iterations works consistently.
+        new_ag["_stable_signature"] = compute_ag_stable_signature(
+            new_ag, [cluster]
+        )
+        # Scope affected_questions to this cluster's qids only.
+        new_ag["affected_questions"] = cluster_qids
+        decomposed.append(new_ag)
+
+    # Defensive fallback: if every src cluster missed the lookup,
+    # return the original so we don't silently drop the AG.
+    if not decomposed:
+        return [ag]
+    return decomposed
+
+
 def patchable_hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
     """Rows where GT is confirmed correct and Genie should be patched."""
     qids: list[str] = []
