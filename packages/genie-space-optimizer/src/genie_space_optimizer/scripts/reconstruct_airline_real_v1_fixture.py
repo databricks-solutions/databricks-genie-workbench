@@ -68,3 +68,49 @@ def substitute_trace_ids_with_canonical_qids(
         else:
             new_eval_rows.append(dict(row))
     return {**raw_iter, "eval_rows": new_eval_rows}
+
+
+def reconstruct_fixture(
+    raw_fixture: dict[str, Any],
+    trace_maps_by_iter: dict[int, dict[str, str]],
+) -> dict[str, Any]:
+    """Apply per-iteration trace_id->canonical_qid maps to a raw fixture.
+
+    Args:
+        raw_fixture: The cycle 7 fixture as parsed from JSON. Must have
+            ``fixture_id`` and ``iterations`` keys.
+        trace_maps_by_iter: ``{iteration_int: {trace_id: canonical_qid}}``.
+            Must contain an entry for every iteration in ``raw_fixture``.
+
+    Returns:
+        A new fixture dict (does not mutate input) with eval_rows rewritten.
+
+    Raises:
+        KeyError: when an iteration in raw_fixture has no entry in
+            trace_maps_by_iter, OR when any eval_row's trace ID isn't in
+            its iteration's map.
+    """
+    new_iterations: list[dict[str, Any]] = []
+    for raw_iter in raw_fixture.get("iterations") or []:
+        iter_num = raw_iter.get("iteration")
+        if iter_num not in trace_maps_by_iter:
+            raise KeyError(
+                f"iteration {iter_num} not in trace_maps_by_iter "
+                f"(have iterations: {sorted(trace_maps_by_iter.keys())})"
+            )
+        new_iterations.append(
+            substitute_trace_ids_with_canonical_qids(
+                raw_iter, trace_maps_by_iter[iter_num]
+            )
+        )
+    return {**raw_fixture, "iterations": new_iterations}
+
+
+def load_fixture(path: pathlib.Path | str) -> dict[str, Any]:
+    """Read a fixture JSON from disk."""
+    return json.loads(pathlib.Path(path).read_text())
+
+
+def save_fixture(fixture: dict[str, Any], path: pathlib.Path | str) -> None:
+    """Write a fixture JSON to disk in compact form (matches stderr emission)."""
+    pathlib.Path(path).write_text(json.dumps(fixture, separators=(",", ":")))

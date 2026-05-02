@@ -64,3 +64,52 @@ def test_substitute_passes_through_already_canonical_rows() -> None:
     }
     out = substitute_trace_ids_with_canonical_qids(raw_iter, {})
     assert out["eval_rows"][0]["question_id"] == "airline_q_001"
+
+
+def test_reconstruct_fixture_transforms_all_iterations() -> None:
+    """End-to-end transformation across multiple iterations + per-iter maps."""
+    from genie_space_optimizer.scripts.reconstruct_airline_real_v1_fixture import (
+        reconstruct_fixture,
+    )
+
+    raw_fixture = {
+        "fixture_id": "airline_real_v1_run_test",
+        "iterations": [
+            {
+                "iteration": 1,
+                "eval_rows": [{"question_id": "tr-a", "result_correctness": "yes"}],
+                "clusters": [{"cluster_id": "H001", "question_ids": ["q1"]}],
+            },
+            {
+                "iteration": 2,
+                "eval_rows": [{"question_id": "tr-b", "result_correctness": "no"}],
+                "clusters": [{"cluster_id": "H001", "question_ids": ["q2"]}],
+            },
+        ],
+    }
+    trace_maps_by_iter = {1: {"tr-a": "q1"}, 2: {"tr-b": "q2"}}
+
+    out = reconstruct_fixture(raw_fixture, trace_maps_by_iter)
+
+    assert out["fixture_id"] == "airline_real_v1_run_test"
+    assert len(out["iterations"]) == 2
+    assert out["iterations"][0]["eval_rows"][0]["question_id"] == "q1"
+    assert out["iterations"][1]["eval_rows"][0]["question_id"] == "q2"
+
+
+def test_reconstruct_fixture_raises_on_iteration_missing_from_maps() -> None:
+    """Iteration with no map entry is a hard failure (caller must supply maps for every iter)."""
+    import pytest
+    from genie_space_optimizer.scripts.reconstruct_airline_real_v1_fixture import (
+        reconstruct_fixture,
+    )
+
+    raw_fixture = {
+        "fixture_id": "x",
+        "iterations": [
+            {"iteration": 1, "eval_rows": [{"question_id": "tr-a"}], "clusters": []},
+            {"iteration": 2, "eval_rows": [{"question_id": "tr-b"}], "clusters": []},
+        ],
+    }
+    with pytest.raises(KeyError, match="iteration 2"):
+        reconstruct_fixture(raw_fixture, {1: {"tr-a": "q1"}})
