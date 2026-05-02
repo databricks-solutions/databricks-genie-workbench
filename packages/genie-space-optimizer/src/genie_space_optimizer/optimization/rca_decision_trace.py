@@ -287,6 +287,56 @@ def summarize_patch_for_trace(patch: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def patch_cap_decision_records(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    decisions: list[dict[str, Any]],
+) -> list[DecisionRecord]:
+    """Convert per-AG patch-cap audit dicts into typed DecisionRecord rows.
+
+    This is the Phase B source-of-truth conversion. ``patch_cap_decision_rows``
+    below is the legacy Delta-row adapter that delegates here.
+    """
+    records: list[DecisionRecord] = []
+    for decision in decisions:
+        proposal_id = str(decision.get("proposal_id") or "")
+        selected = decision.get("decision") == "selected"
+        target_qids = _clean_str_tuple(decision.get("target_qids") or ())
+        records.append(
+            DecisionRecord(
+                run_id=run_id,
+                iteration=int(iteration),
+                decision_type=DecisionType.GATE_DECISION,
+                outcome=DecisionOutcome.ACCEPTED if selected else DecisionOutcome.DROPPED,
+                reason_code=(
+                    ReasonCode.PATCH_CAP_SELECTED
+                    if selected else ReasonCode.PATCH_CAP_DROPPED
+                ),
+                question_id=target_qids[0] if len(target_qids) == 1 else "",
+                ag_id=ag_id,
+                proposal_id=proposal_id,
+                gate="patch_cap",
+                reason_detail=str(decision.get("selection_reason") or ""),
+                affected_qids=target_qids,
+                proposal_ids=(proposal_id,) if proposal_id else (),
+                metrics={
+                    "selection_reason": decision.get("selection_reason"),
+                    "rank": decision.get("rank"),
+                    "relevance_score": _as_float(decision.get("relevance_score")),
+                    "lever": _as_int(decision.get("lever"), 5),
+                    "patch_type": decision.get("patch_type"),
+                    "rca_id": decision.get("rca_id"),
+                    "target_qids": list(target_qids),
+                    "parent_proposal_id": str(decision.get("parent_proposal_id") or ""),
+                    "expanded_patch_id": str(decision.get("expanded_patch_id") or ""),
+                },
+            )
+        )
+    return records
+
+
 def patch_cap_decision_rows(
     *,
     run_id: str,
@@ -294,35 +344,45 @@ def patch_cap_decision_rows(
     ag_id: str,
     decisions: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """Legacy Delta-row adapter over ``patch_cap_decision_records``.
+
+    Phase B: typed ``DecisionRecord`` is the source of truth; this row
+    shape is preserved for the existing Delta persistence path
+    (``write_decisions``) and for callers that read the legacy schema.
+    """
     rows: list[dict[str, Any]] = []
-    for idx, decision in enumerate(decisions, start=1):
-        proposal_id = str(decision.get("proposal_id") or "")
-        selected = decision.get("decision") == "selected"
+    for idx, record in enumerate(
+        patch_cap_decision_records(
+            run_id=run_id,
+            iteration=iteration,
+            ag_id=ag_id,
+            decisions=decisions,
+        ),
+        start=1,
+    ):
+        row = record.to_dict()
         rows.append({
-            "run_id": run_id,
-            "iteration": iteration,
-            "ag_id": ag_id,
+            "run_id": row["run_id"],
+            "iteration": row["iteration"],
+            "ag_id": row.get("ag_id"),
             "decision_order": idx,
             "stage_letter": "I",
-            "gate_name": "patch_cap",
-            "decision": "accepted" if selected else "dropped",
-            "reason_code": None if selected else decision.get("selection_reason"),
-            "reason_detail": decision.get("selection_reason"),
-            "affected_qids": list(decision.get("target_qids") or []),
-            "source_cluster_ids": [],
-            "proposal_ids": [proposal_id] if proposal_id else [],
+            "gate_name": row.get("gate", ""),
+            "decision": (
+                "accepted"
+                if record.outcome == DecisionOutcome.ACCEPTED else "dropped"
+            ),
+            "reason_code": (
+                None
+                if record.outcome == DecisionOutcome.ACCEPTED
+                else row.get("reason_detail")
+            ),
+            "reason_detail": row.get("reason_detail"),
+            "affected_qids": row.get("affected_qids", []),
+            "source_cluster_ids": row.get("source_cluster_ids", []),
+            "proposal_ids": row.get("proposal_ids", []),
             "proposal_to_patch_map": None,
-            "metrics": {
-                "selection_reason": decision.get("selection_reason"),
-                "rank": decision.get("rank"),
-                "relevance_score": _as_float(decision.get("relevance_score")),
-                "lever": _as_int(decision.get("lever"), 5),
-                "patch_type": decision.get("patch_type"),
-                "rca_id": decision.get("rca_id"),
-                "target_qids": list(decision.get("target_qids") or []),
-                "parent_proposal_id": str(decision.get("parent_proposal_id") or ""),
-                "expanded_patch_id": str(decision.get("expanded_patch_id") or ""),
-            },
+            "metrics": row.get("metrics", {}),
         })
     return rows
 
