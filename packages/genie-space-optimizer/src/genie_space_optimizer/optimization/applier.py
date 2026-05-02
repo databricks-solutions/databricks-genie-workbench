@@ -2755,21 +2755,26 @@ def _split_rewrite_instruction_patch(patch: dict) -> list[dict] | None:
         for sec in LEVER_TO_SECTIONS.get(lv, []):
             _owner_by_section.setdefault(sec, lv)
 
-    _base_fields = {
-        k: patch.get(k) for k in (
-            "proposal_id",
-            "cluster_id",
-            "rationale",
-            "dual_persistence",
-            "confidence",
-            "questions_fixed",
-            "questions_at_risk",
-            "net_impact",
-            "asi",
-            "provenance",
-            "invoked_levers",
-            "old_value",
-        ) if k in patch
+    _SPLIT_CHILD_BASE_FIELDS: tuple[str, ...] = (
+        # Identity & rationale that the existing splitter relied on.
+        "proposal_id",
+        "rationale",
+        "dual_persistence",
+        "questions_fixed",
+        "questions_at_risk",
+        "net_impact",
+        "asi",
+        "invoked_levers",
+        "old_value",
+    )
+    # Track B: also propagate every field on the canonical proposal-metadata
+    # allowlist so split-children carry the same risk and cluster lineage
+    # the parent carried. ``confidence`` and ``provenance`` are already in
+    # the allowlist; ``cluster_id`` and friends now flow here too.
+    _base_fields: dict = {
+        k: patch.get(k)
+        for k in (*_SPLIT_CHILD_BASE_FIELDS, *PROPOSAL_METADATA_ALLOWLIST)
+        if k in patch
     }
 
     children: list[dict] = []
