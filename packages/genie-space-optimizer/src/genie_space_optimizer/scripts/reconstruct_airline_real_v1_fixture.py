@@ -238,3 +238,99 @@ def fetch_trace_map_for_iteration_via_delta(
         if canonical and trace_id:
             inverted[str(trace_id)] = str(canonical)
     return inverted
+
+
+def assert_canonical_overlap(fixture: dict[str, Any]) -> None:
+    """Validate that every iteration's eval_qids and cluster_qids share a namespace.
+
+    Two checks:
+      1. No eval_row has a ``tr-`` prefixed qid.
+      2. Every cluster qid (hard + soft) is present in that iteration's
+         eval_rows. (Strict subset, not equal — eval_rows is the full
+         24-question corpus; clusters select a few that need fixing.)
+
+    Raises AssertionError on the first violation.
+    """
+    for it in fixture.get("iterations") or []:
+        eval_qids = {r.get("question_id") for r in (it.get("eval_rows") or [])}
+        trace_id_prefixed = {q for q in eval_qids if isinstance(q, str) and q.startswith("tr-")}
+        if trace_id_prefixed:
+            raise AssertionError(
+                f"iter {it.get('iteration')}: {len(trace_id_prefixed)} eval_rows "
+                f"have trace-id-prefixed qids (e.g. {next(iter(trace_id_prefixed))})"
+            )
+        cluster_qids: set[str] = set()
+        for c in (it.get("clusters") or []):
+            cluster_qids.update(c.get("question_ids") or [])
+        for c in (it.get("soft_clusters") or []):
+            cluster_qids.update(c.get("question_ids") or [])
+        missing = cluster_qids - eval_qids
+        if missing:
+            raise AssertionError(
+                f"iter {it.get('iteration')}: cluster qids not present in eval_rows: "
+                f"{sorted(missing)}"
+            )
+
+
+def main(
+    *,
+    raw_fixture_path: str,
+    out_fixture_path: str,
+    experiment_id: str,
+    optimization_run_id: str,
+    catalog: str,
+    schema: str,
+    spark: Any | None = None,
+) -> None:
+    """End-to-end reconstruction. Run inside a Databricks notebook.
+
+    Step 1. Load raw fixture.
+    Step 2. For each iteration, build trace_id->canonical_qid via MLflow
+            (primary) or Delta (fallback).
+    Step 3. Apply substitution.
+    Step 4. Assert canonical overlap.
+    Step 5. Save the corrected fixture.
+
+    Hard-fails (raises) at any step that does not produce expected data —
+    we explicitly do not silently emit a partially-correct fixture.
+    """
+    print(f"[reconstruct] loading raw fixture from {raw_fixture_path}")
+    raw = load_fixture(raw_fixture_path)
+    iterations = raw.get("iterations") or []
+    print(f"[reconstruct] found {len(iterations)} iterations in raw fixture")
+
+    trace_maps_by_iter: dict[int, dict[str, str]] = {}
+    for it in iterations:
+        iter_num = int(it["iteration"])
+        print(f"[reconstruct] iter {iter_num}: fetching trace map via MLflow tags")
+        tmap = fetch_trace_map_for_iteration(
+            experiment_id=experiment_id,
+            optimization_run_id=optimization_run_id,
+            iteration=iter_num,
+        )
+        if not tmap and spark is not None:
+            print(f"[reconstruct] iter {iter_num}: MLflow returned 0 traces, falling back to Delta")
+            tmap = fetch_trace_map_for_iteration_via_delta(
+                spark=spark,
+                catalog=catalog,
+                schema=schema,
+                optimization_run_id=optimization_run_id,
+                iteration=iter_num,
+            )
+        if not tmap:
+            raise RuntimeError(
+                f"iter {iter_num}: both MLflow and Delta returned empty trace maps; "
+                f"check experiment_id={experiment_id!r}, run_id={optimization_run_id!r}"
+            )
+        print(f"[reconstruct] iter {iter_num}: recovered {len(tmap)} trace_id->qid pairs")
+        trace_maps_by_iter[iter_num] = tmap
+
+    print("[reconstruct] applying substitution across all iterations")
+    corrected = reconstruct_fixture(raw, trace_maps_by_iter)
+
+    print("[reconstruct] running canonical-overlap assertions")
+    assert_canonical_overlap(corrected)
+
+    print(f"[reconstruct] writing corrected fixture to {out_fixture_path}")
+    save_fixture(corrected, out_fixture_path)
+    print("[reconstruct] DONE")

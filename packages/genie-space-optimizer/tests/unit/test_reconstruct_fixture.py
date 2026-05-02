@@ -113,3 +113,63 @@ def test_reconstruct_fixture_raises_on_iteration_missing_from_maps() -> None:
     }
     with pytest.raises(KeyError, match="iteration 2"):
         reconstruct_fixture(raw_fixture, {1: {"tr-a": "q1"}})
+
+
+def test_assert_canonical_overlap_passes_when_clusters_subset_of_eval_qids() -> None:
+    """The cluster qids must be a subset of the eval qids after substitution."""
+    from genie_space_optimizer.scripts.reconstruct_airline_real_v1_fixture import (
+        assert_canonical_overlap,
+    )
+
+    fx = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "eval_rows": [{"question_id": "q1"}, {"question_id": "q2"}, {"question_id": "q3"}],
+                "clusters": [{"cluster_id": "H001", "question_ids": ["q2"]}],
+                "soft_clusters": [{"cluster_id": "S001", "question_ids": ["q3"]}],
+            },
+        ],
+    }
+    assert_canonical_overlap(fx)  # must not raise
+
+
+def test_assert_canonical_overlap_fails_when_eval_qids_have_trace_id_prefix() -> None:
+    """Detects the bug we are reconstructing around."""
+    import pytest
+    from genie_space_optimizer.scripts.reconstruct_airline_real_v1_fixture import (
+        assert_canonical_overlap,
+    )
+
+    fx = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "eval_rows": [{"question_id": "tr-aaa"}],
+                "clusters": [{"cluster_id": "H001", "question_ids": ["q1"]}],
+                "soft_clusters": [],
+            },
+        ],
+    }
+    with pytest.raises(AssertionError, match="trace-id-prefixed"):
+        assert_canonical_overlap(fx)
+
+
+def test_assert_canonical_overlap_fails_when_cluster_qid_missing_from_eval_qids() -> None:
+    import pytest
+    from genie_space_optimizer.scripts.reconstruct_airline_real_v1_fixture import (
+        assert_canonical_overlap,
+    )
+
+    fx = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "eval_rows": [{"question_id": "q1"}],
+                "clusters": [{"cluster_id": "H001", "question_ids": ["q_missing"]}],
+                "soft_clusters": [],
+            },
+        ],
+    }
+    with pytest.raises(AssertionError, match="not present in eval_rows"):
+        assert_canonical_overlap(fx)
