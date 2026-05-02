@@ -25,7 +25,7 @@ edits are allowed only when each edit deletes or deprecates an existing alias.
 | Regression debt | `regression_debt_qids` | Bounded out-of-target hard regressions accepted because the action group produced a net causal win. | `collateral_qids`, `new regressions` when accepted | `optimization/control_plane.py::decide_control_plane_acceptance` |
 | Rollback trust | `rollback_state_trusted` | Boolean control-plane state indicating whether the live space matches the pre-AG snapshot after rollback. | `rollback_verified` when used as a loop-wide learning flag | `optimization/harness.py` |
 | Optimizer trace container | `OptimizationTrace` | Canonical in-memory container for journey events, decision records, validation reports, and operator transcript projections. | `decision log`, `trace rows` when used as a schema name | `optimization/rca_decision_trace.py` |
-| Optimizer decision row | `DecisionRecord` | Canonical record for a Lever Loop choice with shared identity fields, outcome, reason code, affected qids, and metrics. | `decision audit row` outside Delta persistence, `gate row` outside gate-specific adapters | `optimization/rca_decision_trace.py` |
+| Optimizer decision row | `DecisionRecord` | Canonical record for a Lever Loop choice with evidence refs, RCA, root cause, causal target qids, expected effect, observed effect, regression qids, reason code, and next action. | `decision audit row` outside Delta persistence, `gate row` outside gate-specific adapters | `optimization/rca_decision_trace.py` |
 | Operator transcript | `operator_transcript` | Deterministic pretty stdout projection rendered from `OptimizationTrace`. | ad hoc print sections, scoreboard prose | `optimization/rca_decision_trace.py` |
 
 ## Data Flow As Types
