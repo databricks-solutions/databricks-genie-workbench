@@ -187,6 +187,71 @@ def canonical_decision_json(records: Sequence[DecisionRecord]) -> str:
     return json.dumps(rows, sort_keys=True, separators=(",", ":"))
 
 
+@dataclass(frozen=True)
+class OptimizationTrace:
+    """Canonical in-memory container for the optimizer-decision trace.
+
+    Owns journey events, typed decision records, and per-iteration
+    validation reports. Replay, fixtures, persistence, and the operator
+    transcript are deterministic projections over this single source.
+    """
+
+    journey_events: tuple[Any, ...] = ()
+    decision_records: tuple[DecisionRecord, ...] = ()
+    validation_by_iteration: Mapping[int, Mapping[str, Any]] = field(default_factory=dict)
+
+    def canonical_decision_json(self) -> str:
+        return canonical_decision_json(self.decision_records)
+
+    def render_operator_transcript(self, *, iteration: int) -> str:
+        return render_operator_transcript(trace=self, iteration=iteration)
+
+
+def render_operator_transcript(
+    *,
+    trace: OptimizationTrace,
+    iteration: int,
+) -> str:
+    records = [
+        r for r in trace.decision_records
+        if int(r.iteration) == int(iteration)
+    ]
+    bar = "-" * 100
+    lines = [
+        f"+{bar}",
+        f"|  OPERATOR TRANSCRIPT  iteration={iteration}",
+        f"+{bar}",
+        f"|  Decision records: {len(records)}",
+    ]
+    by_type: dict[str, list[DecisionRecord]] = {}
+    for rec in sorted(records, key=_decision_sort_key):
+        by_type.setdefault(rec.decision_type.value, []).append(rec)
+    for dtype in sorted(by_type):
+        lines.append("|")
+        lines.append(f"|  {dtype}")
+        for rec in by_type[dtype]:
+            qids = list(rec.affected_qids) or ([rec.question_id] if rec.question_id else [])
+            target = ",".join(qids) if qids else "-"
+            parts = [
+                f"outcome={rec.outcome.value}",
+                f"reason={rec.reason_code.value}",
+                f"qid={target}",
+            ]
+            if rec.cluster_id:
+                parts.append(f"cluster={rec.cluster_id}")
+            if rec.ag_id:
+                parts.append(f"ag={rec.ag_id}")
+            if rec.proposal_id:
+                parts.append(f"proposal={rec.proposal_id}")
+            if rec.gate:
+                parts.append(f"gate={rec.gate}")
+            if rec.reason_detail:
+                parts.append(f"detail={rec.reason_detail}")
+            lines.append("|    - " + "  ".join(parts))
+    lines.append(f"+{bar}")
+    return "\n".join(lines)
+
+
 def summarize_patch_for_trace(patch: dict[str, Any]) -> dict[str, Any]:
     target = (
         patch.get("section_name")
