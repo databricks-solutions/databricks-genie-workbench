@@ -9827,6 +9827,26 @@ def _run_gate_checks(
     except Exception:
         logger.debug("Failed to log full eval gate feedback", exc_info=True)
 
+    # Track F — when the candidate is accepted via the attribution-drift
+    # branch, the declared target qids did not move but other qids
+    # flipped. Surface the actual flipped qids so operators can see why
+    # the candidate is a real win even though the named target is still
+    # hard.
+    if _control_plane_decision.reason_code == "accepted_with_attribution_drift":
+        from genie_space_optimizer.optimization.control_plane import (
+            hard_failure_qids,
+        )
+
+        _pre_hard_set = set(hard_failure_qids(_baseline_rows_for_control_plane))
+        _post_hard_set = set(hard_failure_qids(_after_rows))
+        _actual_fixed = tuple(sorted(_pre_hard_set - _post_hard_set))
+        logger.info(
+            "[Track F] ACCEPTED with attribution drift: "
+            "declared_target_qids=%s actual_fixed_qids=%s",
+            tuple(_control_plane_decision.target_qids),
+            _actual_fixed,
+        )
+
     _audit_emit(
         stage_letter="N",
         gate_name="full_eval_acceptance",
@@ -10633,10 +10653,25 @@ def _run_lever_loop(
     # The eval-entry block at iteration N uses iteration N-1's eval
     # result (or this baseline-derived seed for N=1) so the replay
     # fixture has real ``eval_rows`` even on the first iteration.
-    # Updated immediately after every ``full_result = ...`` assignment
-    # inside the loop body.
+    # Inside ``_run_lever_loop`` the only outer-loop ``full_result =``
+    # assignment is the post-acceptance line below; the carrier is
+    # refreshed there. Rolled-back iterations deliberately do NOT
+    # update the carrier because the live Genie state reverts to the
+    # last accepted (or seeded) baseline.
     _latest_eval_result: dict[str, Any] = {}
     try:
+        # Reuse the canonical row-extractors so that flattened MLflow
+        # keys (``feedback/result_correctness/value``,
+        # ``feedback/arbiter/value``) and legacy keys
+        # (``result_correctness/value`` / ``result_correctness`` /
+        # ``arbiter/value`` / ``arbiter``) are handled identically to
+        # downstream eval consumers. Without this, baseline rows that
+        # only carry the ``feedback/...`` flattened form would seed
+        # every score as ``"no"`` and overstate failure_question_ids.
+        from genie_space_optimizer.optimization.evaluation import (
+            _arbiter_str as _seed_arbiter_str,
+            _rc_str as _seed_rc_str,
+        )
         _baseline_rows_seed = _rows_from_iteration_payload(baseline_iter)
         if _baseline_rows_seed:
             _seed_qids: list[str] = []
@@ -10648,17 +10683,11 @@ def _run_lever_loop(
                 if not _qid:
                     continue
                 _seed_qids.append(_qid)
-                _rc = str(
-                    _r.get("result_correctness/value")
-                    or _r.get("result_correctness")
-                    or ""
-                ).lower()
+                _rc = _seed_rc_str(_r)
                 _seed_scores[_qid] = (
                     "yes" if _rc in ("yes", "true", "1", "pass") else "no"
                 )
-                _arb = str(
-                    _r.get("arbiter/value") or _r.get("arbiter") or ""
-                ).lower()
+                _arb = _seed_arbiter_str(_r)
                 if _arb:
                     _seed_arbiter[_qid] = _arb
                 if _seed_scores[_qid] == "no":
