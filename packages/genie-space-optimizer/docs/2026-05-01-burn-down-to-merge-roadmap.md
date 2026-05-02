@@ -25,11 +25,11 @@ The roadmap should converge on one canonical trace model with multiple projectio
 
 ```text
 OptimizationTrace
-  ├─ Journey events: qid lifecycle projection
-  ├─ Decision records: optimizer choice/rationale projection
-  ├─ Journey validation reports: per-iteration contract health
-  ├─ Scoreboard snapshot: aggregate operator health metrics
-  └─ Operator transcript: pretty stdout rendered from the same data
+  |-- Journey events: qid lifecycle projection
+  |-- Decision records: optimizer choice/rationale projection
+  |-- Journey validation reports: per-iteration contract health
+  |-- Scoreboard snapshot: aggregate operator health metrics
+  `-- Operator transcript: pretty stdout rendered from the same data
 ```
 
 The shared identity spine is:
@@ -55,7 +55,7 @@ stdout transcript must be derived from the same records so they cannot drift.
 | E | Final integration + contract-gate flip + merge | No | 1 | ~1 day | merge point |
 | F | Deeper `harness.py` modularization (5 byte-stable extractions) | Yes | 0 | ~5–8 days | post-merge follow-up |
 | G | Typed contract hardening for extracted modules | Yes | 0 | ~5–10 days | post-merge architecture follow-up |
-| | **Pre-merge total** | | **2–4 runs (~4–8 hrs)** | **~2 weeks** | |
+| | **Pre-merge total** | | **9–11 runs (~18–22 hrs, 8 already spent)** | **~2–3 weeks** | |
 | | **Post-merge follow-up** | | 0 | ~2–3 weeks | |
 
 ## Why this sequencing
@@ -97,7 +97,7 @@ Seven reasons it has to be in this order:
 
 **Why second:** The lossless-contract validator is already deployed in **warn-only** mode (per [`2026-05-01-lever-loop-lossless-contract-and-replay-gate-plan.md`](./2026-05-01-lever-loop-lossless-contract-and-replay-gate-plan.md)). Burn-down is the operator activity of running real loops, triaging the violations the warn-only validator surfaces, fixing missing event emits in `harness.py`, and re-running until violations are zero.
 
-Without burn-down, Phase B's scoreboard math is built on a journey ledger that's still missing events — `causal_patch_survival_pct` would be wrong by construction.
+Without burn-down, Phase D's scoreboard math would be built on a journey ledger that's still missing events — `causal_patch_survival_pct` would be wrong by construction.
 
 **What ships:**
 
@@ -109,7 +109,7 @@ Without burn-down, Phase B's scoreboard math is built on a journey ledger that's
 
 **Why a real-captured fixture, not a hand-synthesized one?** Capturing real loop output is faster (no design work), unbiased (it exercises every event the real loop *actually* emits, not what we *expected* it to emit), and refreshable (when the loop's emit set legitimately changes, re-capture and commit). The hand-synthesized fixture extension that earlier drafts proposed is dropped.
 
-Logic correctness for B and C is validated by **pure-function unit tests over synthetic events** — fixture work is only for end-to-end replay byte-stability.
+Logic correctness for later trace, transcript, scoreboard, and bucketing work is validated by **pure-function unit tests over synthetic events**. Fixture work is for end-to-end replay byte-stability and real-cycle regression coverage.
 
 **Exit criterion:** Clean burn-down on airline corpus + `airline_real_v1.json` committed with `expected_canonical_journey`, per-iteration validation report persistence, and `test_run_replay_airline_real_v1_within_burndown_budget` enforcing budget `0`.
 
@@ -375,15 +375,17 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
 | Phase | Real runs | Wall time |
 |---|---|---|
 | 0 (verification smoke) | 0–1 | ~2 hr |
-| A (burn-down, 1–3 cycles) | 1–3 | ~2–6 hr |
-| B / C / D (replay-only) | 0 | 0 |
+| A (burn-down, cycles 1–8) | 8 actual | ~16 hr actual |
+| B (unified trace + transcript) | 0 | 0 |
+| C (RCA loop reliability) | 0–1 | ~0–2 hr |
+| D (scoreboard, bucketing, first extractions) | 0 | 0 |
 | E (final integration) | 1 | ~2 hr |
 | F (deeper modularization, replay-only, post-merge) | 0 | 0 |
 | G (typed contract hardening, replay-only, post-merge) | 0 | 0 |
-| **Pre-merge total** | **2–4** | **~4–10 hr** |
+| **Pre-merge total** | **9–11** | **~18–22 hr** |
 | **Post-merge follow-up** | **0** | **0** |
 
-Calendar estimate: ~2 weeks pre-merge with the contract gate live at the end, then ~1 week of small post-merge PRs for Phase F, then ~1–2 weeks of typed-contract hardening for Phase G.
+Calendar estimate from the current point: ~1–2 additional weeks pre-merge with journey and decision gates live at the end, then ~1 week of small post-merge PRs for Phase F, then ~1–2 weeks of typed-contract hardening for Phase G.
 
 ---
 
@@ -394,12 +396,13 @@ Calendar estimate: ~2 weeks pre-merge with the contract gate live at the end, th
 - **Hand-synthesized fixture extensions.** Replaced by real-fixture capture at the end of Phase A (more honest, less work).
 - **Further orchestration-spine decomposition beyond Phase F/G.** After Phase F, the remaining `harness.py` should be the orchestration spine. Phase G improves the contracts crossing that spine. Splitting the spine itself further is parked unless the spine becomes hard to reason about after typed contracts land.
 - **Typed contract redesign before Phase G.** Strong typing is the desired endpoint, but it is deliberately delayed until after the burn-down, merge gate, and byte-stable extractions. Before then, only add narrow types that support the active phase without reshaping module boundaries.
+- **Dashboarding beyond stdout/MLflow artifacts.** Phase B standardizes the operator transcript first. Rich dashboards can follow once the trace contract is stable and persisted consistently.
 
 ---
 
 ## Concrete next action
 
-**Start Phase B — Operator Scoreboard.** Phases 0 and A are complete (see [`2026-05-01-phase-a-burndown-log.md`](./2026-05-01-phase-a-burndown-log.md) for the close summary and [`2026-05-02-phase-a-burndown-log.md`](./2026-05-02-phase-a-burndown-log.md) for the per-iter detail). The airline corpus's journey-contract validation count is 0; `airline_real_v1.json` is committed with `expected_canonical_journey` (365 events, 38 706 bytes) and gated by `test_run_replay_airline_real_v1_within_burndown_budget` (budget=0). Phase B is replay-only, requires zero real-Genie cycles, and can begin immediately. Detailed plan to be drafted as `2026-05-XX-operator-scoreboard-plan.md`.
+**Start Phase B — Unified trace + DecisionRecord + operator transcript.** Phases 0 and A are complete (see [`2026-05-01-phase-a-burndown-log.md`](./2026-05-01-phase-a-burndown-log.md) for the close summary and [`2026-05-02-phase-a-burndown-log.md`](./2026-05-02-phase-a-burndown-log.md) for the per-iter detail). The airline corpus's journey-contract validation count is 0; `airline_real_v1.json` is committed with `expected_canonical_journey` (365 events, 38 706 bytes) and gated by `test_run_replay_airline_real_v1_within_burndown_budget` (budget=0). Phase B is replay-only, requires zero real-Genie cycles, and should define the canonical decision-trace schema before scoreboard or bucketing work begins. Detailed plan to be drafted as `2026-05-XX-unified-trace-and-operator-transcript-plan.md`.
 
 ---
 
@@ -414,9 +417,14 @@ Calendar estimate: ~2 weeks pre-merge with the contract gate live at the end, th
 | [`2026-05-02-run-replay-per-iteration-fix-plan.md`](./2026-05-02-run-replay-per-iteration-fix-plan.md) | Implemented | A (replay-engine fix that drove cycle-7→8 burn-down to 0) |
 | [`2026-05-02-phase-a-burndown-log.md`](./2026-05-02-phase-a-burndown-log.md) | Captured | A (per-cycle ledger and detail) |
 | [`2026-05-02-cycle7-reconstruction-postmortem.md`](./2026-05-02-cycle7-reconstruction-postmortem.md) | Captured | A (cycles 1-7 fixture-shape postmortem) |
+| [`2026-05-02-cycle8-side-bugs-high-level-plan.md`](./2026-05-02-cycle8-side-bugs-high-level-plan.md) | Drafted | C (qid extraction and target-qid propagation gaps) |
 | [`high level plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md`](./high%20level%20plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md) | Implemented | A (consolidated 16-track Phase A plan) |
-| `2026-05-XX-operator-scoreboard-plan.md` | To be written | B |
-| `2026-05-XX-failure-bucketing-classifier-plan.md` | To be written | C |
+| `2026-05-XX-unified-trace-and-operator-transcript-plan.md` | To be written | B |
+| `2026-05-XX-rca-loop-contract-plan.md` | To be written | C |
+| `2026-05-XX-canonical-qid-extraction-plan.md` | To be written | C |
+| `2026-05-XX-target-qid-propagation-plan.md` | To be written | C |
+| `2026-05-XX-operator-scoreboard-plan.md` | To be written | D |
+| `2026-05-XX-failure-bucketing-classifier-plan.md` | To be written | D |
 | `2026-05-XX-harness-extractions-phase-1-plan.md` | To be written | D |
 | `2026-05-XX-harness-extractions-phase-2-plan.md` | To be written | F |
 | `2026-05-XX-lever-loop-typed-contract-hardening-plan.md` | To be written | G |
