@@ -683,6 +683,14 @@ def select_target_aware_causal_patch_cap(
             selection_reason = "behavior_direct_fix_reserved"
         elif selected_flag:
             selection_reason = "target_coverage"
+        elif (
+            not selected_flag
+            and _patch_family(patch) in selected_families
+        ):
+            # A patch was dropped because its family already had a
+            # representative selected in an earlier pass. Surfaces the
+            # split-child crowding case that motivated Track C.
+            selection_reason = "family_already_selected"
         else:
             selection_reason = "lower_causal_rank"
         decisions.append({

@@ -86,3 +86,47 @@ def test_split_children_of_one_parent_consume_one_family_slot_not_n() -> None:
     assert split_children_kept <= 1, (
         f"family slot collapse failed: {split_children_kept} split-children kept"
     )
+
+
+def test_dropped_split_child_decision_carries_family_already_selected_reason() -> None:
+    """When the second split-child is dropped because its family already
+    won a slot, the decision row must explain that explicitly so
+    operators can distinguish family-crowding from low-relevance drops.
+    """
+    from genie_space_optimizer.optimization.patch_selection import (
+        select_target_aware_causal_patch_cap,
+    )
+
+    patches = [
+        _split_child("P_REWRITE", 1, "QUERY RULES", 0.92),
+        _split_child("P_REWRITE", 2, "ASSET ROUTING", 0.91),
+        _split_child("P_REWRITE", 3, "QUERY PATTERNS", 0.90),
+        {
+            "proposal_id": "P_DIRECT",
+            "type": "add_sql_snippet_filter",
+            "lever": 6,
+            "root_cause": "missing_filter",
+            "source_cluster_ids": ["H001"],
+            "target_qids": ["q1"],
+            "relevance_score": 0.50,
+        },
+    ]
+
+    _, decisions = select_target_aware_causal_patch_cap(
+        patches,
+        target_qids=("q1",),
+        max_patches=2,
+        active_cluster_ids=("H001",),
+        per_cluster_slot_floor=1,
+    )
+
+    dropped_split_children = [
+        d for d in decisions
+        if d.get("decision") == "dropped"
+        and d.get("proposal_id", "").startswith("P_REWRITE#")
+    ]
+    assert dropped_split_children, "expected dropped split-children in decisions"
+    for d in dropped_split_children:
+        assert d.get("selection_reason") == "family_already_selected", (
+            f"expected family_already_selected, got {d.get('selection_reason')}"
+        )
