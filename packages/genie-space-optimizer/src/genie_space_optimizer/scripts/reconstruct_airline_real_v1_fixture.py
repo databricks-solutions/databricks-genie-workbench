@@ -114,3 +114,127 @@ def load_fixture(path: pathlib.Path | str) -> dict[str, Any]:
 def save_fixture(fixture: dict[str, Any], path: pathlib.Path | str) -> None:
     """Write a fixture JSON to disk in compact form (matches stderr emission)."""
     pathlib.Path(path).write_text(json.dumps(fixture, separators=(",", ":")))
+
+
+def fetch_trace_map_for_iteration(
+    *,
+    experiment_id: str,
+    optimization_run_id: str,
+    iteration: int,
+    expected_count: int = 24,
+) -> dict[str, str]:
+    """Build ``{trace_id: canonical_qid}`` for one iteration via MLflow tags.
+
+    Mirrors ``evaluation.py:_recover_trace_map_via_tags`` but inverts the
+    map (the production helper returns ``{qid: trace_id}``; we want the
+    other direction so we can substitute trace IDs in eval_rows).
+
+    The lever-loop tags every predict_fn span with:
+      - ``genie.optimization_run_id`` = the GSO run UUID
+      - ``genie.iteration`` = the iteration number (string)
+      - ``question_id`` = the canonical benchmark qid
+
+    Args:
+        experiment_id: MLflow experiment that the lever-loop wrote to. From
+            ``$MLFLOW_EXPERIMENT_ID`` in the deploy `.env`.
+        optimization_run_id: GSO run UUID (e.g. cycle 7 was
+            ``78557321-4e43-4bc6-9b4c-906771bd2f8d``). Find via the
+            fixture's ``fixture_id`` field, which has format
+            ``airline_real_v1_run_<run_id>``.
+        iteration: 1-indexed iteration number.
+        expected_count: How many traces we expect (24 for the airline
+            corpus). Used as a sanity check, not a filter.
+
+    Returns:
+        ``{trace_id: canonical_qid}``. Empty if the search returns no rows
+        (caller should fall back to Delta).
+    """
+    import mlflow  # type: ignore[import-not-found]
+
+    filter_string = (
+        f"tags.`genie.optimization_run_id` = '{optimization_run_id}' "
+        f"AND tags.`genie.iteration` = '{iteration}'"
+    )
+    traces_df = mlflow.search_traces(
+        locations=[experiment_id],
+        filter_string=filter_string,
+        max_results=max(500, expected_count * 2),
+    )
+    inverted: dict[str, str] = {}
+    if traces_df is None or len(traces_df) == 0:
+        return inverted
+    for _, row in traces_df.iterrows():
+        tid = row.get("trace_id")
+        tags = row.get("tags") or {}
+        qid = tags.get("question_id", "") if isinstance(tags, dict) else ""
+        if tid and qid:
+            inverted[str(tid)] = str(qid)
+    return inverted
+
+
+def fetch_trace_map_for_iteration_via_delta(
+    *,
+    spark: Any,
+    catalog: str,
+    schema: str,
+    optimization_run_id: str,
+    iteration: int,
+) -> dict[str, str]:
+    """Fallback: build ``{trace_id: canonical_qid}`` from Delta iteration rows.
+
+    Reads ``<catalog>.<schema>.genie_opt_iterations.rows_json`` for the
+    given run + iteration and parses the JSON list. Each row in the
+    persisted JSON has both a canonical ``question_id`` field and (in
+    most shapes) a ``client_request_id`` / ``request_id`` / ``trace_id``
+    that matches the eval_rows entry in the raw fixture.
+
+    Args:
+        spark: A SparkSession (notebook's `spark` global, or a Databricks
+            Connect session).
+        catalog: UC catalog where GSO tables live (``$GSO_CATALOG``).
+        schema: UC schema (``$GSO_SCHEMA``).
+        optimization_run_id: GSO run UUID (must match Delta
+            ``run_id`` partition).
+        iteration: 1-indexed iteration number.
+
+    Returns:
+        ``{trace_id: canonical_qid}``. Empty if the row has no parseable
+        rows_json or no rows carry both fields.
+    """
+    df = spark.sql(
+        f"""
+        SELECT rows_json
+        FROM {catalog}.{schema}.genie_opt_iterations
+        WHERE run_id = '{optimization_run_id}'
+          AND iteration = {int(iteration)}
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """
+    )
+    rows = df.collect()
+    if not rows:
+        return {}
+    rows_json_str = rows[0]["rows_json"] or ""
+    if not rows_json_str:
+        return {}
+    try:
+        rows_payload = json.loads(rows_json_str)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(rows_payload, list):
+        return {}
+    inverted: dict[str, str] = {}
+    for row in rows_payload:
+        if not isinstance(row, dict):
+            continue
+        canonical = row.get("question_id") or row.get("id")
+        if not canonical and isinstance(row.get("inputs"), dict):
+            canonical = row["inputs"].get("question_id")
+        trace_id = (
+            row.get("trace_id")
+            or row.get("client_request_id")
+            or row.get("request_id")
+        )
+        if canonical and trace_id:
+            inverted[str(trace_id)] = str(canonical)
+    return inverted
