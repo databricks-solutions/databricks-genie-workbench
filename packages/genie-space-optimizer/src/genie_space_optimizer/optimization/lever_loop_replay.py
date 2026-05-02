@@ -118,6 +118,7 @@ def _replay_iteration(
         affected = [str(q) for q in (ag.get("affected_questions") or []) if q]
         for q in affected:
             _emit("ag_assigned", question_id=q, ag_id=ag_id)
+        applied_qids: list[str] = []
         for prop in ag.get("patches") or []:
             pid = str(prop.get("proposal_id") or "")
             ptype = str(prop.get("patch_type") or "")
@@ -132,9 +133,25 @@ def _replay_iteration(
                 )
             for q in target_qids:
                 _emit("applied", question_id=q, proposal_id=pid, patch_type=ptype)
+                applied_qids.append(q)
         outcome = ag_outcomes.get(ag_id, "rolled_back")
         if outcome in ("accepted", "accepted_with_regression_debt", "rolled_back"):
             _emit(outcome, question_ids=affected, ag_id=ag_id)
+        elif outcome in ("skipped_no_applied_patches", "skipped_dead_on_arrival"):
+            # Recognized "AG made no successful changes" outcomes from
+            # harness.py:14658 (skipped_dead_on_arrival) and
+            # harness.py:14908 (skipped_no_applied_patches).
+            #
+            # Emit a terminal `rolled_back` event ONLY for qids that
+            # reached `applied` in this AG. For qids that never reached
+            # `applied` (e.g., when every patch had target_qids:[], the
+            # Cycle 8 reality), no terminal AG event is emitted — their
+            # journey legally ends `ag_assigned -> post_eval` per
+            # _LEGAL_NEXT[AG_ASSIGNED]. For qids that did reach `applied`
+            # (the post-strategist-fix world), `applied -> rolled_back ->
+            # post_eval` is legal per _LEGAL_NEXT[APPLIED].
+            if applied_qids:
+                _emit("rolled_back", question_ids=applied_qids, ag_id=ag_id)
 
     # Post-eval closer.
     is_passing = {

@@ -169,3 +169,53 @@ def test_run_replay_airline_real_v1_within_burndown_budget() -> None:
         f"airline_real_v1 produced {len(result.validation.violations)} "
         f"violations (budget={BURNDOWN_BUDGET}). First 5: {summary}"
     )
+
+
+def test_run_replay_recognizes_skipped_ag_outcomes() -> None:
+    """Cycle 8 introduced two new AG outcomes (skipped_no_applied_patches,
+    skipped_dead_on_arrival). The replay engine must recognize them
+    explicitly: emit a terminal `rolled_back` event ONLY for qids that
+    reached `applied`, and emit nothing for qids that never reached
+    `applied`. In both cases the resulting journey must be valid.
+    """
+    from genie_space_optimizer.optimization.lever_loop_replay import run_replay
+
+    fixture_path = (
+        Path(__file__).parent
+        / "fixtures"
+        / "synthetic_skipped_ag_outcomes.json"
+    )
+    fixture = json.loads(fixture_path.read_text())
+
+    result = run_replay(fixture)
+
+    # All three sub-cases must validate cleanly.
+    assert result.validation.is_valid, (
+        f"expected clean validation, got "
+        f"{len(result.validation.violations)} violations: "
+        f"{[(v.question_id, v.kind) for v in result.validation.violations]}"
+    )
+
+    # Sub-case 1 + 2 (target_qids:[]): no terminal AG event for those qids.
+    rolled_back_qids = {
+        e.question_id for e in result.events if e.stage == "rolled_back"
+    }
+    no_apply_qids = {"syn_q1", "syn_q2", "syn_q3", "syn_q4"}
+    assert rolled_back_qids.isdisjoint(no_apply_qids), (
+        f"qids whose AG had no applied patches must NOT receive a "
+        f"terminal AG event; got rolled_back for "
+        f"{rolled_back_qids & no_apply_qids}"
+    )
+
+    # Sub-case 3: applied qid gets a terminal rolled_back.
+    assert "syn_q5" in rolled_back_qids, (
+        "qid that reached `applied` under skipped_dead_on_arrival must "
+        "receive a terminal `rolled_back` event so the journey legally "
+        "ends `applied -> rolled_back -> post_eval`"
+    )
+    # syn_q6 is in affected_questions but NOT in target_qids, so no `applied`
+    # event for it → no terminal rolled_back for it either.
+    assert "syn_q6" not in rolled_back_qids, (
+        "qid that is in affected_questions but never reached `applied` "
+        "must NOT receive a terminal AG event"
+    )

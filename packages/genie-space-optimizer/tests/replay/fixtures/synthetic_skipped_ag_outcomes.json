@@ -1,0 +1,53 @@
+{
+  "fixture_id": "synthetic_skipped_ag_outcomes_v1",
+  "iterations": [
+    {
+      "iteration": 1,
+      "eval_rows": [
+        {"question_id": "syn_q1", "arbiter": "ground_truth_correct", "result_correctness": "no"},
+        {"question_id": "syn_q2", "arbiter": "ground_truth_correct", "result_correctness": "no"},
+        {"question_id": "syn_q3", "arbiter": "ground_truth_correct", "result_correctness": "no"},
+        {"question_id": "syn_q4", "arbiter": "ground_truth_correct", "result_correctness": "no"},
+        {"question_id": "syn_q5", "arbiter": "ground_truth_correct", "result_correctness": "no"},
+        {"question_id": "syn_q6", "arbiter": "ground_truth_correct", "result_correctness": "no"}
+      ],
+      "clusters": [
+        {"cluster_id": "C_NO_APPLY", "question_ids": ["syn_q1", "syn_q2"], "root_cause": "missing_filter"},
+        {"cluster_id": "C_DOA_NO_TARGETS", "question_ids": ["syn_q3", "syn_q4"], "root_cause": "missing_filter"},
+        {"cluster_id": "C_DOA_WITH_APPLY", "question_ids": ["syn_q5", "syn_q6"], "root_cause": "missing_filter"}
+      ],
+      "soft_clusters": [],
+      "post_eval_passing_qids": [],
+      "ag_outcomes": {
+        "AG_SKIP_NO_APPLY": "skipped_no_applied_patches",
+        "AG_SKIP_DOA_NO_TARGETS": "skipped_dead_on_arrival",
+        "AG_SKIP_DOA_WITH_APPLY": "skipped_dead_on_arrival"
+      },
+      "strategist_response": {
+        "action_groups": [
+          {
+            "id": "AG_SKIP_NO_APPLY",
+            "affected_questions": ["syn_q1", "syn_q2"],
+            "patches": [
+              {"cluster_id": "C_NO_APPLY", "proposal_id": "P001", "patch_type": "add_sql_snippet_filter", "target_qids": []}
+            ]
+          },
+          {
+            "id": "AG_SKIP_DOA_NO_TARGETS",
+            "affected_questions": ["syn_q3", "syn_q4"],
+            "patches": [
+              {"cluster_id": "C_DOA_NO_TARGETS", "proposal_id": "P001", "patch_type": "add_sql_snippet_filter", "target_qids": []}
+            ]
+          },
+          {
+            "id": "AG_SKIP_DOA_WITH_APPLY",
+            "affected_questions": ["syn_q5", "syn_q6"],
+            "patches": [
+              {"cluster_id": "C_DOA_WITH_APPLY", "proposal_id": "P001", "patch_type": "add_sql_snippet_filter", "target_qids": ["syn_q5"]}
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
