@@ -43,6 +43,63 @@ The journey ledger answers "where did this qid go?" Decision records answer
 "what did the optimizer choose, why, and what happened?" The scoreboard and
 stdout transcript must be derived from the same records so they cannot drift.
 
+## RCA-Grounded Decision Invariant
+
+No optimizer decision is valid unless it can be traced through this chain:
+
+```text
+evidence -> RCA -> causal target qids -> proposed patch -> gate rationale
+  -> applied/skipped outcome -> observed eval result -> next action
+```
+
+This is a contract, not just an observability preference. Every AG, proposal,
+patch, gate result, rollback/acceptance decision, and unresolved-qid state must
+either carry that chain or carry a typed reason explaining which link is absent.
+
+Concretely, every applicable `DecisionRecord` must carry:
+
+- `evidence_refs` — trace IDs, eval-row references, judge/ASI IDs, SQL-diff IDs, or replay fixture references that justify the decision.
+- `rca_id` and `root_cause` — the normalized RCA being acted on.
+- `target_qids` — the qids the decision claims to help, or a typed broad-scope reason.
+- `expected_effect` — the specific behavior the patch/decision expects to change.
+- `observed_effect` — what post-eval actually observed.
+- `regression_qids` — any out-of-target qids harmed or put into regression debt.
+- `reason_code` — a stable enum suitable for replay assertions and dashboards.
+- `next_action` — the operator or optimizer action implied by the result.
+
+LLMs may propose, summarize, and reason over competing RCA options. Deterministic
+contracts decide whether the proposal is RCA-grounded, targetable, safe to apply,
+accepted, rolled back, or escalated. This keeps the optimizer tunable even when
+Genie or model behavior remains probabilistic.
+
+## Observability Contract
+
+Standard output is a deterministic projection of `OptimizationTrace`, not a
+separate logging path. New observability must add typed trace fields or renderer
+sections, not ad hoc print blocks in `harness.py`.
+
+The operator transcript is the human-readable projection of the same machine-
+readable records persisted in replay fixtures and MLflow artifacts. If stdout
+says "gate dropped P001 because no causal target," the same fact must exist as a
+typed `DecisionRecord` with a stable `reason_code`.
+
+Every iteration's transcript must use a fixed schema:
+
+1. Iteration summary.
+2. Hard failures and current qid state.
+3. RCA cards with evidence.
+4. AG decisions and rationale.
+5. Proposal survival and gate drops.
+6. Applied patches and rollback/acceptance decision.
+7. Observed result and regressions.
+8. Unresolved qid buckets.
+9. Next suggested action.
+
+Replay must assert the operator transcript is byte-stable. A future operator
+should be able to diagnose any failed iteration using only the standard
+operator transcript plus linked trace JSON, without grepping raw logs or reading
+`harness.py`.
+
 ## At a glance
 
 | # | Phase | Replay-only? | Real-Genie runs | Calendar | Branch state |
@@ -70,7 +127,7 @@ Seven reasons it has to be in this order:
 6. **Phase F remains byte-stable modularization.** The deeper extractions should still be behavior-preserving PRs, but they should move trace-aware subsystems, not opaque dict mutation blocks.
 7. **Phase G tightens APIs after modules exist.** Strong contracts become easier and safer once the code has coherent homes. Phase G should harden the module APIs while preserving persisted Delta and replay compatibility.
 
-**Current guardrail:** avoid adding new substantial helpers directly to `harness.py`. If a helper is a reusable domain operation or grows beyond roughly 30–50 LOC, put it in the module it will eventually belong to and import it into `harness.py`. New instrumentation should prefer `DecisionRecord` / `OptimizationTrace` producers over ad hoc log lines.
+**Current guardrail:** avoid adding new substantial helpers directly to `harness.py`. If a helper is a reusable domain operation or grows beyond roughly 30–50 LOC, put it in the module it will eventually belong to and import it into `harness.py`. New instrumentation must add `DecisionRecord` / `OptimizationTrace` producers or renderer sections, not freeform print/log blocks.
 
 ---
 
@@ -123,7 +180,7 @@ Logic correctness for later trace, transcript, scoreboard, and bucketing work is
 
 **What ships:**
 
-- New module `optimization/trace.py` or `optimization/decision_trace.py` with:
+- New trace module ownership under `optimization/rca_decision_trace.py` first, with the option to split transcript rendering into `optimization/operator_transcript.py` during Phase F, containing:
   - `OptimizationTrace`
   - `DecisionRecord`
   - `DecisionType`
@@ -143,6 +200,14 @@ Logic correctness for later trace, transcript, scoreboard, and bucketing work is
   - `decision_type`
   - `reason_code`
   - `outcome`
+- Required RCA-grounded decision fields where applicable:
+  - `evidence_refs`
+  - `root_cause`
+  - `target_qids`
+  - `expected_effect`
+  - `observed_effect`
+  - `regression_qids`
+  - `next_action`
 - Decision records for the first end-to-end path:
   - eval row classified
   - cluster selected
@@ -153,13 +218,15 @@ Logic correctness for later trace, transcript, scoreboard, and bucketing work is
   - patch applied or skipped
   - rollback/acceptance decided
   - qid resolved/unresolved
-- Standard operator transcript rendered from `OptimizationTrace`, not from ad hoc logging. Minimum transcript sections:
+- Standard operator transcript rendered from `OptimizationTrace`, not from ad hoc logging or scattered harness locals. Minimum transcript sections:
   - iteration summary
+  - hard failures and current qid state
   - RCA cards
   - strategist/action-group decisions
   - proposal survival table
   - gate drop reasons
   - patch application and rollback/acceptance decision
+  - observed result and regressions
   - unresolved qid buckets
   - next suggested action
 - Replay fixture extension: `iterations[N].decision_records`, preserved through `journey_fixture_exporter.py`.
@@ -167,15 +234,15 @@ Logic correctness for later trace, transcript, scoreboard, and bucketing work is
 
 **Validation strategy:**
 
-- Pure unit tests for `DecisionRecord` serialization, stable sort order, and renderer snapshots.
+- Pure unit tests for `DecisionRecord` serialization, required RCA/evidence fields, stable sort order, and renderer snapshots.
 - Replay tests assert `airline_real_v1.json` produces byte-stable decision records and a byte-stable operator transcript.
 - Cross-projection consistency tests: if a decision says a patch was applied, the journey projection must contain the corresponding applied event; if the journey says dropped at a gate, a gate decision record must explain why.
 
-**Exit criterion:** every replay iteration has a decision trace and operator transcript; transcript is readable without grepping raw logs; journey, decision, and validation projections agree.
+**Exit criterion:** every replay iteration has a decision trace and operator transcript; transcript is readable without grepping raw logs; journey, decision, RCA, and validation projections agree; every applicable decision is traceable through evidence → RCA → causal target qids → proposed patch → gate rationale → applied/skipped outcome → observed eval result → next action.
 
 **Real-Genie runs:** 0.
 
-**Detailed plan:** [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md) — implemented.
+**Detailed plan:** [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md) — ready for implementation.
 
 ---
 
@@ -199,6 +266,7 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
   - `ExpectedFix`
   - `ObservedEffect`
   - `LearnedNextAction`
+- An RCA-groundedness gate: any AG, proposal, or patch without an RCA-backed causal claim is rejected, quarantined, or flagged with a typed `reason_code`.
 - Fix for strategist/decomposition patch emission where patches lose `target_qids`; every patch must carry target qids or an explicit reason it is intentionally broad.
 - Shared canonical `extract_question_id(row)` helper used by baseline seeding, GT correction, eval row consumers, and replay/exporter code. Trace/request IDs are last-resort fallbacks, never preferred over benchmark qids.
 - Decision records for RCA failures:
@@ -218,7 +286,7 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
 - Replay tests assert every unresolved qid has an RCA loop state and next action.
 - One optional real-Genie run if Cycle 8's side-bug fixes need live confirmation before merge.
 
-**Exit criterion:** no `target_qids: []` patches reach gates unless explicitly marked broad with a reason; no GT-correction candidate is skipped for missing qid; every unresolved qid has a traceable RCA loop state and suggested next action.
+**Exit criterion:** no `target_qids: []` patches reach gates unless explicitly marked broad with a typed reason; no GT-correction candidate is skipped for missing qid; every AG/proposal/patch has an RCA-backed causal claim or an explicit ungrounded reason; every unresolved qid has a traceable RCA loop state and suggested next action.
 
 **Real-Genie runs:** 0–1.
 
@@ -285,12 +353,13 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
    - Zero validator warnings.
    - Decision trace is complete for every iteration.
    - Operator transcript renders with iteration summary, RCA cards, AG decisions, proposal survival, gate reasons, acceptance/rollback, unresolved buckets, and next suggested action.
+   - A failed iteration can be diagnosed from the operator transcript plus linked trace JSON without grepping raw logs or reading `harness.py`.
    - Scoreboard renders with sensible numbers.
    - Bucketing labels look right (spot-check 3–5 unresolved qids manually).
    - RCA loop state is present for every unresolved qid.
    - No accuracy regression vs the variance baseline captured during Phase A burn-down.
 3. **Flip `raise_on_violation=True`** in `harness.py` (the journey contract becomes a hard gate on every future run).
-4. Add a decision-trace hard-gate check for required decision records on replay. Missing journey emits and missing decision records should both fail closed.
+4. Add a decision-trace hard-gate check for required decision records on replay. Missing journey emits, missing decision records, missing RCA/evidence fields, and stdout/trace drift should all fail closed.
 5. Open the deliberately-broken sanity PR for CI verification: intentionally drop one `_emit_ag_outcome_journey` call or one required decision record in a test branch, watch CI fail with a clear contract violation, then close the PR. This proves the gates are wired correctly and CI catches regressions.
 6. Merge the feature branch.
 
@@ -344,7 +413,7 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
   - `LoopContext` — run IDs, space IDs, catalog/schema, warehouse, apply mode, lever set, and feature flags.
   - `IterationState` — iteration number, baseline/candidate accuracy, hard qids, cluster assignments, and terminal state.
   - `OptimizationTrace` — owned container for journey events, decision records, validation reports, and projections.
-  - `DecisionRecord` — canonical record for an optimizer choice with evidence, rationale, target, reason code, and observed outcome.
+  - `DecisionRecord` — canonical record for an optimizer choice with evidence refs, RCA, root cause, causal targets, expected effect, observed effect, regression qids, reason code, and next action.
   - `RcaLoopState` — evidence, root cause, causal patch intent, expected fix, observed result, and learned next action.
   - `ProposalBatch` — proposals, parent/child lineage, cap decisions, malformed counts, and gate outcomes.
   - `PatchApplicationResult` — applied patches, rejected patches, rollback metadata, and survival attribution.
@@ -397,12 +466,13 @@ Calendar estimate from the current point: ~1–2 additional weeks pre-merge with
 - **Further orchestration-spine decomposition beyond Phase F/G.** After Phase F, the remaining `harness.py` should be the orchestration spine. Phase G improves the contracts crossing that spine. Splitting the spine itself further is parked unless the spine becomes hard to reason about after typed contracts land.
 - **Typed contract redesign before Phase G.** Strong typing is the desired endpoint, but it is deliberately delayed until after the burn-down, merge gate, and byte-stable extractions. Before then, only add narrow types that support the active phase without reshaping module boundaries.
 - **Dashboarding beyond stdout/MLflow artifacts.** Phase B standardizes the operator transcript first. Rich dashboards can follow once the trace contract is stable and persisted consistently.
+- **Ad hoc diagnostic print blocks in `harness.py`.** New operator-visible diagnostics should be typed trace producers plus centralized transcript renderer sections. Freeform prints are parked unless they are temporary migration shims removed by the same phase.
 
 ---
 
 ## Concrete next action
 
-**Start Phase B — Unified trace + DecisionRecord + operator transcript.** Phases 0 and A are complete (see [`2026-05-01-phase-a-burndown-log.md`](./2026-05-01-phase-a-burndown-log.md) for the close summary and [`2026-05-02-phase-a-burndown-log.md`](./2026-05-02-phase-a-burndown-log.md) for the per-iter detail). The airline corpus's journey-contract validation count is 0; `airline_real_v1.json` is committed with `expected_canonical_journey` (365 events, 38 706 bytes) and gated by `test_run_replay_airline_real_v1_within_burndown_budget` (budget=0). Phase B is replay-only, requires zero real-Genie cycles, and should define the canonical decision-trace schema before scoreboard or bucketing work begins. Detailed plan to be drafted as `2026-05-XX-unified-trace-and-operator-transcript-plan.md`.
+**Implement Phase B — Unified trace + DecisionRecord + operator transcript.** Phases 0 and A are complete (see [`2026-05-01-phase-a-burndown-log.md`](./2026-05-01-phase-a-burndown-log.md) for the close summary and [`2026-05-02-phase-a-burndown-log.md`](./2026-05-02-phase-a-burndown-log.md) for the per-iter detail). The airline corpus's journey-contract validation count is 0; `airline_real_v1.json` is committed with `expected_canonical_journey` (365 events, 38 706 bytes) and gated by `test_run_replay_airline_real_v1_within_burndown_budget` (budget=0). Phase B is replay-only, requires zero real-Genie cycles, and should define the canonical decision-trace schema before scoreboard or bucketing work begins. Detailed plan is ready at [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md).
 
 ---
 
@@ -419,7 +489,7 @@ Calendar estimate from the current point: ~1–2 additional weeks pre-merge with
 | [`2026-05-02-cycle7-reconstruction-postmortem.md`](./2026-05-02-cycle7-reconstruction-postmortem.md) | Captured | A (cycles 1-7 fixture-shape postmortem) |
 | [`2026-05-02-cycle8-side-bugs-high-level-plan.md`](./2026-05-02-cycle8-side-bugs-high-level-plan.md) | Drafted | C (qid extraction and target-qid propagation gaps) |
 | [`high level plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md`](./high%20level%20plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md) | Implemented | A (consolidated 16-track Phase A plan) |
-| [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md) | Implemented | B |
+| [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md) | Ready | B |
 | `2026-05-XX-rca-loop-contract-plan.md` | To be written | C |
 | `2026-05-XX-canonical-qid-extraction-plan.md` | To be written | C |
 | `2026-05-XX-target-qid-propagation-plan.md` | To be written | C |
