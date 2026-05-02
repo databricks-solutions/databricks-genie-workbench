@@ -374,3 +374,81 @@ def test_exporter_handles_missing_journey_validation_field() -> None:
         fixture_id="t_legacy_v1", iterations_data=iterations_data,
     ))
     assert "journey_validation" not in fx["iterations"][0]
+
+
+def test_exporter_passes_decision_records_through() -> None:
+    import json
+    from genie_space_optimizer.optimization.journey_fixture_exporter import (
+        serialize_replay_fixture,
+    )
+
+    iterations_data = [_sample_iteration_input()]
+    iterations_data[0]["decision_records"] = [
+        {
+            "run_id": "run_1",
+            "iteration": 1,
+            "decision_type": "gate_decision",
+            "outcome": "dropped",
+            "reason_code": "patch_cap_dropped",
+            "question_id": "q_002",
+            "ag_id": "AG_1",
+            "proposal_id": "p1",
+            "gate": "patch_cap",
+            "affected_qids": ["q_002"],
+            "metrics": {"rank": 2},
+            "_volatile": "strip-me",
+        },
+    ]
+
+    parsed = json.loads(serialize_replay_fixture(
+        fixture_id="decision_records_v1",
+        iterations_data=iterations_data,
+    ))
+
+    assert parsed["iterations"][0]["decision_records"] == [
+        {
+            "run_id": "run_1",
+            "iteration": 1,
+            "decision_type": "gate_decision",
+            "outcome": "dropped",
+            "reason_code": "patch_cap_dropped",
+            "question_id": "q_002",
+            "ag_id": "AG_1",
+            "proposal_id": "p1",
+            "gate": "patch_cap",
+            "affected_qids": ["q_002"],
+            "metrics": {"rank": 2},
+        },
+    ]
+
+
+def test_begin_iteration_capture_initializes_decision_records() -> None:
+    from genie_space_optimizer.optimization.journey_fixture_exporter import (
+        begin_iteration_capture,
+    )
+
+    iters: list[dict] = []
+    snap = begin_iteration_capture(iterations_data=iters, iteration=1)
+
+    assert snap["decision_records"] == []
+    assert iters[0]["decision_records"] == []
+
+
+def test_summarize_replay_fixture_counts_decision_records() -> None:
+    from genie_space_optimizer.optimization.journey_fixture_exporter import (
+        begin_iteration_capture,
+        summarize_replay_fixture,
+    )
+
+    iters: list[dict] = []
+    snap = begin_iteration_capture(iterations_data=iters, iteration=1)
+    snap["decision_records"].append({
+        "run_id": "run_1",
+        "iteration": 1,
+        "decision_type": "gate_decision",
+        "outcome": "accepted",
+        "reason_code": "patch_cap_selected",
+    })
+
+    summary = summarize_replay_fixture(iterations_data=iters)
+    assert summary["per_iter"][0]["decision_records"] == 1

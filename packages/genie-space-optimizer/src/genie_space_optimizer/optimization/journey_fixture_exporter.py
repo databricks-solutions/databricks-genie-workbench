@@ -37,6 +37,7 @@ _ALLOWED_ITERATION_KEYS = (
     "ag_outcomes",
     "post_eval_passing_qids",
     "journey_validation",
+    "decision_records",
 )
 _ALLOWED_EVAL_ROW_KEYS = (
     "question_id",
@@ -58,6 +59,25 @@ _ALLOWED_PATCH_KEYS = (
     "patch_type",
     "target_qids",
     "cluster_id",
+)
+_ALLOWED_DECISION_RECORD_KEYS = (
+    "run_id",
+    "iteration",
+    "decision_type",
+    "outcome",
+    "reason_code",
+    "question_id",
+    "cluster_id",
+    "rca_id",
+    "ag_id",
+    "proposal_id",
+    "patch_id",
+    "gate",
+    "reason_detail",
+    "affected_qids",
+    "source_cluster_ids",
+    "proposal_ids",
+    "metrics",
 )
 
 
@@ -96,6 +116,11 @@ def _strip_iteration(it: dict[str, Any]) -> dict[str, Any]:
                 for ag in (sr.get("action_groups") or [])
             ],
         }
+    if "decision_records" in out:
+        out["decision_records"] = [
+            _strip_dict(r, _ALLOWED_DECISION_RECORD_KEYS)
+            for r in (out.get("decision_records") or [])
+        ]
     return out
 
 
@@ -172,6 +197,7 @@ def begin_iteration_capture(
         "ag_outcomes": {},
         "post_eval_passing_qids": [],
         "journey_validation": None,
+        "decision_records": [],
     }
     iterations_data.append(snapshot)
     return snapshot
@@ -202,6 +228,7 @@ def summarize_replay_fixture(
                 "post_eval_passing_qids": len(
                     it.get("post_eval_passing_qids") or []
                 ),
+                "decision_records": len(it.get("decision_records") or []),
             }
         )
     return {
