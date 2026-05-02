@@ -68,12 +68,53 @@ def causal_attribution_tier(patch: dict[str, Any]) -> int:
     return 0
 
 
+def _target_fingerprint(patch: dict[str, Any]) -> str:
+    """Return a deterministic fingerprint of where this patch writes.
+
+    Used as a tiebreaker in ``_stable_identity`` so two patches that share
+    a ``proposal_id`` (e.g., a section split-child and a standalone snippet
+    that inherited the same parent index) cannot collide. Order matches the
+    fields the applier inspects when routing: section, table, column,
+    snippet name, and target_object.
+    """
+    parts: list[str] = []
+    for key in (
+        "section_name",
+        "instruction_section",
+        "table",
+        "column",
+        "snippet_name",
+        "snippet_type",
+        "target_object",
+        "target_table",
+    ):
+        value = patch.get(key)
+        if value is None or value == "":
+            continue
+        parts.append(f"{key}={value}")
+    return "|".join(parts)
+
+
 def _stable_identity(patch: dict[str, Any]) -> str:
-    return str(
+    """Return a stable identity that survives id-stamping bugs upstream.
+
+    History: the optimizer used to key on ``expanded_patch_id or
+    proposal_id`` alone. A rewrite_instruction split-child and a
+    standalone snippet that inherited the parent's sequential index
+    could land on the same id (``P001#2``) but differ in lever and
+    type. Identity now includes lever, type, and target_fingerprint so
+    those distinct patches do not collapse silently in dedup.
+    """
+    base_id = str(
         patch.get("expanded_patch_id")
         or patch.get("proposal_id")
         or id(patch)
     )
+    parent = str(patch.get("parent_proposal_id") or "")
+    lever = str(patch.get("lever", ""))
+    ptype = str(patch.get("type") or patch.get("patch_type") or "")
+    fingerprint = _target_fingerprint(patch)
+    return f"{parent}|{base_id}|L{lever}|{ptype}|{fingerprint}"
 
 
 def _deduplicate_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
