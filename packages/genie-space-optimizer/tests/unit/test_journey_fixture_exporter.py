@@ -307,3 +307,70 @@ def test_summarize_replay_fixture_handles_empty_list() -> None:
 
     summary = summarize_replay_fixture(iterations_data=[])
     assert summary == {"iterations": 0, "per_iter": []}
+
+
+def test_exporter_passes_journey_validation_field_through() -> None:
+    """If an iteration snapshot has a journey_validation dict, the exporter
+    must preserve it byte-for-byte through serialize_replay_fixture."""
+    import json
+    from genie_space_optimizer.optimization.journey_fixture_exporter import (
+        serialize_replay_fixture,
+    )
+
+    iterations_data = [
+        {
+            "iteration": 1,
+            "eval_rows": [
+                {"question_id": "q1", "result_correctness": "yes",
+                 "arbiter": "both_correct"}
+            ],
+            "clusters": [],
+            "soft_clusters": [],
+            "strategist_response": {"action_groups": []},
+            "ag_outcomes": {},
+            "post_eval_passing_qids": ["q1"],
+            "journey_validation": {
+                "is_valid": True,
+                "missing_qids": [],
+                "violations": [],
+                "terminal_state_by_qid": {"q1": "already_passing"},
+            },
+        },
+    ]
+
+    s = serialize_replay_fixture(
+        fixture_id="t_jv_v1", iterations_data=iterations_data,
+    )
+    fx = json.loads(s)
+    assert fx["iterations"][0]["journey_validation"] == {
+        "is_valid": True,
+        "missing_qids": [],
+        "violations": [],
+        "terminal_state_by_qid": {"q1": "already_passing"},
+    }
+
+
+def test_exporter_handles_missing_journey_validation_field() -> None:
+    """Legacy fixtures (pre-L4a) have no journey_validation field. The
+    exporter must not invent one — output omits the key entirely."""
+    import json
+    from genie_space_optimizer.optimization.journey_fixture_exporter import (
+        serialize_replay_fixture,
+    )
+
+    iterations_data = [
+        {
+            "iteration": 1,
+            "eval_rows": [],
+            "clusters": [],
+            "soft_clusters": [],
+            "strategist_response": {"action_groups": []},
+            "ag_outcomes": {},
+            "post_eval_passing_qids": [],
+        },
+    ]
+
+    fx = json.loads(serialize_replay_fixture(
+        fixture_id="t_legacy_v1", iterations_data=iterations_data,
+    ))
+    assert "journey_validation" not in fx["iterations"][0]

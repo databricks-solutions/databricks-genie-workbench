@@ -36,6 +36,7 @@ _ALLOWED_ITERATION_KEYS = (
     "strategist_response",
     "ag_outcomes",
     "post_eval_passing_qids",
+    "journey_validation",
 )
 _ALLOWED_EVAL_ROW_KEYS = (
     "question_id",
