@@ -12042,8 +12042,20 @@ def _run_lever_loop(
                             len(_uncovered),
                             [c.get("cluster_id") for c in _uncovered],
                         )
+                        from genie_space_optimizer.optimization.control_plane import (
+                            compute_ag_stable_signature,
+                        )
+
                         for _c in _uncovered:
                             _diag_ag = diagnostic_action_group_for_cluster(_c)
+                            # Track D — stamp a stable signature derived
+                            # from cluster_signature, qid set, and root
+                            # cause so revalidation in later iterations
+                            # does not depend on the unstable H00N
+                            # cluster_id label.
+                            _diag_ag["_stable_signature"] = compute_ag_stable_signature(
+                                _diag_ag, [_c]
+                            )
                             action_groups.append(_diag_ag)
                             diagnostic_action_queue.append(_diag_ag)
                             # Task 13 — diagnostic AG covers all qids in
