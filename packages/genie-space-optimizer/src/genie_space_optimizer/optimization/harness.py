@@ -431,6 +431,61 @@ def _emit_post_eval_journey(
         )
 
 
+def _extract_eval_result_from_gate(gate_result: dict) -> dict:
+    """Return the eval-result payload from a gate_result, regardless of outcome.
+
+    `_run_gate_checks` returns the eval payload under ``full_result`` when the
+    gate accepts and under ``failed_eval_result`` when the gate rolls back.
+    The carrier (`_latest_eval_result` in `_run_lever_loop`) needs whichever
+    is present so downstream consumers (replay-fixture snapshot, post_eval
+    journey emit, journey-contract validator, soft-cluster currency check)
+    see the most recent measurement of reality regardless of acceptance state.
+
+    Returns ``{}`` when neither key is populated (e.g., the gate failed before
+    eval ran). Callers should treat an empty return as "do not overwrite the
+    existing carrier value" so a previously-good measurement is not clobbered.
+    """
+    if not isinstance(gate_result, dict):
+        return {}
+    candidate = gate_result.get("full_result") or gate_result.get("failed_eval_result")
+    if isinstance(candidate, dict) and candidate:
+        return candidate
+    return {}
+
+
+def _build_fixture_eval_rows(eval_result: dict) -> list[dict]:
+    """Convert an eval-result payload into the replay-fixture eval_rows shape.
+
+    Mirrors the inline derivation at the iteration-start snapshot site so a
+    rolled-back iteration can backfill its own snapshot from the gate's eval
+    result rather than waiting for the next iteration to inherit it. Returns
+    an empty list when the payload has no `question_ids`.
+    """
+    if not isinstance(eval_result, dict):
+        return []
+    qids = eval_result.get("question_ids") or []
+    if not qids:
+        return []
+    scores = eval_result.get("scores") or {}
+    arbiter = eval_result.get("arbiter_verdicts") or {}
+    failures = {str(q) for q in (eval_result.get("failure_question_ids") or [])}
+    rows: list[dict] = []
+    for q in qids:
+        qid = str(q)
+        if not qid:
+            continue
+        if isinstance(scores, dict) and qid in scores:
+            v = str(scores[qid]).lower()
+            correctness = "yes" if v in ("yes", "true", "1", "pass") else "no"
+        else:
+            correctness = "no" if qid in failures else "yes"
+        row: dict = {"question_id": qid, "result_correctness": correctness}
+        if isinstance(arbiter, dict) and qid in arbiter:
+            row["arbiter"] = str(arbiter[qid])
+        rows.append(row)
+    return rows
+
+
 def _merge_bug4_counters(eval_result: dict) -> dict:
     """Inject Bug #4 (benchmark leakage) counters into an eval_result before
     it is written via ``write_iteration`` for the 'full' scope.
@@ -10673,6 +10728,17 @@ def _run_lever_loop(
             _rc_str as _seed_rc_str,
         )
         _baseline_rows_seed = _rows_from_iteration_payload(baseline_iter)
+        if not _baseline_rows_seed:
+            # Silent zero-rows is the actual failure mode that caused the
+            # Phase A burn-down empty fixtures: the synthetic baseline
+            # payload doesn't always carry per-row data in the expected
+            # shape. Log loudly so operators see it.
+            logger.warning(
+                "Phase A: baseline payload yielded 0 extractable eval rows "
+                "(_latest_eval_result will rely on first gate result instead "
+                "of baseline seed). baseline_iter keys=%s",
+                sorted((baseline_iter or {}).keys()) if isinstance(baseline_iter, dict) else type(baseline_iter).__name__,
+            )
         if _baseline_rows_seed:
             _seed_qids: list[str] = []
             _seed_scores: dict[str, str] = {}
@@ -10705,9 +10771,15 @@ def _run_lever_loop(
                 len(_seed_failures),
             )
     except Exception:
-        logger.debug(
+        # Promoted from debug → warning: a silent seed failure here was the
+        # root cause of three wasted real-Genie cycles (see Phase A burn-down
+        # log). The carrier is now also refreshed at every gate-checks site
+        # so a failed seed is no longer fatal for the replay fixture, but we
+        # still want operators to SEE the failure rather than discover it via
+        # an empty fixture two hours later.
+        logger.warning(
             "Phase A: failed to seed _latest_eval_result from baseline "
-            "(non-fatal)",
+            "(non-fatal — carrier will be populated on first gate result)",
             exc_info=True,
         )
     _verdict_history: dict[str, list] = {}
@@ -14889,6 +14961,38 @@ def _run_lever_loop(
             ),
         )
 
+        # Phase A — Lossless contract: refresh the deterministic eval-result
+        # carrier IMMEDIATELY after the gate returns, BEFORE the accept/
+        # rollback branch below. The previous wiring only refreshed on the
+        # accept path (line ~15400 region), so a run where every iteration
+        # rolled back would leave the carrier empty for the entire run,
+        # producing empty `eval_rows` and `post_eval_passing_qids` in the
+        # replay fixture and starving the journey-contract validator of qids.
+        # The helper returns {} when neither full_result nor
+        # failed_eval_result is populated; in that case we deliberately keep
+        # the prior carrier value rather than clobbering with empty.
+        _gate_eval = _extract_eval_result_from_gate(gate_result)
+        if _gate_eval:
+            _latest_eval_result = _gate_eval
+            # Defensive backfill — populate the current iteration's snapshot
+            # from THIS iteration's gate result so iter 1 has real eval_rows
+            # even when the baseline seed at _run_lever_loop start silently
+            # failed. The iter-start snapshot block (around line ~11138)
+            # reads _latest_eval_result, which on iter 1 only has the
+            # baseline seed; if that seed is empty the iter-1 snapshot is
+            # empty too. This second write fixes that without depending on
+            # the seed.
+            try:
+                _backfill_rows = _build_fixture_eval_rows(_gate_eval)
+                if _backfill_rows and not _current_iter_inputs.get("eval_rows"):
+                    _current_iter_inputs["eval_rows"] = _backfill_rows
+            except Exception:
+                logger.debug(
+                    "Phase A: eval_rows backfill from gate_result failed "
+                    "(non-fatal)",
+                    exc_info=True,
+                )
+
         # v2 Task 21 — Per-question regression rows with full attribution.
         # The gate returns the verdict and suppressed-qid set; the lever
         # loop owns persistence here because ``strategy`` (cluster
@@ -15398,12 +15502,12 @@ def _run_lever_loop(
         full_accuracy = gate_result["full_accuracy"]
         new_model_id = gate_result["new_model_id"]
         full_result = gate_result["full_result"]
-        # Phase A — refresh the deterministic eval-result carrier
-        # immediately on every full-eval result assignment. Subsequent
-        # post_eval / validator reads (and the next iteration's eval-
-        # entry block) will see this rather than relying on
-        # ``locals().get("full_result")``.
-        _latest_eval_result = full_result or {}
+        # Phase A — carrier is now refreshed at the gate-checks site above
+        # (right after `_run_gate_checks` returns), so this re-assignment is
+        # redundant on the accept path but harmless. Kept as a no-op anchor
+        # so downstream reads of the local `full_result` variable stay
+        # consistent with the carrier.
+        _latest_eval_result = full_result or _latest_eval_result
         _last_full_mlflow_run_id = full_result.get("mlflow_run_id") or full_result.get("run_id", "")
 
         _full_trace_map = full_result.get("trace_map", {})
