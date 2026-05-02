@@ -175,7 +175,7 @@ Logic correctness for later trace, transcript, scoreboard, and bucketing work is
 
 **Real-Genie runs:** 0.
 
-**Detailed plan:** to be written as `2026-05-XX-unified-trace-and-operator-transcript-plan.md`.
+**Detailed plan:** [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md) — implemented.
 
 ---
 
@@ -419,7 +419,7 @@ Calendar estimate from the current point: ~1–2 additional weeks pre-merge with
 | [`2026-05-02-cycle7-reconstruction-postmortem.md`](./2026-05-02-cycle7-reconstruction-postmortem.md) | Captured | A (cycles 1-7 fixture-shape postmortem) |
 | [`2026-05-02-cycle8-side-bugs-high-level-plan.md`](./2026-05-02-cycle8-side-bugs-high-level-plan.md) | Drafted | C (qid extraction and target-qid propagation gaps) |
 | [`high level plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md`](./high%20level%20plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md) | Implemented | A (consolidated 16-track Phase A plan) |
-| `2026-05-XX-unified-trace-and-operator-transcript-plan.md` | To be written | B |
+| [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md) | Implemented | B |
 | `2026-05-XX-rca-loop-contract-plan.md` | To be written | C |
 | `2026-05-XX-canonical-qid-extraction-plan.md` | To be written | C |
 | `2026-05-XX-target-qid-propagation-plan.md` | To be written | C |
