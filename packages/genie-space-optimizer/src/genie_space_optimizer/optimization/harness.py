@@ -11788,15 +11788,69 @@ def _run_lever_loop(
             ag = None
             strategy = pending_strategy if _process_all_ags else None
             if _process_all_ags and pending_action_groups:
-                _live_cluster_ids = {
-                    c.get("cluster_id", "") for c in clusters + (soft_signal_clusters or [])
+                # Track D — revalidate buffered AGs by stable signature
+                # rather than by the unstable H00N cluster_id label.
+                # An AG's signature stays constant across iterations;
+                # cluster_id re-numbers. Drop AGs whose signature no
+                # longer overlaps the current iteration's cluster set
+                # with an explicit audit row.
+                _live_cluster_signatures = {
+                    str(c.get("cluster_signature") or "")
+                    for c in clusters + (soft_signal_clusters or [])
+                    if c.get("cluster_signature")
                 }
+                _src_ids: set[str] = set()
+                _dropped_for_drift: list[dict] = []
                 while pending_action_groups:
                     _candidate = pending_action_groups.pop(0)
-                    _src_ids = set(_candidate.get("source_cluster_ids", []) or [])
-                    if not _src_ids or (_src_ids & _live_cluster_ids):
+                    _candidate_sig = _candidate.get("_stable_signature")
+                    _candidate_sig_set = (
+                        set(_candidate_sig[0]) if _candidate_sig else set()
+                    )
+                    if not _candidate_sig_set:
+                        # Backwards-compatible fallback: AGs created
+                        # before Track D's stamping landed do not have
+                        # a signature; fall through to the legacy
+                        # cluster-id check so the loop does not stall
+                        # on in-flight buffers.
+                        _src_ids = set(
+                            _candidate.get("source_cluster_ids", []) or []
+                        )
+                        _live_cluster_ids = {
+                            c.get("cluster_id", "")
+                            for c in clusters + (soft_signal_clusters or [])
+                        }
+                        if not _src_ids or (_src_ids & _live_cluster_ids):
+                            ag = _candidate
+                            break
+                        continue
+                    if _candidate_sig_set & _live_cluster_signatures:
+                        _src_ids = set(
+                            _candidate.get("source_cluster_ids", []) or []
+                        )
                         ag = _candidate
                         break
+                    # Signature drift — drop and audit.
+                    _dropped_for_drift.append(_candidate)
+                if _dropped_for_drift:
+                    for _drop in _dropped_for_drift:
+                        print(
+                            _section(
+                                "DROPPING BUFFERED AG (signature drift)", "-"
+                            ) + "\n"
+                            + _kv("AG id", _drop.get("id", "?")) + "\n"
+                            + _kv(
+                                "Stale signatures",
+                                sorted(
+                                    set((_drop.get("_stable_signature") or ((),))[0])
+                                ),
+                            ) + "\n"
+                            + _kv(
+                                "Live signatures",
+                                sorted(_live_cluster_signatures),
+                            ) + "\n"
+                            + _bar("-")
+                        )
                 if ag is not None:
                     print(
                         _section(
@@ -11854,20 +11908,42 @@ def _run_lever_loop(
                     for c in _strategy_hard_clusters + list(_strategy_soft_clusters or [])
                     if c.get("cluster_id")
                 }
+                _live_diag_signatures = {
+                    str(c.get("cluster_signature") or "")
+                    for c in _strategy_hard_clusters + list(_strategy_soft_clusters or [])
+                    if c.get("cluster_signature")
+                }
                 _diag_preempt: dict | None = None
                 while diagnostic_action_queue and _diag_preempt is None:
                     _candidate = diagnostic_action_queue.pop(0)
-                    _src_ids = {
-                        str(cid) for cid in (_candidate.get("source_cluster_ids") or []) if str(cid)
-                    }
-                    if _src_ids and not (_src_ids & _live_cluster_ids):
+                    _candidate_sig = _candidate.get("_stable_signature")
+                    _candidate_sig_set = (
+                        set(_candidate_sig[0]) if _candidate_sig else set()
+                    )
+                    # Track D — prefer signature match; fall back to
+                    # cluster-id only when the AG predates this PR.
+                    if _candidate_sig_set:
+                        _matches_live = bool(
+                            _candidate_sig_set & _live_diag_signatures
+                        )
+                    else:
+                        _src_ids = {
+                            str(cid) for cid in (_candidate.get("source_cluster_ids") or []) if str(cid)
+                        }
+                        _matches_live = bool(_src_ids & _live_cluster_ids)
+                    if not _matches_live:
                         print(
-                            _section("SKIPPING DIAGNOSTIC AG BECAUSE CLUSTER RESOLVED", "-")
-                            + "\n"
-                            + _kv("AG id", _candidate.get("id", "?"))
-                            + "\n"
-                            + _kv("Source clusters", sorted(_src_ids))
-                            + "\n"
+                            _section(
+                                "SKIPPING DIAGNOSTIC AG BECAUSE CLUSTER RESOLVED", "-"
+                            ) + "\n"
+                            + _kv("AG id", _candidate.get("id", "?")) + "\n"
+                            + _kv(
+                                "Stale signatures",
+                                sorted(_candidate_sig_set) if _candidate_sig_set
+                                else sorted(
+                                    {str(cid) for cid in (_candidate.get("source_cluster_ids") or []) if str(cid)}
+                                ),
+                            ) + "\n"
                             + _bar("-")
                         )
                         continue
