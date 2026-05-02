@@ -515,50 +515,19 @@ def _baseline_row_qid(row: dict) -> str:
     carried a question_id/id key") fires precisely when this returns "" for
     every row, so a future row shape with yet another id key will be visible
     immediately rather than producing a silent empty fixture.
+
+    Cycle 8 consolidation: the lookup logic now lives in
+    :mod:`genie_space_optimizer.optimization._qid_extraction` and is
+    shared with ``ground_truth_corrections._extract_question_id`` so
+    the two extractors cannot diverge again. This wrapper preserves
+    the string-return contract used throughout the lever loop.
     """
-    import json as _json
-
-    canonical = (
-        row.get("question_id")
-        or row.get("id")
-        or row.get("inputs/question_id")
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
     )
-    if canonical:
-        return str(canonical)
 
-    inputs = row.get("inputs")
-    if isinstance(inputs, dict):
-        nested = inputs.get("question_id")
-        if nested:
-            return str(nested)
-
-    request = row.get("request")
-    request_dict: dict | None = None
-    if isinstance(request, dict):
-        request_dict = request
-    elif isinstance(request, str):
-        try:
-            parsed = _json.loads(request)
-        except (TypeError, ValueError):
-            parsed = None
-        if isinstance(parsed, dict):
-            request_dict = parsed
-    if request_dict is not None:
-        kwargs = request_dict.get("kwargs")
-        if isinstance(kwargs, dict):
-            kw_qid = kwargs.get("question_id")
-            if kw_qid:
-                return str(kw_qid)
-        # Some shapes put question_id at the top level of request itself.
-        top_qid = request_dict.get("question_id")
-        if top_qid:
-            return str(top_qid)
-
-    return str(
-        row.get("client_request_id")
-        or row.get("request_id")
-        or ""
-    )
+    qid, _source = extract_question_id(row)
+    return qid
 
 
 def _seed_eval_result_from_baseline_iter(baseline_iter: dict | None) -> dict:

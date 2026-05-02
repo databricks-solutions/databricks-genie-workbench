@@ -36,10 +36,19 @@ from ``evaluation`` (not ``harness``) to avoid a circular import.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 from typing import Any
+
+from genie_space_optimizer.optimization._qid_extraction import (
+    extract_question_id,
+)
 
 # Imported lazily inside ``should_cluster_as_soft_signal`` to keep this
 # module dependency-free at import time. ``evaluation`` is heavy.
+
+logger = logging.getLogger(__name__)
 
 
 _RC_FALSE_VALUES: frozenset[str] = frozenset({"no", "false", "0", "0.0"})
@@ -121,45 +130,33 @@ def should_cluster_as_soft_signal(row: dict[str, Any]) -> bool:
 
 
 def _extract_question_id(row: dict[str, Any]) -> str:
-    """Try every known eval-row shape for the question id.
+    """Return the row's canonical question id, falling back to a
+    trace-id alias when nothing canonical is present.
 
-    Eval rows reach this module via several producer paths and arrive
-    in inconsistent shapes:
-
-    * Flattened MLflow eval (dot form):    ``inputs.question_id``
-    * Flattened MLflow eval (slash form):  ``inputs/question_id``
-    * Pre-flatten nested dict:             ``inputs: {question_id: ...}``
-    * Synthetic harness rows:              ``metadata: {question_id: ...}``
-    * Bare top-level (legacy):             ``question_id`` / ``id``
-
-    Returns an empty string when none of the shapes carry a value;
-    callers should treat empty as unidentifiable.
+    Thin wrapper over :func:`_qid_extraction.extract_question_id`,
+    which is the single source of truth shared with
+    ``harness._baseline_row_qid``. Kept as a module-private helper for
+    back-compat with internal callers; new code should call
+    :func:`extract_question_id` directly so it can branch on the
+    ``source`` tag.
     """
-    # Flat keys (dot or slash form)
-    for key in (
-        "inputs.question_id",
-        "inputs/question_id",
-        "question_id",
-        "id",
-    ):
-        val = row.get(key)
-        if val is not None and str(val).strip():
-            return str(val).strip()
-    # Nested inputs dict
-    inputs = row.get("inputs")
-    if isinstance(inputs, dict):
-        for key in ("question_id", "id"):
-            val = inputs.get(key)
-            if val is not None and str(val).strip():
-                return str(val).strip()
-    # Nested metadata dict
-    meta = row.get("metadata")
-    if isinstance(meta, dict):
-        for key in ("question_id", "id"):
-            val = meta.get(key)
-            if val is not None and str(val).strip():
-                return str(val).strip()
-    return ""
+    qid, _source = extract_question_id(row)
+    return qid
+
+
+def _payload_hash(row: dict[str, Any]) -> str:
+    """Return a short content hash of *row* for diagnostics.
+
+    The hash lets operators correlate "same shape failing across many
+    iterations" without leaking full row contents (which can include
+    SQL / PII) into logs. ``default=str`` keeps the hash stable for
+    non-JSON-serialisable values without raising.
+    """
+    try:
+        encoded = json.dumps(row, sort_keys=True, default=str).encode()
+    except (TypeError, ValueError):
+        encoded = repr(sorted(row.items())).encode()
+    return hashlib.sha256(encoded).hexdigest()[:12]
 
 
 def build_gt_correction_candidate(
@@ -176,12 +173,38 @@ def build_gt_correction_candidate(
     Raises ``ValueError`` when the row carries no extractable
     ``question_id`` — the previous silent-empty behavior produced
     un-reviewable rows that broke the corpus-review queue downstream.
+    Before raising, a DEBUG log captures the row's key set and a
+    short payload hash so cycle-N+1 operators can identify the
+    failing shape without re-running the lever loop (Cycle 8 side-bug
+    plan, diagnosis Step 1).
+
+    When the row only carries a trace-id alias (``client_request_id``
+    / ``request_id``), the candidate is still built — silently
+    dropping these would corrupt the corpus-review queue — but a
+    structured WARNING fires so the reviewer knows to canonicalize
+    the qid via MLflow rather than treating the trace ID as canonical.
     """
-    qid = _extract_question_id(row)
+    qid, source = extract_question_id(row)
     if not qid:
+        logger.debug(
+            "GT correction candidate row missing question_id; "
+            "row keys=%r payload_hash=%s",
+            sorted(row.keys()),
+            _payload_hash(row),
+        )
         raise ValueError(
             "GT correction candidate missing question_id; cannot persist a "
             "reviewable row. Inspect the eval row payload for missing id keys."
+        )
+    if source == "trace_fallback":
+        logger.warning(
+            "GT correction candidate using trace-id fallback for "
+            "question_id=%r (no canonical key on the row); reviewer must "
+            "canonicalize via MLflow before promoting the corpus fix. "
+            "row keys=%r payload_hash=%s",
+            qid,
+            sorted(row.keys()),
+            _payload_hash(row),
         )
     return {
         "run_id": run_id,

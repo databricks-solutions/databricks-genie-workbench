@@ -13,6 +13,11 @@ re-introduce corpus defects into the lever loop.
 
 from __future__ import annotations
 
+import json
+import logging
+
+import pytest
+
 from genie_space_optimizer.optimization.ground_truth_corrections import (
     build_gt_correction_candidate,
     is_gt_correction_candidate,
@@ -209,3 +214,132 @@ def test_status_state_machine_initial_value_is_pending_review():
     candidate = build_gt_correction_candidate(row, run_id="r", iteration=0)
 
     assert candidate["status"] == "pending_review"
+
+
+# ── Cycle 8 Bug 2: broaden _extract_question_id to mirror Track D ────
+#
+# Cycle 8 stderr emitted ``Skipping unidentifiable GT correction
+# candidate`` warnings even after Track D fixed the carrier-side
+# extractor (``harness._baseline_row_qid``). Root cause: the GT-
+# correction extractor was a separate, narrower implementation that
+# did not learn the cycle 5/7 row shapes. The fix consolidates both
+# extractors onto a shared helper and broadens the GT-correction path
+# to cover ``request.kwargs.question_id`` and ``client_request_id``
+# (last-resort) — exactly the shapes Track D already handles.
+#
+# These tests pin the new contract on the GT-correction call site so
+# the same extractor divergence cannot recur.
+
+
+def _arbiter_genie_correct_row(extra: dict) -> dict:
+    """Build a minimal arbiter=genie_correct row with caller-supplied
+    qid keys grafted on. Strips out any default ``inputs.question_id``
+    so the test can isolate which qid key the extractor finds."""
+    base = {
+        "feedback/result_correctness/value": "no",
+        "feedback/arbiter/value": "genie_correct",
+    }
+    base.update(extra)
+    return base
+
+
+def test_build_candidate_extracts_question_id_from_request_kwargs_dict():
+    # Cycle 5 row shape: canonical qid lives nested in
+    # request.kwargs.question_id. The narrow pre-fix extractor missed
+    # this and the row was silently skipped.
+    row = _arbiter_genie_correct_row({
+        "request": {"kwargs": {"question_id": "airline_q_canonical"}},
+    })
+
+    candidate = build_gt_correction_candidate(row, run_id="run-x", iteration=3)
+
+    assert candidate["question_id"] == "airline_q_canonical"
+
+
+def test_build_candidate_extracts_question_id_from_request_kwargs_json_string():
+    # Some MLflow eval-table shapes persist ``request`` as a JSON-
+    # encoded string. The shared extractor parses it and finds the
+    # canonical qid; the narrow pre-fix extractor returned "".
+    row = _arbiter_genie_correct_row({
+        "request": json.dumps({"kwargs": {"question_id": "from_json_kwargs"}}),
+    })
+
+    candidate = build_gt_correction_candidate(row, run_id="run-y", iteration=4)
+
+    assert candidate["question_id"] == "from_json_kwargs"
+
+
+def test_build_candidate_uses_client_request_id_as_last_resort_and_warns(caplog):
+    # When no canonical-qid key exists, the extractor falls through to
+    # ``client_request_id`` so the candidate isn't silently dropped.
+    # The candidate is built but a structured WARNING fires so the
+    # reviewer can canonicalize the qid via MLflow.
+    row = _arbiter_genie_correct_row({"client_request_id": "tr-only"})
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="genie_space_optimizer.optimization.ground_truth_corrections",
+    ):
+        candidate = build_gt_correction_candidate(row, run_id="r", iteration=0)
+
+    assert candidate["question_id"] == "tr-only"
+    warning_records = [
+        r for r in caplog.records
+        if r.levelno >= logging.WARNING
+        and "trace" in r.getMessage().lower()
+    ]
+    assert warning_records, (
+        "Expected a structured warning when GT-correction extractor "
+        "falls back to a trace-id key"
+    )
+
+
+def test_build_candidate_prefers_canonical_over_client_request_id():
+    # Co-existence of canonical and trace-id keys: canonical wins.
+    # Mirrors Track D's contract that canonical sources are always
+    # checked before client_request_id.
+    row = _arbiter_genie_correct_row({
+        "client_request_id": "tr-aaa",
+        "inputs": {"question_id": "airline_canonical_024"},
+    })
+
+    candidate = build_gt_correction_candidate(row, run_id="r", iteration=0)
+
+    assert candidate["question_id"] == "airline_canonical_024"
+
+
+def test_build_candidate_logs_debug_payload_before_raising_on_unidentifiable_row(caplog):
+    # When the row truly carries no qid keys at all, build_gt_correction
+    # _candidate must (a) raise ValueError so the harness skip-and-warn
+    # path fires, AND (b) emit a DEBUG log capturing the row's key set
+    # and a payload hash so cycle 9+ can identify what shape is failing
+    # without re-running the lever loop. The debug log is the diagnosis
+    # hook the cycle-8 side-bugs plan called for.
+    row = {
+        "feedback/result_correctness/value": "no",
+        "feedback/arbiter/value": "genie_correct",
+        "unrelated_data": "no qid here",
+    }
+
+    with caplog.at_level(
+        logging.DEBUG,
+        logger="genie_space_optimizer.optimization.ground_truth_corrections",
+    ):
+        with pytest.raises(ValueError):
+            build_gt_correction_candidate(row, run_id="r", iteration=0)
+
+    debug_records = [
+        r for r in caplog.records
+        if r.levelno == logging.DEBUG
+        and "row keys" in r.getMessage().lower()
+    ]
+    assert debug_records, (
+        "Expected a DEBUG log capturing row.keys() before the "
+        "ValueError is raised, so cycle 9+ can identify the failing shape"
+    )
+    msg = debug_records[0].getMessage()
+    assert "feedback/result_correctness/value" in msg
+    assert "unrelated_data" in msg
+    # A short payload hash makes the same shape correlatable across
+    # iterations / runs without leaking the full row to logs.
+    assert "payload_hash" in msg.lower()

@@ -1,14 +1,47 @@
-# Burn-Down to Merge — Roadmap
+# Burn-Down to Modular RCA Optimizer — Roadmap
 
-> **Status:** Working roadmap for the `fix/gso-lossless-contract-replay-gate` feature branch. This is the **high-level program plan** that ties together the stabilization path to merge, the byte-stable post-merge modularization path, and the follow-on typed-contract hardening needed to make the lever-loop harness rationally extensible for LLM-assisted iteration. Each phase has (or will have) its own detailed implementation plan; this document is the strategic narrative.
+> **Status:** Working roadmap for the `fix/gso-lossless-contract-replay-gate` feature branch. This is the **high-level program plan** for moving from a large, log-driven `harness.py` to a modular RCA-based optimizer with a unified trace architecture, typed contracts, deterministic replay gates, and operator-facing stdout that explains every important decision.
 
 ## Goal
 
-Land three pieces of optimizer instrumentation — operator scoreboard, failure bucketing classifier, three `harness.py` extractions — on top of the already-merged lossless contract + replay gate, validated primarily against the deterministic <30s replay test, with the journey contract flipped to a **hard CI gate** at the merge point. Then land the **deeper `harness.py` modularization** (RCA & clustering, strategist invocation, proposal pipeline, application/rollback, acceptance gating) as a sequence of small, byte-stable post-merge PRs. Finally, after the code has safe module boundaries, tighten those boundaries into typed contracts so the remaining harness is an orchestration spine and each subsystem can be understood, tested, and iterated on independently.
+Turn the Lever Loop into a reliable RCA optimization system where every iteration has a lossless, typed record of:
+
+1. What evidence was observed.
+2. What root cause was inferred.
+3. Which action group, proposals, and patches were chosen.
+4. Which gates accepted or rejected them and why.
+5. Whether the target qids improved, regressed, or remained unresolved.
+6. What the operator should try next.
+
+The end state is a modular codebase where `harness.py` is an orchestration spine, each subsystem has a narrow role and explicit type contract, replay fixtures reproduce the same decisions byte-stably, and stdout renders a standard operator transcript that makes optimizer behavior easy to debug and improve.
 
 ## Architecture in one sentence
 
-Eight sequential phases (0 → A → B → C → D → E → F → G). Phases 0 and A are the only pre-merge phases that exercise real Genie. Phases B/C/D and Phase F run entirely against the deterministic replay. Phase E is one final real-Genie validation before merge. Phase F is byte-stable post-merge modularization. Phase G is post-extraction typed-contract hardening: it deliberately changes API shape, but only after Phase F has moved behavior into coherent modules and the hard replay gate can prove behavior did not regress.
+Eight sequential phases (0 → A → B → C → D → E → F → G). Phase A establishes a clean per-iteration journey contract and real replay fixture. Phase B introduces the unified `OptimizationTrace` / `DecisionRecord` contract and standard operator transcript. Phase C hardens the RCA loop itself. Phase D builds scoreboard and failure bucketing as projections of the same trace while starting low-risk extractions. Phase E flips the hard gate and merges. Phases F/G finish modularization and tighten typed contracts.
+
+## Unified Architecture Target
+
+The roadmap should converge on one canonical trace model with multiple projections, not separate logging systems:
+
+```text
+OptimizationTrace
+  ├─ Journey events: qid lifecycle projection
+  ├─ Decision records: optimizer choice/rationale projection
+  ├─ Journey validation reports: per-iteration contract health
+  ├─ Scoreboard snapshot: aggregate operator health metrics
+  └─ Operator transcript: pretty stdout rendered from the same data
+```
+
+The shared identity spine is:
+
+```text
+run_id, iteration, question_id, cluster_id, rca_id, ag_id,
+proposal_id, patch_id, gate, decision_type, reason_code, outcome
+```
+
+The journey ledger answers "where did this qid go?" Decision records answer
+"what did the optimizer choose, why, and what happened?" The scoreboard and
+stdout transcript must be derived from the same records so they cannot drift.
 
 ## At a glance
 
@@ -16,9 +49,9 @@ Eight sequential phases (0 → A → B → C → D → E → F → G). Phases 0 
 |---|---|---|---|---|---|
 | 0 | Cross-task state resilience (Repair Run fix) | No | 0–1 | ~2–3 days | pre-merge |
 | A | Contract burn-down + real-fixture capture **(✅ complete — 2026-05-02)** | No | 8 (cycles 1-8) | ~1 day actual (estimate was 3-5 days) | pre-merge |
-| B | Operator scoreboard | Yes | 0 | ~3–4 days | pre-merge |
-| C | Failure bucketing classifier | Yes | 0 | ~3–4 days | pre-merge |
-| D | Three initial `harness.py` extractions | Yes | 0 | ~2–3 days | pre-merge |
+| B | Unified trace + DecisionRecord + operator transcript | Yes | 0 | ~3–5 days | pre-merge |
+| C | RCA loop reliability hardening | Mixed | 0–1 | ~3–5 days | pre-merge |
+| D | Scoreboard, failure bucketing, and first trace-aware extractions | Yes | 0 | ~4–6 days | pre-merge |
 | E | Final integration + contract-gate flip + merge | No | 1 | ~1 day | merge point |
 | F | Deeper `harness.py` modularization (5 byte-stable extractions) | Yes | 0 | ~5–8 days | post-merge follow-up |
 | G | Typed contract hardening for extracted modules | Yes | 0 | ~5–10 days | post-merge architecture follow-up |
@@ -27,18 +60,17 @@ Eight sequential phases (0 → A → B → C → D → E → F → G). Phases 0 
 
 ## Why this sequencing
 
-Six reasons it has to be in this order:
+Seven reasons it has to be in this order:
 
-1. **Phase 0 unblocks the iteration cadence for Phase A.** Burn-down is the loop "deploy → run → triage validator warnings → fix emits → re-run." Without Phase 0, every "re-run" is a 2-hour full DAG. With Phase 0 (Repair Run works), it's ~20 minutes.
-2. **Phase A produces the real fixture that Phases B/C depend on.** Hand-synthesized fixtures are biased toward what we expect to find, not what the real loop actually emits. Capturing real `_journey_events` after a clean burn-down is the more honest validation surface for byte-stable replay.
-3. **Phase D's byte-stability check needs the real fixture in place.** Refactoring against a synthetic fixture that doesn't fully exercise the pipeline lets regressions slip through. Real fixture → real regression detection.
-4. **Phase F (deeper modularization) needs Phase A's contract work + Phase D's byte-stable replay gate already on `main`.** The five Phase F extractions (RCA, strategist, proposal pipeline, applier/rollback, acceptance gate) are only safe and tiny because the [combined Phase A burn-down plan](./high%20level%20plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md) makes their input/output contracts explicit and the Phase D gate proves byte stability for any harness extraction. Doing F before E and Phase A would re-introduce the cross-module coupling we just spent Phase A removing.
-5. **Phase F is intentionally not the typed-architecture endpoint.** It is a byte-stable lift-and-shift that moves coherent subsystems out of `harness.py` without changing behavior. That gives reviewers tiny, reversible PRs, but it preserves today's dict shapes, positional arguments, and mutation patterns where those exist.
-6. **Phase G needs Phase F's module boundaries.** Strong typed contracts should be introduced after behavior has been moved into focused modules. Tightening contracts before the burn-down and extraction gates are green would mix behavioral stabilization with API redesign, making failures harder to attribute.
+1. **Phase 0 unblocks iteration cadence.** Repair Run has to carry enough state for short re-runs; otherwise every burn-down cycle costs a full 2-hour DAG.
+2. **Phase A makes replay trustworthy.** The real fixture now validates per iteration, persists `journey_validation`, keeps raw cycle fixtures, and has a CI budget tightened to zero. That gives every later phase a deterministic safety rail.
+3. **Phase B must precede more observability.** Scoreboards, failure buckets, and stdout should not each invent their own schema. A canonical `DecisionRecord` first makes every later rendering a projection of one source of truth.
+4. **Phase C makes RCA reliability first-class.** The optimizer is only useful if evidence, root cause, causal patch, targeted qids, observed effect, and learned next action form a closed loop. Cycle 8's `target_qids: []` and GT-correction qid loss bugs are symptoms of that contract not being explicit enough.
+5. **Phase D can then build operator UX safely.** Scoreboard, bucketing, and initial extractions become consumers of `OptimizationTrace`, not parallel log parsers.
+6. **Phase F remains byte-stable modularization.** The deeper extractions should still be behavior-preserving PRs, but they should move trace-aware subsystems, not opaque dict mutation blocks.
+7. **Phase G tightens APIs after modules exist.** Strong contracts become easier and safer once the code has coherent homes. Phase G should harden the module APIs while preserving persisted Delta and replay compatibility.
 
-B and C technically have no inter-dependency — they could be parallel. We sequence them because the scoreboard naturally calls into the bucketing classifier for the `terminal_unactionable_qids` list, so building the scoreboard first makes the bucketing wiring smaller.
-
-**Current guardrail:** during Phase A burn-down, avoid adding new substantial helpers directly to `harness.py`. If a new helper is purely local and small, keep it near the call site. If it is a reusable domain operation or grows beyond roughly 30–50 LOC, put it in the domain module it will eventually belong to (or a small new module) and import it into `harness.py`. This prevents more random helper accretion while preserving the strict Phase A sequencing.
+**Current guardrail:** avoid adding new substantial helpers directly to `harness.py`. If a helper is a reusable domain operation or grows beyond roughly 30–50 LOC, put it in the module it will eventually belong to and import it into `harness.py`. New instrumentation should prefer `DecisionRecord` / `OptimizationTrace` producers over ad hoc log lines.
 
 ---
 
@@ -69,104 +101,178 @@ Without burn-down, Phase B's scoreboard math is built on a journey ledger that's
 
 **What ships:**
 
-1. Whatever event-emit fixes the burn-down surfaces. These are bug fixes against the existing contract module, not new architecture. Each is a small, focused commit.
-2. A short burn-down log: "after N runs on the airline corpus, validator reports 0 violations."
-3. **One critical artifact**: at the end of the clean run, dump `_journey_events` to JSON and commit it as `tests/replay/fixtures/airline_real_v1.json`. Run `scripts/record_replay_baseline.py` to compute the canonical ledger.
+1. Per-iteration replay validation that mirrors the production harness contract instead of flattening multi-iteration journeys into one qid timeline.
+2. Event-emit and replay-engine fixes surfaced by real airline cycles, with the CI burn-down budget tightened to zero.
+3. A committed real fixture: `tests/replay/fixtures/airline_real_v1.json`, plus preserved raw cycle fixtures such as `airline_real_v1_cycle7_raw.json` and `airline_real_v1_cycle8_raw.json`.
+4. Per-iteration `journey_validation` persisted into the replay fixture, MLflow artifacts (`phase_a/journey_validation/iter_<N>.json`), and MLflow tags.
+5. Burn-down logs that record cycle history, violation composition, replay-engine fixes, and the final zero-violation close.
 
 **Why a real-captured fixture, not a hand-synthesized one?** Capturing real loop output is faster (no design work), unbiased (it exercises every event the real loop *actually* emits, not what we *expected* it to emit), and refreshable (when the loop's emit set legitimately changes, re-capture and commit). The hand-synthesized fixture extension that earlier drafts proposed is dropped.
 
 Logic correctness for B and C is validated by **pure-function unit tests over synthetic events** — fixture work is only for end-to-end replay byte-stability.
 
-**Exit criterion:** Clean burn-down on airline corpus + `airline_real_v1.json` committed and referenced by the existing replay test.
+**Exit criterion:** Clean burn-down on airline corpus + `airline_real_v1.json` committed with `expected_canonical_journey`, per-iteration validation report persistence, and `test_run_replay_airline_real_v1_within_burndown_budget` enforcing budget `0`.
 
-**Real-Genie runs:** 1–3 (depends on how many emit gaps surface).
+**Real-Genie runs:** 8 cycles actual. Phase A is complete as of 2026-05-02; see [`2026-05-02-phase-a-burndown-log.md`](./2026-05-02-phase-a-burndown-log.md).
 
 ---
 
-## Phase B — Operator scoreboard
+## Phase B — Unified trace + DecisionRecord + operator transcript
 
-**Why third:** Now that the journey ledger is complete (Phase A) and the replay fixture is real (Phase A), the scoreboard can be computed and validated. Scoreboard is the operator-facing UX layer on top of the contract — it makes "did this run actually do something?" answerable in 5 seconds instead of 5 minutes of grepping.
+**Why third:** The journey ledger is complete, but it is only the qid lifecycle projection. The optimizer also needs a decision projection: every important choice should have a typed record that explains the choice, input evidence, policy/rationale, causal target, and observed result. Without this phase, scoreboard and stdout would keep being derived from scattered logs.
 
 **What ships:**
 
-- New module `optimization/scoreboard.py` exposing a `Scoreboard` dataclass and `build_scoreboard(...)` pure function.
-- Seven leading metrics computed from `JourneyValidationReport` + `PatchSurvivalSnapshot` + the terminal-state classifier:
+- New module `optimization/trace.py` or `optimization/decision_trace.py` with:
+  - `OptimizationTrace`
+  - `DecisionRecord`
+  - `DecisionType`
+  - `DecisionOutcome`
+  - `ReasonCode`
+  - helpers for appending and rendering records deterministically
+- Shared identity fields across journey events and decisions:
+  - `run_id`
+  - `iteration`
+  - `question_id`
+  - `cluster_id`
+  - `rca_id`
+  - `ag_id`
+  - `proposal_id`
+  - `patch_id`
+  - `gate`
+  - `decision_type`
+  - `reason_code`
+  - `outcome`
+- Decision records for the first end-to-end path:
+  - eval row classified
+  - cluster selected
+  - RCA card/theme formed
+  - strategist AG emitted
+  - proposal generated
+  - gate accepted/dropped
+  - patch applied or skipped
+  - rollback/acceptance decided
+  - qid resolved/unresolved
+- Standard operator transcript rendered from `OptimizationTrace`, not from ad hoc logging. Minimum transcript sections:
+  - iteration summary
+  - RCA cards
+  - strategist/action-group decisions
+  - proposal survival table
+  - gate drop reasons
+  - patch application and rollback/acceptance decision
+  - unresolved qid buckets
+  - next suggested action
+- Replay fixture extension: `iterations[N].decision_records`, preserved through `journey_fixture_exporter.py`.
+- MLflow artifacts: `phase_b/decision_trace/iter_<N>.json` and `phase_b/operator_transcript/iter_<N>.txt` when an active run exists.
+
+**Validation strategy:**
+
+- Pure unit tests for `DecisionRecord` serialization, stable sort order, and renderer snapshots.
+- Replay tests assert `airline_real_v1.json` produces byte-stable decision records and a byte-stable operator transcript.
+- Cross-projection consistency tests: if a decision says a patch was applied, the journey projection must contain the corresponding applied event; if the journey says dropped at a gate, a gate decision record must explain why.
+
+**Exit criterion:** every replay iteration has a decision trace and operator transcript; transcript is readable without grepping raw logs; journey, decision, and validation projections agree.
+
+**Real-Genie runs:** 0.
+
+**Detailed plan:** to be written as `2026-05-XX-unified-trace-and-operator-transcript-plan.md`.
+
+---
+
+## Phase C — RCA loop reliability hardening
+
+**Why fourth:** The optimizer's core job is not to produce events; it is to improve Genie Spaces through an RCA loop. Phase C makes that loop explicit and reliable:
+
+```text
+evidence -> root_cause -> causal_patch -> targeted_qids
+  -> expected_fix -> observed_result -> learned_next_action
+```
+
+Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches with `target_qids: []`, and GT-correction candidates losing `question_id`. Both are identity/causality failures. They must be fixed before deeper modularization, because extracted modules should inherit a correct RCA contract rather than preserve broken ambiguity.
+
+**What ships:**
+
+- A canonical RCA loop contract in the same trace vocabulary used by Phase B:
+  - `EvidenceRecord`
+  - `RcaFinding`
+  - `CausalPatchIntent`
+  - `ExpectedFix`
+  - `ObservedEffect`
+  - `LearnedNextAction`
+- Fix for strategist/decomposition patch emission where patches lose `target_qids`; every patch must carry target qids or an explicit reason it is intentionally broad.
+- Shared canonical `extract_question_id(row)` helper used by baseline seeding, GT correction, eval row consumers, and replay/exporter code. Trace/request IDs are last-resort fallbacks, never preferred over benchmark qids.
+- Decision records for RCA failures:
+  - no evidence
+  - no RCA
+  - RCA but no AG
+  - AG but no proposal
+  - proposal but no causal target
+  - patch dropped by gate
+  - patch applied but no observed improvement
+- Unit tests from observed Cycle 8 row and patch shapes.
+
+**Validation strategy:**
+
+- Unit tests prove every known qid shape extracts canonical benchmark qids and never prefers `tr-*` over `inputs.question_id`.
+- Unit tests prove decomposed AG patches inherit `affected_questions` when patch-level `target_qids` is omitted.
+- Replay tests assert every unresolved qid has an RCA loop state and next action.
+- One optional real-Genie run if Cycle 8's side-bug fixes need live confirmation before merge.
+
+**Exit criterion:** no `target_qids: []` patches reach gates unless explicitly marked broad with a reason; no GT-correction candidate is skipped for missing qid; every unresolved qid has a traceable RCA loop state and suggested next action.
+
+**Real-Genie runs:** 0–1.
+
+**Detailed plans:** split into focused plans:
+- `2026-05-XX-canonical-qid-extraction-plan.md`
+- `2026-05-XX-target-qid-propagation-plan.md`
+- `2026-05-XX-rca-loop-contract-plan.md`
+
+---
+
+## Phase D — Scoreboard, failure bucketing, and first trace-aware extractions
+
+**Why fifth:** Once journey events, decision records, and RCA loop states share one trace architecture, operator metrics and unresolved-qid buckets become projections instead of separate logic. Phase D also starts modularization, but only where the new trace contract makes extraction low risk.
+
+**What ships:**
+
+- New module `optimization/scoreboard.py` exposing `ScoreboardSnapshot` and `build_scoreboard(trace)`.
+- New module `optimization/failure_bucketing.py` exposing `FailureBucket` and `classify_unresolved_qid(trace, qid)`.
+- Scoreboard metrics computed from `OptimizationTrace`, not directly from scattered harness locals:
   - `journey_completeness_pct`
   - `hard_cluster_coverage_pct`
   - `causal_patch_survival_pct`
-  - `malformed_proposals_at_cap` (count, must be 0)
+  - `malformed_proposals_at_cap`
   - `rollback_attribution_complete_pct`
-  - `terminal_unactionable_qids` (named list)
-  - `accuracy_delta` with variance band from baseline doc
-- Rendered at end of `_run_lever_loop` alongside the existing journey ledger.
-- Persisted to existing eval Delta tables for trend analysis.
-
-**Validation strategy:**
-
-- **Logic correctness:** ~30 unit tests over synthetic event lists — one test per metric edge case. No fixture work needed.
-- **Byte-stability:** the existing replay test asserts the scoreboard for `airline_real_v1.json` matches a committed expected snapshot.
-
-**Exit criterion:** Scoreboard renders on every replay run; numeric values match expected snapshot; ~5–7 tasks committed.
-
-**Real-Genie runs:** 0.
-
-**Detailed plan:** to be written as `2026-05-XX-operator-scoreboard-plan.md` once Phase A is complete (the real fixture's exact event set informs the metric edge cases).
-
----
-
-## Phase C — Failure bucketing classifier
-
-**Why fourth:** Scoreboard tells you `terminal_unactionable_qids: [q017, q032, q041]`. The bucketing classifier tells you *why* each one is unresolved.
-
-| Bucket | Diagnostic question | Operator next action |
-|---|---|---|
-| `EVIDENCE_GAP` | Did any judge fire on this qid? | Fix the judge / add coverage |
-| `PROPOSAL_GAP` | Was a cluster formed but no proposal generated? | Inspect strategist; add cluster-driven synthesis |
-| `GATE_OR_CAP_GAP` | Was a proposal generated but capped/gated/firewalled? | Tune the gate; relax the cap |
-| `MODEL_CEILING` | Did everything fire correctly and the model still didn't fix it? | Out of optimizer's scope — escalate to human review or different patch type |
-
-This is the diagnostic that turns "the loop terminated unactionable" into a concrete next action.
-
-**What ships:**
-
-- New module `optimization/failure_bucketing.py` exposing a pure `classify_unresolved_qid(events, ag_outcomes) -> FailureBucket` function.
-- Four-bucket enum.
-- Wired into the scoreboard's `terminal_unactionable_qids` so each qid carries its bucket label.
-
-**Validation strategy:**
-
-- **Logic correctness:** ~5–10 unit tests per bucket over synthetic event lists. No fixture work needed.
-- **Byte-stability:** replay test asserts each unresolved qid's bucket assignment in `airline_real_v1.json` matches the expected snapshot.
-
-**Exit criterion:** Every unresolved hard qid has a bucket; ~5–7 tasks committed.
-
-**Real-Genie runs:** 0.
-
-**Detailed plan:** to be written as `2026-05-XX-failure-bucketing-classifier-plan.md`.
-
----
-
-## Phase D — Three initial `harness.py` extractions
-
-**Why fifth:** `harness.py` is ~14,907 lines and growing. Modularization makes the file holdable in context for future agentic edits. Phase D picks the three lowest-risk, highest-leverage extractions that the contract helpers already factored out. Phase F (post-merge) finishes the job.
-
-**Order matters (lowest-risk first):**
+  - `terminal_unactionable_qids`
+  - `accuracy_delta`
+  - `decision_trace_completeness_pct`
+  - `rca_loop_closure_pct`
+- Failure buckets with next-action labels:
+  - `EVIDENCE_GAP`
+  - `RCA_GAP`
+  - `PROPOSAL_GAP`
+  - `TARGETING_GAP`
+  - `GATE_OR_CAP_GAP`
+  - `APPLY_OR_ROLLBACK_GAP`
+  - `MODEL_CEILING`
+- Three initial trace-aware extractions:
 
 | Order | Extraction | New module | Why low-risk |
 |---|---|---|---|
-| 1 | Eval entry & classification | `optimization/eval_entry.py` | Already a pure function; lift-and-shift |
-| 2 | AG outcome wiring | `optimization/ag_outcome.py` | Contract helpers (`_emit_ag_outcome_journey`, etc.) already isolated this |
-| 3 | Post-eval transition | `optimization/post_eval.py` | Same pattern as 2 |
+| 1 | Eval entry & classification | `optimization/eval_entry.py` | Already pure; emits journey + decision records. |
+| 2 | AG outcome wiring | `optimization/ag_outcome.py` | Contract helpers already isolated this; now emits decision records too. |
+| 3 | Post-eval transition | `optimization/post_eval.py` | Same pattern; produces qid result and RCA loop observed effect. |
 
-**Validation strategy:** each extraction is its own commit. Replay test asserts the canonical journey ledger is **byte-identical** before vs after each extraction. If even one event reorders, the diff fails the replay test and the commit is rolled back. This is the same byte-stability guarantee that makes Phase A's real fixture so valuable here.
+**Validation strategy:** each extraction is its own commit. Replay tests assert canonical journey, decision trace, scoreboard, and transcript snapshots are byte-stable before vs after each extraction.
 
-**Exit criterion:** Three extractions land; replay byte-stable across each; total LoC reduction in `harness.py` ~1500–2500 lines.
+**Exit criterion:** scoreboard and failure buckets render from `OptimizationTrace`; every unresolved qid has a bucket and next action; first three extractions land without changing journey or decision snapshots.
 
 **Real-Genie runs:** 0.
 
-**Detailed plan:** to be written as `2026-05-XX-harness-extractions-phase-1-plan.md`.
-
-**Phase F (post-merge) finishes byte-stable modularization** with five deeper extractions. Phase G then tightens the extracted module contracts. See Phase F and Phase G below.
+**Detailed plans:** to be written as:
+- `2026-05-XX-operator-scoreboard-plan.md`
+- `2026-05-XX-failure-bucketing-classifier-plan.md`
+- `2026-05-XX-harness-extractions-phase-1-plan.md`
 
 ---
 
@@ -177,14 +283,18 @@ This is the diagnostic that turns "the loop terminated unactionable" into a conc
 1. Run one real Lever Loop on the airline benchmark (~2 hours).
 2. Confirm:
    - Zero validator warnings.
+   - Decision trace is complete for every iteration.
+   - Operator transcript renders with iteration summary, RCA cards, AG decisions, proposal survival, gate reasons, acceptance/rollback, unresolved buckets, and next suggested action.
    - Scoreboard renders with sensible numbers.
    - Bucketing labels look right (spot-check 3–5 unresolved qids manually).
+   - RCA loop state is present for every unresolved qid.
    - No accuracy regression vs the variance baseline captured during Phase A burn-down.
 3. **Flip `raise_on_violation=True`** in `harness.py` (the journey contract becomes a hard gate on every future run).
-4. Open the deliberately-broken sanity PR for CI verification: intentionally drop one `_emit_ag_outcome_journey` call in a test branch, watch CI fail with a clear contract violation, then close the PR. This proves the gate is wired correctly and CI catches regressions.
-5. Merge the feature branch.
+4. Add a decision-trace hard-gate check for required decision records on replay. Missing journey emits and missing decision records should both fail closed.
+5. Open the deliberately-broken sanity PR for CI verification: intentionally drop one `_emit_ag_outcome_journey` call or one required decision record in a test branch, watch CI fail with a clear contract violation, then close the PR. This proves the gates are wired correctly and CI catches regressions.
+6. Merge the feature branch.
 
-**Exit criterion:** PR merged; contract gate is live; CI fails closed on missing emits.
+**Exit criterion:** PR merged; journey and decision gates are live; CI fails closed on missing emits or missing required decisions.
 
 **Real-Genie runs:** 1.
 
@@ -192,23 +302,23 @@ This is the diagnostic that turns "the loop terminated unactionable" into a conc
 
 ## Phase F — Deeper `harness.py` modularization (post-merge)
 
-**Why sixth:** Phase D extracted three lowest-risk subsystems. The five remaining subsystems carry most of `harness.py`'s remaining mass and most of its cross-module coupling. Phase A's lossless contract + the [combined Phase A burn-down plan](./high%20level%20plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md) make their input/output contracts explicit and testable, so each one becomes a tiny PR gated by byte-stable replay — the same gate Phase D uses.
+**Why sixth:** Phase D extracted three lowest-risk subsystems. The five remaining subsystems carry most of `harness.py`'s remaining mass and most of its cross-module coupling. Phase A's journey contract plus Phases B/C's decision trace and RCA loop contracts make their input/output behavior explicit and testable, so each one becomes a small PR gated by byte-stable replay.
 
 **Why post-merge:** these are isolated refactors with zero behavior change. They do not need to block the merge of the contract gate, the scoreboard, or the bucketing classifier. They land as a sequence of small follow-up PRs on `main`, each individually reviewable and reversible.
 
-**What Phase F is not:** Phase F is not the "strongly typed modular harness" endpoint. It is the prerequisite for that endpoint. The extraction PRs must preserve behavior and call shape closely enough for the replay ledger to stay byte-identical, so they may still carry today's `dict[str, Any]` payloads, mutation-through-shared-state patterns, and wide call signatures. Phase G tightens those contracts after the code has coherent homes.
+**What Phase F is not:** Phase F is not the "strongly typed modular harness" endpoint. It is the prerequisite for that endpoint. The extraction PRs must preserve behavior and call shape closely enough for replay to keep journey, decision, scoreboard, and transcript snapshots byte-identical, so they may still carry today's `dict[str, Any]` payloads, mutation-through-shared-state patterns, and wide call signatures. Phase G tightens those contracts after the code has coherent homes.
 
 **Order matters (lowest-risk first, same logic as Phase D):**
 
 | Order | Extraction | New module | Phase A precondition that makes it safe |
 |---|---|---|---|
-| 1 | RCA & clustering | `optimization/rca_clustering.py` | Track D (stable cluster signatures across iterations) + Track 2 (`_BEHAVIOR_ROOT_CAUSES` complete). |
-| 2 | Strategist invocation | `optimization/strategist_invocation.py` | Track D (AG signature stability) + Track 4 (AG decomposition guardrail) + lever-directive drift closed. |
-| 3 | Proposal pipeline | `optimization/proposal_pipeline.py` | Track 1 (proposal-to-patch metadata contract) + Track B (split-child propagation). |
-| 4 | Application / rollback | `optimization/applier_rollback.py` | Track A (cap conservation) + Track C (patch-family budgeting) + Tracks 3/E (survival truthfulness). |
-| 5 | Acceptance gating | `optimization/acceptance_gate.py` | Track F (acceptance predicate reorder) + Tracks 3/E/F/I (audit-log consistency). |
+| 1 | RCA & clustering | `optimization/rca_clustering.py` | RCA loop contract: evidence, root cause, cluster, and RCA card are traceable. |
+| 2 | Strategist invocation | `optimization/strategist_invocation.py` | AG decisions carry source clusters, affected qids, and rationale. |
+| 3 | Proposal pipeline | `optimization/proposal_pipeline.py` | Proposal decisions carry causal targets, lineage, and malformed/gate reasons. |
+| 4 | Application / rollback | `optimization/applier_rollback.py` | Gate, apply, rollback, and survival decisions are trace-complete. |
+| 5 | Acceptance gating | `optimization/acceptance_gate.py` | Acceptance decisions carry target wins, regressions, rollback trust, and learned next action. |
 
-**Validation strategy:** identical to Phase D. Each extraction is its own commit. The replay test (now a hard gate post-Phase E) asserts byte-identical journey ledger before vs after. If anything reorders, CI fails closed and the commit is rolled back.
+**Validation strategy:** identical to Phase D. Each extraction is its own commit. The replay test (now a hard gate post-Phase E) asserts byte-identical journey ledger, decision trace, scoreboard snapshot, and operator transcript before vs after. If anything reorders, CI fails closed and the commit is rolled back.
 
 **Exit criterion:** all five extractions land on `main`; replay byte-stable across each; total LoC reduction in `harness.py` of an additional ~6000–8000 lines (from ~12k post-Phase D to ~4–6k). The remaining `harness.py` is the orchestration spine — the loop body, lever ordering, and inter-module wiring — but the extracted modules may still expose legacy-shaped contracts until Phase G.
 
@@ -216,7 +326,7 @@ This is the diagnostic that turns "the loop terminated unactionable" into a conc
 
 **Detailed plan:** to be written as `2026-05-XX-harness-extractions-phase-2-plan.md` once Phase D lands and the replay gate is hard.
 
-**Why the eventual Phase F is realistic, not aspirational:** the [combined Phase A burn-down plan](./high%20level%20plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md) is specifically scoped to make these five subsystems independently extractable. Each Phase A track maps to one of the Phase F preconditions in the table above. After Phase A, the cross-module coupling that currently makes these five modules risky is gone.
+**Why the eventual Phase F is realistic, not aspirational:** the [combined Phase A burn-down plan](./high%20level%20plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md) made the journey surface replayable; Phases B/C add the missing decision and RCA contracts. Together, those make the five deep subsystems independently extractable without asking reviewers to trust a giant behavioral refactor.
 
 ---
 
@@ -233,11 +343,15 @@ This is the diagnostic that turns "the loop terminated unactionable" into a conc
 - Explicit typed objects for recurring concepts such as:
   - `LoopContext` — run IDs, space IDs, catalog/schema, warehouse, apply mode, lever set, and feature flags.
   - `IterationState` — iteration number, baseline/candidate accuracy, hard qids, cluster assignments, and terminal state.
+  - `OptimizationTrace` — owned container for journey events, decision records, validation reports, and projections.
+  - `DecisionRecord` — canonical record for an optimizer choice with evidence, rationale, target, reason code, and observed outcome.
+  - `RcaLoopState` — evidence, root cause, causal patch intent, expected fix, observed result, and learned next action.
   - `ProposalBatch` — proposals, parent/child lineage, cap decisions, malformed counts, and gate outcomes.
   - `PatchApplicationResult` — applied patches, rejected patches, rollback metadata, and survival attribution.
   - `AcceptanceDecision` — accepted/rolled-back decision, reason class, regression debt, and accuracy delta.
   - `JourneyLedger` — typed wrapper around journey events plus validation report accessors.
   - `ScoreboardSnapshot` — scoreboard inputs and rendered operator-facing metrics.
+  - `OperatorTranscript` — deterministic pretty stdout projection for replay, MLflow artifacting, and human review.
 - Per-module type-checking ratcheted in gradually. Start with the extracted modules; do not require strict typing across all of legacy `harness.py` on day one.
 - Compatibility adapters only where needed to keep persisted Delta payloads and replay fixtures stable. The public module APIs should become typed; persisted schemas should remain backward-compatible unless a separate migration plan says otherwise.
 
@@ -245,7 +359,7 @@ This is the diagnostic that turns "the loop terminated unactionable" into a conc
 
 - Each module gets its own typed-contract PR after its Phase F extraction has landed.
 - Unit tests prove the typed model constructors reject malformed inputs and preserve the current happy-path shape.
-- Replay tests continue to assert behavior does not regress.
+- Replay tests continue to assert journey, decision, scoreboard, and transcript behavior does not regress.
 - Type checking is opt-in per hardened module first, then expanded. The end state is enforced typing for the extracted modules and a much smaller untyped allowance for the remaining orchestration spine.
 
 **Exit criterion:** the eight extracted modules expose typed public APIs; `harness.py` orchestrates typed contracts rather than building and mutating open-ended dictionaries at every boundary; LLM-assisted edits can target one module plus its contract tests without loading the whole lever-loop harness into context.
