@@ -12,11 +12,20 @@ def test_patch_retry_signature_includes_column_and_instruction_section():
         "instruction_section": "QUERY CONSTRUCTION",
     }
 
-    assert patch_retry_signature(patch) == (
+    sig = patch_retry_signature(patch)
+    # Track E (Phase A burn-down): signature is now a 6-tuple including
+    # parent_proposal_id and a content fingerprint. Non-split-child
+    # patches receive empty parent_proposal_id; the content fingerprint
+    # is deterministic for empty content fields.
+    assert sig[:4] == (
         "update_column_description",
         "cat.sch.tkt_payment",
         "PAYMENT_AMT",
         frozenset({"QUERY CONSTRUCTION"}),
+    )
+    assert sig[4] == "", "non-split-child must have empty parent_proposal_id"
+    assert isinstance(sig[5], str) and len(sig[5]) == 16, (
+        f"content fingerprint must be a 16-char hex string; got {sig[5]!r}"
     )
 
 

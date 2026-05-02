@@ -46,15 +46,83 @@ def _section_set(patch: dict[str, Any]) -> frozenset[str]:
     return frozenset(str(v).strip() for v in raw if str(v).strip())
 
 
-def patch_retry_signature(patch: dict[str, Any]) -> tuple[str, str, str, frozenset[str]]:
+def _parent_proposal_id(patch: dict[str, Any]) -> str:
+    """Return the parent proposal id for a split-child, else empty.
+
+    Track E: only set on patches stamped with ``_split_from`` by
+    ``_split_rewrite_instruction_patch``. Non-split patches return ""
+    so their signature is unaffected by this addition.
+    """
+    if patch.get("_split_from"):
+        return str(patch.get("parent_proposal_id") or "").strip()
+    return ""
+
+
+def _target_content_fingerprint(patch: dict[str, Any]) -> str:
+    """Return a short stable hash of the patch's content-bearing fields.
+
+    Track E: two split-children for the same section but different
+    proposed content (instruction text, snippet body, column
+    description) must produce different signatures so reflection-as-
+    validator does not over-block fresh content. The hash covers the
+    union of fields applier reads as the "value" of a patch:
+
+      * ``new_text`` (rewrite/instruction prose)
+      * ``value`` (heterogeneous payload — used by ``add_sql_snippet_*``,
+        ``add_join_spec``, ``add_measure``, etc.)
+      * ``description`` / ``new_description`` (column description patches)
+      * ``snippet`` (legacy alias)
+
+    Returns first 16 hex chars of SHA-256 over a JSON-stable
+    serialization. Collisions at 64 bits are negligible for the
+    in-memory rolled-back-patch set.
+    """
+    import hashlib
+    import json
+
+    payload = {
+        "new_text": patch.get("new_text", ""),
+        "value": patch.get("value", ""),
+        "description": patch.get("description") or patch.get("new_description") or "",
+        "snippet": patch.get("snippet", ""),
+    }
+    try:
+        encoded = json.dumps(payload, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        # Fall back to repr for non-JSON-serializable payloads.
+        encoded = repr(sorted(payload.items()))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
+def patch_retry_signature(
+    patch: dict[str, Any],
+) -> tuple[str, str, str, frozenset[str], str, str]:
     """Return a precise retry key for one patch shape.
 
-    Tuple of (patch_type, target_table, target_column, section_set). Two
-    patches with the same key target the exact same column or instruction
-    section, so reflection's "this rolled back" memory should compare on
-    this key rather than table-only.
+    Track E (Phase A burn-down): tuple of ``(patch_type, target_table,
+    target_column, section_set, parent_proposal_id, content_fingerprint)``.
+
+    The two new components, both empty for non-split-child patches,
+    distinguish split-children of two different parent rewrites that
+    happen to touch the same section, AND distinguish two attempts at
+    the same parent+section with different proposed content. Reflection-
+    as-validator can therefore block exact re-proposals while allowing
+    fresh content for the same section.
+
+    Backwards compatibility: callers receive a 6-tuple instead of a
+    4-tuple. ``retry_allowed_after_rollback`` and the
+    ``_patch_forbidden_signatures`` set in ``harness.py`` use the tuple
+    opaquely (set membership only), so the change is transparent to
+    them. Callers that index into the tuple positionally must update.
     """
-    return (_patch_type(patch), _target_table(patch), _target_column(patch), _section_set(patch))
+    return (
+        _patch_type(patch),
+        _target_table(patch),
+        _target_column(patch),
+        _section_set(patch),
+        _parent_proposal_id(patch),
+        _target_content_fingerprint(patch),
+    )
 
 
 _DIRECT_BEHAVIOR_TYPES = frozenset({
