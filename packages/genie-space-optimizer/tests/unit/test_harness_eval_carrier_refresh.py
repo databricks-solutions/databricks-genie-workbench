@@ -477,3 +477,74 @@ def test_seed_eval_result_cycle_5_payload_powers_fixture_eval_rows() -> None:
     for r in rows:
         assert "result_correctness" in r
         assert r["arbiter"] == "both_correct"
+
+
+# ---------------------------------------------------------------------------
+# Track D regression — _baseline_row_qid must prefer canonical qid sources
+# (request.kwargs.question_id, inputs.question_id) over trace-id aliases
+# (client_request_id, request_id) when both are present. Cycle 7 found a
+# row shape where client_request_id contained an MLflow trace ID; the old
+# helper returned that trace ID and corrupted the fixture. See
+# docs/2026-05-02-track-a-fixture-reconstruction-and-qid-extractor-fix-plan.md.
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_row_qid_prefers_inputs_question_id_over_client_request_id() -> None:
+    """The cycle 7 row shape: client_request_id is a trace ID, the canonical
+    qid lives at inputs.question_id. Helper must return the canonical qid."""
+    from genie_space_optimizer.optimization.harness import _baseline_row_qid
+
+    row = {
+        "client_request_id": "tr-f74a86401aa0b8e292f602e0069d867d",
+        "inputs": {"question_id": "airline_ticketing_and_fare_analysis_gs_024"},
+    }
+    assert _baseline_row_qid(row) == "airline_ticketing_and_fare_analysis_gs_024"
+
+
+def test_baseline_row_qid_prefers_request_kwargs_question_id_over_client_request_id() -> None:
+    """Some MLflow eval-table shapes nest the canonical qid inside
+    request.kwargs (the JSON-encoded predict_fn payload)."""
+    from genie_space_optimizer.optimization.harness import _baseline_row_qid
+
+    row = {
+        "client_request_id": "tr-aaa",
+        "request": {"kwargs": {"question_id": "airline_q_canonical"}},
+    }
+    assert _baseline_row_qid(row) == "airline_q_canonical"
+
+
+def test_baseline_row_qid_handles_request_as_json_string() -> None:
+    """request can also be persisted as a JSON-encoded string. The helper
+    must parse it and find the canonical qid."""
+    import json
+    from genie_space_optimizer.optimization.harness import _baseline_row_qid
+
+    row = {
+        "client_request_id": "tr-bbb",
+        "request": json.dumps({"kwargs": {"question_id": "airline_q_from_json"}}),
+    }
+    assert _baseline_row_qid(row) == "airline_q_from_json"
+
+
+def test_baseline_row_qid_falls_back_to_client_request_id_when_no_canonical_present() -> None:
+    """Forward-compat: if no canonical qid source exists, the helper must
+    still return *something* (the trace ID) so the carrier doesn't go empty.
+    The downstream warning ('baseline payload had N rows but 0 carried')
+    will fire if every row falls into this case, giving operator visibility."""
+    from genie_space_optimizer.optimization.harness import _baseline_row_qid
+
+    row = {"client_request_id": "tr-only"}
+    assert _baseline_row_qid(row) == "tr-only"
+
+
+def test_baseline_row_qid_top_level_question_id_still_wins_over_inputs() -> None:
+    """The existing top-level alias chain still takes precedence over inputs
+    (preserves cycle 5/6 fix semantics)."""
+    from genie_space_optimizer.optimization.harness import _baseline_row_qid
+
+    row = {
+        "question_id": "top_level_canonical",
+        "client_request_id": "tr-aaa",
+        "inputs": {"question_id": "inputs_canonical"},
+    }
+    assert _baseline_row_qid(row) == "top_level_canonical"
