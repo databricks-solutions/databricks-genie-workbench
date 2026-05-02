@@ -14615,8 +14615,13 @@ def _run_lever_loop(
                 _build_patch_record(entry, _patch_lever, apply_mode),
                 catalog, schema,
             )
-            # Task 13 — emit ``applied`` per applied patch, scoped to
-            # the proposal's target_qids.
+            # Task 13 — emit ``applied`` per applied patch.
+            # Track 3/E (Phase A burn-down) — splits into
+            # ``applied_targeted`` (qid was in the patch's
+            # target_qids) and ``applied_broad_ag_scope`` (qid was
+            # in the AG's affected_questions but not specifically
+            # targeted by this patch). Phase B's
+            # ``causal_patch_survival_pct`` consumes this distinction.
             try:
                 _ap = entry.get("patch", {}) or {}
                 _ap_pid = str(
@@ -14625,22 +14630,39 @@ def _run_lever_loop(
                     or _ap.get("id")
                     or ""
                 )
-                _ap_qids = list(_ap.get("_grounding_target_qids") or [])
-                if not _ap_qids:
-                    _ap_qids = list(_ap.get("target_qids") or [])
-                _ap_qids = [str(q) for q in _ap_qids if q]
-                if _ap_qids:
+                _ap_target_qids = list(_ap.get("_grounding_target_qids") or [])
+                if not _ap_target_qids:
+                    _ap_target_qids = list(_ap.get("target_qids") or [])
+                _ap_target_qid_set = {str(q) for q in _ap_target_qids if q}
+
+                _ap_ag_qids = {
+                    str(q)
+                    for q in (ag.get("affected_questions", []) or [])
+                    if str(q)
+                }
+                _ap_broad_qid_set = _ap_ag_qids - _ap_target_qid_set
+
+                _ap_patch_type = str(
+                    _ap.get("patch_type") or _ap.get("type") or ""
+                )
+
+                if _ap_target_qid_set:
                     _journey_emit(
-                        "applied",
-                        question_ids=_ap_qids,
+                        "applied_targeted",
+                        question_ids=sorted(_ap_target_qid_set),
                         proposal_id=_ap_pid,
-                        patch_type=str(
-                            _ap.get("patch_type") or _ap.get("type") or ""
-                        ),
+                        patch_type=_ap_patch_type,
+                    )
+                if _ap_broad_qid_set:
+                    _journey_emit(
+                        "applied_broad_ag_scope",
+                        question_ids=sorted(_ap_broad_qid_set),
+                        proposal_id=_ap_pid,
+                        patch_type=_ap_patch_type,
                     )
             except Exception:
                 logger.debug(
-                    "Task 13: applied journey emit failed (non-fatal)",
+                    "Track 3/E: applied journey emit failed (non-fatal)",
                     exc_info=True,
                 )
 
