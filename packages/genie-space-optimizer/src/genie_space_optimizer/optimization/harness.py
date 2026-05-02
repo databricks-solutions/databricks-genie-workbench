@@ -14865,6 +14865,40 @@ def _run_lever_loop(
                         ) + "\n"
                         + _bar("-")
                     )
+                # Cycle 8 Bug 1 Phase 3a — persist applier-decision counts to
+                # MLflow so future cycle intakes have queryable diagnostic
+                # data. Without this, the only way to learn why an AG hit
+                # ``skipped_no_applied_patches`` is to dig the per-AG span
+                # out of MLflow's full trace tree, or hand-grep the cycle's
+                # stderr. Best-effort wrapped.
+                try:
+                    import mlflow as _mlflow_apl  # type: ignore[import-not-found]
+                    if _decision_counts and _mlflow_apl.active_run() is not None:
+                        _mlflow_apl.log_dict(
+                            {
+                                "iteration": iteration_counter,
+                                "ag_id": str(ag_id),
+                                "decision_counts": dict(_decision_counts),
+                                "reason_code": _apply_skip.reason_code,
+                                "reason_detail": _apply_skip.reason_detail,
+                            },
+                            artifact_file=(
+                                f"phase_a/applier_decisions/"
+                                f"iter_{iteration_counter}_{ag_id}.json"
+                            ),
+                        )
+                        _mlflow_apl.set_tags({
+                            (
+                                f"applier_decisions.iter_{iteration_counter}."
+                                f"{ag_id}.dropped_count"
+                            ): str(sum(_decision_counts.values())),
+                        })
+                except Exception:
+                    logger.debug(
+                        "Cycle 8 Bug 1 Phase 3a: MLflow applier-decisions "
+                        "persistence skipped (non-fatal)",
+                        exc_info=True,
+                    )
             except Exception:
                 logger.debug("Failed to print applier decision counts", exc_info=True)
             write_stage(
