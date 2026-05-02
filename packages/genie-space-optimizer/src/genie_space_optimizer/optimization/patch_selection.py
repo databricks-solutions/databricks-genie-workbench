@@ -120,18 +120,15 @@ def _stable_identity(patch: dict[str, Any]) -> str:
 def _deduplicate_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Return decisions with at most one entry per stable identity.
 
-    First occurrence wins. Later occurrences are dropped silently because
-    they would otherwise lie about cap reconciliation downstream.
+    Identity matches ``_stable_identity``: parent + id + lever + type +
+    target_fingerprint. A decision row that lacks identity-relevant
+    fields is preserved as-is so callers can still see it.
     """
     seen: set[str] = set()
     deduped: list[dict[str, Any]] = []
     for decision in decisions:
-        identity = str(
-            decision.get("expanded_patch_id")
-            or decision.get("proposal_id")
-            or ""
-        )
-        if not identity:
+        identity = _stable_identity(decision)
+        if not identity or identity == "||L||":
             deduped.append(decision)
             continue
         if identity in seen:
@@ -139,6 +136,33 @@ def _deduplicate_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, An
         seen.add(identity)
         deduped.append(decision)
     return deduped
+
+
+def _assert_cap_conservation(
+    *,
+    func_name: str,
+    input_count: int,
+    decisions: list[dict[str, Any]],
+) -> None:
+    """Hard-fail when a cap selector loses or duplicates a decision row.
+
+    Surfaces the May-01 ESR ``Original 4, Kept 3, Dropped 0`` defect class
+    immediately rather than letting it propagate through survival ledgers
+    and journey events.
+    """
+    if len(decisions) != input_count:
+        identities = [_stable_identity(d) for d in decisions]
+        raise AssertionError(
+            f"{func_name}: cap conservation violated: input={input_count} "
+            f"decisions={len(decisions)} identities={identities!r}"
+        )
+    kept = sum(1 for d in decisions if d.get("decision") == "selected")
+    dropped = sum(1 for d in decisions if d.get("decision") == "dropped")
+    if kept + dropped != input_count:
+        raise AssertionError(
+            f"{func_name}: kept ({kept}) + dropped ({dropped}) != input "
+            f"({input_count})"
+        )
 
 
 def _deduplicate_patches(patches: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -179,8 +203,9 @@ def select_causal_patch_cap(
     a different lever or instruction section.
     """
     patches = _deduplicate_patches(patches)
+    _input_count = len(patches)
     if max_patches <= 0:
-        return [], _deduplicate_decisions([
+        _deduped = _deduplicate_decisions([
             {
                 "proposal_id": _proposal_id(p, idx),
                 "decision": "dropped",
@@ -188,11 +213,26 @@ def select_causal_patch_cap(
                 "rank": None,
                 **_identity_fields(p, _proposal_id(p, idx)),
                 "lever": _lever(p),
+                "type": p.get("type") or p.get("patch_type"),
+                "section_name": p.get("section_name"),
+                "instruction_section": p.get("instruction_section"),
+                "table": p.get("table"),
+                "column": p.get("column"),
+                "snippet_name": p.get("snippet_name"),
+                "snippet_type": p.get("snippet_type"),
+                "target_object": p.get("target_object"),
+                "target_table": p.get("target_table"),
             }
             for idx, p in enumerate(patches)
         ])
+        _assert_cap_conservation(
+            func_name="select_causal_patch_cap",
+            input_count=_input_count,
+            decisions=_deduped,
+        )
+        return [], _deduped
     if len(patches) <= max_patches:
-        return list(patches), _deduplicate_decisions([
+        _deduped = _deduplicate_decisions([
             {
                 "proposal_id": _proposal_id(p, idx),
                 "decision": "selected",
@@ -200,10 +240,25 @@ def select_causal_patch_cap(
                 "rank": idx + 1,
                 "relevance_score": _score(p, "relevance_score"),
                 "lever": _lever(p),
+                "type": p.get("type") or p.get("patch_type"),
+                "section_name": p.get("section_name"),
+                "instruction_section": p.get("instruction_section"),
+                "table": p.get("table"),
+                "column": p.get("column"),
+                "snippet_name": p.get("snippet_name"),
+                "snippet_type": p.get("snippet_type"),
+                "target_object": p.get("target_object"),
+                "target_table": p.get("target_table"),
                 **_identity_fields(p, _proposal_id(p, idx)),
             }
             for idx, p in enumerate(patches)
         ])
+        _assert_cap_conservation(
+            func_name="select_causal_patch_cap",
+            input_count=_input_count,
+            decisions=_deduped,
+        )
+        return list(patches), _deduped
 
     remaining: list[tuple[int, dict[str, Any]]] = list(enumerate(patches))
     selected: list[tuple[int, dict[str, Any], str]] = []
@@ -237,32 +292,48 @@ def select_causal_patch_cap(
         selected.append((best[0], patch, reason))
         seen_levers.add(_lever(patch))
 
-    selected_ids = {_proposal_id(p, idx) for idx, p, _reason in selected}
-    rank_by_id = {
-        _proposal_id(p, idx): rank
-        for rank, (idx, p, _reason) in enumerate(selected, start=1)
+    selected_identities = {_stable_identity(p) for _idx, p, _reason in selected}
+    rank_by_identity = {
+        _stable_identity(p): rank
+        for rank, (_idx, p, _reason) in enumerate(selected, start=1)
     }
-    reason_by_id = {
-        _proposal_id(p, idx): reason
-        for idx, p, reason in selected
+    reason_by_identity = {
+        _stable_identity(p): reason
+        for _idx, p, reason in selected
     }
     decisions: list[dict[str, Any]] = []
     for idx, patch in enumerate(patches):
         pid = _proposal_id(patch, idx)
-        selected_flag = pid in selected_ids
+        identity = _stable_identity(patch)
+        selected_flag = identity in selected_identities
         decisions.append({
             "proposal_id": pid,
             "decision": "selected" if selected_flag else "dropped",
             "selection_reason": (
-                reason_by_id[pid] if selected_flag else "lower_causal_rank"
+                reason_by_identity[identity] if selected_flag else "lower_causal_rank"
             ),
-            "rank": rank_by_id.get(pid),
+            "rank": rank_by_identity.get(identity),
             "relevance_score": _score(patch, "relevance_score"),
             "lever": _lever(patch),
+            "type": patch.get("type") or patch.get("patch_type"),
+            "section_name": patch.get("section_name"),
+            "instruction_section": patch.get("instruction_section"),
+            "table": patch.get("table"),
+            "column": patch.get("column"),
+            "snippet_name": patch.get("snippet_name"),
+            "snippet_type": patch.get("snippet_type"),
+            "target_object": patch.get("target_object"),
+            "target_table": patch.get("target_table"),
             **_identity_fields(patch, pid),
         })
 
-    return [p for _idx, p, _reason in selected], _deduplicate_decisions(decisions)
+    _deduped = _deduplicate_decisions(decisions)
+    _assert_cap_conservation(
+        func_name="select_causal_patch_cap",
+        input_count=_input_count,
+        decisions=_deduped,
+    )
+    return [p for _idx, p, _reason in selected], _deduped
 
 
 def _target_qids(patch: dict[str, Any]) -> tuple[str, ...]:
@@ -374,6 +445,11 @@ def select_target_aware_causal_patch_cap(
     next dropped patch is debuggable.
     """
     patches = _deduplicate_patches(patches)
+    # Conservation invariant: this function's two early returns delegate to
+    # ``select_causal_patch_cap``, which enforces conservation. The third
+    # return path below builds its own decisions and asserts conservation
+    # explicitly.
+    _input_count = len(patches)
     if max_patches <= 0:
         return select_causal_patch_cap(patches, max_patches=max_patches)
     if len(patches) <= max_patches:
@@ -543,7 +619,22 @@ def select_target_aware_causal_patch_cap(
             "lever_diversity_tier": _lever_diversity_tier(patch),
             "active_cluster_match_tier": _active_cluster_match_tier(patch, active_set),
             "is_direct_behavior": _is_direct_behavior_patch(patch),
+            "type": patch.get("type") or patch.get("patch_type"),
+            "section_name": patch.get("section_name"),
+            "instruction_section": patch.get("instruction_section"),
+            "table": patch.get("table"),
+            "column": patch.get("column"),
+            "snippet_name": patch.get("snippet_name"),
+            "snippet_type": patch.get("snippet_type"),
+            "target_object": patch.get("target_object"),
+            "target_table": patch.get("target_table"),
             **_identity_fields(patch, pid),
         })
 
-    return _deduplicate_patches(selected), _deduplicate_decisions(decisions)
+    _deduped = _deduplicate_decisions(decisions)
+    _assert_cap_conservation(
+        func_name="select_target_aware_causal_patch_cap",
+        input_count=_input_count,
+        decisions=_deduped,
+    )
+    return _deduplicate_patches(selected), _deduped

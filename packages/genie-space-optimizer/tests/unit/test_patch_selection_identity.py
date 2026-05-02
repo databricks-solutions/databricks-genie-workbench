@@ -55,3 +55,50 @@ def test_stable_identity_distinguishes_two_split_children_targeting_different_se
     }
 
     assert _stable_identity(a) != _stable_identity(b)
+
+
+def test_select_causal_patch_cap_decisions_conserve_input_count() -> None:
+    """For every input patch the cap must emit exactly one decision row."""
+    from genie_space_optimizer.optimization.patch_selection import select_causal_patch_cap
+
+    patches = [
+        {"proposal_id": "P001#1", "expanded_patch_id": "P001#1", "parent_proposal_id": "P001",
+         "lever": 5, "type": "update_instruction_section", "section_name": "QUERY RULES",
+         "relevance_score": 0.9},
+        {"proposal_id": "P001#2", "expanded_patch_id": "P001#2", "parent_proposal_id": "P001",
+         "lever": 5, "type": "update_instruction_section", "section_name": "ASSET ROUTING",
+         "relevance_score": 0.8},
+        {"proposal_id": "P001#2", "expanded_patch_id": "P001#2", "parent_proposal_id": "P001",
+         "lever": 6, "type": "add_sql_snippet_expression", "table": "cat.sch.mv_fact",
+         "relevance_score": 0.95},
+    ]
+
+    selected, decisions = select_causal_patch_cap(patches, max_patches=2)
+
+    assert len(decisions) == len(patches), (
+        f"cap conservation violated: {len(patches)} input -> {len(decisions)} decisions"
+    )
+    kept = sum(1 for d in decisions if d["decision"] == "selected")
+    dropped = sum(1 for d in decisions if d["decision"] == "dropped")
+    assert kept + dropped == len(patches)
+    assert len(selected) == kept
+
+
+def test_select_causal_patch_cap_logs_full_identity_on_collision() -> None:
+    """Two patches with the same id but different (lever, type) must both appear in decisions."""
+    from genie_space_optimizer.optimization.patch_selection import select_causal_patch_cap
+
+    patches = [
+        {"proposal_id": "P001#2", "expanded_patch_id": "P001#2", "parent_proposal_id": "P001",
+         "lever": 5, "type": "update_instruction_section", "section_name": "QUERY PATTERNS",
+         "relevance_score": 0.5},
+        {"proposal_id": "P001#2", "expanded_patch_id": "P001#2", "parent_proposal_id": "P001",
+         "lever": 6, "type": "add_sql_snippet_expression", "table": "cat.sch.mv_fact",
+         "relevance_score": 0.99},
+    ]
+
+    selected, decisions = select_causal_patch_cap(patches, max_patches=1)
+
+    assert len(decisions) == 2
+    levers_in_decisions = sorted(d.get("lever") for d in decisions)
+    assert levers_in_decisions == [5, 6]
