@@ -17,6 +17,9 @@ class RcaTerminalStatus(str, Enum):
     UNRESOLVED_HARD_FAILURE_WITH_UNTRIED_SQL_DELTA = "unresolved_hard_failure_with_untried_sql_delta"
     DIMINISHING_RETURNS_WITH_OPEN_DEBT = "diminishing_returns_with_open_debt"
     PLATEAU_NO_OPEN_FAILURES = "plateau_no_open_failures"
+    # Track G — plateau detector cannot fire while a queued diagnostic
+    # or buffered AG still covers a live hard qid (signature overlap).
+    PLATEAU_PENDING_DIAGNOSTIC_AGS = "plateau_pending_diagnostic_ags"
 
 
 @dataclass(frozen=True)
@@ -115,13 +118,25 @@ def resolve_terminal_on_plateau(
     current_hard_qids: set[str],
     regression_debt_qids: set[str],
     sql_delta_qids: set[str] | None = None,
+    pending_diagnostic_ags: list[dict] | None = None,
 ) -> RcaTerminalDecision:
     """Resolve the plateau terminal status from current eval state.
 
-    Priority: hard failures with concrete SQL deltas (still patchable) >
-    hard failures still in quarantine > open regression debt > clean
-    plateau. The result replaces the old ``(unknown)`` plateau label so
-    downstream consumers see a typed status.
+    Priority:
+        1. Hard failures with concrete SQL deltas (still patchable).
+        2. **Track G** — pending diagnostic / buffered AGs whose stable
+           signature still overlaps the live hard set (still patchable
+           via the queue, no need to terminate).
+        3. Hard failures still in quarantine.
+        4. Open regression debt.
+        5. Clean plateau.
+
+    ``pending_diagnostic_ags`` is an iterable of AG dicts as stored in
+    ``harness.py``'s ``pending_action_groups`` and
+    ``diagnostic_action_queue``. Each AG should carry a
+    ``_stable_signature`` (Track D) — the resolver reads
+    ``ag["_stable_signature"][1]`` for the qid set. AGs without a
+    signature fall back to ``ag["affected_questions"]``.
     """
     still_patchable = sorted(set(sql_delta_qids or set()) & set(current_hard_qids))
     if still_patchable:
@@ -133,6 +148,36 @@ def resolve_terminal_on_plateau(
                 f"remaining: {still_patchable}"
             ),
         )
+
+    # Track G — refuse plateau when a queued AG covers a live hard qid.
+    overlapping_ags: list[tuple[str, set[str]]] = []
+    for ag in pending_diagnostic_ags or []:
+        sig = ag.get("_stable_signature")
+        if sig and len(sig) >= 2:
+            ag_qids = {str(q) for q in (sig[1] or ()) if str(q)}
+        else:
+            ag_qids = {
+                str(q)
+                for q in (ag.get("affected_questions") or [])
+                if str(q)
+            }
+        overlap = ag_qids & set(current_hard_qids)
+        if overlap:
+            overlapping_ags.append((str(ag.get("id") or ""), overlap))
+
+    if overlapping_ags:
+        ag_summary = ", ".join(
+            f"{ag_id}=>{sorted(qids)}" for ag_id, qids in overlapping_ags
+        )
+        return RcaTerminalDecision(
+            status=RcaTerminalStatus.PLATEAU_PENDING_DIAGNOSTIC_AGS,
+            should_continue=True,
+            reason=(
+                f"plateau suppressed — pending_diagnostic_ags=[{ag_summary}] "
+                f"overlap live hard set"
+            ),
+        )
+
     quarantined_and_hard = sorted(set(quarantined_qids) & set(current_hard_qids))
     if quarantined_and_hard:
         return RcaTerminalDecision(
