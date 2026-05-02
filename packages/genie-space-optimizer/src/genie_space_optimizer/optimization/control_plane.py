@@ -609,3 +609,35 @@ def select_control_plane_baseline_rows(
     if full_rows:
         return full_rows, str(full.get("eval_scope") or "full")
     return [], "unknown"
+
+
+def assert_quarantine_attribution_sound(
+    *,
+    quarantined_qids: Iterable[str],
+    currently_passing_qids: Iterable[str],
+    currently_hard_qids: Iterable[str],
+) -> None:
+    """Track H — fail loud on quarantine attribution drift.
+
+    Two invariants:
+      1. No currently-passing qid may appear in the quarantine list.
+      2. When the live hard set has size 1, that qid cannot be quarantined
+         (singleton-hard floor — quarantine is for *recurring* failure,
+         not for the only remaining target).
+    """
+    quarantined = {str(q) for q in quarantined_qids if str(q)}
+    passing = {str(q) for q in currently_passing_qids if str(q)}
+    hard = {str(q) for q in currently_hard_qids if str(q)}
+
+    bad_passing = sorted(quarantined & passing)
+    if bad_passing:
+        raise AssertionError(
+            f"quarantine attribution drift: passing qids appear in quarantine: "
+            f"{bad_passing}; quarantine source must be currently-failing rows only"
+        )
+    if len(hard) == 1 and (hard & quarantined):
+        raise AssertionError(
+            f"singleton-hard qid cannot be quarantined: hard={sorted(hard)}, "
+            f"quarantined={sorted(quarantined)}; the only remaining hard "
+            f"target must be available to the strategist"
+        )
