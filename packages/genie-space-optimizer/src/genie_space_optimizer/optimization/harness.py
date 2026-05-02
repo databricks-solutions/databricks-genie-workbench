@@ -14602,10 +14602,28 @@ def _run_lever_loop(
 
             try:
                 from genie_space_optimizer.optimization.rca_decision_trace import (
+                    OptimizationTrace,
+                    patch_cap_decision_records,
                     patch_cap_decision_rows,
+                    render_operator_transcript,
                 )
                 from genie_space_optimizer.optimization.state import (
                     write_lever_loop_decisions as _write_decisions,
+                )
+
+                # Phase B Trace Plan Task 7 — capture typed records first so
+                # the iteration snapshot persists them for replay/fixture.
+                # Then convert back to legacy rows for the existing Delta
+                # write path (write_lever_loop_decisions consumers haven't
+                # migrated yet).
+                _patch_cap_records = patch_cap_decision_records(
+                    run_id=run_id,
+                    iteration=iteration_counter,
+                    ag_id=ag_id,
+                    decisions=_patch_cap_decisions,
+                )
+                _current_iter_inputs.setdefault("decision_records", []).extend(
+                    [r.to_dict() for r in _patch_cap_records]
                 )
 
                 _write_decisions(
@@ -16166,6 +16184,67 @@ def _run_lever_loop(
                     "(non-fatal)",
                     exc_info=True,
                 )
+
+        # Phase B Trace Plan Task 7 — render the operator transcript and
+        # persist the per-iteration decision trace + transcript to MLflow.
+        # All best-effort wrapped: missing mlflow / no active run / no
+        # decisions captured this iteration is silently skipped.
+        try:
+            from genie_space_optimizer.optimization.rca_decision_trace import (
+                DecisionRecord,
+                OptimizationTrace,
+                canonical_decision_json,
+                render_operator_transcript,
+                validate_decisions_against_journey,
+            )
+
+            _decision_records = [
+                DecisionRecord.from_dict(r)
+                for r in (_current_iter_inputs.get("decision_records") or [])
+            ]
+            if _decision_records:
+                _decision_validation = validate_decisions_against_journey(
+                    records=_decision_records,
+                    events=_journey_events,
+                )
+                _trace = OptimizationTrace(
+                    journey_events=tuple(_journey_events),
+                    decision_records=tuple(_decision_records),
+                )
+                _transcript = render_operator_transcript(
+                    trace=_trace,
+                    iteration=iteration_counter,
+                )
+                print(_transcript)
+                import mlflow as _mlflow_trace  # type: ignore[import-not-found]
+                if _mlflow_trace.active_run() is not None:
+                    _mlflow_trace.log_text(
+                        canonical_decision_json(_decision_records),
+                        artifact_file=(
+                            f"phase_b/decision_trace/"
+                            f"iter_{iteration_counter}.json"
+                        ),
+                    )
+                    _mlflow_trace.log_text(
+                        _transcript,
+                        artifact_file=(
+                            f"phase_b/operator_transcript/"
+                            f"iter_{iteration_counter}.txt"
+                        ),
+                    )
+                    _mlflow_trace.set_tags({
+                        f"decision_trace.iter_{iteration_counter}.records": (
+                            str(len(_decision_records))
+                        ),
+                        f"decision_trace.iter_{iteration_counter}.violations": (
+                            str(len(_decision_validation))
+                        ),
+                    })
+        except Exception:
+            logger.debug(
+                "Phase B: decision trace persistence skipped (non-fatal)",
+                exc_info=True,
+            )
 
         # Task 13 — render the per-question journey ledger at normal
         # iteration end. Early-exit paths call the same idempotent helper

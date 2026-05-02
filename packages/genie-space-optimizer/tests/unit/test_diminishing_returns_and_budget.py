@@ -189,3 +189,25 @@ def test_harness_persists_patch_cap_trace_rows_and_prints_inventory() -> None:
     assert "patch_cap_decision_rows" in src
     assert "format_patch_inventory" in src
     assert "PROPOSAL INVENTORY" in src
+
+
+def test_harness_captures_patch_cap_decision_records_in_fixture() -> None:
+    """Phase B Trace Plan Task 7: harness wires the typed DecisionRecord
+    capture path. Static-source check — confirms the four wiring anchors
+    are present (patch_cap_decision_records call, decision_records stash
+    on iteration snapshot, phase_b MLflow artifact paths)."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    src = (
+        root
+        / "src"
+        / "genie_space_optimizer"
+        / "optimization"
+        / "harness.py"
+    ).read_text()
+
+    assert "patch_cap_decision_records" in src
+    assert '_current_iter_inputs.setdefault("decision_records", [])' in src
+    assert "phase_b/decision_trace" in src
+    assert "phase_b/operator_transcript" in src
