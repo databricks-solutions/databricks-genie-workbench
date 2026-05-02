@@ -109,8 +109,12 @@ def build_patch_survival_table(snap: PatchSurvivalSnapshot) -> str:
             notes.append("lost_at:cap")
         if n_cap and not n_done:
             notes.append("lost_at:apply")
+        # Track 3/E — patches with no cluster lineage render under
+        # the (ag_level) label so operators can distinguish "lost
+        # cluster" from "AG-level metadata patch".
+        cid_label = cid if cid else "(ag_level)"
         lines.append(
-            f"│  {cid:<14}{n_prop:>10}{n_norm:>12}{n_appl:>11}{n_cap:>9}{n_done:>9}   "
+            f"│  {cid_label:<14}{n_prop:>10}{n_norm:>12}{n_appl:>11}{n_cap:>9}{n_done:>9}   "
             f"{', '.join(notes)}"
         )
     lines.append(f"└{bar}")
