@@ -40,6 +40,11 @@ class JourneyStage(str, Enum):
     DROPPED_AT_REFLECTION = "dropped_at_reflection"
     DROPPED_AT_CAP = "dropped_at_cap"
     APPLIED = "applied"
+    # Track 3/E (Phase A burn-down) — apply emit splits into:
+    #   APPLIED_TARGETED        — qid in patch.target_qids
+    #   APPLIED_BROAD_AG_SCOPE  — qid in AG.affected_questions \ patch.target_qids
+    APPLIED_TARGETED = "applied_targeted"
+    APPLIED_BROAD_AG_SCOPE = "applied_broad_ag_scope"
     ROLLED_BACK = "rolled_back"
     ACCEPTED = "accepted"
     ACCEPTED_WITH_REGRESSION_DEBT = "accepted_with_regression_debt"
