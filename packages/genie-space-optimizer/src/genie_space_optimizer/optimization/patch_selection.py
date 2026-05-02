@@ -439,6 +439,33 @@ def _patch_belongs_to_cluster(p: dict[str, Any], cluster_id: str) -> bool:
     return cid in _cluster_ids(p)
 
 
+def _patch_family(p: dict[str, Any]) -> str:
+    """Return a family identifier shared by all split-children of one
+    rewrite_instruction parent.
+
+    Track C (Phase A burn-down): when a ``rewrite_instruction`` proposal
+    is expanded into K section-split children by
+    ``_split_rewrite_instruction_patch``, every child carries
+    ``_split_from == "rewrite_instruction"`` and the same
+    ``parent_proposal_id``. The cap collapses these K children into one
+    family slot for reservation purposes so they cannot crowd out a
+    direct-fix patch in the same AG.
+
+    Non-split patches return their own ``proposal_id`` as the family
+    (each is its own family of size one).
+    """
+    if p.get("_split_from") == "rewrite_instruction":
+        parent = str(p.get("parent_proposal_id") or "").strip()
+        if parent:
+            return f"split:{parent}"
+    pid = str(
+        p.get("expanded_patch_id")
+        or p.get("proposal_id")
+        or ""
+    ).strip()
+    return pid or f"_anon_{id(p)}"
+
+
 def _lever_diversity_tier(patch: dict[str, Any]) -> int:
     """Return an impact tier for the patch's lever.
 
