@@ -136,3 +136,76 @@ def test_plural_top_n_collapse_qualifies_as_direct_behavior_patch() -> None:
         "cap reservation; otherwise SQL-shape direct fixes lose to "
         "broad metadata patches at cap"
     )
+
+
+def test_multi_cluster_ag_preserves_one_direct_fix_per_cluster() -> None:
+    """Track 2 — an AG spanning H001/H002/H003 with one direct fix per
+    cluster plus broad metadata patches must preserve the direct fix
+    for each active cluster when ``per_cluster_slot_floor=1``.
+
+    This is the multi-cluster scenario from the May-01 ESR run where
+    cap dropped a targeted L6 direct fix because the broad metadata
+    patches won relevance ranking.
+    """
+    patches = [
+        # Direct fixes — one per cluster.
+        {
+            "proposal_id": "DIRECT_H001",
+            "type": "add_sql_snippet_filter",
+            "lever": 6,
+            "root_cause": "missing_filter",
+            "source_cluster_ids": ["H001"],
+            "target_qids": ["q1"],
+            "relevance_score": 0.60,
+        },
+        {
+            "proposal_id": "DIRECT_H002",
+            "type": "add_sql_snippet_calculation",
+            "lever": 5,
+            "root_cause": "plural_top_n_collapse",
+            "source_cluster_ids": ["H002"],
+            "target_qids": ["q2"],
+            "relevance_score": 0.55,
+        },
+        {
+            "proposal_id": "DIRECT_H003",
+            "type": "add_sql_snippet_filter",
+            "lever": 6,
+            "root_cause": "wrong_filter_condition",
+            "source_cluster_ids": ["H003"],
+            "target_qids": ["q3"],
+            "relevance_score": 0.50,
+        },
+        # Broad metadata patches — high relevance but no cluster lineage.
+        {
+            "proposal_id": "BROAD_1",
+            "type": "update_column_description",
+            "lever": 1,
+            "target_qids": ["q1", "q2", "q3"],
+            "relevance_score": 0.95,
+        },
+        {
+            "proposal_id": "BROAD_2",
+            "type": "update_column_description",
+            "lever": 1,
+            "target_qids": ["q1", "q2", "q3"],
+            "relevance_score": 0.93,
+        },
+    ]
+
+    selected, decisions = select_target_aware_causal_patch_cap(
+        patches,
+        target_qids=("q1", "q2", "q3"),
+        max_patches=3,
+        active_cluster_ids=("H001", "H002", "H003"),
+        per_cluster_slot_floor=1,
+    )
+
+    selected_ids = {p["proposal_id"] for p in selected}
+    assert {"DIRECT_H001", "DIRECT_H002", "DIRECT_H003"}.issubset(selected_ids), (
+        f"every active cluster's direct fix must survive cap; selected={selected_ids}"
+    )
+    # Decision rows must explain attribution for every input.
+    assert len(decisions) == len(patches)
+    for decision in decisions:
+        assert "cluster_id" in decision and "selection_reason" in decision
