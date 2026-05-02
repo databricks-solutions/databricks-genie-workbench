@@ -286,3 +286,40 @@ def test_run_replay_recognizes_skipped_ag_outcomes() -> None:
         "qid that is in affected_questions but never reached `applied` "
         "must NOT receive a terminal AG event"
     )
+
+
+def test_airline_real_v1_replay_canonical_ledger_is_byte_stable() -> None:
+    """The canonical journey ledger persisted as `expected_canonical_journey`
+    in airline_real_v1.json must reproduce byte-for-byte from a fresh
+    `run_replay` call. If this drifts, either the producer (replay engine)
+    changed legitimately — re-record with `scripts/record_replay_baseline.py`
+    — or there's a regression."""
+    from genie_space_optimizer.optimization.lever_loop_replay import run_replay
+
+    fixture = _load("airline_real_v1.json")
+    expected = fixture.get("expected_canonical_journey")
+    if not expected:
+        pytest.skip(
+            "expected_canonical_journey not yet recorded; run "
+            "scripts/record_replay_baseline.py to seed it."
+        )
+    result = run_replay(fixture)
+    assert result.canonical_json == expected, (
+        "Canonical journey drift detected. If this drift was intentional, "
+        "rerun the baseline recorder script and commit the new fixture."
+    )
+
+
+def test_airline_real_v1_replay_completes_in_under_thirty_seconds() -> None:
+    """Replay must stay fast enough to be a developer inner-loop tool. The
+    full 5-iteration airline fixture takes well under a second locally; a
+    30s budget catches accidental quadratic regressions in the replay
+    engine without being flaky in CI."""
+    import time
+    from genie_space_optimizer.optimization.lever_loop_replay import run_replay
+
+    fixture = _load("airline_real_v1.json")
+    started = time.perf_counter()
+    run_replay(fixture)
+    elapsed = time.perf_counter() - started
+    assert elapsed < 30.0, f"Replay took {elapsed:.2f}s (>30s budget)."

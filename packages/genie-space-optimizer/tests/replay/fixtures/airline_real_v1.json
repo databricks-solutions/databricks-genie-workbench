@@ -1,1 +1,1066 @@
-{"fixture_id":"airline_real_v1_run_8b121949-a3dd-416b-a4b1-0550bc52b39e","iterations":[{"ag_outcomes":{"AG_DECOMPOSED_H001":"skipped_no_applied_patches"},"clusters":[{"cluster_id":"H001","question_ids":["airline_ticketing_and_fare_analysis_gs_024"],"root_cause":"missing_filter"},{"cluster_id":"H002","question_ids":["airline_ticketing_and_fare_analysis_gs_009"],"root_cause":"plural_top_n_collapse"},{"cluster_id":"H003","question_ids":["airline_ticketing_and_fare_analysis_gs_016"],"root_cause":"granularity_drop"}],"eval_rows":[{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_003","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_026","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_030","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_024","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_004","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_014","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_002","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_025","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_018","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_012","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_007","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_021","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_019","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_017","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_009","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_005","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_001","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_016","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_006","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_013","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_010","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_022","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_008","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_029","result_correctness":"yes"}],"iteration":1,"post_eval_passing_qids":[],"soft_clusters":[{"cluster_id":"S002","question_ids":["airline_ticketing_and_fare_analysis_gs_004","airline_ticketing_and_fare_analysis_gs_014","airline_ticketing_and_fare_analysis_gs_019","airline_ticketing_and_fare_analysis_gs_021","airline_ticketing_and_fare_analysis_gs_030"],"root_cause":"wrong_column"},{"cluster_id":"S001","question_ids":["airline_ticketing_and_fare_analysis_gs_003","airline_ticketing_and_fare_analysis_gs_006"],"root_cause":"wrong_filter_condition"},{"cluster_id":"S003","question_ids":["airline_ticketing_and_fare_analysis_gs_007"],"root_cause":"missing_filter"},{"cluster_id":"S004","question_ids":["airline_ticketing_and_fare_analysis_gs_013"],"root_cause":"wrong_column"},{"cluster_id":"S005","question_ids":["airline_ticketing_and_fare_analysis_gs_010"],"root_cause":"wrong_table"}],"strategist_response":{"action_groups":[{"affected_questions":["airline_ticketing_and_fare_analysis_gs_024"],"id":"AG_DECOMPOSED_H001","patches":[{"cluster_id":"H001","patch_type":"add_sql_snippet_filter","proposal_id":"P001","target_qids":[]}]}]}},{"ag_outcomes":{"AG_DECOMPOSED_H001":"skipped_dead_on_arrival"},"clusters":[{"cluster_id":"H001","question_ids":["airline_ticketing_and_fare_analysis_gs_024"],"root_cause":"missing_filter"},{"cluster_id":"H002","question_ids":["airline_ticketing_and_fare_analysis_gs_009"],"root_cause":"plural_top_n_collapse"},{"cluster_id":"H003","question_ids":["airline_ticketing_and_fare_analysis_gs_016"],"root_cause":"granularity_drop"}],"eval_rows":[{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_003","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_026","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_030","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_024","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_004","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_014","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_002","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_025","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_018","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_012","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_007","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_021","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_019","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_017","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_009","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_005","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_001","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_016","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_006","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_013","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_010","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_022","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_008","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_029","result_correctness":"yes"}],"iteration":2,"post_eval_passing_qids":[],"soft_clusters":[{"cluster_id":"S002","question_ids":["airline_ticketing_and_fare_analysis_gs_004","airline_ticketing_and_fare_analysis_gs_014","airline_ticketing_and_fare_analysis_gs_019","airline_ticketing_and_fare_analysis_gs_021","airline_ticketing_and_fare_analysis_gs_030"],"root_cause":"wrong_column"},{"cluster_id":"S001","question_ids":["airline_ticketing_and_fare_analysis_gs_003","airline_ticketing_and_fare_analysis_gs_006"],"root_cause":"wrong_filter_condition"},{"cluster_id":"S003","question_ids":["airline_ticketing_and_fare_analysis_gs_007"],"root_cause":"missing_filter"},{"cluster_id":"S004","question_ids":["airline_ticketing_and_fare_analysis_gs_013"],"root_cause":"wrong_column"},{"cluster_id":"S005","question_ids":["airline_ticketing_and_fare_analysis_gs_010"],"root_cause":"wrong_table"}],"strategist_response":{"action_groups":[{"affected_questions":["airline_ticketing_and_fare_analysis_gs_024"],"id":"AG_DECOMPOSED_H001","patches":[{"cluster_id":"H001","patch_type":"add_sql_snippet_measure","proposal_id":"P001","target_qids":[]}]}]}},{"ag_outcomes":{"AG_DECOMPOSED_H001":"skipped_dead_on_arrival"},"clusters":[{"cluster_id":"H001","question_ids":["airline_ticketing_and_fare_analysis_gs_024"],"root_cause":"missing_filter"},{"cluster_id":"H002","question_ids":["airline_ticketing_and_fare_analysis_gs_009"],"root_cause":"plural_top_n_collapse"},{"cluster_id":"H003","question_ids":["airline_ticketing_and_fare_analysis_gs_016"],"root_cause":"granularity_drop"}],"eval_rows":[{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_003","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_026","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_030","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_024","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_004","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_014","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_002","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_025","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_018","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_012","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_007","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_021","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_019","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_017","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_009","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_005","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_001","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_016","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_006","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_013","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_010","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_022","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_008","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_029","result_correctness":"yes"}],"iteration":3,"post_eval_passing_qids":[],"soft_clusters":[{"cluster_id":"S002","question_ids":["airline_ticketing_and_fare_analysis_gs_004","airline_ticketing_and_fare_analysis_gs_014","airline_ticketing_and_fare_analysis_gs_019","airline_ticketing_and_fare_analysis_gs_021","airline_ticketing_and_fare_analysis_gs_030"],"root_cause":"wrong_column"},{"cluster_id":"S001","question_ids":["airline_ticketing_and_fare_analysis_gs_003","airline_ticketing_and_fare_analysis_gs_006"],"root_cause":"wrong_filter_condition"},{"cluster_id":"S003","question_ids":["airline_ticketing_and_fare_analysis_gs_007"],"root_cause":"missing_filter"},{"cluster_id":"S004","question_ids":["airline_ticketing_and_fare_analysis_gs_013"],"root_cause":"wrong_column"},{"cluster_id":"S005","question_ids":["airline_ticketing_and_fare_analysis_gs_010"],"root_cause":"wrong_table"}],"strategist_response":{"action_groups":[{"affected_questions":["airline_ticketing_and_fare_analysis_gs_024"],"id":"AG_DECOMPOSED_H001","patches":[{"cluster_id":"H001","patch_type":"add_sql_snippet_measure","proposal_id":"P001","target_qids":[]}]}]}},{"ag_outcomes":{"AG_DECOMPOSED_H001":"skipped_dead_on_arrival"},"clusters":[{"cluster_id":"H001","question_ids":["airline_ticketing_and_fare_analysis_gs_024"],"root_cause":"missing_filter"},{"cluster_id":"H002","question_ids":["airline_ticketing_and_fare_analysis_gs_009"],"root_cause":"plural_top_n_collapse"},{"cluster_id":"H003","question_ids":["airline_ticketing_and_fare_analysis_gs_016"],"root_cause":"granularity_drop"}],"eval_rows":[{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_003","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_026","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_030","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_024","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_004","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_014","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_002","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_025","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_018","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_012","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_007","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_021","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_019","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_017","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_009","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_005","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_001","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_016","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_006","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_013","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_010","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_022","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_008","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_029","result_correctness":"yes"}],"iteration":4,"post_eval_passing_qids":[],"soft_clusters":[{"cluster_id":"S002","question_ids":["airline_ticketing_and_fare_analysis_gs_004","airline_ticketing_and_fare_analysis_gs_014","airline_ticketing_and_fare_analysis_gs_019","airline_ticketing_and_fare_analysis_gs_021","airline_ticketing_and_fare_analysis_gs_030"],"root_cause":"wrong_column"},{"cluster_id":"S001","question_ids":["airline_ticketing_and_fare_analysis_gs_003","airline_ticketing_and_fare_analysis_gs_006"],"root_cause":"wrong_filter_condition"},{"cluster_id":"S003","question_ids":["airline_ticketing_and_fare_analysis_gs_007"],"root_cause":"missing_filter"},{"cluster_id":"S004","question_ids":["airline_ticketing_and_fare_analysis_gs_013"],"root_cause":"wrong_column"},{"cluster_id":"S005","question_ids":["airline_ticketing_and_fare_analysis_gs_010"],"root_cause":"wrong_table"}],"strategist_response":{"action_groups":[{"affected_questions":["airline_ticketing_and_fare_analysis_gs_024"],"id":"AG_DECOMPOSED_H001","patches":[{"cluster_id":"H001","patch_type":"add_sql_snippet_measure","proposal_id":"P001","target_qids":[]}]}]}},{"ag_outcomes":{"AG_DECOMPOSED_H001":"skipped_dead_on_arrival"},"clusters":[{"cluster_id":"H001","question_ids":["airline_ticketing_and_fare_analysis_gs_024"],"root_cause":"missing_filter"},{"cluster_id":"H002","question_ids":["airline_ticketing_and_fare_analysis_gs_009"],"root_cause":"plural_top_n_collapse"},{"cluster_id":"H003","question_ids":["airline_ticketing_and_fare_analysis_gs_016"],"root_cause":"granularity_drop"}],"eval_rows":[{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_003","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_026","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_030","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_024","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_004","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_014","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_002","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_025","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_018","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_012","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_007","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_021","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_019","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_017","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_009","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_005","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_001","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_016","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_006","result_correctness":"yes"},{"arbiter":"ground_truth_correct","question_id":"airline_ticketing_and_fare_analysis_gs_013","result_correctness":"no"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_010","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_022","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_008","result_correctness":"yes"},{"arbiter":"both_correct","question_id":"airline_ticketing_and_fare_analysis_gs_029","result_correctness":"yes"}],"iteration":5,"post_eval_passing_qids":[],"soft_clusters":[{"cluster_id":"S002","question_ids":["airline_ticketing_and_fare_analysis_gs_004","airline_ticketing_and_fare_analysis_gs_014","airline_ticketing_and_fare_analysis_gs_019","airline_ticketing_and_fare_analysis_gs_021","airline_ticketing_and_fare_analysis_gs_030"],"root_cause":"wrong_column"},{"cluster_id":"S001","question_ids":["airline_ticketing_and_fare_analysis_gs_003","airline_ticketing_and_fare_analysis_gs_006"],"root_cause":"wrong_filter_condition"},{"cluster_id":"S003","question_ids":["airline_ticketing_and_fare_analysis_gs_007"],"root_cause":"missing_filter"},{"cluster_id":"S004","question_ids":["airline_ticketing_and_fare_analysis_gs_013"],"root_cause":"wrong_column"},{"cluster_id":"S005","question_ids":["airline_ticketing_and_fare_analysis_gs_010"],"root_cause":"wrong_table"}],"strategist_response":{"action_groups":[{"affected_questions":["airline_ticketing_and_fare_analysis_gs_024"],"id":"AG_DECOMPOSED_H001","patches":[{"cluster_id":"H001","patch_type":"add_sql_snippet_measure","proposal_id":"P001","target_qids":[]}]}]}}]}
+{
+  "fixture_id": "airline_real_v1_run_8b121949-a3dd-416b-a4b1-0550bc52b39e",
+  "iterations": [
+    {
+      "ag_outcomes": {
+        "AG_DECOMPOSED_H001": "skipped_no_applied_patches"
+      },
+      "clusters": [
+        {
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        },
+        {
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "cluster_id": "H003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "root_cause": "granularity_drop"
+        }
+      ],
+      "eval_rows": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "result_correctness": "yes"
+        }
+      ],
+      "iteration": 1,
+      "post_eval_passing_qids": [],
+      "soft_clusters": [
+        {
+          "cluster_id": "S002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_004",
+            "airline_ticketing_and_fare_analysis_gs_014",
+            "airline_ticketing_and_fare_analysis_gs_019",
+            "airline_ticketing_and_fare_analysis_gs_021",
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "cluster_id": "S001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_003",
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "cluster_id": "S003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "root_cause": "missing_filter"
+        },
+        {
+          "cluster_id": "S004",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "cluster_id": "S005",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "root_cause": "wrong_table"
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "airline_ticketing_and_fare_analysis_gs_024"
+            ],
+            "id": "AG_DECOMPOSED_H001",
+            "patches": [
+              {
+                "cluster_id": "H001",
+                "patch_type": "add_sql_snippet_filter",
+                "proposal_id": "P001",
+                "target_qids": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "ag_outcomes": {
+        "AG_DECOMPOSED_H001": "skipped_dead_on_arrival"
+      },
+      "clusters": [
+        {
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        },
+        {
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "cluster_id": "H003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "root_cause": "granularity_drop"
+        }
+      ],
+      "eval_rows": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "result_correctness": "yes"
+        }
+      ],
+      "iteration": 2,
+      "post_eval_passing_qids": [],
+      "soft_clusters": [
+        {
+          "cluster_id": "S002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_004",
+            "airline_ticketing_and_fare_analysis_gs_014",
+            "airline_ticketing_and_fare_analysis_gs_019",
+            "airline_ticketing_and_fare_analysis_gs_021",
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "cluster_id": "S001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_003",
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "cluster_id": "S003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "root_cause": "missing_filter"
+        },
+        {
+          "cluster_id": "S004",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "cluster_id": "S005",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "root_cause": "wrong_table"
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "airline_ticketing_and_fare_analysis_gs_024"
+            ],
+            "id": "AG_DECOMPOSED_H001",
+            "patches": [
+              {
+                "cluster_id": "H001",
+                "patch_type": "add_sql_snippet_measure",
+                "proposal_id": "P001",
+                "target_qids": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "ag_outcomes": {
+        "AG_DECOMPOSED_H001": "skipped_dead_on_arrival"
+      },
+      "clusters": [
+        {
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        },
+        {
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "cluster_id": "H003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "root_cause": "granularity_drop"
+        }
+      ],
+      "eval_rows": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "result_correctness": "yes"
+        }
+      ],
+      "iteration": 3,
+      "post_eval_passing_qids": [],
+      "soft_clusters": [
+        {
+          "cluster_id": "S002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_004",
+            "airline_ticketing_and_fare_analysis_gs_014",
+            "airline_ticketing_and_fare_analysis_gs_019",
+            "airline_ticketing_and_fare_analysis_gs_021",
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "cluster_id": "S001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_003",
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "cluster_id": "S003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "root_cause": "missing_filter"
+        },
+        {
+          "cluster_id": "S004",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "cluster_id": "S005",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "root_cause": "wrong_table"
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "airline_ticketing_and_fare_analysis_gs_024"
+            ],
+            "id": "AG_DECOMPOSED_H001",
+            "patches": [
+              {
+                "cluster_id": "H001",
+                "patch_type": "add_sql_snippet_measure",
+                "proposal_id": "P001",
+                "target_qids": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "ag_outcomes": {
+        "AG_DECOMPOSED_H001": "skipped_dead_on_arrival"
+      },
+      "clusters": [
+        {
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        },
+        {
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "cluster_id": "H003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "root_cause": "granularity_drop"
+        }
+      ],
+      "eval_rows": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "result_correctness": "yes"
+        }
+      ],
+      "iteration": 4,
+      "post_eval_passing_qids": [],
+      "soft_clusters": [
+        {
+          "cluster_id": "S002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_004",
+            "airline_ticketing_and_fare_analysis_gs_014",
+            "airline_ticketing_and_fare_analysis_gs_019",
+            "airline_ticketing_and_fare_analysis_gs_021",
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "cluster_id": "S001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_003",
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "cluster_id": "S003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "root_cause": "missing_filter"
+        },
+        {
+          "cluster_id": "S004",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "cluster_id": "S005",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "root_cause": "wrong_table"
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "airline_ticketing_and_fare_analysis_gs_024"
+            ],
+            "id": "AG_DECOMPOSED_H001",
+            "patches": [
+              {
+                "cluster_id": "H001",
+                "patch_type": "add_sql_snippet_measure",
+                "proposal_id": "P001",
+                "target_qids": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "ag_outcomes": {
+        "AG_DECOMPOSED_H001": "skipped_dead_on_arrival"
+      },
+      "clusters": [
+        {
+          "cluster_id": "H001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "root_cause": "missing_filter"
+        },
+        {
+          "cluster_id": "H002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_009"
+          ],
+          "root_cause": "plural_top_n_collapse"
+        },
+        {
+          "cluster_id": "H003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_016"
+          ],
+          "root_cause": "granularity_drop"
+        }
+      ],
+      "eval_rows": [
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_003",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_026",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_030",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_024",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_004",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_014",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_002",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_025",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_018",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_012",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_007",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_021",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_019",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_017",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_009",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_005",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_001",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_016",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_006",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "ground_truth_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_013",
+          "result_correctness": "no"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_010",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_022",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_008",
+          "result_correctness": "yes"
+        },
+        {
+          "arbiter": "both_correct",
+          "question_id": "airline_ticketing_and_fare_analysis_gs_029",
+          "result_correctness": "yes"
+        }
+      ],
+      "iteration": 5,
+      "post_eval_passing_qids": [],
+      "soft_clusters": [
+        {
+          "cluster_id": "S002",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_004",
+            "airline_ticketing_and_fare_analysis_gs_014",
+            "airline_ticketing_and_fare_analysis_gs_019",
+            "airline_ticketing_and_fare_analysis_gs_021",
+            "airline_ticketing_and_fare_analysis_gs_030"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "cluster_id": "S001",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_003",
+            "airline_ticketing_and_fare_analysis_gs_006"
+          ],
+          "root_cause": "wrong_filter_condition"
+        },
+        {
+          "cluster_id": "S003",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_007"
+          ],
+          "root_cause": "missing_filter"
+        },
+        {
+          "cluster_id": "S004",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_013"
+          ],
+          "root_cause": "wrong_column"
+        },
+        {
+          "cluster_id": "S005",
+          "question_ids": [
+            "airline_ticketing_and_fare_analysis_gs_010"
+          ],
+          "root_cause": "wrong_table"
+        }
+      ],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "affected_questions": [
+              "airline_ticketing_and_fare_analysis_gs_024"
+            ],
+            "id": "AG_DECOMPOSED_H001",
+            "patches": [
+              {
+                "cluster_id": "H001",
+                "patch_type": "add_sql_snippet_measure",
+                "proposal_id": "P001",
+                "target_qids": []
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "expected_canonical_journey": "[{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"already_passing\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_001\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"already_passing\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_002\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_003\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_004\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"already_passing\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_005\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_006\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_007\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"already_passing\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_008\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"stage\":\"evaluated\"},{\"cluster_id\":\"H002\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"root_cause\":\"plural_top_n_collapse\",\"stage\":\"clustered\"},{\"cluster_id\":\"H002\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"root_cause\":\"plural_top_n_collapse\",\"stage\":\"clustered\"},{\"cluster_id\":\"H002\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"root_cause\":\"plural_top_n_collapse\",\"stage\":\"clustered\"},{\"cluster_id\":\"H002\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"root_cause\":\"plural_top_n_collapse\",\"stage\":\"clustered\"},{\"cluster_id\":\"H002\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"root_cause\":\"plural_top_n_collapse\",\"stage\":\"clustered\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_009\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_010\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"already_passing\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_012\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_013\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_014\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"stage\":\"evaluated\"},{\"cluster_id\":\"H003\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"root_cause\":\"granularity_drop\",\"stage\":\"clustered\"},{\"cluster_id\":\"H003\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"root_cause\":\"granularity_drop\",\"stage\":\"clustered\"},{\"cluster_id\":\"H003\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"root_cause\":\"granularity_drop\",\"stage\":\"clustered\"},{\"cluster_id\":\"H003\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"root_cause\":\"granularity_drop\",\"stage\":\"clustered\"},{\"cluster_id\":\"H003\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"root_cause\":\"granularity_drop\",\"stage\":\"clustered\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_016\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"already_passing\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_017\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_018\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_019\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_021\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"already_passing\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_022\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"evaluated\"},{\"cluster_id\":\"H001\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"root_cause\":\"missing_filter\",\"stage\":\"clustered\"},{\"cluster_id\":\"H001\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"root_cause\":\"missing_filter\",\"stage\":\"clustered\"},{\"cluster_id\":\"H001\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"root_cause\":\"missing_filter\",\"stage\":\"clustered\"},{\"cluster_id\":\"H001\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"root_cause\":\"missing_filter\",\"stage\":\"clustered\"},{\"cluster_id\":\"H001\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"root_cause\":\"missing_filter\",\"stage\":\"clustered\"},{\"ag_id\":\"AG_DECOMPOSED_H001\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"ag_assigned\"},{\"ag_id\":\"AG_DECOMPOSED_H001\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"ag_assigned\"},{\"ag_id\":\"AG_DECOMPOSED_H001\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"ag_assigned\"},{\"ag_id\":\"AG_DECOMPOSED_H001\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"ag_assigned\"},{\"ag_id\":\"AG_DECOMPOSED_H001\",\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"ag_assigned\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_024\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"already_passing\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_025\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"already_passing\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_026\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"already_passing\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"already_passing\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_029\",\"stage\":\"post_eval\",\"transition\":\"pass_to_fail\",\"was_passing\":true},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"evaluated\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"soft_signal\"},{\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"soft_signal\"},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false},{\"is_passing\":false,\"question_id\":\"airline_ticketing_and_fare_analysis_gs_030\",\"stage\":\"post_eval\",\"transition\":\"hold_fail\",\"was_passing\":false}]"
+}
