@@ -139,3 +139,54 @@ def test_ag_level_patches_with_no_cluster_lineage_render_their_own_row() -> None
     assert "lost_at" not in ag_level_line, (
         f"AG-level row incorrectly marked as lost; line: {ag_level_line!r}"
     )
+
+
+def test_lost_at_normalize_must_not_fire_when_descendant_patches_applied() -> None:
+    """Track 3 — when a parent rewrite proposal is normalized into K
+    split-children for the same cluster lineage and any of those
+    children land in the applied set, the cluster cannot be reported
+    as ``lost_at:normalize``.
+    """
+    snap = PatchSurvivalSnapshot(
+        ag_id="AG_REWRITE",
+        proposed=[
+            {"proposal_id": "P_REWRITE", "source_cluster_ids": ["H001"]},
+        ],
+        normalized=[
+            # Expanded children at normalize gate — same lineage.
+            {"proposal_id": "P_REWRITE#1", "source_cluster_ids": ["H001"],
+             "_split_from": "rewrite_instruction",
+             "parent_proposal_id": "P_REWRITE"},
+            {"proposal_id": "P_REWRITE#2", "source_cluster_ids": ["H001"],
+             "_split_from": "rewrite_instruction",
+             "parent_proposal_id": "P_REWRITE"},
+        ],
+        applyable=[
+            {"proposal_id": "P_REWRITE#1", "source_cluster_ids": ["H001"],
+             "_split_from": "rewrite_instruction",
+             "parent_proposal_id": "P_REWRITE"},
+            {"proposal_id": "P_REWRITE#2", "source_cluster_ids": ["H001"],
+             "_split_from": "rewrite_instruction",
+             "parent_proposal_id": "P_REWRITE"},
+        ],
+        capped=[
+            {"proposal_id": "P_REWRITE#1", "source_cluster_ids": ["H001"],
+             "_split_from": "rewrite_instruction",
+             "parent_proposal_id": "P_REWRITE"},
+        ],
+        applied=[
+            {"proposal_id": "P_REWRITE#1", "source_cluster_ids": ["H001"],
+             "_split_from": "rewrite_instruction",
+             "parent_proposal_id": "P_REWRITE"},
+        ],
+    )
+    table = build_patch_survival_table(snap)
+    h001_line = next(
+        (line for line in table.splitlines() if "│  H001" in line),
+        "",
+    )
+    assert h001_line, f"missing H001 row in ledger:\n{table}"
+    assert "lost_at:normalize" not in h001_line, (
+        "H001 row marked lost_at:normalize despite descendant patches "
+        f"applied for the same cluster; row: {h001_line!r}"
+    )
