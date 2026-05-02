@@ -50,3 +50,24 @@ Reference: `docs/2026-05-02-run-replay-per-iteration-fix-plan.md` Phase 4.
 | Cycle | Date | Iters | Violations | Composition (by_kind) | Notes |
 |---|---|---|---|---|---|
 | 7 | 2026-05-02 | 5 | 44 | `{illegal_transition: 44}` | Per-iter validator landed; Track D `_baseline_row_qid` fix in place; cross-iter noise eliminated. Initial CI budget set to 44. |
+
+## 2026-05-02 — L4a: per-iteration `JourneyValidationReport` persistence
+
+Strict-additive widening of the per-iteration data-capture surface; no loop decision-logic changed.
+
+**Persisted to:**
+- Replay fixture: `iterations[N].journey_validation = report.to_dict()`
+- MLflow artifact: `phase_a/journey_validation/iter_<N>.json` per iteration
+- MLflow tags: `journey_validation.iter_<N>.violations`, `journey_validation.iter_<N>.is_valid`
+
+**Deferred (out of scope for L4a):**
+- Delta column on `genie_opt_iterations`. Schema migration is invasive; backfill story for historical runs is non-trivial. Re-evaluate when L4b/L4c lands and a real query workload exists.
+
+**Verified by:**
+- `tests/unit/test_question_journey_contract.py::test_journey_validation_report_to_dict_round_trip`
+- `tests/unit/test_validate_journeys_at_iteration_end.py` (2 tests)
+- `tests/unit/test_journey_fixture_exporter.py::test_exporter_passes_journey_validation_field_through`
+- `tests/unit/test_journey_fixture_exporter.py::test_exporter_handles_missing_journey_validation_field`
+- Cycle 8 intake (Phase 5 Task 14 Step 4) will confirm MLflow artifact + tags appear post-run.
+
+Reference: `docs/2026-05-02-run-replay-per-iteration-fix-plan.md` Phase 4.5.
