@@ -232,3 +232,47 @@ def test_canonical_journey_is_stable_across_runs() -> None:
     a = canonical_journey_json(events=events)
     b = canonical_journey_json(events=list(events))
     assert a == b
+
+
+def test_journey_validation_report_to_dict_round_trip() -> None:
+    """to_dict() must produce a JSON-safe, stable dict; enum values render
+    as their .value strings so the output is byte-stable."""
+    import json
+
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        JourneyContractViolation,
+        JourneyTerminalState,
+        JourneyValidationReport,
+    )
+
+    report = JourneyValidationReport(
+        is_valid=False,
+        missing_qids=("q_missing",),
+        violations=[
+            JourneyContractViolation(
+                question_id="q1",
+                kind="illegal_transition",
+                detail="evaluated -> post_eval",
+            ),
+        ],
+        terminal_state_by_qid={
+            "q1": JourneyTerminalState.HARD_FAILURE_UNRESOLVED,
+            "q2": JourneyTerminalState.ALREADY_PASSING,
+        },
+    )
+
+    d = report.to_dict()
+    assert json.loads(json.dumps(d, sort_keys=True, separators=(",", ":"))) == d
+    assert d["is_valid"] is False
+    assert d["missing_qids"] == ["q_missing"]
+    assert d["violations"] == [
+        {
+            "question_id": "q1",
+            "kind": "illegal_transition",
+            "detail": "evaluated -> post_eval",
+        },
+    ]
+    assert d["terminal_state_by_qid"] == {
+        "q1": "hard_failure_unresolved",
+        "q2": "already_passing",
+    }

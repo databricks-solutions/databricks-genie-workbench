@@ -145,6 +145,31 @@ class JourneyValidationReport:
     violations: list[JourneyContractViolation]
     terminal_state_by_qid: dict[str, JourneyTerminalState]
 
+    def to_dict(self) -> dict:
+        """Return a JSON-safe, stable dict representation.
+
+        Used by the lever-loop harness to persist per-iteration validation
+        results to the replay fixture and MLflow without leaking dataclass
+        identities or enum reprs. Output is deterministic under
+        ``json.dumps(sort_keys=True)``, suitable for byte-stable artifact diffs.
+        """
+        return {
+            "is_valid": bool(self.is_valid),
+            "missing_qids": list(self.missing_qids),
+            "violations": [
+                {
+                    "question_id": v.question_id,
+                    "kind": v.kind,
+                    "detail": v.detail,
+                }
+                for v in self.violations
+            ],
+            "terminal_state_by_qid": {
+                qid: state.value
+                for qid, state in self.terminal_state_by_qid.items()
+            },
+        }
+
 
 def _classify_terminal_state(
     *,
