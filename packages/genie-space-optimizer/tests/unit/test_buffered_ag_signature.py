@@ -162,3 +162,33 @@ def test_signature_drift_rejects_buffered_ag_when_cluster_resolved() -> None:
         "buffered AG must NOT match iter-2 live signatures when the "
         "underlying cluster_signature drifted"
     )
+
+
+def test_diagnostic_queue_drain_initializes_src_ids_before_signature_branch() -> None:
+    """Regression: diagnostic AGs stamped with _stable_signature (Track D)
+    must not crash the queue-drain loop with UnboundLocalError on _src_ids.
+    The print at "USING DIAGNOSTIC AG FROM COVERAGE GAP" references _src_ids
+    in both the signature path and the legacy id-fallback path, so
+    initialization must happen before the if/else fork.
+    """
+    import inspect
+
+    from genie_space_optimizer.optimization import harness
+
+    src = inspect.getsource(harness)
+    drain_idx = src.find(
+        "while diagnostic_action_queue and _diag_preempt is None:"
+    )
+    assert drain_idx >= 0, "diagnostic queue drain block not found"
+    print_idx = src.find("USING DIAGNOSTIC AG FROM COVERAGE GAP", drain_idx)
+    assert print_idx >= 0, "diagnostic-AG print site not found"
+
+    block = src[drain_idx:print_idx]
+    assignment_idx = block.find("_src_ids")
+    branch_idx = block.find("if _candidate_sig_set:")
+    assert assignment_idx >= 0 and branch_idx >= 0
+    assert assignment_idx < branch_idx, (
+        "_src_ids must be initialized BEFORE the signature/id-fallback "
+        "branch — otherwise the signature path leaves it unbound and the "
+        '"USING DIAGNOSTIC AG" print raises UnboundLocalError.'
+    )

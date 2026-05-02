@@ -12001,6 +12001,15 @@ def _run_lever_loop(
                     _candidate_sig_set = (
                         set(_candidate_sig[0]) if _candidate_sig else set()
                     )
+                    # Derive _src_ids once per candidate so the audit
+                    # print and the "USING DIAGNOSTIC AG" print can
+                    # reference it regardless of which match path
+                    # (signature vs id-fallback) was taken.
+                    _src_ids = {
+                        str(cid)
+                        for cid in (_candidate.get("source_cluster_ids") or [])
+                        if str(cid)
+                    }
                     # Track D — prefer signature match; fall back to
                     # cluster-id only when the AG predates this PR.
                     if _candidate_sig_set:
@@ -12008,9 +12017,6 @@ def _run_lever_loop(
                             _candidate_sig_set & _live_diag_signatures
                         )
                     else:
-                        _src_ids = {
-                            str(cid) for cid in (_candidate.get("source_cluster_ids") or []) if str(cid)
-                        }
                         _matches_live = bool(_src_ids & _live_cluster_ids)
                     if not _matches_live:
                         print(
@@ -12021,9 +12027,7 @@ def _run_lever_loop(
                             + _kv(
                                 "Stale signatures",
                                 sorted(_candidate_sig_set) if _candidate_sig_set
-                                else sorted(
-                                    {str(cid) for cid in (_candidate.get("source_cluster_ids") or []) if str(cid)}
-                                ),
+                                else sorted(_src_ids),
                             ) + "\n"
                             + _bar("-")
                         )
