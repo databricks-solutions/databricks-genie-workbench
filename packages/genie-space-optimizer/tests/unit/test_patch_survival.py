@@ -94,3 +94,48 @@ def test_clusters_with_count_uses_priority_when_multiple_fields_present() -> Non
     assert counts == {"H_PRIMARY": 1}, (
         f"priority order broken; expected cluster_id wins, got {counts}"
     )
+
+
+def test_ag_level_patches_with_no_cluster_lineage_render_their_own_row() -> None:
+    """Track 3/E — patches with no cluster lineage (AG-level metadata
+    patches the strategist proposes against the AG as a whole) must
+    appear as their own ``(ag_level)`` row in the survival ledger,
+    not silently disappear.
+    """
+    snap = PatchSurvivalSnapshot(
+        ag_id="AG_TEST",
+        proposed=[
+            {"proposal_id": "P_AG_LEVEL", "type": "update_global_setting"},
+            {"proposal_id": "P_H001", "source_cluster_ids": ["H001"]},
+        ],
+        normalized=[
+            {"proposal_id": "P_AG_LEVEL", "type": "update_global_setting"},
+            {"proposal_id": "P_H001", "source_cluster_ids": ["H001"]},
+        ],
+        applyable=[
+            {"proposal_id": "P_AG_LEVEL", "type": "update_global_setting"},
+            {"proposal_id": "P_H001", "source_cluster_ids": ["H001"]},
+        ],
+        capped=[
+            {"proposal_id": "P_AG_LEVEL", "type": "update_global_setting"},
+            {"proposal_id": "P_H001", "source_cluster_ids": ["H001"]},
+        ],
+        applied=[
+            {"proposal_id": "P_AG_LEVEL", "type": "update_global_setting"},
+            {"proposal_id": "P_H001", "source_cluster_ids": ["H001"]},
+        ],
+    )
+    table = build_patch_survival_table(snap)
+
+    assert "(ag_level)" in table, (
+        "AG-level patches with no cluster lineage must render as "
+        "(ag_level) row; ledger output:\n" + table
+    )
+    assert "H001" in table, "expected H001 cluster row"
+    ag_level_line = next(
+        (line for line in table.splitlines() if "(ag_level)" in line),
+        "",
+    )
+    assert "lost_at" not in ag_level_line, (
+        f"AG-level row incorrectly marked as lost; line: {ag_level_line!r}"
+    )
