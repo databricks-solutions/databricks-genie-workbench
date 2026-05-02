@@ -278,6 +278,35 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "assess_readiness",
+            "description": (
+                "Assess whether the selected tables can answer the user's business questions. "
+                "Crawls Unity Catalog metadata and evaluates readiness across four pillars: "
+                "semantic coverage, data quality & freshness signals, modelability, and GenAI context readiness. "
+                "Returns per-question confidence bands (High/Medium/Low) and prioritized recommendations. "
+                "Call this AFTER inspection is complete, BEFORE plan generation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "table_identifiers": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Fully qualified table names (catalog.schema.table) — the tables selected for the Genie Space.",
+                    },
+                    "business_questions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "The user's business questions from the requirements step (up to 10).",
+                    },
+                },
+                "required": ["table_identifiers", "business_questions"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "test_sql",
             "description": "Execute a SQL query to verify it runs successfully. Use this to test example SQL queries before including them in the config. Returns column names, first few rows, and row count. For parameterized SQL (using :param_name syntax), pass the parameters with default_value so the query can be tested with real values.",
             "parameters": {
@@ -943,6 +972,7 @@ def handle_tool_call(name: str, arguments: dict, session_config: dict | None = N
         "assess_data_quality": _assess_data_quality,
         "profile_table_usage": _profile_table_usage,
         "profile_columns": _profile_columns,
+        "assess_readiness": _assess_readiness,
         "test_sql": _test_sql,
         "discover_warehouses": _discover_warehouses,
         "generate_plan": _generate_plan_fallback,
@@ -1837,6 +1867,276 @@ def _strip_leading_comments(sql: str) -> str:
     return "\n".join(lines).strip()
 
 
+# ── Readiness assessment (adapted from Genie Readiness Profiler) ────────────
+
+# Terms for matching business questions to metadata
+_MEASURE_TERMS = (
+    "revenue", "sales", "spend", "cost", "expense", "budget", "forecast", "amount",
+    "quantity", "count", "growth", "margin", "profit", "loss", "earnings",
+    "balance", "utilization", "consumption", "rate", "percentage", "pct",
+)
+_ENTITY_TERMS = (
+    "quarter", "month", "year", "region", "product", "customer", "vendor",
+    "cost center", "department", "segment", "category", "division", "account",
+)
+_TIME_TERMS = ("qoq", "yoy", "quarter", "month", "year", "daily", "weekly", "trend")
+
+
+def _extract_question_terms(questions: list[str]) -> dict[str, set[str]]:
+    """Extract plausible measures, entities, and time references from question text."""
+    all_text = " ".join(q.lower() for q in questions)
+    measures = {t for t in _MEASURE_TERMS if t in all_text}
+    entities = {t for t in _ENTITY_TERMS if t in all_text}
+    time_refs = {t for t in _TIME_TERMS if t in all_text}
+    words = set(re.findall(r"\b[a-z][a-z0-9_]*\b", all_text))
+    return {"measures": measures, "entities": entities, "time": time_refs, "words": words}
+
+
+@mlflow.trace(name="assess_readiness", span_type=SpanType.TOOL)
+def _assess_readiness(table_identifiers: list[str], business_questions: list[str]) -> dict:
+    """Assess data readiness for answering business questions via Genie.
+
+    Crawls UC metadata for the given tables and scores readiness across four
+    pillars: semantic coverage, data quality/freshness, modelability, and
+    GenAI context readiness. Also produces per-question confidence bands.
+    """
+    client = get_workspace_client()
+    questions = business_questions[:10]
+
+    # ── Crawl metadata for selected tables ──
+    all_col_names: list[str] = []
+    all_table_names: list[str] = []
+    all_comments: list[str] = []
+    total_columns = 0
+    columns_with_comments = 0
+    tables_with_comments = 0
+    tables_metadata: list[dict] = []
+    schemas_seen: set[str] = set()
+
+    for tbl_id in table_identifiers:
+        try:
+            table_info = client.tables.get(tbl_id)
+        except Exception as e:
+            logger.warning("assess_readiness: cannot access %s: %s", tbl_id, e)
+            continue
+
+        tbl_name = (table_info.name or "").lower()
+        all_table_names.append(tbl_name)
+        if table_info.comment:
+            all_comments.append(table_info.comment.lower())
+            tables_with_comments += 1
+
+        parts = tbl_id.split(".")
+        if len(parts) >= 2:
+            schemas_seen.add(parts[1])
+
+        cols_meta = []
+        for col in (table_info.columns or []):
+            col_name = (col.name or "").lower()
+            all_col_names.append(col_name)
+            total_columns += 1
+            if col.comment:
+                all_comments.append(col.comment.lower())
+                columns_with_comments += 1
+            cols_meta.append({
+                "name": col.name,
+                "type": str(col.type_text or col.type_name or ""),
+                "has_comment": bool(col.comment),
+            })
+
+        tables_metadata.append({
+            "identifier": tbl_id,
+            "name": tbl_name,
+            "has_comment": bool(table_info.comment),
+            "column_count": len(cols_meta),
+            "columns": cols_meta,
+        })
+
+    total_tables = len(tables_metadata)
+    if total_tables == 0:
+        return {
+            "overall_readiness": "Low",
+            "error": "Could not access any of the specified tables.",
+            "pillars": [],
+            "question_readiness": {},
+            "recommendations": ["Verify table permissions and try again."],
+        }
+
+    corpus = " ".join(all_col_names + all_table_names + all_comments).lower()
+    col_doc_pct = (columns_with_comments / total_columns * 100) if total_columns > 0 else 0
+    tbl_doc_pct = (tables_with_comments / total_tables * 100) if total_tables > 0 else 0
+
+    # ── Extract terms from questions ──
+    extracted = _extract_question_terms(questions) if questions else {}
+    exp_measures = len(extracted.get("measures", set()))
+    exp_entities = len(extracted.get("entities", set()))
+    measure_hits = sum(1 for m in extracted.get("measures", set()) if m in corpus)
+    entity_hits = sum(1 for e in extracted.get("entities", set()) if e in corpus)
+
+    # ── Per-question confidence bands ──
+    question_readiness: dict[str, dict] = {}
+    if questions:
+        for i, q in enumerate(questions):
+            q_terms = _extract_question_terms([q])
+            total_expected = (
+                len(q_terms.get("measures", set()))
+                + len(q_terms.get("entities", set()))
+                + len(q_terms.get("time", set()))
+            )
+            hits = sum(1 for w in q_terms.get("words", set()) if w in corpus)
+            coverage = hits / max(total_expected, 1) if q_terms.get("words") else 0.5
+            if coverage >= 0.8:
+                band = "High"
+            elif coverage >= 0.6:
+                band = "Medium"
+            else:
+                band = "Low"
+            question_readiness[q] = {
+                "band": band,
+                "matched_terms": sorted(q_terms.get("words", set()) & set(corpus.split()))[:10],
+            }
+
+    # ── Pillar 1: Semantic coverage ──
+    semantic_reasons: list[str] = []
+    if questions and (exp_measures > 0 or exp_entities > 0):
+        if exp_measures > 0 and measure_hits == 0:
+            semantic_band = "Low"
+            semantic_reasons.append(
+                f"Questions reference measures ({sorted(extracted.get('measures', set()))[:3]}) "
+                "but no matching columns found."
+            )
+        elif exp_entities > 0 and entity_hits == 0:
+            semantic_band = "Low"
+            semantic_reasons.append(
+                f"Questions reference dimensions ({sorted(extracted.get('entities', set()))[:3]}) "
+                "but no matching columns found."
+            )
+        elif measure_hits >= exp_measures * 0.5 and entity_hits >= max(exp_entities * 0.5, 0):
+            semantic_band = "High"
+            semantic_reasons.append(
+                f"Metadata covers measures and dimensions implied by {len(questions)} questions."
+            )
+        else:
+            semantic_band = "Medium"
+            semantic_reasons.append(
+                f"Partial coverage: {measure_hits}/{exp_measures} measure-like, "
+                f"{entity_hits}/{exp_entities} entity-like columns matched."
+            )
+    elif total_tables < 3:
+        semantic_band = "Low"
+        semantic_reasons.append(f"Only {total_tables} table(s) — limited analytical coverage.")
+    else:
+        semantic_band = "Medium"
+        semantic_reasons.append(f"{total_tables} tables across {len(schemas_seen)} schema(s).")
+
+    # ── Pillar 2: Data quality & freshness ──
+    dq_reasons: list[str] = []
+    if total_columns == 0:
+        dq_band = "Low"
+        dq_reasons.append("No columns detected.")
+    else:
+        typed_cols = sum(
+            1 for t in tables_metadata for c in t["columns"] if c.get("type")
+        )
+        typed_pct = typed_cols / total_columns * 100
+        if typed_pct > 90:
+            dq_band = "Medium"
+            dq_reasons.append(
+                f"{typed_pct:.0f}% of columns have type info. "
+                "Full DQ assessment was done in the inspection step."
+            )
+        else:
+            dq_band = "Low"
+            dq_reasons.append(f"Only {typed_pct:.0f}% of columns have type info.")
+
+    # ── Pillar 3: Modelability ──
+    model_reasons: list[str] = []
+    if len(schemas_seen) >= 2 and total_tables >= 5:
+        model_band = "Medium"
+        model_reasons.append("Multiple schemas with several tables — potential for dimensional modeling.")
+    elif total_tables >= 2:
+        model_band = "Low"
+        model_reasons.append("Limited table set; assess join keys and grain clarity manually.")
+    else:
+        model_band = "Low"
+        model_reasons.append("Insufficient tables to evaluate modelability.")
+
+    # ── Pillar 4: GenAI context readiness ──
+    genai_reasons: list[str] = []
+    if col_doc_pct > 60 and tbl_doc_pct > 60:
+        genai_band = "High"
+        genai_reasons.append(
+            f"{col_doc_pct:.0f}% column docs, {tbl_doc_pct:.0f}% table docs — strong context for Genie."
+        )
+    elif col_doc_pct > 20 or tbl_doc_pct > 20:
+        genai_band = "Medium"
+        genai_reasons.append(
+            f"{col_doc_pct:.0f}% column docs, {tbl_doc_pct:.0f}% table docs — partial coverage."
+        )
+    else:
+        genai_band = "Low"
+        genai_reasons.append(
+            f"Only {col_doc_pct:.0f}% column docs and {tbl_doc_pct:.0f}% table docs — "
+            "Genie will struggle without descriptions."
+        )
+
+    pillars = [
+        {"name": "Semantic coverage", "band": semantic_band, "reasons": semantic_reasons},
+        {"name": "Data quality & freshness", "band": dq_band, "reasons": dq_reasons},
+        {"name": "Modelability", "band": model_band, "reasons": model_reasons},
+        {"name": "GenAI context readiness", "band": genai_band, "reasons": genai_reasons},
+    ]
+
+    # ── Overall readiness ──
+    band_scores = {"High": 3, "Medium": 2, "Low": 1}
+    avg = sum(band_scores.get(p["band"], 0) for p in pillars) / len(pillars)
+    overall = "High" if avg >= 2.5 else ("Medium" if avg >= 1.5 else "Low")
+
+    # ── Recommendations ──
+    recommendations: list[str] = []
+    if genai_band != "High":
+        missing_tbl_descs = [t["identifier"] for t in tables_metadata if not t["has_comment"]]
+        if missing_tbl_descs:
+            recommendations.append(
+                f"Add descriptions to {len(missing_tbl_descs)} table(s): {', '.join(missing_tbl_descs[:3])}"
+            )
+        cols_without = total_columns - columns_with_comments
+        if cols_without > 0:
+            recommendations.append(
+                f"{cols_without} column(s) ({100 - col_doc_pct:.0f}%) have no descriptions — "
+                "these will be generated in the Genie Space configuration."
+            )
+    if semantic_band == "Low" and extracted.get("entities"):
+        missing_dims = sorted(extracted["entities"] - set(corpus.split()))
+        if missing_dims:
+            recommendations.append(
+                f"Consider adding tables for missing dimensions: {', '.join(missing_dims[:5])}"
+            )
+    if semantic_band == "Low" and extracted.get("measures"):
+        missing_measures = sorted(extracted["measures"] - set(corpus.split()))
+        if missing_measures:
+            recommendations.append(
+                f"No columns match these measure terms: {', '.join(missing_measures[:5])}. "
+                "Consider adding relevant tables or adjusting questions."
+            )
+    low_qs = [q for q, info in question_readiness.items() if info["band"] == "Low"]
+    if low_qs:
+        recommendations.append(
+            f"{len(low_qs)} question(s) have Low confidence — consider adjusting them or adding more tables."
+        )
+
+    return {
+        "overall_readiness": overall,
+        "pillars": pillars,
+        "question_readiness": question_readiness,
+        "recommendations": recommendations,
+        "tables_assessed": total_tables,
+        "total_columns": total_columns,
+        "column_doc_pct": round(col_doc_pct, 1),
+        "table_doc_pct": round(tbl_doc_pct, 1),
+    }
+
+
 def _test_sql(sql: str, parameters: list[dict] | None = None) -> dict:
     test_query = _substitute_params(sql, parameters)
     test_query = _strip_leading_comments(test_query)
@@ -2009,13 +2309,18 @@ def _generate_config(
     Use this for INITIAL creation only. For post-creation modifications,
     use update_config instead.
     """
-    if not tables:
+    if tables is None:
+        tables = []
+    if metric_views is None:
+        metric_views = []
+
+    if not tables and not metric_views:
         return {
-            "error": "tables is required and must contain at least one table",
+            "error": "At least one table or metric view is required",
             "hint": (
-                "Pass tables as a list of objects with at least 'identifier' "
-                "(catalog.schema.table). Review describe_table results for the "
-                "identifiers you inspected earlier."
+                "Pass tables and/or metric_views as lists of objects with at "
+                "least 'identifier'. Review describe_table results for the "
+                "data sources you inspected earlier."
             ),
         }
     if sample_questions is None:
@@ -2033,6 +2338,8 @@ def _generate_config(
     # ── data_sources.tables ──
     ds_tables = []
     for tbl in tables:
+        if isinstance(tbl, str):
+            tbl = {"identifier": tbl}
         entry: dict[str, Any] = {"identifier": tbl["identifier"]}
         if tbl.get("description"):
             entry["description"] = [tbl["description"]]
@@ -2678,8 +2985,6 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
         _check_sorted(tables, lambda x: x.get("identifier", ""), "identifier", "data_sources.tables", error)
         if len(tables) > _MAX_TABLES:
             error("data_sources.tables", f"Maximum {_MAX_TABLES} tables allowed (found {len(tables)})")
-        elif len(tables) >= 9:
-            warning("data_sources.tables", f"{len(tables)} tables — consider splitting into focused rooms for >8 tables")
         for i, tbl in enumerate(tables):
             ident = tbl.get("identifier", "")
             if not _TABLE_ID_PATTERN.match(ident):
@@ -2883,10 +3188,10 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
                 "instructions.text_instructions",
                 f"Text instructions only {ti_total_chars} chars — add more business context (>50 chars recommended)"
             )
-        if ti_total_chars > 2000:
+        if ti_total_chars > 2500:
             warning(
                 "instructions.text_instructions",
-                f"Text instructions are {ti_total_chars:,} chars — keep under 2,000 to avoid pushing out higher-value SQL context"
+                f"Text instructions are {ti_total_chars:,} chars — keep under 2,500 to avoid pushing out higher-value SQL context"
             )
         if _SQL_IN_TEXT_RE.search(ti_all_text):
             warning(
@@ -2901,16 +3206,16 @@ def _validate_config(config: dict | None = None, reconcile_sources: bool = True)
             f"No join specs for {len(tables)} tables — add join specifications to help Genie correctly join your tables"
         )
 
-    # 5. Table count: 9-12 warning already handled above (structural check changed to warn at >=9)
+    # 5. Table count: hard structural limits are handled above.
 
-    # 6. Example SQLs: warn if <8; warn at 8-14; warn if >50% lack usage_guidance
+    # 6. Example SQLs: warn if <8; warn at 8-9; warn if >50% lack usage_guidance
     n_examples = len(eqs)
     if n_examples < 8:
         warning(
             "instructions.example_question_sqls",
             f"Only {n_examples} example SQLs — 8+ required for good accuracy"
         )
-    elif n_examples < 15:
+    elif n_examples < 10:
         warning(
             "instructions.example_question_sqls",
             f"{n_examples} example SQLs — 10-15 is the sweet spot for largest accuracy jump"

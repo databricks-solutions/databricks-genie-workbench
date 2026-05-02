@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-from backend.services.genie_client import get_serialized_space
+from backend.services.genie_client import get_serialized_space, normalize_metric_view_sources
 
 router = APIRouter(prefix="/api")
 
@@ -117,6 +117,8 @@ async def parse_space_json(request: ParseJsonRequest):
             space_data = json.loads(serialized)
         else:
             space_data = serialized
+        if isinstance(space_data, dict):
+            normalize_metric_view_sources(space_data)
 
         # Generate placeholder ID
         genie_space_id = f"pasted-{datetime.now().strftime('%Y%m%d-%H%M%S')}"

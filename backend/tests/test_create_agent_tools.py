@@ -181,7 +181,7 @@ class TestMetricViewClassification:
         assert args["metric_views"][0]["column_configs"] == [
             {"column_name": "AI Feature Adopter", "enable_format_assistance": True}
         ]
-        assert injected == ["metric_views(1)"]
+        assert injected == ["metric_views(1|describe_table)"]
 
     def test_reconcile_prefers_metric_view_entry_over_duplicate_table(self):
         config = {
@@ -214,6 +214,17 @@ class TestMetricViewClassification:
 
         data_sources = result["config"]["data_sources"]
         assert [t["identifier"] for t in data_sources["tables"]] == ["cat.sch.accounts"]
+        assert [mv["identifier"] for mv in data_sources["metric_views"]] == ["cat.sch.mv_churn_risk"]
+
+    def test_generate_config_allows_metric_view_only_space(self):
+        result = _generate_config(
+            metric_views=[
+                {"identifier": "cat.sch.mv_churn_risk", "column_configs": [{"column_name": "risk"}]},
+            ],
+        )
+
+        data_sources = result["config"]["data_sources"]
+        assert data_sources["tables"] == []
         assert [mv["identifier"] for mv in data_sources["metric_views"]] == ["cat.sch.mv_churn_risk"]
 
     def test_validate_detects_cross_section_column_duplicates_when_not_reconciled(self):

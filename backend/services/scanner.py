@@ -182,8 +182,8 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     # Check for warnings on passing check
     ti_warnings = []
     if passed:
-        if total_chars > 2000:
-            ti_warnings.append(f"Instructions total {total_chars:,} chars — keep under 2,000 to avoid pushing out higher-value SQL context")
+        if total_chars > 2500:
+            ti_warnings.append(f"Instructions total {total_chars:,} chars — keep under 2,500 to avoid pushing out higher-value SQL context")
         if _SQL_IN_TEXT_RE.search(all_text):
             ti_warnings.append("SQL patterns found in text instructions — move to Example SQLs or SQL Expressions")
         if ti_warnings:
@@ -213,17 +213,11 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     if not passed and total_sources > 12:
         detail += " — consider multi-room architecture"
         severity = "fail"
-    elif passed and total_sources > 8:
-        detail += " — consider splitting into focused rooms for >8 data sources"
-        severity = "warning"
     _check(checks, "Data source count 1-12", passed, detail=detail, severity=severity)
     if not passed and (tables or metric_views):
         if total_sources > 12:
             findings.append(f"{total_sources} data sources — more than 12 reduces Genie accuracy")
             next_steps.append("Consider multi-room architecture or reducing to the most relevant 5-12 data sources")
-    elif severity == "warning":
-        warnings.append(detail)
-        warning_next_steps.append("Consider splitting into focused rooms for better accuracy")
 
     # 7. 8+ example SQLs (Gap 4: tightened from 5; Gap 9: usage_guidance check)
     example_sqls = space_data.get("instructions", {}).get("example_question_sqls", [])
@@ -233,7 +227,7 @@ def calculate_score(space_data: dict, optimization_run: dict | None = None) -> d
     severity = "pass" if passed else "fail"
     if not passed:
         detail += " — 8+ required"
-    elif n_examples < 15:
+    elif n_examples < 10:
         detail += " — 10-15 is the sweet spot for largest accuracy jump"
         severity = "warning"
     _check(checks, "8+ example SQLs", passed, detail=detail, severity=severity)

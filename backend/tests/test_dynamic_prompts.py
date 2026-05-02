@@ -155,6 +155,18 @@ def test_assemble_inspection():
 
     assert "Inspect & Understand the Data" in prompt
     assert "Step 3 (Feasibility)" in prompt    # previous
+    assert "Step 5 (Profiling)" in prompt      # next
+
+
+def test_assemble_profiling():
+    session = _make_session()
+    _add_tool_call(session, "discover_tables")
+    _add_tool_call(session, "describe_table")
+    _add_tool_call(session, "assess_data_quality")
+    prompt = assemble_system_prompt(session, SCHEMA_REF)
+
+    assert "Data Readiness Profiling" in prompt
+    assert "Step 4 (Inspection)" in prompt     # previous
     assert "Step 5 (Plan)" in prompt           # next
 
 

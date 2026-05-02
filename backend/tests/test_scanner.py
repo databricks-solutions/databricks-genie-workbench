@@ -241,14 +241,25 @@ class TestTextInstructions:
         check = _check_by_label(calculate_score(data), "Text instructions (>50 chars)")
         assert check["passed"] is True
 
-    def test_over_2000_chars_warning(self):
+    def test_2500_chars_no_length_warning(self):
         tables = [{"name": "t", "columns": []}]
         data = {"data_sources": {"tables": tables},
                 "instructions": {"text_instructions": [{"content": ["x" * 2500]}]},
                 "benchmarks": {}}
         result = calculate_score(data)
         check = _check_by_label(result, "Text instructions (>50 chars)")
+        assert check["severity"] == "pass"
+        assert not any("keep under 2,500" in w for w in result["warnings"])
+
+    def test_over_2500_chars_warning(self):
+        tables = [{"name": "t", "columns": []}]
+        data = {"data_sources": {"tables": tables},
+                "instructions": {"text_instructions": [{"content": ["x" * 2501]}]},
+                "benchmarks": {}}
+        result = calculate_score(data)
+        check = _check_by_label(result, "Text instructions (>50 chars)")
         assert check["severity"] == "warning"
+        assert any("keep under 2,500" in w for w in result["warnings"])
 
     def test_sql_in_text_warning(self):
         tables = [{"name": "t", "columns": []}]
@@ -325,12 +336,14 @@ class TestTableCount:
         check = _check_by_label(calculate_score(data), "Data source count 1-12")
         assert check["passed"] is True
 
-    def test_9_tables_warning(self):
+    def test_9_tables_clean_pass(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(9)]
         data = {"data_sources": {"tables": tables}, "instructions": {}, "benchmarks": {}}
-        check = _check_by_label(calculate_score(data), "Data source count 1-12")
+        result = calculate_score(data)
+        check = _check_by_label(result, "Data source count 1-12")
         assert check["passed"] is True
-        assert check["severity"] == "warning"
+        assert check["severity"] == "pass"
+        assert not any("focused rooms" in w for w in result["warnings"])
 
     def test_13_tables_fails(self):
         tables = [{"name": f"t{i}", "columns": []} for i in range(13)]
@@ -369,15 +382,32 @@ class TestExampleSqls:
                 "benchmarks": {}}
         check = _check_by_label(calculate_score(data), "8+ example SQLs")
         assert check["passed"] is True
+        assert check["severity"] == "warning"
 
-    def test_10_examples_warning_for_sweet_spot(self):
-        """8-14 examples pass but with a warning suggesting 10-15."""
+    def test_9_examples_warning_for_sweet_spot(self):
+        """8-9 examples pass but warn to reach the 10-15 target band."""
+        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
+                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(9)]},
+                "benchmarks": {}}
+        check = _check_by_label(calculate_score(data), "8+ example SQLs")
+        assert check["passed"] is True
+        assert check["severity"] == "warning"
+
+    def test_10_examples_clean_pass(self):
         data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
                 "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(10)]},
                 "benchmarks": {}}
         check = _check_by_label(calculate_score(data), "8+ example SQLs")
         assert check["passed"] is True
-        assert check["severity"] == "warning"
+        assert check["severity"] == "pass"
+
+    def test_12_examples_clean_pass(self):
+        data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},
+                "instructions": {"example_question_sqls": [{"id": str(i)} for i in range(12)]},
+                "benchmarks": {}}
+        check = _check_by_label(calculate_score(data), "8+ example SQLs")
+        assert check["passed"] is True
+        assert check["severity"] == "pass"
 
     def test_15_examples_no_warning(self):
         data = {"data_sources": {"tables": [{"name": "t", "columns": []}]},

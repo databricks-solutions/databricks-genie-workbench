@@ -35,6 +35,17 @@ _CONCURRENCY = 3
 # Higher parallelism than plan generation since each task is a SQL warehouse call.
 _VALIDATION_CONCURRENCY = 8
 
+_METRIC_VIEW_SQL_RULES = """\
+## Metric View SQL Rules
+When querying a Databricks metric view:
+- Explicitly select dimensions and measures; never use SELECT *.
+- Wrap every metric-view measure column in MEASURE(), for example MEASURE(`Net Sales`) AS net_sales.
+- Group by selected dimensions using GROUP BY ALL or an explicit GROUP BY dimension list.
+- Do not join a metric view directly to another table. Query the metric view in a CTE first, then join the CTE result.
+"""
+
+_METRIC_VIEW_MEASURE_ERROR = "METRIC_VIEW_MISSING_MEASURE_FUNCTION"
+
 
 def generate_plan(
     tables_context: list[dict],
@@ -108,6 +119,54 @@ def _table_id(t: dict) -> str:
     return t.get("table") or t.get("table_name") or t.get("identifier", "?")
 
 
+def _is_metric_view_context(t: dict) -> bool:
+    return "METRIC_VIEW" in str(t.get("table_type") or "").upper()
+
+
+def _table_plan_entry(t: dict) -> dict:
+    """Convert a describe_table result into a plan table entry."""
+    name = _table_id(t)
+    cols = t.get("columns", [])
+    recs = t.get("recommendations", {})
+    exclude = set(recs.get("exclude_etl", []))
+
+    column_configs = []
+    for c in cols:
+        col_name = c.get("name", "?")
+        entry: dict = {"column_name": col_name}
+        if c.get("description"):
+            entry["description"] = c["description"]
+        if col_name in exclude:
+            entry["excluded"] = True
+        column_configs.append(entry)
+
+    return {
+        "identifier": name,
+        "description": t.get("comment", ""),
+        "column_configs": column_configs,
+    }
+
+
+def _metric_view_plan_entry(t: dict) -> dict:
+    """Convert a describe_table result into a plan metric-view entry."""
+    cols = t.get("columns", [])
+    column_configs = []
+    for c in cols:
+        entry: dict = {
+            "column_name": c.get("name", "?"),
+            "enable_format_assistance": True,
+        }
+        if c.get("description"):
+            entry["description"] = c["description"]
+        column_configs.append(entry)
+
+    return {
+        "identifier": _table_id(t),
+        "description": t.get("comment", ""),
+        "column_configs": column_configs,
+    }
+
+
 def _call_llm_section(prompt: str, max_tokens: int, section_name: str) -> dict:
     """Call the LLM serving endpoint and parse the JSON response.
 
@@ -138,15 +197,19 @@ def _build_shared_context(
         parts.append(f"## User Requirements\n{user_requirements}")
 
     table_lines = []
+    has_metric_view = False
     for t in tables_context:
         name = _table_id(t)
         comment = t.get("comment", "")
         cols = t.get("columns", [])
+        is_metric_view = _is_metric_view_context(t)
+        has_metric_view = has_metric_view or is_metric_view
         col_summary = ", ".join(c.get("name", "?") for c in cols[:20])
         if len(cols) > 20:
             col_summary += f" (+{len(cols) - 20} more)"
         row_count = t.get("row_count", "?")
-        table_lines.append(f"- **{name}** ({len(cols)} cols, ~{row_count} rows): {comment}")
+        type_label = " [METRIC_VIEW]" if is_metric_view else ""
+        table_lines.append(f"- **{name}**{type_label} ({len(cols)} cols, ~{row_count} rows): {comment}")
         table_lines.append(f"  Columns: {col_summary}")
 
         recs = t.get("recommendations", {})
@@ -155,6 +218,8 @@ def _build_shared_context(
 
     if table_lines:
         parts.append("## Tables\n" + "\n".join(table_lines))
+    if has_metric_view:
+        parts.append(_METRIC_VIEW_SQL_RULES)
 
     quality = inspection_summaries.get("quality")
     if quality and not quality.get("error"):
@@ -276,30 +341,15 @@ def _gen_tables(shared: str, tables_context: list[dict]) -> dict:
     Falls back to raw metadata on LLM failure — table configs are optional enrichment.
     """
     tables = []
+    metric_views = []
     for t in tables_context:
-        name = _table_id(t)
-        cols = t.get("columns", [])
-        recs = t.get("recommendations", {})
-        exclude = set(recs.get("exclude_etl", []))
-
-        column_configs = []
-        for c in cols:
-            col_name = c.get("name", "?")
-            entry: dict = {"column_name": col_name}
-            if c.get("description"):
-                entry["description"] = c["description"]
-            if col_name in exclude:
-                entry["excluded"] = True
-            column_configs.append(entry)
-
-        tables.append({
-            "identifier": name,
-            "description": t.get("comment", ""),
-            "column_configs": column_configs,
-        })
+        if _is_metric_view_context(t):
+            metric_views.append(_metric_view_plan_entry(t))
+        else:
+            tables.append(_table_plan_entry(t))
 
     if not tables:
-        return {"tables": []}
+        return {"tables": [], "metric_views": metric_views}
 
     prompt = (
         "You are enriching table and column metadata for a Databricks Genie Space.\n\n"
@@ -318,11 +368,18 @@ def _gen_tables(shared: str, tables_context: list[dict]) -> dict:
     )
 
     try:
-        result = _call_llm_section(prompt, max_tokens=2048, section_name="tables")
-        return result if "tables" in result else {"tables": tables}
+        result = _call_llm_section(prompt, max_tokens=4096, section_name="tables")
+        if "tables" not in result:
+            result = {"tables": tables}
+        if metric_views:
+            result["metric_views"] = metric_views
+        return result
     except Exception:
         logger.warning("Table description enrichment failed, using raw metadata")
-        return {"tables": tables}
+        result = {"tables": tables}
+        if metric_views:
+            result["metric_views"] = metric_views
+        return result
 
 
 def _gen_questions_instructions(shared: str) -> dict:
@@ -347,8 +404,8 @@ def _gen_questions_instructions(shared: str) -> dict:
         "- `## CONSTRAINTS` — hard guardrails: what never to show (PII columns, secrets), what not to do.\n"
         "- `## Instructions you must follow when providing summaries` — summary-customization behavior "
         "(rounding rules, mandatory caveats). **Use this exact heading — it is Databricks's blessed string.**\n\n"
-        "IMPORTANT: Keep text_instructions UNDER 2,000 characters total. Be concise — use bullet points, "
-        "not paragraphs. If you have more than 2,000 chars of context, prioritize the most important rules "
+        "IMPORTANT: Keep text_instructions UNDER 2,500 characters total. Be concise — use bullet points, "
+        "not paragraphs. If you have more than 2,500 chars of context, prioritize the most important rules "
         "and drop the rest. Long instructions push out higher-value SQL context in Genie's prompt window.\n"
         "NEVER include SQL code (SELECT, WHERE, JOIN, GROUP BY, etc.) in text instructions — "
         "those patterns belong in Example SQLs, Measures, Filters, or Expressions.\n"
@@ -387,6 +444,11 @@ def _gen_example_sqls(shared: str) -> dict:
         "   - IMPORTANT: Generate no more than 12 pairs total.\n"
         "   - CRITICAL: Only use filter values that appear in the Column Profiles section below.\n"
         "     Do NOT invent status values, tier names, or category labels — use real data.\n\n"
+        "METRIC VIEW SQL RULES:\n"
+        "   - If a query uses a table marked [METRIC_VIEW], wrap measure columns with MEASURE(`Measure Name`).\n"
+        "   - Select/group metric-view dimensions normally; use GROUP BY ALL or explicit dimension grouping.\n"
+        "   - Never use SELECT * with metric views.\n"
+        "   - Do not join a metric view directly to another table; query it in a CTE first, then join the CTE.\n\n"
         "Return ONLY valid JSON:\n"
         '{"example_sqls": [{"question": "...", "sql": "...", "usage_guidance": "...", "parameters": [...]}]}\n\n'
         f"Context:\n{shared}"
@@ -412,6 +474,11 @@ def _gen_benchmarks(shared: str) -> dict:
         "   - IMPORTANT: Generate no more than 10 pairs total.\n"
         "   - CRITICAL: Only use filter values that appear in the Column Profiles section below.\n"
         "     Do NOT invent status values, tier names, or category labels — use real data.\n\n"
+        "METRIC VIEW SQL RULES:\n"
+        "   - If a query uses a table marked [METRIC_VIEW], wrap measure columns with MEASURE(`Measure Name`).\n"
+        "   - Select/group metric-view dimensions normally; use GROUP BY ALL or explicit dimension grouping.\n"
+        "   - Never use SELECT * with metric views.\n"
+        "   - Do not join a metric view directly to another table; query it in a CTE first, then join the CTE.\n\n"
         "BENCHMARK QUALITY RULES:\n"
         "   - The expected SQL must be the MOST DIRECT, NATURAL answer to the question.\n"
         "   - Do NOT add extra WHERE clauses the question didn't ask for (e.g., IS NOT NULL checks).\n"
@@ -513,6 +580,54 @@ def _repair_unbound_sql(item: dict, kind: str, shared_context: str) -> dict | No
         except Exception:
             logger.warning("Benchmark SQL repair failed: %s", sql[:80])
         return None
+
+
+def _is_metric_view_measure_error(error: str) -> bool:
+    return _METRIC_VIEW_MEASURE_ERROR in error
+
+
+def _repair_metric_view_sql(item: dict, kind: str, shared_context: str, error: str) -> dict | None:
+    """Rewrite SQL that failed because metric-view measures need MEASURE()."""
+    sql_key = "sql" if kind == "example_sql" else "expected_sql"
+    sql = item.get(sql_key, "")
+    if not sql:
+        return None
+
+    prompt = (
+        "The following Databricks SQL query failed because it queries a metric view measure "
+        "without the required MEASURE() aggregate function.\n\n"
+        f"Error: {error}\n\n"
+        f"Question: {item.get('question', '')}\n\n"
+        f"SQL:\n{sql}\n\n"
+        "Rewrite the whole SQL using valid Databricks metric-view syntax:\n"
+        "- Wrap every metric-view measure column with MEASURE(`Measure Name`) and give it a SQL alias.\n"
+        "- Keep metric-view dimensions unwrapped and include them in GROUP BY ALL or an explicit GROUP BY.\n"
+        "- Never use SELECT * with metric views.\n"
+        "- If the metric view must be joined to another table, query the metric view in a CTE first, then join the CTE result.\n"
+        "- Preserve parameter placeholders and existing parameters for example SQLs.\n\n"
+        "Return ONLY valid JSON:\n"
+        f'{{"{sql_key}": "..."}}\n\n'
+        f"Context:\n{shared_context[:4000]}"
+    )
+    try:
+        result = _call_llm_section(prompt, max_tokens=2048, section_name="metric view SQL repair")
+        repaired_sql = result.get(sql_key, "")
+        if repaired_sql:
+            return {**item, sql_key: repaired_sql}
+    except Exception:
+        logger.warning("Metric-view SQL repair failed: %s", sql[:80])
+    return None
+
+
+def _repair_sql_validation_failure(
+    item: dict,
+    kind: str,
+    shared_context: str,
+    reason: str,
+) -> dict | None:
+    if _is_metric_view_measure_error(reason):
+        return _repair_metric_view_sql(item, kind, shared_context, reason)
+    return _repair_unbound_sql(item, kind, shared_context)
 
 
 def _validate_analytics_sql(plan: dict) -> list[str]:
@@ -704,6 +819,7 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
     # repeated thread-creation overhead. Phases are sequential by necessity.
     test_results: dict[tuple[str, int], dict] = {}
     needs_repair: list[tuple[str, int]] = []
+    repair_reasons: dict[tuple[str, int], str] = {}
     hard_failures: dict[tuple[str, int], str] = {}
     repaired: dict[tuple[str, int], dict] = {}
     warnings: list[str] = []
@@ -726,8 +842,9 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
         for (kind, idx), result in test_results.items():
             if not result.get("success"):
                 err = result.get("error", "unknown")
-                if "Unbound SQL parameters" in err:
+                if "Unbound SQL parameters" in err or _is_metric_view_measure_error(err):
                     needs_repair.append((kind, idx))
+                    repair_reasons[(kind, idx)] = err
                 else:
                     hard_failures[(kind, idx)] = err
             elif kind == "benchmark" and result.get("success"):
@@ -735,6 +852,7 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
                 if row_count == 0:
                     # Benchmark SQL ran but returned no rows — filter values likely hallucinated
                     needs_repair.append((kind, idx))
+                    repair_reasons[(kind, idx)] = "zero-row benchmark"
                     warnings.append(f"Benchmark #{idx+1} returned 0 rows — attempting repair with real values")
 
         # Phase 2: repair unbound-param failures
@@ -744,7 +862,15 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
                 for kind, idx in needs_repair
             ]
             repair_futures = {
-                pool.submit(run_in_context(_repair_unbound_sql, item, kind, shared_context)): (kind, idx)
+                pool.submit(
+                    run_in_context(
+                        _repair_sql_validation_failure,
+                        item,
+                        kind,
+                        shared_context,
+                        repair_reasons.get((kind, idx), ""),
+                    )
+                ): (kind, idx)
                 for kind, idx, item in repair_items
             }
             for future in as_completed(repair_futures):
@@ -775,12 +901,20 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
                         result = future.result()
                         if result.get("success"):
                             q = repaired[key].get("question", "?")[:80]
+                            reason = repair_reasons.get(key, "")
+                            metric_view_repair = _is_metric_view_measure_error(reason)
                             if kind == "example_sql":
                                 example_sqls[idx] = repaired[key]
-                                warnings.append(f"Repaired example SQL #{idx+1} ({q}): filled in missing parameter defaults")
+                                if metric_view_repair:
+                                    warnings.append(f"Repaired example SQL #{idx+1} ({q}): added MEASURE() for metric view measures")
+                                else:
+                                    warnings.append(f"Repaired example SQL #{idx+1} ({q}): filled in missing parameter defaults")
                             else:
                                 benchmarks[idx] = repaired[key]
-                                warnings.append(f"Repaired benchmark #{idx+1} ({q}): converted to hardcoded SQL")
+                                if metric_view_repair:
+                                    warnings.append(f"Repaired benchmark #{idx+1} ({q}): added MEASURE() for metric view measures")
+                                else:
+                                    warnings.append(f"Repaired benchmark #{idx+1} ({q}): converted to hardcoded SQL")
                         else:
                             hard_failures[key] = result.get("error", "repair re-test failed")
                     except Exception as e:
@@ -793,7 +927,11 @@ def _validate_plan_sqls(plan: dict, shared_context: str = "") -> list[str]:
 
         elif needs_repair:
             for kind, idx in needs_repair:
-                hard_failures[(kind, idx)] = "unbound parameters (no context for repair)"
+                reason = repair_reasons.get((kind, idx), "")
+                if _is_metric_view_measure_error(reason):
+                    hard_failures[(kind, idx)] = "metric-view measure syntax (no context for repair)"
+                else:
+                    hard_failures[(kind, idx)] = "unbound parameters (no context for repair)"
 
     # Drop hard failures
     failed_example_idxs = {idx for (kind, idx) in hard_failures if kind == "example_sql"}
@@ -824,18 +962,19 @@ def _assemble(results: dict[str, dict], tables_context: list[dict]) -> dict:
 
     tables_result = results.get("tables", {})
     plan["tables"] = tables_result.get("tables", [])
+    plan["metric_views"] = tables_result.get("metric_views", [])
 
     if not plan["tables"] and tables_context:
         plan["tables"] = [
-            {
-                "identifier": _table_id(t),
-                "description": t.get("comment", ""),
-                "column_configs": [
-                    {"column_name": c.get("name", "?")}
-                    for c in t.get("columns", [])
-                ],
-            }
+            _table_plan_entry(t)
             for t in tables_context
+            if not _is_metric_view_context(t)
+        ]
+    if not plan["metric_views"] and tables_context:
+        plan["metric_views"] = [
+            _metric_view_plan_entry(t)
+            for t in tables_context
+            if _is_metric_view_context(t)
         ]
 
     qi = results.get("questions", {})

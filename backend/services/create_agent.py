@@ -34,6 +34,7 @@ STEP_LABELS: dict[str, str] = {
     "discovery": "Discovering data sources",
     "feasibility": "Assessing feasibility",
     "inspection": "Inspecting tables",
+    "profiling": "Profiling the data",
     "plan": "Building plan",
     "config_create": "Generating configuration",
     "post_creation": "Finalizing space",
@@ -44,6 +45,7 @@ STEP_THINKING: dict[str, str] = {
     "discovery": "Exploring your data catalog…",
     "feasibility": "Assessing data feasibility…",
     "inspection": "Analyzing table structure and data quality…",
+    "profiling": "Profiling the data…",
     "plan": "Designing your Genie Space plan…",
     "config_create": "Generating the configuration…",
     "post_creation": "Finalizing your Genie Space…",
@@ -54,7 +56,8 @@ STEP_THINKING: dict[str, str] = {
 # The prompt guides the agent on what to focus on; STEP_TOOLS is a safety net.
 _DISCOVERY = {"search_tables", "discover_catalogs", "discover_schemas", "discover_tables"}
 _INSPECTION = _DISCOVERY | {"describe_table", "profile_columns", "assess_data_quality", "profile_table_usage", "test_sql"}
-_PLAN = _INSPECTION | {"generate_plan", "present_plan"}
+_PROFILING = _INSPECTION | {"assess_readiness"}
+_PLAN = _PROFILING | {"generate_plan", "present_plan"}
 _CONFIG = _PLAN | {"discover_warehouses", "generate_config", "validate_config", "create_space"}
 _POST = _CONFIG | {"update_config", "update_space"}
 
@@ -63,6 +66,7 @@ STEP_TOOLS: dict[str, set[str]] = {
     "discovery": _DISCOVERY,
     "feasibility": _INSPECTION,
     "inspection": _INSPECTION,
+    "profiling": _PLAN,  # needs generate_plan/present_plan so agent can advance from profiling
     "plan": _PLAN,
     "config_create": _CONFIG,
     "post_creation": _POST,
@@ -73,6 +77,7 @@ STEP_ORDER = [
     "discovery",
     "feasibility",
     "inspection",
+    "profiling",
     "plan",
     "config_create",
     "post_creation",
@@ -1264,12 +1269,10 @@ class CreateGenieAgent:
                             }
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
-        if "tables" not in tool_args and tables_by_id:
-            tool_args["tables"] = list(tables_by_id.values())
-            injected.append(f"tables({len(tables_by_id)})")
-        if "metric_views" not in tool_args and mvs_by_id:
-            tool_args["metric_views"] = list(mvs_by_id.values())
-            injected.append(f"metric_views({len(mvs_by_id)})")
+        # Strip string-only tables so plan sections (with LLM-generated descriptions) can fill them in
+        tables_val = tool_args.get("tables")
+        if tables_val and all(isinstance(t, str) for t in tables_val):
+            del tool_args["tables"]
 
         # --- Extract user's edited plan from selections (preferred source) ---
         edited_plan: dict | None = None
@@ -1327,6 +1330,14 @@ class CreateGenieAgent:
                         tool_args[arg_key] = val
                         count = len(val) if isinstance(val, list) else 1
                         injected.append(f"{arg_key}({count}|{source})")
+
+        # Fall back to raw describe_table data for anything plan sections didn't provide
+        if "tables" not in tool_args and tables_by_id:
+            tool_args["tables"] = list(tables_by_id.values())
+            injected.append(f"tables({len(tables_by_id)}|describe_table)")
+        if "metric_views" not in tool_args and mvs_by_id:
+            tool_args["metric_views"] = list(mvs_by_id.values())
+            injected.append(f"metric_views({len(mvs_by_id)}|describe_table)")
 
         return injected
 

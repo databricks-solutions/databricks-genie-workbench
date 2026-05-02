@@ -37,6 +37,10 @@ from backend.prompts_create._inspection import (
     STEP as STEP_INSPECTION,
     SUMMARY as SUMMARY_INSPECTION,
 )
+from backend.prompts_create._profiling import (
+    STEP as STEP_PROFILING,
+    SUMMARY as SUMMARY_PROFILING,
+)
 from backend.prompts_create._plan import (
     STEP as STEP_PLAN,
     SUMMARY as SUMMARY_PLAN,
@@ -61,6 +65,7 @@ STEP_ORDER = [
     "discovery",
     "feasibility",
     "inspection",
+    "profiling",
     "plan",
     "config_create",
     "post_creation",
@@ -71,6 +76,7 @@ STEP_PROMPTS = {
     "discovery": STEP_DISCOVERY,
     "feasibility": STEP_FEASIBILITY,
     "inspection": STEP_INSPECTION,
+    "profiling": STEP_PROFILING,
     "plan": STEP_PLAN,
     "config_create": STEP_CONFIG_CREATE,
     "post_creation": STEP_POST_CREATION,
@@ -81,6 +87,7 @@ STEP_SUMMARIES = {
     "discovery": SUMMARY_DISCOVERY,
     "feasibility": SUMMARY_FEASIBILITY,
     "inspection": SUMMARY_INSPECTION,
+    "profiling": SUMMARY_PROFILING,
     "plan": SUMMARY_PLAN,
     "config_create": SUMMARY_CONFIG_CREATE,
     "post_creation": SUMMARY_POST_CREATION,
@@ -163,8 +170,14 @@ def detect_step(session: AgentSession) -> str:
     # Plan generation done → plan review or config
     if _has_tool(session.history, "present_plan") or _has_tool(session.history, "generate_plan"):
         return "plan"
+
+    # Profiling complete → ready for plan
+    if _has_tool_result(session.history, "assess_readiness"):
+        return "profiling"
+
+    # Inspection complete → profiling
     if _inspection_complete(session.history):
-        return "plan"
+        return "profiling"
 
     # Inspection: requires feasibility_confirmed OR describe_table in progress
     if _has_tool(session.history, "describe_table"):
