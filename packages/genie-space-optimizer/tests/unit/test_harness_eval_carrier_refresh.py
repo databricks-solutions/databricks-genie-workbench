@@ -337,3 +337,143 @@ def test_seed_eval_result_powers_lazy_snapshot_fallback() -> None:
     assert by_qid["7now_gs_001"]["result_correctness"] == "no"
     assert by_qid["7now_gs_001"]["arbiter"] == "ground_truth_correct"
     assert by_qid["7now_gs_002"]["result_correctness"] == "yes"
+
+
+# ---------------------------------------------------------------------------
+# _baseline_row_qid + cycle 5 MLflow eval-table row shape.
+#
+# Cycle 5 fired the new "Phase A: baseline payload had N rows but 0 carried a
+# question_id/id key" diagnostic and printed the ACTUAL row keys from a real
+# airline run:
+#   ['_asi_source', 'arbiter/metadata', 'arbiter/rationale', 'arbiter/value',
+#    'asset_routing/metadata', 'asset_routing/rationale', 'asset_routing/value',
+#    'client_request_id', 'completeness/metadata', 'completeness/rationale',
+#    'completeness/value', 'execution_duration', 'expected_asset/metadata',
+#    'expected_asset/value', 'expected_response/metadata',
+#    'expected_response/value', 'logical_accuracy/metadata',
+#    'logical_accuracy/rationale', 'logical_accuracy/value', 'request']
+#
+# These tests pin that the helper extracts qids from THIS exact key-set so
+# cycle 6 cannot regress on the same root cause.
+# ---------------------------------------------------------------------------
+
+
+CYCLE_5_MLFLOW_ROW_KEYS = (
+    "_asi_source",
+    "arbiter/metadata",
+    "arbiter/rationale",
+    "arbiter/value",
+    "asset_routing/metadata",
+    "asset_routing/rationale",
+    "asset_routing/value",
+    "client_request_id",
+    "completeness/metadata",
+    "completeness/rationale",
+    "completeness/value",
+    "execution_duration",
+    "expected_asset/metadata",
+    "expected_asset/value",
+    "expected_response/metadata",
+    "expected_response/value",
+    "logical_accuracy/metadata",
+    "logical_accuracy/rationale",
+    "logical_accuracy/value",
+    "request",
+)
+
+
+def _make_cycle_5_baseline_row(qid: str, arbiter_value: str = "both_correct") -> dict:
+    """Construct a baseline row whose key-set exactly matches the cycle 5
+    diagnostic output. Used by the regression tests below to prove the
+    helper handles the real MLflow eval-table row shape, not just the
+    canonical ``question_id`` shape.
+    """
+    row = {k: "stub" for k in CYCLE_5_MLFLOW_ROW_KEYS}
+    row["client_request_id"] = qid
+    row["arbiter/value"] = arbiter_value
+    return row
+
+
+def test_baseline_row_qid_extracts_client_request_id_from_mlflow_shape() -> None:
+    """Cycle 5 regression: the realistic MLflow eval-table row carries the
+    qid in `client_request_id`, not `question_id`/`id`."""
+    from genie_space_optimizer.optimization.harness import _baseline_row_qid
+
+    row = _make_cycle_5_baseline_row("airline_ticketing_and_fare_analysis_gs_016")
+    assert _baseline_row_qid(row) == "airline_ticketing_and_fare_analysis_gs_016"
+
+
+def test_baseline_row_qid_prefers_question_id_over_aliases() -> None:
+    """Defensive: if BOTH `question_id` and `client_request_id` are present
+    (e.g., a future row shape that adds the canonical key), prefer the
+    canonical name to keep semantics with the snapshot/journey emit code."""
+    from genie_space_optimizer.optimization.harness import _baseline_row_qid
+
+    row = {
+        "question_id": "canonical_qid",
+        "client_request_id": "request_uuid_12345",
+    }
+    assert _baseline_row_qid(row) == "canonical_qid"
+
+
+def test_baseline_row_qid_alias_fallback_order_matches_helper_doc() -> None:
+    """Pin the documented fallback order: question_id → id → client_request_id
+    → request_id → inputs/question_id → empty."""
+    from genie_space_optimizer.optimization.harness import _baseline_row_qid
+
+    assert _baseline_row_qid({"id": "from_id"}) == "from_id"
+    assert _baseline_row_qid({"client_request_id": "from_crid"}) == "from_crid"
+    assert _baseline_row_qid({"request_id": "from_rid"}) == "from_rid"
+    assert _baseline_row_qid({"inputs/question_id": "from_inputs"}) == "from_inputs"
+    assert _baseline_row_qid({"unrelated": "value"}) == ""
+    assert _baseline_row_qid({}) == ""
+
+
+def test_seed_eval_result_handles_cycle_5_mlflow_baseline_payload() -> None:
+    """End-to-end pin: feed the helper a 24-row baseline payload that
+    matches cycle 5's actual key-set verbatim. The helper must extract all
+    24 qids (cycle 5 extracted 0 — the bug this fix closes)."""
+    from genie_space_optimizer.optimization.harness import (
+        _seed_eval_result_from_baseline_iter,
+    )
+
+    qids = [
+        f"airline_ticketing_and_fare_analysis_gs_{i:03d}" for i in range(1, 25)
+    ]
+    baseline_iter = {
+        "rows_json": [
+            _make_cycle_5_baseline_row(qid, arbiter_value="ground_truth_correct")
+            for qid in qids
+        ],
+    }
+    out = _seed_eval_result_from_baseline_iter(baseline_iter)
+    assert out["question_ids"] == qids
+    assert len(out["question_ids"]) == 24
+    assert all(out["scores"][q] == "no" for q in qids), (
+        "Without a `result_correctness` key in the row, the helper defaults "
+        "to 'no' — the gate result will refresh this on first eval."
+    )
+    assert all(out["arbiter_verdicts"][q] == "ground_truth_correct" for q in qids)
+    assert out["failure_question_ids"] == qids
+
+
+def test_seed_eval_result_cycle_5_payload_powers_fixture_eval_rows() -> None:
+    """End-to-end shape test threading cycle 5's row shape all the way to
+    the replay fixture's `eval_rows` list — the actual artifact Task 13
+    Step 7's sanity script asserts is non-empty."""
+    from genie_space_optimizer.optimization.harness import (
+        _build_fixture_eval_rows,
+        _seed_eval_result_from_baseline_iter,
+    )
+
+    qids = [f"airline_gs_{i:03d}" for i in range(1, 11)]
+    baseline_iter = {
+        "rows_json": [_make_cycle_5_baseline_row(q) for q in qids],
+    }
+    seeded = _seed_eval_result_from_baseline_iter(baseline_iter)
+    rows = _build_fixture_eval_rows(seeded)
+    assert len(rows) == 10
+    assert {r["question_id"] for r in rows} == set(qids)
+    for r in rows:
+        assert "result_correctness" in r
+        assert r["arbiter"] == "both_correct"

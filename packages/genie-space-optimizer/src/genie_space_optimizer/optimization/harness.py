@@ -488,6 +488,33 @@ def _build_fixture_eval_rows(eval_result: dict) -> list[dict]:
     return rows
 
 
+def _baseline_row_qid(row: dict) -> str:
+    """Extract the question identifier from a persisted baseline eval row.
+
+    Handles three observed row shapes:
+
+    * Replay-fixture / canonical eval shape: ``question_id`` or ``id``.
+    * MLflow per-eval-row shape: ``client_request_id`` (the request ID column
+      surfaced by the MLflow eval table — it carries the qid for our predict
+      function) or ``request_id`` (legacy alias).
+    * Inputs-namespaced shape some judges emit: ``inputs/question_id``.
+
+    Returns "" when none of those keys is present. The diagnostic warning
+    Phase A burn-down cycle 5 added ("baseline payload had N rows but 0
+    carried a question_id/id key") fires precisely when this returns "" for
+    every row, so a future row shape with yet another id key will be visible
+    immediately rather than producing a silent empty fixture.
+    """
+    return str(
+        row.get("question_id")
+        or row.get("id")
+        or row.get("client_request_id")
+        or row.get("request_id")
+        or row.get("inputs/question_id")
+        or ""
+    )
+
+
 def _seed_eval_result_from_baseline_iter(baseline_iter: dict | None) -> dict:
     """Build an `_latest_eval_result`-shaped dict from a persisted baseline row.
 
@@ -496,7 +523,8 @@ def _seed_eval_result_from_baseline_iter(baseline_iter: dict | None) -> dict:
     ``{question_ids, scores, arbiter_verdicts, failure_question_ids}``.
 
     Returns ``{}`` when `baseline_iter` is None, has no `rows_json`, or
-    `rows_json` contains no rows with extractable question IDs. Caller treats
+    `rows_json` contains no rows with extractable question IDs (delegated to
+    `_baseline_row_qid`, which knows the realistic key aliases). Caller treats
     `{}` as "no baseline data available" and falls through.
 
     Centralized so the carrier seed at `_run_lever_loop` setup AND the
@@ -505,6 +533,14 @@ def _seed_eval_result_from_baseline_iter(baseline_iter: dict | None) -> dict:
     before `_run_gate_checks` (e.g. all patches dropped by the applier
     blast-radius gate, dead-on-arrival AG retry blocked) produce empty
     `eval_rows` in the replay fixture.
+
+    Correctness defaulting: rows that don't carry any of the
+    `_eval_rc_str`-recognised keys default to ``"no"`` (treated as a
+    failure). This is intentional — the replay fixture only requires that
+    `eval_rows` be populated; the canonical correctness for those rows is
+    refreshed by every gate result via `_extract_eval_result_from_gate`,
+    so a baseline-only "no" defaults are corrected the moment the loop
+    actually evaluates anything.
     """
     if not isinstance(baseline_iter, dict) or not baseline_iter:
         return {}
@@ -524,7 +560,7 @@ def _seed_eval_result_from_baseline_iter(baseline_iter: dict | None) -> dict:
     arbiter: dict[str, str] = {}
     failures: list[str] = []
     for r in rows:
-        qid = str(r.get("question_id") or r.get("id") or "")
+        qid = _baseline_row_qid(r)
         if not qid:
             continue
         qids.append(qid)
@@ -10805,9 +10841,11 @@ def _run_lever_loop(
             # cannot tell the difference between "no rows" and "rows but
             # no identifiers". Both states leave the carrier empty.
             logger.warning(
-                "Phase A: baseline payload had %d rows but 0 carried a "
-                "question_id/id key (_latest_eval_result stays empty). "
-                "Sample row keys=%s",
+                "Phase A: baseline payload had %d rows but 0 carried any of "
+                "the recognised qid keys (question_id, id, client_request_id, "
+                "request_id, inputs/question_id) — _latest_eval_result stays "
+                "empty. Add the actual qid key to _baseline_row_qid. Sample "
+                "row keys=%s",
                 len(_baseline_rows_seed),
                 sorted((_baseline_rows_seed[0] or {}).keys())[:20]
                 if isinstance(_baseline_rows_seed[0], dict)
