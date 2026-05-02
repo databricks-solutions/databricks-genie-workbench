@@ -428,12 +428,20 @@ def patch_cap_decision_records(
 
     This is the Phase B source-of-truth conversion. ``patch_cap_decision_rows``
     below is the legacy Delta-row adapter that delegates here.
+
+    Carries the RCA-grounding contract fields when the upstream decision
+    dict supplies them (rca_id, root_cause, evidence_refs, target_qids,
+    expected_effect, regression_qids). Synthesizes ``observed_effect``
+    and ``next_action`` from the decision's selected/dropped state so the
+    transcript always carries an operator-actionable next step.
     """
     records: list[DecisionRecord] = []
     for decision in decisions:
         proposal_id = str(decision.get("proposal_id") or "")
         selected = decision.get("decision") == "selected"
         target_qids = _clean_str_tuple(decision.get("target_qids") or ())
+        rca_id = str(decision.get("rca_id") or "")
+        root_cause = str(decision.get("root_cause") or "")
         records.append(
             DecisionRecord(
                 run_id=run_id,
@@ -445,11 +453,24 @@ def patch_cap_decision_records(
                     if selected else ReasonCode.PATCH_CAP_DROPPED
                 ),
                 question_id=target_qids[0] if len(target_qids) == 1 else "",
+                rca_id=rca_id,
+                root_cause=root_cause,
                 ag_id=ag_id,
                 proposal_id=proposal_id,
                 gate="patch_cap",
                 reason_detail=str(decision.get("selection_reason") or ""),
+                evidence_refs=_clean_str_tuple(decision.get("evidence_refs") or ()),
                 affected_qids=target_qids,
+                target_qids=target_qids,
+                expected_effect=str(decision.get("expected_effect") or ""),
+                observed_effect=(
+                    "Selected for apply" if selected else "Dropped by patch cap"
+                ),
+                regression_qids=_clean_str_tuple(decision.get("regression_qids") or ()),
+                next_action=(
+                    "Apply selected patch and evaluate target qids"
+                    if selected else "Inspect lower-ranked patch if target remains unresolved"
+                ),
                 proposal_ids=(proposal_id,) if proposal_id else (),
                 metrics={
                     "selection_reason": decision.get("selection_reason"),
@@ -457,7 +478,8 @@ def patch_cap_decision_records(
                     "relevance_score": _as_float(decision.get("relevance_score")),
                     "lever": _as_int(decision.get("lever"), 5),
                     "patch_type": decision.get("patch_type"),
-                    "rca_id": decision.get("rca_id"),
+                    "rca_id": rca_id,
+                    "root_cause": root_cause,
                     "target_qids": list(target_qids),
                     "parent_proposal_id": str(decision.get("parent_proposal_id") or ""),
                     "expanded_patch_id": str(decision.get("expanded_patch_id") or ""),
