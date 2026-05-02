@@ -168,7 +168,14 @@ def test_control_plane_acceptance_requires_target_improvement() -> None:
     assert decision.target_fixed_qids == ("q_target",)
 
 
-def test_control_plane_acceptance_rejects_unrelated_global_gain() -> None:
+def test_control_plane_acceptance_accepts_unrelated_global_gain_as_attribution_drift() -> None:
+    """Track F (Phase A burn-down MVP): when the named target qid does not
+    flip but every regression budget stays at zero, the candidate is a real
+    net win and must accept under ``accepted_with_attribution_drift``. The
+    rationale is that RCA, clustering, cap, applier, and rollback all
+    worked — the only discrepancy is attribution drift between the named
+    target and the qids that actually flipped.
+    """
     from genie_space_optimizer.optimization.control_plane import (
         decide_control_plane_acceptance,
     )
@@ -206,8 +213,8 @@ def test_control_plane_acceptance_rejects_unrelated_global_gain() -> None:
         post_rows=post_rows,
     )
 
-    assert decision.accepted is False
-    assert decision.reason_code == "target_qids_not_improved"
+    assert decision.accepted is True
+    assert decision.reason_code == "accepted_with_attribution_drift"
 
 
 def test_control_plane_acceptance_rejects_when_targets_missing() -> None:
