@@ -462,6 +462,17 @@ def instruction_patch_scope_is_safe(
     ptype = str(patch.get("type") or patch.get("patch_type") or "")
     if ptype not in {"add_instruction", "rewrite_instruction", "update_instruction_section"}:
         return {"safe": True, "reason": "not_instruction_rewrite"}
+    # Track B: a section-split child of a scanned rewrite_instruction
+    # must carry passing_dependents from the parent. Missing the field
+    # on a split-child indicates a propagation bug in
+    # ``_split_rewrite_instruction_patch`` — fail loud rather than imply
+    # safety from absence.
+    if patch.get("_split_from") == "rewrite_instruction" and patch.get("passing_dependents") is None:
+        return {
+            "safe": False,
+            "reason": "split_child_missing_passing_dependents",
+            "section_name": str(patch.get("section_name") or "(none)"),
+        }
     if patch.get("passing_dependents") is not None:
         return {"safe": True, "reason": "has_counterfactual_dependents"}
 

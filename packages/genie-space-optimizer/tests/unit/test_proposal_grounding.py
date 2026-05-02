@@ -837,3 +837,26 @@ def test_l6_counterfactual_blast_radius_gate_rejects_many_outside_dependents():
         "gs_003",
         "gs_004",
     ]
+
+
+def test_instruction_patch_scope_is_unsafe_for_split_child_missing_passing_dependents() -> None:
+    """A patch with _split_from set is a section-split child of a scanned
+    rewrite. Missing passing_dependents on a split-child is a propagation
+    bug, not implicit safety — the gate must surface it."""
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        instruction_patch_scope_is_safe,
+    )
+
+    split_child_without_deps = {
+        "type": "update_instruction_section",
+        "section_name": "QUERY RULES",
+        "_split_from": "rewrite_instruction",
+        "lever": 5,
+        # passing_dependents intentionally absent — Track B propagation gap.
+    }
+
+    decision = instruction_patch_scope_is_safe(
+        split_child_without_deps, ag_target_qids=("q001",),
+    )
+    assert decision["safe"] is False
+    assert decision["reason"] == "split_child_missing_passing_dependents"
