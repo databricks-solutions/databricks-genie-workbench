@@ -112,3 +112,27 @@ def test_per_cluster_floor_recognizes_source_cluster_ids_only() -> None:
         f"per-cluster floor failed to see source_cluster_ids lineage; "
         f"got {selected_ids}, expected {{'P_GOOD'}}"
     )
+
+
+def test_plural_top_n_collapse_qualifies_as_direct_behavior_patch() -> None:
+    """Track 2 — SQL-shape failures (plural top-N collapse, missing
+    temporal filters) are direct-fix root causes for cap reservation.
+    Without this, the only direct fix for a top-N tie collapse never
+    earns the global direct-behavior reservation slot.
+    """
+    from genie_space_optimizer.optimization.patch_selection import (
+        _is_direct_behavior_patch,
+    )
+
+    sql_shape_fix = {
+        "proposal_id": "P_TOPN",
+        "type": "add_sql_snippet_calculation",
+        "lever": 5,
+        "root_cause": "plural_top_n_collapse",
+        "target_qids": ["q_top5"],
+    }
+    assert _is_direct_behavior_patch(sql_shape_fix), (
+        "plural_top_n_collapse should be a behavior root cause for "
+        "cap reservation; otherwise SQL-shape direct fixes lose to "
+        "broad metadata patches at cap"
+    )
