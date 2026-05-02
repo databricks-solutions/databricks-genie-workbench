@@ -16085,16 +16085,24 @@ def _run_lever_loop(
         # Lossless contract Task 7 — warn-only journey-contract validator.
         # The hard gate flips this to raise in Phase 4. Defensive wrap so a
         # validator bug never breaks the loop while we burn down warnings.
+        # L4a: capture the report and stash it on _current_iter_inputs so the
+        # fixture exporter and MLflow per-iteration write (next try-block)
+        # both see it.
+        _journey_report = None
         try:
             _eval_qids_for_validator = list(
                 (_latest_eval_result or {}).get("question_ids") or []
             )
-            _validate_journeys_at_iteration_end(
+            _journey_report = _validate_journeys_at_iteration_end(
                 events=_journey_events,
                 eval_qids=_eval_qids_for_validator,
                 iteration=iteration_counter,
                 raise_on_violation=False,
             )
+            if _journey_report is not None:
+                _current_iter_inputs["journey_validation"] = (
+                    _journey_report.to_dict()
+                )
         except Exception:
             logger.debug(
                 "iteration-end journey validator failed (non-fatal)",

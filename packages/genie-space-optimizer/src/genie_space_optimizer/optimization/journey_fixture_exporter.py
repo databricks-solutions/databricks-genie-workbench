@@ -170,6 +170,7 @@ def begin_iteration_capture(
         "strategist_response": {"action_groups": []},
         "ag_outcomes": {},
         "post_eval_passing_qids": [],
+        "journey_validation": None,
     }
     iterations_data.append(snapshot)
     return snapshot
