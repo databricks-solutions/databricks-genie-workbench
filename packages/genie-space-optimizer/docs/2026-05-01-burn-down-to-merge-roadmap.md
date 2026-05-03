@@ -17,7 +17,7 @@ The end state is a modular codebase where `harness.py` is an orchestration spine
 
 ## Architecture in one sentence
 
-Eight sequential phases (0 → A → B → C → D → E → F → G). Phase A establishes a clean per-iteration journey contract and real replay fixture. Phase B introduces the unified `OptimizationTrace` / `DecisionRecord` contract and standard operator transcript. Phase C hardens the RCA loop itself. Phase D builds scoreboard and failure bucketing as projections of the same trace while starting low-risk extractions. Phase E flips the hard gate and merges. Phases F/G finish modularization and tighten typed contracts.
+Eight sequential phases (0 → A → B → C → D → E → F → G), with two pre-merge observability inserts (E.0 and E.1). Phase A establishes a clean per-iteration journey contract and real replay fixture. Phase B introduces the unified `OptimizationTrace` / `DecisionRecord` contract and standard operator transcript. Phase C hardens the RCA loop itself. Phase D builds scoreboard and failure bucketing as projections of the same trace while starting low-risk extractions. Phase E.0 makes MLflow decision artifacts reliable, and Phase E.1 formalizes the GSO Run Output Contract so humans, CLI tools, and LLM postmortem skills all consume the same RCA-grounded process. Phase E flips the hard gate and merges. Phases F/G finish modularization and tighten typed contracts.
 
 ## Unified Architecture Target
 
@@ -105,6 +105,22 @@ skill under `docs/skills/`. It consumes Databricks Job ID + Run ID, reads
 `GSO_*_V1` markers, MLflow tags/artifacts, replay fixtures, and traces, then
 writes a structured postmortem under `docs/runid_analysis/`.
 
+The standard process every human transcript and machine artifact must mirror is:
+
+```text
+RCA Evidence -> Cluster -> Action Group -> Proposal -> Gate
+  -> Applied Patch -> Eval Result -> Learning
+```
+
+Phase E.1 turns that process into the formal **GSO Run Output Contract**:
+
+- `operator_transcript.md` renders the human process ledger with short "what happened" and "why this stage exists" descriptions for every stage.
+- `OptimizationTrace` and `DecisionRecord` remain the canonical typed evidence for LLM reasoning.
+- `GSO_*_V1` stdout markers expose run, iteration, convergence, and artifact-index pointers for Databricks CLI discovery.
+- MLflow stores a parent-run `gso_postmortem_bundle/` as the one-stop shop for LLM troubleshooting, while iteration eval runs retain iteration-local artifacts and logged models retain candidate/champion state.
+- `evidence_bundle` materializes that MLflow bundle into `docs/runid_analysis/<optimization_run_id>/evidence/`.
+- `gso-postmortem` consumes only the evidence bundle unless the manifest declares a missing piece that requires raw stdout or trace fetch fallback.
+
 ## At a glance
 
 | # | Phase | Replay-only? | Real-Genie runs | Calendar | Branch state |
@@ -116,6 +132,7 @@ writes a structured postmortem under `docs/runid_analysis/`.
 | D | Scoreboard, failure bucketing, and first trace-aware extractions **(✅ complete — 3/3 plans landed)** | Yes | 0 | shipped | pre-merge |
 | **D.5** | **Pre-merge polish — alternatives capture (cluster / AG / proposal)** | Yes | 0 | ~2–3 days | pre-merge |
 | **E.0** | **MLflow artifact integrity audit + persistence fixes** | Mostly | 0 (replay-only) + 1 backfill smoke | ~2–3 days | pre-merge prerequisite for E |
+| **E.1** | **GSO Run Output Contract - centralized human + LLM observability** | Mostly | 0 (validated by next E pilot) | ~2–3 days | pre-merge prerequisite for E |
 | E | Final integration + contract-gate flip + merge | No | 1 | ~1 day | merge point |
 | F | Deeper `harness.py` modularization (5 byte-stable extractions) | Yes | 0 | ~5–8 days | post-merge follow-up |
 | G | Typed contract hardening for extracted modules | Yes | 0 | ~5–10 days | post-merge architecture follow-up |
@@ -176,6 +193,7 @@ Before flipping the merge gate at Phase E, two pre-merge phases close gaps that 
 
 - **Phase D.5 — Alternatives capture.** Adds `alternatives_considered: tuple[AlternativeOption, ...]` to `DecisionRecord` and stamps it on `CLUSTER_SELECTED`, `STRATEGIST_AG_EMITTED`, and `PROPOSAL_GENERATED`. Transforms transcript reasoning from "this stage chose X" to "this stage chose X over {Y, Z} because of {reason_Y, reason_Z}". Plan: [`2026-05-04-pre-phase-e-alternatives-capture-plan.md`](./2026-05-04-pre-phase-e-alternatives-capture-plan.md).
 - **Phase E.0 — MLflow artifact integrity audit.** Phase A claims to persist `phase_a/journey_validation/iter_<N>.json` and Phase B claims to persist `phase_b/decision_trace/iter_<N>.json` + `phase_b/operator_transcript/iter_<N>.txt`. Spot inspection of `iter_04 / full_eval / pass_1 / run_d6a7faeb` shows only `evaluation_runtime/`, `judge_prompts/`, `model_snapshots/` — the decision-trail artifacts are not visible on the run an operator naturally clicks into. The persistence calls exist (`harness.py:17241`, `17312-17319`) but route to whichever MLflow run was last started by the harness's `end_run` / `start_run` pattern. E.0 audits where artifacts actually land, anchors them to a stable per-iteration parent run, surfaces silent persistence failures, and adds a backfill CLI for completed runs. Plan: [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md).
+- **Phase E.1 - GSO Run Output Contract.** The live run `407772af-9662-4803-be6b-f00a368c528a` proved that the loop can improve a space while still leaving humans and LLMs to stitch together stdout, notebook exit JSON, MLflow eval runs, strategy runs, logged model snapshots, and local evidence bundles manually. E.1 formalizes the output shape: a process-first human transcript, an artifact-index marker for CLI discovery, iteration-local MLflow artifacts, and a parent-run `gso_postmortem_bundle/` that `evidence_bundle` and `gso-postmortem` consume as the one-stop troubleshooting package. Plan: [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md).
 
 ### Future work explicitly on the radar (post-Phase F)
 
@@ -458,6 +476,52 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
 
 ---
 
+## Phase E.1 - GSO Run Output Contract: centralized human + LLM observability
+
+**Why insert here:** Phase E.0 makes artifact persistence reliable, but it does not by itself define what the run output should look like once those artifacts are reliable. The live run `407772af-9662-4803-be6b-f00a368c528a` showed the gap: the raw task output contained enough information to diagnose the loop, but it was too large, partly truncated, and not organized as the RCA process. LLMs also need a stable way to discover parent MLflow runs, iteration eval runs, strategy runs, logged model artifacts, and local evidence bundles without guessing from raw stdout.
+
+**What ships:**
+
+- A formal **GSO Run Output Contract** rooted in the standard loop:
+
+  ```text
+  RCA Evidence -> Cluster -> Action Group -> Proposal -> Gate
+    -> Applied Patch -> Eval Result -> Learning
+  ```
+
+- A process-first `operator_transcript.md` for humans. Each iteration renders the same stage order, and each stage includes a short explanation of what happened and why the stage exists so a new operator can follow the optimizer end to end.
+- A parent-run `gso_postmortem_bundle/` in MLflow as the one-stop LLM troubleshooting package:
+  - `manifest.json`
+  - `run_summary.json`
+  - `artifact_index.json`
+  - `operator_transcript.md`
+  - `decision_trace_all.json`
+  - `journey_validation_all.json`
+  - `replay_fixture.json`
+  - `scoreboard.json`
+  - `failure_buckets.json`
+  - `iterations/iter_<N>/*`
+- Iteration eval runs continue to store iteration-local artifacts and metrics. The parent bundle assembles the right subset so postmortem starts from one place without losing MLflow-native lineage.
+- Logged models store candidate/champion state only: config snapshots, applied patches, and source iteration run id. They do not become the one-stop troubleshooting store.
+- A new `GSO_ARTIFACT_INDEX_V1` stdout marker and pointer-rich `dbutils.notebook.exit(...)` fields so `databricks jobs get-run-output <lever_loop_task_run_id>` can locate the parent bundle and linked iteration artifacts even when stdout is truncated.
+- `evidence_bundle` pulls the parent bundle into `docs/runid_analysis/<optimization_run_id>/evidence/gso_postmortem_bundle/` before falling back to legacy phase artifacts or raw notebook output.
+- `gso-postmortem` consumes the evidence bundle, not live ad hoc log scraping.
+
+**Validation strategy:**
+
+- Unit tests for artifact path constants, run-role tags, artifact-index markers, marker parsing, evidence-bundle local layout, parent-bundle assembly, and MLflow audit coverage.
+- Snapshot-style tests for the process transcript stage order and stage descriptions.
+- A lightweight smoke test proves `GSO_ARTIFACT_INDEX_V1` points from CLI-visible stdout to the parent bundle.
+- No dedicated real-Genie run. The next Phase E pilot validates the full path in the workspace.
+
+**Exit criterion:** a completed lever-loop task exposes enough CLI-visible pointers to locate the parent MLflow `gso_postmortem_bundle/`; the parent bundle contains a readable human transcript and typed LLM artifacts; `evidence_bundle` materializes the bundle locally; and `gso-postmortem` can produce a postmortem without grepping raw task output unless the manifest declares a missing artifact.
+
+**Real-Genie runs:** 0 dedicated. The next Phase E candidate pilot validates the fix end to end.
+
+**Detailed plan:** [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md).
+
+---
+
 ## Phase E — Final integration + merge
 
 **What happens:**
@@ -471,6 +535,9 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
    - Scoreboard renders with sensible numbers.
    - Bucketing labels look right (spot-check 3–5 unresolved qids manually).
    - RCA loop state is present for every unresolved qid.
+   - `GSO_ARTIFACT_INDEX_V1` and `dbutils.notebook.exit(...)` identify the parent MLflow run, iteration eval runs, strategy runs, logged model ids, and `gso_postmortem_bundle/` paths.
+   - `gso_postmortem_bundle/operator_transcript.md` is readable as a process ledger for humans.
+   - `gso_postmortem_bundle/decision_trace_all.json` and per-iteration `decision_trace.json` artifacts are sufficient for LLM postmortem analysis.
    - No accuracy regression vs the variance baseline captured during Phase A burn-down.
 3. **Flip `raise_on_violation=True`** in `harness.py` (the journey contract becomes a hard gate on every future run).
 4. Add a decision-trace hard-gate check for required decision records on replay. Missing journey emits, missing decision records, missing RCA/evidence fields, and stdout/trace drift should all fail closed.
