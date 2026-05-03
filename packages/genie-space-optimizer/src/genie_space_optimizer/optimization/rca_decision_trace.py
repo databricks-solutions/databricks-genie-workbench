@@ -518,8 +518,54 @@ def render_operator_transcript(
                 r for r in by_section.get(SECTION_OBSERVED_RESULTS, [])
                 if r.outcome == DecisionOutcome.UNRESOLVED
             ]
-            for rec in unresolved:
-                lines.append(_format_record_line(rec))
+            # Phase D Failure-Bucketing T5: classify each unresolved qid
+            # via the canonical RCA-chain ladder. Render a histogram
+            # summary line at the top of the section, then annotate each
+            # per-qid line with bucket label + next-action prose.
+            try:
+                from genie_space_optimizer.optimization.failure_bucketing import (
+                    classify_unresolved_qid,
+                )
+                _classifier_available = True
+            except ImportError:
+                _classifier_available = False
+            if _classifier_available:
+                histogram: dict[str, int] = {}
+                qid_to_classification: dict[str, Any] = {}
+                for rec in unresolved:
+                    if not rec.question_id:
+                        continue
+                    classification = classify_unresolved_qid(
+                        trace, rec.question_id, iteration=iteration,
+                    )
+                    qid_to_classification[rec.question_id] = classification
+                    bucket_name = (
+                        classification.bucket.name
+                        if classification.bucket is not None
+                        else "RESOLVED"
+                    )
+                    histogram[bucket_name] = histogram.get(bucket_name, 0) + 1
+                if histogram:
+                    counts = " ".join(
+                        f"{name}={histogram[name]}"
+                        for name in sorted(histogram)
+                    )
+                    lines.append(f"|    buckets: {counts}")
+                else:
+                    lines.append("|    buckets: (none)")
+                for rec in unresolved:
+                    line = _format_record_line(rec)
+                    classification = qid_to_classification.get(rec.question_id)
+                    if classification and classification.bucket is not None:
+                        line = (
+                            line
+                            + f"  bucket={classification.bucket.name}"
+                            + f"  bucket_action={classification.reason}"
+                        )
+                    lines.append(line)
+            else:
+                for rec in unresolved:
+                    lines.append(_format_record_line(rec))
             continue
         if section == SECTION_NEXT_ACTION:
             next_actions = [
