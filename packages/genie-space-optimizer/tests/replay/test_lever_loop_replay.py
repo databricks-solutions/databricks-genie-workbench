@@ -121,7 +121,10 @@ def test_run_replay_intra_iter_violation_is_caught_and_attributed() -> None:
         f"{len(illegal)}: {[(v.question_id, v.detail) for v in illegal]}"
     )
     assert illegal[0].question_id == "syn_q2"
-    assert illegal[0].detail == "evaluated -> post_eval"
+    # PR-C: detail is prefixed with the chain label ("trunk: " for trunk
+    # transitions, "lane[<pid>]: " for proposal-lane transitions) so
+    # postmortem readers can locate the offending chain.
+    assert illegal[0].detail == "trunk: evaluated -> post_eval"
 
 
 def test_run_replay_single_iter_5cluster_fixture_still_validates_cleanly() -> None:
