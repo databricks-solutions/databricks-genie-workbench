@@ -14618,6 +14618,59 @@ def _run_lever_loop(
                         "(non-fatal)",
                         exc_info=True,
                     )
+                # Cycle 9 T6: emit one DecisionRecord per blast-radius
+                # drop so the iteration's decision_records is non-empty
+                # even when no patches survive to the patch-cap.
+                try:
+                    from genie_space_optimizer.optimization.decision_emitters import (
+                        blast_radius_decision_records,
+                        is_strict_mode,
+                    )
+                    _br_root_cause = ""
+                    _br_rca_id = ""
+                    for _cid in (ag.get("source_cluster_ids") or []):
+                        _br_cluster = (
+                            _iter_source_clusters_by_id.get(str(_cid)) or {}
+                        )
+                        if not _br_root_cause:
+                            _br_root_cause = str(
+                                _br_cluster.get("root_cause") or ""
+                            )
+                        if not _br_rca_id:
+                            _br_rca_id = str(
+                                _iter_rca_id_by_cluster.get(str(_cid)) or ""
+                            )
+                        if _br_root_cause and _br_rca_id:
+                            break
+                    _br_target_qids = [
+                        str(q)
+                        for q in (ag.get("affected_questions") or [])
+                        if q
+                    ]
+                    _br_records = blast_radius_decision_records(
+                        run_id=run_id,
+                        iteration=iteration_counter,
+                        ag_id=str(ag_id),
+                        rca_id=_br_rca_id,
+                        root_cause=_br_root_cause,
+                        target_qids=_br_target_qids,
+                        dropped=_blast_dropped,
+                    )
+                    _current_iter_inputs.setdefault(
+                        "decision_records", []
+                    ).extend([r.to_dict() for r in _br_records])
+                except Exception:
+                    _phase_b_producer_exceptions["blast_radius"] = (
+                        _phase_b_producer_exceptions.get("blast_radius", 0)
+                        + 1
+                    )
+                    logger.debug(
+                        "blast-radius DecisionRecord emission failed "
+                        "(non-fatal)",
+                        exc_info=True,
+                    )
+                    if is_strict_mode():
+                        raise
             patches = _blast_kept
         except ImportError:
             # instruction_patch_scope_is_safe not yet implemented (Task 2A
@@ -15272,6 +15325,64 @@ def _run_lever_loop(
                     signature=_selected_patch_signature,
                     reason=_apply_skip.reason_code,
                 )
+                # Cycle 9 T7: emit one PATCH_SKIPPED DecisionRecord per
+                # proposal_id in the dead-on-arrival signature. ACCEPTANCE_DECIDED
+                # already covers the AG-level signal; this gives
+                # finer-grained per-patch attribution (no-op patch vs
+                # applier-rejected patch).
+                try:
+                    from genie_space_optimizer.optimization.decision_emitters import (
+                        dead_on_arrival_decision_records,
+                        is_strict_mode,
+                    )
+                    _doa_root_cause = ""
+                    _doa_rca_id = ""
+                    for _cid in (ag.get("source_cluster_ids") or []):
+                        _doa_cluster = (
+                            _iter_source_clusters_by_id.get(str(_cid)) or {}
+                        )
+                        if not _doa_root_cause:
+                            _doa_root_cause = str(
+                                _doa_cluster.get("root_cause") or ""
+                            )
+                        if not _doa_rca_id:
+                            _doa_rca_id = str(
+                                _iter_rca_id_by_cluster.get(str(_cid)) or ""
+                            )
+                        if _doa_root_cause and _doa_rca_id:
+                            break
+                    _doa_target_qids = [
+                        str(q)
+                        for q in (ag.get("affected_questions") or [])
+                        if q
+                    ]
+                    _doa_records = dead_on_arrival_decision_records(
+                        run_id=run_id,
+                        iteration=iteration_counter,
+                        ag_id=str(ag_id),
+                        rca_id=_doa_rca_id,
+                        root_cause=_doa_root_cause,
+                        target_qids=_doa_target_qids,
+                        signature=tuple(_selected_patch_signature or ()),
+                        reason=str(_apply_skip.reason_code or ""),
+                    )
+                    _current_iter_inputs.setdefault(
+                        "decision_records", []
+                    ).extend([r.to_dict() for r in _doa_records])
+                except Exception:
+                    _phase_b_producer_exceptions["dead_on_arrival"] = (
+                        _phase_b_producer_exceptions.get(
+                            "dead_on_arrival", 0
+                        )
+                        + 1
+                    )
+                    logger.debug(
+                        "dead-on-arrival DecisionRecord emission failed "
+                        "(non-fatal)",
+                        exc_info=True,
+                    )
+                    if is_strict_mode():
+                        raise
                 logger.warning(
                     "AG %s deterministic_no_applied_patches: selected patch "
                     "signature=%s recovery_reason=all_selected_patches_dropped_by_applier",

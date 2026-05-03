@@ -537,6 +537,155 @@ def post_eval_resolution_records(
 # ---------------------------------------------------------------------------
 
 
+def blast_radius_decision_records(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    rca_id: str,
+    root_cause: str,
+    target_qids: Sequence[str],
+    dropped: Sequence[Mapping[str, Any]],
+) -> list[DecisionRecord]:
+    """Emit one ``GATE_DECISION`` / ``DROPPED`` record per blast-radius drop.
+
+    Cycle 9 T6: the blast-radius gate runs *before* the patch-cap; the
+    patch-cap is the only producer in the existing pipeline, so AGs
+    fully dropped by the gate contributed zero ``DecisionRecord`` rows
+    and Phase B's operator transcript rendered nothing for that
+    iteration. This producer closes that gap.
+
+    ``reason_code=NO_CAUSAL_TARGET`` is the precise semantic of a
+    blast-radius drop: the patch would change rows for passing
+    dependents outside the AG's target qids — i.e. the patch has no
+    causally-clean target.
+
+    Gate-specific signals (``passing_dependents_outside_target``,
+    ``target`` table) live in ``metrics`` so the cross-checker's
+    RCA-grounding contract still validates against the canonical
+    fields.
+    """
+    cleaned_target_qids = tuple(
+        str(q) for q in (target_qids or ()) if str(q)
+    )
+    records: list[DecisionRecord] = []
+    for d in dropped or []:
+        proposal_id = str(d.get("proposal_id") or "")
+        outside = [
+            str(q)
+            for q in (d.get("passing_dependents_outside_target") or [])
+            if str(q)
+        ]
+        records.append(
+            DecisionRecord(
+                run_id=str(run_id),
+                iteration=int(iteration),
+                ag_id=str(ag_id),
+                rca_id=str(rca_id or ""),
+                root_cause=str(root_cause or ""),
+                proposal_id=proposal_id,
+                proposal_ids=(proposal_id,) if proposal_id else (),
+                decision_type=DecisionType.GATE_DECISION,
+                outcome=DecisionOutcome.DROPPED,
+                reason_code=ReasonCode.NO_CAUSAL_TARGET,
+                gate="blast_radius",
+                reason_detail=str(d.get("reason") or ""),
+                evidence_refs=(f"ag:{ag_id}", "blast_radius_gate"),
+                target_qids=cleaned_target_qids,
+                affected_qids=cleaned_target_qids,
+                expected_effect=(
+                    f"Patch would address "
+                    f"{root_cause or 'failure pattern'} on "
+                    f"{len(cleaned_target_qids)} target qid(s)."
+                ),
+                observed_effect=(
+                    f"Dropped: collateral risk on {len(outside)} passing "
+                    f"dependent(s) outside target."
+                ),
+                next_action=(
+                    "Add target table to AG forbid_tables and "
+                    "re-strategize"
+                ),
+                metrics={
+                    "patch_type": str(d.get("patch_type") or ""),
+                    "passing_dependents_outside_target": outside,
+                    "target": str(d.get("target") or ""),
+                },
+            )
+        )
+    return records
+
+
+def dead_on_arrival_decision_records(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    rca_id: str,
+    root_cause: str,
+    target_qids: Sequence[str],
+    signature: tuple[str, ...],
+    reason: str,
+) -> list[DecisionRecord]:
+    """Emit one ``PATCH_SKIPPED`` record per dead-on-arrival patch signature.
+
+    Cycle 9 T7: the existing ``ACCEPTANCE_DECIDED`` producer (wired in
+    the postmortem follow-up) emits *one* record per AG when the AG hits
+    the dead-on-arrival path. This producer adds *finer-grained
+    per-signature* records — one ``PATCH_SKIPPED`` per proposal_id in
+    the signature — so the operator can distinguish "AG dropped because
+    P001#1 was a no-op" from "AG dropped because P002#1 hit applier
+    rejection."
+
+    When ``signature`` is empty (all patches dropped before the
+    applier), returns an empty list — there's nothing to attribute at
+    the per-patch level, and the AG-level ACCEPTANCE_DECIDED record
+    already carries the AG-wide signal.
+    """
+    if not signature:
+        return []
+    cleaned_target_qids = tuple(
+        str(q) for q in (target_qids or ()) if str(q)
+    )
+    records: list[DecisionRecord] = []
+    for proposal_id in signature:
+        if not proposal_id:
+            continue
+        records.append(
+            DecisionRecord(
+                run_id=str(run_id),
+                iteration=int(iteration),
+                ag_id=str(ag_id),
+                rca_id=str(rca_id or ""),
+                root_cause=str(root_cause or ""),
+                proposal_id=str(proposal_id),
+                proposal_ids=(str(proposal_id),),
+                decision_type=DecisionType.PATCH_SKIPPED,
+                outcome=DecisionOutcome.SKIPPED,
+                reason_code=ReasonCode.NO_APPLIED_PATCHES,
+                reason_detail=str(reason or ""),
+                evidence_refs=(f"ag:{ag_id}", f"patch:{proposal_id}"),
+                target_qids=cleaned_target_qids,
+                affected_qids=cleaned_target_qids,
+                expected_effect=(
+                    f"Patch {proposal_id} would address "
+                    f"{root_cause or 'failure pattern'}."
+                ),
+                observed_effect=(
+                    f"Patch dropped before apply: {reason or 'unknown'}."
+                ),
+                next_action=(
+                    "Force strategist to produce a different patch shape"
+                ),
+                metrics={
+                    "signature": list(signature),
+                    "recovery_reason": str(reason or ""),
+                },
+            )
+        )
+    return records
+
+
 def classify_no_records_reason(
     *,
     iteration_inputs: Mapping[str, Any],
