@@ -89,8 +89,11 @@ def _synthetic_trace():
     return OptimizationTrace(decision_records=tuple(records))
 
 
+# Pinned via observed output. ``accuracy_delta`` retains the raw float
+# subtraction (0.60 - 0.50) so the test surfaces any future change to
+# the metric helper rather than masking precision drift via approx().
 _EXPECTED_SYNTHETIC = {
-    "accuracy_delta": 0.10,
+    "accuracy_delta": 0.09999999999999998,
     "causal_patch_survival_pct": 1.0,
     "decision_trace_completeness_pct": 1.0,
     "dominant_signal": "HEALTHY",
