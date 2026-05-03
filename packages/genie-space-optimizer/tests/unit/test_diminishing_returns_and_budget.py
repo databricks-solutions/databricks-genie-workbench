@@ -230,3 +230,21 @@ def test_harness_emits_gso_run_analysis_markers() -> None:
     assert "phase_b_marker" in src
     assert "convergence_marker" in src
     assert "GSO_PHASE_B_V1" in src or "phase_b_marker(" in src
+
+
+def test_harness_sets_databricks_run_mlflow_tags_for_analysis() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    src = (
+        root
+        / "src"
+        / "genie_space_optimizer"
+        / "optimization"
+        / "harness.py"
+    ).read_text()
+
+    assert "genie.databricks.job_id" in src
+    assert "genie.databricks.parent_run_id" in src
+    assert "genie.databricks.lever_loop_task_run_id" in src
+    assert "genie.phase_b.partial" in src
