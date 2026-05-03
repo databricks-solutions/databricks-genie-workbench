@@ -10353,6 +10353,41 @@ def _run_lever_loop(
     all_failure_question_ids: list[str] = []
     question_trace_map: dict[str, list[str]] = {}
 
+    # Phase B observability follow-up — function-scope state used to
+    # build ``loop_out["phase_b"]`` manifest at lever-loop terminate.
+    # See `docs/2026-05-02-unified-trace-and-operator-transcript-plan.md`
+    # postmortem follow-up. ``_phase_b_iter_record_counts`` /
+    # ``_phase_b_iter_violation_counts`` /
+    # ``_phase_b_no_records_iterations`` / ``_phase_b_artifact_paths``
+    # accumulate one entry per iteration. ``_phase_b_producer_exceptions``
+    # is a roll-up across iterations (per-iteration counter is built
+    # adjacent to ``_current_iter_inputs``).
+    from genie_space_optimizer.optimization.decision_emitters import (
+        PHASE_B_CONTRACT_VERSION as _PHASE_B_CONTRACT_VERSION,
+    )
+    _phase_b_iter_record_counts: list[int] = []
+    _phase_b_iter_violation_counts: list[int] = []
+    _phase_b_no_records_iterations: list[int] = []
+    _phase_b_artifact_paths: list[str] = []
+    _phase_b_producer_exceptions: dict[str, int] = {}
+    _phase_b_target_qids_missing_count: int = 0
+    _phase_b_total_violations: int = 0
+
+    # Stamp the contract version on the MLflow run so the postmortem
+    # analyzer can tell "deploy is stale" (no tag) from "deploy is
+    # current but produced 0 records" (tag present, manifest shows zero).
+    try:
+        import mlflow as _mlflow_phase_b_init  # type: ignore[import-not-found]
+        if _mlflow_phase_b_init.active_run() is not None:
+            _mlflow_phase_b_init.set_tag(
+                "phase_b_contract_version", _PHASE_B_CONTRACT_VERSION
+            )
+    except Exception:
+        logger.debug(
+            "Phase B contract version tag set skipped (non-fatal)",
+            exc_info=True,
+        )
+
     _human_sql_fixes = [
         {"question": c.get("question", ""), "new_expected_sql": c["corrected_sql"], "verdict": "genie_correct"}
         for c in (human_corrections or [])
@@ -11416,6 +11451,138 @@ def _run_lever_loop(
                 "Phase A: eval-entry journey emit failed (non-fatal)",
                 exc_info=True,
             )
+
+        # Phase B observability follow-up — initialize per-iteration
+        # producer-exception counter and shared lookup maps used by the
+        # 5 typed-record producers wired below.
+        _iter_producer_exceptions: dict[str, int] = {
+            "eval_classification": 0,
+            "cluster": 0,
+            "strategist_ag": 0,
+            "ag_outcome": 0,
+            "post_eval_resolution": 0,
+        }
+        _iter_classification: dict[str, str] = {}
+        for _q in _already_passing_set:
+            _iter_classification[str(_q)] = "already_passing"
+        for _q in _hard_qid_set:
+            _iter_classification[str(_q)] = "hard"
+        for _q in _soft_qid_set:
+            _iter_classification[str(_q)] = "soft"
+        for _q in _gt_corr_qid_set:
+            _iter_classification[str(_q)] = "gt_correction"
+        _iter_cluster_by_qid: dict[str, str] = {}
+        _iter_source_clusters_by_id: dict[str, dict] = {}
+        for _c in (clusters or []):
+            _cid = str(_c.get("cluster_id") or "")
+            if _cid:
+                _iter_source_clusters_by_id[_cid] = _c
+            for _q in (_c.get("question_ids") or []):
+                _qstr = str(_q)
+                if _qstr and _cid:
+                    _iter_cluster_by_qid[_qstr] = _cid
+        # rca_id is not currently surfaced from the cluster dicts at
+        # this site; the producers gracefully degrade to empty rca_id
+        # for now. Future work will plumb the cluster's RCA card through.
+        _iter_rca_id_by_cluster: dict[str, str] = {}
+
+        # Phase B observability follow-up — closure that builds an
+        # ACCEPTANCE_DECIDED record from an AG and outcome string and
+        # stashes it on the iteration snapshot. Captures the iteration
+        # scope (clusters, lookups, exception counter) so the 5 outcome
+        # sites in the harness can call it inline with one line each.
+        def _phase_b_emit_ag_outcome_record(_ag_obj, _outcome_str):
+            try:
+                from genie_space_optimizer.optimization.decision_emitters import (
+                    ag_outcome_decision_record as _ag_outcome_decision_record,
+                    is_strict_mode as _phase_b_strict_mode_inner,
+                )
+
+                _ag_rec = _ag_outcome_decision_record(
+                    run_id=run_id,
+                    iteration=iteration_counter,
+                    ag=_ag_obj,
+                    outcome=str(_outcome_str or ""),
+                    source_clusters_by_id=_iter_source_clusters_by_id,
+                    rca_id_by_cluster=_iter_rca_id_by_cluster,
+                )
+                if _ag_rec is not None:
+                    _current_iter_inputs.setdefault(
+                        "decision_records", []
+                    ).append(_ag_rec.to_dict())
+            except Exception:
+                _iter_producer_exceptions["ag_outcome"] += 1
+                _phase_b_producer_exceptions["ag_outcome"] = (
+                    _phase_b_producer_exceptions.get("ag_outcome", 0) + 1
+                )
+                logger.debug(
+                    "Phase B: ag_outcome_decision_record failed (non-fatal)",
+                    exc_info=True,
+                )
+                if _phase_b_strict_mode_inner():
+                    raise
+
+        # Phase B observability follow-up — emit EVAL_CLASSIFIED records
+        # (one per qid). Even when no patches reach the cap this
+        # iteration, this gives the analyzer 24+ records per iter so
+        # ``decision_records_total > 0`` and the trace is observable.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                eval_classification_records as _eval_classification_records,
+                is_strict_mode as _phase_b_strict_mode,
+            )
+
+            _eval_records = _eval_classification_records(
+                run_id=run_id,
+                iteration=iteration_counter,
+                eval_qids=_eval_qids_for_entry,
+                classification=_iter_classification,
+                cluster_by_qid=_iter_cluster_by_qid,
+            )
+            _current_iter_inputs.setdefault("decision_records", []).extend(
+                [r.to_dict() for r in _eval_records]
+            )
+        except Exception as _exc_eval:
+            _iter_producer_exceptions["eval_classification"] += 1
+            _phase_b_producer_exceptions["eval_classification"] = (
+                _phase_b_producer_exceptions.get("eval_classification", 0) + 1
+            )
+            logger.debug(
+                "Phase B: eval_classification_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
+        # Phase B observability follow-up — emit CLUSTER_SELECTED
+        # records (one per hard cluster). Note: clusters list at this
+        # site is the hard-cluster list; soft clusters are captured
+        # separately via the journey ``soft_signal`` events.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                cluster_records as _cluster_records,
+            )
+
+            _hard_cluster_records = _cluster_records(
+                run_id=run_id,
+                iteration=iteration_counter,
+                clusters=clusters or [],
+                rca_id_by_cluster=_iter_rca_id_by_cluster,
+            )
+            _current_iter_inputs.setdefault("decision_records", []).extend(
+                [r.to_dict() for r in _hard_cluster_records]
+            )
+        except Exception:
+            _iter_producer_exceptions["cluster"] += 1
+            _phase_b_producer_exceptions["cluster"] = (
+                _phase_b_producer_exceptions.get("cluster", 0) + 1
+            )
+            logger.debug(
+                "Phase B: cluster_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
 
         # Phase A — populate replay-fixture iteration snapshot fields
         # eval_rows / clusters / soft_clusters from the analysis result.
@@ -13832,6 +13999,50 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
+        # Phase B observability follow-up — emit STRATEGIST_AG_EMITTED
+        # for the current AG. ``ag`` is in scope inside the AG loop.
+        # Cycle-9 reality: when target_qids is empty (the upstream
+        # Cycle-8-Bug-1 pattern), reason_code=MISSING_TARGET_QIDS surfaces
+        # the gap on every iteration, which is the diagnostic signal the
+        # postmortem analyzer will pivot on once Phase B records flow.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                strategist_ag_records as _strategist_ag_records,
+                is_strict_mode as _phase_b_strict_mode,
+            )
+            from genie_space_optimizer.optimization.rca_decision_trace import (
+                ReasonCode as _ReasonCode,
+            )
+
+            _ag_records = _strategist_ag_records(
+                run_id=run_id,
+                iteration=iteration_counter,
+                action_groups=[ag],
+                source_clusters_by_id={
+                    str(_c.get("cluster_id") or ""): _c
+                    for _c in (clusters or [])
+                    if _c.get("cluster_id")
+                },
+                rca_id_by_cluster=_iter_rca_id_by_cluster,
+            )
+            _current_iter_inputs.setdefault("decision_records", []).extend(
+                [r.to_dict() for r in _ag_records]
+            )
+            for _r in _ag_records:
+                if _r.reason_code == _ReasonCode.MISSING_TARGET_QIDS:
+                    _phase_b_target_qids_missing_count += 1
+        except Exception:
+            _iter_producer_exceptions["strategist_ag"] += 1
+            _phase_b_producer_exceptions["strategist_ag"] = (
+                _phase_b_producer_exceptions.get("strategist_ag", 0) + 1
+            )
+            logger.debug(
+                "Phase B: strategist_ag_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
         # Task 13 — emit ``proposed`` events for every proposal that
         # survived to ``proposals_to_patches``. Use both
         # ``_grounding_target_qids`` and ``target_qids`` so we capture
@@ -14724,6 +14935,7 @@ def _run_lever_loop(
                     "Phase A: ag_outcome capture (dead-on-arrival) failed (non-fatal)",
                     exc_info=True,
                 )
+            _phase_b_emit_ag_outcome_record(ag, "skipped_dead_on_arrival")
             pending_action_groups = []
             pending_strategy = None
             continue
@@ -14779,6 +14991,24 @@ def _run_lever_loop(
                 + _kv("Reason", reason) + "\n"
                 + _bar("!")
             )
+            # Phase B observability follow-up — record the AG outcome so
+            # the ACCEPTANCE_DECIDED producer (and the cross-checker
+            # invariant "every STRATEGIST_AG_EMITTED has a matching
+            # ACCEPTANCE_DECIDED") can see this terminal path. Before
+            # this fix, the AG was silently discarded with no
+            # ag_outcomes write, leaving the trace blind to
+            # snapshot-capture failures.
+            try:
+                _current_iter_inputs["ag_outcomes"][str(ag_id)] = (
+                    "skipped_pre_ag_snapshot_failed"
+                )
+            except Exception:
+                logger.debug(
+                    "Phase B: ag_outcome capture (pre_ag_snapshot_failed) "
+                    "failed (non-fatal)",
+                    exc_info=True,
+                )
+            _phase_b_emit_ag_outcome_record(ag, "skipped_pre_ag_snapshot_failed")
             pending_action_groups = []
             pending_strategy = None
             continue
@@ -15008,6 +15238,7 @@ def _run_lever_loop(
                     "Phase A: ag_outcome capture (no_applied_patches) failed (non-fatal)",
                     exc_info=True,
                 )
+            _phase_b_emit_ag_outcome_record(ag, "skipped_no_applied_patches")
             _render_current_journey()
             continue
 
@@ -15374,6 +15605,7 @@ def _run_lever_loop(
                     "Phase A: AG-outcome (rolled_back) emit/capture failed (non-fatal)",
                     exc_info=True,
                 )
+            _phase_b_emit_ag_outcome_record(ag, "rolled_back")
             _render_current_journey()
             rollback(apply_log, w, space_id, metadata_snapshot)
             # Task 7 — verify the Genie Space actually returned to its
@@ -15790,6 +16022,7 @@ def _run_lever_loop(
                 "Phase A: ag_outcome capture (accepted) failed (non-fatal)",
                 exc_info=True,
             )
+        _phase_b_emit_ag_outcome_record(ag, _outcome_for_journey)
 
         full_scores = gate_result["full_scores"]
         full_accuracy = gate_result["full_accuracy"]
@@ -16173,6 +16406,42 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
+        # Phase B observability follow-up — emit QID_RESOLUTION records
+        # (one per qid) at post-eval. Held-pass qids carry no rca_id
+        # (handled by the POST_EVAL_HOLD_PASS rca-exempt cross-check).
+        # Other transitions carry the rca_id from the qid's home cluster.
+        # Wrapped in locals()-guard because the post-eval try block above
+        # may have failed before defining the inner vars.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                post_eval_resolution_records as _post_eval_resolution_records,
+                is_strict_mode as _phase_b_strict_mode,
+            )
+
+            _qid_records = _post_eval_resolution_records(
+                run_id=run_id,
+                iteration=iteration_counter,
+                eval_qids=locals().get("_post_eval_eval_qids") or [],
+                prior_passing_qids=locals().get("_prev_passing_qids") or set(),
+                post_passing_qids=locals().get("_post_eval_is_passing") or [],
+                cluster_by_qid=_iter_cluster_by_qid,
+                rca_id_by_cluster=_iter_rca_id_by_cluster,
+            )
+            _current_iter_inputs.setdefault("decision_records", []).extend(
+                [r.to_dict() for r in _qid_records]
+            )
+        except Exception:
+            _iter_producer_exceptions["post_eval_resolution"] += 1
+            _phase_b_producer_exceptions["post_eval_resolution"] = (
+                _phase_b_producer_exceptions.get("post_eval_resolution", 0) + 1
+            )
+            logger.debug(
+                "Phase B: post_eval_resolution_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
         # Phase A — note: the iteration snapshot was appended at
         # iteration begin via ``begin_iteration_capture``. No late append
         # is needed; mutations to ``_current_iter_inputs`` above already
@@ -16312,6 +16581,89 @@ def _run_lever_loop(
                     )
             except Exception:
                 logger.debug("Phase B partial tag skipped", exc_info=True)
+
+        # Phase B observability follow-up — per-iteration accounting
+        # for the manifest + no-records diagnostic. ALWAYS runs, even
+        # when the persistence block above short-circuited (no records,
+        # missing mlflow, etc.). This is what makes the postmortem
+        # analyzer able to distinguish "Phase B ran but had nothing to
+        # record" from "Phase B never ran" or "deploy is stale".
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                NoRecordsReason as _NoRecordsReason,
+                classify_no_records_reason as _classify_no_records_reason,
+            )
+            from genie_space_optimizer.optimization.rca_decision_trace import (
+                DecisionRecord as _DecisionRecord_pb,
+                validate_decisions_against_journey as _validate_pb,
+            )
+            from genie_space_optimizer.optimization.run_analysis_contract import (
+                phase_b_no_records_marker as _phase_b_no_records_marker,
+            )
+
+            _iter_records_dicts = list(
+                _current_iter_inputs.get("decision_records") or []
+            )
+            _iter_record_count = len(_iter_records_dicts)
+            _phase_b_iter_record_counts.append(_iter_record_count)
+
+            if _iter_record_count == 0:
+                # No-records diagnostic — emit a stable stdout marker +
+                # MLflow tag with a reason from the closed
+                # NoRecordsReason vocabulary.
+                _no_rec_reason = _classify_no_records_reason(
+                    iteration_inputs=_current_iter_inputs,
+                    producer_exceptions=_iter_producer_exceptions,
+                )
+                _phase_b_no_records_iterations.append(int(iteration_counter))
+                _phase_b_iter_violation_counts.append(0)
+                print(_phase_b_no_records_marker(
+                    optimization_run_id=run_id,
+                    iteration=iteration_counter,
+                    reason=_no_rec_reason.value,
+                    producer_exceptions=dict(_iter_producer_exceptions),
+                    contract_version=_PHASE_B_CONTRACT_VERSION,
+                ))
+                try:
+                    import mlflow as _mlflow_no_rec  # type: ignore[import-not-found]
+                    if _mlflow_no_rec.active_run() is not None:
+                        _mlflow_no_rec.set_tags({
+                            (
+                                f"decision_trace.iter_{iteration_counter}."
+                                "no_records_reason"
+                            ): _no_rec_reason.value,
+                            (
+                                f"decision_trace.iter_{iteration_counter}.records"
+                            ): "0",
+                        })
+                except Exception:
+                    logger.debug(
+                        "Phase B no-records MLflow tag skipped (non-fatal)",
+                        exc_info=True,
+                    )
+            else:
+                # Records were captured — track artifact path + count
+                # violations.
+                _phase_b_artifact_paths.append(
+                    f"phase_b/decision_trace/iter_{iteration_counter}.json"
+                )
+                try:
+                    _typed_records = [
+                        _DecisionRecord_pb.from_dict(r) for r in _iter_records_dicts
+                    ]
+                    _violations = _validate_pb(
+                        records=_typed_records,
+                        events=_journey_events,
+                    )
+                    _phase_b_iter_violation_counts.append(len(_violations))
+                    _phase_b_total_violations += len(_violations)
+                except Exception:
+                    _phase_b_iter_violation_counts.append(0)
+        except Exception:
+            logger.debug(
+                "Phase B: per-iter accounting skipped (non-fatal)",
+                exc_info=True,
+            )
 
         # GSO run analysis: emit machine-readable per-iteration summary
         # so the analyzer skill can build a postmortem without scraping
@@ -16553,6 +16905,29 @@ def _run_lever_loop(
     except Exception:
         logger.debug("GSO convergence/end marker skipped", exc_info=True)
 
+    # Phase B observability follow-up — emit GSO_PHASE_B_END_V1 marker
+    # and build the ``loop_out["phase_b"]`` manifest. The manifest is
+    # the CLI-truth surface for the postmortem analyzer because
+    # ``databricks jobs get-run-output`` only exposes the
+    # ``dbutils.notebook.exit(...)`` JSON for this task; stdout is not
+    # surfaced. ``run_lever_loop.py:548-563`` allowlists ``phase_b`` in
+    # the debug_info filter so this manifest survives the round trip.
+    _phase_b_total_records = sum(_phase_b_iter_record_counts)
+    try:
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            phase_b_end_marker as _phase_b_end_marker,
+        )
+        print(_phase_b_end_marker(
+            optimization_run_id=run_id,
+            total_records=_phase_b_total_records,
+            iter_record_counts=list(_phase_b_iter_record_counts),
+            iter_violation_counts=list(_phase_b_iter_violation_counts),
+            no_records_iterations=list(_phase_b_no_records_iterations),
+            contract_version=_PHASE_B_CONTRACT_VERSION,
+        ))
+    except Exception:
+        logger.debug("Phase B end marker emission skipped", exc_info=True)
+
     return {
         "scores": best_scores,
         "accuracy": best_accuracy,
@@ -16570,6 +16945,17 @@ def _run_lever_loop(
         "all_failure_question_ids": list(dict.fromkeys(all_failure_question_ids)),
         "_debug_ref_sqls_count": len(reference_sqls),
         "_debug_failure_rows_loaded": len(_get_failure_rows(spark, run_id, catalog, schema)),
+        "phase_b": {
+            "contract_version": _PHASE_B_CONTRACT_VERSION,
+            "decision_records_total": int(_phase_b_total_records),
+            "iter_record_counts": list(_phase_b_iter_record_counts),
+            "iter_violation_counts": list(_phase_b_iter_violation_counts),
+            "no_records_iterations": list(_phase_b_no_records_iterations),
+            "artifact_paths": list(_phase_b_artifact_paths),
+            "producer_exceptions": dict(_phase_b_producer_exceptions),
+            "target_qids_missing_count": int(_phase_b_target_qids_missing_count),
+            "total_violations": int(_phase_b_total_violations),
+        },
     }
 
 
