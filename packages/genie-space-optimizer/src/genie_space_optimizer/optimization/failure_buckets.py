@@ -231,6 +231,68 @@ SEED_CATALOG: list[BucketingSeedPattern] = [
             "rejected all of them."
         ),
     ),
+    BucketingSeedPattern(
+        pattern_id="dead_on_arrival_blocks_buffered_drain",
+        description=(
+            "AG fails dead-on-arrival or applier-rejection and the "
+            "lever loop unconditionally clears pending_action_groups, "
+            "discarding buffered AGs targeting other clusters"
+        ),
+        bucket=FailureBucket.GATE_OR_CAP_GAP,
+        sub_bucket="buffered_ag_unrelated_drop",
+        source_run="cycle9",
+        why=(
+            "Selective drain not yet wired; one failed AG took down "
+            "two unrelated buffered AGs."
+        ),
+    ),
+    BucketingSeedPattern(
+        pattern_id="blast_radius_no_escape_hatch",
+        description=(
+            "Blast-radius gate dropped every candidate patch; the "
+            "strategist re-proposed the same shape on the next "
+            "iteration with no constraint on the dropped table"
+        ),
+        bucket=FailureBucket.GATE_OR_CAP_GAP,
+        sub_bucket="blast_radius_dead_end",
+        source_run="cycle9",
+        why=(
+            "No forbid_tables feedback loop into the strategist; "
+            "loop spent 5 iterations producing the same dropped "
+            "patch shape."
+        ),
+    ),
+    BucketingSeedPattern(
+        pattern_id="proposal_direction_inversion",
+        description=(
+            "Strategist proposal value directly contradicts the "
+            "dominant cluster counterfactual (e.g. ADD filter X when "
+            "the diagnosis says REMOVE filter X)"
+        ),
+        bucket=FailureBucket.PROPOSAL_GAP,
+        sub_bucket="counterfactual_contradiction",
+        source_run="cycle9",
+        why=(
+            "Proposal grounding does not validate that proposal value "
+            "agrees with cluster counterfactual_fix direction."
+        ),
+    ),
+    BucketingSeedPattern(
+        pattern_id="union_all_grain_split",
+        description=(
+            "Generated SQL composed two heterogeneous report shapes "
+            "via UNION ALL with NULL filler columns instead of one "
+            "result set at the question's expected grain"
+        ),
+        bucket=FailureBucket.MODEL_CEILING,
+        sub_bucket="union_all_grain_split",
+        source_run="cycle9",
+        why=(
+            "Strategist cannot synthesize a single canonical grain; "
+            "no template asset exists for compound monthly + pattern "
+            "breakdowns."
+        ),
+    ),
 ]
 
 
