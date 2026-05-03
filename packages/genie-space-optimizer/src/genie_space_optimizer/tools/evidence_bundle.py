@@ -64,6 +64,56 @@ class BundleResult:
     manifest: Manifest
 
 
+def _extract_stdout_with_fallback(
+    out: Mapping[str, Any] | dict[str, Any],
+) -> tuple[str, str, MissingPiece | None]:
+    """Resolve lever-loop stdout from a Databricks ``get-run-output`` payload.
+
+    Resolution order:
+        1. ``out["logs"]``  — populated for ``python_wheel_task`` /
+           ``spark_python_task`` runs.
+        2. ``out["notebook_output"]["result"]`` — populated for
+           ``notebook_task`` runs (logs is empty by API contract).
+        3. Empty string if neither is populated.
+
+    Returns ``(stdout_text, source, missing_piece)``. ``source`` is one
+    of ``"logs"``, ``"notebook_output.result"``, or ``"absent"``. A
+    ``STDOUT_FALLBACK_NOTEBOOK_OUTPUT`` ``MissingPiece`` is returned
+    when fallback is used so postmortems make the source explicit.
+    """
+    logs_text = str((out or {}).get("logs") or "")
+    if logs_text:
+        return logs_text, "logs", None
+
+    notebook_output = (out or {}).get("notebook_output") or {}
+    result_text = str(notebook_output.get("result") or "")
+    truncated = bool(notebook_output.get("truncated"))
+    if result_text:
+        suffix = " (truncated by Databricks)" if truncated else ""
+        diagnosis = (
+            "logs field empty (notebook task — Databricks Jobs API does "
+            "not populate `logs` for notebook_task; the real stdout is in "
+            "notebook_output.result). Falling back to notebook_output."
+            f"result{suffix}."
+        )
+        suggested = (
+            "no operator action required. The marker parser and replay "
+            "extractor consume the same string regardless of source."
+        )
+        return (
+            result_text,
+            "notebook_output.result",
+            MissingPiece(
+                kind=MissingPieceKind.STDOUT_FALLBACK_NOTEBOOK_OUTPUT,
+                iteration=None,
+                diagnosis=diagnosis,
+                suggested_action=suggested,
+            ),
+        )
+
+    return "", "absent", None
+
+
 def _markers_to_json(markers: Any) -> str:
     return json.dumps(
         {
