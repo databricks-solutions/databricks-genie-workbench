@@ -458,10 +458,18 @@ def instruction_patch_scope_is_safe(
     many passing questions. The blast-radius gate cannot see them because
     they don't carry a table/column footprint, so this second classifier
     drops them before the patch cap.
+
+    Phase 3c Task B: after T2.4 began stamping passing_dependents=[] on
+    every visited proposal (so split-children inherit a real value), the
+    global-scope check below must still run for split-children targeting
+    a global section — even when passing_dependents is the empty list.
+    The early-return for "has_counterfactual_dependents" only applies
+    when the section is not global OR a specific target is present.
     """
     ptype = str(patch.get("type") or patch.get("patch_type") or "")
     if ptype not in {"add_instruction", "rewrite_instruction", "update_instruction_section"}:
         return {"safe": True, "reason": "not_instruction_rewrite"}
+
     # Track B: a section-split child of a scanned rewrite_instruction
     # must carry passing_dependents from the parent. Missing the field
     # on a split-child indicates a propagation bug in
@@ -473,8 +481,6 @@ def instruction_patch_scope_is_safe(
             "reason": "split_child_missing_passing_dependents",
             "section_name": str(patch.get("section_name") or "(none)"),
         }
-    if patch.get("passing_dependents") is not None:
-        return {"safe": True, "reason": "has_counterfactual_dependents"}
 
     section = str(
         patch.get("section_name")
@@ -488,6 +494,12 @@ def instruction_patch_scope_is_safe(
         or patch.get("target_table")
         or patch.get("column")
     )
+
+    # Phase 3c Task B: global-section check runs BEFORE the
+    # has_counterfactual_dependents early-return so a split-child
+    # touching QUERY RULES / ASSET ROUTING / CONSTRAINTS / AGGREGATION
+    # RULES with no specific target still gets dropped, even when its
+    # passing_dependents stamp is the empty list.
     if ptype in {"add_instruction", "rewrite_instruction"} or section in _GLOBAL_INSTRUCTION_SECTIONS:
         if not has_specific_target:
             return {
@@ -495,6 +507,10 @@ def instruction_patch_scope_is_safe(
                 "reason": "global_instruction_scope_without_dependents",
                 "section_name": section or "(full rewrite)",
             }
+
+    if patch.get("passing_dependents") is not None:
+        return {"safe": True, "reason": "has_counterfactual_dependents"}
+
     return {"safe": True, "reason": "narrow_instruction_scope"}
 
 
