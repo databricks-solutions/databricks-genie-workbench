@@ -14289,6 +14289,43 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
+        # Phase B delta Task 5 — emit PROPOSAL_GENERATED decision
+        # records alongside the proposed journey events. The producer
+        # respects the same _grounding_target_qids -> target_qids
+        # precedence as the journey emit above.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                proposal_generated_records as _proposal_generated_records,
+            )
+
+            _cluster_root_cause_by_id = {
+                str(_c.get("cluster_id") or ""): str(_c.get("root_cause") or "")
+                for _c in (clusters or [])
+                if _c.get("cluster_id")
+            }
+            _proposal_records = _proposal_generated_records(
+                run_id=run_id,
+                iteration=iteration_counter,
+                ag_id=str(ag_id),
+                proposals=all_proposals or [],
+                rca_id_by_cluster=_iter_rca_id_by_cluster,
+                cluster_root_cause_by_id=_cluster_root_cause_by_id,
+            )
+            _current_iter_inputs.setdefault("decision_records", []).extend(
+                [r.to_dict() for r in _proposal_records]
+            )
+        except Exception:
+            _iter_producer_exceptions["proposal_generated"] += 1
+            _phase_b_producer_exceptions["proposal_generated"] = (
+                _phase_b_producer_exceptions.get("proposal_generated", 0) + 1
+            )
+            logger.debug(
+                "Phase B: proposal_generated_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
         # Task 4 — patch-survival snapshot: normalized gate.
         _survival_normalized = list(patches)
 
