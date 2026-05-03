@@ -22,12 +22,28 @@ def _as_patch_for_grounding(plan: Any) -> dict:
     intents = list(getattr(plan, "patch_intents", ()) or ())
     if intents:
         first = intents[0]
-        if isinstance(first, dict):
-            patch.update({
-                "patch_type": first.get("type") or first.get("patch_type") or patch["patch_type"],
-                "target": first.get("target") or first.get("column") or patch["target"],
-                "new_text": first.get("intent") or patch["new_text"],
-            })
+        # Phase C Task 2: ``patch_intents`` is now ``tuple[ExpectedFix, ...]``
+        # but historical fixtures + LLM output paths still emit dicts.
+        # Accept both.
+        if hasattr(first, "as_dict"):
+            first_dict = first.as_dict()
+        elif isinstance(first, dict):
+            first_dict = first
+        else:
+            first_dict = {}
+        patch.update({
+            "patch_type": (
+                first_dict.get("type")
+                or first_dict.get("patch_type")
+                or patch["patch_type"]
+            ),
+            "target": (
+                first_dict.get("target")
+                or first_dict.get("column")
+                or patch["target"]
+            ),
+            "new_text": first_dict.get("intent") or patch["new_text"],
+        })
     return patch
 
 

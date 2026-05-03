@@ -12,10 +12,85 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 _IDENT_RE = re.compile(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\b")
+
+
+@dataclass(frozen=True)
+class ExpectedFix:
+    """Typed shape of a patch intent inside an :class:`RcaExecutionPlan`.
+
+    Phase C Task 2: ``RcaExecutionPlan.patch_intents`` was previously
+    ``tuple[dict, ...]`` — the only un-typed link in the RCA contract
+    chain. Promoting to a frozen dataclass matches the surrounding
+    types (``RcaFinding``, ``RcaPatchTheme``, ``RcaExecutionPlan``,
+    ``RcaNextActionDecision``) and gives the unified RCA-groundedness
+    gate (Phase C Task 4) a stable surface for grounding-term lookup.
+
+    ``extras`` is the open-ended bucket for patch-type-specific keys
+    (``snippet_name``, ``expression``, ``description``, ``synonyms``,
+    etc.) that not every patch shape carries. The four canonical fields
+    (``patch_type``, ``target``, ``intent``, ``lever``) are extracted
+    explicitly because every consumer reads them.
+    """
+
+    patch_type: str
+    target: str = ""
+    intent: str = ""
+    lever: int = 0
+    grounding_terms: tuple[str, ...] = ()
+    extras: tuple[tuple[str, Any], ...] = ()
+
+    @property
+    def extras_dict(self) -> dict[str, Any]:
+        """Convenience view over ``extras`` for callers that prefer dict
+        access. The underlying storage is a tuple of pairs so the
+        dataclass can stay hashable/frozen."""
+        return dict(self.extras)
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any] | None) -> "ExpectedFix":
+        """Build an ExpectedFix from one of today's untyped patch dicts.
+
+        Lookup is forgiving: the LLM/strategist paths sometimes write
+        ``patch_type`` and sometimes ``type``. Both are accepted.
+        """
+        d = dict(raw or {})
+        canonical = {"patch_type", "type", "target", "intent", "lever"}
+        patch_type = str(d.get("patch_type") or d.get("type") or "")
+        target = str(d.get("target") or d.get("column") or d.get("table") or "")
+        intent = str(d.get("intent") or d.get("new_text") or "")
+        try:
+            lever = int(d.get("lever") or 0)
+        except (TypeError, ValueError):
+            lever = 0
+        grounding = _patch_grounding_terms(d)
+        extras = tuple(
+            (str(k), v) for k, v in d.items() if k not in canonical
+        )
+        return cls(
+            patch_type=patch_type,
+            target=target,
+            intent=intent,
+            lever=lever,
+            grounding_terms=grounding,
+            extras=extras,
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        """Inverse of :meth:`from_dict` — emits the dict shape today's
+        downstream consumers (applier, fixture serializer) expect."""
+        out: dict[str, Any] = {
+            "type": self.patch_type,
+            "patch_type": self.patch_type,
+            "target": self.target,
+            "intent": self.intent,
+            "lever": self.lever,
+        }
+        out.update(self.extras_dict)
+        return out
 
 
 @dataclass(frozen=True)
@@ -27,7 +102,7 @@ class RcaExecutionPlan:
     required_levers: tuple[int, ...]
     grounding_terms: tuple[str, ...]
     defect_key: str
-    patch_intents: tuple[dict, ...]
+    patch_intents: tuple[ExpectedFix, ...]
     confidence: float = 0.0
     evidence_summary: str = ""
 
@@ -183,7 +258,7 @@ def build_rca_execution_plans(themes: Iterable[Any]) -> list[RcaExecutionPlan]:
             required_levers=tuple(int(x) for x in required),
             grounding_terms=_theme_grounding_terms(theme, patches),
             defect_key=defect_key_for_theme(theme),
-            patch_intents=patches,
+            patch_intents=tuple(ExpectedFix.from_dict(p) for p in patches),
             confidence=float(_field(theme, "confidence", 0.0) or 0.0),
             evidence_summary=str(_field(theme, "evidence_summary", "") or ""),
         ))
