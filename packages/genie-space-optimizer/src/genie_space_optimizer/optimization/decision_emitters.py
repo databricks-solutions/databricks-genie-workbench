@@ -1075,6 +1075,88 @@ def unresolved_rca_records(
 
 
 # ---------------------------------------------------------------------------
+# Orphan RCA — STRATEGIST_AG_EMITTED + UNRESOLVED + RCA_UNGROUNDED
+# ---------------------------------------------------------------------------
+
+
+def orphan_rca_records(
+    *,
+    run_id: str,
+    iteration: int,
+    findings: Sequence[Any],
+    action_groups: Sequence[Mapping[str, Any]],
+) -> list[DecisionRecord]:
+    """Emit ``STRATEGIST_AG_EMITTED`` + ``UNRESOLVED`` + ``RCA_UNGROUNDED``
+    for findings whose qids are not covered by any emitted AG.
+
+    Phase C Task 6: ``strategist_ag_records`` only emits per-AG. A
+    finding the strategist did not pick up (the LLM dropped it; or
+    the finding's qids fell outside every AG's
+    ``affected_questions``) produces no record — the trace silently
+    loses signal. This producer closes that gap.
+
+    The record carries the finding's ``rca_id`` (it IS known), so
+    the validator's ``rca_id`` requirement passes without any
+    exemption.
+    """
+    def _attr(obj: Any, name: str, default: Any = None) -> Any:
+        if isinstance(obj, Mapping):
+            return obj.get(name, default)
+        return getattr(obj, name, default)
+
+    covered_qids: set[str] = set()
+    for ag in action_groups or []:
+        for q in (ag.get("affected_questions") or []):
+            qstr = str(q or "")
+            if qstr:
+                covered_qids.add(qstr)
+
+    records: list[DecisionRecord] = []
+    for finding in findings or []:
+        rca_id = str(_attr(finding, "rca_id", "") or "")
+        if not rca_id:
+            continue
+        f_qids = tuple(
+            str(q) for q in (_attr(finding, "target_qids", ()) or ())
+            if str(q)
+        )
+        if not f_qids:
+            continue
+        # Any qid covered by any AG → not orphaned.
+        if any(q in covered_qids for q in f_qids):
+            continue
+        root_cause = str(_attr(finding, "root_cause", "") or "")
+        records.append(
+            DecisionRecord(
+                run_id=str(run_id),
+                iteration=int(iteration),
+                decision_type=DecisionType.STRATEGIST_AG_EMITTED,
+                outcome=DecisionOutcome.UNRESOLVED,
+                reason_code=ReasonCode.RCA_UNGROUNDED,
+                ag_id="",
+                rca_id=rca_id,
+                root_cause=root_cause,
+                evidence_refs=(f"rca:{rca_id}",),
+                affected_qids=f_qids,
+                target_qids=f_qids,
+                expected_effect=(
+                    f"Strategist should emit an AG for "
+                    f"{root_cause or 'failure pattern'}."
+                ),
+                observed_effect=(
+                    f"RCA {rca_id} produced no AG "
+                    f"({len(f_qids)} target qid(s) orphaned)."
+                ),
+                next_action=(
+                    "Force strategist to emit an AG covering "
+                    f"{','.join(f_qids[:5])}, or quarantine the RCA."
+                ),
+            )
+        )
+    return records
+
+
+# ---------------------------------------------------------------------------
 # RCA groundedness gate — GATE_DECISION (rca_groundedness)
 # ---------------------------------------------------------------------------
 

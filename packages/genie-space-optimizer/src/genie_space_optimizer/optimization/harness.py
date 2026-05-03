@@ -17318,6 +17318,44 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
+        # Phase C Task 6 — emit STRATEGIST_AG_EMITTED+UNRESOLVED+
+        # RCA_UNGROUNDED for findings whose qids are not covered by
+        # any emitted AG. Fires once per iteration after all AGs have
+        # been processed so action_groups is fully populated.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                orphan_rca_records as _orphan_rca_records,
+            )
+            from genie_space_optimizer.optimization.rca import (
+                rca_findings_from_clusters as _rca_findings_from_clusters_c6,
+            )
+
+            _phase_c_findings_orphan = _rca_findings_from_clusters_c6(
+                clusters or []
+            )
+            _strategy_for_orphan = (
+                _current_iter_inputs.get("strategist_response") or {}
+            )
+            _orphan_records = _orphan_rca_records(
+                run_id=run_id,
+                iteration=iteration_counter,
+                findings=_phase_c_findings_orphan,
+                action_groups=(_strategy_for_orphan.get("action_groups") or []),
+            )
+            _current_iter_inputs.setdefault("decision_records", []).extend(
+                [r.to_dict() for r in _orphan_records]
+            )
+        except Exception:
+            _phase_b_producer_exceptions["orphan_rca"] = (
+                _phase_b_producer_exceptions.get("orphan_rca", 0) + 1
+            )
+            logger.debug(
+                "Phase C: orphan_rca_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
         # GSO run analysis: emit machine-readable per-iteration summary
         # so the analyzer skill can build a postmortem without scraping
         # freeform logs.
