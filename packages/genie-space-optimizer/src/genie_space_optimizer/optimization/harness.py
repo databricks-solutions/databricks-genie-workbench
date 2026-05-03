@@ -16489,6 +16489,58 @@ def _run_lever_loop(
             )
         _phase_b_emit_ag_outcome_record(ag, _outcome_for_journey)
 
+        # Phase C Task 3 — ObservedEffect per applied patch in this AG.
+        # Best-effort with defensive defaults: empty pre/post passing
+        # qid sets and zero deltas if the surrounding scope hasn't yet
+        # named the relevant signals. The structured surface is what
+        # matters; downstream consumers (next-action mapper) tolerate
+        # unset fields, and Phase D / Cycle-8 Bug 1 Phase 3b will plumb
+        # richer signals into this site.
+        try:
+            from genie_space_optimizer.optimization.rca_execution import (
+                build_observed_effects,
+            )
+
+            _observed = build_observed_effects(
+                iteration=iteration_counter,
+                ag_id=str(ag_id),
+                apply_log=apply_log,
+                pre_passing_qids=(),
+                post_passing_qids=tuple(
+                    _current_iter_inputs.get("post_eval_passing_qids") or ()
+                ),
+                pre_iq=0.0,
+                post_iq=0.0,
+                arbiter_verdict_change="",
+                pre_judge_failures=0,
+                post_judge_failures=0,
+            )
+            _current_iter_inputs.setdefault("observed_effects", []).extend(
+                [
+                    {
+                        "iteration": e.iteration,
+                        "ag_id": e.ag_id,
+                        "proposal_id": e.proposal_id,
+                        "pre_passing_qids": list(e.pre_passing_qids),
+                        "post_passing_qids": list(e.post_passing_qids),
+                        "iq_delta": e.iq_delta,
+                        "arbiter_verdict_change": e.arbiter_verdict_change,
+                        "judge_failure_delta": e.judge_failure_delta,
+                    }
+                    for e in _observed
+                ]
+            )
+        except Exception:
+            _phase_b_producer_exceptions["observed_effect"] = (
+                _phase_b_producer_exceptions.get("observed_effect", 0) + 1
+            )
+            logger.debug(
+                "Phase C: build_observed_effects failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
         full_scores = gate_result["full_scores"]
         full_accuracy = gate_result["full_accuracy"]
         new_model_id = gate_result["new_model_id"]

@@ -455,3 +455,83 @@ def clusters_share_defect_identity(left: dict, right: dict) -> bool:
     left_fn = {t for t in left_terms if "fn" in t or "tvf" in t or "function" in t}
     right_fn = {t for t in right_terms if "fn" in t or "tvf" in t or "function" in t}
     return bool(left_fn and right_fn and left_fn & right_fn)
+
+
+@dataclass(frozen=True)
+class ObservedEffect:
+    """Typed post-eval delta for a single applied patch.
+
+    Phase C Task 3: closes the loop between intended fix
+    (``RcaExecutionPlan`` / :class:`ExpectedFix`) and what actually
+    happened after the patch was applied. Today this signal lives as
+    ad-hoc keys on ``apply_log`` plus free-text ``observed_effect``
+    strings on :class:`DecisionRecord`. The dataclass gives the next-
+    action mapper and replay validators a single typed surface.
+
+    ``arbiter_verdict_change`` is one of ``""`` (unknown / no change),
+    ``"hold"``, ``"fail->pass"``, ``"pass->fail"``. Any other string is
+    accepted but treated as opaque by downstream consumers.
+    """
+
+    iteration: int
+    ag_id: str
+    proposal_id: str
+    pre_passing_qids: tuple[str, ...]
+    post_passing_qids: tuple[str, ...]
+    iq_delta: float
+    arbiter_verdict_change: str
+    judge_failure_delta: int
+
+
+def build_observed_effects(
+    *,
+    iteration: int,
+    ag_id: str,
+    apply_log: Mapping[str, Any] | None,
+    pre_passing_qids: Iterable[str],
+    post_passing_qids: Iterable[str],
+    pre_iq: float,
+    post_iq: float,
+    arbiter_verdict_change: str,
+    pre_judge_failures: int,
+    post_judge_failures: int,
+) -> list[ObservedEffect]:
+    """One :class:`ObservedEffect` per applied patch from ``apply_log``.
+
+    All applied patches inside a single AG share the same iteration-
+    level pre/post snapshot — the harness applies an AG's patches as a
+    bundle and re-evaluates once. So the per-patch ``ObservedEffect``
+    rows differ only in ``proposal_id``; downstream consumers
+    aggregate by ``ag_id`` when an AG-level view is wanted.
+
+    Defensive: applier rows occasionally omit ``proposal_id``. Skip
+    those rather than emit a sentinel, so the list stays a faithful
+    index of attributed applications.
+    """
+    pre_set = tuple(str(q) for q in (pre_passing_qids or ()) if str(q))
+    post_set = tuple(str(q) for q in (post_passing_qids or ()) if str(q))
+    iq_delta = float(post_iq) - float(pre_iq)
+    judge_delta = int(post_judge_failures) - int(pre_judge_failures)
+
+    effects: list[ObservedEffect] = []
+    applied = (apply_log or {}).get("applied") or []
+    for entry in applied:
+        if not isinstance(entry, Mapping):
+            continue
+        patch = entry.get("patch")
+        if not isinstance(patch, Mapping):
+            continue
+        proposal_id = str(patch.get("proposal_id") or "")
+        if not proposal_id:
+            continue
+        effects.append(ObservedEffect(
+            iteration=int(iteration),
+            ag_id=str(ag_id),
+            proposal_id=proposal_id,
+            pre_passing_qids=pre_set,
+            post_passing_qids=post_set,
+            iq_delta=iq_delta,
+            arbiter_verdict_change=str(arbiter_verdict_change or ""),
+            judge_failure_delta=judge_delta,
+        ))
+    return effects
