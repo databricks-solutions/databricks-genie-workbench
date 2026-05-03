@@ -110,6 +110,63 @@ def is_rank_when_limit_n_required(patch: dict[str, Any]) -> bool:
     return False
 
 
+_RANKING_FN_RE = re.compile(r"\b(?:DENSE_RANK|RANK)\s*\(\s*\)", re.IGNORECASE)
+
+
+_TOP_N_INTENT_RE = re.compile(
+    r"\b("
+    r"top\s+\d+|"
+    r"bottom\s+\d+|"
+    r"highest|lowest|"
+    r"largest|smallest|"
+    r"most|least|"
+    r"best|worst|"
+    r"first\s+\d+|last\s+\d+"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def metadata_indicates_top_n_intent(metadata: dict[str, Any]) -> bool:
+    """Return True when judge metadata + SQL shape strongly indicate a
+    plural top-N collapse — independent of whether the judge labeled the
+    failure ``wrong_join_spec``, ``wrong_aggregation``, or anything else.
+
+    Two-signal AND:
+
+    1. SQL shape: the candidate SQL contains ``RANK()`` or ``DENSE_RANK()``
+       AND does NOT contain ``LIMIT N`` or a ``ROW_NUMBER()`` ranking
+       construct (which is the canonical top-N shape).
+    2. Question intent: the question text contains a top-N ranking
+       keyword (``top 5``, ``highest``, ``lowest``, ``largest``, ...),
+       OR the producer already stamped
+       ``metadata["question_requests_exact_top_n"] = True``.
+
+    The two-signal design keeps false positives low: windowed analytics
+    queries that legitimately use ``RANK()`` without ``LIMIT`` (e.g.,
+    "rank carriers over time") do not trip the override because the
+    question text does not match the keyword list.
+    """
+    if metadata.get("question_requests_exact_top_n"):
+        intent_signal = True
+    else:
+        question_text = str(metadata.get("question_text") or "")
+        intent_signal = bool(_TOP_N_INTENT_RE.search(question_text))
+    if not intent_signal:
+        return False
+
+    sql_text = str(metadata.get("genie_sql") or metadata.get("sql") or "")
+    if not sql_text:
+        return False
+    if not _RANKING_FN_RE.search(sql_text):
+        return False
+    if _LIMIT_N_RE.search(sql_text):
+        return False
+    if _ROW_NUMBER_FN_RE.search(sql_text):
+        return False
+    return True
+
+
 _REMOVE_VERB_RE = re.compile(
     r"\b(?:remove|drop|strip|delete)\b\s+the\s+([A-Z_]+(?:\s*=\s*[A-Za-z0-9'_-]+)?)"
     r"(?:\s+filter)?",
