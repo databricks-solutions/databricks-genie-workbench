@@ -10451,6 +10451,16 @@ def _run_lever_loop(
     _phase_b_target_qids_missing_count: int = 0
     _phase_b_total_violations: int = 0
 
+    # Cycle 9 T5: cross-iteration AG constraints (forbid_tables on
+    # blast-radius drops). The strategist's prompt-renderer will surface
+    # these in a future task; for now, the structured dict on
+    # ``metadata_snapshot["_strategist_constraints"]`` is observable in
+    # the replay fixture and MLflow tags.
+    from genie_space_optimizer.optimization.strategist_constraints import (
+        StrategistConstraints,
+    )
+    _strategist_constraints: StrategistConstraints = StrategistConstraints()
+
     # Stamp the contract version on the MLflow run so the postmortem
     # analyzer can tell "deploy is stale" (no tag) from "deploy is
     # current but produced 0 records" (tag present, manifest shows zero).
@@ -12561,6 +12571,14 @@ def _run_lever_loop(
                     strategy = copy.deepcopy(strategist_memo_cache[_memo_key])
                     strategy["_memoized"] = True
                 else:
+                    # Cycle 9 T5: surface accumulated forbid_tables
+                    # constraints to the strategist via metadata_snapshot.
+                    # The prompt-renderer pickup is a future task; the
+                    # data is already observable in the replay fixture.
+                    if _strategist_constraints.to_strategist_context():
+                        metadata_snapshot["_strategist_constraints"] = (
+                            _strategist_constraints.to_strategist_context()
+                        )
                     strategy = _call_llm_for_adaptive_strategy(
                         clusters=_strategy_hard_clusters,
                         soft_signal_clusters=_strategy_soft_clusters,
@@ -14521,6 +14539,14 @@ def _run_lever_loop(
                         "passing_dependents_outside_target": _decision.get(
                             "passing_dependents_outside_target", []
                         ),
+                        # Cycle 9 T5: surface the patch's target table
+                        # so record_blast_radius_drop can capture it
+                        # for cross-iteration forbid_tables.
+                        "target": str(
+                            _candidate.get("target")
+                            or _candidate.get("table")
+                            or ""
+                        ),
                     })
                     continue
                 # Task 2A — second classifier for broad instruction rewrites
@@ -14543,6 +14569,11 @@ def _run_lever_loop(
                         ),
                         "reason": _scope_decision["reason"],
                         "passing_dependents_outside_target": [],
+                        "target": str(
+                            _candidate.get("target")
+                            or _candidate.get("table")
+                            or ""
+                        ),
                     })
                     continue
                 _blast_kept.append(_candidate)
@@ -14569,6 +14600,24 @@ def _run_lever_loop(
                     len(patches),
                     [d["proposal_id"] for d in _blast_dropped[:8]],
                 )
+                # Cycle 9 T5: record the dropped tables as forbidden for
+                # the next strategist call on this AG so it doesn't
+                # re-propose the same shape against the same table.
+                try:
+                    from genie_space_optimizer.optimization.strategist_constraints import (
+                        record_blast_radius_drop,
+                    )
+                    record_blast_radius_drop(
+                        constraints=_strategist_constraints,
+                        ag_id=str(ag_id),
+                        dropped_patches=_blast_dropped,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Cycle9 T5: strategist_constraints update skipped "
+                        "(non-fatal)",
+                        exc_info=True,
+                    )
             patches = _blast_kept
         except ImportError:
             # instruction_patch_scope_is_safe not yet implemented (Task 2A
