@@ -719,3 +719,49 @@ def classify_no_records_reason(
     ):
         return NoRecordsReason.ALL_AGS_DROPPED_AT_GROUNDING
     return NoRecordsReason.PATCH_CAP_DID_NOT_FIRE
+
+
+def rca_id_by_cluster_from_findings(
+    *,
+    clusters: Sequence[Mapping[str, Any]],
+    findings: Sequence[Any],
+) -> dict[str, str]:
+    """Derive ``{cluster_id: rca_id}`` from clusters and RCA findings.
+
+    Phase B delta Task 1: the harness used to initialize this map to
+    ``{}`` because the cluster dicts at the cluster-build site do not
+    carry ``rca_id`` directly. This helper is the single source of
+    truth for the derivation; ``harness.py`` imports it.
+
+    Strategy: for each cluster, find the first finding whose
+    ``target_qids`` intersect the cluster's ``question_ids``. Tolerates
+    both dataclass findings (``rca_id``/``target_qids`` attributes) and
+    dict findings (``rca_id``/``target_qids`` keys), since callers feed
+    both shapes.
+    """
+    def _attr_or_key(obj: Any, name: str, default: Any = None) -> Any:
+        if isinstance(obj, Mapping):
+            return obj.get(name, default)
+        return getattr(obj, name, default)
+
+    cluster_to_rca: dict[str, str] = {}
+    for cluster in clusters or []:
+        cid = str(cluster.get("cluster_id") or "")
+        if not cid:
+            continue
+        cluster_qids = {str(q) for q in (cluster.get("question_ids") or []) if str(q)}
+        if not cluster_qids:
+            continue
+        for finding in findings or []:
+            rca_id = str(_attr_or_key(finding, "rca_id", "") or "")
+            if not rca_id:
+                continue
+            target_qids = {
+                str(q)
+                for q in (_attr_or_key(finding, "target_qids", ()) or ())
+                if str(q)
+            }
+            if cluster_qids & target_qids:
+                cluster_to_rca[cid] = rca_id
+                break
+    return cluster_to_rca

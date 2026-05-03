@@ -11633,10 +11633,34 @@ def _run_lever_loop(
                 _qstr = str(_q)
                 if _qstr and _cid:
                     _iter_cluster_by_qid[_qstr] = _cid
-        # rca_id is not currently surfaced from the cluster dicts at
-        # this site; the producers gracefully degrade to empty rca_id
-        # for now. Future work will plumb the cluster's RCA card through.
-        _iter_rca_id_by_cluster: dict[str, str] = {}
+        # Phase B delta Task 1: derive {cluster_id: rca_id} from the
+        # iteration's RCA findings so every producer (cluster_records,
+        # strategist_ag_records, ag_outcome_decision_record,
+        # post_eval_resolution_records, blast_radius_decision_records,
+        # dead_on_arrival_decision_records) stamps a real rca_id on
+        # every record. Empty when no findings overlap a cluster's
+        # question_ids; the validator's per-decision_type rules treat
+        # missing rca_id as a violation, which is the desired loud
+        # signal for that case.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                rca_id_by_cluster_from_findings,
+            )
+            from genie_space_optimizer.optimization.rca import (
+                rca_findings_from_clusters,
+            )
+            _iter_rca_id_by_cluster: dict[str, str] = (
+                rca_id_by_cluster_from_findings(
+                    clusters=clusters or [],
+                    findings=rca_findings_from_clusters(clusters or []),
+                )
+            )
+        except Exception:
+            logger.debug(
+                "Phase B delta Task 1: rca_id_by_cluster derivation failed (non-fatal)",
+                exc_info=True,
+            )
+            _iter_rca_id_by_cluster = {}
 
         # Phase B observability follow-up — closure that builds an
         # ACCEPTANCE_DECIDED record from an AG and outcome string and
