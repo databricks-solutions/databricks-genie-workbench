@@ -14654,6 +14654,23 @@ def _run_lever_loop(
                 for _c in (clusters or [])
                 if _c.get("cluster_id")
             }
+            # Phase D.5 Task 7: capture proposal alternatives. Without a
+            # local that holds the strategist's full pre-filter set
+            # (including malformed/cap-dropped proposals), the fallback
+            # uses ``all_proposals`` (the surviving set) which yields
+            # empty alternatives — byte-stable. Wire ``_raw_proposals_for_ag``
+            # here when cycle E surfaces it as a local.
+            _proposal_alts = _build_proposal_alternatives_for_ag(
+                raw_proposals=(
+                    list(_raw_proposals_for_ag)
+                    if "_raw_proposals_for_ag" in locals()
+                    else (all_proposals or [])
+                ),
+                surviving_proposal_ids=[
+                    str(p.get("proposal_id") or p.get("id") or "")
+                    for p in (all_proposals or [])
+                ],
+            )
             _proposal_records = _proposal_generated_records(
                 run_id=run_id,
                 iteration=iteration_counter,
@@ -14661,6 +14678,7 @@ def _run_lever_loop(
                 proposals=all_proposals or [],
                 rca_id_by_cluster=_iter_rca_id_by_cluster,
                 cluster_root_cause_by_id=_cluster_root_cause_by_id,
+                proposal_alternatives_for_ag=_proposal_alts,
             )
             _current_iter_inputs.setdefault("decision_records", []).extend(
                 [r.to_dict() for r in _proposal_records]
