@@ -70,8 +70,18 @@ For Phase E specifically, distinguish between three failure surfaces — the rec
    - Markers: `evidence/markers.json`
    - Job state: `evidence/job_run.json`
    - Stdout/stderr: `evidence/lever_loop_stdout.txt`, `evidence/lever_loop_stderr.txt`
+   - **Notebook output**: `evidence/lever_loop_notebook_output.json` *(fall back to this whenever `lever_loop_stdout.txt` is empty — the lever-loop is a notebook task in production and `databricks jobs get-run-output` returns empty `logs` for notebook tasks; the structured per-iteration `phase_b` summary lives in `notebook_output.result`)*
    - Replay fixture: `evidence/replay_fixture.json`
    - MLflow audit: `evidence/mlflow_audit.{md,json}`
+
+   If the bundle does not yet capture `lever_loop_notebook_output.json` (older bundle versions don't), pull it manually before walking the checklist:
+
+   ```bash
+   databricks jobs get-run-output <lever_task_run_id> --profile <profile> --output json \
+     > <bundle_dir>/evidence/lever_loop_notebook_output.json
+   ```
+
+   Then parse `notebook_output.result` (a JSON-encoded string) for the canonical lever-loop result dict — `iteration_counter`, `levers_attempted`, `levers_accepted`, `levers_rolled_back`, and the `phase_b` summary block (`decision_records_total`, `iter_record_counts`, `iter_violation_counts`, `no_records_iterations`, `artifact_paths`, `producer_exceptions`, `target_qids_missing_count`, `total_violations`). This block is the de-facto "stdout" for any run whose harness predates the `GSO_*_V1` markers.
 
    - If `manifest.exit_status == "incomplete"`, list every entry in `manifest.missing_pieces`. Decide whether each gap is blocking analysis (the postmortem cannot answer the operator's question without it) or merely informational.
    - If a `PHASE_*_ARTIFACT_MISSING_ON_ANCHOR` gap is blocking and `replay_fixture` is present, recommend rerunning the bundle with `--auto-backfill`.
@@ -186,6 +196,11 @@ For Phase E specifically, distinguish between three failure surfaces — the rec
   - `Next Suggested Action`
 - Decision validation count is zero or listed.
 
+When `lever_loop_notebook_output.json` is available, run these two cross-checks before concluding:
+
+- **Producer-gap check.** Compare `notebook_output.phase_b.iter_record_counts` length against `notebook_output.result.iteration_counter`. If `len(iter_record_counts) < iteration_counter` AND the missing iters are not enumerated in `no_records_iterations`, classify as `PHASE_B_TRACE_GAP` — producer side. Iters that ran but emitted no records and aren't typed as "no records" are silently broken; the persistence layer can't help.
+- **Persistence-claim check.** For every path in `notebook_output.phase_b.artifact_paths`, verify it actually exists on at least one MLflow run in the experiment (recursive `MlflowClient.list_artifacts` over every sibling). When a path is *claimed* by the result block but *absent* on every run, classify as `PHASE_B_PERSIST_SILENT_FAILURE` — the harness's exception-suppressed Phase B persistence path swallowed a real error. Recommend deploying `genie.phase_b.partial=true` tagging (committed in the `fix/gso-lossless-contract-replay-gate` branch) so the next run surfaces the failure rather than burying it.
+
 ### RCA-Groundedness Health
 
 For each sampled or failing decision record, check:
@@ -275,7 +290,9 @@ Classify the primary failure as one of:
 - `GATE_OR_CAP_GAP`
 - `APPLIER_FAILURE`
 - `ROLLBACK_OR_ACCEPTANCE_GAP`
-- `PHASE_B_TRACE_GAP`
+- `PHASE_B_TRACE_GAP` — at least one of:
+  - **producer-gap subkind**: `len(iter_record_counts) < iteration_counter` and the missing iters are not in `no_records_iterations` (records were never emitted, never typed).
+  - **persistence-silent-failure subkind**: `phase_b.artifact_paths` claims artifacts that don't exist on any MLflow run (the persistence path's `try/except: logger.debug` block swallowed a real error). Pre-deployment of `genie.phase_b.partial` tagging, this is invisible from MLflow alone.
 - `MLFLOW_ARTIFACT_GAP`
 - `CONVERGENCE_OR_PLATEAU_GAP`
 - `MODEL_CEILING`
@@ -358,19 +375,46 @@ One of `READY_TO_MERGE`, `PILOT_NEEDS_RERUN`, `MERGE_GATE_GAP`, `BASELINE_REGRES
 
 If task output is truncated, say so and rely on MLflow artifacts and markers.
 
-If MLflow experiment ID cannot be resolved, write the report with `MLFLOW_EXPERIMENT_UNRESOLVED` and ask the user for the experiment ID.
+If MLflow experiment ID cannot be resolved, write the report with `MLFLOW_EXPERIMENT_UNRESOLVED` and ask the user for the experiment ID. Try this resolution chain first before asking:
+1. Explicit `experiment_id` input.
+2. `GSO_RUN_MANIFEST_V1.mlflow_experiment_id` from markers.
+3. `MLFLOW_EXPERIMENT_ID`/`mlflow_experiment_id`/`experiment_id` in `job_run.job_parameters`.
+4. `experiment_name` in `job_run.job_parameters` → resolve via `MlflowClient.get_experiment_by_name(name).experiment_id`.
+5. Ask the operator.
 
-If `GSO_*_V1` markers are missing, run legacy-mode analysis from existing section banners and replay markers, then recommend adding marker support.
+If `GSO_*_V1` markers are missing AND `lever_loop_stdout.txt` is empty, the lever-loop is a notebook task and stdout is not a capture surface. Pull `lever_loop_notebook_output.json` (see Step 0) and read `notebook_output.result.phase_b` instead. Do not declare missing markers a blocker on its own — the structured result is the substitute.
 
-If evidence conflicts, report the conflict rather than choosing one source silently.
+If the audit anchor resolved to `enrichment_snapshot` (or any non-`lever_loop` `genie.run_type`) AND `mlflow_audit.sibling_runs[*].artifact_paths` are empty for `phase_a/`/`phase_b/` prefixes, the deployed harness is not tagging any run with `genie.run_type=lever_loop`. The audit cannot find the canonical anchor. Recover by querying MLflow directly:
+
+```python
+from mlflow.tracking import MlflowClient
+client = MlflowClient()
+exp = client.get_experiment_by_name("<experiment_name from job_parameters>")
+runs = client.search_runs(
+    experiment_ids=[exp.experiment_id],
+    filter_string=f"tags.`genie.run_id` = '{opt_run_id}'",  # NOT genie.optimization_run_id
+    max_results=200,
+)
+```
+
+Then inspect each run's tags for `genie.stage=full_eval` and `genie.iteration=<N>` — those are the per-iteration anchors. List artifacts on each. If `phase_b/decision_trace/iter_<N>.json` and `phase_b/operator_transcript/iter_<N>.txt` are absent across **every** iteration run, you have confirmed the persistence-silent-failure subkind of `PHASE_B_TRACE_GAP`.
+
+If evidence conflicts, report the conflict rather than choosing one source silently. Specifically: when `notebook_output.phase_b.artifact_paths` lists a path that does not exist on any MLflow run, surface the conflict in the postmortem's "Evidence Collected" section — do not silently treat one as authoritative.
 
 For Phase E specifically:
 
 - If `baseline_run_id` is unavailable when `phase=E`, write the report with `PHASE_E_BASELINE_UNRESOLVED` in the accuracy non-regression row and ask the user. Do not fabricate a baseline from this run's iteration 0.
 - If the pilot did not complete (truncation, infrastructure failure, run cancelled mid-iteration), classify the run with the appropriate non-Phase-E label (`DATABRICKS_JOB_FAILURE` etc.) and explicitly state that Phase E validation cannot proceed until a complete pilot run exists.
+- If the parent job run is `RUNNING` but the `lever_loop` task is `TERMINATED/SUCCESS` (i.e., `finalize` and `deploy` are still in progress), proceed with the Phase E checklist for the lever loop. Mark `Metadata` with `finalize_state`/`deploy_state` as `pending` and exclude finalize-only outputs (UC champion promotion, repeatability re-run results) from the verdict — they will need a separate follow-up postmortem once the parent terminates.
 - If merge-gate state checks find `repo_root` unset or inaccessible, mark each merge-gate row `UNVERIFIED` and ask the user to confirm or rerun with `repo_root` set.
 - If pilot-run validation passes but merge-gate state shows multiple gaps, do not classify as `READY_TO_MERGE` — use `MERGE_GATE_GAP` and list the missing items in priority order.
 - If the `mlflow_audit` CLI reports decision-trail artifacts missing on the lever_loop anchor for any iteration, classify the run as `MERGE_GATE_GAP` with the label `PHASE_E0_DECISION_TRAIL_MISSING`, and recommend running `python -m genie_space_optimizer.tools.mlflow_backfill --opt-run-id <id> --replay-fixture <path>` followed by a fresh audit pass before re-attempting the Phase E pilot.
+- **Disambiguating `MERGE_GATE_GAP` vs `PILOT_NEEDS_RERUN` when decision-trail artifacts are absent across the entire experiment.** This is the most common confusion. Use this routing:
+  - The lever loop terminated cleanly (TERMINATED/SUCCESS) AND `notebook_output.phase_b.artifact_paths` claims paths that don't exist anywhere in MLflow → **`MERGE_GATE_GAP`** with subkind `PHASE_B_PERSIST_SILENT_FAILURE`. Re-running the same harness will reproduce the same gap. The fix is to deploy the `genie.phase_b.partial` tagging branch so the next run surfaces the underlying exception, then patch the producer or persistence path it identifies.
+  - The lever loop terminated cleanly AND `notebook_output.phase_b.iter_violation_counts` contains any value > 0 → **`MERGE_GATE_GAP`** even without missing artifacts. Phase E exit criteria require zero validator warnings; this is a contract violation, not a re-run candidate.
+  - The lever loop terminated cleanly AND `len(notebook_output.phase_b.iter_record_counts) < iteration_counter` AND missing iters are not in `no_records_iterations` → **`MERGE_GATE_GAP`** with subkind `PHASE_B_PRODUCER_GAP`. Producers are silently not appending; re-running won't help.
+  - The lever loop did NOT terminate cleanly (FAILED, TIMEDOUT, INTERNAL_ERROR) → likely `PILOT_NEEDS_RERUN` after the underlying defect is fixed. Inspect the task error first.
+  - When in doubt, prefer `MERGE_GATE_GAP` over `PILOT_NEEDS_RERUN`. Re-runs are expensive (real Genie hours) and pre-deploy reruns reproduce pre-deploy bugs.
 
 ## Cross-Skill Hand-offs
 

@@ -30,23 +30,45 @@ This skill orchestrates; it does not analyze. Reasoning lives in `gso-lever-loop
 
 ## Workflow
 
+0. **Verify the environment can reach the workspace.** Two prerequisites are easy to miss and produce silent empty audits:
+
+   - `databricks auth profiles` lists `<profile>` and the listed host matches the workspace that ran the job. (Wrong workspace ⇒ `mlflow_audit` returns zero sibling runs even when the run exists.)
+   - The MLflow client points at the workspace, not local. Set `MLFLOW_TRACKING_URI=databricks` and `DATABRICKS_CONFIG_PROFILE=<profile>` in the bundle invocation env. Without these, `MlflowClient.search_runs()` searches local MLflow (which is empty) and the audit returns no runs without raising.
+
+   Pass them explicitly when invoking the bundle, e.g.:
+
+   ```bash
+   MLFLOW_TRACKING_URI=databricks DATABRICKS_CONFIG_PROFILE=<profile> \
+     python -m genie_space_optimizer.tools.evidence_bundle ...
+   ```
+
 1. **Build the bundle.**
 
    ```bash
    python -m genie_space_optimizer.tools.evidence_bundle \
        --job-id <job_id> --run-id <run_id> --profile <profile> \
-       --output-dir <output_dir> [--auto-backfill]
+       --output-dir <output_dir> [--auto-backfill] \
+       [--opt-run-id <recovered>] [--experiment-id <id>]
    ```
 
    The CLI prints `manifest.json` to stdout. Capture `resolved.optimization_run_id`.
 
-2. **If the manifest reports `OPTIMIZATION_RUN_ID_UNRESOLVED`,** stop and ask the operator. Without it, no postmortem can be filed; the bundle dir is `runid_analysis/unresolved_<run_id>/`.
+   **Idempotence note.** The bundle short-circuits when `<output_dir>/<opt_run_id>/evidence/manifest.json` already exists with matching `(job_id, run_id, profile)` inputs. To force a re-pull (e.g., after deploying harness changes, after fixing tag schema, or after pointing at a different workspace), delete `manifest.json` or vary one input. There is no `--force` flag today.
+
+2. **If the manifest reports `OPTIMIZATION_RUN_ID_UNRESOLVED`,** the harness on the workspace is older than the `GSO_RUN_MANIFEST_V1` emitter and stdout markers are absent. Do **not** stop yet — the opt_run_id is recoverable from the parent job run before asking the operator:
+
+   1. Read `<bundle_dir>/evidence/job_run.json` and look at `job_parameters[*].run_id`. The lever_loop notebook receives the opt_run_id as a job parameter named `run_id`. Capture that value.
+   2. Re-run the bundle with `--opt-run-id <recovered>`. Delete the prior `manifest.json` first (idempotence note above) so the audit is allowed to re-run with the resolved ID.
+   3. Only ask the operator if step 1 returns no value (very rare — would mean the optimizer was invoked outside the standard lever-loop notebook contract).
 
 3. **Inspect `missing_pieces`.**
    - If `PHASE_*_ARTIFACT_MISSING_ON_ANCHOR` is present AND `auto_backfill=false`, ask the operator: "decision-trail artifacts are missing on the anchor run; rerun the bundle with `--auto-backfill` (writes to MLflow) or proceed without?"
-   - If `MLFLOW_AUDIT_FAILED`, surface the root error to the operator and stop. (This usually means the wrong workspace profile.)
+   - If the audit anchor resolved to `enrichment_snapshot` (or any non-`lever_loop` `genie.run_type`) **and** sibling artifacts are empty, the deployed harness is not tagging any run with `genie.run_type=lever_loop`. Do not treat this as `MLFLOW_AUDIT_FAILED`. Pass the bundle to the analysis skill — its degraded-mode rules cover this case by searching iteration full_eval runs by `genie.run_id`.
+   - If `MLFLOW_AUDIT_FAILED`, surface the root error to the operator and stop. (This usually means the wrong workspace profile, or `MLFLOW_TRACKING_URI` is unset — see Step 0.)
 
 4. **Hand off to `gso-lever-loop-run-analysis`** with `bundle_dir=<output_dir>/<opt_run_id>`. The analysis skill reads `evidence/manifest.json`, walks its checklists, decides whether to invoke `trace_fetcher`, and writes `postmortem.md` + `postmortem.json`.
+
+   **Partial-run policy.** When the parent job run is `RUNNING` but the `lever_loop` task is `TERMINATED/SUCCESS` (typically because `finalize` and `deploy` tasks are still pending), the lever-loop is fully analyzable. Proceed with the postmortem and annotate `Metadata` with `finalize_state`/`deploy_state` as `pending` so the reader knows post-loop steps were not evaluated. Do not wait for the parent run to finish.
 
 5. **Read the postmortem verdict** (`postmortem.json.status`):
    - `READY_TO_MERGE` → ask: "advance the burn-down? hand off to `gso-replay-cycle-intake` with `fixture_source=bundle://<opt_run_id>`?"
@@ -76,7 +98,11 @@ This skill orchestrates; it does not analyze. Reasoning lives in `gso-lever-loop
 
 | Failure | Recovery |
 |---|---|
-| `evidence_bundle` exits 2 (`OPTIMIZATION_RUN_ID_UNRESOLVED`) | Ask the operator for the opt_run_id, or rerun with `--opt-run-id <id>` once the harness fix lands. |
+| `evidence_bundle` exits 2 (`OPTIMIZATION_RUN_ID_UNRESOLVED`) | First read `evidence/job_run.json :: job_parameters[*].run_id` and rerun with `--opt-run-id <recovered>`. Only ask the operator if that field is empty. |
+| `mlflow_audit` returned 0 sibling runs but the run exists in the workspace UI | Almost always `MLFLOW_TRACKING_URI` was unset; the client searched local MLflow. Re-invoke with `MLFLOW_TRACKING_URI=databricks DATABRICKS_CONFIG_PROFILE=<profile>` set. See Step 0. |
+| `mlflow_audit` anchor = `enrichment_snapshot` (no `genie.run_type=lever_loop` tag found) | Not a tooling failure — the deployed harness predates the canonical tag schema. Pass to the analysis skill anyway; its degraded rules search iteration runs directly. |
 | `mlflow_audit` fails (wrong workspace) | Ask for the correct `--profile`. |
 | `mlflow_backfill` fails | Ask the operator before retrying; do not loop. |
+| Bundle short-circuited (manifest already exists) and you wanted a fresh pull | Delete `<bundle_dir>/evidence/manifest.json` and re-invoke. There is no `--force` flag. |
+| Lever-loop stdout file `lever_loop_stdout.txt` is empty even though the task ran | Lever-loop is a notebook task in production; `databricks jobs get-run-output` returns empty `logs` for notebook tasks. The structured result is in `notebook_output.result`. The analysis skill is responsible for falling back to that. |
 | Postmortem verdict = `INSUFFICIENT_EVIDENCE` | Ask the operator whether to widen the trace fetch beyond `--from-recommendations` (manual `--trace-id` flags). |
