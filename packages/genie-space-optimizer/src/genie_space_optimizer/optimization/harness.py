@@ -788,6 +788,52 @@ def _resolve_lever_loop_exit_reason(
     return "lever_loop_completed"
 
 
+def _drop_proposals_matching_rolled_back_content_fingerprints(
+    *,
+    proposals: list[dict],
+    rolled_back_patches: list[dict],
+) -> tuple[list[dict], list[tuple[dict, str]]]:
+    """Drop any proposal whose ``patch_retry_signature.content_fingerprint``
+    matches a fingerprint already present in the rolled-back set.
+
+    Runs *before* the existing ``_patch_forbidden`` keyed match in the
+    proposal-grounding stage. Closes the iter-3/iter-4 same-content gap
+    where a non-CONTENT_REGRESSION rollback left ``do_not_retry`` empty
+    but the proposal stage still re-emitted byte-identical text.
+
+    Returns ``(kept, dropped)`` where ``dropped`` is a list of
+    ``(proposal, reason)`` pairs with reason
+    ``"content_fingerprint_seen_in_rolled_back_set"``.
+    """
+    from genie_space_optimizer.optimization.reflection_retry import (
+        patch_retry_signature,
+    )
+
+    rolled_back_fingerprints: set[str] = set()
+    for p in rolled_back_patches or []:
+        if isinstance(p, dict):
+            sig = patch_retry_signature(p)
+            if len(sig) >= 6 and sig[5]:
+                rolled_back_fingerprints.add(sig[5])
+
+    if not rolled_back_fingerprints:
+        return list(proposals or []), []
+
+    kept: list[dict] = []
+    dropped: list[tuple[dict, str]] = []
+    for p in proposals or []:
+        if not isinstance(p, dict):
+            kept.append(p)
+            continue
+        sig = patch_retry_signature(p)
+        fingerprint = sig[5] if len(sig) >= 6 else ""
+        if fingerprint and fingerprint in rolled_back_fingerprints:
+            dropped.append((p, "content_fingerprint_seen_in_rolled_back_set"))
+        else:
+            kept.append(p)
+    return kept, dropped
+
+
 def _extract_eval_result_from_gate(gate_result: dict) -> dict:
     """Return the eval-result payload from a gate_result, regardless of outcome.
 
@@ -14143,6 +14189,32 @@ def _run_lever_loop(
             ag_id, len(_patch_forbidden), _total_rb, _content_rb,
             _content_rb_with_dnr,
         )
+
+        # PR-E Task 3 — content-fingerprint dedup runs irrespective of
+        # rollback_class so byte-identical re-proposals get blocked even
+        # when the rollback was infra/insufficient-gain (which leaves
+        # ``do_not_retry`` empty and lets the existing _patch_forbidden
+        # match miss the duplicate). Build the all-rollbacks list inline
+        # because _rolled_back_patches_for_retry filters to
+        # CONTENT_REGRESSION only.
+        _all_rolled_back_patches_for_dedup: list[dict] = []
+        for _rb in reflection_buffer:
+            if _rb.get("accepted"):
+                continue
+            for _rb_patch in _rb.get("do_not_retry_patches", []) or []:
+                if isinstance(_rb_patch, dict):
+                    _all_rolled_back_patches_for_dedup.append(_rb_patch)
+        all_proposals, _content_dedup_dropped = (
+            _drop_proposals_matching_rolled_back_content_fingerprints(
+                proposals=all_proposals,
+                rolled_back_patches=_all_rolled_back_patches_for_dedup,
+            )
+        )
+        if _content_dedup_dropped:
+            logger.info(
+                "[%s] PR-E content-fingerprint dedup dropped %d proposals",
+                ag_id, len(_content_dedup_dropped),
+            )
 
         if _patch_forbidden:
             from genie_space_optimizer.common.config import (
