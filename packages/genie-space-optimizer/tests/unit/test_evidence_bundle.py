@@ -244,6 +244,174 @@ def test_build_bundle_records_phase_b_missing_on_anchor(
     )
 
 
+def test_auto_backfill_invoked_when_decision_trail_missing(
+    tmp_path: Path,
+    fake_databricks_runner: MagicMock,
+    fake_mlflow: MagicMock,
+) -> None:
+    from genie_space_optimizer.tools.evidence_bundle import build_bundle
+
+    fake_databricks_runner.get_run_output.return_value = {
+        "logs": _STDOUT_WITH_FIXTURE,
+        "error": "",
+    }
+    audit_calls: list[dict] = []
+
+    def _audit(**kwargs):
+        audit_calls.append(kwargs)
+        if len(audit_calls) == 1:
+            return {
+                "anchor_run_id": "mr-1",
+                "sibling_runs": [
+                    {"run_id": "mr-1", "run_type": "lever_loop", "artifact_paths": []}
+                ],
+                "missing_per_iteration": [
+                    {
+                        "iteration": 1,
+                        "kind": "PHASE_B_DECISION_TRACE",
+                        "anchor_run_id": "mr-1",
+                    },
+                ],
+            }
+        return {
+            "anchor_run_id": "mr-1",
+            "sibling_runs": [
+                {
+                    "run_id": "mr-1",
+                    "run_type": "lever_loop",
+                    "artifact_paths": ["phase_b/decision_trace/iter_01.json"],
+                }
+            ],
+            "missing_per_iteration": [],
+        }
+
+    fake_mlflow.audit.side_effect = _audit
+    fake_mlflow.download_artifacts.return_value = []
+    fake_mlflow.backfill = MagicMock(
+        return_value={"uploaded": ["phase_b/decision_trace/iter_01.json"]}
+    )
+
+    result = build_bundle(
+        job_id="j-1",
+        run_id="r-1",
+        profile="p",
+        output_root=tmp_path,
+        databricks_runner=fake_databricks_runner,
+        mlflow_runner=fake_mlflow,
+        auto_backfill=True,
+    )
+    fake_mlflow.backfill.assert_called_once()
+    assert result.manifest.exit_status == "complete"
+
+
+def test_trace_fetch_recommendations_derived_from_decision_trace(
+    tmp_path: Path,
+    fake_databricks_runner: MagicMock,
+    fake_mlflow: MagicMock,
+) -> None:
+    from genie_space_optimizer.tools.evidence_bundle import build_bundle
+
+    fake_databricks_runner.get_run_output.return_value = {
+        "logs": _STDOUT_WITH_FIXTURE,
+        "error": "",
+    }
+    fake_mlflow.audit.return_value = {
+        "anchor_run_id": "mr-1",
+        "sibling_runs": [
+            {
+                "run_id": "mr-1",
+                "run_type": "lever_loop",
+                "artifact_paths": ["phase_b/decision_trace/iter_01.json"],
+            }
+        ],
+        "missing_per_iteration": [],
+    }
+
+    def _download(*, run_id: str, artifact_path: str, dest: Path) -> list[Path]:
+        target = dest / artifact_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(
+                {
+                    "iteration": 1,
+                    "decisions": [
+                        {
+                            "decision_type": "PROPOSAL_GENERATED",
+                            "outcome": "ABANDONED",
+                            "reason_code": "UNKNOWN",
+                            "evidence_refs": [{"trace_id": "tr-abc"}],
+                        }
+                    ],
+                }
+            )
+        )
+        return [target]
+
+    fake_mlflow.download_artifacts.side_effect = _download
+
+    result = build_bundle(
+        job_id="j-1",
+        run_id="r-1",
+        profile="p",
+        output_root=tmp_path,
+        databricks_runner=fake_databricks_runner,
+        mlflow_runner=fake_mlflow,
+    )
+    recs = result.manifest.trace_fetch_recommendations
+    assert any(
+        r.reason.value == "UNRESOLVED_REASON_CODE" and "tr-abc" in r.trace_ids
+        for r in recs
+    )
+
+
+def test_build_bundle_is_idempotent(
+    tmp_path: Path,
+    fake_databricks_runner: MagicMock,
+    fake_mlflow: MagicMock,
+) -> None:
+    from genie_space_optimizer.tools.evidence_bundle import build_bundle
+
+    first = build_bundle(
+        job_id="j-1",
+        run_id="r-1",
+        profile="p",
+        output_root=tmp_path,
+        databricks_runner=fake_databricks_runner,
+        mlflow_runner=fake_mlflow,
+    )
+    fake_databricks_runner.reset_mock()
+    fake_mlflow.reset_mock()
+    # Re-prime the mocks so the second call (if it ever fully runs) returns
+    # the same shapes. Idempotence should short-circuit and not exercise these.
+    fake_databricks_runner.get_run.return_value = {
+        "run_id": "r-1",
+        "tasks": [{"task_key": "lever_loop", "run_id": "tr-1"}],
+    }
+    fake_databricks_runner.get_run_output.return_value = {
+        "logs": (
+            "GSO_RUN_MANIFEST_V1 "
+            '{"databricks_job_id":"j-1","databricks_parent_run_id":"r-1",'
+            '"event":"start","lever_loop_task_run_id":"tr-1",'
+            '"mlflow_experiment_id":"exp-1","optimization_run_id":"opt-abc",'
+            '"space_id":"sp-1"}\n'
+            "===PHASE_A_REPLAY_FIXTURE_JSON_BEGIN===\n"
+            '{"version":1,"iterations":[{"iteration":1,"qids":["q1"]}]}\n'
+            "===PHASE_A_REPLAY_FIXTURE_JSON_END===\n"
+        ),
+        "error": "",
+    }
+    second = build_bundle(
+        job_id="j-1",
+        run_id="r-1",
+        profile="p",
+        output_root=tmp_path,
+        databricks_runner=fake_databricks_runner,
+        mlflow_runner=fake_mlflow,
+    )
+    assert second.manifest.exit_status == first.manifest.exit_status
+    fake_databricks_runner.get_run.assert_called_once()
+
+
 def test_main_smoke(
     tmp_path: Path,
     fake_databricks_runner: MagicMock,
