@@ -475,41 +475,9 @@ def _validate_journeys_at_iteration_end(
     return report
 
 
-def _emit_post_eval_journey(
-    *,
-    emit,
-    eval_qids,
-    was_passing_qids,
-    is_passing_qids,
-) -> None:
-    """Stamp the closing post_eval event for every qid that entered eval.
-
-    The transition is ``fail_to_pass``, ``pass_to_fail``, ``hold_pass``, or
-    ``hold_fail``.
-    """
-    was = {str(q) for q in (was_passing_qids or []) if q}
-    is_now = {str(q) for q in (is_passing_qids or []) if q}
-    for q in eval_qids or []:
-        qid = str(q)
-        if not qid:
-            continue
-        prior = qid in was
-        after = qid in is_now
-        if prior and after:
-            transition = "hold_pass"
-        elif not prior and after:
-            transition = "fail_to_pass"
-        elif prior and not after:
-            transition = "pass_to_fail"
-        else:
-            transition = "hold_fail"
-        emit(
-            "post_eval",
-            question_id=qid,
-            was_passing=prior,
-            is_passing=after,
-            transition=transition,
-        )
+from genie_space_optimizer.optimization.post_eval import (  # noqa: E402,F401
+    _emit_post_eval_journey,
+)
 
 
 def _extract_eval_result_from_gate(gate_result: dict) -> dict:
