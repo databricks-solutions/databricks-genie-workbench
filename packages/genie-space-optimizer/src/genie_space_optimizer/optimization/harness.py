@@ -404,26 +404,9 @@ def _emit_gate_drop_journey(*, emit, gate: str, dropped: list[dict]) -> None:
         )
 
 
-def _emit_ag_outcome_journey(
-    *,
-    emit,
-    ag_id: str,
-    outcome: str,
-    affected_qids,
-) -> None:
-    """Stamp the AG-level outcome event for every qid the AG targeted.
-
-    ``outcome`` must be one of ``accepted``, ``accepted_with_regression_debt``,
-    or ``rolled_back``.
-    """
-    if outcome not in (
-        "accepted", "accepted_with_regression_debt", "rolled_back",
-    ):
-        return
-    qids = [str(q) for q in (affected_qids or []) if q]
-    if not qids:
-        return
-    emit(outcome, question_ids=qids, ag_id=ag_id)
+from genie_space_optimizer.optimization.ag_outcome import (  # noqa: E402,F401
+    _emit_ag_outcome_journey,
+)
 
 
 def _emit_ag_assignment_journey(
