@@ -110,8 +110,8 @@ writes a structured postmortem under `docs/runid_analysis/`.
 | # | Phase | Replay-only? | Real-Genie runs | Calendar | Branch state |
 |---|---|---|---|---|---|
 | 0 | Cross-task state resilience (Repair Run fix) | No | 0–1 | ~2–3 days | pre-merge |
-| A | Contract burn-down + real-fixture capture **(✅ complete — 2026-05-02)** | No | 8 (cycles 1-8) | ~1 day actual (estimate was 3-5 days) | pre-merge |
-| B | Unified trace + DecisionRecord + operator transcript | Yes | 0 | ~3–5 days | pre-merge |
+| A | Contract burn-down + real-fixture capture **(✅ complete — 2026-05-02; cycle-9 post-close burndown landed 2026-05-03)** | No | 9 (cycles 1-8 + post-close cycle 9) | ~1 day actual (estimate was 3-5 days) | pre-merge |
+| B | Unified trace + DecisionRecord + operator transcript **(🟡 partial — contract + 7 of 10 producers shipped via cycle 9; delta plan ready)** | Yes | 0 | ~1–2 days remaining | pre-merge |
 | C | RCA loop reliability hardening | Mixed | 0–1 | ~3–5 days | pre-merge |
 | D | Scoreboard, failure bucketing, and first trace-aware extractions | Yes | 0 | ~4–6 days | pre-merge |
 | E | Final integration + contract-gate flip + merge | No | 1 | ~1 day | merge point |
@@ -175,7 +175,7 @@ Logic correctness for later trace, transcript, scoreboard, and bucketing work is
 
 **Exit criterion:** Clean burn-down on airline corpus + `airline_real_v1.json` committed with `expected_canonical_journey`, per-iteration validation report persistence, and `test_run_replay_airline_real_v1_within_burndown_budget` enforcing budget `0`.
 
-**Real-Genie runs:** 8 cycles actual. Phase A is complete as of 2026-05-02; see [`2026-05-02-phase-a-burndown-log.md`](./2026-05-02-phase-a-burndown-log.md).
+**Real-Genie runs:** 8 cycles actual. Phase A's burndown closed 2026-05-02; see [`2026-05-02-phase-a-burndown-log.md`](./2026-05-02-phase-a-burndown-log.md). A 9th post-close cycle on 2026-05-03 surfaced new bugs (premature plateau termination via the dead-on-arrival path discarding unrelated buffered AGs, blast-radius drops with no escape hatch, contradictory `add_*` patches against `remove_*` counterfactuals, dormant SQL-shape predicates, missing `phase_b_marker` when no decision records were emitted). Those fixes shipped via [`2026-05-03-cycle9-burndown-blast-radius-recovery-and-decision-trace-plan.md`](./2026-05-03-cycle9-burndown-blast-radius-recovery-and-decision-trace-plan.md), which also pre-shipped four of Phase B's seven decision-record producers (`blast_radius`, `dead_on_arrival`, `ag_outcome`, `post_eval_resolution`), the strategist-`forbid_tables` constraint store, the operator scoreboard banner, and four new failure-bucket seed patterns. The post-close burndown is treated as the tail of Phase A; the Phase B delta plan below picks up where cycle 9 left off.
 
 ---
 
@@ -247,7 +247,9 @@ Logic correctness for later trace, transcript, scoreboard, and bucketing work is
 
 **Real-Genie runs:** 0.
 
-**Detailed plan:** [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md) — ready for implementation.
+**Detailed plans:**
+- [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md) — original 9-task contract-first plan; Tasks 1-7 shipped; Tasks 8-9 superseded by the delta plan below.
+- [`2026-05-03-phase-b-decision-trace-completion-plan.md`](./2026-05-03-phase-b-decision-trace-completion-plan.md) — **delta plan, ready for implementation.** Closes the remaining gaps after cycle 9: plumbs `rca_id_by_cluster` from real RCA findings, adds the three remaining producers (`RCA_FORMED`, `PROPOSAL_GENERATED`, `PATCH_APPLIED`), widens the validator's `applied`-stage matcher, projects `DecisionType` slices into the nine named transcript sections, and adds a synthetic cross-projection replay test that pins all ten DecisionTypes byte-stably. 10 TDD tasks; ~1–2 days; no real-Genie cycles needed during implementation. After it lands, one real-Genie airline cycle refreshes `airline_real_v1.json` with seeded `expected_canonical_decisions` / `expected_operator_transcript` and unblocks Phase C.
 
 ---
 
@@ -477,7 +479,7 @@ Calendar estimate from the current point: ~1–2 additional weeks pre-merge with
 
 ## Concrete next action
 
-**Implement Phase B — Unified trace + DecisionRecord + operator transcript.** Phases 0 and A are complete (see [`2026-05-01-phase-a-burndown-log.md`](./2026-05-01-phase-a-burndown-log.md) for the close summary and [`2026-05-02-phase-a-burndown-log.md`](./2026-05-02-phase-a-burndown-log.md) for the per-iter detail). The airline corpus's journey-contract validation count is 0; `airline_real_v1.json` is committed with `expected_canonical_journey` (365 events, 38 706 bytes) and gated by `test_run_replay_airline_real_v1_within_burndown_budget` (budget=0). Phase B is replay-only, requires zero real-Genie cycles, and should define the canonical decision-trace schema before scoreboard or bucketing work begins. Detailed plan is ready at [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md).
+**Finish Phase B — execute the decision-trace completion delta plan.** Phase A's burn-down + cycle-9 post-close fixes are landed; Phase B's contract, container, validator, transcript-renderer scaffolding, and seven of ten `DecisionType` producers are already shipped (see [`2026-05-03-cycle9-burndown-blast-radius-recovery-and-decision-trace-plan.md`](./2026-05-03-cycle9-burndown-blast-radius-recovery-and-decision-trace-plan.md)). What remains is a focused 10-task delta covering: (a) plumbing `rca_id_by_cluster` from real RCA findings (the empty `_iter_rca_id_by_cluster: {}` at `harness.py:11639` silently zeroed out the RCA-grounding contract on every cluster-bound record); (b) the three missing producers `RCA_FORMED` / `PROPOSAL_GENERATED` / `PATCH_APPLIED`; (c) widening the validator to accept the `applied_targeted` / `applied_broad_ag_scope` stage family; (d) projecting `DecisionType` slices into the nine named transcript sections instead of dumping under raw enum values; (e) a synthetic cross-projection replay test pinning the full ten-type happy path. Ready at [`2026-05-03-phase-b-decision-trace-completion-plan.md`](./2026-05-03-phase-b-decision-trace-completion-plan.md). Replay-only during implementation; one real-Genie airline cycle afterwards refreshes the fixture, seeds `expected_canonical_decisions` / `expected_operator_transcript`, and unblocks Phase C.
 
 ---
 
@@ -494,7 +496,9 @@ Calendar estimate from the current point: ~1–2 additional weeks pre-merge with
 | [`2026-05-02-cycle7-reconstruction-postmortem.md`](./2026-05-02-cycle7-reconstruction-postmortem.md) | Captured | A (cycles 1-7 fixture-shape postmortem) |
 | [`2026-05-02-cycle8-side-bugs-high-level-plan.md`](./2026-05-02-cycle8-side-bugs-high-level-plan.md) | Drafted | C (qid extraction and target-qid propagation gaps) |
 | [`high level plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md`](./high%20level%20plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md) | Implemented | A (consolidated 16-track Phase A plan) |
-| [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md) | Ready | B |
+| [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md) | Tasks 1-7 shipped; remaining scope subsumed by the cycle-9 close + delta plan | B |
+| [`2026-05-03-cycle9-burndown-blast-radius-recovery-and-decision-trace-plan.md`](./2026-05-03-cycle9-burndown-blast-radius-recovery-and-decision-trace-plan.md) | Implemented | A (post-close burndown) and partial B/C/D pre-shipping |
+| [`2026-05-03-phase-b-decision-trace-completion-plan.md`](./2026-05-03-phase-b-decision-trace-completion-plan.md) | Ready | B (delta — closes Phase B) |
 | `2026-05-XX-rca-loop-contract-plan.md` | To be written | C |
 | `2026-05-XX-canonical-qid-extraction-plan.md` | To be written | C |
 | `2026-05-XX-target-qid-propagation-plan.md` | To be written | C |
