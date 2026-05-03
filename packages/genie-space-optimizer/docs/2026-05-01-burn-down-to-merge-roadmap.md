@@ -100,6 +100,11 @@ should be able to diagnose any failed iteration using only the standard
 operator transcript plus linked trace JSON, without grepping raw logs or reading
 `harness.py`.
 
+The reusable analyzer for this contract is the `gso-lever-loop-run-analysis`
+skill under `docs/skills/`. It consumes Databricks Job ID + Run ID, reads
+`GSO_*_V1` markers, MLflow tags/artifacts, replay fixtures, and traces, then
+writes a structured postmortem under `docs/runid_analysis/`.
+
 ## At a glance
 
 | # | Phase | Replay-only? | Real-Genie runs | Calendar | Branch state |
@@ -498,3 +503,4 @@ Calendar estimate from the current point: ~1–2 additional weeks pre-merge with
 | `2026-05-XX-harness-extractions-phase-1-plan.md` | To be written | D |
 | `2026-05-XX-harness-extractions-phase-2-plan.md` | To be written | F |
 | `2026-05-XX-lever-loop-typed-contract-hardening-plan.md` | To be written | G |
+| [`skills/gso-lever-loop-run-analysis/SKILL.md`](./skills/gso-lever-loop-run-analysis/SKILL.md) | Ready after implementation | B/C/D+ run analysis |
