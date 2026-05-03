@@ -368,6 +368,136 @@ from genie_space_optimizer.optimization.eval_entry import (  # noqa: E402,F401
 )
 
 
+# ── Phase D.5 alternatives-capture helpers ────────────────────────────
+# Build the alternatives_by_id maps that the three trace-aware producers
+# (cluster_records, strategist_ag_records, proposal_generated_records)
+# now accept. Each helper is pure and lazy-imports AlternativeOption /
+# RejectReason so the harness module-load order is unaffected.
+
+
+def _build_cluster_alternatives_by_id(
+    *,
+    candidate_clusters,
+    promoted_cluster_ids,
+):
+    """Build {chosen_cluster_id: tuple[AlternativeOption, ...]} for stamping.
+
+    Phase D.5 Task 5: used at the cluster-selection site to record which
+    candidate clusters were demoted/dropped in favor of each chosen
+    hard cluster. The same tuple of rejections is stamped on every
+    promoted cluster of the same batch — operators reading the
+    transcript see "this hard cluster won out over these others"
+    consistently across the batch.
+    """
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        AlternativeOption,
+        RejectReason,
+    )
+
+    _REASON_MAP = {
+        "below_hard_threshold": RejectReason.BELOW_HARD_THRESHOLD,
+        "insufficient_qids": RejectReason.INSUFFICIENT_QIDS,
+    }
+
+    promoted_set = {str(cid) for cid in (promoted_cluster_ids or []) if cid}
+    rejections = []
+    for cluster in candidate_clusters or []:
+        cid = str(cluster.get("cluster_id") or "")
+        if not cid or cid in promoted_set:
+            continue
+        reason_str = str(cluster.get("demoted_reason") or "")
+        rejections.append(
+            AlternativeOption(
+                option_id=cid,
+                kind="cluster",
+                reject_reason=_REASON_MAP.get(reason_str, RejectReason.OTHER),
+                reject_detail=reason_str,
+            )
+        )
+    rejections_tuple = tuple(rejections)
+    return {cid: rejections_tuple for cid in sorted(promoted_set)}
+
+
+def _build_ag_alternatives_by_id(
+    *,
+    strategist_returned_ags,
+    emitted_ag_ids,
+):
+    """Build {chosen_ag_id: tuple[AlternativeOption, ...]} for stamping."""
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        AlternativeOption,
+        RejectReason,
+    )
+
+    _REASON_MAP = {
+        "buffered": RejectReason.BUFFERED,
+        "lower_score": RejectReason.LOWER_SCORE,
+        "missing_target_qids": RejectReason.MISSING_TARGET_QIDS,
+        "rca_ungrounded": RejectReason.RCA_UNGROUNDED,
+    }
+
+    emitted_set = {str(aid) for aid in (emitted_ag_ids or []) if aid}
+    rejections = []
+    for ag in strategist_returned_ags or []:
+        ag_id = str(ag.get("id") or ag.get("ag_id") or "")
+        if not ag_id or ag_id in emitted_set or not ag.get("rejected"):
+            continue
+        reason_str = str(ag.get("reject_reason") or "")
+        score_raw = ag.get("_score")
+        rejections.append(
+            AlternativeOption(
+                option_id=ag_id,
+                kind="ag",
+                score=float(score_raw) if score_raw is not None else None,
+                reject_reason=_REASON_MAP.get(reason_str, RejectReason.OTHER),
+                reject_detail=(
+                    reason_str if reason_str not in _REASON_MAP else ""
+                ),
+            )
+        )
+    rejections_tuple = tuple(rejections)
+    return {ag_id: rejections_tuple for ag_id in sorted(emitted_set)}
+
+
+def _build_proposal_alternatives_for_ag(
+    *,
+    raw_proposals,
+    surviving_proposal_ids,
+):
+    """Build the alternatives tuple shared across an AG's surviving proposals."""
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        AlternativeOption,
+        RejectReason,
+    )
+
+    _REASON_MAP = {
+        "malformed": RejectReason.MALFORMED,
+        "patch_cap_dropped": RejectReason.PATCH_CAP_DROPPED,
+        "rca_ungrounded": RejectReason.RCA_UNGROUNDED,
+        "missing_target_qids": RejectReason.MISSING_TARGET_QIDS,
+        "lower_score": RejectReason.LOWER_SCORE,
+    }
+
+    surviving_set = {str(pid) for pid in (surviving_proposal_ids or []) if pid}
+    out = []
+    for proposal in raw_proposals or []:
+        pid = str(proposal.get("proposal_id") or proposal.get("id") or "")
+        if not pid or pid in surviving_set or not proposal.get("_dropped"):
+            continue
+        reason_str = str(proposal.get("_drop_reason") or "")
+        score_raw = proposal.get("_score")
+        out.append(
+            AlternativeOption(
+                option_id=pid,
+                kind="proposal",
+                score=float(score_raw) if score_raw is not None else None,
+                reject_reason=_REASON_MAP.get(reason_str, RejectReason.OTHER),
+                reject_detail=str(proposal.get("_drop_detail") or ""),
+            )
+        )
+    return tuple(out)
+
+
 _GATE_TO_STAGE: dict[str, str] = {
     "grounding": "dropped_at_grounding",
     "normalize": "dropped_at_normalize",
@@ -11837,11 +11967,30 @@ def _run_lever_loop(
                 cluster_records as _cluster_records,
             )
 
+            # Phase D.5 Task 5: capture cluster alternatives.
+            # ``clusters`` is the hard-only list at this site; without a
+            # local ``candidate_clusters`` collection, the fallback below
+            # produces empty alternatives (byte-stable). When a future
+            # cycle wires the candidate list (demoted + hard) into a
+            # local, pass it as ``candidate_clusters`` here.
+            _candidate_clusters_for_alts = (
+                _candidate_clusters_for_decision_trace
+                if "_candidate_clusters_for_decision_trace" in locals()
+                else (clusters or [])
+            )
+            _cluster_alts_by_id = _build_cluster_alternatives_by_id(
+                candidate_clusters=_candidate_clusters_for_alts,
+                promoted_cluster_ids=[
+                    str(c.get("cluster_id") or "")
+                    for c in (clusters or [])
+                ],
+            )
             _hard_cluster_records = _cluster_records(
                 run_id=run_id,
                 iteration=iteration_counter,
                 clusters=clusters or [],
                 rca_id_by_cluster=_iter_rca_id_by_cluster,
+                cluster_alternatives_by_id=_cluster_alts_by_id,
             )
             _current_iter_inputs.setdefault("decision_records", []).extend(
                 [r.to_dict() for r in _hard_cluster_records]
