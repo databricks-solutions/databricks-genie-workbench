@@ -363,34 +363,9 @@ def format_evaluation_summary_block(
 # unit-testable without standing up a full lever-loop scope.
 
 
-def _emit_eval_entry_journey(
-    *,
-    emit,
-    eval_qids,
-    already_passing_qids,
-    hard_qids,
-    soft_qids,
-    gt_correction_qids,
-) -> None:
-    """Stamp the evaluated + classification events for every benchmark row.
-
-    Called once per AG iteration immediately after _analyze_and_distribute.
-    The hard set is *not* classified at entry — it gets a 'clustered' event
-    later in the same iteration.
-    """
-    seen = {str(q) for q in eval_qids if q}
-    if not seen:
-        return
-    emit("evaluated", question_ids=sorted(seen))
-    for q in already_passing_qids or []:
-        if str(q) in seen:
-            emit("already_passing", question_id=str(q))
-    for q in soft_qids or []:
-        if str(q) in seen:
-            emit("soft_signal", question_id=str(q))
-    for q in gt_correction_qids or []:
-        if str(q) in seen:
-            emit("gt_correction_candidate", question_id=str(q))
+from genie_space_optimizer.optimization.eval_entry import (  # noqa: E402,F401
+    _emit_eval_entry_journey,
+)
 
 
 _GATE_TO_STAGE: dict[str, str] = {
