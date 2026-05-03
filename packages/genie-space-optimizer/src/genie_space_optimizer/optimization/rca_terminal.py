@@ -27,6 +27,11 @@ class RcaTerminalDecision:
     status: RcaTerminalStatus
     should_continue: bool
     reason: str
+    # PR-B2: Pending AGs whose target qids no longer overlap the live hard
+    # set. Populated only by ``resolve_terminal_on_plateau``; defaults to
+    # an empty tuple for ``classify_terminal_state`` and other callers so
+    # the change is non-breaking.
+    retired_ags: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 def classify_terminal_state(
@@ -138,6 +143,27 @@ def resolve_terminal_on_plateau(
     ``ag["_stable_signature"][1]`` for the qid set. AGs without a
     signature fall back to ``ag["affected_questions"]``.
     """
+    pending_ags = list(pending_diagnostic_ags or [])
+    hard_set = set(current_hard_qids)
+
+    def _ag_qids(ag: dict) -> tuple[str, ...]:
+        sig = ag.get("_stable_signature")
+        if sig and len(sig) >= 2:
+            return tuple(sorted(str(q) for q in (sig[1] or ()) if str(q)))
+        return tuple(
+            sorted(str(q) for q in (ag.get("affected_questions") or []) if str(q))
+        )
+
+    # PR-B2: enumerate AGs whose qids no longer overlap the live hard set.
+    # Each consumer receives the same tuple via RcaTerminalDecision.retired_ags
+    # so the harness can emit one AG_RETIRED DecisionRecord per entry.
+    retired_ags_tuple: tuple[tuple[str, tuple[str, ...]], ...] = tuple(
+        (str(ag.get("id") or ag.get("ag_id") or ""), _ag_qids(ag))
+        for ag in pending_ags
+        if not (set(_ag_qids(ag)) & hard_set)
+        and (ag.get("id") or ag.get("ag_id") or "")
+    )
+
     still_patchable = sorted(set(sql_delta_qids or set()) & set(current_hard_qids))
     if still_patchable:
         return RcaTerminalDecision(
@@ -147,23 +173,18 @@ def resolve_terminal_on_plateau(
                 f"{len(still_patchable)} hard failure(s) have concrete SQL deltas "
                 f"remaining: {still_patchable}"
             ),
+            retired_ags=retired_ags_tuple,
         )
 
     # Track G — refuse plateau when a queued AG covers a live hard qid.
     overlapping_ags: list[tuple[str, set[str]]] = []
-    for ag in pending_diagnostic_ags or []:
-        sig = ag.get("_stable_signature")
-        if sig and len(sig) >= 2:
-            ag_qids = {str(q) for q in (sig[1] or ()) if str(q)}
-        else:
-            ag_qids = {
-                str(q)
-                for q in (ag.get("affected_questions") or [])
-                if str(q)
-            }
-        overlap = ag_qids & set(current_hard_qids)
+    for ag in pending_ags:
+        ag_qids = set(_ag_qids(ag))
+        overlap = ag_qids & hard_set
         if overlap:
-            overlapping_ags.append((str(ag.get("id") or ""), overlap))
+            overlapping_ags.append(
+                (str(ag.get("id") or ag.get("ag_id") or ""), overlap)
+            )
 
     if overlapping_ags:
         ag_summary = ", ".join(
@@ -176,6 +197,7 @@ def resolve_terminal_on_plateau(
                 f"plateau suppressed — pending_diagnostic_ags=[{ag_summary}] "
                 f"overlap live hard set"
             ),
+            retired_ags=retired_ags_tuple,
         )
 
     quarantined_and_hard = sorted(set(quarantined_qids) & set(current_hard_qids))
@@ -187,6 +209,7 @@ def resolve_terminal_on_plateau(
                 f"{len(quarantined_and_hard)} hard failure(s) remain in "
                 f"quarantine: {quarantined_and_hard}"
             ),
+            retired_ags=retired_ags_tuple,
         )
     open_debt = sorted(set(regression_debt_qids) & set(current_hard_qids))
     if open_debt:
@@ -197,9 +220,11 @@ def resolve_terminal_on_plateau(
                 f"{len(open_debt)} regression debt qid(s) still hard: "
                 f"{open_debt}"
             ),
+            retired_ags=retired_ags_tuple,
         )
     return RcaTerminalDecision(
         status=RcaTerminalStatus.PLATEAU_NO_OPEN_FAILURES,
         should_continue=False,
         reason="no hard failures or open regression debt remain",
+        retired_ags=retired_ags_tuple,
     )
