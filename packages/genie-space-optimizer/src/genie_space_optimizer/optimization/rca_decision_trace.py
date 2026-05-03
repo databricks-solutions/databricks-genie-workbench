@@ -77,6 +77,24 @@ class ReasonCode(str, Enum):
     POST_EVAL_PASS_TO_FAIL = "post_eval_pass_to_fail"
 
 
+class RejectReason(str, Enum):
+    """Why a candidate option was rejected in favor of the chosen one.
+
+    Used by AlternativeOption to record cluster, AG, and proposal
+    candidates that were considered but not selected.
+    """
+    NONE = "none"
+    BELOW_HARD_THRESHOLD = "below_hard_threshold"  # cluster: not promoted to hard
+    INSUFFICIENT_QIDS = "insufficient_qids"        # cluster: too small
+    LOWER_SCORE = "lower_score"                    # ag/proposal: ranked below chosen
+    BUFFERED = "buffered"                          # ag: deferred to later iteration
+    MISSING_TARGET_QIDS = "missing_target_qids"    # ag/proposal: cycle-8-bug-1 pattern
+    MALFORMED = "malformed"                        # proposal: failed shape validation
+    PATCH_CAP_DROPPED = "patch_cap_dropped"        # proposal: dropped by N-cap
+    RCA_UNGROUNDED = "rca_ungrounded"              # ag/proposal: no RCA backing
+    OTHER = "other"
+
+
 def _enum_value(value: Any) -> str:
     if isinstance(value, Enum):
         return str(value.value)
@@ -95,6 +113,49 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_json_safe(v) for v in value]
     return value
+
+
+@dataclass(frozen=True)
+class AlternativeOption:
+    """A single candidate option that was rejected in favor of the chosen one.
+
+    Stamped on `DecisionRecord.alternatives_considered` for
+    CLUSTER_SELECTED, STRATEGIST_AG_EMITTED, and PROPOSAL_GENERATED.
+    """
+    option_id: str = ""
+    kind: str = ""  # one of "cluster" | "ag" | "proposal"
+    score: float | None = None
+    reject_reason: RejectReason = RejectReason.NONE
+    reject_detail: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        row: dict[str, Any] = {
+            "option_id": str(self.option_id),
+            "kind": str(self.kind),
+            "reject_reason": self.reject_reason.value,
+        }
+        if self.score is not None:
+            row["score"] = float(self.score)
+        if self.reject_detail:
+            row["reject_detail"] = str(self.reject_detail)
+        return row
+
+    @classmethod
+    def from_dict(cls, row: Mapping[str, Any]) -> "AlternativeOption":
+        score_raw = row.get("score")
+        return cls(
+            option_id=str(row.get("option_id") or ""),
+            kind=str(row.get("kind") or ""),
+            score=float(score_raw) if score_raw is not None else None,
+            reject_reason=RejectReason(
+                str(row.get("reject_reason") or "none")
+            ),
+            reject_detail=str(row.get("reject_detail") or ""),
+        )
+
+
+def _alt_sort_key(opt: AlternativeOption) -> tuple:
+    return (str(opt.kind), str(opt.option_id))
 
 
 @dataclass(frozen=True)
@@ -128,6 +189,7 @@ class DecisionRecord:
     source_cluster_ids: tuple[str, ...] = ()
     proposal_ids: tuple[str, ...] = ()
     metrics: Mapping[str, Any] = field(default_factory=dict)
+    alternatives_considered: tuple[AlternativeOption, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -168,6 +230,11 @@ class DecisionRecord:
             row["proposal_ids"] = list(self.proposal_ids)
         if self.metrics:
             row["metrics"] = _json_safe(dict(self.metrics))
+        if self.alternatives_considered:
+            row["alternatives_considered"] = [
+                opt.to_dict()
+                for opt in sorted(self.alternatives_considered, key=_alt_sort_key)
+            ]
         return row
 
     @classmethod
@@ -197,6 +264,10 @@ class DecisionRecord:
             source_cluster_ids=_clean_str_tuple(row.get("source_cluster_ids") or ()),
             proposal_ids=_clean_str_tuple(row.get("proposal_ids") or ()),
             metrics=dict(row.get("metrics") or {}),
+            alternatives_considered=tuple(
+                AlternativeOption.from_dict(o)
+                for o in (row.get("alternatives_considered") or ())
+            ),
         )
 
 
