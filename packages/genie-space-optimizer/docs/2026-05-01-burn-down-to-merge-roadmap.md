@@ -617,7 +617,6 @@ Both phases are replay-only during implementation. The next real-Genie cycle is 
 | [`2026-05-04-harness-extractions-phase-1-plan.md`](./2026-05-04-harness-extractions-phase-1-plan.md) | Implemented | D |
 | [`2026-05-04-pre-phase-e-alternatives-capture-plan.md`](./2026-05-04-pre-phase-e-alternatives-capture-plan.md) | Ready | D.5 |
 | [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md) | Ready | E.0 |
-| [`2026-05-04-gso-evidence-bundle-and-orchestrator-skill-plan.md`](./2026-05-04-gso-evidence-bundle-and-orchestrator-skill-plan.md) | Implemented | E.0 synergy follow-up — adds evidence_bundle + trace_fetcher CLIs, gitignores runid_analysis/, refactors gso-lever-loop-run-analysis + gso-replay-cycle-intake to consume bundles, introduces gso-postmortem as the single-command troubleshooting entry point |
 | `2026-05-XX-harness-extractions-phase-2-plan.md` | To be written | F |
 | `2026-05-XX-lever-loop-typed-contract-hardening-plan.md` | To be written | G |
 | [`skills/gso-lever-loop-run-analysis/SKILL.md`](./skills/gso-lever-loop-run-analysis/SKILL.md) | Ready | B/C/D/E run analysis |
