@@ -164,6 +164,86 @@ def test_build_bundle_records_replay_fixture_missing(
     )
 
 
+def test_build_bundle_invokes_mlflow_audit_and_downloads_artifacts(
+    tmp_path: Path,
+    fake_databricks_runner: MagicMock,
+    fake_mlflow: MagicMock,
+) -> None:
+    from genie_space_optimizer.tools.evidence_bundle import build_bundle
+
+    fake_mlflow.audit.return_value = {
+        "anchor_run_id": "mr-1",
+        "sibling_runs": [
+            {
+                "run_id": "mr-1",
+                "run_type": "lever_loop",
+                "artifact_paths": [
+                    "phase_a/journey_validation/iter_01.json",
+                    "phase_b/decision_trace/iter_01.json",
+                    "phase_b/operator_transcript/iter_01.txt",
+                ],
+            },
+            {"run_id": "mr-2", "run_type": "strategy", "artifact_paths": []},
+        ],
+        "missing_per_iteration": [],
+    }
+
+    def _download(*, run_id: str, artifact_path: str, dest: Path) -> list[Path]:
+        target = dest / artifact_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}" if artifact_path.endswith(".json") else "transcript")
+        return [target]
+
+    fake_mlflow.download_artifacts.side_effect = _download
+
+    result = build_bundle(
+        job_id="j-1",
+        run_id="r-1",
+        profile="p",
+        output_root=tmp_path,
+        databricks_runner=fake_databricks_runner,
+        mlflow_runner=fake_mlflow,
+    )
+    paths = result.paths
+    assert (paths.mlflow_dir / "mr-1" / "phase_b" / "decision_trace" / "iter_01.json").exists()
+    assert paths.mlflow_audit_md.exists()
+    assert paths.mlflow_audit_json.exists()
+    assert result.manifest.resolved["anchor_mlflow_run_id"] == "mr-1"
+    assert "mr-1" in result.manifest.resolved["sibling_mlflow_run_ids"]
+    pulled = result.manifest.artifacts_pulled["mlflow_artifacts"]
+    assert any(p["run_id"] == "mr-1" for p in pulled)
+
+
+def test_build_bundle_records_phase_b_missing_on_anchor(
+    tmp_path: Path,
+    fake_databricks_runner: MagicMock,
+    fake_mlflow: MagicMock,
+) -> None:
+    from genie_space_optimizer.tools.evidence_bundle import build_bundle
+    from genie_space_optimizer.tools.evidence_layout import MissingPieceKind
+
+    fake_mlflow.audit.return_value = {
+        "anchor_run_id": "mr-1",
+        "sibling_runs": [{"run_id": "mr-1", "run_type": "lever_loop", "artifact_paths": []}],
+        "missing_per_iteration": [
+            {"iteration": 4, "kind": "PHASE_B_DECISION_TRACE", "anchor_run_id": "mr-1"},
+        ],
+    }
+    result = build_bundle(
+        job_id="j-1",
+        run_id="r-1",
+        profile="p",
+        output_root=tmp_path,
+        databricks_runner=fake_databricks_runner,
+        mlflow_runner=fake_mlflow,
+    )
+    assert any(
+        p.kind is MissingPieceKind.PHASE_B_ARTIFACT_MISSING_ON_ANCHOR
+        and p.iteration == 4
+        for p in result.manifest.missing_pieces
+    )
+
+
 def test_main_smoke(
     tmp_path: Path,
     fake_databricks_runner: MagicMock,

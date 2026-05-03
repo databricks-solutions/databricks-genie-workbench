@@ -42,6 +42,124 @@ def _list_artifacts_recursive(client: Any, run_id: str, path: str = "") -> list[
     return out
 
 
+_LEVER_LOOP_RUN_TYPE = "lever_loop"
+
+
+def audit_optimization_run(
+    *,
+    optimization_run_id: str,
+    experiment_id: str | None = None,
+    client: Any = None,
+) -> dict[str, Any]:
+    """Programmatic audit returning a structured dict.
+
+    Phase E.0 Task 6a (added for the evidence-bundle plan). Returns:
+
+        {
+            "anchor_run_id": str,                      # lever_loop sibling, or earliest
+            "sibling_runs": [
+                {"run_id": ..., "run_type": ..., "artifact_paths": [...]},
+                ...
+            ],
+            "missing_per_iteration": [
+                {"iteration": int, "kind": str, "anchor_run_id": str},
+                ...
+            ],
+        }
+
+    ``kind`` values: ``PHASE_A_JOURNEY_VALIDATION``,
+    ``PHASE_B_DECISION_TRACE``, ``PHASE_B_OPERATOR_TRANSCRIPT``.
+
+    The companion ``audit()`` function in this module still returns a
+    markdown report for the CLI. They share the same listing logic.
+    """
+    import re as _re
+
+    from mlflow.tracking import MlflowClient
+
+    if client is None:
+        client = MlflowClient()
+    filter_string = f"tags.`genie.optimization_run_id` = '{optimization_run_id}'"
+    experiment_ids = (
+        [experiment_id]
+        if experiment_id
+        else [e.experiment_id for e in client.search_experiments()]
+    )
+    runs = client.search_runs(
+        experiment_ids=experiment_ids,
+        filter_string=filter_string,
+        max_results=200,
+    )
+
+    sibling_runs: list[dict[str, Any]] = []
+    anchor_run_id = ""
+    earliest_start = None
+    earliest_run_id = ""
+    iters_seen_by_kind: dict[str, set[int]] = {
+        "PHASE_A_JOURNEY_VALIDATION": set(),
+        "PHASE_B_DECISION_TRACE": set(),
+        "PHASE_B_OPERATOR_TRANSCRIPT": set(),
+    }
+    iter_re_by_kind = {
+        "PHASE_A_JOURNEY_VALIDATION": _re.compile(
+            r"^phase_a/journey_validation/iter_(\d+)\.json$"
+        ),
+        "PHASE_B_DECISION_TRACE": _re.compile(
+            r"^phase_b/decision_trace/iter_(\d+)\.json$"
+        ),
+        "PHASE_B_OPERATOR_TRANSCRIPT": _re.compile(
+            r"^phase_b/operator_transcript/iter_(\d+)\.txt$"
+        ),
+    }
+    for run in runs:
+        run_id = run.info.run_id
+        tags = run.data.tags or {}
+        run_type = tags.get("genie.run_type", "")
+        artifacts = _list_artifacts_recursive(client, run_id)
+        sibling_runs.append(
+            {"run_id": run_id, "run_type": run_type, "artifact_paths": artifacts}
+        )
+        if run_type == _LEVER_LOOP_RUN_TYPE and not anchor_run_id:
+            anchor_run_id = run_id
+        start_time = getattr(run.info, "start_time", None) or 0
+        if earliest_start is None or start_time < earliest_start:
+            earliest_start = start_time
+            earliest_run_id = run_id
+        # Only count iter coverage on the lever_loop sibling — that's where
+        # decision-trail artifacts are anchored per Phase E.0.
+        if run_type == _LEVER_LOOP_RUN_TYPE:
+            for art in artifacts:
+                for kind, pattern in iter_re_by_kind.items():
+                    match = pattern.match(art)
+                    if match:
+                        iters_seen_by_kind[kind].add(int(match.group(1)))
+    if not anchor_run_id:
+        anchor_run_id = earliest_run_id
+
+    # Determine missing iters: any iter where one of the three kinds is
+    # missing on the anchor while iter is referenced by at least one kind.
+    all_iters: set[int] = set()
+    for s in iters_seen_by_kind.values():
+        all_iters.update(s)
+    missing_per_iteration: list[dict[str, Any]] = []
+    for iteration in sorted(all_iters):
+        for kind, seen in iters_seen_by_kind.items():
+            if iteration not in seen:
+                missing_per_iteration.append(
+                    {
+                        "iteration": iteration,
+                        "kind": kind,
+                        "anchor_run_id": anchor_run_id,
+                    }
+                )
+
+    return {
+        "anchor_run_id": anchor_run_id,
+        "sibling_runs": sibling_runs,
+        "missing_per_iteration": missing_per_iteration,
+    }
+
+
 def audit(
     *,
     opt_run_id: str,
