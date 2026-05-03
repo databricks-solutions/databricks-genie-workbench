@@ -11593,6 +11593,14 @@ def _run_lever_loop(
 
     strategist_memo_cache: dict[str, dict[str, Any]] = {}
 
+    # PR-B2: bookkeeping for the convergence-marker exit reason. Each
+    # break site overwrites one of these; the marker emit at the bottom
+    # of the function reads them through _resolve_lever_loop_exit_reason
+    # so the marker `reason` matches the human-readable termination print.
+    _lever_loop_plateau_decision = None
+    _lever_loop_divergence_label: str | None = None
+    _lever_loop_retired_ags: list[tuple[str, tuple[str, ...]]] = []
+
     for _iter_num in range(1, max_iterations + 1):
         # ── Exit checks ──────────────────────────────────────────────
         from genie_space_optimizer.optimization.acceptance_policy import (
@@ -11721,11 +11729,18 @@ def _run_lever_loop(
                     _resolved.reason,
                 )
                 continue
+            # PR-B2: capture the resolver decision so the convergence marker
+            # at the bottom of the function reports the same typed status
+            # the human-readable print below shows. Also accumulate retired
+            # AGs (Task 5 emits one DecisionRecord per entry).
+            _lever_loop_plateau_decision = _resolved
+            _lever_loop_retired_ags.extend(_resolved.retired_ags)
             print(
                 _section("LEVER LOOP — TERMINATION: plateau", "!") + "\n"
                 + _kv("Reason", _resolved.reason) + "\n"
                 + _kv("RCA terminal status", _resolved.status.value) + "\n"
                 + _kv("Iteration", _iteration_label(_iter_num)) + "\n"
+                + _kv("Retired AGs", str(len(_resolved.retired_ags))) + "\n"
                 + _bar("!")
             )
             break
@@ -11752,6 +11767,9 @@ def _run_lever_loop(
                 "Divergence detected at iteration %d: %s",
                 _iter_num, _div_rationale,
             )
+            # PR-B2: capture the divergence label so the convergence marker
+            # at the bottom of the function reports the typed reason.
+            _lever_loop_divergence_label = f"divergence_{_div_rationale}"
             print(
                 _section("LEVER LOOP — TERMINATION: divergence", "!") + "\n"
                 + _kv("Reason", _div_rationale) + "\n"
@@ -18072,7 +18090,13 @@ def _run_lever_loop(
     # marker here records that the loop body finished and carries the
     # final accuracy and threshold flag.
     try:
-        _convergence_reason = "lever_loop_completed"
+        # PR-B2: project plateau / divergence break state onto a typed
+        # marker reason so the GSO_CONVERGENCE_V1 reader sees the same
+        # vocabulary as the LEVER LOOP — TERMINATION print above.
+        _convergence_reason = _resolve_lever_loop_exit_reason(
+            _lever_loop_plateau_decision,
+            _lever_loop_divergence_label,
+        )
         _thresholds_met = bool(all_thresholds_met(best_scores, thresholds))
         print(convergence_marker(
             optimization_run_id=run_id,
