@@ -213,6 +213,70 @@ def cluster_records(
 
 
 # ---------------------------------------------------------------------------
+# RCA formed — RCA_FORMED
+# ---------------------------------------------------------------------------
+
+
+def rca_formed_records(
+    *,
+    run_id: str,
+    iteration: int,
+    clusters: Sequence[Mapping[str, Any]],
+    rca_id_by_cluster: Mapping[str, str],
+) -> list[DecisionRecord]:
+    """One ``RCA_FORMED`` ``DecisionRecord`` per cluster routed to an RCA card.
+
+    Phase B delta Task 2: closes the gap between ``CLUSTER_SELECTED``
+    (the cluster was identified) and ``STRATEGIST_AG_EMITTED`` (the AG
+    was generated). Without this record, postmortem readers can't tell
+    which clusters made it through the RCA layer vs which were dropped,
+    and the trace skips the link between cluster and AG.
+
+    Skips clusters with no rca_id — those are emitted upstream as
+    CLUSTER_SELECTED with empty rca_id, which is the existing
+    cross-checker violation that surfaces the gap.
+    """
+    rca_lookup = dict(rca_id_by_cluster or {})
+    records: list[DecisionRecord] = []
+    for cluster in clusters or []:
+        cid = str(cluster.get("cluster_id") or "")
+        if not cid:
+            continue
+        rca_id = str(rca_lookup.get(cid) or "")
+        if not rca_id:
+            continue
+        qids = tuple(
+            str(q) for q in (cluster.get("question_ids") or []) if str(q)
+        )
+        root_cause = str(cluster.get("root_cause") or "")
+        records.append(
+            DecisionRecord(
+                run_id=run_id,
+                iteration=int(iteration),
+                decision_type=DecisionType.RCA_FORMED,
+                outcome=DecisionOutcome.INFO,
+                reason_code=ReasonCode.RCA_GROUNDED,
+                cluster_id=cid,
+                rca_id=rca_id,
+                root_cause=root_cause,
+                evidence_refs=(f"cluster:{cid}", f"rca:{rca_id}"),
+                affected_qids=qids,
+                target_qids=qids,
+                source_cluster_ids=(cid,),
+                expected_effect=(
+                    f"RCA {rca_id} provides causal grounding for "
+                    f"{root_cause or 'failure pattern'} on "
+                    f"{len(qids)} qid(s)."
+                ),
+                next_action=(
+                    f"Strategist should emit AG targeting {cid}"
+                ),
+            )
+        )
+    return records
+
+
+# ---------------------------------------------------------------------------
 # Strategist AG emission — STRATEGIST_AG_EMITTED
 # ---------------------------------------------------------------------------
 
