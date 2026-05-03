@@ -14511,6 +14511,20 @@ def _run_lever_loop(
                 ReasonCode as _ReasonCode,
             )
 
+            # Phase D.5 Task 6: capture AG alternatives. ``[ag]`` at this
+            # site is the single emitted AG; without a local that holds
+            # the strategist's full returned set (including buffered/
+            # filtered/rejected), the fallback yields empty alternatives
+            # — byte-stable. Wire ``strategist_returned_ags`` here when
+            # cycle E surfaces it as a local.
+            _ag_alts_by_id = _build_ag_alternatives_by_id(
+                strategist_returned_ags=(
+                    list(strategist_returned_ags)
+                    if "strategist_returned_ags" in locals()
+                    else [ag]
+                ),
+                emitted_ag_ids=[str(ag.get("id") or ag.get("ag_id") or "")],
+            )
             _ag_records = _strategist_ag_records(
                 run_id=run_id,
                 iteration=iteration_counter,
@@ -14521,6 +14535,7 @@ def _run_lever_loop(
                     if _c.get("cluster_id")
                 },
                 rca_id_by_cluster=_iter_rca_id_by_cluster,
+                ag_alternatives_by_id=_ag_alts_by_id,
             )
             _current_iter_inputs.setdefault("decision_records", []).extend(
                 [r.to_dict() for r in _ag_records]
