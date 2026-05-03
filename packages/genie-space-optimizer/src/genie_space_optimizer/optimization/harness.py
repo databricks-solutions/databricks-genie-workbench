@@ -11610,9 +11610,12 @@ def _run_lever_loop(
         _iter_producer_exceptions: dict[str, int] = {
             "eval_classification": 0,
             "cluster": 0,
+            "rca_formed": 0,
             "strategist_ag": 0,
             "ag_outcome": 0,
             "post_eval_resolution": 0,
+            "proposal_generated": 0,
+            "patch_applied": 0,
         }
         _iter_classification: dict[str, str] = {}
         for _q in _already_passing_set:
@@ -11755,6 +11758,36 @@ def _run_lever_loop(
             )
             logger.debug(
                 "Phase B: cluster_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
+        # Phase B delta Task 3 — emit RCA_FORMED records (one per
+        # cluster routed to an RCA card). Closes the gap between
+        # CLUSTER_SELECTED and STRATEGIST_AG_EMITTED in the decision
+        # trace.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                rca_formed_records as _rca_formed_records,
+            )
+
+            _rca_formed = _rca_formed_records(
+                run_id=run_id,
+                iteration=iteration_counter,
+                clusters=clusters or [],
+                rca_id_by_cluster=_iter_rca_id_by_cluster,
+            )
+            _current_iter_inputs.setdefault("decision_records", []).extend(
+                [r.to_dict() for r in _rca_formed]
+            )
+        except Exception:
+            _iter_producer_exceptions["rca_formed"] += 1
+            _phase_b_producer_exceptions["rca_formed"] = (
+                _phase_b_producer_exceptions.get("rca_formed", 0) + 1
+            )
+            logger.debug(
+                "Phase B: rca_formed_records failed (non-fatal)",
                 exc_info=True,
             )
             if _phase_b_strict_mode():
