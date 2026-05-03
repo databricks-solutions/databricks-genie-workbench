@@ -1,11 +1,11 @@
 ---
 name: gso-lever-loop-run-analysis
-description: Analyze Genie Space Optimizer lever-loop Databricks Job runs using Job ID and Run ID. Use for Phase A/B/C/D validation, RCA-grounded optimizer debugging, operator transcript checks, MLflow trace/artifact inspection, and postmortem generation.
+description: Use when analyzing, validating, debugging, or postmortem-ing a Genie Space Optimizer lever-loop Databricks Job run by job_id + run_id. Covers Phase A journey replay, Phase B/C decision-trace and RCA-groundedness checks, Phase D scoreboard and bucketing checks, Phase E pilot-run merge-readiness validation (zero validator warnings, raise_on_violation flip, accuracy non-regression vs variance baseline, decision-trace hard-gate, sanity-broken PR), MLflow trace/artifact inspection, and postmortem generation.
 ---
 
 # GSO Lever Loop Run Analysis
 
-Use this skill when asked to analyze, validate, debug, or postmortem a Genie Space Optimizer lever-loop Databricks Job run.
+Use this skill when asked to analyze, validate, debug, or postmortem a Genie Space Optimizer lever-loop Databricks Job run, including the Phase E real-run pilot that gates the burn-down-to-merge roadmap.
 
 ## Required Inputs
 
@@ -19,6 +19,9 @@ Use this skill when asked to analyze, validate, debug, or postmortem a Genie Spa
 - `experiment_id`: MLflow experiment ID. If omitted, resolve it from run parameters, stdout markers, MLflow tags, or job output.
 - `output_dir`: Directory for reports. Default: `packages/genie-space-optimizer/docs/runid_analysis`.
 - `iteration`: Iteration number to focus on. If omitted, analyze all iterations.
+- `phase`: One of `A`, `B`, `C`, `D`, `E`, or `all` (default `all`). When set to `E`, the Phase E Merge-Readiness Health checklist runs in addition to the per-iteration checklists. When set to a single earlier phase, focus the report on that phase's checks.
+- `baseline_run_id`: Required when `phase=E`. The Phase A variance-baseline run ID used for the accuracy non-regression check. If omitted with `phase=E`, ask the user.
+- `repo_root`: Path to the repo for codebase-state checks (Phase E only). Default: workspace root. Used to verify `raise_on_violation`, the decision-trace hard-gate replay test, and the sanity-broken PR commit/CI artifact.
 
 ## Required Related Skills
 
@@ -29,6 +32,7 @@ Use these skills as needed:
 - `analyze-mlflow-trace` for detailed trace analysis.
 - `querying-mlflow-metrics` for metrics and aggregate trace/run analysis.
 - `systematic-debugging` for root-cause workflow.
+- `gso-replay-cycle-intake` — peer skill; the **write-side** counterpart. This skill is read-only; when the user asks to "advance the burn-down", "intake the cycle", "promote the fixture", or to act on the analysis output, hand off there. See "Cross-Skill Hand-offs" below.
 
 ## Operating Principle
 
@@ -38,6 +42,12 @@ Do not guess. Follow systematic debugging:
 2. Identify where the failure occurred: infrastructure, input handoff, eval, RCA, strategist, proposal, gate, applier, acceptance, Phase B trace persistence, convergence, or reporting.
 3. State one root-cause hypothesis at a time.
 4. Recommend the smallest next diagnostic or code action.
+
+For Phase E specifically, distinguish between three failure surfaces — the recommended next action depends on which one tripped:
+
+- **Pilot-run gap** (rerun candidate): a defect surfaced during the real run itself (validator warning, missing decision record, transcript section empty on a real iteration, scoreboard nonsense, bucket misclassification). Rerun is on the table only after the underlying defect is fixed; a rerun without a fix repeats the same failure.
+- **Merge-gate gap** (code/test work): the codebase has not yet flipped `raise_on_violation`, lacks the decision-trace hard-gate replay test, or has no sanity-broken PR CI evidence. Independent of any pilot run; does not need a rerun.
+- **Baseline regression** (rollback or rescope): the pilot completed cleanly but accuracy regressed against the Phase A variance baseline. Investigate the regressing iteration's decision trace; consider rolling back the offending PR or rescoping Phase E.
 
 ## Analysis Workflow
 
@@ -169,6 +179,42 @@ If any field is missing, classify the run as `DEGRADED_TRACE_CONTRACT` unless th
 - Assessment/scorer errors separated from application errors.
 - Long/slow traces listed when latency is relevant.
 
+### Phase E Merge-Readiness Health
+
+Run this section only when `phase=E` or `phase=all` AND the run under review is positioned as the Phase E pilot. The checklist has two halves: pilot-run validation (depends on this run's outputs) and merge-gate state (depends on the codebase, independent of any single run).
+
+#### Pilot-run validation (this run's outputs)
+
+Each item maps to one bullet from roadmap lines 360-367:
+
+- **Zero validator warnings.** Sum journey-contract violations + decision-trace validation count across all iterations. Pass requires `0`. Any non-zero is a `PHASE_E_VALIDATOR_WARNINGS_PRESENT` blocker.
+- **Decision trace completeness.** For every iteration, `phase_b/decision_trace/iter_<N>.json` exists, contains records of all 10 `DecisionType` values that had at least one corresponding event, and the cross-projection check holds.
+- **Operator transcript diagnosability.** A failed iteration's transcript must let an operator name the failure surface (which gate, which proposal, which qid, which bucket) without grepping `harness.py` or raw stdout. Spot-check by picking one rolled-back or unresolved iteration and reading only its transcript: can you name (a) the AG that rolled back, (b) the gate that dropped, (c) the unresolved bucket and next action? Three yes = pass.
+- **Scoreboard sensibility.** `journey_completeness_pct`, `decision_trace_completeness_pct`, and `rca_loop_closure_pct` are all in `[0.0, 1.0]`. `accuracy_delta` is finite and matches the iteration's eval delta. `dominant_signal` resolves to one of the seven defined rungs (HEALTHY / RCA_GAP / TARGETING_GAP / etc.) — no `UNKNOWN` or empty string.
+- **Bucket interpretability.** Pick 3-5 unresolved qids from the final iteration's `Unresolved QID Buckets` section. For each, read the per-qid evidence (linked decision records via `evidence_record_ids`) and confirm the assigned `FailureBucket` matches the actual earliest broken link in the RCA invariant chain. Misclassification on more than one qid out of five is a `PHASE_E_BUCKET_INTERPRETABILITY_FAIL`.
+- **RCA loop state coverage.** Every unresolved qid in the final iteration has a `ClassificationResult` with `bucket != None` and `evidence_record_ids` non-empty. Sentinel-only is acceptable for resolved qids; unresolved qids without evidence is a gap.
+- **Accuracy non-regression vs Phase A baseline.** Required input: `baseline_run_id`. Pull the variance-baseline arbiter accuracy from `baseline_run_id`'s final iteration; compare to this pilot's final-iteration arbiter accuracy. Non-regression means within the variance band (typically ±2 percentage points unless a tighter band is set in `expected_canonical_decisions`). A regression beyond the band is `PHASE_E_ACCURACY_REGRESSION` and is **not** a rerun candidate without a code investigation.
+
+#### Merge-gate state (codebase, independent of this run)
+
+These four items are read from `repo_root`, not from the run output:
+
+- **`raise_on_violation` flipped.** Confirm `_validate_journeys_at_iteration_end` is called with `raise_on_violation=True` in `harness.py`. Today's call site (around line 17218 pre-Phase E) passes `False`. Pass requires the flip. If still `False`, this is `PHASE_E_MERGE_GATE_NOT_WIRED`.
+- **Decision-trace hard-gate replay test exists.** A test in `tests/replay/` must fail closed when a required `DecisionRecord` is missing — distinct from the cross-projection structure test which validates layout. Search for tests that assert presence-and-completeness of canonical record types (`PATCH_APPLIED`, `RCA_FORMED`, `ACCEPTANCE_DECIDED`, `QID_RESOLUTION`) and would CI-fail if any went missing on a synthetic gap fixture. Absence of such a test is `PHASE_E_MERGE_GATE_NOT_WIRED`.
+- **Sanity-broken PR CI evidence captured.** A closed PR (or saved CI run link) must exist proving CI failed loudly when one `_emit_ag_outcome_journey` call or one required decision record was dropped. Without this evidence, the gates are unproven even if they exist on paper.
+- **No partially-shipped Phase D plans.** All tasks across the three Phase D plans (`2026-05-04-operator-scoreboard-plan.md`, `2026-05-04-failure-bucketing-classifier-plan.md`, `2026-05-04-harness-extractions-phase-1-plan.md`) are landed against their respective task lists. Partial completion is a soft block — the pilot can run, but merge cannot.
+- **Decision-trail artifact integrity (E.0).** Run `python -m genie_space_optimizer.tools.mlflow_audit --opt-run-id <id>` and confirm `phase_a/journey_validation/`, `phase_b/decision_trace/`, and `phase_b/operator_transcript/` are present on the lever_loop anchor run for every iteration. If the audit reports any prefix missing on the anchor, this is `PHASE_E0_DECISION_TRAIL_MISSING` — see Degraded Analysis Rules for routing.
+
+#### Phase E verdict
+
+After completing both halves, classify the run as one of:
+
+- `READY_TO_MERGE` — pilot-run validation all green, merge-gate state all four items pass.
+- `PILOT_NEEDS_RERUN` — a pilot-run defect surfaced; underlying code fix required before rerun. Name the fix.
+- `MERGE_GATE_GAP` — pilot-run validation passed but one or more merge-gate items unfinished. Pilot does not need to rerun.
+- `BASELINE_REGRESSION` — pilot completed but accuracy regressed beyond the variance band.
+- `BLOCKED` — multiple of the above; list each.
+
 ## Failure Taxonomy
 
 Classify the primary failure as one of:
@@ -189,6 +235,16 @@ Classify the primary failure as one of:
 - `CONVERGENCE_OR_PLATEAU_GAP`
 - `MODEL_CEILING`
 - `UNKNOWN_NEEDS_MORE_EVIDENCE`
+
+### Phase E specific (use only when `phase=E`)
+
+- `PHASE_E_VALIDATOR_WARNINGS_PRESENT` — one or more journey or decision-trace validations emitted on the pilot run. Blocks merge.
+- `PHASE_E_ACCURACY_REGRESSION` — pilot final-iteration accuracy fell below the Phase A variance band vs `baseline_run_id`. Blocks merge; not a rerun candidate without code investigation.
+- `PHASE_E_TRANSCRIPT_NOT_DIAGNOSTIC` — operator transcript renders the eight sections but one or more is empty on an iteration that should have had records, or required fields are missing such that an operator cannot diagnose without log-grep.
+- `PHASE_E_SCOREBOARD_NONSENSICAL` — scoreboard metric out of `[0.0, 1.0]`, infinite/NaN delta, or `dominant_signal` unresolved.
+- `PHASE_E_BUCKET_INTERPRETABILITY_FAIL` — more than one of five spot-checked unresolved qids was bucketed to a downstream link instead of the earliest broken link in the RCA invariant chain.
+- `PHASE_E_MERGE_GATE_NOT_WIRED` — `raise_on_violation` still `False`, decision-trace hard-gate replay test absent, or sanity-broken PR CI evidence missing. Independent of any pilot run.
+- `PHASE_E_PARTIAL_PHASE_D` — at least one task across the three Phase D plans is unlanded. Soft block on merge; pilot may proceed.
 
 ## Report Format
 
@@ -222,6 +278,37 @@ Every report must contain:
 ## Evidence Appendix
 ```
 
+When `phase=E` (or `phase=all` for a Phase E pilot), the report must also contain:
+
+```markdown
+## Phase E Merge-Readiness Health
+
+### Pilot-Run Validation
+
+| Check | Result | Evidence |
+|---|---|---|
+| Zero validator warnings | PASS / FAIL (count) | (per-iteration count breakdown) |
+| Decision trace completeness | PASS / FAIL | (artifact paths + missing types) |
+| Transcript diagnosability spot-check | PASS / FAIL | (iteration sampled + 3 named answers) |
+| Scoreboard sensibility | PASS / FAIL | (out-of-range metrics, if any) |
+| Bucket interpretability spot-check | PASS / FAIL | (qids sampled + correctness) |
+| RCA loop state coverage | PASS / FAIL | (unresolved qids missing evidence) |
+| Accuracy non-regression vs baseline | PASS / FAIL (delta) | (baseline_run_id + variance band) |
+
+### Merge-Gate State
+
+| Check | Result | Evidence |
+|---|---|---|
+| `raise_on_violation=True` flipped | PASS / FAIL | (harness.py line + commit) |
+| Decision-trace hard-gate replay test exists | PASS / FAIL | (test file path + assertion type) |
+| Sanity-broken PR CI evidence captured | PASS / FAIL | (PR URL + CI failure link) |
+| Phase D plans fully landed | PASS / FAIL | (per-plan task tally) |
+
+### Phase E Verdict
+
+One of `READY_TO_MERGE`, `PILOT_NEEDS_RERUN`, `MERGE_GATE_GAP`, `BASELINE_REGRESSION`, or `BLOCKED` with one paragraph naming the smallest concrete next action.
+```
+
 ## Degraded Analysis Rules
 
 If task output is truncated, say so and rely on MLflow artifacts and markers.
@@ -232,9 +319,35 @@ If `GSO_*_V1` markers are missing, run legacy-mode analysis from existing sectio
 
 If evidence conflicts, report the conflict rather than choosing one source silently.
 
+For Phase E specifically:
+
+- If `baseline_run_id` is unavailable when `phase=E`, write the report with `PHASE_E_BASELINE_UNRESOLVED` in the accuracy non-regression row and ask the user. Do not fabricate a baseline from this run's iteration 0.
+- If the pilot did not complete (truncation, infrastructure failure, run cancelled mid-iteration), classify the run with the appropriate non-Phase-E label (`DATABRICKS_JOB_FAILURE` etc.) and explicitly state that Phase E validation cannot proceed until a complete pilot run exists.
+- If merge-gate state checks find `repo_root` unset or inaccessible, mark each merge-gate row `UNVERIFIED` and ask the user to confirm or rerun with `repo_root` set.
+- If pilot-run validation passes but merge-gate state shows multiple gaps, do not classify as `READY_TO_MERGE` — use `MERGE_GATE_GAP` and list the missing items in priority order.
+- If the `mlflow_audit` CLI reports decision-trail artifacts missing on the lever_loop anchor for any iteration, classify the run as `MERGE_GATE_GAP` with the label `PHASE_E0_DECISION_TRAIL_MISSING`, and recommend running `python -m genie_space_optimizer.tools.mlflow_backfill --opt-run-id <id> --replay-fixture <path>` followed by a fresh audit pass before re-attempting the Phase E pilot.
+
+## Cross-Skill Hand-offs
+
+This skill is **read-only**; it never overwrites fixtures, edits the burn-down ledger, modifies test budget literals, or creates git commits. When the user's intent crosses into write-side ops, hand off explicitly to `gso-replay-cycle-intake` rather than attempting those actions here.
+
+This skill **calls** `gso-replay-cycle-intake` in two cases:
+
+1. **Post-analysis intake request** — after a postmortem completes, if the user says "advance the burn-down", "intake this cycle", "promote the fixture", or "tighten the budget", hand off with `cycle_number`, the `databricks://<job_id>/<run_id>` source (or the resolved MLflow artifact path), and the postmortem's one-line summary as `notes`.
+2. **Phase E `READY_TO_MERGE` intake** — when the Phase E checklist verdict is `READY_TO_MERGE` and the user wants to lock the burn-down at the merge baseline, hand off with the pilot run's job/run reference. Tightening the burn-down budget on a clean merge run is the canonical capstone for Phase E.
+
+This skill **is called by** `gso-replay-cycle-intake` in three cases:
+
+1. **Fixture acquisition for a `databricks://` source** — the intake skill defers job-run resolution and MLflow artifact lookup here. Return the resolved fixture path (or MLflow artifact reference) so it can copy it into the cycle's raw fixture slot.
+2. **Step 6 regression triage** — when the intake skill's Step 4 finds violations above the prior `BURNDOWN_BUDGET`, it reverts and hands off here with the cycle-N raw fixture path and the prior cycle's commit SHA. Produce a postmortem identifying the regressing emit pattern; the intake skill will not promote until a fix lands and a re-run is at-or-below budget.
+3. **Notes derivation** — when the user did not supply `notes` for the ledger row, the intake skill may ask this skill for a one-paragraph "what changed since cycle N-1" summary derived from the postmortem's Recommended Next Actions section.
+
+Hand-offs in either direction are **explicit**. State "Handing off to `gso-replay-cycle-intake` to advance the burn-down" (or the converse) before invoking the peer skill so the audit trail is clear.
+
 ## Safety
 
 - Do not run destructive Databricks commands.
 - Do not cancel, rerun, repair, or delete jobs unless the user explicitly asks.
 - Do not include tokens, credentials, full bearer headers, or raw secrets in reports.
 - Quote only short evidence snippets.
+- Do not overwrite replay fixtures, edit the burn-down ledger, change `BURNDOWN_BUDGET`, or create git commits — those are write-side operations owned by `gso-replay-cycle-intake`. If the user requests them, hand off rather than attempting them here.
