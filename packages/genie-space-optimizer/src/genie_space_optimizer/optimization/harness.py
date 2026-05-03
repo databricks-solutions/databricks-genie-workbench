@@ -785,6 +785,15 @@ def _merge_bug4_counters(eval_result: dict) -> dict:
         from genie_space_optimizer.optimization.optimizer import (
             get_bug4_counters, reset_bug4_counters,
         )
+        # Cycle 8 Bug 1 Phase 3b Task B: reset the Lever 5 gate-drop
+        # ledger alongside Bug-4 counters since they share an
+        # iteration-scoped lifecycle.
+        try:
+            from genie_space_optimizer.optimization.optimizer import (
+                reset_lever5_gate_drops as _reset_lever5_gate_drops,
+            )
+        except ImportError:
+            _reset_lever5_gate_drops = None
     except ImportError:
         return eval_result
     snapshot = get_bug4_counters()
@@ -819,6 +828,8 @@ def _merge_bug4_counters(eval_result: dict) -> dict:
         existing_fw["_total"] = int(existing_fw.get("_total", 0)) + flat_rejections
     eval_result["firewall_rejection_count_by_type"] = existing_fw
     reset_bug4_counters()
+    if _reset_lever5_gate_drops is not None:
+        _reset_lever5_gate_drops()
     return eval_result
 
 
@@ -13528,6 +13539,66 @@ def _run_lever_loop(
                 benchmarks=benchmarks,
             )
             all_proposals.extend(lever_proposals)
+
+        # Cycle 8 Bug 1 Phase 3b Task B — drain Lever 5 structural-gate
+        # drops for this AG into the iteration's decision_records. The
+        # gate fires inside generate_proposals_from_strategy and stashes
+        # one record per drop on optimizer._LEVER5_GATE_DROPS; we snapshot
+        # here, filter to this AG, and build a typed GATE_DECISION
+        # DecisionRecord. The full ledger is reset at the end of the
+        # iteration alongside the Bug-4 counters.
+        try:
+            from genie_space_optimizer.optimization.optimizer import (
+                get_lever5_gate_drops as _get_lever5_gate_drops,
+            )
+            from genie_space_optimizer.optimization.decision_emitters import (
+                lever5_structural_gate_records as _lever5_structural_gate_records,
+            )
+
+            _l5_all_drops = _get_lever5_gate_drops()
+            _l5_ag_drops = [
+                d for d in _l5_all_drops
+                if str(d.get("ag_id") or "") == str(ag_id)
+            ]
+            if _l5_ag_drops:
+                _l5_ag_root_cause = ""
+                _l5_ag_rca_id = ""
+                for _cid in (ag.get("source_cluster_ids") or []):
+                    _l5_ag_rca_id = str(
+                        _iter_rca_id_by_cluster.get(str(_cid)) or ""
+                    )
+                    _src_cluster = _iter_source_clusters_by_id.get(str(_cid))
+                    if isinstance(_src_cluster, dict) and not _l5_ag_root_cause:
+                        _l5_ag_root_cause = str(
+                            _src_cluster.get("root_cause") or ""
+                        )
+                    if _l5_ag_rca_id and _l5_ag_root_cause:
+                        break
+                _l5_records = _lever5_structural_gate_records(
+                    run_id=run_id,
+                    iteration=iteration_counter,
+                    ag_id=str(ag_id),
+                    rca_id=_l5_ag_rca_id,
+                    root_cause=_l5_ag_root_cause,
+                    target_qids=tuple(
+                        str(q) for q in (ag.get("affected_questions") or [])
+                        if str(q)
+                    ),
+                    drops=_l5_ag_drops,
+                )
+                _current_iter_inputs.setdefault(
+                    "decision_records", []
+                ).extend([r.to_dict() for r in _l5_records])
+        except Exception:
+            _phase_b_producer_exceptions["lever5_structural_gate"] = (
+                _phase_b_producer_exceptions.get("lever5_structural_gate", 0) + 1
+            )
+            logger.debug(
+                "Cycle 8 3b: lever5_structural_gate_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
 
         # Task 4 — patch-survival snapshot: proposed gate.
         _survival_proposed = list(all_proposals)

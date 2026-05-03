@@ -852,6 +852,92 @@ def blast_radius_decision_records(
     return records
 
 
+def lever5_structural_gate_records(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    rca_id: str,
+    root_cause: str,
+    target_qids: Sequence[str],
+    drops: Sequence[Mapping[str, Any]],
+) -> list[DecisionRecord]:
+    """Emit one ``GATE_DECISION`` / ``DROPPED`` record per Lever 5
+    structural-gate drop.
+
+    Cycle 8 Bug 1 Phase 3b Task B: the gate at
+    ``optimizer.py:13961-13971`` silently zeroes ``instruction_sections``
+    and ``instruction_guidance`` when the dominant cluster root cause is
+    SQL-shape (``wrong_aggregation``, ``missing_filter``, ``wrong_join``,
+    etc.) but no ``example_sql`` is attached. Today no ``DecisionRecord``
+    is emitted, so the operator transcript's
+    ``Proposal Survival And Gate Drops`` section renders nothing for the
+    most common drop on ``gs_024``.
+
+    ``reason_code=RCA_UNGROUNDED`` is the precise semantic: the proposal
+    has no causal grounding for the SQL-shape root cause it claims to
+    address (instructions don't change SQL structure).
+
+    Gate-specific signals (``target_lever``, ``root_causes``,
+    ``had_example_sqls``, ``instruction_sections_dropped``,
+    ``instruction_guidance_dropped``) live in ``metrics`` so the
+    cross-checker's RCA-grounding contract still validates against the
+    canonical fields.
+    """
+    cleaned_target_qids = tuple(
+        str(q) for q in (target_qids or ()) if str(q)
+    )
+    records: list[DecisionRecord] = []
+    for d in drops or []:
+        root_causes = list(d.get("root_causes") or ())
+        records.append(
+            DecisionRecord(
+                run_id=str(run_id),
+                iteration=int(iteration),
+                ag_id=str(ag_id),
+                rca_id=str(rca_id or ""),
+                root_cause=str(root_cause or ""),
+                decision_type=DecisionType.GATE_DECISION,
+                outcome=DecisionOutcome.DROPPED,
+                reason_code=ReasonCode.RCA_UNGROUNDED,
+                gate="lever5_structural_gate",
+                reason_detail=f"sql_shape_without_example_sql:{','.join(root_causes)}",
+                evidence_refs=(f"ag:{ag_id}", "lever5_structural_gate"),
+                target_qids=cleaned_target_qids,
+                affected_qids=cleaned_target_qids,
+                expected_effect=(
+                    f"Lever 5 instruction would address "
+                    f"{root_cause or 'failure pattern'} on "
+                    f"{len(cleaned_target_qids)} target qid(s)."
+                ),
+                observed_effect=(
+                    f"Dropped: SQL-shape root cause(s) "
+                    f"{root_causes} require structural fix; no "
+                    f"example_sql attached."
+                ),
+                next_action=(
+                    "Re-route via Lever 6 (sql_snippet) or attach "
+                    "example_sql via cluster-driven synthesis"
+                ),
+                metrics={
+                    "target_lever": int(d.get("target_lever") or 5),
+                    "root_causes": [str(r) for r in root_causes],
+                    "had_example_sqls": bool(d.get("had_example_sqls") or False),
+                    "instruction_sections_dropped": bool(
+                        d.get("instruction_sections_dropped") or False
+                    ),
+                    "instruction_guidance_dropped": bool(
+                        d.get("instruction_guidance_dropped") or False
+                    ),
+                    "source_clusters": [
+                        str(s) for s in (d.get("source_clusters") or ())
+                    ],
+                },
+            )
+        )
+    return records
+
+
 def dead_on_arrival_decision_records(
     *,
     run_id: str,

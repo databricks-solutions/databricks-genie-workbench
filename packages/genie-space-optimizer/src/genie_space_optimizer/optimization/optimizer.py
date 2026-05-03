@@ -7806,6 +7806,26 @@ def _incr_bug4_counter(key: str, amount: int = 1) -> None:
     _BUG4_COUNTERS[key] = _BUG4_COUNTERS.get(key, 0) + amount
 
 
+# ── Lever 5 structural-gate drop side-channel ──────────────────────────
+# Cycle 8 Bug 1 Phase 3b Task B: the gate at line 13961 silently zeroes
+# instruction proposals when the dominant cluster root cause is SQL-shape
+# but no example_sql is attached. We append one record per drop here so
+# the harness can build typed DecisionRecords downstream and surface the
+# drop in the operator transcript. Reset per iteration alongside the
+# Bug-4 counters.
+_LEVER5_GATE_DROPS: list[dict] = []
+
+
+def reset_lever5_gate_drops() -> None:
+    """Reset the Lever 5 structural-gate drop ledger between iterations."""
+    _LEVER5_GATE_DROPS.clear()
+
+
+def get_lever5_gate_drops() -> list[dict]:
+    """Snapshot of Lever 5 structural-gate drops for harness wiring."""
+    return list(_LEVER5_GATE_DROPS)
+
+
 def _resolve_lever5_llm_result(
     llm_result: dict, original_patch_type: str, cluster: dict | None = None,
 ) -> tuple[str, dict]:
@@ -13960,6 +13980,23 @@ def generate_proposals_from_strategy(
             )
             if _l5_structural_gate_blocked:
                 _incr_bug4_counter("lever5_text_only_blocked")
+                # Cycle 8 Bug 1 Phase 3b Task B: capture the drop on a
+                # side-channel ledger so the harness can build a typed
+                # GATE_DECISION DecisionRecord for the operator
+                # transcript. The instruction silencing below remains
+                # the active behaviour; this is observability only.
+                _LEVER5_GATE_DROPS.append({
+                    "ag_id": str(ag_id),
+                    "source_clusters": tuple(str(s) for s in source_clusters),
+                    "root_causes": tuple(sorted(_ag_structural_root_causes)),
+                    "target_lever": 5,
+                    "had_example_sqls": bool(example_sqls_list),
+                    "instruction_sections_dropped": (
+                        isinstance(instruction_sections, dict)
+                        and bool(instruction_sections)
+                    ),
+                    "instruction_guidance_dropped": bool(instruction_guidance),
+                })
                 logger.warning(
                     "[%s] Lever 5 structural gate: dropping instruction-only "
                     "proposal. Dominant cluster root cause(s) %s are SQL-shape; "
