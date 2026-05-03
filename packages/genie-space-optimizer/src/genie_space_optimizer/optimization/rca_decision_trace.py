@@ -247,6 +247,24 @@ def _record_qids(record: DecisionRecord) -> tuple[str, ...]:
     return ()
 
 
+# Phase B delta Task 8: ``PATCH_APPLIED`` decision records map to the
+# ``applied`` journey stage, but the harness has split that stage into
+# ``applied_targeted`` (qid was in patch's target_qids) and
+# ``applied_broad_ag_scope`` (qid was in the AG's affected_questions
+# but not the patch's narrow target). Both descend from ``applied``,
+# so the validator treats them as members of the same stage family.
+_STAGE_FAMILIES: Mapping[str, tuple[str, ...]] = {
+    "applied": ("applied", "applied_targeted", "applied_broad_ag_scope"),
+}
+
+
+def _stage_matches(event_stage: str, required_stage: str) -> bool:
+    family = _STAGE_FAMILIES.get(required_stage)
+    if family is not None:
+        return event_stage in family
+    return event_stage == required_stage
+
+
 def _has_event(
     *,
     events: Sequence[Any],
@@ -257,7 +275,7 @@ def _has_event(
     for ev in events:
         if getattr(ev, "question_id", "") != qid:
             continue
-        if getattr(ev, "stage", "") != stage:
+        if not _stage_matches(getattr(ev, "stage", ""), stage):
             continue
         if proposal_id and getattr(ev, "proposal_id", "") != proposal_id:
             continue
