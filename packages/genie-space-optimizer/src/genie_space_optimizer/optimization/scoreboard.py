@@ -269,3 +269,195 @@ def _events_by_qid(trace: OptimizationTrace) -> dict[str, list[QuestionJourneyEv
             continue
         grouped.setdefault(qid, []).append(ev)
     return grouped
+
+
+# ---------------------------------------------------------------------------
+# Phase D — trace-derived metric functions (ten metrics).
+# ---------------------------------------------------------------------------
+
+
+_TERMINAL_UNACTIONABLE_REASONS: frozenset[str] = frozenset({
+    "post_eval_hold_fail",
+    "post_eval_pass_to_fail",
+})
+
+
+def journey_completeness_pct_from_trace(
+    trace: OptimizationTrace, *, iteration: int,
+) -> float:
+    qids: set[str] = set()
+    for rec in _records_by_type_for_iteration(
+        trace, iteration=iteration, decision_type=DecisionType.EVAL_CLASSIFIED,
+    ):
+        if rec.question_id:
+            qids.add(rec.question_id)
+    if not qids:
+        return 0.0
+    events_for_qid = _events_by_qid(trace)
+    completed = sum(
+        1 for qid in qids
+        if any(
+            ev.stage in _TERMINAL_JOURNEY_STAGES
+            for ev in events_for_qid.get(qid, [])
+        )
+    )
+    return completed / len(qids)
+
+
+def hard_cluster_coverage_pct_from_trace(
+    trace: OptimizationTrace, *, iteration: int,
+) -> float:
+    distinct_clusters: set[str] = set()
+    for rec in _records_by_type_for_iteration(
+        trace, iteration=iteration, decision_type=DecisionType.CLUSTER_SELECTED,
+    ):
+        if rec.cluster_id:
+            distinct_clusters.add(rec.cluster_id)
+    if not distinct_clusters:
+        return 0.0
+    covered: set[str] = set()
+    for rec in _records_by_type_for_iteration(
+        trace, iteration=iteration, decision_type=DecisionType.PATCH_APPLIED,
+    ):
+        if rec.cluster_id:
+            covered.add(rec.cluster_id)
+    return len(covered & distinct_clusters) / len(distinct_clusters)
+
+
+def causal_patch_survival_pct_from_trace(
+    trace: OptimizationTrace, *, iteration: int,
+) -> float:
+    proposed_ids: set[str] = set()
+    for rec in _records_by_type_for_iteration(
+        trace, iteration=iteration, decision_type=DecisionType.PROPOSAL_GENERATED,
+    ):
+        pid = rec.proposal_id or (rec.proposal_ids[0] if rec.proposal_ids else "")
+        if pid:
+            proposed_ids.add(pid)
+    if not proposed_ids:
+        return 0.0
+    applied_parent_ids: set[str] = set()
+    for rec in _records_by_type_for_iteration(
+        trace, iteration=iteration, decision_type=DecisionType.PATCH_APPLIED,
+    ):
+        pid = rec.proposal_id or (rec.proposal_ids[0] if rec.proposal_ids else "")
+        if pid:
+            applied_parent_ids.add(pid)
+    return len(applied_parent_ids & proposed_ids) / len(proposed_ids)
+
+
+def malformed_proposals_at_cap_from_trace(
+    trace: OptimizationTrace, *, iteration: int,
+) -> int:
+    count = 0
+    for rec in _records_by_type_for_iteration(
+        trace, iteration=iteration, decision_type=DecisionType.GATE_DECISION,
+    ):
+        if (
+            rec.gate == "patch_cap"
+            and rec.outcome.value == "dropped"
+            and rec.reason_code.value == "patch_cap_dropped"
+        ):
+            count += 1
+    return count
+
+
+def rollback_attribution_complete_pct_from_trace(
+    trace: OptimizationTrace, *, iteration: int,
+) -> float:
+    rollbacks = [
+        rec for rec in _records_by_type_for_iteration(
+            trace, iteration=iteration,
+            decision_type=DecisionType.ACCEPTANCE_DECIDED,
+        )
+        if rec.outcome.value == "rolled_back"
+    ]
+    if not rollbacks:
+        return 1.0
+    complete = sum(
+        1 for rec in rollbacks
+        if rec.reason_code.value != "none" and rec.reason_detail
+    )
+    return complete / len(rollbacks)
+
+
+def terminal_unactionable_qids_from_trace(
+    trace: OptimizationTrace, *, iteration: int,
+) -> int:
+    qids: set[str] = set()
+    for rec in _records_by_type_for_iteration(
+        trace, iteration=iteration,
+        decision_type=DecisionType.QID_RESOLUTION,
+    ):
+        if (
+            rec.outcome.value == "unresolved"
+            and rec.reason_code.value in _TERMINAL_UNACTIONABLE_REASONS
+            and rec.question_id
+        ):
+            qids.add(rec.question_id)
+    return len(qids)
+
+
+def accuracy_delta_from_inputs(
+    *, baseline_accuracy: float, candidate_accuracy: float,
+) -> float:
+    return float(candidate_accuracy) - float(baseline_accuracy)
+
+
+def trace_id_fallback_rate_from_trace(
+    trace: OptimizationTrace, *, iteration: int,
+) -> float:
+    eval_recs = list(_records_by_type_for_iteration(
+        trace, iteration=iteration, decision_type=DecisionType.EVAL_CLASSIFIED,
+    ))
+    if not eval_recs:
+        return 0.0
+    recovered = sum(
+        1 for rec in eval_recs
+        if bool((rec.metrics or {}).get("trace_id_recovered_via_fallback"))
+    )
+    return recovered / len(eval_recs)
+
+
+def decision_trace_completeness_pct_from_trace(
+    trace: OptimizationTrace, *, iteration: int,
+) -> float:
+    eval_qids: set[str] = set()
+    for rec in _records_by_type_for_iteration(
+        trace, iteration=iteration, decision_type=DecisionType.EVAL_CLASSIFIED,
+    ):
+        if rec.question_id:
+            eval_qids.add(rec.question_id)
+    if not eval_qids:
+        return 0.0
+    resolved_qids: set[str] = set()
+    for rec in _records_by_type_for_iteration(
+        trace, iteration=iteration, decision_type=DecisionType.QID_RESOLUTION,
+    ):
+        if rec.question_id:
+            resolved_qids.add(rec.question_id)
+    return len(resolved_qids & eval_qids) / len(eval_qids)
+
+
+def rca_loop_closure_pct_from_trace(
+    trace: OptimizationTrace, *, iteration: int,
+) -> float:
+    rca_records = [
+        rec for rec in _records_by_type_for_iteration(
+            trace, iteration=iteration, decision_type=DecisionType.RCA_FORMED,
+        )
+        if rec.target_qids
+    ]
+    if not rca_records:
+        return 1.0
+    resolved_qids: set[str] = set()
+    for rec in _records_by_type_for_iteration(
+        trace, iteration=iteration, decision_type=DecisionType.QID_RESOLUTION,
+    ):
+        if rec.question_id:
+            resolved_qids.add(rec.question_id)
+    closed = sum(
+        1 for rec in rca_records
+        if all(qid in resolved_qids for qid in rec.target_qids)
+    )
+    return closed / len(rca_records)

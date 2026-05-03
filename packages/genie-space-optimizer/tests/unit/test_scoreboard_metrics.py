@@ -213,3 +213,316 @@ def test_compute_scoreboard_dominant_signal_proposal_gap_when_no_proposals_for_h
     )
     sb = compute_scoreboard(snap)
     assert sb["dominant_signal"] == "PROPOSAL_GAP"
+
+
+# ---------------------------------------------------------------------------
+# Phase D — trace-derived metric tests
+# ---------------------------------------------------------------------------
+
+
+def _trace_iter1(records, events=()):
+    from genie_space_optimizer.optimization.rca_decision_trace import OptimizationTrace
+    return OptimizationTrace(
+        decision_records=tuple(records), journey_events=tuple(events),
+    )
+
+
+def test_journey_completeness_pct_from_trace_returns_one_when_every_qid_terminal():
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord, DecisionType, DecisionOutcome, ReasonCode,
+    )
+    from genie_space_optimizer.optimization.question_journey import (
+        QuestionJourneyEvent,
+    )
+    from genie_space_optimizer.optimization.scoreboard import (
+        journey_completeness_pct_from_trace,
+    )
+
+    records = [
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.EVAL_CLASSIFIED,
+            outcome=DecisionOutcome.INFO,
+            reason_code=ReasonCode.HARD_FAILURE,
+            question_id=qid,
+        )
+        for qid in ("q1", "q2", "q3")
+    ]
+    events = [
+        QuestionJourneyEvent(question_id=qid, stage="applied_targeted")
+        for qid in ("q1", "q2", "q3")
+    ]
+    trace = _trace_iter1(records, events)
+    assert journey_completeness_pct_from_trace(trace, iteration=1) == 1.0
+
+
+def test_journey_completeness_pct_from_trace_below_one_when_some_qids_drop_early():
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord, DecisionType, DecisionOutcome, ReasonCode,
+    )
+    from genie_space_optimizer.optimization.question_journey import (
+        QuestionJourneyEvent,
+    )
+    from genie_space_optimizer.optimization.scoreboard import (
+        journey_completeness_pct_from_trace,
+    )
+
+    records = [
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.EVAL_CLASSIFIED,
+            outcome=DecisionOutcome.INFO,
+            reason_code=ReasonCode.HARD_FAILURE,
+            question_id=qid,
+        )
+        for qid in ("q1", "q2", "q3")
+    ]
+    events = [
+        QuestionJourneyEvent(question_id="q1", stage="evaluated"),
+        QuestionJourneyEvent(question_id="q2", stage="applied_targeted"),
+        QuestionJourneyEvent(question_id="q3", stage="applied_targeted"),
+    ]
+    trace = _trace_iter1(records, events)
+    pct = journey_completeness_pct_from_trace(trace, iteration=1)
+    assert 0.6 < pct < 0.7
+
+
+def test_hard_cluster_coverage_pct_from_trace_counts_applied_clusters():
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord, DecisionType, DecisionOutcome, ReasonCode,
+    )
+    from genie_space_optimizer.optimization.scoreboard import (
+        hard_cluster_coverage_pct_from_trace,
+    )
+
+    records = [
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.CLUSTER_SELECTED,
+            outcome=DecisionOutcome.INFO,
+            reason_code=ReasonCode.HARD_FAILURE,
+            cluster_id="H001",
+        ),
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.CLUSTER_SELECTED,
+            outcome=DecisionOutcome.INFO,
+            reason_code=ReasonCode.HARD_FAILURE,
+            cluster_id="H002",
+        ),
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.PATCH_APPLIED,
+            outcome=DecisionOutcome.APPLIED,
+            reason_code=ReasonCode.PATCH_APPLIED,
+            cluster_id="H001", proposal_id="P1",
+        ),
+    ]
+    trace = _trace_iter1(records)
+    assert hard_cluster_coverage_pct_from_trace(trace, iteration=1) == 0.5
+
+
+def test_causal_patch_survival_pct_from_trace_counts_proposed_vs_applied():
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord, DecisionType, DecisionOutcome, ReasonCode,
+    )
+    from genie_space_optimizer.optimization.scoreboard import (
+        causal_patch_survival_pct_from_trace,
+    )
+
+    records = [
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.PROPOSAL_GENERATED,
+            outcome=DecisionOutcome.INFO, reason_code=ReasonCode.PROPOSAL_EMITTED,
+            proposal_id=pid,
+        )
+        for pid in ("P1", "P2", "P3")
+    ] + [
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.PATCH_APPLIED,
+            outcome=DecisionOutcome.APPLIED, reason_code=ReasonCode.PATCH_APPLIED,
+            proposal_id="P1",
+        ),
+    ]
+    trace = _trace_iter1(records)
+    assert causal_patch_survival_pct_from_trace(trace, iteration=1) == pytest.approx(1/3)
+
+
+def test_causal_patch_survival_pct_from_trace_collapses_split_children_via_proposal_ids():
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord, DecisionType, DecisionOutcome, ReasonCode,
+    )
+    from genie_space_optimizer.optimization.scoreboard import (
+        causal_patch_survival_pct_from_trace,
+    )
+
+    records = [
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.PROPOSAL_GENERATED,
+            outcome=DecisionOutcome.INFO, reason_code=ReasonCode.PROPOSAL_EMITTED,
+            proposal_id="P1",
+        ),
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.PATCH_APPLIED,
+            outcome=DecisionOutcome.APPLIED, reason_code=ReasonCode.PATCH_APPLIED,
+            proposal_id="", proposal_ids=("P1",),
+        ),
+    ]
+    trace = _trace_iter1(records)
+    assert causal_patch_survival_pct_from_trace(trace, iteration=1) == 1.0
+
+
+def test_malformed_proposals_at_cap_from_trace_counts_patch_cap_drops():
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord, DecisionType, DecisionOutcome, ReasonCode,
+    )
+    from genie_space_optimizer.optimization.scoreboard import (
+        malformed_proposals_at_cap_from_trace,
+    )
+
+    records = [
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.GATE_DECISION,
+            outcome=DecisionOutcome.DROPPED,
+            reason_code=ReasonCode.PATCH_CAP_DROPPED,
+            gate="patch_cap", proposal_id="P1",
+        ),
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.GATE_DECISION,
+            outcome=DecisionOutcome.DROPPED,
+            reason_code=ReasonCode.PATCH_CAP_DROPPED,
+            gate="patch_cap", proposal_id="P2",
+        ),
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.GATE_DECISION,
+            outcome=DecisionOutcome.DROPPED,
+            reason_code=ReasonCode.NO_CAUSAL_TARGET,
+            gate="blast_radius", proposal_id="P3",
+        ),
+    ]
+    trace = _trace_iter1(records)
+    assert malformed_proposals_at_cap_from_trace(trace, iteration=1) == 2
+
+
+def test_rollback_attribution_complete_pct_from_trace_vacuous_when_no_rollbacks():
+    from genie_space_optimizer.optimization.scoreboard import (
+        rollback_attribution_complete_pct_from_trace,
+    )
+
+    trace = _trace_iter1([])
+    assert rollback_attribution_complete_pct_from_trace(trace, iteration=1) == 1.0
+
+
+def test_rollback_attribution_complete_pct_from_trace_partial():
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord, DecisionType, DecisionOutcome, ReasonCode,
+    )
+    from genie_space_optimizer.optimization.scoreboard import (
+        rollback_attribution_complete_pct_from_trace,
+    )
+
+    records = [
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.ACCEPTANCE_DECIDED,
+            outcome=DecisionOutcome.ROLLED_BACK,
+            reason_code=ReasonCode.NO_APPLIED_PATCHES,
+            reason_detail="benchmark_did_not_improve",
+        ),
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.ACCEPTANCE_DECIDED,
+            outcome=DecisionOutcome.ROLLED_BACK,
+            reason_code=ReasonCode.NONE,
+            reason_detail="",
+        ),
+    ]
+    trace = _trace_iter1(records)
+    assert rollback_attribution_complete_pct_from_trace(trace, iteration=1) == 0.5
+
+
+def test_terminal_unactionable_qids_from_trace_counts_unresolved_terminal_states():
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord, DecisionType, DecisionOutcome, ReasonCode,
+    )
+    from genie_space_optimizer.optimization.scoreboard import (
+        terminal_unactionable_qids_from_trace,
+    )
+
+    records = [
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.QID_RESOLUTION,
+            outcome=DecisionOutcome.UNRESOLVED,
+            reason_code=ReasonCode.POST_EVAL_HOLD_FAIL,
+            question_id="q1",
+        ),
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.QID_RESOLUTION,
+            outcome=DecisionOutcome.UNRESOLVED,
+            reason_code=ReasonCode.POST_EVAL_PASS_TO_FAIL,
+            question_id="q2",
+        ),
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.QID_RESOLUTION,
+            outcome=DecisionOutcome.RESOLVED,
+            reason_code=ReasonCode.POST_EVAL_FAIL_TO_PASS,
+            question_id="q3",
+        ),
+    ]
+    trace = _trace_iter1(records)
+    assert terminal_unactionable_qids_from_trace(trace, iteration=1) == 2
+
+
+def test_accuracy_delta_pure_subtraction():
+    from genie_space_optimizer.optimization.scoreboard import accuracy_delta_from_inputs
+
+    assert accuracy_delta_from_inputs(
+        baseline_accuracy=0.50, candidate_accuracy=0.62,
+    ) == pytest.approx(0.12)
+
+
+def test_trace_id_fallback_rate_from_trace_zero_when_no_eval_records():
+    from genie_space_optimizer.optimization.scoreboard import (
+        trace_id_fallback_rate_from_trace,
+    )
+
+    trace = _trace_iter1([])
+    assert trace_id_fallback_rate_from_trace(trace, iteration=1) == 0.0
+
+
+def test_trace_id_fallback_rate_from_trace_counts_recovered_rows():
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord, DecisionType, DecisionOutcome, ReasonCode,
+    )
+    from genie_space_optimizer.optimization.scoreboard import (
+        trace_id_fallback_rate_from_trace,
+    )
+
+    records = [
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.EVAL_CLASSIFIED,
+            outcome=DecisionOutcome.INFO, reason_code=ReasonCode.HARD_FAILURE,
+            question_id="q1",
+            metrics={"trace_id_recovered_via_fallback": True},
+        ),
+        DecisionRecord(
+            run_id="r", iteration=1,
+            decision_type=DecisionType.EVAL_CLASSIFIED,
+            outcome=DecisionOutcome.INFO, reason_code=ReasonCode.HARD_FAILURE,
+            question_id="q2",
+            metrics={"trace_id_recovered_via_fallback": False},
+        ),
+    ]
+    trace = _trace_iter1(records)
+    assert trace_id_fallback_rate_from_trace(trace, iteration=1) == 0.5
