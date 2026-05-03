@@ -461,3 +461,88 @@ def rca_loop_closure_pct_from_trace(
         if all(qid in resolved_qids for qid in rec.target_qids)
     )
     return closed / len(rca_records)
+
+
+# ---------------------------------------------------------------------------
+# Phase D — build_scoreboard aggregator + dominant-signal priority.
+# ---------------------------------------------------------------------------
+
+
+def build_scoreboard(
+    *,
+    trace: OptimizationTrace,
+    iteration: int,
+    baseline_accuracy: float,
+    candidate_accuracy: float,
+    run_id: str = "",
+) -> ScoreboardSnapshot:
+    """Compute every scoreboard metric over the canonical Phase B trace.
+
+    ``baseline_accuracy`` and ``candidate_accuracy`` are passed through
+    explicitly because accuracy is an iteration-level scalar that lives
+    outside the per-record trace; the harness reads them from
+    ``snap["baseline_accuracy"]`` and ``snap["candidate_accuracy"]``.
+
+    Dominant-signal priority (first match wins):
+      1. PROPOSAL_GAP — eval rows but zero proposals.
+      2. RCA_GAP — closure < 0.5 AND survival < 0.5.
+      3. GATE_OR_CAP_GAP — survival < 0.5 OR cap drops > 0.
+      4. EVIDENCE_GAP — terminal_unactionable_qids > 0.
+      5. MODEL_CEILING — accuracy_delta <= 0.0.
+      6. HEALTHY — fallback.
+    """
+    journey = journey_completeness_pct_from_trace(trace, iteration=iteration)
+    cluster_cov = hard_cluster_coverage_pct_from_trace(trace, iteration=iteration)
+    survival = causal_patch_survival_pct_from_trace(trace, iteration=iteration)
+    cap_drops = malformed_proposals_at_cap_from_trace(trace, iteration=iteration)
+    rollback = rollback_attribution_complete_pct_from_trace(trace, iteration=iteration)
+    terminal = terminal_unactionable_qids_from_trace(trace, iteration=iteration)
+    delta = accuracy_delta_from_inputs(
+        baseline_accuracy=baseline_accuracy,
+        candidate_accuracy=candidate_accuracy,
+    )
+    fallback = trace_id_fallback_rate_from_trace(trace, iteration=iteration)
+    completeness = decision_trace_completeness_pct_from_trace(
+        trace, iteration=iteration,
+    )
+    closure = rca_loop_closure_pct_from_trace(trace, iteration=iteration)
+
+    has_eval_rows = any(
+        True for _ in _records_by_type_for_iteration(
+            trace, iteration=iteration, decision_type=DecisionType.EVAL_CLASSIFIED,
+        )
+    )
+    has_proposals = any(
+        True for _ in _records_by_type_for_iteration(
+            trace, iteration=iteration, decision_type=DecisionType.PROPOSAL_GENERATED,
+        )
+    )
+
+    if has_eval_rows and not has_proposals:
+        dominant = "PROPOSAL_GAP"
+    elif closure <= 0.5 and survival < 0.5:
+        dominant = "RCA_GAP"
+    elif survival < 0.5 or cap_drops > 0:
+        dominant = "GATE_OR_CAP_GAP"
+    elif terminal > 0:
+        dominant = "EVIDENCE_GAP"
+    elif delta <= 0.0:
+        dominant = "MODEL_CEILING"
+    else:
+        dominant = "HEALTHY"
+
+    return ScoreboardSnapshot(
+        iteration=int(iteration),
+        run_id=str(run_id),
+        journey_completeness_pct=journey,
+        hard_cluster_coverage_pct=cluster_cov,
+        causal_patch_survival_pct=survival,
+        malformed_proposals_at_cap=cap_drops,
+        rollback_attribution_complete_pct=rollback,
+        terminal_unactionable_qids=terminal,
+        accuracy_delta=delta,
+        trace_id_fallback_rate=fallback,
+        decision_trace_completeness_pct=completeness,
+        rca_loop_closure_pct=closure,
+        dominant_signal=dominant,
+    )
