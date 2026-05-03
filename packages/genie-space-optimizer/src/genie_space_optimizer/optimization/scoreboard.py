@@ -190,3 +190,39 @@ def compute_scoreboard(snap: LoopSnapshot) -> dict[str, Any]:
 
     metrics["dominant_signal"] = dominant
     return metrics
+
+
+# ---------------------------------------------------------------------------
+# Phase D — typed scoreboard snapshot returned by ``build_scoreboard``.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ScoreboardSnapshot:
+    """Typed result of ``build_scoreboard``. Backward-compatible with the
+    legacy ``compute_scoreboard`` dict via ``to_dict()``.
+    """
+
+    iteration: int = 0
+    run_id: str = ""
+    journey_completeness_pct: float = 0.0
+    hard_cluster_coverage_pct: float = 0.0
+    causal_patch_survival_pct: float = 0.0
+    malformed_proposals_at_cap: int = 0
+    rollback_attribution_complete_pct: float = 0.0
+    terminal_unactionable_qids: int = 0
+    accuracy_delta: float = 0.0
+    trace_id_fallback_rate: float = 0.0
+    decision_trace_completeness_pct: float = 0.0
+    rca_loop_closure_pct: float = 0.0
+    dominant_signal: str = "HEALTHY"
+
+    def to_dict(self) -> dict[str, Any]:
+        from dataclasses import asdict
+        return dict(sorted(asdict(self).items()))
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ScoreboardSnapshot":
+        allowed = {f.name for f in cls.__dataclass_fields__.values()}
+        cleaned = {k: v for k, v in (payload or {}).items() if k in allowed}
+        return cls(**cleaned)
