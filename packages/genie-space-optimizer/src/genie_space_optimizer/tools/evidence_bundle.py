@@ -281,12 +281,18 @@ def build_bundle(
     lever_task_run_id = lever_task["run_id"] if lever_task else ""
     stdout_text = ""
     stderr_text = ""
+    stdout_source = "absent"
+    stdout_fallback_missing: MissingPiece | None = None
     if lever_task_run_id:
         out = databricks_runner.get_run_output(
             run_id=lever_task_run_id, profile=profile
         )
-        stdout_text = out.get("logs", "") or ""
-        stderr_text = out.get("error", "") or ""
+        (
+            stdout_text,
+            stdout_source,
+            stdout_fallback_missing,
+        ) = _extract_stdout_with_fallback(out)
+        stderr_text = str(out.get("error", "") or "")
 
     markers = parse_markers(stdout_text)
     # opt_run_id resolution order:
@@ -328,6 +334,8 @@ def build_bundle(
     paths.markers.write_text(_markers_to_json(markers))
 
     missing: list[MissingPiece] = []
+    if stdout_fallback_missing is not None:
+        missing.append(stdout_fallback_missing)
     if markers.optimization_run_id() is None and not opt_run_id_override:
         missing.append(
             MissingPiece(
@@ -496,6 +504,7 @@ def build_bundle(
             "mlflow_audit_json": "evidence/mlflow_audit.json" if audit else "",
             "mlflow_artifacts": tuple(pulled_artifacts),
             "traces": (),
+            "stdout_source": stdout_source,
         },
         missing_pieces=tuple(missing),
         trace_fetch_recommendations=recommendations,
