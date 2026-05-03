@@ -97,6 +97,7 @@ def test_missing_piece_kind_is_closed_enum() -> None:
 
     expected = {
         "STDOUT_TRUNCATED",
+        "STDOUT_FALLBACK_NOTEBOOK_OUTPUT",
         "JOB_RUN_FETCH_FAILED",
         "MLFLOW_AUDIT_FAILED",
         "PHASE_A_ARTIFACT_MISSING_ON_ANCHOR",
