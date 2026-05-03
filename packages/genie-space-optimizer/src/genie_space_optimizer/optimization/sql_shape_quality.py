@@ -110,6 +110,45 @@ def is_rank_when_limit_n_required(patch: dict[str, Any]) -> bool:
     return False
 
 
+_REMOVE_VERB_RE = re.compile(
+    r"\b(?:remove|drop|strip|delete)\b\s+the\s+([A-Z_]+(?:\s*=\s*[A-Za-z0-9'_-]+)?)"
+    r"(?:\s+filter)?",
+    re.IGNORECASE,
+)
+_ADD_SNIPPET_TYPES = frozenset({
+    "add_sql_snippet_filter",
+    "add_sql_snippet_measure",
+    "add_sql_snippet_dimension",
+})
+
+
+def proposal_direction_contradicts_counterfactual(
+    patch: dict[str, Any],
+) -> bool:
+    """Return True when an ``add_sql_snippet_*`` patch's value matches
+    the column/expression the counterfactual_fix says to *remove*.
+
+    Triggers only on ``add_*`` snippet patch types. Instruction patches
+    are out of scope (an instruction can legitimately say "always include
+    X" even when one historic counterfactual said remove X).
+    """
+    patch_type = str(patch.get("type") or patch.get("patch_type") or "").lower()
+    if patch_type not in _ADD_SNIPPET_TYPES:
+        return False
+    cf = str(patch.get("counterfactual_fix") or "")
+    if not cf:
+        return False
+    value = str(patch.get("value") or "").upper()
+    if not value:
+        return False
+    for match in _REMOVE_VERB_RE.finditer(cf):
+        token = match.group(1).upper().strip()
+        col = token.split("=")[0].strip()
+        if col and col in value:
+            return True
+    return False
+
+
 def prefer_scoped_instruction_over_weak_snippet(
     snippet_patch: dict[str, Any],
     candidate_instruction_patches: list[dict[str, Any]],

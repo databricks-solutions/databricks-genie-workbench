@@ -590,6 +590,7 @@ def select_patch_bundle(
     # (instruction) over the brittle one (defensive snippet).
     from genie_space_optimizer.optimization.sql_shape_quality import (
         prefer_scoped_instruction_over_weak_snippet,
+        proposal_direction_contradicts_counterfactual,
     )
 
     _scored_proposals = [p for p, _s in scored]
@@ -605,6 +606,9 @@ def select_patch_bundle(
             p, _instruction_candidates
         ):
             p["_drop_reason"] = "weak_sql_shape_quality"
+            continue
+        if proposal_direction_contradicts_counterfactual(p):
+            p["_drop_reason"] = "proposal_direction_contradicts_counterfactual"
             continue
         _kept.append((p, s))
     scored = _kept
