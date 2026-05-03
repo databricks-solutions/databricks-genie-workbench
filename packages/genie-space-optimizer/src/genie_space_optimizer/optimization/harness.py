@@ -798,6 +798,18 @@ def _merge_bug4_counters(eval_result: dict) -> dict:
         int(eval_result.get("secondary_mining_blocked") or 0)
         + int(snapshot.get("secondary_mining_blocked", 0) or 0)
     )
+    # Cycle 8 Bug 1 Phase 3b Task A — surface the Lever 5 structural
+    # gate counter so the iteration banner can render it. The gate
+    # increments _BUG4_COUNTERS["lever5_text_only_blocked"] at
+    # optimizer.py:13962 every time it drops an instruction-only
+    # proposal whose dominant cluster root cause is SQL-shape; without
+    # this fold, future cycles can hit the gate hundreds of times
+    # invisibly.
+    eval_result.setdefault("lever5_text_only_blocked", 0)
+    eval_result["lever5_text_only_blocked"] = (
+        int(eval_result.get("lever5_text_only_blocked") or 0)
+        + int(snapshot.get("lever5_text_only_blocked", 0) or 0)
+    )
     existing_fw = eval_result.get("firewall_rejection_count_by_type") or {}
     if not isinstance(existing_fw, dict):
         existing_fw = {}
