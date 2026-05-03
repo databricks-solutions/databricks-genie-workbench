@@ -494,6 +494,24 @@ TYPE_TO_SECTION: Mapping[DecisionType, str] = {
 }
 
 
+def _format_alternatives_line(rec: "DecisionRecord") -> str | None:
+    """Return one indented line summarizing rec.alternatives_considered.
+
+    Format: "    alternatives: <opt_id>(<reason_code>:<detail>), ..."
+    Returns None when the record has no alternatives to surface.
+    """
+    if not rec.alternatives_considered:
+        return None
+    parts: list[str] = []
+    for opt in sorted(rec.alternatives_considered, key=_alt_sort_key):
+        chunk = f"{opt.option_id}({opt.reject_reason.value}"
+        if opt.reject_detail:
+            chunk += f":{opt.reject_detail}"
+        chunk += ")"
+        parts.append(chunk)
+    return "|    alternatives: " + ", ".join(parts)
+
+
 def _format_record_line(rec: "DecisionRecord") -> str:
     qids = list(rec.affected_qids) or (
         [rec.question_id] if rec.question_id else []
@@ -649,8 +667,22 @@ def render_operator_transcript(
             else:
                 lines.append("|    - (no open next action)")
             continue
+        # Phase D.5 Task 8: surface alternatives_considered under each
+        # chosen record in the three selection-point sections (RCA Cards,
+        # AG Decisions, Proposal Survival). Other sections render plain
+        # record lines — alternatives are not meaningful for terminal
+        # outcomes.
+        _ALT_SECTIONS = {
+            SECTION_RCA_CARDS,
+            SECTION_AG_DECISIONS,
+            SECTION_PROPOSAL_SURVIVAL,
+        }
         for rec in by_section.get(section, []):
             lines.append(_format_record_line(rec))
+            if section in _ALT_SECTIONS:
+                alts_line = _format_alternatives_line(rec)
+                if alts_line is not None:
+                    lines.append(alts_line)
 
     lines.append(f"+{bar}")
     return "\n".join(lines)
