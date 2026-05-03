@@ -756,6 +756,38 @@ from genie_space_optimizer.optimization.post_eval import (  # noqa: E402,F401
 )
 
 
+def _resolve_lever_loop_exit_reason(
+    plateau_decision,
+    divergence_label: str | None,
+) -> str:
+    """Resolve the canonical convergence ``reason`` for a Lever Loop run.
+
+    Priority:
+        1. ``plateau_decision`` (an ``RcaTerminalDecision``) when the loop
+           broke out of the body via the plateau path. We project the
+           typed ``status`` enum onto a stable ``"plateau_<status>"`` slug
+           so the marker reader sees the same vocabulary as the
+           human-readable ``RCA terminal status:`` print.
+        2. ``divergence_label`` when the loop broke via the consecutive-
+           rollback divergence path. The label is already typed (e.g.
+           ``"divergence_consecutive_rollbacks"``).
+        3. ``"lever_loop_completed"`` when neither was set — the loop ran
+           to its natural body end without an exception.
+
+    Returns:
+        A string fit for the ``GSO_CONVERGENCE_V1`` marker's ``reason``.
+    """
+    if plateau_decision is not None:
+        try:
+            status_value = plateau_decision.status.value
+        except AttributeError:
+            status_value = str(plateau_decision.status)
+        return f"plateau_{status_value}"
+    if divergence_label:
+        return str(divergence_label)
+    return "lever_loop_completed"
+
+
 def _extract_eval_result_from_gate(gate_result: dict) -> dict:
     """Return the eval-result payload from a gate_result, regardless of outcome.
 
