@@ -55,6 +55,15 @@ class EvaluationResult:
     Field set is the union of what today's harness locals expose to
     downstream stages. F2 / F3 / F8 read from this dataclass instead
     of from harness locals.
+
+    ``raw`` carries the full ``evaluation.run_evaluation`` return dict
+    unchanged. This is a deliberate backward-compat escape hatch for
+    F1's wire-up: the harness's ~250 lines of post-eval logic
+    (full_result_1.get('asi_extraction_audit'), .get('scores'),
+    .get('quarantined_benchmarks_qids'), etc.) read fields the typed
+    surface doesn't yet expose. Subsequent F-plans absorb that logic
+    into their own stages and shrink ``raw`` toward removal in Phase
+    G.
     """
 
     scoreboard: dict[str, Any]
@@ -66,6 +75,7 @@ class EvaluationResult:
     per_qid_judge: dict[str, Any] = field(default_factory=dict)
     asi_metadata: dict[str, Any] = field(default_factory=dict)
     eval_provenance: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 def _row_qid(row: dict[str, Any]) -> str:
@@ -231,4 +241,5 @@ def _evaluate(
             "experiment_id": str(raw.get("experiment_id") or ""),
             "model_id": str(raw.get("model_id") or ""),
         },
+        raw=raw,
     )

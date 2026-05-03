@@ -9921,20 +9921,70 @@ def _run_gate_checks(
         default_tags as _v2_tags_full,
         full_eval_run_name,
     )
-    full_result_1 = run_evaluation(
-        space_id, exp_name, iteration_counter, benchmarks,
-        domain, None, "full",
-        predict_fn, scorers,
-        spark=spark, w=w, catalog=catalog, gold_schema=schema, uc_schema=uc_schema,
-        reference_sqls=reference_sqls if reference_sqls else None,
-        model_creation_kwargs=_model_kwargs,
-        max_benchmark_count=max_benchmark_count,
-        run_name=full_eval_run_name(run_id, iteration_counter, pass_index=1),
-        extra_tags=_v2_tags_full(
+    # Phase F1 — route the per-iteration full eval through stages.evaluation.
+    # The journey-emit + EVAL_CLASSIFIED records are owned by the
+    # _run_lever_loop block (lines 12097, 12218) which fires off cluster
+    # analysis upstream of this call; here we pass no-op emit hooks so
+    # the wrapper does NOT double-emit. Subsequent F-plans absorb the
+    # surrounding orchestration into stages and let the wrapper own
+    # journey/decision emission directly.
+    from genie_space_optimizer.optimization.stages import (
+        StageContext as _StageCtx,
+        evaluation as _eval_stage,
+    )
+
+    _stage_ctx_full_eval = _StageCtx(
+        run_id=run_id,
+        iteration=int(iteration_counter),
+        space_id=space_id,
+        domain=domain,
+        catalog=catalog,
+        schema=schema,
+        apply_mode="real",
+        journey_emit=lambda *a, **k: None,
+        decision_emit=lambda record: None,
+        mlflow_anchor_run_id=None,
+        feature_flags={},
+    )
+    _eval_kwargs_full = {
+        "space_id": space_id,
+        "experiment_name": exp_name,
+        "iteration": iteration_counter,
+        "benchmarks": benchmarks,
+        "domain": domain,
+        "model_id": None,
+        "eval_scope": "full",
+        "predict_fn": predict_fn,
+        "scorers": scorers,
+        "spark": spark,
+        "w": w,
+        "catalog": catalog,
+        "gold_schema": schema,
+        "uc_schema": uc_schema,
+        "reference_sqls": reference_sqls if reference_sqls else None,
+        "model_creation_kwargs": _model_kwargs,
+        "max_benchmark_count": max_benchmark_count,
+        "run_name": full_eval_run_name(run_id, iteration_counter, pass_index=1),
+        "extra_tags": _v2_tags_full(
             run_id, space_id=space_id, stage="full_eval",
             iteration=iteration_counter, ag_id=ag_id,
         ),
+    }
+    _eval_inp_full = _eval_stage.EvaluationInput(
+        space_state={"id": space_id},
+        eval_qids=tuple(
+            str(b.get("question_id") or "")
+            for b in (benchmarks or [])
+            if b.get("question_id")
+        ),
+        run_role="iteration_eval",
+        iteration_label=_iteration_label(iteration_counter),
+        scope="full",
     )
+    _eval_result_full = _eval_stage.evaluate_post_patch(
+        _stage_ctx_full_eval, _eval_inp_full, eval_kwargs=_eval_kwargs_full,
+    )
+    full_result_1 = _eval_result_full.raw
     new_model_id = full_result_1.get("model_id", "")
 
     # Task 0 → Task 3: forward the ASI extraction audit row that
