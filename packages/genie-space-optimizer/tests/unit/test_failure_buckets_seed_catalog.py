@@ -24,11 +24,11 @@ def test_failure_bucket_enum_has_four_top_level_values() -> None:
     }
 
 
-def test_seed_catalog_contains_sixteen_patterns() -> None:
+def test_seed_catalog_contains_twenty_patterns() -> None:
     from genie_space_optimizer.optimization.failure_buckets import SEED_CATALOG
 
-    assert len(SEED_CATALOG) == 16, (
-        f"expected 16 seed patterns, got {len(SEED_CATALOG)}"
+    assert len(SEED_CATALOG) == 20, (
+        f"expected 20 seed patterns (16 baseline + 4 cycle9), got {len(SEED_CATALOG)}"
     )
 
 
