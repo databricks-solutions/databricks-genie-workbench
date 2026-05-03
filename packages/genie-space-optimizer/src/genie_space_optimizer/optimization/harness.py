@@ -368,6 +368,152 @@ from genie_space_optimizer.optimization.eval_entry import (  # noqa: E402,F401
 )
 
 
+# ── Phase E.0 anchored artifact persistence ───────────────────────────
+# Resolve a stable lever_loop sibling run for every decision-trail
+# upload so phase_a/ and phase_b/ artifacts land on the same operator-
+# discoverable run regardless of which stage's MLflow run is currently
+# active. See `2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`.
+
+from dataclasses import dataclass as _dataclass
+
+
+@_dataclass(frozen=True)
+class _ArtifactPersistResult:
+    success: bool
+    anchor_run_id: str
+    exception_class: str
+
+
+def _persist_phase_a_artifact_to_anchor(
+    *,
+    opt_run_id: str,
+    iteration: int,
+    report_dict: dict,
+) -> _ArtifactPersistResult:
+    """Phase E.0 Task 5: anchor phase_a/journey_validation/ to the lever_loop run."""
+    try:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+        from genie_space_optimizer.tools.mlflow_artifact_anchor import (
+            resolve_anchor_run_id,
+        )
+    except ImportError as exc:
+        return _ArtifactPersistResult(
+            success=False, anchor_run_id="",
+            exception_class=type(exc).__name__,
+        )
+
+    artifact_path = f"phase_a/journey_validation/iter_{int(iteration)}.json"
+    try:
+        client = MlflowClient()
+        active = mlflow.active_run()
+        experiment_ids: list[str] = []
+        if active is not None:
+            experiment_ids.append(active.info.experiment_id)
+        else:
+            for e in client.search_experiments():
+                experiment_ids.append(e.experiment_id)
+        anchor = resolve_anchor_run_id(
+            client=client,
+            opt_run_id=opt_run_id,
+            experiment_ids=experiment_ids,
+        )
+        if not anchor:
+            return _ArtifactPersistResult(
+                success=False, anchor_run_id="",
+                exception_class="NoSiblingRun",
+            )
+        import json as _json
+        client.log_text(
+            run_id=anchor,
+            text=_json.dumps(report_dict, sort_keys=True, separators=(",", ":")),
+            artifact_file=artifact_path,
+        )
+        client.set_tag(
+            anchor,
+            f"journey_validation.iter_{int(iteration)}.violations",
+            str(len(report_dict.get("violations") or [])),
+        )
+        client.set_tag(
+            anchor,
+            f"journey_validation.iter_{int(iteration)}.is_valid",
+            str(report_dict.get("is_valid", False)).lower(),
+        )
+        return _ArtifactPersistResult(
+            success=True, anchor_run_id=anchor, exception_class="",
+        )
+    except Exception as exc:
+        return _ArtifactPersistResult(
+            success=False, anchor_run_id="",
+            exception_class=type(exc).__name__,
+        )
+
+
+def _persist_phase_b_artifacts_to_anchor(
+    *,
+    opt_run_id: str,
+    iteration: int,
+    decision_json: str,
+    transcript: str,
+    record_count: int,
+    violation_count: int,
+) -> _ArtifactPersistResult:
+    """Phase E.0 Task 5: anchor phase_b/ artifacts to the lever_loop run."""
+    try:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+        from genie_space_optimizer.tools.mlflow_artifact_anchor import (
+            resolve_anchor_run_id,
+        )
+    except ImportError as exc:
+        return _ArtifactPersistResult(
+            success=False, anchor_run_id="",
+            exception_class=type(exc).__name__,
+        )
+
+    decision_path = f"phase_b/decision_trace/iter_{int(iteration)}.json"
+    transcript_path = f"phase_b/operator_transcript/iter_{int(iteration)}.txt"
+    try:
+        client = MlflowClient()
+        active = mlflow.active_run()
+        experiment_ids: list[str] = []
+        if active is not None:
+            experiment_ids.append(active.info.experiment_id)
+        else:
+            for e in client.search_experiments():
+                experiment_ids.append(e.experiment_id)
+        anchor = resolve_anchor_run_id(
+            client=client,
+            opt_run_id=opt_run_id,
+            experiment_ids=experiment_ids,
+        )
+        if not anchor:
+            return _ArtifactPersistResult(
+                success=False, anchor_run_id="",
+                exception_class="NoSiblingRun",
+            )
+        client.log_text(run_id=anchor, text=decision_json, artifact_file=decision_path)
+        client.log_text(run_id=anchor, text=transcript, artifact_file=transcript_path)
+        client.set_tag(
+            anchor,
+            f"decision_trace.iter_{int(iteration)}.records",
+            str(record_count),
+        )
+        client.set_tag(
+            anchor,
+            f"decision_trace.iter_{int(iteration)}.violations",
+            str(violation_count),
+        )
+        return _ArtifactPersistResult(
+            success=True, anchor_run_id=anchor, exception_class="",
+        )
+    except Exception as exc:
+        return _ArtifactPersistResult(
+            success=False, anchor_run_id="",
+            exception_class=type(exc).__name__,
+        )
+
+
 # ── Phase D.5 alternatives-capture helpers ────────────────────────────
 # Build the alternatives_by_id maps that the three trace-aware producers
 # (cluster_records, strategist_ag_records, proposal_generated_records)
@@ -17413,44 +17559,23 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
-        # Phase E.0 Task 3 — best-effort MLflow per-iteration
-        # journey-validation artifact + tags, wrapped with a stdout
-        # marker (GSO_PHASE_A_ARTIFACT_V1) emitted on every attempt
-        # so silent failures surface in run logs.
+        # Phase E.0 Task 5 — anchor phase_a/journey_validation/ to the
+        # lever_loop sibling instead of mlflow.active_run() (which is
+        # whichever stage end_run/start_run last started). Surfaces
+        # success/failure via GSO_PHASE_A_ARTIFACT_V1 stdout marker.
         if _journey_report is not None:
             _phase_a_artifact_path = (
                 f"phase_a/journey_validation/iter_{iteration_counter}.json"
             )
-            _phase_a_anchor_run_id = ""
-            _phase_a_success = False
-            _phase_a_exception_class = ""
-            try:
-                import mlflow as _mlflow_iter  # type: ignore[import-not-found]
-                if _mlflow_iter.active_run() is not None:
-                    _phase_a_anchor_run_id = (
-                        _mlflow_iter.active_run().info.run_id
-                    )
-                    _mlflow_iter.log_dict(
-                        _journey_report.to_dict(),
-                        artifact_file=_phase_a_artifact_path,
-                    )
-                    _mlflow_iter.set_tags({
-                        f"journey_validation.iter_{iteration_counter}.violations": (
-                            str(len(_journey_report.violations))
-                        ),
-                        f"journey_validation.iter_{iteration_counter}.is_valid": (
-                            str(_journey_report.is_valid).lower()
-                        ),
-                    })
-                    _phase_a_success = True
-                else:
-                    _phase_a_exception_class = "NoActiveRun"
-            except Exception as _exc:
-                _phase_a_exception_class = type(_exc).__name__
+            _phase_a_result = _persist_phase_a_artifact_to_anchor(
+                opt_run_id=run_id,
+                iteration=iteration_counter,
+                report_dict=_journey_report.to_dict(),
+            )
+            if not _phase_a_result.success:
                 logger.warning(
-                    "Phase A: MLflow per-iteration journey persistence "
-                    "failed: %s: %s",
-                    _phase_a_exception_class, _exc,
+                    "Phase A: anchored persistence failed: %s",
+                    _phase_a_result.exception_class,
                 )
             from genie_space_optimizer.common.mlflow_markers import (
                 phase_a_artifact_marker,
@@ -17458,10 +17583,10 @@ def _run_lever_loop(
             print(phase_a_artifact_marker(
                 optimization_run_id=run_id,
                 iteration=iteration_counter,
-                anchor_run_id=_phase_a_anchor_run_id,
+                anchor_run_id=_phase_a_result.anchor_run_id,
                 artifact_path=_phase_a_artifact_path,
-                success=_phase_a_success,
-                exception_class=_phase_a_exception_class,
+                success=_phase_a_result.success,
+                exception_class=_phase_a_result.exception_class,
             ))
 
         # Phase B Trace Plan Task 7 — render the operator transcript and
@@ -17511,42 +17636,22 @@ def _run_lever_loop(
                     operator_transcript_artifact=_phase_b_transcript_artifact,
                     persist_ok=True,
                 ))
-                # Phase E.0 Task 3 — wrap MLflow persistence with explicit
-                # success/failure tracking + GSO_PHASE_B_ARTIFACT_V1 stdout
-                # marker. Replaces the prior silent logger.debug catch-all.
-                _phase_b_anchor_run_id = ""
-                _phase_b_success = False
-                _phase_b_exception_class = ""
-                try:
-                    import mlflow as _mlflow_trace  # type: ignore[import-not-found]
-                    if _mlflow_trace.active_run() is not None:
-                        _phase_b_anchor_run_id = (
-                            _mlflow_trace.active_run().info.run_id
-                        )
-                        _mlflow_trace.log_text(
-                            canonical_decision_json(_decision_records),
-                            artifact_file=_phase_b_decision_artifact,
-                        )
-                        _mlflow_trace.log_text(
-                            _transcript,
-                            artifact_file=_phase_b_transcript_artifact,
-                        )
-                        _mlflow_trace.set_tags({
-                            f"decision_trace.iter_{iteration_counter}.records": (
-                                str(len(_decision_records))
-                            ),
-                            f"decision_trace.iter_{iteration_counter}.violations": (
-                                str(len(_decision_validation))
-                            ),
-                        })
-                        _phase_b_success = True
-                    else:
-                        _phase_b_exception_class = "NoActiveRun"
-                except Exception as _exc:
-                    _phase_b_exception_class = type(_exc).__name__
+                # Phase E.0 Task 5 — anchor phase_b/ to the lever_loop
+                # sibling. Replaces mlflow.active_run() persistence so
+                # decision_trace + operator_transcript land alongside
+                # phase_a/ on the same operator-discoverable run.
+                _phase_b_result = _persist_phase_b_artifacts_to_anchor(
+                    opt_run_id=run_id,
+                    iteration=iteration_counter,
+                    decision_json=canonical_decision_json(_decision_records),
+                    transcript=_transcript,
+                    record_count=len(_decision_records),
+                    violation_count=len(_decision_validation),
+                )
+                if not _phase_b_result.success:
                     logger.warning(
-                        "Phase B: decision trace persistence failed: %s: %s",
-                        _phase_b_exception_class, _exc,
+                        "Phase B: anchored persistence failed: %s",
+                        _phase_b_result.exception_class,
                     )
                 from genie_space_optimizer.common.mlflow_markers import (
                     phase_b_artifact_marker,
@@ -17554,11 +17659,11 @@ def _run_lever_loop(
                 print(phase_b_artifact_marker(
                     optimization_run_id=run_id,
                     iteration=iteration_counter,
-                    anchor_run_id=_phase_b_anchor_run_id,
+                    anchor_run_id=_phase_b_result.anchor_run_id,
                     decision_trace_path=_phase_b_decision_artifact,
                     operator_transcript_path=_phase_b_transcript_artifact,
-                    success=_phase_b_success,
-                    exception_class=_phase_b_exception_class,
+                    success=_phase_b_result.success,
+                    exception_class=_phase_b_result.exception_class,
                 ))
         except Exception:
             logger.debug(
