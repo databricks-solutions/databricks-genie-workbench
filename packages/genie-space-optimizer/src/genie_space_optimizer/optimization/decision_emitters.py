@@ -294,6 +294,9 @@ def strategist_ag_records(
     action_groups: Sequence[Mapping[str, Any]],
     source_clusters_by_id: Mapping[str, Mapping[str, Any]] | None = None,
     rca_id_by_cluster: Mapping[str, str] | None = None,
+    ag_alternatives_by_id: (
+        Mapping[str, Sequence[AlternativeOption]] | None
+    ) = None,
 ) -> list[DecisionRecord]:
     """One ``STRATEGIST_AG_EMITTED`` per AG returned by the strategist.
 
@@ -305,6 +308,7 @@ def strategist_ag_records(
     """
     cluster_lookup = dict(source_clusters_by_id or {})
     rca_lookup = dict(rca_id_by_cluster or {})
+    alt_lookup = dict(ag_alternatives_by_id or {})
     records: list[DecisionRecord] = []
     for ag in action_groups or []:
         ag_id = str(ag.get("id") or ag.get("ag_id") or "")
@@ -373,6 +377,7 @@ def strategist_ag_records(
                     if target_qids_tuple
                     else "Diagnose missing target_qids upstream"
                 ),
+                alternatives_considered=tuple(alt_lookup.get(ag_id) or ()),
             )
         )
     return records
