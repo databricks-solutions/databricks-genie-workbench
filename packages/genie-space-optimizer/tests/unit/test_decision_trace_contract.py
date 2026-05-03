@@ -149,8 +149,14 @@ def test_optimization_trace_serializes_decisions_and_renders_transcript() -> Non
     transcript = trace.render_operator_transcript(iteration=1)
     assert "OPERATOR TRANSCRIPT  iteration=1" in transcript
     assert "Decision records: 1" in transcript
-    assert "cluster_selected" in transcript
-    assert "q1" in transcript
+    # Phase B delta Task 9: CLUSTER_SELECTED is projected into the
+    # RCA Cards With Evidence section rather than dumped under the raw
+    # decision_type. Body content (qid, cluster, root_cause, next_action)
+    # is preserved, just attributed to the named section.
+    assert "RCA Cards With Evidence" in transcript
+    rca_idx = transcript.index("RCA Cards With Evidence")
+    ag_idx = transcript.index("AG Decisions And Rationale")
+    assert rca_idx < transcript.index("q1") < ag_idx
     assert "missing_filter" in transcript
     assert "Generate proposals for H001." in transcript
 

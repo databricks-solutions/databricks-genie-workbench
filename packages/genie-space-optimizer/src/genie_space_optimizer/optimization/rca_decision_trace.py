@@ -375,6 +375,67 @@ def validate_decisions_against_journey(
     return violations
 
 
+# Phase B delta Task 9: project each DecisionType into one of the nine
+# fixed transcript sections defined by the roadmap's Observability
+# Contract. Sections are stable strings (also used as transcript
+# headings) so a future DecisionType added without a mapping fails
+# `test_every_decision_type_has_an_assigned_section` loud.
+SECTION_HARD_FAILURES = "Hard Failures And QID State"
+SECTION_RCA_CARDS = "RCA Cards With Evidence"
+SECTION_AG_DECISIONS = "AG Decisions And Rationale"
+SECTION_PROPOSAL_SURVIVAL = "Proposal Survival And Gate Drops"
+SECTION_APPLIED_PATCHES = "Applied Patches And Acceptance"
+SECTION_OBSERVED_RESULTS = "Observed Results And Regressions"
+SECTION_UNRESOLVED_QIDS = "Unresolved QID Buckets"
+SECTION_NEXT_ACTION = "Next Suggested Action"
+
+TYPE_TO_SECTION: Mapping[DecisionType, str] = {
+    DecisionType.EVAL_CLASSIFIED: SECTION_HARD_FAILURES,
+    DecisionType.CLUSTER_SELECTED: SECTION_RCA_CARDS,
+    DecisionType.RCA_FORMED: SECTION_RCA_CARDS,
+    DecisionType.STRATEGIST_AG_EMITTED: SECTION_AG_DECISIONS,
+    DecisionType.PROPOSAL_GENERATED: SECTION_PROPOSAL_SURVIVAL,
+    DecisionType.GATE_DECISION: SECTION_PROPOSAL_SURVIVAL,
+    DecisionType.PATCH_APPLIED: SECTION_APPLIED_PATCHES,
+    DecisionType.PATCH_SKIPPED: SECTION_APPLIED_PATCHES,
+    DecisionType.ACCEPTANCE_DECIDED: SECTION_APPLIED_PATCHES,
+    DecisionType.QID_RESOLUTION: SECTION_OBSERVED_RESULTS,
+}
+
+
+def _format_record_line(rec: "DecisionRecord") -> str:
+    qids = list(rec.affected_qids) or (
+        [rec.question_id] if rec.question_id else []
+    )
+    target = ",".join(qids) if qids else "-"
+    parts = [
+        f"outcome={rec.outcome.value}",
+        f"reason={rec.reason_code.value}",
+        f"qid={target}",
+    ]
+    if rec.cluster_id:
+        parts.append(f"cluster={rec.cluster_id}")
+    if rec.ag_id:
+        parts.append(f"ag={rec.ag_id}")
+    if rec.proposal_id:
+        parts.append(f"proposal={rec.proposal_id}")
+    if rec.gate:
+        parts.append(f"gate={rec.gate}")
+    if rec.reason_detail:
+        parts.append(f"detail={rec.reason_detail}")
+    if rec.root_cause:
+        parts.append(f"root={rec.root_cause}")
+    if rec.rca_id:
+        parts.append(f"rca={rec.rca_id}")
+    if rec.expected_effect:
+        parts.append(f"expected={rec.expected_effect}")
+    if rec.observed_effect:
+        parts.append(f"observed={rec.observed_effect}")
+    if rec.next_action:
+        parts.append(f"next={rec.next_action}")
+    return "|    - " + "  ".join(parts)
+
+
 def render_operator_transcript(
     *,
     trace: OptimizationTrace,
@@ -382,16 +443,34 @@ def render_operator_transcript(
 ) -> str:
     """Render the deterministic stdout projection of OptimizationTrace.
 
-    The transcript follows the fixed nine-section schema defined in the
-    plan's `## Observability Contract`. Section headings always appear so
-    operators can scan for any section even when empty (which itself is a
-    diagnostic signal — e.g., empty 'AG Decisions And Rationale' on an
-    iteration that should have produced AGs is a wiring bug).
+    Phase B delta Task 9: each ``DecisionType`` is projected into one
+    of the nine named sections via ``TYPE_TO_SECTION``. Section
+    headings always appear (even when empty) so operators can scan
+    for any section, and an empty section is itself a diagnostic
+    signal (e.g., empty ``RCA Cards With Evidence`` on an iteration
+    that had hard failures means the cluster -> RCA wiring broke).
+
+    QID_RESOLUTION records with ``UNRESOLVED`` outcome additionally
+    surface in ``Unresolved QID Buckets``; the ``Next Suggested
+    Action`` section is rendered from the dominant un-passed cluster's
+    ``next_action`` field if present, falling back to a static prompt.
     """
     records = [
         r for r in trace.decision_records
         if int(r.iteration) == int(iteration)
     ]
+    sorted_records = sorted(records, key=_decision_sort_key)
+    by_section: dict[str, list[DecisionRecord]] = {}
+    for rec in sorted_records:
+        section = TYPE_TO_SECTION.get(rec.decision_type)
+        if section is None:
+            # Defensive: future DecisionType without a mapping. The
+            # test_every_decision_type_has_an_assigned_section guard
+            # catches this on every CI run, but at runtime we keep the
+            # output legible by falling back to Next Action.
+            section = SECTION_NEXT_ACTION
+        by_section.setdefault(section, []).append(rec)
+
     bar = "-" * 100
     lines = [
         f"+{bar}",
@@ -399,56 +478,43 @@ def render_operator_transcript(
         f"+{bar}",
         "|  Iteration Summary",
         f"|  Decision records: {len(records)}",
-        "|",
-        "|  Hard Failures And QID State",
-        "|",
-        "|  RCA Cards With Evidence",
-        "|",
-        "|  AG Decisions And Rationale",
-        "|",
-        "|  Proposal Survival And Gate Drops",
-        "|",
-        "|  Applied Patches And Acceptance",
-        "|",
-        "|  Observed Results And Regressions",
-        "|",
-        "|  Unresolved QID Buckets",
-        "|",
-        "|  Next Suggested Action",
     ]
-    by_type: dict[str, list[DecisionRecord]] = {}
-    for rec in sorted(records, key=_decision_sort_key):
-        by_type.setdefault(rec.decision_type.value, []).append(rec)
-    for dtype in sorted(by_type):
+
+    section_order = (
+        SECTION_HARD_FAILURES,
+        SECTION_RCA_CARDS,
+        SECTION_AG_DECISIONS,
+        SECTION_PROPOSAL_SURVIVAL,
+        SECTION_APPLIED_PATCHES,
+        SECTION_OBSERVED_RESULTS,
+        SECTION_UNRESOLVED_QIDS,
+        SECTION_NEXT_ACTION,
+    )
+    for section in section_order:
         lines.append("|")
-        lines.append(f"|  {dtype}")
-        for rec in by_type[dtype]:
-            qids = list(rec.affected_qids) or ([rec.question_id] if rec.question_id else [])
-            target = ",".join(qids) if qids else "-"
-            parts = [
-                f"outcome={rec.outcome.value}",
-                f"reason={rec.reason_code.value}",
-                f"qid={target}",
+        lines.append(f"|  {section}")
+        if section == SECTION_UNRESOLVED_QIDS:
+            unresolved = [
+                r for r in by_section.get(SECTION_OBSERVED_RESULTS, [])
+                if r.outcome == DecisionOutcome.UNRESOLVED
             ]
-            if rec.cluster_id:
-                parts.append(f"cluster={rec.cluster_id}")
-            if rec.ag_id:
-                parts.append(f"ag={rec.ag_id}")
-            if rec.proposal_id:
-                parts.append(f"proposal={rec.proposal_id}")
-            if rec.gate:
-                parts.append(f"gate={rec.gate}")
-            if rec.reason_detail:
-                parts.append(f"detail={rec.reason_detail}")
-            if rec.root_cause:
-                parts.append(f"root={rec.root_cause}")
-            if rec.expected_effect:
-                parts.append(f"expected={rec.expected_effect}")
-            if rec.observed_effect:
-                parts.append(f"observed={rec.observed_effect}")
-            if rec.next_action:
-                parts.append(f"next={rec.next_action}")
-            lines.append("|    - " + "  ".join(parts))
+            for rec in unresolved:
+                lines.append(_format_record_line(rec))
+            continue
+        if section == SECTION_NEXT_ACTION:
+            next_actions = [
+                r.next_action
+                for r in sorted_records
+                if r.next_action and r.outcome != DecisionOutcome.RESOLVED
+            ]
+            if next_actions:
+                lines.append(f"|    - {next_actions[0]}")
+            else:
+                lines.append("|    - (no open next action)")
+            continue
+        for rec in by_section.get(section, []):
+            lines.append(_format_record_line(rec))
+
     lines.append(f"+{bar}")
     return "\n".join(lines)
 
