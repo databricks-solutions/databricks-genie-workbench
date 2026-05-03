@@ -198,6 +198,42 @@ def _mentions_remove_defensive_filter(text: str) -> bool:
     )
 
 
+def _top_n_collapse_metadata_override(
+    failure: str,
+    metadata: dict,
+) -> RcaKind | None:
+    """Return ``RcaKind.TOP_N_CARDINALITY_COLLAPSE`` when SQL + question
+    evidence indicate a plural top-N collapse regardless of judge label.
+
+    Fires only for failure types whose canonical levers (4, 5, 6) overlap
+    the top-N collapse levers (1, 5, 6). Fail-safe: non-overlapping
+    failures (e.g., ``asset_routing_error``) bypass the override even
+    when SQL shape would qualify, because the operator's other corrective
+    paths are more discriminating for those.
+    """
+    from genie_space_optimizer.optimization.sql_shape_quality import (
+        metadata_indicates_top_n_intent,
+    )
+
+    eligible = {
+        "wrong_join_spec",
+        "missing_join_spec",
+        "wrong_join",
+        "missing_join",
+        "wrong_aggregation",
+        "wrong_measure",
+        "different_metric",
+        "missing_dimension",
+        "wrong_grouping",
+        "different_grain",
+    }
+    if failure not in eligible:
+        return None
+    if metadata_indicates_top_n_intent(metadata or {}):
+        return RcaKind.TOP_N_CARDINALITY_COLLAPSE
+    return None
+
+
 def _safe_rca_kind(value: Any, failure_type: str = "", metadata: dict | None = None) -> RcaKind:
     raw = str(value or "").strip()
     if raw:
@@ -207,6 +243,9 @@ def _safe_rca_kind(value: Any, failure_type: str = "", metadata: dict | None = N
             pass
     metadata = metadata or {}
     failure = str(failure_type or "").strip().lower()
+    override = _top_n_collapse_metadata_override(failure, metadata)
+    if override is not None:
+        return override
     fix_text = " ".join(
         str(metadata.get(k) or "")
         for k in ("counterfactual_fix", "rationale", "wrong_clause")
