@@ -17,7 +17,7 @@ The end state is a modular codebase where `harness.py` is an orchestration spine
 
 ## Architecture in one sentence
 
-Eight sequential phases (0 → A → B → C → D → E → F → G), with two pre-merge observability inserts (E.0 and E.1). Phase A establishes a clean per-iteration journey contract and real replay fixture. Phase B introduces the unified `OptimizationTrace` / `DecisionRecord` contract and standard operator transcript. Phase C hardens the RCA loop itself. Phase D builds scoreboard and failure bucketing as projections of the same trace while starting low-risk extractions. Phase E.0 makes MLflow decision artifacts reliable, and Phase E.1 formalizes the GSO Run Output Contract so humans, CLI tools, and LLM postmortem skills all consume the same RCA-grounded process. Phase E flips the hard gate and merges. Phases F/G finish modularization and tighten typed contracts.
+Nine sequential phases (0 → A → B → C → D → E → F → G → H), with one pre-merge observability insert (E.0) and a pre-rerun bug-fix batch (PR-A through PR-E). Phase A establishes a clean per-iteration journey contract and real replay fixture. Phase B introduces the unified `OptimizationTrace` / `DecisionRecord` contract and standard operator transcript. Phase C hardens the RCA loop itself. Phase D builds scoreboard and failure bucketing as projections of the same trace while starting low-risk extractions. The PR-A through PR-E batch (`2026-05-03-merge-readiness-pre-rerun-plans-index.md`) closes correctness and observability gaps surfaced by the live `407772af-9662-4803-be6b-f00a368c528a` run before the next expensive cycle. Phase E.0 makes MLflow decision artifacts reliable; Phase E flips the hard gate and merges. Phase F decomposes `harness.py` into nine **stage-aligned modules**, one per `RCA Evidence → Cluster → AG → Proposal → Gate → Applied Patch → Eval Result → Learning` step. Phase G freezes per-stage typed `StageInput` / `StageOutput` contracts. Phase H lands the **GSO Run Output Contract** as the final unification: a process-first `operator_transcript.md`, a parent-run `gso_postmortem_bundle/` with per-stage I/O capture, and a one-stop CLI/LLM postmortem package — all generated automatically from the typed stage modules introduced in F+G.
 
 ## Unified Architecture Target
 
@@ -125,33 +125,36 @@ Phase E.1 turns that process into the formal **GSO Run Output Contract**:
 
 | # | Phase | Replay-only? | Real-Genie runs | Calendar | Branch state |
 |---|---|---|---|---|---|
-| 0 | Cross-task state resilience (Repair Run fix) | No | 0–1 | ~2–3 days | pre-merge |
+| 0 | Cross-task state resilience (Repair Run fix) **(✅ complete)** | No | 0–1 | shipped | pre-merge |
 | A | Contract burn-down + real-fixture capture **(✅ complete — 2026-05-02; cycle-9 post-close burndown landed 2026-05-03)** | No | 9 (cycles 1-8 + post-close cycle 9) | ~1 day actual (estimate was 3-5 days) | pre-merge |
 | B | Unified trace + DecisionRecord + operator transcript **(✅ complete — 10/10 producers shipped via cycle 9 + delta)** | Yes | 0 | shipped | pre-merge |
 | C | RCA loop reliability hardening **(✅ complete — RCA loop contract, residuals, target-qid propagation landed)** | Mixed | 0–1 | shipped | pre-merge |
 | D | Scoreboard, failure bucketing, and first trace-aware extractions **(✅ complete — 3/3 plans landed)** | Yes | 0 | shipped | pre-merge |
-| **D.5** | **Pre-merge polish — alternatives capture (cluster / AG / proposal)** | Yes | 0 | ~2–3 days | pre-merge |
+| **D.5** | **Pre-merge polish — alternatives capture (cluster / AG / proposal) (✅ complete)** | Yes | 0 | shipped | pre-merge |
+| **PR-A→PR-E** | **Pre-rerun bug-fix batch from live run `407772af` (✅ complete — 6/6 plans landed)** | Mixed | 0 (replay-only during impl) | shipped | pre-merge (next live run gated by E.0) |
 | **E.0** | **MLflow artifact integrity audit + persistence fixes** | Mostly | 0 (replay-only) + 1 backfill smoke | ~2–3 days | pre-merge prerequisite for E |
-| **E.1** | **GSO Run Output Contract - centralized human + LLM observability** | Mostly | 0 (validated by next E pilot) | ~2–3 days | pre-merge prerequisite for E |
 | E | Final integration + contract-gate flip + merge | No | 1 | ~1 day | merge point |
-| F | Deeper `harness.py` modularization (5 byte-stable extractions) | Yes | 0 | ~5–8 days | post-merge follow-up |
-| G | Typed contract hardening for extracted modules | Yes | 0 | ~5–10 days | post-merge architecture follow-up |
-| | **Pre-merge total** | | **10–12 runs (~20–24 hrs, 9 already spent)** | **~3–4 weeks** | |
-| | **Post-merge follow-up** | | 0 | ~2–3 weeks | |
+| F | Stage-aligned `harness.py` modularization (9 stage modules) | Yes | 0 | ~10–14 days | post-merge follow-up |
+| G | Per-stage typed `StageInput` / `StageOutput` contract hardening | Yes | 0 | ~7–10 days | post-merge architecture follow-up |
+| **H** | **GSO Run Output Contract — process-first transcript + per-stage MLflow bundle (final unification)** | Yes | 0 | ~5–7 days | post-merge unification |
+| | **Pre-merge total** | | **10–11 runs (~20–22 hrs, 9 already spent)** | **~1 week remaining** | |
+| | **Post-merge follow-up (F → G → H)** | | 0 | ~3–5 weeks | |
 
 ## Why this sequencing
 
-Seven reasons it has to be in this order:
+Nine reasons it has to be in this order:
 
 1. **Phase 0 unblocks iteration cadence.** Repair Run has to carry enough state for short re-runs; otherwise every burn-down cycle costs a full 2-hour DAG.
 2. **Phase A makes replay trustworthy.** The real fixture now validates per iteration, persists `journey_validation`, keeps raw cycle fixtures, and has a CI budget tightened to zero. That gives every later phase a deterministic safety rail.
 3. **Phase B must precede more observability.** Scoreboards, failure buckets, and stdout should not each invent their own schema. A canonical `DecisionRecord` first makes every later rendering a projection of one source of truth.
 4. **Phase C makes RCA reliability first-class.** The optimizer is only useful if evidence, root cause, causal patch, targeted qids, observed effect, and learned next action form a closed loop. Cycle 8's `target_qids: []` and GT-correction qid loss bugs are symptoms of that contract not being explicit enough.
 5. **Phase D can then build operator UX safely.** Scoreboard, bucketing, and initial extractions become consumers of `OptimizationTrace`, not parallel log parsers.
-6. **Phase F remains byte-stable modularization.** The deeper extractions should still be behavior-preserving PRs, but they should move trace-aware subsystems, not opaque dict mutation blocks.
-7. **Phase G tightens APIs after modules exist.** Strong contracts become easier and safer once the code has coherent homes. Phase G should harden the module APIs while preserving persisted Delta and replay compatibility.
+6. **Phase F is stage-aligned, not just byte-stable.** Phases A–E and the PR-A→E batch made every stage-level decision (`EVAL_CLASSIFIED`, `CLUSTER_SELECTED`, `RCA_FORMED`, `STRATEGIST_AG_EMITTED`, `PROPOSAL_GENERATED`, `GATE_DECISION`, `PATCH_APPLIED`, `ACCEPTANCE_DECIDED`, `QID_RESOLUTION`, `AG_RETIRED`) typed and traceable. Phase F finally aligns the *executable code* with the same nine-stage process so the LLM postmortem can map a `decision_type` from stdout straight to one source file. Each extraction is its own commit, gated by byte-stable replay.
+7. **Phase G freezes the per-stage typed input/output contracts** so each stage module exposes a `StageInput` and `StageOutput` dataclass that LLMs and humans can reason about in isolation. Strong contracts become both safe and useful once the code has coherent stage-aligned homes.
+8. **Phase H lands the GSO Run Output Contract on top of F+G.** The process-first `operator_transcript.md`, the parent-run `gso_postmortem_bundle/` with per-stage `iter_NN/stages/<stage>/input.json + output.json + decisions.json`, and the `GSO_ARTIFACT_INDEX_V1` marker all become deterministic projections of the typed stage I/O. Without F+G, Phase H would have to re-invent stage attribution by parsing `harness.py`; with F+G, attribution is free.
+9. **The final unification reads as a tape.** After H lands, an iteration of `_run_lever_loop` reads as a linear sequence of `stages.evaluation.evaluate_post_patch` → `stages.rca_evidence.collect` → `stages.clustering.form` → `stages.action_groups.select` → `stages.proposals.generate` → `stages.gates.filter` → `stages.application.apply` → `stages.evaluation.evaluate_post_patch` → `stages.acceptance.decide` → `stages.learning.update`, each capturing typed I/O. That tape is what the operator transcript renders, what the LLM postmortem reasons over, and what scoreboard/failure bucketing project into operator metrics.
 
-**Current guardrail:** avoid adding new substantial helpers directly to `harness.py`. If a helper is a reusable domain operation or grows beyond roughly 30–50 LOC, put it in the module it will eventually belong to and import it into `harness.py`. New instrumentation must add `DecisionRecord` / `OptimizationTrace` producers or renderer sections, not freeform print/log blocks.
+**Current guardrail:** avoid adding new substantial helpers directly to `harness.py`. If a helper is a reusable domain operation or grows beyond roughly 30–50 LOC, put it in the module it will eventually belong to and import it into `harness.py`. New instrumentation must add `DecisionRecord` / `OptimizationTrace` producers or renderer sections, not freeform print/log blocks. After Phase F1 lands, "the module it will eventually belong to" is concretely the corresponding `optimization/stages/<stage>.py` file.
 
 ---
 
@@ -159,47 +162,69 @@ Seven reasons it has to be in this order:
 
 The end-state target is: **given a stdout/stderr from a Lever Loop job, an operator can identify which module's reasoning was off and fix it**. Phases 0–D get the program ~70–80% there. The remaining 20–30% is tracked here explicitly so it doesn't fall off the radar.
 
-### Diagnosability scorecard (as of 2026-05-03)
+### Diagnosability scorecard (as of 2026-05-04, post-PR-E)
 
 | Property | Grade | Concrete gap | Phase that closes it |
 |---|---|---|---|
-| **Per-qid RCA log** is typed and complete | A− (~90%) | Alternatives aren't captured — when the strategist picks AG_X over AG_Y, only AG_X gets a record. Same for clustering and proposal generation. | Phase D.5 |
-| **Cluster formation rationale** is first-class | C+ (~50%) | `cluster_records` stamps the chosen cluster but not "why this clustering vs another". | Phase D.5 |
-| **Modularized code** (defect → one file) | C+ (~40%) | 5 of 10 stages still live in `harness.py` / `optimizer.py` / `synthesis.py` / `applier.py`. | Phase F |
-| **Stdout-only diagnosability** | B (~70%) | (a) Hard gate not yet flipped; (b) MLflow artifacts (`phase_a/`, `phase_b/`) appear missing on operator-visible runs — see Phase E.0. | Phase E.0 + E |
+| **Per-qid RCA log** is typed and complete | A (~95%) | Alternatives are now captured for cluster / AG / proposal selection (Phase D.5 landed). | done |
+| **Cluster formation rationale** is first-class | A− (~90%) | `cluster_records` now stamps both chosen cluster and rejected alternatives. | done |
+| **Lane-aware journey validation** | A (~95%) | `validate_question_journeys` now splits trunk and per-`proposal_id` lanes (PR-C landed). | done |
+| **AG retirement transparency** | A (~95%) | Plateau termination now emits one `AG_RETIRED` `DecisionRecord` per silently-retired AG (PR-B2 landed). | done |
+| **RCA top-N intent classification** | A (~95%) | `RANK()` without `LIMIT N` now routes to `TOP_N_CARDINALITY_COLLAPSE` instead of `wrong_join_spec` (PR-D landed). | done |
+| **Pre-arbiter saturation acceptance** | A (~95%) | `accepted_pre_arbiter_improvement` branch now fires when post-arbiter is flat but pre-arbiter improved (PR-E landed). | done |
+| **Reflection content-fingerprint dedup** | A (~95%) | `_drop_proposals_matching_rolled_back_content_fingerprints` now blocks byte-identical re-proposals (PR-E landed). | done |
+| **Modularized code** (defect → one file mapped to one stage) | C+ (~40%) | 6 of 10 stages still live inside `harness.py` (~19,900 LOC) / `optimizer.py` (~15,600 LOC) / `synthesis.py` / `applier.py`. The PR-A→E fixes landed in the right files but the executable code is still not stage-aligned. | **Phase F (9 stage modules)** |
+| **Per-stage typed input/output** (LLM can reason about each stage in isolation) | F (~10%) | Stage I/O today is implicit through shared dicts and harness locals. | **Phase G (typed `StageInput` / `StageOutput`)** |
+| **Per-stage I/O capture in postmortem bundle** | F (~5%) | The `gso_postmortem_bundle/iterations/iter_NN/` plan exists but cannot be populated without per-stage modules. | **Phase H (built on F + G)** |
+| **Stdout-only diagnosability** | B (~70%) | (a) Hard gate not yet flipped; (b) MLflow artifacts (`phase_a/`, `phase_b/`) need anchoring (E.0). | Phase E.0 + E |
 | **Stderr-only diagnosability** | F (~10%) | Stderr today is mostly Python tracebacks, not contract reasoning. The transcript lives in stdout + MLflow artifacts. | Out of scope; not needed if stdout + artifacts are reliable. |
 
 ### Stage → module localization map
 
-When stdout points at a `decision_type`, today this is where the reasoning lives. Phase F closes the right column.
+When stdout points at a `decision_type`, today this is where the reasoning lives. Phase F closes the right column by extracting one module per stage in `optimization/stages/`.
 
-| `decision_type` | Producer (`decision_emitters.py`) | Reasoning today | Reasoning after Phase F |
-|---|---|---|---|
-| `EVAL_CLASSIFIED` | `eval_classification_records:102` | `eval_entry.py` ✅ | same |
-| `CLUSTER_SELECTED` | `cluster_records:161` | `harness.py` + `rca.py` | `rca_clustering.py` |
-| `RCA_FORMED` | `rca_formed_records:220` | `harness.py` + `rca.py` | `rca_clustering.py` |
-| `STRATEGIST_AG_EMITTED` | `strategist_ag_records:284` | `harness.py` + `optimizer.py` | `strategist_invocation.py` |
-| `PROPOSAL_GENERATED` | `proposal_generated_records:380` | `harness.py` + `synthesis.py` + `cluster_driven_synthesis.py` | `proposal_pipeline.py` |
-| `GATE_DECISION` (Lever 5 / blast radius) | `lever5_structural_gate_records:855` / `blast_radius_decision_records:776` | `harness.py` + `applier.py` | `applier_rollback.py` |
-| `PATCH_APPLIED` / `PATCH_SKIPPED` | `patch_applied_records:466` | `harness.py` + `applier.py` | `applier_rollback.py` |
-| `ACCEPTANCE_DECIDED` | `ag_outcome_decision_record:592` | `ag_outcome.py` ✅ | same |
-| `QID_RESOLUTION` | `post_eval_resolution_records:677` | `post_eval.py` ✅ | same |
+| Stage (per `PROCESS_STAGE_ORDER`) | `decision_type` | Producer (`decision_emitters.py`) | Reasoning today | Reasoning after Phase F |
+|---|---|---|---|---|
+| evaluation_state | `EVAL_CLASSIFIED` | `eval_classification_records:102` | `eval_entry.py` ✅ + `harness.py` + `evaluation.py` | `stages/evaluation.py` (entry + post-eval; F1) |
+| rca_evidence | (feeds RCA_FORMED) | (none direct — feeds `rca_formed_records`) | `harness.py` + `rca.py` + `judge_classes.py` | `stages/rca_evidence.py` (F2) |
+| cluster_formation | `CLUSTER_SELECTED` + `RCA_FORMED` | `cluster_records:161`, `rca_formed_records:220` | `harness.py` + `optimizer.py:cluster_failures:1865` + `rca.py` | `stages/clustering.py` (F3) |
+| action_group_selection | `STRATEGIST_AG_EMITTED` | `strategist_ag_records:284` | `harness.py` + `optimizer.py` + `strategist_constraints.py` | `stages/action_groups.py` (F4) |
+| proposal_generation | `PROPOSAL_GENERATED` | `proposal_generated_records:380` | `harness.py` + `synthesis.py` + `optimizer.py:generate_proposals_from_strategy` | `stages/proposals.py` (F5) |
+| safety_gates | `GATE_DECISION` (lever-5 / blast-radius / groundedness / DOA) | `lever5_structural_gate_records:855` / `blast_radius_decision_records:776` / `groundedness_gate_records:1220` / `dead_on_arrival_decision_records:911` | `harness.py` + `applier.py` + `proposal_grounding.py` + `iteration_acceptance.py` + `reflection_retry.py` | `stages/gates.py` (F6) |
+| applied_patches | `PATCH_APPLIED` / `PATCH_SKIPPED` | `patch_applied_records:466` | `harness.py` + `applier.py` | `stages/application.py` (F7) |
+| post_patch_evaluation | (re-uses EVAL stage) | (re-uses `eval_classification_records`) | `harness.py` + `post_eval.py` ✅ | `stages/evaluation.py` (post-eval entry; F1) |
+| acceptance_decision | `ACCEPTANCE_DECIDED` + `QID_RESOLUTION` | `ag_outcome_decision_record:592`, `post_eval_resolution_records:677` | `ag_outcome.py` ✅ + `post_eval.py` ✅ + `control_plane.py` + `iteration_acceptance.py` + `acceptance_policy.py` + `harness.py` | `stages/acceptance.py` (F8) |
+| learning_next_action | `AG_RETIRED` + terminal records | (terminal/AG_RETIRED records emitted inline in `harness.py:11801-11828`) | `harness.py` + `reflection_retry.py` + `rca_terminal.py` | `stages/learning.py` (F9) |
 
-Stages with ✅ are already module-precise from a stdout marker. The remaining five collapse to one module each after Phase F.
+After Phase F lands, every `decision_type` in the operator transcript maps to exactly one stage module. Phase G adds typed `StageInput` / `StageOutput` per module. Phase H captures both into the parent-run `gso_postmortem_bundle/iterations/iter_NN/stages/<stage_key>/{input.json,output.json,decisions.json}` so an LLM postmortem can attribute any regression to a single stage with full per-stage I/O.
 
-### Pre-merge gap closures (Phases D.5 and E.0)
+### Pre-merge gap closures (Phase D.5, PR-A→PR-E batch, and Phase E.0)
 
-Before flipping the merge gate at Phase E, two pre-merge phases close gaps that a Phase E pilot run would otherwise immediately surface:
+Three pre-merge gap-closure batches stand between the post-Phase D codebase and the Phase E merge gate flip:
 
-- **Phase D.5 — Alternatives capture.** Adds `alternatives_considered: tuple[AlternativeOption, ...]` to `DecisionRecord` and stamps it on `CLUSTER_SELECTED`, `STRATEGIST_AG_EMITTED`, and `PROPOSAL_GENERATED`. Transforms transcript reasoning from "this stage chose X" to "this stage chose X over {Y, Z} because of {reason_Y, reason_Z}". Plan: [`2026-05-04-pre-phase-e-alternatives-capture-plan.md`](./2026-05-04-pre-phase-e-alternatives-capture-plan.md).
+- **Phase D.5 — Alternatives capture (✅ complete).** Added `alternatives_considered: tuple[AlternativeOption, ...]` to `DecisionRecord` and stamped it on `CLUSTER_SELECTED`, `STRATEGIST_AG_EMITTED`, and `PROPOSAL_GENERATED`. Transformed transcript reasoning from "this stage chose X" to "this stage chose X over {Y, Z} because of {reason_Y, reason_Z}". Plan: [`2026-05-04-pre-phase-e-alternatives-capture-plan.md`](./2026-05-04-pre-phase-e-alternatives-capture-plan.md).
+
+- **PR-A → PR-E — Pre-rerun bug-fix batch from live run `407772af` (✅ complete).** The 2026-05-03 live Lever Loop run on the airline benchmark surfaced six structural bugs that the existing trace-and-decision-record contract caught but could not fix on its own. The batch landed all of them before the next expensive cycle; the index plan documents what each PR shipped and gives the cross-references. Index: [`2026-05-03-merge-readiness-pre-rerun-plans-index.md`](./2026-05-03-merge-readiness-pre-rerun-plans-index.md).
+
+  | PR | Plan | Fix |
+  | -- | ---- | --- |
+  | PR-A | [`2026-05-03-pr-a-replay-pasted-fixture-validation-plan.md`](./2026-05-03-pr-a-replay-pasted-fixture-validation-plan.md) | Operator script `replay_runid_fixture` + canonical analysis outputs under `docs/runid_analysis/<opt_run_id>/analysis/`. |
+  | PR-B1 | [`2026-05-03-pr-b1-evidence-bundle-notebook-output-fallback-plan.md`](./2026-05-03-pr-b1-evidence-bundle-notebook-output-fallback-plan.md) | `evidence_bundle` falls back to `notebook_output.result` when Databricks Jobs API returns no logs. |
+  | PR-B2 | [`2026-05-03-pr-b2-lever-loop-termination-vocab-and-ag-retirement-plan.md`](./2026-05-03-pr-b2-lever-loop-termination-vocab-and-ag-retirement-plan.md) | Convergence-marker `reason` unified with the human-readable termination print; one `AG_RETIRED` `DecisionRecord` per silently-retired AG at plateau. |
+  | PR-C | [`2026-05-03-pr-c-lane-aware-journey-validator-and-fixture-persistence-plan.md`](./2026-05-03-pr-c-lane-aware-journey-validator-and-fixture-persistence-plan.md) | `validate_question_journeys` now splits trunk and per-`proposal_id` lanes; multi-proposal iterations no longer trigger spurious `illegal_transition` violations. |
+  | PR-D | [`2026-05-03-pr-d-rca-classifier-top-n-cardinality-routing-plan.md`](./2026-05-03-pr-d-rca-classifier-top-n-cardinality-routing-plan.md) | `_safe_rca_kind` routes `RANK()` without `LIMIT N` to `TOP_N_CARDINALITY_COLLAPSE` instead of `wrong_join_spec` when intent + SQL shape align. |
+  | PR-E | [`2026-05-03-pr-e-pre-arbiter-secondary-acceptance-and-reflection-dedup-plan.md`](./2026-05-03-pr-e-pre-arbiter-secondary-acceptance-and-reflection-dedup-plan.md) | `decide_control_plane_acceptance` now accepts on `accepted_pre_arbiter_improvement` when post-arbiter is saturated and pre-arbiter improved with no collateral regression; content-fingerprint dedup blocks byte-identical re-proposals across rollback classes. |
+
 - **Phase E.0 — MLflow artifact integrity audit.** Phase A claims to persist `phase_a/journey_validation/iter_<N>.json` and Phase B claims to persist `phase_b/decision_trace/iter_<N>.json` + `phase_b/operator_transcript/iter_<N>.txt`. Spot inspection of `iter_04 / full_eval / pass_1 / run_d6a7faeb` shows only `evaluation_runtime/`, `judge_prompts/`, `model_snapshots/` — the decision-trail artifacts are not visible on the run an operator naturally clicks into. The persistence calls exist (`harness.py:17241`, `17312-17319`) but route to whichever MLflow run was last started by the harness's `end_run` / `start_run` pattern. E.0 audits where artifacts actually land, anchors them to a stable per-iteration parent run, surfaces silent persistence failures, and adds a backfill CLI for completed runs. Plan: [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md).
-- **Phase E.1 - GSO Run Output Contract.** The live run `407772af-9662-4803-be6b-f00a368c528a` proved that the loop can improve a space while still leaving humans and LLMs to stitch together stdout, notebook exit JSON, MLflow eval runs, strategy runs, logged model snapshots, and local evidence bundles manually. E.1 formalizes the output shape: a process-first human transcript, an artifact-index marker for CLI discovery, iteration-local MLflow artifacts, and a parent-run `gso_postmortem_bundle/` that `evidence_bundle` and `gso-postmortem` consume as the one-stop troubleshooting package. Plan: [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md).
 
-### Future work explicitly on the radar (post-Phase F)
+The **GSO Run Output Contract** (formerly E.1) has been moved to **Phase H** as the post-Phase G unification step. The motivation is unchanged — the live `407772af-9662-4803-be6b-f00a368c528a` run proved humans and LLMs need a process-first transcript and a one-stop MLflow `gso_postmortem_bundle/` — but the contract becomes much smaller and much more powerful once Phases F and G have produced typed per-stage modules whose I/O can be captured automatically. See **Phase H** below. Plan (target file): [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md).
 
-- **Per-stage module attribution field on `DecisionRecord`.** Once Phase F lands, add a `module: str` field (e.g. `"rca_clustering"`, `"proposal_pipeline"`) so transcript readers don't need the stage→module table above. Doable as a one-task PR after Phase F.
-- **Phase G typed contracts** — already on the roadmap; surfaces strong types after module boundaries are real.
-- **Production observability dashboard** — currently parked. Phase B's stable artifact structure is a precondition; E.0's anchoring fix is a prerequisite for dashboards to point at the right run.
+### Future work explicitly on the radar
+
+- **Phase F stage-aligned modularization** — see Phase F below. Index: [`2026-05-04-phase-f-stages-modularization-index.md`](./2026-05-04-phase-f-stages-modularization-index.md).
+- **Phase G typed `StageInput` / `StageOutput` contracts** — see Phase G below; concrete because each Phase F module already exposes the right input/output shape.
+- **Phase H GSO Run Output Contract unification** — see Phase H below; the `gso_postmortem_bundle/iterations/iter_NN/stages/<stage_key>/` payload is generated automatically from per-stage I/O capture once F+G land.
+- **Production observability dashboard** — currently parked. Phase H's stable bundle layout is the precondition; E.0's anchoring fix is a prerequisite for dashboards to point at the right run.
 
 ---
 
@@ -476,52 +501,6 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
 
 ---
 
-## Phase E.1 - GSO Run Output Contract: centralized human + LLM observability
-
-**Why insert here:** Phase E.0 makes artifact persistence reliable, but it does not by itself define what the run output should look like once those artifacts are reliable. The live run `407772af-9662-4803-be6b-f00a368c528a` showed the gap: the raw task output contained enough information to diagnose the loop, but it was too large, partly truncated, and not organized as the RCA process. LLMs also need a stable way to discover parent MLflow runs, iteration eval runs, strategy runs, logged model artifacts, and local evidence bundles without guessing from raw stdout.
-
-**What ships:**
-
-- A formal **GSO Run Output Contract** rooted in the standard loop:
-
-  ```text
-  RCA Evidence -> Cluster -> Action Group -> Proposal -> Gate
-    -> Applied Patch -> Eval Result -> Learning
-  ```
-
-- A process-first `operator_transcript.md` for humans. Each iteration renders the same stage order, and each stage includes a short explanation of what happened and why the stage exists so a new operator can follow the optimizer end to end.
-- A parent-run `gso_postmortem_bundle/` in MLflow as the one-stop LLM troubleshooting package:
-  - `manifest.json`
-  - `run_summary.json`
-  - `artifact_index.json`
-  - `operator_transcript.md`
-  - `decision_trace_all.json`
-  - `journey_validation_all.json`
-  - `replay_fixture.json`
-  - `scoreboard.json`
-  - `failure_buckets.json`
-  - `iterations/iter_<N>/*`
-- Iteration eval runs continue to store iteration-local artifacts and metrics. The parent bundle assembles the right subset so postmortem starts from one place without losing MLflow-native lineage.
-- Logged models store candidate/champion state only: config snapshots, applied patches, and source iteration run id. They do not become the one-stop troubleshooting store.
-- A new `GSO_ARTIFACT_INDEX_V1` stdout marker and pointer-rich `dbutils.notebook.exit(...)` fields so `databricks jobs get-run-output <lever_loop_task_run_id>` can locate the parent bundle and linked iteration artifacts even when stdout is truncated.
-- `evidence_bundle` pulls the parent bundle into `docs/runid_analysis/<optimization_run_id>/evidence/gso_postmortem_bundle/` before falling back to legacy phase artifacts or raw notebook output.
-- `gso-postmortem` consumes the evidence bundle, not live ad hoc log scraping.
-
-**Validation strategy:**
-
-- Unit tests for artifact path constants, run-role tags, artifact-index markers, marker parsing, evidence-bundle local layout, parent-bundle assembly, and MLflow audit coverage.
-- Snapshot-style tests for the process transcript stage order and stage descriptions.
-- A lightweight smoke test proves `GSO_ARTIFACT_INDEX_V1` points from CLI-visible stdout to the parent bundle.
-- No dedicated real-Genie run. The next Phase E pilot validates the full path in the workspace.
-
-**Exit criterion:** a completed lever-loop task exposes enough CLI-visible pointers to locate the parent MLflow `gso_postmortem_bundle/`; the parent bundle contains a readable human transcript and typed LLM artifacts; `evidence_bundle` materializes the bundle locally; and `gso-postmortem` can produce a postmortem without grepping raw task output unless the manifest declares a missing artifact.
-
-**Real-Genie runs:** 0 dedicated. The next Phase E candidate pilot validates the fix end to end.
-
-**Detailed plan:** [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md).
-
----
-
 ## Phase E — Final integration + merge
 
 **What happens:**
@@ -550,73 +529,192 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
 
 ---
 
-## Phase F — Deeper `harness.py` modularization (post-merge)
+## Phase F — Stage-aligned `harness.py` modularization (post-merge)
 
-**Why sixth:** Phase D extracted three lowest-risk subsystems. The five remaining subsystems carry most of `harness.py`'s remaining mass and most of its cross-module coupling. Phase A's journey contract plus Phases B/C's decision trace and RCA loop contracts make their input/output behavior explicit and testable, so each one becomes a small PR gated by byte-stable replay.
+**Why sixth:** Phases A–E and the PR-A→E batch made every stage-level decision typed and traceable, but the **executable code** remains a monolith — `harness.py` is ~19,900 LOC, `optimizer.py` is ~15,600 LOC, and 6 of 10 process stages still live inside one of those two files. The decision-emitter producers in `decision_emitters.py` are already stage-aligned (`eval_classification_records`, `cluster_records`, `rca_formed_records`, `strategist_ag_records`, `proposal_generated_records`, four gate producers, `patch_applied_records`, `ag_outcome_decision_record`, `post_eval_resolution_records`, AG_RETIRED via PR-B2). The `PROCESS_STAGE_ORDER` taxonomy in [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md) is already locked. Phase F finally aligns the source code with the same nine-stage process so the LLM postmortem maps a `decision_type` from stdout to exactly one source file — and so Phase H can capture per-stage I/O automatically.
 
-**Why post-merge:** these are isolated refactors with zero behavior change. They do not need to block the merge of the contract gate, the scoreboard, or the bucketing classifier. They land as a sequence of small follow-up PRs on `main`, each individually reviewable and reversible.
+**Why post-merge:** these are behavior-preserving refactors with zero algorithmic change. They do not need to block the merge of the contract gate, the scoreboard, or the bucketing classifier. They land as nine small, individually reviewable, individually reversible PRs on `main`, each gated by byte-stable replay.
 
-**What Phase F is not:** Phase F is not the "strongly typed modular harness" endpoint. It is the prerequisite for that endpoint. The extraction PRs must preserve behavior and call shape closely enough for replay to keep journey, decision, scoreboard, and transcript snapshots byte-identical, so they may still carry today's `dict[str, Any]` payloads, mutation-through-shared-state patterns, and wide call signatures. Phase G tightens those contracts after the code has coherent homes.
+**Architecture — `optimization/stages/` package:**
 
-**Order matters (lowest-risk first, same logic as Phase D):**
+```
+src/genie_space_optimizer/optimization/
+  stages/
+    __init__.py          # StageHandler protocol, StageContext, ProcessStageKey re-exports
+    evaluation.py        # F1 — stages 1 + 8: evaluate_baseline + evaluate_post_patch
+    rca_evidence.py      # F2 — stage 2: judge / ASI / sql-diff / counterfactual evidence
+    clustering.py        # F3 — stage 3: cluster_failures + RCA card formation
+    action_groups.py     # F4 — stage 4: strategist invocation + AG selection + lane lock
+    proposals.py         # F5 — stage 5: synthesis + cluster-driven synthesis
+    gates.py             # F6 — stage 6: lever-5 / blast-radius / groundedness / DOA / dedup
+    application.py       # F7 — stage 7: apply + immediate rollback verification
+    acceptance.py        # F8 — stage 9: control plane + iteration acceptance + AG outcome
+    learning.py          # F9 — stage 10: reflection buffer, do-not-retry, content-fingerprint blocklist, terminal resolution, AG_RETIRED
+  harness.py             # ~2k-LOC orchestration spine (down from ~19,900) reading as a linear tape over the 9 stages
+```
 
-| Order | Extraction | New module | Phase A precondition that makes it safe |
-|---|---|---|---|
-| 1 | RCA & clustering | `optimization/rca_clustering.py` | RCA loop contract: evidence, root cause, cluster, and RCA card are traceable. |
-| 2 | Strategist invocation | `optimization/strategist_invocation.py` | AG decisions carry source clusters, affected qids, and rationale. |
-| 3 | Proposal pipeline | `optimization/proposal_pipeline.py` | Proposal decisions carry causal targets, lineage, and malformed/gate reasons. |
-| 4 | Application / rollback | `optimization/applier_rollback.py` | Gate, apply, rollback, and survival decisions are trace-complete. |
-| 5 | Acceptance gating | `optimization/acceptance_gate.py` | Acceptance decisions carry target wins, regressions, rollback trust, and learned next action. |
+Each `stages/<stage>.py` module exposes:
 
-**Validation strategy:** identical to Phase D. Each extraction is its own commit. The replay test (now a hard gate post-Phase E) asserts byte-identical journey ledger, decision trace, scoreboard snapshot, and operator transcript before vs after. If anything reorders, CI fails closed and the commit is rolled back.
+- A typed `StageInput` dataclass (frozen in Phase G).
+- A typed `StageOutput` dataclass (frozen in Phase G).
+- A single `execute(ctx: StageContext, inp: StageInput) -> StageOutput` entry point.
+- Ownership of the corresponding `decision_emitters.py` producer(s).
+- A per-stage replay fixture asserting byte-stable I/O.
 
-**Exit criterion:** all five extractions land on `main`; replay byte-stable across each; total LoC reduction in `harness.py` of an additional ~6000–8000 lines (from ~12k post-Phase D to ~4–6k). The remaining `harness.py` is the orchestration spine — the loop body, lever ordering, and inter-module wiring — but the extracted modules may still expose legacy-shaped contracts until Phase G.
+**Order matters (lowest-risk first):**
+
+| Order | Plan | Stage(s) | New module | Decision producer it owns | Phase A/B/C/D/PR-A→E precondition that makes it safe |
+|---|---|---|---|---|---|
+| F1 | [`2026-05-04-phase-f1-stages-skeleton-and-evaluation-plan.md`](./2026-05-04-phase-f1-stages-skeleton-and-evaluation-plan.md) | `evaluation_state` + `post_patch_evaluation` | `stages/evaluation.py` (+ `stages/__init__.py` skeleton) | `eval_classification_records` | `eval_entry.py` + `post_eval.py` already extracted in Phase D. |
+| F2 | [`2026-05-04-phase-f2-rca-evidence-stage-extraction-plan.md`](./2026-05-04-phase-f2-rca-evidence-stage-extraction-plan.md) | `rca_evidence` | `stages/rca_evidence.py` | (feeds `rca_formed_records`) | Phase C RCA loop contract: every failure has typed evidence. |
+| F3 | [`2026-05-04-phase-f3-clustering-stage-extraction-plan.md`](./2026-05-04-phase-f3-clustering-stage-extraction-plan.md) | `cluster_formation` | `stages/clustering.py` | `cluster_records`, `rca_formed_records` | Phase D.5 alternatives capture: rejected clusters are typed. |
+| F4 | [`2026-05-04-phase-f4-action-groups-stage-extraction-plan.md`](./2026-05-04-phase-f4-action-groups-stage-extraction-plan.md) | `action_group_selection` | `stages/action_groups.py` | `strategist_ag_records` | Phase B AG decisions carry source clusters and rationale; Phase D.5 stamps rejected AGs. |
+| F5 | [`2026-05-04-phase-f5-proposals-stage-extraction-plan.md`](./2026-05-04-phase-f5-proposals-stage-extraction-plan.md) | `proposal_generation` | `stages/proposals.py` | `proposal_generated_records` | Phase C target-qid propagation; Phase D.5 stamps rejected proposals. |
+| F6 | [`2026-05-04-phase-f6-gates-stage-extraction-plan.md`](./2026-05-04-phase-f6-gates-stage-extraction-plan.md) | `safety_gates` | `stages/gates.py` | `lever5_structural_gate_records`, `blast_radius_decision_records`, `groundedness_gate_records`, `dead_on_arrival_decision_records`, content-fingerprint dedup (PR-E) | All four gate producers + PR-E content-fingerprint dedup landed. |
+| F7 | [`2026-05-04-phase-f7-application-stage-extraction-plan.md`](./2026-05-04-phase-f7-application-stage-extraction-plan.md) | `applied_patches` | `stages/application.py` | `patch_applied_records` | Phase B `PATCH_APPLIED` / `PATCH_SKIPPED` records complete. |
+| F8 | [`2026-05-04-phase-f8-acceptance-stage-extraction-plan.md`](./2026-05-04-phase-f8-acceptance-stage-extraction-plan.md) | `acceptance_decision` | `stages/acceptance.py` | `ag_outcome_decision_record`, `post_eval_resolution_records` | `ag_outcome.py` + `post_eval.py` already extracted; PR-E pre-arbiter acceptance branch landed. |
+| F9 | [`2026-05-04-phase-f9-learning-stage-extraction-plan.md`](./2026-05-04-phase-f9-learning-stage-extraction-plan.md) | `learning_next_action` | `stages/learning.py` | terminal records + `AG_RETIRED` (PR-B2) | PR-B2 typed termination + AG_RETIRED, PR-E content-fingerprint blocklist landed. |
+
+**Validation strategy:** identical to Phase D. Each extraction is its own commit. The replay test (a hard gate post-Phase E) asserts byte-identical journey ledger, decision trace, scoreboard snapshot, and operator transcript before vs after. If anything reorders, CI fails closed and the commit is rolled back.
+
+**Exit criterion:** all nine stage modules land on `main`; replay byte-stable across each; total LoC reduction in `harness.py` ≈ 14,000–16,000 lines (from ~19,900 post-merge to ~3,500–5,500 orchestration spine). The remaining `harness.py` reads as a linear tape over the nine stage modules — the loop body becomes:
+
+```python
+for iter_num in range(1, max_iterations + 1):
+    eval_result = stages.evaluation.evaluate_post_patch(ctx, state.space)
+    evidence    = stages.rca_evidence.collect(ctx, eval_result)
+    clusters    = stages.clustering.form(ctx, evidence)
+    slate       = stages.action_groups.select(ctx, clusters, state.reflection)
+    proposals   = stages.proposals.generate(ctx, slate, state.space_snapshot)
+    gated       = stages.gates.filter(ctx, proposals, evidence, state.applied_history)
+    applied     = stages.application.apply(ctx, gated, state.space_snapshot)
+    post_eval   = stages.evaluation.evaluate_post_patch(ctx, applied.space)
+    outcome     = stages.acceptance.decide(ctx, applied, post_eval)
+    learning    = stages.learning.update(ctx, outcome, ctx.terminal_status)
+    state       = state.advance(applied, post_eval, outcome, learning)
+```
 
 **Real-Genie runs:** 0. Replay test is the only gate.
 
-**Detailed plan:** to be written as `2026-05-XX-harness-extractions-phase-2-plan.md` once Phase D lands and the replay gate is hard.
+**Detailed plans:** [`2026-05-04-phase-f-stages-modularization-index.md`](./2026-05-04-phase-f-stages-modularization-index.md) sequences F1 through F9, with one plan per stage module.
 
-**Why the eventual Phase F is realistic, not aspirational:** the [combined Phase A burn-down plan](./high%20level%20plans/2026-05-01-lever-loop-phase-a-burndown-combined-high-level-plan.md) made the journey surface replayable; Phases B/C add the missing decision and RCA contracts. Together, those make the five deep subsystems independently extractable without asking reviewers to trust a giant behavioral refactor.
+**Why the stage-aligned shape matters:** when stdout points at `decision_type=GATE_DECISION reason=blast_radius`, the LLM postmortem can navigate to exactly `stages/gates.py` and read its `StageInput`/`StageOutput` rather than chasing through 4 files. The eight existing decision-emitter producers are already stage-aligned; Phase F finishes the alignment by pulling the executable code into the same shape.
 
 ---
 
-## Phase G — Typed contract hardening (post-extraction architecture)
+## Phase G — Per-stage typed `StageInput` / `StageOutput` contract hardening
 
-**Why after Phase F:** After Phase F, the harness behavior is stable, replay-gated, and split across coherent modules. That is the first point where it is safe to change API shape deliberately. Phase G turns byte-stable modules into strongly typed, LLM-legible subsystems with explicit contracts, focused responsibilities, and narrow public surfaces.
-
-**Why not earlier:** Typed contract redesign before Phase A/E mixes two failure modes: missing journey emits and API redesign regressions. Typed contract redesign before Phase F also forces contract choices around code that still lives inside a large orchestration file. Phase G waits until the behavior is stable and the module boundaries are real.
+**Why after Phase F:** Phase F gives every stage module a single `execute(...)` entry point with a stage-shaped input and output. Phase G freezes those shapes as typed dataclasses, declares the `StageHandler` Protocol that every module conforms to, and flips the contract gate into strict typing. This is the first point where strong typing is both safe (replay-gated) and useful (one freeze per module instead of one giant API redesign).
 
 **What ships:**
 
-- A small contract model layer for the lever loop, likely under `optimization/contracts.py` or `optimization/lever_loop_contracts.py`, with frozen dataclasses or Pydantic models for the state that crosses module boundaries.
-- Module APIs converted from wide positional signatures and open-ended dictionaries to kwargs-only typed inputs/outputs.
-- Explicit typed objects for recurring concepts such as:
-  - `LoopContext` — run IDs, space IDs, catalog/schema, warehouse, apply mode, lever set, and feature flags.
-  - `IterationState` — iteration number, baseline/candidate accuracy, hard qids, cluster assignments, and terminal state.
-  - `OptimizationTrace` — owned container for journey events, decision records, validation reports, and projections.
-  - `DecisionRecord` — canonical record for an optimizer choice with evidence refs, RCA, root cause, causal targets, expected effect, observed effect, regression qids, reason code, and next action.
-  - `RcaLoopState` — evidence, root cause, causal patch intent, expected fix, observed result, and learned next action.
-  - `ProposalBatch` — proposals, parent/child lineage, cap decisions, malformed counts, and gate outcomes.
-  - `PatchApplicationResult` — applied patches, rejected patches, rollback metadata, and survival attribution.
-  - `AcceptanceDecision` — accepted/rolled-back decision, reason class, regression debt, and accuracy delta.
-  - `JourneyLedger` — typed wrapper around journey events plus validation report accessors.
-  - `ScoreboardSnapshot` — scoreboard inputs and rendered operator-facing metrics.
-  - `OperatorTranscript` — deterministic pretty stdout projection for replay, MLflow artifacting, and human review.
-- Per-module type-checking ratcheted in gradually. Start with the extracted modules; do not require strict typing across all of legacy `harness.py` on day one.
-- Compatibility adapters only where needed to keep persisted Delta payloads and replay fixtures stable. The public module APIs should become typed; persisted schemas should remain backward-compatible unless a separate migration plan says otherwise.
+- `stages/__init__.py` exports a `StageHandler[StageInputT, StageOutputT]` Protocol with `stage_key: ClassVar[str]`, `decision_producer: ClassVar`, and `execute(ctx, inp) -> out`.
+- Every stage module's `StageInput` and `StageOutput` dataclass marked `@dataclass(frozen=True)` with `slots=True`.
+- A `StageContext` typed dataclass replacing today's loose `ctx: dict` plumbing — owns run id, iteration, MLflow client, journey emit hook, decision emit hook, and feature flags.
+- Per-module type-checking ratcheted in: `mypy --strict` clean per stage module, then per import boundary, then `harness.py` orchestration spine.
+- Explicit typed objects for recurring concepts:
+  - `LoopContext` — run IDs, space IDs, catalog/schema, warehouse, apply mode, lever set, feature flags.
+  - `IterationState` — iteration number, baseline/candidate accuracy, hard qids, cluster assignments, terminal state.
+  - `EvaluationResult`, `RcaEvidence`, `ClusterFindings`, `ActionGroupSlate`, `ProposalSlate`, `GateOutcome`, `AppliedPatchSet`, `AgOutcome`, `LearningUpdate` — one StageOutput dataclass per F-plan.
+  - `OptimizationTrace`, `DecisionRecord`, `JourneyLedger`, `ScoreboardSnapshot`, `OperatorTranscript` — already typed; Phase G hardens fields and adds Protocol conformance.
+- Cross-stage `StageHandler` Protocol conformance tests proving every module exports `stage_key`, `decision_producer`, and `execute` with compatible typing.
+- Compatibility adapters only where needed to keep persisted Delta payloads and replay fixtures byte-stable.
 
 **Validation strategy:**
 
-- Each module gets its own typed-contract PR after its Phase F extraction has landed.
-- Unit tests prove the typed model constructors reject malformed inputs and preserve the current happy-path shape.
-- Replay tests continue to assert journey, decision, scoreboard, and transcript behavior does not regress.
-- Type checking is opt-in per hardened module first, then expanded. The end state is enforced typing for the extracted modules and a much smaller untyped allowance for the remaining orchestration spine.
+- Each module gets its own typed-contract PR after its F-plan extraction has landed.
+- Unit tests prove typed dataclass constructors reject malformed inputs and preserve happy-path shape.
+- Replay tests continue to assert journey, decision, scoreboard, and transcript behavior is byte-stable.
+- A new Protocol conformance test asserts every `stages/<stage>.py` module satisfies `StageHandler` and registers under the correct `stage_key`.
 
-**Exit criterion:** the eight extracted modules expose typed public APIs; `harness.py` orchestrates typed contracts rather than building and mutating open-ended dictionaries at every boundary; LLM-assisted edits can target one module plus its contract tests without loading the whole lever-loop harness into context.
+**Exit criterion:** the nine stage modules expose typed public APIs; `harness.py` orchestrates typed contracts rather than building and mutating open-ended dictionaries at every boundary; LLM-assisted edits can target one stage module plus its contract tests without loading the whole lever-loop harness into context. `mypy --strict` clean for every `stages/*.py` module.
 
 **Real-Genie runs:** 0. Replay + unit + type checks are the gates.
 
-**Detailed plan:** to be written as `2026-05-XX-lever-loop-typed-contract-hardening-plan.md` after Phase F's module boundaries are real.
+**Detailed plan:** to be written as `2026-05-XX-phase-g-typed-stage-contracts-plan.md` after Phase F's module boundaries are real.
+
+---
+
+## Phase H — GSO Run Output Contract: final unification on top of F + G
+
+**Why last:** the live run `407772af-9662-4803-be6b-f00a368c528a` proved that the loop can already improve a Genie Space, but humans and LLMs still have to stitch together stdout, notebook exit JSON, MLflow eval runs, strategy runs, logged model snapshots, and local evidence bundles manually. Phase H formalizes the **GSO Run Output Contract** as the final unification: a process-first human transcript, a parent-run `gso_postmortem_bundle/` with per-stage I/O capture, a `GSO_ARTIFACT_INDEX_V1` stdout marker for CLI discovery, and a `gso-postmortem` skill that consumes the bundle as the one-stop troubleshooting package. **Phase H exists because Phases F and G make it small.** Without per-stage modules, capturing per-stage I/O would require parsing `harness.py`. With per-stage typed `execute(ctx, inp) -> out` calls, the harness wraps each call with one decorator that dumps `inp` and `out` to `iter_NN/stages/<stage_key>/`. The bundle becomes a deterministic projection of typed stage I/O.
+
+**Why this is the end goal:** every preceding phase converges on a single reader-facing artifact:
+
+```text
+RCA Evidence -> Cluster -> Action Group -> Proposal -> Gate
+  -> Applied Patch -> Eval Result -> Learning
+```
+
+After Phase H lands, this process is rendered to humans (`operator_transcript.md`), to LLMs (typed JSON per stage), to CLI tools (`GSO_ARTIFACT_INDEX_V1` + `dbutils.notebook.exit(...)` pointers), and to evidence bundles (`gso_postmortem_bundle/`). The same data — stage I/O captured in F+G — projects to all four surfaces. There is one source of truth.
+
+**What ships:**
+
+- A formal **GSO Run Output Contract** rooted in the standard loop:
+
+  ```text
+  RCA Evidence -> Cluster -> Action Group -> Proposal -> Gate
+    -> Applied Patch -> Eval Result -> Learning
+  ```
+
+- A process-first `operator_transcript.md` for humans. Each iteration renders the same stage order, with each stage including `What happened` (concrete facts), `Why this stage exists` (educational), and `Input -> Decision -> Output` (the process transition).
+- A parent-run `gso_postmortem_bundle/` in MLflow as the one-stop LLM troubleshooting package:
+
+  ```text
+  gso_postmortem_bundle/
+    manifest.json
+    run_summary.json
+    artifact_index.json
+    operator_transcript.md
+    decision_trace_all.json
+    journey_validation_all.json
+    replay_fixture.json
+    scoreboard.json
+    failure_buckets.json
+    iterations/
+      iter_01/
+        summary.json
+        operator_transcript.md
+        decision_trace.json
+        journey_validation.json
+        rca_ledger.json
+        proposal_inventory.json
+        patch_survival.json
+        stages/                          # NEW — populated automatically from F+G stage I/O
+          01_evaluation/
+            input.json
+            output.json
+            decisions.json
+          02_rca_evidence/...
+          03_clustering/...
+          04_action_groups/...
+          05_proposals/...
+          06_gates/...
+          07_application/...
+          08_acceptance/...
+          09_learning/...
+  ```
+
+- Iteration eval runs continue to store iteration-local artifacts and metrics. The parent bundle assembles the right subset so postmortem starts from one place without losing MLflow-native lineage.
+- Logged models store candidate/champion state only: config snapshots, applied patches, source iteration run id. They do not become the one-stop troubleshooting store.
+- A new `GSO_ARTIFACT_INDEX_V1` stdout marker and pointer-rich `dbutils.notebook.exit(...)` fields so `databricks jobs get-run-output <lever_loop_task_run_id>` can locate the parent bundle and linked iteration artifacts even when stdout is truncated.
+- `evidence_bundle` pulls the parent bundle into `docs/runid_analysis/<optimization_run_id>/evidence/gso_postmortem_bundle/` before falling back to legacy phase artifacts or raw notebook output.
+- `gso-postmortem` consumes the evidence bundle, not live ad hoc log scraping.
+- Per-stage I/O capture decorator wired into the harness's stage call sites — wraps every `stages.<stage>.execute(ctx, inp)` and writes `inp` + `out` + producer-emitted decisions to MLflow under `gso_postmortem_bundle/iterations/iter_NN/stages/<stage_key>/`.
+
+**Validation strategy:**
+
+- Unit tests for artifact path constants, run-role tags, artifact-index markers, marker parsing, evidence-bundle local layout, parent-bundle assembly, and MLflow audit coverage.
+- Snapshot-style tests for the process transcript stage order and stage descriptions.
+- A lightweight smoke test proves `GSO_ARTIFACT_INDEX_V1` points from CLI-visible stdout to the parent bundle.
+- Replay tests assert the per-stage `iter_NN/stages/<stage_key>/{input.json,output.json,decisions.json}` payloads are byte-stable.
+- The Phase H plan is implementation-independent of any other phase: it can be implemented before, during, or after any other roadmap phase, but it becomes substantially smaller after F+G land because per-stage I/O capture replaces ad hoc rendering.
+
+**Exit criterion:** a completed lever-loop task exposes enough CLI-visible pointers to locate the parent MLflow `gso_postmortem_bundle/`; the parent bundle contains a readable human transcript, typed LLM artifacts, and per-stage I/O captures; `evidence_bundle` materializes the bundle locally; and `gso-postmortem` can produce a postmortem without grepping raw task output unless the manifest declares a missing artifact.
+
+**Real-Genie runs:** 0 dedicated. The next post-Phase H pilot validates the full path in the workspace.
+
+**Detailed plan:** [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md) — the existing plan remains the implementation blueprint. Two task additions land in Phase H itself: (1) wire the per-stage I/O capture decorator into `harness.py`'s stage call sites, and (2) extend `bundle_artifact_paths(...)` to enumerate `iter_NN/stages/<stage_key>/{input.json,output.json,decisions.json}`.
 
 ---
 
@@ -624,18 +722,22 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
 
 | Phase | Real runs | Wall time |
 |---|---|---|
-| 0 (verification smoke) | 0–1 | ~2 hr |
-| A (burn-down, cycles 1–8) | 8 actual | ~16 hr actual |
+| 0 (verification smoke) | 0–1 actual | ~2 hr |
+| A (burn-down, cycles 1–9) | 9 actual | ~18 hr actual |
 | B (unified trace + transcript) | 0 | 0 |
-| C (RCA loop reliability) | 0–1 | ~0–2 hr |
+| C (RCA loop reliability) | 0–1 actual | ~0–2 hr |
 | D (scoreboard, bucketing, first extractions) | 0 | 0 |
+| D.5 (alternatives capture) | 0 | 0 |
+| PR-A → PR-E (pre-rerun bug-fix batch) | 1 actual (run `407772af`) | ~2 hr actual |
+| E.0 (MLflow artifact integrity audit) | 0 (replay-only) | 0 |
 | E (final integration) | 1 | ~2 hr |
-| F (deeper modularization, replay-only, post-merge) | 0 | 0 |
-| G (typed contract hardening, replay-only, post-merge) | 0 | 0 |
-| **Pre-merge total** | **9–11** | **~18–22 hr** |
-| **Post-merge follow-up** | **0** | **0** |
+| F (stage-aligned modularization, replay-only, post-merge) | 0 | 0 |
+| G (per-stage typed contracts, replay-only, post-merge) | 0 | 0 |
+| H (GSO Run Output Contract unification, replay-only, post-merge) | 0 | 0 |
+| **Pre-merge total** | **10–11** | **~22–24 hr (~22 hr already spent)** |
+| **Post-merge follow-up (F → G → H)** | **0** | **0** |
 
-Calendar estimate from the current point: ~1–2 additional weeks pre-merge with journey and decision gates live at the end, then ~1 week of small post-merge PRs for Phase F, then ~1–2 weeks of typed-contract hardening for Phase G.
+Calendar estimate from the current point: ~1 additional week pre-merge (E.0 + E pilot) with journey and decision gates live at the end, then ~2–3 weeks of small post-merge PRs for Phase F (one per stage module), ~1.5 weeks for Phase G typed-contract hardening, and ~1 week for Phase H to wire per-stage I/O capture and ship the parent-run `gso_postmortem_bundle/`.
 
 ---
 
@@ -644,7 +746,7 @@ Calendar estimate from the current point: ~1–2 additional weeks pre-merge with
 - **Generic key/value handoff table.** Phase 0 widens `genie_opt_runs` with 3 columns instead — minimal change, matches existing data shape. Revisit only if a future task needs handoff for arbitrary keys not already in Delta.
 - **Restart-from-checkpoint inside `_run_lever_loop`.** The harness already resumes via `load_latest_full_iteration`. Phase 0 only fixes notebook-level state handoff, not harness internals.
 - **Hand-synthesized fixture extensions.** Replaced by real-fixture capture at the end of Phase A (more honest, less work).
-- **Further orchestration-spine decomposition beyond Phase F/G.** After Phase F, the remaining `harness.py` should be the orchestration spine. Phase G improves the contracts crossing that spine. Splitting the spine itself further is parked unless the spine becomes hard to reason about after typed contracts land.
+- **Further orchestration-spine decomposition beyond Phase F/G/H.** After Phase F, the remaining `harness.py` should be a ~3,500–5,500-LOC orchestration spine that reads as a linear tape over the nine `stages/<stage>.py` modules. Phase G improves the contracts crossing that spine. Phase H wires per-stage I/O capture into the spine. Splitting the spine itself further is parked unless the spine becomes hard to reason about after H lands.
 - **Typed contract redesign before Phase G.** Strong typing is the desired endpoint, but it is deliberately delayed until after the burn-down, merge gate, and byte-stable extractions. Before then, only add narrow types that support the active phase without reshaping module boundaries.
 - **Dashboarding beyond stdout/MLflow artifacts.** Phase B standardizes the operator transcript first. Rich dashboards can follow once the trace contract is stable and persisted consistently.
 - **Ad hoc diagnostic print blocks in `harness.py`.** New operator-visible diagnostics should be typed trace producers plus centralized transcript renderer sections. Freeform prints are parked unless they are temporary migration shims removed by the same phase.
@@ -653,12 +755,13 @@ Calendar estimate from the current point: ~1–2 additional weeks pre-merge with
 
 ## Concrete next action
 
-**Phases 0 → D are complete.** Two pre-merge phases remain before Phase E flips the merge gate:
+**Phases 0 → D, Phase D.5, and the PR-A → PR-E batch are complete.** One pre-merge phase remains before Phase E flips the merge gate:
 
-1. **Phase D.5 — Alternatives capture.** Highest-leverage small follow-up. ~9 TDD tasks; replay-only; closes the "this stage misreasoned" → "this stage rejected option Y for reason Z" diagnostic gap. Plan ready at [`2026-05-04-pre-phase-e-alternatives-capture-plan.md`](./2026-05-04-pre-phase-e-alternatives-capture-plan.md).
-2. **Phase E.0 — MLflow artifact integrity audit.** Required because Phase E's pilot validation depends on `phase_a/`/`phase_b/` artifacts being present on an operator-discoverable run, and current spot inspection shows they are not. ~9 TDD tasks across audit/anchoring/backfill phases. Plan ready at [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md).
+1. **Phase E.0 — MLflow artifact integrity audit.** Required because Phase E's pilot validation depends on `phase_a/`/`phase_b/` artifacts being present on an operator-discoverable run, and current spot inspection shows they are not. ~9 TDD tasks across audit/anchoring/backfill phases. Plan ready at [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md).
 
-Both phases are replay-only during implementation. The next real-Genie cycle is the **Phase E pilot run**, which validates D.5 transcripts and E.0 artifact integrity in one shot, gates the `raise_on_violation=True` flip, and produces the merge-baseline fixture for `gso-replay-cycle-intake` to lock.
+E.0 is replay-only during implementation. The next real-Genie cycle is the **Phase E pilot run**, which validates the PR-A→E fixes in a live run, validates E.0 artifact integrity, gates the `raise_on_violation=True` flip, and produces the merge-baseline fixture for `gso-replay-cycle-intake` to lock.
+
+**After Phase E merges**, the post-merge work runs in three stages: Phase F (9 small stage extractions, replay-gated), Phase G (per-stage typed contracts, replay + mypy gated), and Phase H (GSO Run Output Contract unification on top of F+G). The Phase F index is at [`2026-05-04-phase-f-stages-modularization-index.md`](./2026-05-04-phase-f-stages-modularization-index.md).
 
 ---
 
@@ -682,9 +785,26 @@ Both phases are replay-only during implementation. The next real-Genie cycle is 
 | [`2026-05-04-operator-scoreboard-plan.md`](./2026-05-04-operator-scoreboard-plan.md) | Implemented | D |
 | [`2026-05-04-failure-bucketing-classifier-plan.md`](./2026-05-04-failure-bucketing-classifier-plan.md) | Implemented | D |
 | [`2026-05-04-harness-extractions-phase-1-plan.md`](./2026-05-04-harness-extractions-phase-1-plan.md) | Implemented | D |
-| [`2026-05-04-pre-phase-e-alternatives-capture-plan.md`](./2026-05-04-pre-phase-e-alternatives-capture-plan.md) | Ready | D.5 |
+| [`2026-05-04-pre-phase-e-alternatives-capture-plan.md`](./2026-05-04-pre-phase-e-alternatives-capture-plan.md) | Implemented | D.5 |
+| [`2026-05-03-merge-readiness-pre-rerun-plans-index.md`](./2026-05-03-merge-readiness-pre-rerun-plans-index.md) | Implemented (6/6 PRs landed) | PR-A → PR-E |
+| [`2026-05-03-pr-a-replay-pasted-fixture-validation-plan.md`](./2026-05-03-pr-a-replay-pasted-fixture-validation-plan.md) | Implemented | PR-A |
+| [`2026-05-03-pr-b1-evidence-bundle-notebook-output-fallback-plan.md`](./2026-05-03-pr-b1-evidence-bundle-notebook-output-fallback-plan.md) | Implemented | PR-B1 |
+| [`2026-05-03-pr-b2-lever-loop-termination-vocab-and-ag-retirement-plan.md`](./2026-05-03-pr-b2-lever-loop-termination-vocab-and-ag-retirement-plan.md) | Implemented | PR-B2 |
+| [`2026-05-03-pr-c-lane-aware-journey-validator-and-fixture-persistence-plan.md`](./2026-05-03-pr-c-lane-aware-journey-validator-and-fixture-persistence-plan.md) | Implemented | PR-C |
+| [`2026-05-03-pr-d-rca-classifier-top-n-cardinality-routing-plan.md`](./2026-05-03-pr-d-rca-classifier-top-n-cardinality-routing-plan.md) | Implemented | PR-D |
+| [`2026-05-03-pr-e-pre-arbiter-secondary-acceptance-and-reflection-dedup-plan.md`](./2026-05-03-pr-e-pre-arbiter-secondary-acceptance-and-reflection-dedup-plan.md) | Implemented | PR-E |
 | [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md) | Ready | E.0 |
-| `2026-05-XX-harness-extractions-phase-2-plan.md` | To be written | F |
-| `2026-05-XX-lever-loop-typed-contract-hardening-plan.md` | To be written | G |
+| [`2026-05-04-phase-f-stages-modularization-index.md`](./2026-05-04-phase-f-stages-modularization-index.md) | Ready | F (9-plan index) |
+| [`2026-05-04-phase-f1-stages-skeleton-and-evaluation-plan.md`](./2026-05-04-phase-f1-stages-skeleton-and-evaluation-plan.md) | Ready | F1 (skeleton + evaluation) |
+| [`2026-05-04-phase-f2-rca-evidence-stage-extraction-plan.md`](./2026-05-04-phase-f2-rca-evidence-stage-extraction-plan.md) | Ready | F2 (RCA evidence) |
+| [`2026-05-04-phase-f3-clustering-stage-extraction-plan.md`](./2026-05-04-phase-f3-clustering-stage-extraction-plan.md) | Ready | F3 (clustering) |
+| [`2026-05-04-phase-f4-action-groups-stage-extraction-plan.md`](./2026-05-04-phase-f4-action-groups-stage-extraction-plan.md) | Ready | F4 (action groups) |
+| [`2026-05-04-phase-f5-proposals-stage-extraction-plan.md`](./2026-05-04-phase-f5-proposals-stage-extraction-plan.md) | Ready | F5 (proposals) |
+| [`2026-05-04-phase-f6-gates-stage-extraction-plan.md`](./2026-05-04-phase-f6-gates-stage-extraction-plan.md) | Ready | F6 (gates) |
+| [`2026-05-04-phase-f7-application-stage-extraction-plan.md`](./2026-05-04-phase-f7-application-stage-extraction-plan.md) | Ready | F7 (application) |
+| [`2026-05-04-phase-f8-acceptance-stage-extraction-plan.md`](./2026-05-04-phase-f8-acceptance-stage-extraction-plan.md) | Ready | F8 (acceptance) |
+| [`2026-05-04-phase-f9-learning-stage-extraction-plan.md`](./2026-05-04-phase-f9-learning-stage-extraction-plan.md) | Ready | F9 (learning) |
+| `2026-05-XX-phase-g-typed-stage-contracts-plan.md` | To be written | G |
+| [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md) | Ready (final unification) | H |
 | [`skills/gso-lever-loop-run-analysis/SKILL.md`](./skills/gso-lever-loop-run-analysis/SKILL.md) | Ready | B/C/D/E run analysis |
 | [`skills/gso-replay-cycle-intake/SKILL.md`](./skills/gso-replay-cycle-intake/SKILL.md) | Ready | A burn-down ledger intake |
