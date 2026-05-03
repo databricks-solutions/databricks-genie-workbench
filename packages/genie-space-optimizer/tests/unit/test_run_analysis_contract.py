@@ -65,3 +65,85 @@ def test_phase_b_marker_reports_trace_artifacts() -> None:
     assert payload["decision_record_count"] == 12
     assert payload["decision_validation_count"] == 0
     assert payload["persist_ok"] is True
+
+
+def test_phase_b_no_records_marker_carries_reason_and_producer_exceptions() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        phase_b_no_records_marker,
+    )
+
+    line = phase_b_no_records_marker(
+        optimization_run_id="opt_run_1",
+        iteration=2,
+        reason="all_ags_dropped_at_grounding",
+        producer_exceptions={"eval_classification": 0, "cluster": 1},
+        contract_version="v1",
+    )
+
+    assert line.startswith("GSO_PHASE_B_NO_RECORDS_V1 ")
+    payload = _json_payload(line)
+    assert payload["optimization_run_id"] == "opt_run_1"
+    assert payload["iteration"] == 2
+    assert payload["reason"] == "all_ags_dropped_at_grounding"
+    assert payload["producer_exceptions"] == {"cluster": 1, "eval_classification": 0}
+    assert payload["contract_version"] == "v1"
+
+
+def test_phase_b_no_records_marker_handles_empty_producer_exceptions() -> None:
+    """Default ``producer_exceptions=None`` becomes an empty dict so the
+    JSON payload is always present."""
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        phase_b_no_records_marker,
+    )
+
+    line = phase_b_no_records_marker(
+        optimization_run_id="opt_run_1",
+        iteration=1,
+        reason="no_clusters",
+    )
+
+    payload = _json_payload(line)
+    assert payload["producer_exceptions"] == {}
+
+
+def test_phase_b_end_marker_carries_per_iter_counts() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        phase_b_end_marker,
+    )
+
+    line = phase_b_end_marker(
+        optimization_run_id="opt_run_1",
+        total_records=120,
+        iter_record_counts=[24, 24, 24, 24, 24],
+        iter_violation_counts=[0, 0, 0, 0, 0],
+        no_records_iterations=[],
+        contract_version="v1",
+    )
+
+    assert line.startswith("GSO_PHASE_B_END_V1 ")
+    payload = _json_payload(line)
+    assert payload["total_records"] == 120
+    assert payload["iter_record_counts"] == [24, 24, 24, 24, 24]
+    assert payload["iter_violation_counts"] == [0, 0, 0, 0, 0]
+    assert payload["no_records_iterations"] == []
+    assert payload["contract_version"] == "v1"
+
+
+def test_phase_b_end_marker_carries_no_records_iterations_list() -> None:
+    """Cycle-9 reality: 5 iters with 0 records each."""
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        phase_b_end_marker,
+    )
+
+    line = phase_b_end_marker(
+        optimization_run_id="opt_run_1",
+        total_records=0,
+        iter_record_counts=[0, 0, 0, 0, 0],
+        iter_violation_counts=[0, 0, 0, 0, 0],
+        no_records_iterations=[1, 2, 3, 4, 5],
+        contract_version="v1",
+    )
+
+    payload = _json_payload(line)
+    assert payload["total_records"] == 0
+    assert payload["no_records_iterations"] == [1, 2, 3, 4, 5]

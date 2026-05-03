@@ -547,7 +547,20 @@ dbutils.jobs.taskValues.set(
 
 debug_info = {
     k: v for k, v in loop_out.items()
-    if k.startswith("_debug_") or k in ("levers_attempted", "levers_accepted", "levers_rolled_back", "iteration_counter")
+    if k.startswith("_debug_") or k in (
+        "levers_attempted",
+        "levers_accepted",
+        "levers_rolled_back",
+        "iteration_counter",
+        # Phase B observability manifest. ``loop_out["phase_b"]`` is the
+        # CLI-visible truth surface for Phase B because
+        # ``databricks jobs get-run-output`` exposes only the
+        # ``dbutils.notebook.exit(...)`` JSON for this task — not stdout.
+        # Without this allowlist entry the manifest is silently dropped.
+        # See `docs/2026-05-02-unified-trace-and-operator-transcript-plan.md`
+        # postmortem follow-up.
+        "phase_b",
+    )
 }
 dbutils.jobs.taskValues.set(key="debug_info", value=json.dumps(debug_info, default=str))
 

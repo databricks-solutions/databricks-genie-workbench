@@ -252,3 +252,72 @@ def test_validate_decisions_against_journey_accepts_matching_post_eval_resolutio
     )
 
     assert violations == []
+
+
+def test_validate_decisions_exempts_post_eval_hold_pass_from_rca_required() -> None:
+    """Held-pass qids were never clustered. A ``QID_RESOLUTION`` record
+    with ``reason_code=POST_EVAL_HOLD_PASS`` is exempt from rca_id /
+    root_cause / target_qids checks — claiming any of them for a
+    never-clustered qid would be a lie."""
+    from genie_space_optimizer.optimization.question_journey import QuestionJourneyEvent
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionOutcome,
+        DecisionRecord,
+        DecisionType,
+        ReasonCode,
+        validate_decisions_against_journey,
+    )
+
+    held_pass = DecisionRecord(
+        iteration=1,
+        decision_type=DecisionType.QID_RESOLUTION,
+        outcome=DecisionOutcome.RESOLVED,
+        reason_code=ReasonCode.POST_EVAL_HOLD_PASS,
+        question_id="q1",
+        # NO rca_id, NO root_cause, NO target_qids — and that's intentional.
+        evidence_refs=("post_eval:q1",),
+    )
+    events = [
+        QuestionJourneyEvent(question_id="q1", stage="evaluated"),
+        QuestionJourneyEvent(question_id="q1", stage="post_eval", is_passing=True),
+    ]
+
+    violations = validate_decisions_against_journey(records=[held_pass], events=events)
+    assert violations == [], (
+        f"POST_EVAL_HOLD_PASS should be rca-exempt, got: {violations}"
+    )
+
+
+def test_validate_decisions_does_not_exempt_other_post_eval_reasons() -> None:
+    """Only ``POST_EVAL_HOLD_PASS`` is rca-exempt. ``POST_EVAL_HOLD_FAIL``
+    /``FAIL_TO_PASS`` /``PASS_TO_FAIL`` still require rca_id."""
+    from genie_space_optimizer.optimization.question_journey import QuestionJourneyEvent
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionOutcome,
+        DecisionRecord,
+        DecisionType,
+        ReasonCode,
+        validate_decisions_against_journey,
+    )
+
+    fail_to_pass = DecisionRecord(
+        iteration=1,
+        decision_type=DecisionType.QID_RESOLUTION,
+        outcome=DecisionOutcome.RESOLVED,
+        reason_code=ReasonCode.POST_EVAL_FAIL_TO_PASS,
+        question_id="q1",
+        evidence_refs=("post_eval:q1",),
+        # Deliberately missing rca_id / root_cause / target_qids.
+    )
+    events = [
+        QuestionJourneyEvent(question_id="q1", stage="evaluated"),
+        QuestionJourneyEvent(question_id="q1", stage="post_eval", is_passing=True),
+    ]
+
+    violations = validate_decisions_against_journey(
+        records=[fail_to_pass], events=events,
+    )
+    # Should produce 3 rca-required violations.
+    assert any("has no rca_id" in v for v in violations)
+    assert any("has no root_cause" in v for v in violations)
+    assert any("has no target_qids" in v for v in violations)

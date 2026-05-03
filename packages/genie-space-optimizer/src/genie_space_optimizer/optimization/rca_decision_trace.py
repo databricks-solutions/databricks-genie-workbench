@@ -305,8 +305,18 @@ def validate_decisions_against_journey(
         DecisionType.PATCH_APPLIED: "applied",
         DecisionType.QID_RESOLUTION: "post_eval",
     }
+    # ``POST_EVAL_HOLD_PASS`` records describe qids that were passing
+    # before AND after this iteration's patches; they were never
+    # clustered, so claiming an ``rca_id`` would be a lie. Exempt the
+    # held-pass path from rca-required and target_qids checks. See
+    # `docs/2026-05-02-unified-trace-and-operator-transcript-plan.md`
+    # postmortem follow-up.
+    rca_exempt_reason_codes = {ReasonCode.POST_EVAL_HOLD_PASS}
     for record in records:
-        if record.decision_type in rca_required:
+        if (
+            record.decision_type in rca_required
+            and record.reason_code not in rca_exempt_reason_codes
+        ):
             if not record.evidence_refs:
                 violations.append(
                     f"decision {record.decision_type.value} qid={record.question_id or '-'} "

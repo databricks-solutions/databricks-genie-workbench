@@ -127,3 +127,62 @@ def convergence_marker(
             "thresholds_met": bool(thresholds_met),
         },
     )
+
+
+def phase_b_no_records_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    reason: str,
+    producer_exceptions: Mapping[str, int] | None = None,
+    contract_version: str = "v1",
+) -> str:
+    """Marker emitted when an iteration produces zero ``DecisionRecord``s.
+
+    Distinguishes "Phase B ran but had nothing to record" from "Phase B
+    never ran" (deploy is stale; ``contract_version`` tag absent) and
+    from a silent producer error (``producer_exceptions`` carries the
+    counters). The reason string is drawn from the closed
+    ``NoRecordsReason`` vocabulary in
+    ``optimization/decision_emitters.py``.
+    """
+    return marker_line(
+        "GSO_PHASE_B_NO_RECORDS_V1",
+        {
+            "optimization_run_id": optimization_run_id,
+            "iteration": int(iteration),
+            "reason": str(reason or ""),
+            "producer_exceptions": dict(producer_exceptions or {}),
+            "contract_version": str(contract_version or ""),
+        },
+    )
+
+
+def phase_b_end_marker(
+    *,
+    optimization_run_id: str,
+    total_records: int,
+    iter_record_counts: list[int],
+    iter_violation_counts: list[int],
+    no_records_iterations: list[int],
+    contract_version: str,
+) -> str:
+    """Marker emitted once at lever-loop terminate.
+
+    Carries the per-iter record/violation counts plus a list of
+    iterations that produced zero records (so the analyzer can correlate
+    the end-of-loop view with per-iter ``GSO_PHASE_B_NO_RECORDS_V1``
+    markers). Fires on every termination path (plateau, max-iterations,
+    convergence, raise) — see harness exit-path audit test.
+    """
+    return marker_line(
+        "GSO_PHASE_B_END_V1",
+        {
+            "optimization_run_id": optimization_run_id,
+            "total_records": int(total_records),
+            "iter_record_counts": [int(n) for n in (iter_record_counts or [])],
+            "iter_violation_counts": [int(n) for n in (iter_violation_counts or [])],
+            "no_records_iterations": [int(n) for n in (no_records_iterations or [])],
+            "contract_version": str(contract_version or ""),
+        },
+    )
