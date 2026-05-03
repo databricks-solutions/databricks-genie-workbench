@@ -701,6 +701,100 @@ def _record_dead_on_arrival_signature(
     seen.add(signature)
 
 
+def _t24_counterfactual_scan(
+    *,
+    all_proposals: list[dict],
+    benchmarks: list[dict],
+    ag: dict,
+    prev_failure_qids: set[str] | frozenset[str],
+) -> list[tuple[str, str, list[str]]]:
+    """Stamp passing_dependents and high_collateral_risk on each proposal.
+
+    Phase 3c Task A: every proposal the scan visits is stamped with
+    ``passing_dependents`` (possibly the empty list) so downstream gates
+    can distinguish "scan ran, found nothing" from "scan never ran".
+    Proposals without a ``target`` table are stamped with the empty
+    list; instruction rewrites belong to that bucket today and the
+    instruction-scope gate's split-child propagation check needs the
+    explicit ``[]`` to stop failing loud.
+
+    Returns the legacy ``_collateral_details`` list of
+    ``(patch_type, target, sample_dependents)`` tuples for the operator
+    transcript renderer.
+    """
+    passing_qids = {b.get("id") for b in benchmarks if b.get("id")} - set(
+        prev_failure_qids or ()
+    )
+    affected_qids = set(ag.get("affected_questions", []) or [])
+    affected_n = max(len(affected_qids), 1)
+    collateral_details: list[tuple[str, str, list[str]]] = []
+
+    def _sql_text_for_benchmark(_b: dict) -> str:
+        return " ".join(
+            str(_b.get(k, "")) for k in
+            ("expected_response", "expected_sql", "ground_truth_sql")
+        ).lower()
+
+    for _p in all_proposals:
+        _ptype = str(_p.get("type") or _p.get("patch_type") or "")
+        _target = str(
+            _p.get("target") or _p.get("target_object")
+            or _p.get("target_table") or _p.get("table") or ""
+        ).lower()
+        _target_column = str(_p.get("column") or "").lower()
+
+        # Phase 3c Task A: always stamp passing_dependents so split-children
+        # of any rewrite_instruction inherit a real value (even if []).
+        if not _target:
+            _p["passing_dependents"] = []
+            continue
+
+        _target_tail = _target.split(".")[-1] if "." in _target else _target
+        _target_candidates = {_target, _target_tail}
+        if _target_column:
+            _target_candidates.add(f"{_target_tail}.{_target_column}")
+        _dependents: list[str] = []
+        for _b in benchmarks:
+            _bid = _b.get("id", "")
+            if not _bid or _bid not in passing_qids:
+                continue
+            _bench_assets = [
+                str(t).lower() for t in
+                (_b.get("required_tables") or []) + (_b.get("required_columns") or [])
+            ]
+            _matched = any(
+                any(c == _ba or c in _ba or _ba in c for c in _target_candidates)
+                for _ba in _bench_assets
+            )
+            if not _matched:
+                _sql_text = _sql_text_for_benchmark(_b)
+                if _sql_text and any(
+                    c and c in _sql_text for c in _target_candidates
+                ):
+                    _matched = True
+            if _matched:
+                _dependents.append(_bid)
+        # Phase 3c Task A: stamp even when empty so the gate sees [] not None.
+        _p["passing_dependents"] = _dependents[:50]
+        if _dependents and len(_dependents) >= 2 * affected_n:
+            _p["high_collateral_risk"] = True
+            collateral_details.append(
+                (_ptype, _target, _dependents[:10])
+            )
+            # Phase 3c Task C: per-proposal threshold log for follow-up
+            # diagnosis when the gate fires unexpectedly.
+            logger.info(
+                "[%s] high_collateral_risk: proposal_id=%s target=%s "
+                "dependents=%s threshold=%d",
+                ag.get("id", "?"),
+                _p.get("proposal_id") or _p.get("id") or "?",
+                _target,
+                _dependents,
+                2 * affected_n,
+            )
+    return collateral_details
+
+
 def _seed_eval_result_from_baseline_iter(baseline_iter: dict | None) -> dict:
     """Build an `_latest_eval_result`-shaped dict from a persisted baseline row.
 
@@ -13902,69 +13996,18 @@ def _run_lever_loop(
         _passing_qids = set(b.get("id") for b in benchmarks if b.get("id")) - (prev_failure_qids or set())
         _affected_qids = set(ag.get("affected_questions", []) or [])
         _affected_n = max(len(_affected_qids), 1)
-        _collateral_details: list[tuple[str, str, list[str]]] = []
-
-        # B2 — SQL-text fallback for benchmarks that don't carry
-        # ``required_tables`` / ``required_columns`` metadata. The
-        # original scan was silent in that case; substring-matching
-        # against the benchmark's expected/ground-truth SQL keeps
-        # detection working even when auto-synthesis skipped the
-        # asset metadata.
-        def _sql_text_for_benchmark(_b: dict) -> str:
-            return " ".join(
-                str(_b.get(k, "")) for k in
-                ("expected_response", "expected_sql", "ground_truth_sql")
-            ).lower()
-
-        for _p in all_proposals:
-            _ptype = str(_p.get("type") or _p.get("patch_type") or "")
-            # B2 — read ``table`` for raw column-level proposals
-            # (parallel to B1.1). Without this, every column-level
-            # proposal had ``_target == ""`` and ``continue``d
-            # silently, so the scan never ran for any column patch.
-            _target = str(
-                _p.get("target") or _p.get("target_object")
-                or _p.get("target_table") or _p.get("table") or ""
-            ).lower()
-            _target_column = str(_p.get("column") or "").lower()
-            if not _target:
-                continue
-            # B2 — FQN normalisation. Patch targets are usually
-            # ``catalog.schema.table`` while benchmarks may carry
-            # only ``table`` (unqualified) in their SQL or asset
-            # lists. Match on the unqualified tail too.
-            _target_tail = _target.split(".")[-1] if "." in _target else _target
-            _target_candidates = {_target, _target_tail}
-            if _target_column:
-                _target_candidates.add(f"{_target_tail}.{_target_column}")
-            _dependents: list[str] = []
-            for _b in benchmarks:
-                _bid = _b.get("id", "")
-                if not _bid or _bid not in _passing_qids:
-                    continue
-                _bench_assets = [
-                    str(t).lower() for t in
-                    (_b.get("required_tables") or []) + (_b.get("required_columns") or [])
-                ]
-                _matched = any(
-                    any(c == _ba or c in _ba or _ba in c for c in _target_candidates)
-                    for _ba in _bench_assets
-                )
-                if not _matched:
-                    _sql_text = _sql_text_for_benchmark(_b)
-                    if _sql_text and any(
-                        c and c in _sql_text for c in _target_candidates
-                    ):
-                        _matched = True
-                if _matched:
-                    _dependents.append(_bid)
-            if _dependents:
-                _p["passing_dependents"] = _dependents[:50]
-                if len(_dependents) >= 2 * _affected_n:
-                    _p["high_collateral_risk"] = True
-                    _collateral_details.append(
-                        (_ptype, _target, _dependents[:10])
-                    )
+        # Phase 3c Task A: scan body extracted into _t24_counterfactual_scan
+        # so the per-proposal stamp logic can be exercised in isolation.
+        # The helper stamps ``passing_dependents`` on every visited
+        # proposal (including instruction rewrites with no target table)
+        # and returns the legacy ``_collateral_details`` shape used by
+        # the summary print below.
+        _collateral_details = _t24_counterfactual_scan(
+            all_proposals=all_proposals,
+            benchmarks=benchmarks,
+            ag=ag,
+            prev_failure_qids=prev_failure_qids or set(),
+        )
         # B2 — ALWAYS print a summary so operators can distinguish
         # "scan ran, nothing flagged" from "scan didn't run".
         _total_with_metadata = sum(
