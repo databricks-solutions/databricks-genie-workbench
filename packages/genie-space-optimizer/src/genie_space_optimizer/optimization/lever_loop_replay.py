@@ -145,6 +145,20 @@ def _replay_iteration(
         for q in affected:
             _emit("ag_assigned", question_id=q, ag_id=ag_id)
         applied_qids: list[str] = []
+        # Cycle 10 fix: an AG may carry N alternative proposals/patches all
+        # targeting the same qid (e.g., AG_DECOMPOSED_H001 in cycle 10 iter 2
+        # emitted 12 alternative ``add_join_spec`` patches plus 1
+        # ``add_sql_snippet_measure`` for ``gs_009``). Each alternative is a
+        # separate patch_id but represents the SAME qid-lifecycle transition.
+        # ``proposed`` and ``applied`` are one-shot per qid per AG per iter
+        # (see ``_LEGAL_NEXT`` in question_journey_contract.py: PROPOSED only
+        # transitions to drop stages or APPLIED; APPLIED only to terminal
+        # outcomes). Without dedup the journey-contract validator reports
+        # spurious ``proposed -> proposed`` and ``applied -> applied``
+        # self-transitions, which is the surface symptom but not a real
+        # state-machine violation.
+        proposed_qids_for_ag: set[str] = set()
+        applied_qids_for_ag: set[str] = set()
         for prop in ag.get("patches") or []:
             pid = str(prop.get("proposal_id") or "")
             ptype = str(prop.get("patch_type") or "")
@@ -152,12 +166,18 @@ def _replay_iteration(
                 str(q) for q in (prop.get("target_qids") or []) if q
             ]
             for q in target_qids:
+                if q in proposed_qids_for_ag:
+                    continue
+                proposed_qids_for_ag.add(q)
                 _emit(
                     "proposed", question_id=q,
                     proposal_id=pid, patch_type=ptype,
                     cluster_id=str(prop.get("cluster_id") or ""),
                 )
             for q in target_qids:
+                if q in applied_qids_for_ag:
+                    continue
+                applied_qids_for_ag.add(q)
                 _emit("applied", question_id=q, proposal_id=pid, patch_type=ptype)
                 applied_qids.append(q)
         outcome = ag_outcomes.get(ag_id, "rolled_back")

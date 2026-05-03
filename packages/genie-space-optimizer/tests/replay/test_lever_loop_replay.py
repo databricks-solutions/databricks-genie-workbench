@@ -432,3 +432,41 @@ def test_airline_real_v1_operator_transcript_is_byte_stable() -> None:
         )
     result = run_replay(fixture)
     assert result.operator_transcript == expected
+
+
+def test_synthetic_multi_alt_proposals_one_qid_does_not_double_emit() -> None:
+    """Cycle 10 RC-4 regression: an AG with N alternative proposals all
+    targeting the same qid must produce exactly one ``proposed`` and one
+    ``applied`` event for that qid (per-qid per-AG dedup at
+    ``lever_loop_replay.py``). Without the fix, the replay engine emits N
+    ``proposed`` and N ``applied`` events for the same qid in the same iter,
+    producing ``proposed -> proposed`` and ``applied -> applied`` self-
+    transition violations against the journey contract.
+    """
+    from collections import Counter
+
+    from genie_space_optimizer.optimization.lever_loop_replay import run_replay
+
+    fixture = _load("synthetic_multi_alt_proposals_one_qid.json")
+    result = run_replay(fixture)
+
+    proposed_for_q1 = [
+        e for e in result.events
+        if e.stage == "proposed" and e.question_id == "Q1"
+    ]
+    applied_for_q1 = [
+        e for e in result.events
+        if e.stage == "applied" and e.question_id == "Q1"
+    ]
+    assert len(proposed_for_q1) == 1, (
+        f"expected exactly 1 'proposed' event for Q1 across the AG's 13 "
+        f"alternative patches, got {len(proposed_for_q1)}"
+    )
+    assert len(applied_for_q1) == 1, (
+        f"expected exactly 1 'applied' event for Q1 across the AG's 13 "
+        f"alternative patches, got {len(applied_for_q1)}"
+    )
+    assert result.validation.is_valid, (
+        "expected zero violations, got "
+        f"{Counter(v.detail for v in result.validation.violations)}"
+    )

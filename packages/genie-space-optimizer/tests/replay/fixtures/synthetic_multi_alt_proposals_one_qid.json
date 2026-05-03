@@ -1,0 +1,41 @@
+{
+  "fixture_id": "synthetic_multi_alt_proposals_one_qid",
+  "_doc": "Cycle 10 RC-4 regression fixture. One AG carries 12 alternative add_join_spec patches all targeting qid Q1, plus a single add_sql_snippet_measure also targeting Q1. The journey-contract validator must see exactly one 'proposed' and one 'applied' event for Q1 in this AG (per_qid_per_AG dedup). Without the cycle-10 dedup at lever_loop_replay.py, the replay engine emits 13 'proposed' events and one or more 'applied' events for Q1, producing 'proposed -> proposed' and 'applied -> applied' self-transition violations. With the dedup, violations must be 0.",
+  "iterations": [
+    {
+      "iteration": 1,
+      "eval_rows": [
+        {"question_id": "Q1", "result_correctness": "no", "arbiter": "ground_truth_correct"}
+      ],
+      "clusters": [
+        {"cluster_id": "H001", "question_ids": ["Q1"], "root_cause": "wrong_join_spec"}
+      ],
+      "soft_clusters": [],
+      "ag_outcomes": {"AG1": "accepted"},
+      "post_eval_passing_qids": ["Q1"],
+      "strategist_response": {
+        "action_groups": [
+          {
+            "id": "AG1",
+            "affected_questions": ["Q1"],
+            "patches": [
+              {"cluster_id": "AG1_DISC_001", "patch_type": "add_join_spec", "proposal_id": "P001", "target_qids": ["Q1"]},
+              {"cluster_id": "AG1_DISC_002", "patch_type": "add_join_spec", "proposal_id": "P002", "target_qids": ["Q1"]},
+              {"cluster_id": "AG1_DISC_003", "patch_type": "add_join_spec", "proposal_id": "P003", "target_qids": ["Q1"]},
+              {"cluster_id": "AG1_DISC_004", "patch_type": "add_join_spec", "proposal_id": "P004", "target_qids": ["Q1"]},
+              {"cluster_id": "AG1_DISC_005", "patch_type": "add_join_spec", "proposal_id": "P005", "target_qids": ["Q1"]},
+              {"cluster_id": "AG1_DISC_006", "patch_type": "add_join_spec", "proposal_id": "P006", "target_qids": ["Q1"]},
+              {"cluster_id": "AG1_DISC_007", "patch_type": "add_join_spec", "proposal_id": "P007", "target_qids": ["Q1"]},
+              {"cluster_id": "AG1_DISC_008", "patch_type": "add_join_spec", "proposal_id": "P008", "target_qids": ["Q1"]},
+              {"cluster_id": "AG1_DISC_009", "patch_type": "add_join_spec", "proposal_id": "P009", "target_qids": ["Q1"]},
+              {"cluster_id": "AG1_DISC_010", "patch_type": "add_join_spec", "proposal_id": "P010", "target_qids": ["Q1"]},
+              {"cluster_id": "AG1_DISC_011", "patch_type": "add_join_spec", "proposal_id": "P011", "target_qids": ["Q1"]},
+              {"cluster_id": "AG1_DISC_012", "patch_type": "add_join_spec", "proposal_id": "P012", "target_qids": ["Q1"]},
+              {"cluster_id": "H001", "patch_type": "add_sql_snippet_measure", "proposal_id": "P013", "target_qids": ["Q1"]}
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
