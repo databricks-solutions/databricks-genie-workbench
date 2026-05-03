@@ -11743,6 +11743,37 @@ def _run_lever_loop(
                 + _kv("Retired AGs", str(len(_resolved.retired_ags))) + "\n"
                 + _bar("!")
             )
+            # PR-B2 Task 5: emit one AG_RETIRED DecisionRecord per AG whose
+            # target qids reclassified out of hard before delivery, so the
+            # decision-trace artifact preserves the silent-drop event.
+            if _resolved.retired_ags:
+                from genie_space_optimizer.optimization.rca_decision_trace import (
+                    DecisionOutcome as _DOut_AGRet,
+                    DecisionRecord as _DRec_AGRet,
+                    DecisionType as _DType_AGRet,
+                    ReasonCode as _RCode_AGRet,
+                )
+                _retired_records = [
+                    _DRec_AGRet(
+                        run_id=str(run_id),
+                        iteration=int(_iter_num),
+                        decision_type=_DType_AGRet.AG_RETIRED,
+                        outcome=_DOut_AGRet.RETIRED,
+                        reason_code=_RCode_AGRet.AG_TARGET_NO_LONGER_HARD,
+                        ag_id=str(_retired_ag_id),
+                        target_qids=tuple(_retired_qids),
+                        affected_qids=tuple(_retired_qids),
+                        reason_detail=(
+                            f"AG {_retired_ag_id} retired at plateau because "
+                            f"target qids {list(_retired_qids)} are no longer "
+                            f"in the live hard-failure set."
+                        ),
+                    )
+                    for _retired_ag_id, _retired_qids in _resolved.retired_ags
+                ]
+                _current_iter_inputs.setdefault("decision_records", []).extend(
+                    [r.to_dict() for r in _retired_records]
+                )
             break
         if (
             _plateau_detected

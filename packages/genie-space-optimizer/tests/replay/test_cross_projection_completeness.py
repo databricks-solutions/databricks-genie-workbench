@@ -166,6 +166,22 @@ def _build_full_iteration_fixture() -> dict:
                         "evidence_refs": ["post_eval:q1"],
                         "target_qids": ["q1"], "affected_qids": ["q1"],
                     },
+                    {
+                        # PR-B2: AG_RETIRED — buffered AG whose target qid
+                        # reclassified out of hard before delivery.
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "ag_retired",
+                        "outcome": "retired",
+                        "reason_code": "ag_target_no_longer_hard",
+                        "ag_id": "AG_DEAD",
+                        "target_qids": ["q99"],
+                        "affected_qids": ["q99"],
+                        "reason_detail": (
+                            "AG AG_DEAD retired at plateau because target "
+                            "qids ['q99'] are no longer in the live "
+                            "hard-failure set."
+                        ),
+                    },
                 ],
             }
         ],

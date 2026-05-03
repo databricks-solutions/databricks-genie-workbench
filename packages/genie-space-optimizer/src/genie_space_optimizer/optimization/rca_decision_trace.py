@@ -494,6 +494,10 @@ TYPE_TO_SECTION: Mapping[DecisionType, str] = {
     DecisionType.PATCH_SKIPPED: SECTION_APPLIED_PATCHES,
     DecisionType.ACCEPTANCE_DECIDED: SECTION_APPLIED_PATCHES,
     DecisionType.QID_RESOLUTION: SECTION_OBSERVED_RESULTS,
+    # PR-B2: AG retirement is an AG-level decision (the resolver retiring
+    # buffered AGs at plateau because their target qids reclassified out
+    # of hard) — same section as the original AG emission.
+    DecisionType.AG_RETIRED: SECTION_AG_DECISIONS,
 }
 
 
