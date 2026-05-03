@@ -22,6 +22,8 @@ Use this skill when asked to analyze, validate, debug, or postmortem a Genie Spa
 - `phase`: One of `A`, `B`, `C`, `D`, `E`, or `all` (default `all`). When set to `E`, the Phase E Merge-Readiness Health checklist runs in addition to the per-iteration checklists. When set to a single earlier phase, focus the report on that phase's checks.
 - `baseline_run_id`: Required when `phase=E`. The Phase A variance-baseline run ID used for the accuracy non-regression check. If omitted with `phase=E`, ask the user.
 - `repo_root`: Path to the repo for codebase-state checks (Phase E only). Default: workspace root. Used to verify `raise_on_violation`, the decision-trace hard-gate replay test, and the sanity-broken PR commit/CI artifact.
+- `bundle_dir`: Pre-built evidence bundle root directory. If supplied, the skill skips Step 0 and reads `bundle_dir/evidence/manifest.json` directly. If omitted, the skill runs `evidence_bundle` itself.
+- `auto_backfill`: When `true`, instructs the bundle invocation to run `mlflow_backfill` automatically if decision-trail artifacts are missing on the anchor run. Default: `false` (operator approves before any writes).
 
 ## Required Related Skills
 
@@ -50,6 +52,49 @@ For Phase E specifically, distinguish between three failure surfaces — the rec
 - **Baseline regression** (rollback or rescope): the pilot completed cleanly but accuracy regressed against the Phase A variance baseline. Investigate the regressing iteration's decision trace; consider rolling back the offending PR or rescoping Phase E.
 
 ## Analysis Workflow
+
+**0. Acquire the evidence bundle (preferred path).** If `bundle_dir` is not supplied:
+
+   ```bash
+   python -m genie_space_optimizer.tools.evidence_bundle \
+       --job-id <job_id> --run-id <run_id> --profile <profile> \
+       --output-dir packages/genie-space-optimizer/docs/runid_analysis \
+       [--auto-backfill]
+   ```
+
+   The bundle is idempotent — re-running is cheap. The CLI prints `manifest.json` to stdout and writes the canonical evidence layout to `<output-dir>/<opt_run_id>/evidence/`.
+
+   **Triage the manifest first.** Read `<bundle_dir>/evidence/manifest.json`. Every subsequent step reads from `manifest.artifacts_pulled` paths or directly from disk, never via live CLI:
+   - Phase A: `evidence/mlflow/<anchor>/phase_a/journey_validation/iter_*.json`
+   - Phase B: `evidence/mlflow/<anchor>/phase_b/decision_trace/iter_*.json` and `phase_b/operator_transcript/iter_*.txt`
+   - Markers: `evidence/markers.json`
+   - Job state: `evidence/job_run.json`
+   - Stdout/stderr: `evidence/lever_loop_stdout.txt`, `evidence/lever_loop_stderr.txt`
+   - Replay fixture: `evidence/replay_fixture.json`
+   - MLflow audit: `evidence/mlflow_audit.{md,json}`
+
+   - If `manifest.exit_status == "incomplete"`, list every entry in `manifest.missing_pieces`. Decide whether each gap is blocking analysis (the postmortem cannot answer the operator's question without it) or merely informational.
+   - If a `PHASE_*_ARTIFACT_MISSING_ON_ANCHOR` gap is blocking and `replay_fixture` is present, recommend rerunning the bundle with `--auto-backfill`.
+
+   **Trace fetch decision rule.** Invoke `trace_fetcher` only if **all** of the following hold:
+   - The current root-cause hypothesis cannot be confirmed or refuted from `evidence/markers.json` + `phase_a/` + `phase_b/` artifacts alone.
+   - `manifest.trace_fetch_recommendations` contains at least one entry whose `reason` matches the open hypothesis (e.g., `UNRESOLVED_REASON_CODE` for opaque abandons, `INCOMPLETE_DECISION_TRACE` for journey-violation iterations).
+   - The trace ids requested are bounded (≤10 traces; reject if recommendations imply more — split into a follow-up).
+
+   When the rule fires, run:
+
+   ```bash
+   python -m genie_space_optimizer.tools.trace_fetcher \
+       --bundle-dir <bundle_dir> --from-recommendations
+   ```
+
+   Then re-read `manifest.json` (the trace fetcher updates `artifacts_pulled.traces`) and continue the checklist with the new evidence in `evidence/traces/<trace_id>.json`. **Do not pull traces speculatively.** If logs and decision-trail artifacts already explain the failure, traces are noise.
+
+   When writing the postmortem at `<output-dir>/<opt_run_id>/postmortem.md`, cite specific bundle files (e.g., `evidence/mlflow/mr-1/phase_b/decision_trace/iter_04.json:23`) so future readers can re-verify each claim from the same on-disk evidence.
+
+   The legacy live-CLI workflow below (Steps 1–10) is the **fallback path** when the bundle is unavailable (e.g., `databricks` CLI access is broken or `evidence_bundle` was not run). When using the bundle, Steps 1–10 still describe the *checks* the analysis should make; just substitute "read from bundle file at X" for "run CLI command X".
+
+---
 
 1. Validate Databricks CLI auth:
 
@@ -330,6 +375,9 @@ For Phase E specifically:
 ## Cross-Skill Hand-offs
 
 This skill is **read-only**; it never overwrites fixtures, edits the burn-down ledger, modifies test budget literals, or creates git commits. When the user's intent crosses into write-side ops, hand off explicitly to `gso-replay-cycle-intake` rather than attempting those actions here.
+
+- **Orchestration entry point.** When the operator says "postmortem this run" without specifying a bundle dir, the recommended path is the `gso-postmortem` skill, which sequences `evidence_bundle` → this skill → optional `trace_fetcher` → optional `gso-replay-cycle-intake` hand-off.
+- **Trace fetcher.** This skill *may* invoke `python -m genie_space_optimizer.tools.trace_fetcher` according to the "Trace fetch decision rule" in Step 0. It does not invoke any other write-side commands.
 
 This skill **calls** `gso-replay-cycle-intake` in two cases:
 
