@@ -35,12 +35,6 @@ from genie_space_optimizer.optimization.optimizer import (
 logger = logging.getLogger(__name__)
 
 
-_QUESTION_ID_KEYS: tuple[str, ...] = (
-    "inputs.question_id",
-    "inputs/question_id",
-    "question_id",
-)
-
 # Production rows store SQL via MLflow-flattened keys; ad-hoc fixtures
 # may use the flat shape. Match the chain used by ``proposal_grounding``
 # so mining sees what the harness sees.
@@ -121,16 +115,19 @@ def recommended_patch_types_for_insight(
 
 
 def _extract_question_id(row: dict) -> str:
-    for key in _QUESTION_ID_KEYS:
-        val = row.get(key)
-        if val:
-            return str(val)
-    inputs = row.get("inputs")
-    if isinstance(inputs, dict):
-        val = inputs.get("question_id")
-        if val:
-            return str(val)
-    return ""
+    """Extract a row's canonical question id.
+
+    Phase C Task 1: routes through ``_qid_extraction.extract_question_id``
+    so the regression-mining lane cannot diverge from the four other
+    canonical-qid extractors. Cycle 8 Bug 2 closed two of the four;
+    this closes the last two.
+    """
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
+    )
+
+    qid, _source = extract_question_id(row)
+    return qid
 
 
 def _extract_sql(row: dict, keys: Iterable[str]) -> str:

@@ -230,19 +230,25 @@ _MAX_SESSION_TRACES = 100
 
 
 def _extract_question_id(request_val: Any) -> str:
-    """Extract question_id from a trace's request field."""
-    if not request_val:
+    """Extract question_id from a trace's request field.
+
+    Phase C Task 1: routes through the canonical helper at
+    ``_qid_extraction.extract_question_id`` so this site cannot
+    diverge from the four other canonical-qid extractors. Cycle 8
+    Bug 2 closed two of the four; this closes the last two.
+
+    The canonical helper's ``request`` branch handles both dict and
+    JSON-string shapes, so we simply wrap ``request_val`` into a
+    minimal row.
+    """
+    if request_val is None:
         return ""
-    try:
-        req = json.loads(request_val) if isinstance(request_val, str) else request_val
-        if isinstance(req, dict):
-            return str(
-                req.get("question_id")
-                or req.get("kwargs", {}).get("question_id", "")
-            )
-    except Exception:
-        pass
-    return ""
+    from genie_space_optimizer.optimization._qid_extraction import (
+        extract_question_id,
+    )
+
+    qid, _source = extract_question_id({"request": request_val})
+    return qid
 
 
 def _populate_session_traces(
