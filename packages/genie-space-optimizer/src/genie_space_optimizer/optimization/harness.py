@@ -203,58 +203,88 @@ def _bar(char: str = "-") -> str:
 def _format_scoreboard_banner(*, loop_snapshot: dict) -> str:
     """Render an end-of-iteration scoreboard banner.
 
-    Bridges the harness's dict-shaped iteration state to ``LoopSnapshot``
-    and renders the result via the existing ``_section`` / ``_kv``
-    helpers so the format matches every other harness banner. Any
-    exception (missing field, scoreboard import failure) renders an
+    Phase D: prefers the trace-derived ``build_scoreboard`` path when
+    ``loop_snapshot["trace"]`` is populated; falls back to the legacy
+    synthetic-LoopSnapshot path otherwise so behaviour is backward-
+    compatible during the migration cycle. Any exception renders an
     "unavailable" banner so the loop never breaks on rendering.
     """
     snap = loop_snapshot or {}
     iteration_label = snap.get("iteration", "?")
-    try:
-        from genie_space_optimizer.optimization.scoreboard import (
-            LoopSnapshot,
-            compute_scoreboard,
-        )
-        passing = list(snap.get("passing_qids") or [])
-        hard = list(snap.get("hard_failure_qids") or [])
-        applied = int(snap.get("applied_patch_count") or 0)
-        rolled_back = int(snap.get("rolled_back_patch_count") or 0)
-        loop_snap = LoopSnapshot(
-            question_ids=list(passing) + list(hard),
-            hard_cluster_qids={qid: "c1" for qid in hard},
-            journey_events_per_qid={qid: ["accepted"] for qid in passing},
-            proposed_patches=[
-                {"proposal_id": f"p{i}"} for i in range(applied + rolled_back)
-            ],
-            applied_patches=[{"proposal_id": f"p{i}"} for i in range(applied)],
-            rolled_back_patches=[
-                {"proposal_id": f"r{i}"} for i in range(rolled_back)
-            ],
-            malformed_proposals_at_cap_count=0,
-            rollback_records=[],
-            terminal_unactionable_qids=set(),
-            baseline_accuracy=0.0,
-            candidate_accuracy=0.0,
-            trace_id_fallback_recovered=int(snap.get("trace_id_fallback_count") or 0),
-            trace_id_fallback_total=int(snap.get("trace_id_total") or 0),
-        )
-        result = compute_scoreboard(loop_snap)
-    except Exception:
-        return (
-            _section(f"SCOREBOARD UNAVAILABLE  iteration_{iteration_label}", "-")
-            + "\n"
-            + _kv("dominant_signal", "unavailable")
-            + "\n"
-            + _bar("-")
-        )
 
-    lines = [_section(f"END-OF-ITERATION SCOREBOARD  iteration_{iteration_label}", "=")]
+    trace = snap.get("trace")
+    if trace is not None:
+        try:
+            from genie_space_optimizer.optimization.scoreboard import (
+                build_scoreboard,
+            )
+            scoreboard_snap = build_scoreboard(
+                trace=trace,
+                iteration=int(snap.get("iteration") or 0),
+                baseline_accuracy=float(snap.get("baseline_accuracy") or 0.0),
+                candidate_accuracy=float(snap.get("candidate_accuracy") or 0.0),
+                run_id=str(snap.get("run_id") or ""),
+            )
+            result = scoreboard_snap.to_dict()
+        except Exception:
+            return (
+                _section(
+                    f"SCOREBOARD UNAVAILABLE  iteration_{iteration_label}", "-",
+                )
+                + "\n" + _kv("dominant_signal", "unavailable")
+                + "\n" + _bar("-")
+            )
+    else:
+        try:
+            from genie_space_optimizer.optimization.scoreboard import (
+                LoopSnapshot,
+                compute_scoreboard,
+            )
+            passing = list(snap.get("passing_qids") or [])
+            hard = list(snap.get("hard_failure_qids") or [])
+            applied = int(snap.get("applied_patch_count") or 0)
+            rolled_back = int(snap.get("rolled_back_patch_count") or 0)
+            loop_snap = LoopSnapshot(
+                question_ids=list(passing) + list(hard),
+                hard_cluster_qids={qid: "c1" for qid in hard},
+                journey_events_per_qid={qid: ["accepted"] for qid in passing},
+                proposed_patches=[
+                    {"proposal_id": f"p{i}"} for i in range(applied + rolled_back)
+                ],
+                applied_patches=[{"proposal_id": f"p{i}"} for i in range(applied)],
+                rolled_back_patches=[
+                    {"proposal_id": f"r{i}"} for i in range(rolled_back)
+                ],
+                malformed_proposals_at_cap_count=0,
+                rollback_records=[],
+                terminal_unactionable_qids=set(),
+                baseline_accuracy=0.0,
+                candidate_accuracy=0.0,
+                trace_id_fallback_recovered=int(
+                    snap.get("trace_id_fallback_count") or 0,
+                ),
+                trace_id_fallback_total=int(snap.get("trace_id_total") or 0),
+            )
+            result = compute_scoreboard(loop_snap)
+        except Exception:
+            return (
+                _section(
+                    f"SCOREBOARD UNAVAILABLE  iteration_{iteration_label}", "-",
+                )
+                + "\n" + _kv("dominant_signal", "unavailable")
+                + "\n" + _bar("-")
+            )
+
+    lines = [
+        _section(f"END-OF-ITERATION SCOREBOARD  iteration_{iteration_label}", "="),
+    ]
     lines.append(_kv("dominant_signal", result.get("dominant_signal", "?")))
     for k in (
         "journey_completeness_pct",
         "hard_cluster_coverage_pct",
         "causal_patch_survival_pct",
+        "decision_trace_completeness_pct",
+        "rca_loop_closure_pct",
         "trace_id_fallback_rate",
         "accuracy_delta",
     ):
@@ -262,6 +292,28 @@ def _format_scoreboard_banner(*, loop_snapshot: dict) -> str:
             lines.append(_kv(k, result[k]))
     lines.append(_bar("="))
     return "\n".join(lines)
+
+
+def _build_iteration_trace(
+    *,
+    decision_records,
+    journey_events,
+):
+    """Wrap the iteration's accumulated DecisionRecords + journey events
+    into an OptimizationTrace for ``build_scoreboard`` consumption."""
+    from typing import Mapping
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord,
+        OptimizationTrace,
+    )
+    rec_objects: tuple[DecisionRecord, ...] = tuple(
+        DecisionRecord.from_dict(row) if isinstance(row, Mapping) else row
+        for row in (decision_records or ())
+    )
+    return OptimizationTrace(
+        decision_records=rec_objects,
+        journey_events=tuple(journey_events or ()),
+    )
 
 
 def format_evaluation_summary_block(
