@@ -10,8 +10,8 @@ will consume this catalog. Tests pin:
 from __future__ import annotations
 
 
-def test_failure_bucket_enum_has_four_top_level_values() -> None:
-    from genie_space_optimizer.optimization.failure_buckets import (
+def test_failure_bucket_enum_has_seven_top_level_values() -> None:
+    from genie_space_optimizer.optimization.failure_bucketing import (
         FailureBucket,
     )
 
@@ -21,6 +21,9 @@ def test_failure_bucket_enum_has_four_top_level_values() -> None:
         "EVIDENCE_GAP",
         "PROPOSAL_GAP",
         "MODEL_CEILING",
+        "RCA_GAP",
+        "TARGETING_GAP",
+        "APPLY_OR_ROLLBACK_GAP",
     }
 
 
@@ -76,14 +79,27 @@ def test_match_pattern_id_returns_none_when_unknown() -> None:
     assert match_pattern_id("nonexistent_pattern") is None
 
 
-def test_catalog_covers_each_bucket_at_least_once() -> None:
+def test_catalog_covers_each_dominant_signal_bucket_at_least_once() -> None:
+    """The seed catalog covers the four cycle-9 dominant-signal buckets.
+
+    The Phase D Failure-Bucketing T2 buckets (RCA_GAP, TARGETING_GAP,
+    APPLY_OR_ROLLBACK_GAP) are classifier-only labels populated by
+    ``classify_unresolved_qid`` — they intentionally do not appear in
+    the seed catalog.
+    """
     from genie_space_optimizer.optimization.failure_buckets import (
         FailureBucket,
         SEED_CATALOG,
     )
 
+    dominant_signal_buckets = {
+        FailureBucket.GATE_OR_CAP_GAP,
+        FailureBucket.EVIDENCE_GAP,
+        FailureBucket.PROPOSAL_GAP,
+        FailureBucket.MODEL_CEILING,
+    }
     buckets_seen = {p.bucket for p in SEED_CATALOG}
-    for bucket in FailureBucket:
+    for bucket in dominant_signal_buckets:
         assert bucket in buckets_seen, (
             f"FailureBucket.{bucket.name} has zero seed patterns"
         )

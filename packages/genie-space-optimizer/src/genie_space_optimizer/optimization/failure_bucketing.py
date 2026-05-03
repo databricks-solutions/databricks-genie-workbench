@@ -27,6 +27,14 @@ class FailureBucket(Enum):
     EVIDENCE_GAP = "EVIDENCE_GAP"
     PROPOSAL_GAP = "PROPOSAL_GAP"
     MODEL_CEILING = "MODEL_CEILING"
+    # Phase D Failure-Bucketing T2: three new buckets covering the
+    # remaining links in the RCA invariant chain (see roadmap.md
+    # lines 50-53). These complement the four cycle-9 dominant-signal
+    # labels, which were always meant to be a subset of the full
+    # bucket set.
+    RCA_GAP = "RCA_GAP"
+    TARGETING_GAP = "TARGETING_GAP"
+    APPLY_OR_ROLLBACK_GAP = "APPLY_OR_ROLLBACK_GAP"
 
 
 @dataclass(frozen=True)
