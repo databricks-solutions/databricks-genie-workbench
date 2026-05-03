@@ -10,7 +10,16 @@ state at end-of-iteration.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
+
+from genie_space_optimizer.optimization.rca_decision_trace import (
+    DecisionRecord,
+    DecisionType,
+    OptimizationTrace,
+)
+from genie_space_optimizer.optimization.question_journey import (
+    QuestionJourneyEvent,
+)
 
 # Stages whose presence in a qid's journey signals the qid was
 # meaningfully addressed by the loop (vs dropped early at clustering
@@ -226,3 +235,37 @@ class ScoreboardSnapshot:
         allowed = {f.name for f in cls.__dataclass_fields__.values()}
         cleaned = {k: v for k, v in (payload or {}).items() if k in allowed}
         return cls(**cleaned)
+
+
+# ---------------------------------------------------------------------------
+# Phase D — trace projection helpers reused by every metric.
+# ---------------------------------------------------------------------------
+
+
+def _records_for_iteration(
+    trace: OptimizationTrace, *, iteration: int,
+) -> Iterable[DecisionRecord]:
+    for rec in trace.decision_records:
+        if int(rec.iteration) == int(iteration):
+            yield rec
+
+
+def _records_by_type_for_iteration(
+    trace: OptimizationTrace,
+    *,
+    iteration: int,
+    decision_type: DecisionType,
+) -> Iterable[DecisionRecord]:
+    for rec in _records_for_iteration(trace, iteration=iteration):
+        if rec.decision_type == decision_type:
+            yield rec
+
+
+def _events_by_qid(trace: OptimizationTrace) -> dict[str, list[QuestionJourneyEvent]]:
+    grouped: dict[str, list[QuestionJourneyEvent]] = {}
+    for ev in trace.journey_events:
+        qid = str(getattr(ev, "question_id", "") or "")
+        if not qid:
+            continue
+        grouped.setdefault(qid, []).append(ev)
+    return grouped
