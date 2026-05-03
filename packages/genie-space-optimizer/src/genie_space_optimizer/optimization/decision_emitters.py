@@ -1001,3 +1001,90 @@ def rca_id_by_cluster_from_findings(
                 cluster_to_rca[cid] = rca_id
                 break
     return cluster_to_rca
+
+
+# ---------------------------------------------------------------------------
+# RCA groundedness gate — GATE_DECISION (rca_groundedness)
+# ---------------------------------------------------------------------------
+
+
+def groundedness_gate_records(
+    *,
+    run_id: str,
+    iteration: int,
+    drops: Sequence[Mapping[str, Any]],
+) -> list[DecisionRecord]:
+    """Emit one ``GATE_DECISION`` / ``DROPPED`` record per groundedness drop.
+
+    Phase C Task 5: the unified RCA-groundedness gate
+    (``rca_groundedness.is_rca_grounded``) runs at the AG-emission
+    and proposal-emission sites. Targets that fail grounding are
+    fed here; one record per drop lands in the operator transcript's
+    ``Proposal Survival And Gate Drops`` section.
+
+    Each ``drops`` entry must carry:
+
+    * ``ag_id`` and (optional) ``proposal_id``
+    * ``target_qids`` — the AG's ``affected_questions`` or the
+      proposal's narrower scope
+    * ``rca_id`` and ``root_cause`` — best-known values when the
+      gate ran (may be empty for ``MISSING_TARGET_QIDS``)
+    * ``target_kind`` — ``"ag"`` or ``"proposal"``
+    * ``verdict`` — the :class:`GroundednessVerdict` returned by
+      ``is_rca_grounded``
+
+    The producer trusts the verdict's ``reason_code``; it does not
+    re-decide.
+    """
+    records: list[DecisionRecord] = []
+    for d in drops or []:
+        verdict = d.get("verdict")
+        if verdict is None or getattr(verdict, "accepted", False):
+            continue
+        target_qids = tuple(
+            str(q) for q in (d.get("target_qids") or ()) if str(q)
+        )
+        ag_id = str(d.get("ag_id") or "")
+        proposal_id = str(d.get("proposal_id") or "")
+        target_kind = str(d.get("target_kind") or "")
+        rca_id = str(d.get("rca_id") or "")
+        root_cause = str(d.get("root_cause") or "")
+        records.append(
+            DecisionRecord(
+                run_id=str(run_id),
+                iteration=int(iteration),
+                ag_id=ag_id,
+                rca_id=rca_id,
+                root_cause=root_cause,
+                proposal_id=proposal_id,
+                proposal_ids=(proposal_id,) if proposal_id else (),
+                decision_type=DecisionType.GATE_DECISION,
+                outcome=DecisionOutcome.DROPPED,
+                reason_code=verdict.reason_code,
+                gate="rca_groundedness",
+                reason_detail=f"groundedness:{target_kind}:{verdict.reason_code.value}",
+                evidence_refs=(
+                    f"ag:{ag_id}" if ag_id else "groundedness_gate",
+                ),
+                target_qids=target_qids,
+                affected_qids=target_qids,
+                expected_effect=(
+                    f"{target_kind.title()} would address "
+                    f"{root_cause or 'failure pattern'} on "
+                    f"{len(target_qids)} target qid(s)."
+                ),
+                observed_effect=(
+                    f"Dropped at groundedness gate: "
+                    f"{verdict.reason_code.value}."
+                ),
+                next_action=(
+                    "Strategist must re-target an RCA-grounded scope "
+                    "or skip this AG."
+                ),
+                metrics={
+                    "target_kind": target_kind,
+                    "verdict_finding_id": str(getattr(verdict, "finding_id", "") or ""),
+                },
+            )
+        )
+    return records

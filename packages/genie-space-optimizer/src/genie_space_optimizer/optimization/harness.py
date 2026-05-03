@@ -14260,6 +14260,62 @@ def _run_lever_loop(
             if _phase_b_strict_mode():
                 raise
 
+        # Phase C Task 5 — RCA-groundedness gate at AG level.
+        # Observability-first: emits one GATE_DECISION/DROPPED record
+        # per AG that fails the groundedness predicate, but does NOT
+        # remove the AG from the iteration's pipeline. Existing patch-
+        # cap and blast-radius gates remain authoritative.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                groundedness_gate_records as _groundedness_gate_records,
+            )
+            from genie_space_optimizer.optimization.rca import (
+                rca_findings_from_clusters as _rca_findings_from_clusters_c5,
+            )
+            from genie_space_optimizer.optimization.rca_groundedness import (
+                is_rca_grounded as _is_rca_grounded_c5,
+            )
+
+            _phase_c_findings_ag = _rca_findings_from_clusters_c5(clusters or [])
+            _ag_verdict = _is_rca_grounded_c5(
+                ag, _phase_c_findings_ag, target_kind="ag",
+            )
+            if not _ag_verdict.accepted:
+                _ag_root_cause_c5 = ""
+                _ag_rca_id_c5 = ""
+                for _cid in (ag.get("source_cluster_ids") or []):
+                    _ag_rca_id_c5 = str(
+                        _iter_rca_id_by_cluster.get(str(_cid)) or ""
+                    )
+                    if _ag_rca_id_c5:
+                        break
+                _gate_records_ag = _groundedness_gate_records(
+                    run_id=run_id,
+                    iteration=iteration_counter,
+                    drops=[{
+                        "ag_id": str(ag.get("id") or ag.get("ag_id") or ""),
+                        "proposal_id": "",
+                        "target_qids": list(ag.get("affected_questions") or []),
+                        "rca_id": _ag_rca_id_c5,
+                        "root_cause": _ag_root_cause_c5,
+                        "target_kind": "ag",
+                        "verdict": _ag_verdict,
+                    }],
+                )
+                _current_iter_inputs.setdefault(
+                    "decision_records", []
+                ).extend([r.to_dict() for r in _gate_records_ag])
+        except Exception:
+            _phase_b_producer_exceptions["groundedness_ag"] = (
+                _phase_b_producer_exceptions.get("groundedness_ag", 0) + 1
+            )
+            logger.debug(
+                "Phase C: AG groundedness gate failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
         # Task 13 — emit ``proposed`` events for every proposal that
         # survived to ``proposals_to_patches``. Use both
         # ``_grounding_target_qids`` and ``target_qids`` so we capture
@@ -14321,6 +14377,59 @@ def _run_lever_loop(
             )
             logger.debug(
                 "Phase B: proposal_generated_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
+        # Phase C Task 5 — RCA-groundedness gate at proposal level.
+        # Same observability-first contract as the AG-level gate above.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                groundedness_gate_records as _groundedness_gate_records_p,
+            )
+            from genie_space_optimizer.optimization.rca import (
+                rca_findings_from_clusters as _rca_findings_from_clusters_c5p,
+            )
+            from genie_space_optimizer.optimization.rca_groundedness import (
+                is_rca_grounded as _is_rca_grounded_c5p,
+            )
+
+            _phase_c_findings_p = _rca_findings_from_clusters_c5p(clusters or [])
+            _proposal_drops_c5: list[dict] = []
+            for _prop in (all_proposals or []):
+                _prop_id = str(_prop.get("proposal_id") or "")
+                if not _prop_id:
+                    continue
+                _verdict_p = _is_rca_grounded_c5p(
+                    _prop, _phase_c_findings_p, target_kind="proposal",
+                )
+                if _verdict_p.accepted:
+                    continue
+                _proposal_drops_c5.append({
+                    "ag_id": str(ag.get("id") or ""),
+                    "proposal_id": _prop_id,
+                    "target_qids": list(_prop.get("target_qids") or []),
+                    "rca_id": str(_prop.get("rca_id") or ""),
+                    "root_cause": str(_prop.get("root_cause") or ""),
+                    "target_kind": "proposal",
+                    "verdict": _verdict_p,
+                })
+            if _proposal_drops_c5:
+                _gate_records_p = _groundedness_gate_records_p(
+                    run_id=run_id,
+                    iteration=iteration_counter,
+                    drops=_proposal_drops_c5,
+                )
+                _current_iter_inputs.setdefault(
+                    "decision_records", []
+                ).extend([r.to_dict() for r in _gate_records_p])
+        except Exception:
+            _phase_b_producer_exceptions["groundedness_proposal"] = (
+                _phase_b_producer_exceptions.get("groundedness_proposal", 0) + 1
+            )
+            logger.debug(
+                "Phase C: proposal groundedness gate failed (non-fatal)",
                 exc_info=True,
             )
             if _phase_b_strict_mode():
