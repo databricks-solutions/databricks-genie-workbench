@@ -10218,26 +10218,9 @@ def _run_gate_checks(
             )
     except Exception:
         pass
-    _control_plane_decision = decide_control_plane_acceptance(
-        baseline_accuracy=float(best_accuracy),
-        candidate_accuracy=float(full_accuracy),
-        target_qids=_target_qids,
-        pre_rows=_baseline_rows_for_control_plane,
-        post_rows=_after_rows,
-        min_gain_pp=float(MIN_POST_ARBITER_GAIN_PP),
-        max_new_hard_regressions=_max_new_hard_regressions,
-        protected_qids=_protected_qids,
-    )
-
-    # v2 Task 2 — Pre-arbiter regression guardrail. A candidate that drops
-    # broad pre-arbiter accuracy without flipping any declared target qid
-    # is the symptom of a wide instruction edit trading healthy questions
-    # for nothing — the Q011 silent-regression pattern. Block at acceptance
-    # so the AG cannot be carried forward as a "no-op" win.
-    from genie_space_optimizer.optimization.control_plane import (
-        decide_pre_arbiter_regression_guardrail,
-    )
-
+    # PR-E Task 2: compute pre-arbiter pcts BEFORE the control-plane gate
+    # so the new accepted_pre_arbiter_improvement branch can fire when
+    # post-arbiter is saturated but Genie's raw output improved.
     def _pre_arbiter_correct_count(rows: list[dict]) -> int:
         count = 0
         for r in rows or []:
@@ -10263,6 +10246,29 @@ def _run_gate_checks(
         * _pre_arbiter_correct_count(_after_rows)
         / max(1, len(_after_rows or []))
     )
+
+    _control_plane_decision = decide_control_plane_acceptance(
+        baseline_accuracy=float(best_accuracy),
+        candidate_accuracy=float(full_accuracy),
+        target_qids=_target_qids,
+        pre_rows=_baseline_rows_for_control_plane,
+        post_rows=_after_rows,
+        min_gain_pp=float(MIN_POST_ARBITER_GAIN_PP),
+        max_new_hard_regressions=_max_new_hard_regressions,
+        protected_qids=_protected_qids,
+        baseline_pre_arbiter_accuracy=_baseline_pre_arbiter_pct,
+        candidate_pre_arbiter_accuracy=_candidate_pre_arbiter_pct,
+    )
+
+    # v2 Task 2 — Pre-arbiter regression guardrail. A candidate that drops
+    # broad pre-arbiter accuracy without flipping any declared target qid
+    # is the symptom of a wide instruction edit trading healthy questions
+    # for nothing — the Q011 silent-regression pattern. Block at acceptance
+    # so the AG cannot be carried forward as a "no-op" win.
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_pre_arbiter_regression_guardrail,
+    )
+
     _target_fixed_qids_for_guardrail = tuple(
         sorted(set(_control_plane_decision.target_fixed_qids or ()))
     )
