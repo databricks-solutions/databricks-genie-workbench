@@ -99,10 +99,16 @@ _LEGAL_NEXT: dict[JourneyStage, frozenset[JourneyStage]] = {
     JourneyStage.ALREADY_PASSING: frozenset({JourneyStage.POST_EVAL}),
     JourneyStage.DIAGNOSTIC_AG: frozenset({
         JourneyStage.PROPOSED,
+        JourneyStage.ACCEPTED,
+        JourneyStage.ACCEPTED_WITH_REGRESSION_DEBT,
+        JourneyStage.ROLLED_BACK,
         JourneyStage.POST_EVAL,
     }),
     JourneyStage.AG_ASSIGNED: frozenset({
         JourneyStage.PROPOSED,
+        JourneyStage.ACCEPTED,
+        JourneyStage.ACCEPTED_WITH_REGRESSION_DEBT,
+        JourneyStage.ROLLED_BACK,
         JourneyStage.POST_EVAL,
     }),
     JourneyStage.PROPOSED: frozenset(_DROP_STAGES | {JourneyStage.APPLIED}),
@@ -212,17 +218,85 @@ def _classify_terminal_state(
     return JourneyTerminalState.HARD_FAILURE_UNRESOLVED
 
 
-def _ordered_stages_for_qid(events: list[QuestionJourneyEvent]) -> list[str]:
-    """Return a qid's events in the canonical order used by the renderer.
+_LANE_STAGES: frozenset[str] = frozenset({
+    "proposed",
+    "applied",
+    "applied_targeted",
+    "applied_broad_ag_scope",
+    "dropped_at_grounding",
+    "dropped_at_normalize",
+    "dropped_at_applyability",
+    "dropped_at_alignment",
+    "dropped_at_reflection",
+    "dropped_at_cap",
+})
 
-    Mirrors question_journey._STAGE_ORDER ordering with proposal_id as tiebreak.
+
+def _trunk_anchor_stage(events: list[QuestionJourneyEvent]) -> str:
+    """Return the trunk stage that legally precedes a lane's `proposed`.
+
+    The optimizer routes a qid to a lane via either ``ag_assigned`` (the
+    typical case) or ``diagnostic_ag`` (the diagnostic-AG decompose
+    path). When both are present, ``diagnostic_ag`` takes priority
+    because it is emitted earlier in the trunk.
+    """
+    stages = {ev.stage for ev in events if not ev.proposal_id}
+    if "diagnostic_ag" in stages:
+        return "diagnostic_ag"
+    if "ag_assigned" in stages:
+        return "ag_assigned"
+    return ""
+
+
+def _split_trunk_and_lanes(
+    events: list[QuestionJourneyEvent],
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Return (trunk_stages, lanes_by_proposal_id).
+
+    ``trunk_stages`` is the canonical-ordered list of stages for events
+    whose ``proposal_id`` is empty. ``lanes_by_proposal_id`` is a dict
+    keyed by ``proposal_id`` with each value the canonical-ordered list
+    of stages for that lane.
+
+    Lane sorting uses the same ``_stage_rank`` ordering as the trunk so
+    `proposed -> applied -> dropped_at_*` always validates in causal
+    order.
     """
     from genie_space_optimizer.optimization.question_journey import _stage_rank
 
-    return [
+    trunk_events: list[QuestionJourneyEvent] = []
+    lane_events: dict[str, list[QuestionJourneyEvent]] = {}
+    for ev in events:
+        if ev.proposal_id and ev.stage in _LANE_STAGES:
+            lane_events.setdefault(ev.proposal_id, []).append(ev)
+        else:
+            trunk_events.append(ev)
+
+    trunk_stages = [
         ev.stage
-        for ev in sorted(events, key=lambda e: (_stage_rank(e.stage), e.proposal_id))
+        for ev in sorted(trunk_events, key=lambda e: _stage_rank(e.stage))
     ]
+    lanes_by_pid = {
+        pid: [
+            ev.stage for ev in sorted(lst, key=lambda e: _stage_rank(e.stage))
+        ]
+        for pid, lst in lane_events.items()
+    }
+    return trunk_stages, lanes_by_pid
+
+
+def _ordered_stages_for_qid(events: list[QuestionJourneyEvent]) -> list[str]:
+    """Backwards-compat alias used by ``canonical_journey_json``.
+
+    Returns trunk + every lane concatenated. Used only for byte-stable
+    serialization, NOT for transition validation. Validation goes through
+    ``_split_trunk_and_lanes`` so each lane is checked independently.
+    """
+    trunk_stages, lanes_by_pid = _split_trunk_and_lanes(events)
+    flattened = list(trunk_stages)
+    for pid in sorted(lanes_by_pid):
+        flattened.extend(lanes_by_pid[pid])
+    return flattened
 
 
 def validate_question_journeys(
@@ -232,15 +306,14 @@ def validate_question_journeys(
 ) -> JourneyValidationReport:
     """Assert every evaluated qid has a complete, legal journey.
 
-    A journey is *complete* when:
-      - the qid appears in at least one event,
-      - every adjacent pair of stages is in the legal-transition map, and
-      - the event list resolves to a JourneyTerminalState.
+    Lane-aware: events are split into a trunk (no proposal_id) and one
+    lane per proposal_id. Each lane validates independently with its
+    trunk anchor (``ag_assigned`` or ``diagnostic_ag``) prepended so the
+    first transition is the lane's anchor -> proposed.
     """
     legal_stages = {s.value for s in JourneyStage}
     eval_qid_set = {str(q) for q in eval_qids if q}
 
-    # Group events per-qid, preserving canonical ordering.
     by_qid: dict[str, list[QuestionJourneyEvent]] = {}
     for ev in events:
         if ev.question_id:
@@ -260,37 +333,42 @@ def validate_question_journeys(
         )
 
     for qid, qevents in by_qid.items():
-        ordered = _ordered_stages_for_qid(qevents)
+        trunk_stages, lanes_by_pid = _split_trunk_and_lanes(qevents)
+        anchor = _trunk_anchor_stage(qevents)
 
-        # 1. Unknown-stage check.
-        for s in ordered:
-            if s not in legal_stages:
-                violations.append(
-                    JourneyContractViolation(
-                        question_id=qid,
-                        kind="unknown_stage",
-                        detail=f"stage={s!r} not in JourneyStage enum",
+        all_chains: list[tuple[str, list[str]]] = [("trunk", trunk_stages)]
+        for pid in sorted(lanes_by_pid):
+            chain = lanes_by_pid[pid]
+            if anchor and chain:
+                chain = [anchor, *chain]
+            all_chains.append((f"lane[{pid}]", chain))
+
+        for chain_label, ordered in all_chains:
+            for s in ordered:
+                if s not in legal_stages:
+                    violations.append(
+                        JourneyContractViolation(
+                            question_id=qid,
+                            kind="unknown_stage",
+                            detail=f"{chain_label}: stage={s!r} not in JourneyStage",
+                        )
                     )
-                )
-
-        # 2. Adjacent-transition check.
-        for prev_s, next_s in zip(ordered, ordered[1:]):
-            if prev_s not in legal_stages or next_s not in legal_stages:
-                continue  # already reported as unknown_stage
-            if not is_legal_next_stage(
-                prev=JourneyStage(prev_s),
-                nxt=JourneyStage(next_s),
-            ):
-                violations.append(
-                    JourneyContractViolation(
-                        question_id=qid,
-                        kind="illegal_transition",
-                        detail=f"{prev_s} -> {next_s}",
+            for prev_s, next_s in zip(ordered, ordered[1:]):
+                if prev_s not in legal_stages or next_s not in legal_stages:
+                    continue
+                if not is_legal_next_stage(
+                    prev=JourneyStage(prev_s),
+                    nxt=JourneyStage(next_s),
+                ):
+                    violations.append(
+                        JourneyContractViolation(
+                            question_id=qid,
+                            kind="illegal_transition",
+                            detail=f"{chain_label}: {prev_s} -> {next_s}",
+                        )
                     )
-                )
 
-        # 3. Terminal-state check: classification must succeed AND post_eval must
-        # exist for any qid that entered eval.
+        # Terminal-state check: classification + (for eval qids) post_eval.
         if qid in eval_qid_set and "post_eval" not in {ev.stage for ev in qevents}:
             violations.append(
                 JourneyContractViolation(
