@@ -559,6 +559,84 @@ def _baseline_row_qid(row: dict) -> str:
     return qid
 
 
+def _drain_buffered_action_groups(
+    *,
+    failed_ag: dict,
+    buffered: list[dict],
+    reason: str,
+) -> tuple[list[dict], list[dict]]:
+    """Selectively drop buffered AGs that share affected_questions
+    with the failed AG.
+
+    Cycle 9 burndown: three skip paths in ``_run_lever_loop``
+    (dead-on-arrival, pre-AG-snapshot-failure, applier-rejection
+    no-applied-patches) used to unconditionally clear
+    ``pending_action_groups``, discarding every buffered AG even when
+    they targeted unrelated clusters. This helper keeps buffered AGs
+    whose ``affected_questions`` are disjoint from the failed AG's,
+    because the failure of one AG tells us nothing about proposals for
+    other clusters.
+
+    Returns ``(survivors, dropped)`` so the caller can log / emit a
+    DecisionRecord for the dropped subset.
+    """
+    failed_qids = {
+        str(q)
+        for q in (failed_ag.get("affected_questions") or [])
+        if str(q)
+    }
+    survivors: list[dict] = []
+    dropped: list[dict] = []
+    for ag in buffered or []:
+        ag_qids = {
+            str(q)
+            for q in (ag.get("affected_questions") or [])
+            if str(q)
+        }
+        if failed_qids and ag_qids & failed_qids:
+            dropped.append(ag)
+        else:
+            survivors.append(ag)
+    if dropped:
+        logger.warning(
+            "Selective drain (%s): dropped %d buffered AG(s) overlapping "
+            "with %s; %d survived",
+            reason,
+            len(dropped),
+            failed_ag.get("id", "?"),
+            len(survivors),
+        )
+    return survivors, dropped
+
+
+def _record_dead_on_arrival_signature(
+    *,
+    seen: set[tuple[str, ...]],
+    signature: tuple[str, ...],
+    reason: str,
+) -> None:
+    """Record a dead-on-arrival patch signature, but only if it is
+    informative.
+
+    Cycle 9 burndown: the empty tuple ``()`` is never recorded — it
+    represents "every candidate patch was dropped before the applier
+    saw it" (today only the blast-radius gate causes this). Caching it
+    in the dead-on-arrival ledger short-circuits every subsequent
+    iteration that computes the same empty signature, blocking the
+    strategist from getting another attempt with a different patch
+    shape. The right next step is to ask for new shapes, not to mark
+    the AG terminally dead.
+    """
+    if not signature:
+        logger.info(
+            "Dead-on-arrival ledger skipped empty signature (reason=%s); "
+            "strategist will get another attempt.",
+            reason,
+        )
+        return
+    seen.add(signature)
+
+
 def _seed_eval_result_from_baseline_iter(baseline_iter: dict | None) -> dict:
     """Build an `_latest_eval_result`-shaped dict from a persisted baseline row.
 
@@ -14936,8 +15014,16 @@ def _run_lever_loop(
                     exc_info=True,
                 )
             _phase_b_emit_ag_outcome_record(ag, "skipped_dead_on_arrival")
-            pending_action_groups = []
-            pending_strategy = None
+            # Cycle 9 T1: selective drain — keep buffered AGs whose
+            # affected_questions are disjoint from the failed AG's.
+            _survivors, _dropped_buffered = _drain_buffered_action_groups(
+                failed_ag=ag,
+                buffered=pending_action_groups,
+                reason="dead_on_arrival",
+            )
+            pending_action_groups = _survivors
+            if not pending_action_groups:
+                pending_strategy = None
             continue
 
         # T3.3: shadow apply. When enabled, the intent is to clone the
@@ -15009,8 +15095,16 @@ def _run_lever_loop(
                     exc_info=True,
                 )
             _phase_b_emit_ag_outcome_record(ag, "skipped_pre_ag_snapshot_failed")
-            pending_action_groups = []
-            pending_strategy = None
+            # Cycle 9 T2: selective drain — keep buffered AGs whose
+            # affected_questions are disjoint from the failed AG's.
+            _survivors, _dropped_buffered = _drain_buffered_action_groups(
+                failed_ag=ag,
+                buffered=pending_action_groups,
+                reason="pre_ag_snapshot_failed",
+            )
+            pending_action_groups = _survivors
+            if not pending_action_groups:
+                pending_strategy = None
             continue
 
         metadata_snapshot = _pre_ag_snapshot_capture["snapshot"]
@@ -15120,7 +15214,15 @@ def _run_lever_loop(
         if _apply_skip.skip:
             if _apply_skip.reason_code == "no_applied_patches":
                 _dead_on_arrival_ag_ids.add(str(ag_id))
-                _dead_on_arrival_patch_signatures.add(_selected_patch_signature)
+                # Cycle 9 T4: never cache an empty signature ``()`` as
+                # "already tried" — it represents "every patch was
+                # dropped before the applier" (e.g. blast-radius gate),
+                # which short-circuits subsequent strategist attempts.
+                _record_dead_on_arrival_signature(
+                    seen=_dead_on_arrival_patch_signatures,
+                    signature=_selected_patch_signature,
+                    reason=_apply_skip.reason_code,
+                )
                 logger.warning(
                     "AG %s deterministic_no_applied_patches: selected patch "
                     "signature=%s recovery_reason=all_selected_patches_dropped_by_applier",
@@ -15134,8 +15236,16 @@ def _run_lever_loop(
                     + _kv("Action", "discard buffered AG and force strategist recovery") + "\n"
                     + _bar("!")
                 )
-                pending_action_groups = []
-                pending_strategy = None
+                # Cycle 9 T3: selective drain — keep buffered AGs whose
+                # affected_questions are disjoint from the failed AG's.
+                _survivors, _dropped_buffered = _drain_buffered_action_groups(
+                    failed_ag=ag,
+                    buffered=pending_action_groups,
+                    reason="all_selected_patches_dropped_by_applier",
+                )
+                pending_action_groups = _survivors
+                if not pending_action_groups:
+                    pending_strategy = None
             logger.warning(
                 "[%s] Skipping acceptance eval: %s",
                 ag_id,
