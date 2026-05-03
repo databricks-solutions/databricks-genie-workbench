@@ -158,3 +158,89 @@ def test_section_body_empty_when_no_unresolved_qids():
     assert not body_lines, (
         f"expected empty body but found qid lines: {body_lines}"
     )
+
+
+def _extract_unresolved_section(text: str) -> list[str]:
+    """Pull out the Unresolved QID Buckets section's lines (header + body),
+    stopping at the next section header. Used by the snapshot test below.
+    """
+    lines = text.splitlines()
+    section_idx = next(
+        i for i, line in enumerate(lines)
+        if "Unresolved QID Buckets" in line
+    )
+    out = [lines[section_idx]]
+    for line in lines[section_idx + 1:]:
+        # Section header lines are exactly two leading spaces ("|  ");
+        # body lines are 4-space-indented ("|    "). Stop at next header.
+        stripped = line.lstrip()
+        if stripped.startswith("|  ") and not stripped.startswith("|   "):
+            break
+        out.append(line)
+    return out
+
+
+def test_unresolved_buckets_section_byte_stable_snapshot_for_targeting_gap():
+    """Pin the EXACT rendered text of the Unresolved QID Buckets section
+    for a single TARGETING_GAP qid. Any drift in line shape, whitespace,
+    field ordering, or annotation format will fail this snapshot.
+
+    Update: when an annotation contract change is deliberate (e.g. adding
+    a new field, renaming bucket_action), update both the expected lines
+    here AND the section in render_operator_transcript in the same commit.
+    """
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        render_operator_transcript,
+    )
+
+    trace = _make_trace_with_one_targeting_gap_qid()
+    text = render_operator_transcript(trace=trace, iteration=1)
+    section = _extract_unresolved_section(text)
+    expected = [
+        "|  Unresolved QID Buckets",
+        "|    buckets: TARGETING_GAP=1",
+        (
+            "|    - outcome=unresolved  reason=post_eval_hold_fail  "
+            "qid=q1  next=continue triage  bucket=TARGETING_GAP  "
+            "bucket_action=Proposals exist for the AG but none claim "
+            "the QID in target_qids. Stamp target_qids on the proposal "
+            "site (cycle-8 Bug 1 shape)."
+        ),
+        "|",  # trailing blank-line separator before the next section
+    ]
+    assert section == expected, (
+        f"Unresolved QID Buckets section drifted.\n"
+        f"expected:\n{chr(10).join(expected)}\n\n"
+        f"got:\n{chr(10).join(section)}"
+    )
+
+
+def test_unresolved_buckets_section_byte_stable_snapshot_for_empty_body():
+    """Pin the EXACT rendered text of the Unresolved QID Buckets section
+    when no qids are unresolved. The histogram falls back to ``(none)``;
+    body has no per-qid lines."""
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord, DecisionType, DecisionOutcome, ReasonCode,
+        OptimizationTrace, render_operator_transcript,
+    )
+
+    resolved_rec = DecisionRecord(
+        run_id="r", iteration=1,
+        decision_type=DecisionType.QID_RESOLUTION,
+        outcome=DecisionOutcome.RESOLVED,
+        reason_code=ReasonCode.POST_EVAL_FAIL_TO_PASS,
+        question_id="q1",
+    )
+    trace = OptimizationTrace(decision_records=(resolved_rec,))
+    text = render_operator_transcript(trace=trace, iteration=1)
+    section = _extract_unresolved_section(text)
+    expected = [
+        "|  Unresolved QID Buckets",
+        "|    buckets: (none)",
+        "|",  # trailing blank-line separator before the next section
+    ]
+    assert section == expected, (
+        f"Unresolved QID Buckets empty-body section drifted.\n"
+        f"expected:\n{chr(10).join(expected)}\n\n"
+        f"got:\n{chr(10).join(section)}"
+    )
