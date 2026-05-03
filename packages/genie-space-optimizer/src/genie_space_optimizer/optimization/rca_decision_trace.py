@@ -40,6 +40,7 @@ class DecisionType(str, Enum):
     PATCH_SKIPPED = "patch_skipped"
     ACCEPTANCE_DECIDED = "acceptance_decided"
     QID_RESOLUTION = "qid_resolution"
+    AG_RETIRED = "ag_retired"
 
 
 class DecisionOutcome(str, Enum):
@@ -51,6 +52,7 @@ class DecisionOutcome(str, Enum):
     ROLLED_BACK = "rolled_back"
     RESOLVED = "resolved"
     UNRESOLVED = "unresolved"
+    RETIRED = "retired"
 
 
 class ReasonCode(str, Enum):
@@ -75,6 +77,7 @@ class ReasonCode(str, Enum):
     POST_EVAL_FAIL_TO_PASS = "post_eval_fail_to_pass"
     POST_EVAL_HOLD_FAIL = "post_eval_hold_fail"
     POST_EVAL_PASS_TO_FAIL = "post_eval_pass_to_fail"
+    AG_TARGET_NO_LONGER_HARD = "ag_target_no_longer_hard"
 
 
 class RejectReason(str, Enum):
