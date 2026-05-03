@@ -15729,6 +15729,43 @@ def _run_lever_loop(
                     exc_info=True,
                 )
 
+        # Phase B delta Task 7 — emit PATCH_APPLIED records per
+        # applied entry. Mirrors the per-entry _journey_emit calls in
+        # the loop above; emitted once per AG-iteration after the
+        # loop so we have the complete applied list in one shot.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                patch_applied_records as _patch_applied_records,
+            )
+
+            _cluster_root_cause_by_id = {
+                str(_c.get("cluster_id") or ""): str(_c.get("root_cause") or "")
+                for _c in (clusters or [])
+                if _c.get("cluster_id")
+            }
+            _applied_records = _patch_applied_records(
+                run_id=run_id,
+                iteration=iteration_counter,
+                ag_id=str(ag_id),
+                applied_entries=apply_log.get("applied", []) or [],
+                rca_id_by_cluster=_iter_rca_id_by_cluster,
+                cluster_root_cause_by_id=_cluster_root_cause_by_id,
+            )
+            _current_iter_inputs.setdefault("decision_records", []).extend(
+                [r.to_dict() for r in _applied_records]
+            )
+        except Exception:
+            _iter_producer_exceptions["patch_applied"] += 1
+            _phase_b_producer_exceptions["patch_applied"] = (
+                _phase_b_producer_exceptions.get("patch_applied", 0) + 1
+            )
+            logger.debug(
+                "Phase B: patch_applied_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
         _queued = apply_log.get("queued_high", [])
         if _queued:
             from genie_space_optimizer.optimization.state import write_queued_patch
