@@ -28,13 +28,22 @@ class DefaultMlflowRunner:
     def download_artifacts(
         self, *, run_id: str, artifact_path: str, dest: Path
     ) -> Sequence[Path]:
-        dest.mkdir(parents=True, exist_ok=True)
+        # MLflow's download_artifacts(dst_path=X) places the artifact at
+        # X/<basename(artifact_path)>, dropping the directory structure.
+        # The bundle wants dest/<full artifact_path> so operators can
+        # navigate the tree the same way they see it in the MLflow UI.
+        target = dest / artifact_path
+        target.parent.mkdir(parents=True, exist_ok=True)
         downloaded = self._client.download_artifacts(
-            run_id=run_id, path=artifact_path, dst_path=str(dest)
+            run_id=run_id, path=artifact_path, dst_path=str(target.parent)
         )
         path = Path(downloaded)
         if path.is_dir():
             return [p for p in path.rglob("*") if p.is_file()]
+        # If MLflow returned a flat file basename, normalise to the full path.
+        if path.exists() and path != target:
+            path.replace(target)
+            path = target
         return [path]
 
     def backfill(

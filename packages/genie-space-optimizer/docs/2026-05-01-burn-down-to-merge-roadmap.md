@@ -111,13 +111,15 @@ writes a structured postmortem under `docs/runid_analysis/`.
 |---|---|---|---|---|---|
 | 0 | Cross-task state resilience (Repair Run fix) | No | 0–1 | ~2–3 days | pre-merge |
 | A | Contract burn-down + real-fixture capture **(✅ complete — 2026-05-02; cycle-9 post-close burndown landed 2026-05-03)** | No | 9 (cycles 1-8 + post-close cycle 9) | ~1 day actual (estimate was 3-5 days) | pre-merge |
-| B | Unified trace + DecisionRecord + operator transcript **(🟡 partial — contract + 7 of 10 producers shipped via cycle 9; delta plan ready)** | Yes | 0 | ~1–2 days remaining | pre-merge |
-| C | RCA loop reliability hardening | Mixed | 0–1 | ~3–5 days | pre-merge |
-| D | Scoreboard, failure bucketing, and first trace-aware extractions | Yes | 0 | ~4–6 days | pre-merge |
+| B | Unified trace + DecisionRecord + operator transcript **(✅ complete — 10/10 producers shipped via cycle 9 + delta)** | Yes | 0 | shipped | pre-merge |
+| C | RCA loop reliability hardening **(✅ complete — RCA loop contract, residuals, target-qid propagation landed)** | Mixed | 0–1 | shipped | pre-merge |
+| D | Scoreboard, failure bucketing, and first trace-aware extractions **(✅ complete — 3/3 plans landed)** | Yes | 0 | shipped | pre-merge |
+| **D.5** | **Pre-merge polish — alternatives capture (cluster / AG / proposal)** | Yes | 0 | ~2–3 days | pre-merge |
+| **E.0** | **MLflow artifact integrity audit + persistence fixes** | Mostly | 0 (replay-only) + 1 backfill smoke | ~2–3 days | pre-merge prerequisite for E |
 | E | Final integration + contract-gate flip + merge | No | 1 | ~1 day | merge point |
 | F | Deeper `harness.py` modularization (5 byte-stable extractions) | Yes | 0 | ~5–8 days | post-merge follow-up |
 | G | Typed contract hardening for extracted modules | Yes | 0 | ~5–10 days | post-merge architecture follow-up |
-| | **Pre-merge total** | | **9–11 runs (~18–22 hrs, 8 already spent)** | **~2–3 weeks** | |
+| | **Pre-merge total** | | **10–12 runs (~20–24 hrs, 9 already spent)** | **~3–4 weeks** | |
 | | **Post-merge follow-up** | | 0 | ~2–3 weeks | |
 
 ## Why this sequencing
@@ -133,6 +135,53 @@ Seven reasons it has to be in this order:
 7. **Phase G tightens APIs after modules exist.** Strong contracts become easier and safer once the code has coherent homes. Phase G should harden the module APIs while preserving persisted Delta and replay compatibility.
 
 **Current guardrail:** avoid adding new substantial helpers directly to `harness.py`. If a helper is a reusable domain operation or grows beyond roughly 30–50 LOC, put it in the module it will eventually belong to and import it into `harness.py`. New instrumentation must add `DecisionRecord` / `OptimizationTrace` producers or renderer sections, not freeform print/log blocks.
+
+---
+
+## Open Gaps and Future Work — Diagnosability rubric
+
+The end-state target is: **given a stdout/stderr from a Lever Loop job, an operator can identify which module's reasoning was off and fix it**. Phases 0–D get the program ~70–80% there. The remaining 20–30% is tracked here explicitly so it doesn't fall off the radar.
+
+### Diagnosability scorecard (as of 2026-05-03)
+
+| Property | Grade | Concrete gap | Phase that closes it |
+|---|---|---|---|
+| **Per-qid RCA log** is typed and complete | A− (~90%) | Alternatives aren't captured — when the strategist picks AG_X over AG_Y, only AG_X gets a record. Same for clustering and proposal generation. | Phase D.5 |
+| **Cluster formation rationale** is first-class | C+ (~50%) | `cluster_records` stamps the chosen cluster but not "why this clustering vs another". | Phase D.5 |
+| **Modularized code** (defect → one file) | C+ (~40%) | 5 of 10 stages still live in `harness.py` / `optimizer.py` / `synthesis.py` / `applier.py`. | Phase F |
+| **Stdout-only diagnosability** | B (~70%) | (a) Hard gate not yet flipped; (b) MLflow artifacts (`phase_a/`, `phase_b/`) appear missing on operator-visible runs — see Phase E.0. | Phase E.0 + E |
+| **Stderr-only diagnosability** | F (~10%) | Stderr today is mostly Python tracebacks, not contract reasoning. The transcript lives in stdout + MLflow artifacts. | Out of scope; not needed if stdout + artifacts are reliable. |
+
+### Stage → module localization map
+
+When stdout points at a `decision_type`, today this is where the reasoning lives. Phase F closes the right column.
+
+| `decision_type` | Producer (`decision_emitters.py`) | Reasoning today | Reasoning after Phase F |
+|---|---|---|---|
+| `EVAL_CLASSIFIED` | `eval_classification_records:102` | `eval_entry.py` ✅ | same |
+| `CLUSTER_SELECTED` | `cluster_records:161` | `harness.py` + `rca.py` | `rca_clustering.py` |
+| `RCA_FORMED` | `rca_formed_records:220` | `harness.py` + `rca.py` | `rca_clustering.py` |
+| `STRATEGIST_AG_EMITTED` | `strategist_ag_records:284` | `harness.py` + `optimizer.py` | `strategist_invocation.py` |
+| `PROPOSAL_GENERATED` | `proposal_generated_records:380` | `harness.py` + `synthesis.py` + `cluster_driven_synthesis.py` | `proposal_pipeline.py` |
+| `GATE_DECISION` (Lever 5 / blast radius) | `lever5_structural_gate_records:855` / `blast_radius_decision_records:776` | `harness.py` + `applier.py` | `applier_rollback.py` |
+| `PATCH_APPLIED` / `PATCH_SKIPPED` | `patch_applied_records:466` | `harness.py` + `applier.py` | `applier_rollback.py` |
+| `ACCEPTANCE_DECIDED` | `ag_outcome_decision_record:592` | `ag_outcome.py` ✅ | same |
+| `QID_RESOLUTION` | `post_eval_resolution_records:677` | `post_eval.py` ✅ | same |
+
+Stages with ✅ are already module-precise from a stdout marker. The remaining five collapse to one module each after Phase F.
+
+### Pre-merge gap closures (Phases D.5 and E.0)
+
+Before flipping the merge gate at Phase E, two pre-merge phases close gaps that a Phase E pilot run would otherwise immediately surface:
+
+- **Phase D.5 — Alternatives capture.** Adds `alternatives_considered: tuple[AlternativeOption, ...]` to `DecisionRecord` and stamps it on `CLUSTER_SELECTED`, `STRATEGIST_AG_EMITTED`, and `PROPOSAL_GENERATED`. Transforms transcript reasoning from "this stage chose X" to "this stage chose X over {Y, Z} because of {reason_Y, reason_Z}". Plan: [`2026-05-04-pre-phase-e-alternatives-capture-plan.md`](./2026-05-04-pre-phase-e-alternatives-capture-plan.md).
+- **Phase E.0 — MLflow artifact integrity audit.** Phase A claims to persist `phase_a/journey_validation/iter_<N>.json` and Phase B claims to persist `phase_b/decision_trace/iter_<N>.json` + `phase_b/operator_transcript/iter_<N>.txt`. Spot inspection of `iter_04 / full_eval / pass_1 / run_d6a7faeb` shows only `evaluation_runtime/`, `judge_prompts/`, `model_snapshots/` — the decision-trail artifacts are not visible on the run an operator naturally clicks into. The persistence calls exist (`harness.py:17241`, `17312-17319`) but route to whichever MLflow run was last started by the harness's `end_run` / `start_run` pattern. E.0 audits where artifacts actually land, anchors them to a stable per-iteration parent run, surfaces silent persistence failures, and adds a backfill CLI for completed runs. Plan: [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md).
+
+### Future work explicitly on the radar (post-Phase F)
+
+- **Per-stage module attribution field on `DecisionRecord`.** Once Phase F lands, add a `module: str` field (e.g. `"rca_clustering"`, `"proposal_pipeline"`) so transcript readers don't need the stage→module table above. Doable as a one-task PR after Phase F.
+- **Phase G typed contracts** — already on the roadmap; surfaces strong types after module boundaries are real.
+- **Production observability dashboard** — currently parked. Phase B's stable artifact structure is a precondition; E.0's anchoring fix is a prerequisite for dashboards to point at the right run.
 
 ---
 
@@ -344,10 +393,68 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
 
 **Real-Genie runs:** 0.
 
-**Detailed plans:** to be written as:
-- `2026-05-XX-operator-scoreboard-plan.md`
-- `2026-05-XX-failure-bucketing-classifier-plan.md`
-- `2026-05-XX-harness-extractions-phase-1-plan.md`
+**Detailed plans:** all three implemented:
+- [`2026-05-04-operator-scoreboard-plan.md`](./2026-05-04-operator-scoreboard-plan.md) — implemented.
+- [`2026-05-04-failure-bucketing-classifier-plan.md`](./2026-05-04-failure-bucketing-classifier-plan.md) — implemented.
+- [`2026-05-04-harness-extractions-phase-1-plan.md`](./2026-05-04-harness-extractions-phase-1-plan.md) — implemented.
+
+---
+
+## Phase D.5 — Pre-merge polish: alternatives capture
+
+**Why insert here:** the transcript today says "the strategist picked AG_X" without saying what AG_Y and AG_Z it rejected, and why. Same for cluster formation and proposal generation. Until alternatives are typed, an operator who sees "wrong AG selected" cannot tell whether the strategist (a) only ever saw one AG (a wiring problem), (b) saw two but rejected the better one for a bad reason (a logic problem), or (c) had the right reasoning but the proposal pipeline downstream was the actual defect. This is the highest-leverage small follow-up: it changes the postmortem question from "which stage misreasoned?" to "which stage rejected option Y for reason Z, and was that reason wrong?".
+
+**What ships:**
+
+- New `AlternativeOption` typed dataclass on `rca_decision_trace.py` carrying `option_id`, `kind` (`cluster` | `ag` | `proposal`), `score` (optional float), `reject_reason` (typed enum), and `reject_detail` (free-form short string).
+- New `alternatives_considered: tuple[AlternativeOption, ...]` field on `DecisionRecord`, included in canonical JSON serialization with stable sort order.
+- Producer extensions in `decision_emitters.py`:
+  - `cluster_records` accepts and stamps cluster alternatives (candidate clusters that were not promoted to hard).
+  - `strategist_ag_records` accepts and stamps AG alternatives (AGs the strategist returned but were filtered or buffered).
+  - `proposal_generated_records` accepts and stamps proposal alternatives (proposals dropped pre-survival: malformed, target-cap, RCA-ungrounded).
+- Caller-side capture at the three sites in `harness.py` so the rejected options reach the producers.
+- `render_operator_transcript` surfaces alternatives in sections 3 (RCA cards), 4 (AG decisions), and 5 (proposal survival) when present.
+- New cross-projection replay test that pins alternatives ordering byte-stably.
+
+**Validation strategy:**
+
+- Pure unit tests for the dataclass + `AlternativeOption` serialization, the three producer extensions with empty / single / multi-alternative scenarios, and renderer snapshots showing alternatives.
+- Replay byte-stability: a synthetic fixture exercising 3 clusters (1 selected / 2 rejected), 4 AGs (2 emitted / 2 filtered), 5 proposals (3 surviving / 2 dropped) produces a stable canonical decision trace.
+- No real-Genie cycles required; the existing `airline_real_v1.json` keeps passing because alternatives default to empty.
+
+**Exit criterion:** every `CLUSTER_SELECTED`, `STRATEGIST_AG_EMITTED`, and `PROPOSAL_GENERATED` record either carries alternatives (when the upstream had alternatives to consider) or carries an empty tuple with a reason (e.g. "single candidate"). Transcript sections 3/4/5 render alternatives when present. Replay tests pass byte-stably.
+
+**Real-Genie runs:** 0.
+
+**Detailed plan:** [`2026-05-04-pre-phase-e-alternatives-capture-plan.md`](./2026-05-04-pre-phase-e-alternatives-capture-plan.md).
+
+---
+
+## Phase E.0 — MLflow artifact integrity audit
+
+**Why insert here:** Phase E's pilot-run validation depends on `phase_a/journey_validation/iter_<N>.json` and `phase_b/decision_trace/iter_<N>.json` + `phase_b/operator_transcript/iter_<N>.txt` artifacts being reliably present on a run an operator can navigate to. Spot inspection of a recent post-D run shows the operator-visible eval child run (`iter_04 / full_eval / pass_1`) has only `evaluation_runtime/`, `judge_prompts/`, `model_snapshots/` — the decision-trail artifacts are absent. The persistence calls exist at `harness.py:17241` and `harness.py:17311-17319` but the harness rotates the active MLflow run via `end_run` / `start_run` between stages (see `harness.py:12557-12562`), so `mlflow.active_run()` at persistence time is whichever stage run was last started, not the parent optimization run. Combined with silent `except Exception → logger.debug` catches, persistence failures and stale-run-anchor problems both disappear without trace.
+
+**What ships:**
+
+- Read-only MLflow audit CLI `gso-mlflow-audit --opt-run-id <id>` that lists all MLflow runs sharing the `genie.optimization_run_id` tag, dumps artifact paths for each, and reports where (if anywhere) `phase_a/`/`phase_b/` artifacts landed.
+- Stable per-iteration anchor for decision-trail artifacts: replace `mlflow.active_run()`-based persistence with explicit `MlflowClient().log_text(run_id=<resolved_anchor>, ...)` so artifacts always land on a deterministic run regardless of which stage happened to be active.
+- New `GSO_PHASE_A_ARTIFACT_V1` and `GSO_PHASE_B_ARTIFACT_V1` stdout markers carrying `success`, `run_id`, `artifact_path`, and `exception_class` per persistence attempt — silent failures become loud.
+- Promotion of the relevant `logger.debug` catches to `logger.warning` in `harness.py:17228, 17256, 17328, 17396, 17419` after the underlying causes are diagnosed.
+- Backfill CLI `gso-mlflow-backfill --opt-run-id <id>` that reads the persisted replay fixture and rebuilds + uploads `phase_a/journey_validation/`, `phase_b/decision_trace/`, and `phase_b/operator_transcript/` artifacts to the resolved anchor for already-completed runs.
+- Smoke regression test using a `mlflow.set_tracking_uri("file://...")` stub that runs one iteration and asserts the expected artifact paths exist on the expected run.
+
+**Validation strategy:**
+
+- The audit CLI is read-only — running it against existing runs is the diagnostic.
+- The anchoring fix is unit-tested with a stubbed MLflow client.
+- The smoke test is the regression rail for the anchoring fix.
+- Backfill is hand-verified against the screenshot's `iter_04` run before merging.
+
+**Exit criterion:** for every iteration of every Phase E candidate run, `phase_a/journey_validation/iter_<N>.json`, `phase_b/decision_trace/iter_<N>.json`, and `phase_b/operator_transcript/iter_<N>.txt` are present on a single, operator-discoverable MLflow run. Stdout markers confirm successful persistence per artifact. The audit CLI returns zero discrepancies for fresh runs and a documented backfill plan for legacy runs.
+
+**Real-Genie runs:** 0 dedicated. The next Phase E candidate pilot run validates the fix end-to-end.
+
+**Detailed plan:** [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md).
 
 ---
 
@@ -479,7 +586,12 @@ Calendar estimate from the current point: ~1–2 additional weeks pre-merge with
 
 ## Concrete next action
 
-**Finish Phase B — execute the decision-trace completion delta plan.** Phase A's burn-down + cycle-9 post-close fixes are landed; Phase B's contract, container, validator, transcript-renderer scaffolding, and seven of ten `DecisionType` producers are already shipped (see [`2026-05-03-cycle9-burndown-blast-radius-recovery-and-decision-trace-plan.md`](./2026-05-03-cycle9-burndown-blast-radius-recovery-and-decision-trace-plan.md)). What remains is a focused 10-task delta covering: (a) plumbing `rca_id_by_cluster` from real RCA findings (the empty `_iter_rca_id_by_cluster: {}` at `harness.py:11639` silently zeroed out the RCA-grounding contract on every cluster-bound record); (b) the three missing producers `RCA_FORMED` / `PROPOSAL_GENERATED` / `PATCH_APPLIED`; (c) widening the validator to accept the `applied_targeted` / `applied_broad_ag_scope` stage family; (d) projecting `DecisionType` slices into the nine named transcript sections instead of dumping under raw enum values; (e) a synthetic cross-projection replay test pinning the full ten-type happy path. Ready at [`2026-05-03-phase-b-decision-trace-completion-plan.md`](./2026-05-03-phase-b-decision-trace-completion-plan.md). Replay-only during implementation; one real-Genie airline cycle afterwards refreshes the fixture, seeds `expected_canonical_decisions` / `expected_operator_transcript`, and unblocks Phase C.
+**Phases 0 → D are complete.** Two pre-merge phases remain before Phase E flips the merge gate:
+
+1. **Phase D.5 — Alternatives capture.** Highest-leverage small follow-up. ~9 TDD tasks; replay-only; closes the "this stage misreasoned" → "this stage rejected option Y for reason Z" diagnostic gap. Plan ready at [`2026-05-04-pre-phase-e-alternatives-capture-plan.md`](./2026-05-04-pre-phase-e-alternatives-capture-plan.md).
+2. **Phase E.0 — MLflow artifact integrity audit.** Required because Phase E's pilot validation depends on `phase_a/`/`phase_b/` artifacts being present on an operator-discoverable run, and current spot inspection shows they are not. ~9 TDD tasks across audit/anchoring/backfill phases. Plan ready at [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md).
+
+Both phases are replay-only during implementation. The next real-Genie cycle is the **Phase E pilot run**, which validates D.5 transcripts and E.0 artifact integrity in one shot, gates the `raise_on_violation=True` flip, and produces the merge-baseline fixture for `gso-replay-cycle-intake` to lock.
 
 ---
 
@@ -499,12 +611,14 @@ Calendar estimate from the current point: ~1–2 additional weeks pre-merge with
 | [`2026-05-02-unified-trace-and-operator-transcript-plan.md`](./2026-05-02-unified-trace-and-operator-transcript-plan.md) | Tasks 1-7 shipped; remaining scope subsumed by the cycle-9 close + delta plan | B |
 | [`2026-05-03-cycle9-burndown-blast-radius-recovery-and-decision-trace-plan.md`](./2026-05-03-cycle9-burndown-blast-radius-recovery-and-decision-trace-plan.md) | Implemented | A (post-close burndown) and partial B/C/D pre-shipping |
 | [`2026-05-03-phase-b-decision-trace-completion-plan.md`](./2026-05-03-phase-b-decision-trace-completion-plan.md) | Ready | B (delta — closes Phase B) |
-| `2026-05-XX-rca-loop-contract-plan.md` | To be written | C |
-| `2026-05-XX-canonical-qid-extraction-plan.md` | To be written | C |
-| `2026-05-XX-target-qid-propagation-plan.md` | To be written | C |
-| `2026-05-XX-operator-scoreboard-plan.md` | To be written | D |
-| `2026-05-XX-failure-bucketing-classifier-plan.md` | To be written | D |
-| `2026-05-XX-harness-extractions-phase-1-plan.md` | To be written | D |
+| [`2026-05-03-phase-c-rca-loop-contract-and-residuals-plan.md`](./2026-05-03-phase-c-rca-loop-contract-and-residuals-plan.md) | Implemented | C |
+| [`2026-05-04-operator-scoreboard-plan.md`](./2026-05-04-operator-scoreboard-plan.md) | Implemented | D |
+| [`2026-05-04-failure-bucketing-classifier-plan.md`](./2026-05-04-failure-bucketing-classifier-plan.md) | Implemented | D |
+| [`2026-05-04-harness-extractions-phase-1-plan.md`](./2026-05-04-harness-extractions-phase-1-plan.md) | Implemented | D |
+| [`2026-05-04-pre-phase-e-alternatives-capture-plan.md`](./2026-05-04-pre-phase-e-alternatives-capture-plan.md) | Ready | D.5 |
+| [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md) | Ready | E.0 |
+| [`2026-05-04-gso-evidence-bundle-and-orchestrator-skill-plan.md`](./2026-05-04-gso-evidence-bundle-and-orchestrator-skill-plan.md) | Implemented | E.0 synergy follow-up — adds evidence_bundle + trace_fetcher CLIs, gitignores runid_analysis/, refactors gso-lever-loop-run-analysis + gso-replay-cycle-intake to consume bundles, introduces gso-postmortem as the single-command troubleshooting entry point |
 | `2026-05-XX-harness-extractions-phase-2-plan.md` | To be written | F |
 | `2026-05-XX-lever-loop-typed-contract-hardening-plan.md` | To be written | G |
-| [`skills/gso-lever-loop-run-analysis/SKILL.md`](./skills/gso-lever-loop-run-analysis/SKILL.md) | Ready after implementation | B/C/D+ run analysis |
+| [`skills/gso-lever-loop-run-analysis/SKILL.md`](./skills/gso-lever-loop-run-analysis/SKILL.md) | Ready | B/C/D/E run analysis |
+| [`skills/gso-replay-cycle-intake/SKILL.md`](./skills/gso-replay-cycle-intake/SKILL.md) | Ready | A burn-down ledger intake |
