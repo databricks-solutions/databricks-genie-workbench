@@ -211,3 +211,22 @@ def test_harness_captures_patch_cap_decision_records_in_fixture() -> None:
     assert '_current_iter_inputs.setdefault("decision_records", [])' in src
     assert "phase_b/decision_trace" in src
     assert "phase_b/operator_transcript" in src
+
+
+def test_harness_emits_gso_run_analysis_markers() -> None:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    src = (
+        root
+        / "src"
+        / "genie_space_optimizer"
+        / "optimization"
+        / "harness.py"
+    ).read_text()
+
+    assert "run_manifest_marker" in src
+    assert "iteration_summary_marker" in src
+    assert "phase_b_marker" in src
+    assert "convergence_marker" in src
+    assert "GSO_PHASE_B_V1" in src or "phase_b_marker(" in src

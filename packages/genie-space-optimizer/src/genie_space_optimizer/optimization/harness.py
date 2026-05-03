@@ -10173,11 +10173,60 @@ def _run_lever_loop(
     levers = levers or DEFAULT_LEVER_ORDER
     thresholds = thresholds or DEFAULT_THRESHOLDS
 
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        convergence_marker,
+        iteration_summary_marker,
+        phase_b_marker,
+        run_manifest_marker,
+    )
+
     write_stage(
         spark, run_id, "LEVER_LOOP_STARTED", "STARTED",
         task_key="lever_loop", catalog=catalog, schema=schema,
     )
     _ensure_sql_context(spark, catalog, schema)
+
+    # GSO run analysis: emit machine-readable start manifest and
+    # set Databricks job/run tags on the active MLflow run so the
+    # ``gso-lever-loop-run-analysis`` skill can correlate evidence.
+    _db_job_id = ""
+    _db_parent_run_id = ""
+    _db_task_run_id = ""
+    try:
+        import os as _os_run_analysis
+
+        _db_job_id = str(_os_run_analysis.environ.get("DATABRICKS_JOB_ID") or "")
+        _db_parent_run_id = str(
+            _os_run_analysis.environ.get("DATABRICKS_RUN_ID")
+            or _os_run_analysis.environ.get("DATABRICKS_JOB_RUN_ID")
+            or ""
+        )
+        _db_task_run_id = str(
+            _os_run_analysis.environ.get("DATABRICKS_TASK_RUN_ID")
+            or _db_parent_run_id
+        )
+        print(run_manifest_marker(
+            optimization_run_id=run_id,
+            databricks_job_id=_db_job_id,
+            databricks_parent_run_id=_db_parent_run_id,
+            lever_loop_task_run_id=_db_task_run_id,
+            mlflow_experiment_id=str(os.environ.get("MLFLOW_EXPERIMENT_ID") or ""),
+            space_id=space_id,
+            event="start",
+        ))
+    except Exception:
+        logger.debug("GSO run manifest start marker skipped", exc_info=True)
+    try:
+        import mlflow as _mlflow_run_analysis  # type: ignore[import-not-found]
+        if _mlflow_run_analysis.active_run() is not None:
+            _mlflow_run_analysis.set_tags({
+                "genie.databricks.job_id": _db_job_id,
+                "genie.databricks.parent_run_id": _db_parent_run_id,
+                "genie.databricks.lever_loop_task_run_id": _db_task_run_id,
+                "genie.phase_b.partial": "false",
+            })
+    except Exception:
+        logger.debug("GSO run analysis MLflow tags skipped", exc_info=True)
 
     resume_state = _resume_lever_loop(spark, run_id, catalog, schema)
     # S10 — ``start_lever`` is informational only: the loop below always
@@ -16216,21 +16265,31 @@ def _run_lever_loop(
                     iteration=iteration_counter,
                 )
                 print(_transcript)
+                _phase_b_decision_artifact = (
+                    f"phase_b/decision_trace/iter_{iteration_counter}.json"
+                )
+                _phase_b_transcript_artifact = (
+                    f"phase_b/operator_transcript/iter_{iteration_counter}.txt"
+                )
+                print(phase_b_marker(
+                    optimization_run_id=run_id,
+                    iteration=iteration_counter,
+                    decision_record_count=len(_decision_records),
+                    decision_validation_count=len(_decision_validation),
+                    transcript_chars=len(_transcript),
+                    decision_trace_artifact=_phase_b_decision_artifact,
+                    operator_transcript_artifact=_phase_b_transcript_artifact,
+                    persist_ok=True,
+                ))
                 import mlflow as _mlflow_trace  # type: ignore[import-not-found]
                 if _mlflow_trace.active_run() is not None:
                     _mlflow_trace.log_text(
                         canonical_decision_json(_decision_records),
-                        artifact_file=(
-                            f"phase_b/decision_trace/"
-                            f"iter_{iteration_counter}.json"
-                        ),
+                        artifact_file=_phase_b_decision_artifact,
                     )
                     _mlflow_trace.log_text(
                         _transcript,
-                        artifact_file=(
-                            f"phase_b/operator_transcript/"
-                            f"iter_{iteration_counter}.txt"
-                        ),
+                        artifact_file=_phase_b_transcript_artifact,
                     )
                     _mlflow_trace.set_tags({
                         f"decision_trace.iter_{iteration_counter}.records": (
@@ -16245,6 +16304,53 @@ def _run_lever_loop(
                 "Phase B: decision trace persistence skipped (non-fatal)",
                 exc_info=True,
             )
+            try:
+                import mlflow as _mlflow_phase_b_partial  # type: ignore[import-not-found]
+                if _mlflow_phase_b_partial.active_run() is not None:
+                    _mlflow_phase_b_partial.set_tag(
+                        "genie.phase_b.partial", "true"
+                    )
+            except Exception:
+                logger.debug("Phase B partial tag skipped", exc_info=True)
+
+        # GSO run analysis: emit machine-readable per-iteration summary
+        # so the analyzer skill can build a postmortem without scraping
+        # freeform logs.
+        try:
+            _iter_ag_outcomes = (_current_iter_inputs.get("ag_outcomes") or {})
+            _accepted_count = sum(
+                1 for v in _iter_ag_outcomes.values()
+                if str(v).startswith("accepted")
+            )
+            _rolled_back_count = sum(
+                1 for v in _iter_ag_outcomes.values()
+                if str(v) == "rolled_back"
+            )
+            _skipped_count = sum(
+                1 for v in _iter_ag_outcomes.values()
+                if str(v).startswith("skipped")
+            )
+            _gate_drop_count = sum(
+                1
+                for r in (_current_iter_inputs.get("decision_records") or [])
+                if str(r.get("outcome") or "") == "dropped"
+            )
+            print(iteration_summary_marker(
+                optimization_run_id=run_id,
+                iteration=iteration_counter,
+                accepted_count=_accepted_count,
+                rolled_back_count=_rolled_back_count,
+                skipped_count=_skipped_count,
+                gate_drop_count=_gate_drop_count,
+                decision_record_count=len(
+                    _current_iter_inputs.get("decision_records") or []
+                ),
+                journey_violation_count=(
+                    0 if _journey_report is None else len(_journey_report.violations)
+                ),
+            ))
+        except Exception:
+            logger.debug("GSO iteration summary marker skipped", exc_info=True)
 
         # Task 13 — render the per-question journey ledger at normal
         # iteration end. Early-exit paths call the same idempotent helper
@@ -16416,6 +16522,36 @@ def _run_lever_loop(
             "Phase A: replay-fixture export failed (non-fatal)",
             exc_info=True,
         )
+
+    # GSO run analysis: emit convergence + end-of-run manifest markers
+    # so the analyzer skill knows the loop terminated normally.
+    # ``_run_lever_loop`` itself does not own the fine-grained convergence
+    # reason — ``_run_finalize`` writes that to ``genie_opt_runs``. The
+    # marker here records that the loop body finished and carries the
+    # final accuracy and threshold flag.
+    try:
+        _convergence_reason = "lever_loop_completed"
+        _thresholds_met = bool(all_thresholds_met(best_scores, thresholds))
+        print(convergence_marker(
+            optimization_run_id=run_id,
+            reason=_convergence_reason,
+            iteration_counter=iteration_counter,
+            best_accuracy=(
+                float(best_accuracy) if best_accuracy is not None else None
+            ),
+            thresholds_met=_thresholds_met,
+        ))
+        print(run_manifest_marker(
+            optimization_run_id=run_id,
+            databricks_job_id=_db_job_id,
+            databricks_parent_run_id=_db_parent_run_id,
+            lever_loop_task_run_id=_db_task_run_id,
+            mlflow_experiment_id=str(os.environ.get("MLFLOW_EXPERIMENT_ID") or ""),
+            space_id=space_id,
+            event="end",
+        ))
+    except Exception:
+        logger.debug("GSO convergence/end marker skipped", exc_info=True)
 
     return {
         "scores": best_scores,
