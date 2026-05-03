@@ -17413,19 +17413,26 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
-        # L4a — best-effort MLflow per-iteration journey-validation artifact
-        # and tags. Skipped silently if MLflow is unavailable, no active run
-        # is set, or the validator did not produce a report this iteration.
+        # Phase E.0 Task 3 — best-effort MLflow per-iteration
+        # journey-validation artifact + tags, wrapped with a stdout
+        # marker (GSO_PHASE_A_ARTIFACT_V1) emitted on every attempt
+        # so silent failures surface in run logs.
         if _journey_report is not None:
+            _phase_a_artifact_path = (
+                f"phase_a/journey_validation/iter_{iteration_counter}.json"
+            )
+            _phase_a_anchor_run_id = ""
+            _phase_a_success = False
+            _phase_a_exception_class = ""
             try:
                 import mlflow as _mlflow_iter  # type: ignore[import-not-found]
                 if _mlflow_iter.active_run() is not None:
+                    _phase_a_anchor_run_id = (
+                        _mlflow_iter.active_run().info.run_id
+                    )
                     _mlflow_iter.log_dict(
                         _journey_report.to_dict(),
-                        artifact_file=(
-                            f"phase_a/journey_validation/"
-                            f"iter_{iteration_counter}.json"
-                        ),
+                        artifact_file=_phase_a_artifact_path,
                     )
                     _mlflow_iter.set_tags({
                         f"journey_validation.iter_{iteration_counter}.violations": (
@@ -17435,12 +17442,27 @@ def _run_lever_loop(
                             str(_journey_report.is_valid).lower()
                         ),
                     })
-            except Exception:
-                logger.debug(
-                    "L4a: MLflow per-iteration journey persistence skipped "
-                    "(non-fatal)",
-                    exc_info=True,
+                    _phase_a_success = True
+                else:
+                    _phase_a_exception_class = "NoActiveRun"
+            except Exception as _exc:
+                _phase_a_exception_class = type(_exc).__name__
+                logger.warning(
+                    "Phase A: MLflow per-iteration journey persistence "
+                    "failed: %s: %s",
+                    _phase_a_exception_class, _exc,
                 )
+            from genie_space_optimizer.common.mlflow_markers import (
+                phase_a_artifact_marker,
+            )
+            print(phase_a_artifact_marker(
+                optimization_run_id=run_id,
+                iteration=iteration_counter,
+                anchor_run_id=_phase_a_anchor_run_id,
+                artifact_path=_phase_a_artifact_path,
+                success=_phase_a_success,
+                exception_class=_phase_a_exception_class,
+            ))
 
         # Phase B Trace Plan Task 7 — render the operator transcript and
         # persist the per-iteration decision trace + transcript to MLflow.
@@ -17489,24 +17511,55 @@ def _run_lever_loop(
                     operator_transcript_artifact=_phase_b_transcript_artifact,
                     persist_ok=True,
                 ))
-                import mlflow as _mlflow_trace  # type: ignore[import-not-found]
-                if _mlflow_trace.active_run() is not None:
-                    _mlflow_trace.log_text(
-                        canonical_decision_json(_decision_records),
-                        artifact_file=_phase_b_decision_artifact,
+                # Phase E.0 Task 3 — wrap MLflow persistence with explicit
+                # success/failure tracking + GSO_PHASE_B_ARTIFACT_V1 stdout
+                # marker. Replaces the prior silent logger.debug catch-all.
+                _phase_b_anchor_run_id = ""
+                _phase_b_success = False
+                _phase_b_exception_class = ""
+                try:
+                    import mlflow as _mlflow_trace  # type: ignore[import-not-found]
+                    if _mlflow_trace.active_run() is not None:
+                        _phase_b_anchor_run_id = (
+                            _mlflow_trace.active_run().info.run_id
+                        )
+                        _mlflow_trace.log_text(
+                            canonical_decision_json(_decision_records),
+                            artifact_file=_phase_b_decision_artifact,
+                        )
+                        _mlflow_trace.log_text(
+                            _transcript,
+                            artifact_file=_phase_b_transcript_artifact,
+                        )
+                        _mlflow_trace.set_tags({
+                            f"decision_trace.iter_{iteration_counter}.records": (
+                                str(len(_decision_records))
+                            ),
+                            f"decision_trace.iter_{iteration_counter}.violations": (
+                                str(len(_decision_validation))
+                            ),
+                        })
+                        _phase_b_success = True
+                    else:
+                        _phase_b_exception_class = "NoActiveRun"
+                except Exception as _exc:
+                    _phase_b_exception_class = type(_exc).__name__
+                    logger.warning(
+                        "Phase B: decision trace persistence failed: %s: %s",
+                        _phase_b_exception_class, _exc,
                     )
-                    _mlflow_trace.log_text(
-                        _transcript,
-                        artifact_file=_phase_b_transcript_artifact,
-                    )
-                    _mlflow_trace.set_tags({
-                        f"decision_trace.iter_{iteration_counter}.records": (
-                            str(len(_decision_records))
-                        ),
-                        f"decision_trace.iter_{iteration_counter}.violations": (
-                            str(len(_decision_validation))
-                        ),
-                    })
+                from genie_space_optimizer.common.mlflow_markers import (
+                    phase_b_artifact_marker,
+                )
+                print(phase_b_artifact_marker(
+                    optimization_run_id=run_id,
+                    iteration=iteration_counter,
+                    anchor_run_id=_phase_b_anchor_run_id,
+                    decision_trace_path=_phase_b_decision_artifact,
+                    operator_transcript_path=_phase_b_transcript_artifact,
+                    success=_phase_b_success,
+                    exception_class=_phase_b_exception_class,
+                ))
         except Exception:
             logger.debug(
                 "Phase B: decision trace persistence skipped (non-fatal)",
