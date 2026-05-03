@@ -219,6 +219,8 @@ def build_bundle(
     databricks_runner: DatabricksRunner,
     mlflow_runner: MlflowRunner,
     auto_backfill: bool = False,
+    opt_run_id_override: str = "",
+    experiment_id_override: str = "",
 ) -> BundleResult:
     job_run = databricks_runner.get_run(run_id=run_id, profile=profile)
 
@@ -237,7 +239,16 @@ def build_bundle(
         stderr_text = out.get("error", "") or ""
 
     markers = parse_markers(stdout_text)
-    optimization_run_id = markers.optimization_run_id() or f"unresolved_{run_id}"
+    # opt_run_id resolution order:
+    #   1. operator override via --opt-run-id (used when the harness on
+    #      the workspace pre-dates the GSO_RUN_MANIFEST_V1 emitter and
+    #      stdout markers are absent)
+    #   2. parsed GSO_RUN_MANIFEST_V1 marker
+    #   3. placeholder "unresolved_<run_id>"
+    if opt_run_id_override:
+        optimization_run_id = opt_run_id_override
+    else:
+        optimization_run_id = markers.optimization_run_id() or f"unresolved_{run_id}"
     paths = bundle_paths_for(root=output_root, optimization_run_id=optimization_run_id)
 
     # Idempotence: short-circuit when an existing manifest matches inputs.
@@ -267,7 +278,7 @@ def build_bundle(
     paths.markers.write_text(_markers_to_json(markers))
 
     missing: list[MissingPiece] = []
-    if markers.optimization_run_id() is None:
+    if markers.optimization_run_id() is None and not opt_run_id_override:
         missing.append(
             MissingPiece(
                 kind=MissingPieceKind.OPTIMIZATION_RUN_ID_UNRESOLVED,
@@ -307,11 +318,18 @@ def build_bundle(
     sibling_run_ids: list[str] = []
     pulled_artifacts: list[dict] = []
     anchor_run_id = ""
-    experiment_id = (markers.run_manifest or {}).get("mlflow_experiment_id", "")
-    if markers.optimization_run_id() and experiment_id:
+    # experiment_id resolution: explicit override beats marker-derived.
+    # The audit accepts experiment_id="" / None and searches every
+    # experiment, so the audit can run even when the experiment is not
+    # known up-front (slower but thorough).
+    experiment_id = (
+        experiment_id_override
+        or (markers.run_manifest or {}).get("mlflow_experiment_id", "")
+    )
+    if optimization_run_id and not optimization_run_id.startswith("unresolved_"):
         try:
             audit = mlflow_runner.audit(
-                optimization_run_id=markers.optimization_run_id(),
+                optimization_run_id=optimization_run_id,
                 experiment_id=experiment_id,
             )
         except Exception as exc:  # noqa: BLE001
@@ -460,6 +478,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=Path,
     )
     parser.add_argument("--auto-backfill", action="store_true")
+    parser.add_argument(
+        "--opt-run-id",
+        default="",
+        help=(
+            "Optimization run ID override. Use when the lever_loop stdout "
+            "has no GSO_RUN_MANIFEST_V1 marker (e.g., the workspace harness "
+            "pre-dates the marker emitter). The opt_run_id is recoverable "
+            "from job_run.job_parameters[].run_id."
+        ),
+    )
+    parser.add_argument(
+        "--experiment-id",
+        default="",
+        help=(
+            "MLflow experiment ID override. Optional even with --opt-run-id; "
+            "the audit will search every experiment when unset."
+        ),
+    )
     args = parser.parse_args(argv)
 
     result = build_bundle(
@@ -470,6 +506,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         databricks_runner=_default_databricks_runner(),
         mlflow_runner=_default_mlflow_runner(),
         auto_backfill=args.auto_backfill,
+        opt_run_id_override=args.opt_run_id,
+        experiment_id_override=args.experiment_id,
     )
     print(json.dumps(manifest_to_dict(result.manifest), indent=2, sort_keys=True))
     return 0 if result.manifest.exit_status == "complete" else 1
