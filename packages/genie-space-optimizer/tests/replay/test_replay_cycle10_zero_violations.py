@@ -54,10 +54,19 @@ def test_every_iteration_has_decision_records(fixture):
 
 @pytest.mark.skip(
     reason=(
-        "Cycle 10 raw fixture — pre-PR-C lane-aware validator. The flat "
-        "validator emits illegal_transition for proposed/applied lanes "
-        "across multiple proposals. Unskip after PR-C ships and a refreshed "
-        "fixture is captured."
+        "Cycle 10 raw fixture — post-PR-C lane-aware validator eliminated "
+        "the flat-validator cross-lane false positives, but 8 trunk-level "
+        "producer violations remain on the captured fixture: 3 qids reach "
+        "post_eval directly from `evaluated` (filtered between eval and "
+        "classification — no `clustered`/`soft_signal`/`already_passing`/"
+        "`gt_correction_candidate` emitted by the replay's "
+        "`_classify_eval_rows`), and qid_016 emits both `soft_signal` and "
+        "`clustered` in the same iteration, producing `clustered -> "
+        "soft_signal` after canonical sort. These are real producer bugs "
+        "in `lever_loop_replay._classify_eval_rows` / fixture shape, NOT "
+        "validator gaps. Unskip after a PR-D follow-up fixes the "
+        "classification path so every evaluated qid lands in exactly one "
+        "partition."
     )
 )
 def test_replay_yields_zero_violations(fixture):
