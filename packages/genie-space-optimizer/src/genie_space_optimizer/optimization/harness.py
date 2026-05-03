@@ -200,6 +200,70 @@ def _bar(char: str = "-") -> str:
     return char * _W
 
 
+def _format_scoreboard_banner(*, loop_snapshot: dict) -> str:
+    """Render an end-of-iteration scoreboard banner.
+
+    Bridges the harness's dict-shaped iteration state to ``LoopSnapshot``
+    and renders the result via the existing ``_section`` / ``_kv``
+    helpers so the format matches every other harness banner. Any
+    exception (missing field, scoreboard import failure) renders an
+    "unavailable" banner so the loop never breaks on rendering.
+    """
+    snap = loop_snapshot or {}
+    iteration_label = snap.get("iteration", "?")
+    try:
+        from genie_space_optimizer.optimization.scoreboard import (
+            LoopSnapshot,
+            compute_scoreboard,
+        )
+        passing = list(snap.get("passing_qids") or [])
+        hard = list(snap.get("hard_failure_qids") or [])
+        applied = int(snap.get("applied_patch_count") or 0)
+        rolled_back = int(snap.get("rolled_back_patch_count") or 0)
+        loop_snap = LoopSnapshot(
+            question_ids=list(passing) + list(hard),
+            hard_cluster_qids={qid: "c1" for qid in hard},
+            journey_events_per_qid={qid: ["accepted"] for qid in passing},
+            proposed_patches=[
+                {"proposal_id": f"p{i}"} for i in range(applied + rolled_back)
+            ],
+            applied_patches=[{"proposal_id": f"p{i}"} for i in range(applied)],
+            rolled_back_patches=[
+                {"proposal_id": f"r{i}"} for i in range(rolled_back)
+            ],
+            malformed_proposals_at_cap_count=0,
+            rollback_records=[],
+            terminal_unactionable_qids=set(),
+            baseline_accuracy=0.0,
+            candidate_accuracy=0.0,
+            trace_id_fallback_recovered=int(snap.get("trace_id_fallback_count") or 0),
+            trace_id_fallback_total=int(snap.get("trace_id_total") or 0),
+        )
+        result = compute_scoreboard(loop_snap)
+    except Exception:
+        return (
+            _section(f"SCOREBOARD UNAVAILABLE  iteration_{iteration_label}", "-")
+            + "\n"
+            + _kv("dominant_signal", "unavailable")
+            + "\n"
+            + _bar("-")
+        )
+
+    lines = [_section(f"END-OF-ITERATION SCOREBOARD  iteration_{iteration_label}", "=")]
+    lines.append(_kv("dominant_signal", result.get("dominant_signal", "?")))
+    for k in (
+        "journey_completeness_pct",
+        "hard_cluster_coverage_pct",
+        "causal_patch_survival_pct",
+        "trace_id_fallback_rate",
+        "accuracy_delta",
+    ):
+        if k in result:
+            lines.append(_kv(k, result[k]))
+    lines.append(_bar("="))
+    return "\n".join(lines)
+
+
 def format_evaluation_summary_block(
     *,
     iteration: int,
@@ -16957,6 +17021,29 @@ def _run_lever_loop(
                 for r in (_current_iter_inputs.get("decision_records") or [])
                 if str(r.get("outcome") or "") == "dropped"
             )
+            try:
+                _scoreboard_loop_snapshot = {
+                    "iteration": int(iteration_counter),
+                    "passing_qids": list(
+                        _current_iter_inputs.get("post_eval_passing_qids") or []
+                    ),
+                    "hard_failure_qids": [
+                        qid
+                        for c in (_current_iter_inputs.get("clusters") or [])
+                        for qid in (c.get("question_ids") or [])
+                    ],
+                    "applied_patch_count": _accepted_count,
+                    "rolled_back_patch_count": _rolled_back_count,
+                    "trace_id_fallback_count": 0,
+                    "trace_id_total": 0,
+                }
+                print(_format_scoreboard_banner(
+                    loop_snapshot=_scoreboard_loop_snapshot,
+                ))
+            except Exception:
+                logger.debug(
+                    "scoreboard banner failed (non-fatal)", exc_info=True,
+                )
             print(iteration_summary_marker(
                 optimization_run_id=run_id,
                 iteration=iteration_counter,
