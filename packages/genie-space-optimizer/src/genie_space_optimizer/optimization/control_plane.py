@@ -654,6 +654,9 @@ def decide_control_plane_acceptance(
     max_new_hard_regressions: int = 1,
     max_new_passing_to_hard_regressions: int | None = None,
     protected_qids: Iterable[str] = (),
+    baseline_pre_arbiter_accuracy: float | None = None,
+    candidate_pre_arbiter_accuracy: float | None = None,
+    min_pre_arbiter_gain_pp: float = 2.0,
 ) -> ControlPlaneAcceptance:
     """Accept only causal post-arbiter improvement with no hard regressions.
 
@@ -665,11 +668,20 @@ def decide_control_plane_acceptance(
       post_arbiter_not_improved         — global accuracy did not move
       rejected_no_gain                  — gain below min_gain_pp threshold
       target_qids_not_improved          — none of the declared causal targets flipped
+      accepted_pre_arbiter_improvement  — post saturated at the same value but pre-arbiter improved by >= min_pre_arbiter_gain_pp with no collateral hard regression
       accepted_with_attribution_drift   — net global gain, zero regressions, target unchanged
       accepted_with_regression_debt     — net gain with bounded collateral debt
       out_of_target_hard_regression     — at least one prior-passing qid went hard
       rejected_unbounded_collateral     — collateral exceeds debt budget
       accepted                          — net causal win, no collateral regressions
+
+    The pre-arbiter branch fires only when callers pass both
+    ``baseline_pre_arbiter_accuracy`` and ``candidate_pre_arbiter_accuracy``,
+    AND ``min_gain_pp == 0.0`` (so the caller is in saturation mode rather
+    than enforcing an explicit positive post-arbiter gain). It still
+    requires zero out-of-target hard regressions, zero soft-to-hard
+    moves, and zero passing-to-hard moves on the broader pre-arbiter
+    surface, mirroring the existing collateral-regression protections.
     """
     pre_rows_list = list(pre_rows or [])
     post_rows_list = list(post_rows or [])
@@ -735,8 +747,42 @@ def decide_control_plane_acceptance(
         target_still = ()
         out_of_target_regressed = ()
     elif not has_gain:
-        reason = "rejected_no_gain" if float(min_gain_pp) > 0 else "post_arbiter_not_improved"
-        accepted = False
+        # PR-E: pre-arbiter secondary signal. Saturation-mode acceptance
+        # (no caller-set min_gain_pp) yields to a positive pre-arbiter
+        # delta when collateral regressions are zero on every axis.
+        pre_arbiter_supplied = (
+            baseline_pre_arbiter_accuracy is not None
+            and candidate_pre_arbiter_accuracy is not None
+        )
+        in_saturation_mode = float(min_gain_pp) <= 0.0
+        if pre_arbiter_supplied and in_saturation_mode:
+            pre_delta = round(
+                float(candidate_pre_arbiter_accuracy)
+                - float(baseline_pre_arbiter_accuracy),
+                1,
+            )
+            collateral_clear = (
+                not out_of_target_regressed
+                and not protected_regressed
+                and not soft_to_hard
+                and not passing_to_hard
+            )
+            if (
+                pre_delta >= float(min_pre_arbiter_gain_pp)
+                and collateral_clear
+            ):
+                reason = "accepted_pre_arbiter_improvement"
+                accepted = True
+            else:
+                reason = "post_arbiter_not_improved"
+                accepted = False
+        else:
+            reason = (
+                "rejected_no_gain"
+                if float(min_gain_pp) > 0
+                else "post_arbiter_not_improved"
+            )
+            accepted = False
     elif (
         not has_causal_fix
         and not out_of_target_regressed
