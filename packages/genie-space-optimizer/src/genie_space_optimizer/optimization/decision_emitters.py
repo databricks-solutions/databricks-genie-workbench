@@ -39,6 +39,7 @@ from enum import Enum
 from typing import Any, Mapping, Sequence
 
 from genie_space_optimizer.optimization.rca_decision_trace import (
+    AlternativeOption,
     DecisionOutcome,
     DecisionRecord,
     DecisionType,
@@ -164,6 +165,9 @@ def cluster_records(
     iteration: int,
     clusters: Sequence[Mapping[str, Any]],
     rca_id_by_cluster: Mapping[str, str] | None = None,
+    cluster_alternatives_by_id: (
+        Mapping[str, Sequence[AlternativeOption]] | None
+    ) = None,
 ) -> list[DecisionRecord]:
     """One ``CLUSTER_SELECTED`` ``DecisionRecord`` per hard cluster.
 
@@ -179,6 +183,7 @@ def cluster_records(
             behavior).
     """
     rca_lookup = dict(rca_id_by_cluster or {})
+    alt_lookup = dict(cluster_alternatives_by_id or {})
     records: list[DecisionRecord] = []
     for cluster in clusters or []:
         cid = str(cluster.get("cluster_id") or "")
@@ -207,6 +212,7 @@ def cluster_records(
                     f"for {len(qids)} qid(s)."
                 ),
                 next_action=f"Generate proposals for {cid}.",
+                alternatives_considered=tuple(alt_lookup.get(cid) or ()),
             )
         )
     return records
