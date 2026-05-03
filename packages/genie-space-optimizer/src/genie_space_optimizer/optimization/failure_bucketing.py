@@ -313,3 +313,301 @@ def match_pattern_id(pattern_id: str) -> Optional[BucketingSeedPattern]:
         if entry.pattern_id == pid:
             return entry
     return None
+
+
+# ---------------------------------------------------------------------------
+# Phase D Failure-Bucketing T3: classify_unresolved_qid
+# ---------------------------------------------------------------------------
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionRecord,
+        OptimizationTrace,
+    )
+
+
+@dataclass(frozen=True)
+class ClassificationResult:
+    """Output of ``classify_unresolved_qid``.
+
+    Attributes:
+        bucket: The bucket label, or ``None`` for a currently-passing qid.
+        reason: Operator-readable next-action prose, ≤ 120 chars.
+        earliest_broken_link: Stable identifier for the RCA-chain link
+            that broke. One of: ``evidence_to_rca``, ``rca_to_ag``,
+            ``ag_to_proposal``, ``proposal_to_target_qids``,
+            ``target_qids_to_applied``, ``applied_to_observed``,
+            ``observed_to_next_action``, ``none`` (sentinel for passing).
+        evidence_record_ids: Tuple of indices into ``trace.decision_records``
+            that justified the bucket. Allows the operator transcript
+            to render the supporting records by reference.
+    """
+
+    bucket: "FailureBucket | None"
+    reason: str
+    earliest_broken_link: str
+    evidence_record_ids: tuple[int, ...] = ()
+
+
+# Verbatim reason strings per bucket. Operator-facing; keep ≤ 120 chars.
+_REASONS: dict[str, str] = {
+    "EVIDENCE_GAP": (
+        "QID has no eval row or was not clustered. Re-run RCA judges or "
+        "promote the qid to benchmark review."
+    ),
+    "RCA_GAP": (
+        "QID's cluster has no grounded RCA finding. Re-run RCA prompt with "
+        "broader evidence, or quarantine the cluster."
+    ),
+    "PROPOSAL_GAP": (
+        "RCA exists but no AG or proposal targets the QID. Force strategist "
+        "to emit an AG for the cluster's root cause."
+    ),
+    "TARGETING_GAP": (
+        "Proposals exist for the AG but none claim the QID in target_qids. "
+        "Stamp target_qids on the proposal site (cycle-8 Bug 1 shape)."
+    ),
+    "GATE_OR_CAP_GAP": (
+        "All proposals for the QID dropped at gates (blast_radius / lever5 / "
+        "cap / groundedness). Tighten the gate's escape hatch or rotate lever."
+    ),
+    "APPLY_OR_ROLLBACK_GAP": (
+        "Patch applied but iteration regressed or was rolled back. "
+        "Investigate the regression source or split the AG."
+    ),
+    "MODEL_CEILING": (
+        "Patch landed and held but QID still fails. Likely a model ceiling; "
+        "consider escalation, schema change, or benchmark review."
+    ),
+    "PASSING": "qid is currently passing; no bucket required.",
+}
+
+
+_PASS_REASON_CODES: frozenset[str] = frozenset({
+    "post_eval_hold_pass",
+    "post_eval_fail_to_pass",
+})
+
+
+_HOLD_FAIL_REASON: str = "post_eval_hold_fail"
+_PASS_TO_FAIL_REASON: str = "post_eval_pass_to_fail"
+
+
+def _records_for_iteration(
+    trace: "OptimizationTrace", iteration: int,
+) -> list["DecisionRecord"]:
+    return [
+        r for r in trace.decision_records
+        if int(r.iteration) == int(iteration)
+    ]
+
+
+def _qid_in_record(qid: str, rec: "DecisionRecord") -> bool:
+    if rec.question_id == qid:
+        return True
+    if qid in (rec.affected_qids or ()):
+        return True
+    if qid in (rec.target_qids or ()):
+        return True
+    return False
+
+
+def classify_unresolved_qid(
+    trace: "OptimizationTrace",
+    qid: str,
+    *,
+    iteration: int,
+) -> ClassificationResult:
+    """Classify an unresolved qid against the RCA invariant chain.
+
+    Walks seven rungs from earliest broken link to latest. The earliest
+    rung that matches picks the bucket. Returns the sentinel result with
+    ``bucket=None`` when the qid is currently passing.
+
+    The classifier is pure — no side effects, no logging, no MLflow.
+    """
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionType,
+        DecisionOutcome,
+    )
+
+    iter_records = _records_for_iteration(trace, iteration)
+
+    # Sentinel: qid is currently passing → no classification.
+    qid_resolution = [
+        r for r in iter_records
+        if r.decision_type == DecisionType.QID_RESOLUTION
+        and r.question_id == qid
+    ]
+    if qid_resolution and any(
+        r.outcome == DecisionOutcome.RESOLVED
+        or r.reason_code.value in _PASS_REASON_CODES
+        for r in qid_resolution
+    ):
+        return ClassificationResult(
+            bucket=None,
+            reason=_REASONS["PASSING"],
+            earliest_broken_link="none",
+        )
+
+    # Pre-bucket the records once for cheap lookups.
+    eval_records = [
+        r for r in iter_records
+        if r.decision_type == DecisionType.EVAL_CLASSIFIED
+        and _qid_in_record(qid, r)
+    ]
+    cluster_records = [
+        r for r in iter_records
+        if r.decision_type == DecisionType.CLUSTER_SELECTED
+        and _qid_in_record(qid, r)
+    ]
+
+    # Rung 1 — EVIDENCE_GAP.
+    if not eval_records or not cluster_records:
+        ev_ids = tuple(_record_indices(trace, eval_records + cluster_records))
+        return ClassificationResult(
+            bucket=FailureBucket.EVIDENCE_GAP,
+            reason=_REASONS["EVIDENCE_GAP"],
+            earliest_broken_link="evidence_to_rca",
+            evidence_record_ids=ev_ids,
+        )
+
+    cluster_ids = {r.cluster_id for r in cluster_records if r.cluster_id}
+    rca_records = [
+        r for r in iter_records
+        if r.decision_type == DecisionType.RCA_FORMED
+        and r.cluster_id in cluster_ids
+    ]
+    grounded_rca = [r for r in rca_records if r.rca_id]
+
+    # Rung 2 — RCA_GAP.
+    if not grounded_rca:
+        ev_ids = tuple(_record_indices(trace, cluster_records + rca_records))
+        return ClassificationResult(
+            bucket=FailureBucket.RCA_GAP,
+            reason=_REASONS["RCA_GAP"],
+            earliest_broken_link="rca_to_ag",
+            evidence_record_ids=ev_ids,
+        )
+
+    ag_records = [
+        r for r in iter_records
+        if r.decision_type == DecisionType.STRATEGIST_AG_EMITTED
+        and _qid_in_record(qid, r)
+    ]
+    ag_ids = {r.ag_id for r in ag_records if r.ag_id}
+
+    # Rung 3 — PROPOSAL_GAP.
+    if not ag_ids:
+        ev_ids = tuple(_record_indices(trace, ag_records))
+        return ClassificationResult(
+            bucket=FailureBucket.PROPOSAL_GAP,
+            reason=_REASONS["PROPOSAL_GAP"],
+            earliest_broken_link="ag_to_proposal",
+            evidence_record_ids=ev_ids,
+        )
+
+    proposals_for_ags = [
+        r for r in iter_records
+        if r.decision_type == DecisionType.PROPOSAL_GENERATED
+        and r.ag_id in ag_ids
+    ]
+    if not proposals_for_ags:
+        ev_ids = tuple(_record_indices(trace, ag_records))
+        return ClassificationResult(
+            bucket=FailureBucket.PROPOSAL_GAP,
+            reason=_REASONS["PROPOSAL_GAP"],
+            earliest_broken_link="ag_to_proposal",
+            evidence_record_ids=ev_ids,
+        )
+
+    proposals_targeting_qid = [
+        r for r in proposals_for_ags
+        if qid in (r.target_qids or ())
+    ]
+
+    # Rung 4 — TARGETING_GAP.
+    if not proposals_targeting_qid:
+        ev_ids = tuple(_record_indices(trace, proposals_for_ags))
+        return ClassificationResult(
+            bucket=FailureBucket.TARGETING_GAP,
+            reason=_REASONS["TARGETING_GAP"],
+            earliest_broken_link="proposal_to_target_qids",
+            evidence_record_ids=ev_ids,
+        )
+
+    proposal_ids_targeting_qid = {
+        r.proposal_id for r in proposals_targeting_qid if r.proposal_id
+    }
+    applied_records = [
+        r for r in iter_records
+        if r.decision_type == DecisionType.PATCH_APPLIED
+        and r.proposal_id in proposal_ids_targeting_qid
+    ]
+
+    # Rung 5 — GATE_OR_CAP_GAP.
+    if not applied_records:
+        ev_ids = tuple(_record_indices(
+            trace,
+            proposals_targeting_qid + [
+                r for r in iter_records
+                if r.decision_type == DecisionType.GATE_DECISION
+                and r.proposal_id in proposal_ids_targeting_qid
+            ],
+        ))
+        return ClassificationResult(
+            bucket=FailureBucket.GATE_OR_CAP_GAP,
+            reason=_REASONS["GATE_OR_CAP_GAP"],
+            earliest_broken_link="target_qids_to_applied",
+            evidence_record_ids=ev_ids,
+        )
+
+    # Rung 6 — APPLY_OR_ROLLBACK_GAP.
+    qid_pass_to_fail = any(
+        r.outcome == DecisionOutcome.UNRESOLVED
+        and r.reason_code.value == _PASS_TO_FAIL_REASON
+        for r in qid_resolution
+    )
+    ag_rolled_back = any(
+        r.decision_type == DecisionType.ACCEPTANCE_DECIDED
+        and r.outcome == DecisionOutcome.ROLLED_BACK
+        and r.ag_id in ag_ids
+        for r in iter_records
+    )
+    if qid_pass_to_fail or ag_rolled_back:
+        ev_ids = tuple(_record_indices(
+            trace, applied_records + qid_resolution,
+        ))
+        return ClassificationResult(
+            bucket=FailureBucket.APPLY_OR_ROLLBACK_GAP,
+            reason=_REASONS["APPLY_OR_ROLLBACK_GAP"],
+            earliest_broken_link="applied_to_observed",
+            evidence_record_ids=ev_ids,
+        )
+
+    # Rung 7 — MODEL_CEILING (default for unresolved-but-applied qids).
+    ev_ids = tuple(_record_indices(trace, applied_records + qid_resolution))
+    return ClassificationResult(
+        bucket=FailureBucket.MODEL_CEILING,
+        reason=_REASONS["MODEL_CEILING"],
+        earliest_broken_link="observed_to_next_action",
+        evidence_record_ids=ev_ids,
+    )
+
+
+def _record_indices(
+    trace: "OptimizationTrace",
+    records: list["DecisionRecord"],
+) -> list[int]:
+    """Look up indices of the given records inside ``trace.decision_records``.
+
+    Uses identity (``is``) so a record that appears twice in ``records`` is
+    deduplicated by its trace position.
+    """
+    indices: list[int] = []
+    for idx, candidate in enumerate(trace.decision_records):
+        if any(candidate is r for r in records):
+            indices.append(idx)
+    return indices
