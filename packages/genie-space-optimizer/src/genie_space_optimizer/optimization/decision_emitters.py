@@ -373,6 +373,92 @@ def strategist_ag_records(
 
 
 # ---------------------------------------------------------------------------
+# Proposal generated — PROPOSAL_GENERATED
+# ---------------------------------------------------------------------------
+
+
+def proposal_generated_records(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    proposals: Sequence[Mapping[str, Any]],
+    rca_id_by_cluster: Mapping[str, str],
+    cluster_root_cause_by_id: Mapping[str, str],
+) -> list[DecisionRecord]:
+    """One ``PROPOSAL_GENERATED`` ``DecisionRecord`` per surviving proposal.
+
+    Phase B delta Task 4: parallels the existing ``_journey_emit
+    ("proposed", ...)`` site so the decision trace records every proposal
+    that survived to ``proposals_to_patches``. Proposals without
+    target_qids (the Cycle-8-Bug-1 pattern) are dropped here — they
+    cannot satisfy the cross-checker's RCA-grounding contract, and the
+    strategist-AG record's ``MISSING_TARGET_QIDS`` reason already
+    surfaces the gap upstream.
+    """
+    rca_lookup = dict(rca_id_by_cluster or {})
+    root_cause_lookup = dict(cluster_root_cause_by_id or {})
+    records: list[DecisionRecord] = []
+    for proposal in proposals or []:
+        proposal_id = str(
+            proposal.get("proposal_id")
+            or proposal.get("id")
+            or ""
+        )
+        if not proposal_id:
+            continue
+        target_qids = tuple(
+            str(q) for q in (proposal.get("_grounding_target_qids") or []) if str(q)
+        )
+        if not target_qids:
+            target_qids = tuple(
+                str(q) for q in (proposal.get("target_qids") or []) if str(q)
+            )
+        if not target_qids:
+            continue
+        cluster_id = str(proposal.get("cluster_id") or "")
+        rca_id = str(rca_lookup.get(cluster_id) or "")
+        root_cause = str(root_cause_lookup.get(cluster_id) or "")
+        patch_type = str(
+            proposal.get("patch_type") or proposal.get("type") or ""
+        )
+        evidence_refs = tuple(
+            v for v in (
+                f"ag:{ag_id}" if ag_id else "",
+                f"cluster:{cluster_id}" if cluster_id else "",
+                f"rca:{rca_id}" if rca_id else "",
+            ) if v
+        )
+        records.append(
+            DecisionRecord(
+                run_id=run_id,
+                iteration=int(iteration),
+                decision_type=DecisionType.PROPOSAL_GENERATED,
+                outcome=DecisionOutcome.ACCEPTED,
+                reason_code=ReasonCode.PROPOSAL_EMITTED,
+                ag_id=str(ag_id or ""),
+                cluster_id=cluster_id,
+                rca_id=rca_id,
+                root_cause=root_cause,
+                proposal_id=proposal_id,
+                proposal_ids=(proposal_id,),
+                evidence_refs=evidence_refs,
+                affected_qids=target_qids,
+                target_qids=target_qids,
+                source_cluster_ids=(cluster_id,) if cluster_id else (),
+                expected_effect=(
+                    f"Proposal {proposal_id} ({patch_type}) should "
+                    f"resolve {root_cause or 'failure pattern'} on "
+                    f"{len(target_qids)} target qid(s)."
+                ),
+                next_action="Apply proposal and observe target qid outcome.",
+                metrics={"patch_type": patch_type},
+            )
+        )
+    return records
+
+
+# ---------------------------------------------------------------------------
 # AG outcome — ACCEPTANCE_DECIDED
 # ---------------------------------------------------------------------------
 
