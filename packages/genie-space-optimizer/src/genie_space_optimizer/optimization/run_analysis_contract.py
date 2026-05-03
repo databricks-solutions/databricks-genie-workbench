@@ -186,3 +186,78 @@ def phase_b_end_marker(
             "contract_version": str(contract_version or ""),
         },
     )
+
+
+def lever_loop_exit_manifest(
+    *,
+    optimization_run_id: str,
+    mlflow_experiment_id: str,
+    accuracy: float,
+    iteration_counter: int,
+    levers_attempted: list,
+    levers_accepted: list,
+    levers_rolled_back: list,
+    per_iteration_decision_counts: list[int],
+    per_iteration_journey_violations: list[int],
+    no_decision_record_reasons: list[str],
+    phase_b_decision_artifacts: list[str],
+    phase_b_transcript_artifacts: list[str],
+) -> str:
+    """Build the JSON string passed to ``dbutils.notebook.exit`` from
+    the lever-loop task.
+
+    Surfaces decision counts, journey violations, and Phase B artifact
+    paths so ``databricks jobs get-run-output`` reveals the same numbers
+    MLflow has. Returned as a JSON string (not dict) so the call site
+    stays a single ``dbutils.notebook.exit(lever_loop_exit_manifest(...))``.
+    """
+    payload = {
+        "optimization_run_id": str(optimization_run_id),
+        "mlflow_experiment_id": str(mlflow_experiment_id),
+        "accuracy": float(accuracy),
+        "iteration_counter": int(iteration_counter),
+        "levers_attempted": list(levers_attempted),
+        "levers_accepted": list(levers_accepted),
+        "levers_rolled_back": list(levers_rolled_back),
+        "per_iteration_decision_counts": [
+            int(n) for n in (per_iteration_decision_counts or [])
+        ],
+        "per_iteration_journey_violations": [
+            int(n) for n in (per_iteration_journey_violations or [])
+        ],
+        "no_decision_record_reasons": [
+            str(r) for r in (no_decision_record_reasons or [])
+        ],
+        "phase_b_decision_artifacts": [
+            str(p) for p in (phase_b_decision_artifacts or [])
+        ],
+        "phase_b_transcript_artifacts": [
+            str(p) for p in (phase_b_transcript_artifacts or [])
+        ],
+    }
+    return json.dumps(payload, default=str)
+
+
+def finalize_exit_manifest(
+    *,
+    optimization_run_id: str,
+    status: str,
+    convergence_reason: str,
+    repeatability_pct: float,
+    elapsed_seconds: float,
+    report_path: str,
+    promoted_to_champion: bool,
+) -> str:
+    """Build the JSON string passed to ``dbutils.notebook.exit`` from
+    the finalize task.
+    """
+    payload = {
+        "optimization_run_id": str(optimization_run_id),
+        "status": str(status),
+        "convergence_reason": str(convergence_reason),
+        "repeatability_pct": float(repeatability_pct),
+        "elapsed_seconds": float(elapsed_seconds),
+        "report_path": str(report_path),
+        "promoted_to_champion": bool(promoted_to_champion),
+    }
+    return json.dumps(payload, default=str)
