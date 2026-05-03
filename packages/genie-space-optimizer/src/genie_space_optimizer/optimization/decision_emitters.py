@@ -396,6 +396,9 @@ def proposal_generated_records(
     proposals: Sequence[Mapping[str, Any]],
     rca_id_by_cluster: Mapping[str, str],
     cluster_root_cause_by_id: Mapping[str, str],
+    proposal_alternatives_for_ag: (
+        Sequence[AlternativeOption] | None
+    ) = None,
 ) -> list[DecisionRecord]:
     """One ``PROPOSAL_GENERATED`` ``DecisionRecord`` per surviving proposal.
 
@@ -409,6 +412,7 @@ def proposal_generated_records(
     """
     rca_lookup = dict(rca_id_by_cluster or {})
     root_cause_lookup = dict(cluster_root_cause_by_id or {})
+    alternatives_tuple = tuple(proposal_alternatives_for_ag or ())
     records: list[DecisionRecord] = []
     for proposal in proposals or []:
         proposal_id = str(
@@ -464,6 +468,7 @@ def proposal_generated_records(
                 ),
                 next_action="Apply proposal and observe target qid outcome.",
                 metrics={"patch_type": patch_type},
+                alternatives_considered=alternatives_tuple,
             )
         )
     return records

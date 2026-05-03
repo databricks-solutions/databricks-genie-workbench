@@ -131,6 +131,114 @@ def test_strategist_ag_records_default_alternatives_is_empty_tuple() -> None:
     assert records[0].alternatives_considered == ()
 
 
+def test_proposal_generated_records_stamps_alternatives_per_ag() -> None:
+    from genie_space_optimizer.optimization.decision_emitters import (
+        proposal_generated_records,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        AlternativeOption, RejectReason,
+    )
+
+    records = proposal_generated_records(
+        run_id="run_1",
+        iteration=1,
+        ag_id="AG_001",
+        proposals=[
+            {
+                "proposal_id": "P_001",
+                "_grounding_target_qids": ["q1", "q2"],
+                "cluster_id": "H001",
+                "patch_type": "instruction_section",
+            },
+        ],
+        rca_id_by_cluster={"H001": "rca_h001"},
+        cluster_root_cause_by_id={"H001": "missing_filter"},
+        proposal_alternatives_for_ag=(
+            AlternativeOption(
+                option_id="P_007",
+                kind="proposal",
+                reject_reason=RejectReason.MALFORMED,
+                reject_detail="rejected by shape validator: missing patch_type",
+            ),
+            AlternativeOption(
+                option_id="P_011",
+                kind="proposal",
+                score=0.1,
+                reject_reason=RejectReason.PATCH_CAP_DROPPED,
+                reject_detail="dropped by 5-proposal cap",
+            ),
+        ),
+    )
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.proposal_id == "P_001"
+    assert len(rec.alternatives_considered) == 2
+    assert {opt.option_id for opt in rec.alternatives_considered} == {
+        "P_007", "P_011",
+    }
+
+
+def test_proposal_generated_records_alternatives_apply_to_every_surviving_proposal() -> None:
+    """All proposals from the same AG batch share the same alternatives list."""
+    from genie_space_optimizer.optimization.decision_emitters import (
+        proposal_generated_records,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        AlternativeOption, RejectReason,
+    )
+
+    records = proposal_generated_records(
+        run_id="run_1",
+        iteration=1,
+        ag_id="AG_001",
+        proposals=[
+            {
+                "proposal_id": "P_001",
+                "_grounding_target_qids": ["q1"],
+                "cluster_id": "H001",
+            },
+            {
+                "proposal_id": "P_002",
+                "_grounding_target_qids": ["q2"],
+                "cluster_id": "H001",
+            },
+        ],
+        rca_id_by_cluster={"H001": "rca_h001"},
+        cluster_root_cause_by_id={"H001": "missing_filter"},
+        proposal_alternatives_for_ag=(
+            AlternativeOption(
+                option_id="P_007",
+                kind="proposal",
+                reject_reason=RejectReason.RCA_UNGROUNDED,
+            ),
+        ),
+    )
+    assert len(records) == 2
+    for rec in records:
+        assert len(rec.alternatives_considered) == 1
+        assert rec.alternatives_considered[0].option_id == "P_007"
+
+
+def test_proposal_generated_records_default_alternatives_is_empty_tuple() -> None:
+    from genie_space_optimizer.optimization.decision_emitters import (
+        proposal_generated_records,
+    )
+
+    records = proposal_generated_records(
+        run_id="run_1",
+        iteration=1,
+        ag_id="AG_001",
+        proposals=[{
+            "proposal_id": "P_001",
+            "_grounding_target_qids": ["q1"],
+            "cluster_id": "H001",
+        }],
+        rca_id_by_cluster={"H001": "rca_h001"},
+        cluster_root_cause_by_id={"H001": "missing_filter"},
+    )
+    assert records[0].alternatives_considered == ()
+
+
 def test_cluster_records_ignores_alternatives_for_unknown_cluster_id() -> None:
     from genie_space_optimizer.optimization.decision_emitters import cluster_records
     from genie_space_optimizer.optimization.rca_decision_trace import (
