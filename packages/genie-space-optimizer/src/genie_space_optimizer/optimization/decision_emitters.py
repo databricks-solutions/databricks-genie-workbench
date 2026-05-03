@@ -1004,6 +1004,77 @@ def rca_id_by_cluster_from_findings(
 
 
 # ---------------------------------------------------------------------------
+# Unresolved RCA — RCA_FORMED + UNRESOLVED + RCA_UNGROUNDED
+# ---------------------------------------------------------------------------
+
+
+def unresolved_rca_records(
+    *,
+    run_id: str,
+    iteration: int,
+    clusters: Sequence[Mapping[str, Any]],
+    rca_id_by_cluster: Mapping[str, str],
+) -> list[DecisionRecord]:
+    """Emit ``RCA_FORMED`` + ``UNRESOLVED`` + ``RCA_UNGROUNDED`` for
+    clusters with hard failures but no matching RCA finding.
+
+    Phase C Task 7: ``rca_formed_records`` only emits when an RCA *is*
+    formed for the cluster. Clusters whose RCA prompt produced no
+    finding silently drop out of the trace — invisible failure. This
+    producer closes that gap with the exact same shape as
+    ``rca_formed_records`` but with ``UNRESOLVED`` outcome and an
+    empty ``rca_id``. The validator's per-(type,reason) exemption
+    (``rca_decision_trace`` Task 7) allows the empty ``rca_id`` for
+    this combination only.
+    """
+    rca_lookup = dict(rca_id_by_cluster or {})
+    records: list[DecisionRecord] = []
+    for cluster in clusters or []:
+        cid = str(cluster.get("cluster_id") or "")
+        if not cid:
+            continue
+        if rca_lookup.get(cid):
+            # The cluster has an RCA finding; ``rca_formed_records``
+            # owns this case.
+            continue
+        qids = tuple(
+            str(q) for q in (cluster.get("question_ids") or []) if str(q)
+        )
+        if not qids:
+            continue
+        root_cause = str(cluster.get("root_cause") or "")
+        records.append(
+            DecisionRecord(
+                run_id=str(run_id),
+                iteration=int(iteration),
+                decision_type=DecisionType.RCA_FORMED,
+                outcome=DecisionOutcome.UNRESOLVED,
+                reason_code=ReasonCode.RCA_UNGROUNDED,
+                cluster_id=cid,
+                rca_id="",
+                root_cause=root_cause,
+                evidence_refs=(f"cluster:{cid}",),
+                affected_qids=qids,
+                target_qids=qids,
+                source_cluster_ids=(cid,),
+                expected_effect=(
+                    f"Cluster {cid} should ground on a root cause."
+                ),
+                observed_effect=(
+                    f"No RCA finding for cluster {cid} "
+                    f"({len(qids)} hard qid(s)); strategist has "
+                    f"nothing to ground against."
+                ),
+                next_action=(
+                    "Re-run RCA prompt with broader evidence, or "
+                    "promote this cluster to a benchmark-review queue."
+                ),
+            )
+        )
+    return records
+
+
+# ---------------------------------------------------------------------------
 # RCA groundedness gate — GATE_DECISION (rca_groundedness)
 # ---------------------------------------------------------------------------
 

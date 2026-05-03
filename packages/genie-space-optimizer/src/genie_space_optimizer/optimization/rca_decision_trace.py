@@ -329,7 +329,19 @@ def validate_decisions_against_journey(
     # held-pass path from rca-required and target_qids checks. See
     # `docs/2026-05-02-unified-trace-and-operator-transcript-plan.md`
     # postmortem follow-up.
+    # Phase C Task 7: ``RCA_FORMED + RCA_UNGROUNDED`` is the no-RCA-for-
+    # cluster signal. The cluster failed but RCA produced no finding —
+    # so claiming an ``rca_id`` would also be a lie. Exempt exactly that
+    # pairing. ``rca_id`` and ``root_cause`` exemptions are scoped to
+    # specific (decision_type, reason_code) pairs so a forgotten emit
+    # site cannot silently route through the exemption.
     rca_exempt_reason_codes = {ReasonCode.POST_EVAL_HOLD_PASS}
+    rca_id_exempt_pairs: set[tuple[DecisionType, ReasonCode]] = {
+        (DecisionType.RCA_FORMED, ReasonCode.RCA_UNGROUNDED),
+    }
+    root_cause_exempt_pairs: set[tuple[DecisionType, ReasonCode]] = {
+        (DecisionType.RCA_FORMED, ReasonCode.RCA_UNGROUNDED),
+    }
     for record in records:
         if (
             record.decision_type in rca_required
@@ -340,12 +352,20 @@ def validate_decisions_against_journey(
                     f"decision {record.decision_type.value} qid={record.question_id or '-'} "
                     "has no evidence_refs"
                 )
-            if not record.rca_id and record.decision_type not in {DecisionType.EVAL_CLASSIFIED}:
+            if (
+                not record.rca_id
+                and record.decision_type not in {DecisionType.EVAL_CLASSIFIED}
+                and (record.decision_type, record.reason_code) not in rca_id_exempt_pairs
+            ):
                 violations.append(
                     f"decision {record.decision_type.value} qid={record.question_id or '-'} "
                     "has no rca_id"
                 )
-            if not record.root_cause and record.decision_type not in {DecisionType.EVAL_CLASSIFIED}:
+            if (
+                not record.root_cause
+                and record.decision_type not in {DecisionType.EVAL_CLASSIFIED}
+                and (record.decision_type, record.reason_code) not in root_cause_exempt_pairs
+            ):
                 violations.append(
                     f"decision {record.decision_type.value} qid={record.question_id or '-'} "
                     "has no root_cause"

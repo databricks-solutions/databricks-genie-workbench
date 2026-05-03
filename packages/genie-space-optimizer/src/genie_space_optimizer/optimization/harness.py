@@ -11793,6 +11793,33 @@ def _run_lever_loop(
             if _phase_b_strict_mode():
                 raise
 
+        # Phase C Task 7 — emit RCA_FORMED+UNRESOLVED+RCA_UNGROUNDED
+        # for clusters with hard failures but no matching RCA finding.
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                unresolved_rca_records as _unresolved_rca_records,
+            )
+
+            _unresolved_records = _unresolved_rca_records(
+                run_id=run_id,
+                iteration=iteration_counter,
+                clusters=clusters or [],
+                rca_id_by_cluster=_iter_rca_id_by_cluster,
+            )
+            _current_iter_inputs.setdefault("decision_records", []).extend(
+                [r.to_dict() for r in _unresolved_records]
+            )
+        except Exception:
+            _phase_b_producer_exceptions["unresolved_rca"] = (
+                _phase_b_producer_exceptions.get("unresolved_rca", 0) + 1
+            )
+            logger.debug(
+                "Phase C: unresolved_rca_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
         # Phase A — populate replay-fixture iteration snapshot fields
         # eval_rows / clusters / soft_clusters from the analysis result.
         try:
