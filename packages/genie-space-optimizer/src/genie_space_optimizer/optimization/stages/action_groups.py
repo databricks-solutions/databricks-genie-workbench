@@ -118,6 +118,14 @@ class ActionGroupsInput:
     # MODEL_CEILING qids from AG target sets and tags AGs whose targets
     # are all EVIDENCE_GAP with ``ag_kind="evidence_gathering"``.
     prior_buckets_by_qid: Mapping[str, Any] = field(default_factory=dict)
+    # Cycle 5 T2 — gate-drops carrying a causal-target patch from the
+    # prior iteration. Empty unless the prior iteration captured drops.
+    # Surfaced to the strategist's prompt context when
+    # ``GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST`` is on so the LLM can
+    # propose a narrower variant or shift levers instead of re-emitting
+    # the same dropped pattern. Typed as ``tuple[Any, ...]`` to avoid a
+    # circular import on ``stages.gates.DroppedCausalPatch``.
+    prior_iteration_dropped_causal_patches: tuple[Any, ...] = ()
 
 
 @dataclass

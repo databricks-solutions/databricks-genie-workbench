@@ -5434,3 +5434,19 @@ def productive_iteration_budget_enabled() -> bool:
     consumed by deterministic no-ops. Default off pending corpus
     closeout."""
     return _flag_enabled("GSO_PRODUCTIVE_ITERATION_BUDGET")
+
+
+def causal_drop_feedback_to_strategist_enabled() -> bool:
+    """Cycle 5 T2 — when on, gate-drops carrying a causal-target patch
+    are captured as typed ``DroppedCausalPatch`` records and exposed to
+    the next strategist call as
+    ``ActionGroupsInput.prior_iteration_dropped_causal_patches`` so the
+    LLM can propose a narrower variant or shift to a different lever
+    instead of re-emitting the same dropped pattern.
+
+    Closes the iter-1 → iter-2 silent-replay path in run
+    2423b960-16e8-41d4-a0cb-74c563378e05 where blast_radius dropped
+    ``add_sql_snippet_measure`` with 8 outside-target dependents and the
+    strategist re-emitted the same pattern next iteration. Default off
+    pending corpus closeout."""
+    return _flag_enabled("GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST")

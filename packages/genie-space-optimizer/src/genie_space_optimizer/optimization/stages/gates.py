@@ -30,6 +30,71 @@ from typing import Any
 STAGE_KEY: str = "safety_gates"
 
 
+@dataclass(frozen=True)
+class DroppedCausalPatch:
+    """Cycle 5 T2 — payload captured at every gate drop where the
+    dropped patch carried target_qids overlapping the AG's causal
+    target set. The harness threads a tuple of these into the next
+    iteration's
+    ``ActionGroupsInput.prior_iteration_dropped_causal_patches`` so the
+    strategist can propose a narrower variant or shift levers instead
+    of re-emitting the same dropped pattern.
+
+    Frozen so instances are hashable for set-membership dedup across
+    iterations.
+    """
+    gate: str
+    reason: str
+    proposal_id: str
+    patch_type: str
+    target: str
+    target_qids: tuple[str, ...]
+    dependents_outside_target: tuple[str, ...]
+    rca_id: str
+    root_cause: str
+
+
+def capture_dropped_causal_patch(
+    *,
+    decision: dict,
+    ag_target_qids: tuple[str, ...],
+    rca_id: str,
+    root_cause: str,
+) -> "DroppedCausalPatch | None":
+    """Cycle 5 T2 — return a ``DroppedCausalPatch`` when ``decision``
+    is a drop AND the dropped patch carried target qids overlapping
+    ``ag_target_qids``. Returns ``None`` otherwise (the strategist
+    only learns from drops that were on its actual causal path; broad
+    drops without a target qid intersection are noise).
+    """
+    if str(decision.get("outcome") or "") != "dropped":
+        return None
+    target_qids = tuple(
+        str(q) for q in (ag_target_qids or ()) if str(q)
+    )
+    if not target_qids:
+        return None
+    metrics = decision.get("metrics") or {}
+    dependents = tuple(
+        str(q)
+        for q in (metrics.get("passing_dependents_outside_target") or ())
+    )
+    return DroppedCausalPatch(
+        gate=str(decision.get("gate") or ""),
+        reason=str(
+            decision.get("reason_detail")
+            or decision.get("reason_code") or ""
+        ),
+        proposal_id=str(decision.get("proposal_id") or ""),
+        patch_type=str(metrics.get("patch_type") or ""),
+        target=str(metrics.get("target") or ""),
+        target_qids=target_qids,
+        dependents_outside_target=dependents,
+        rca_id=str(rca_id or ""),
+        root_cause=str(root_cause or ""),
+    )
+
+
 GATE_PIPELINE_ORDER: tuple[str, ...] = (
     # Cycle 2 Task 1: intra_ag_dedup runs first as a safety pre-pass —
     # collapse proposals with identical body text under different
