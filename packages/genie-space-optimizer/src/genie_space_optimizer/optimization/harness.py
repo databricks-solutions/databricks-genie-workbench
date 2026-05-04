@@ -9175,6 +9175,9 @@ def _analyze_and_distribute(
     # hard clusters mint H001..., soft clusters mint S001....
     #
     # Verified against: stages/clustering.py:32-46 (Input), 86-127 (form).
+    from genie_space_optimizer.optimization.stage_io_capture import (
+        wrap_with_io_capture as _wrap_with_io_capture,
+    )
     from genie_space_optimizer.optimization.stages import StageContext as _StageCtx
     from genie_space_optimizer.optimization.stages import clustering as _clust_stage
 
@@ -9198,7 +9201,15 @@ def _analyze_and_distribute(
         soft_eval_result={"rows": soft_signal_rows} if soft_signal_rows else None,
         qid_state=_shared_qid_state,
     )
-    _cluster_findings = _clust_stage.form(_stage_ctx_clustering, _clust_inp)
+    # Phase F+H Commit B10: wrap F3 with stage_io_capture decorator.
+    # Replay-byte-stable because the wrapper returns out unchanged and
+    # the MLflow log_text calls are no-ops while mlflow_anchor_run_id
+    # is None (Phase C Commit 17 wires the anchor).
+    _clust_wrapped = _wrap_with_io_capture(
+        execute=_clust_stage.execute,
+        stage_key="cluster_formation",
+    )
+    _cluster_findings = _clust_wrapped(_stage_ctx_clustering, _clust_inp)
     clusters = list(_cluster_findings.clusters)
     soft_clusters: list[dict] = list(_cluster_findings.soft_clusters)
 
