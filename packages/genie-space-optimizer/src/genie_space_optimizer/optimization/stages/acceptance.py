@@ -78,6 +78,12 @@ class AcceptanceInput:
     min_pre_arbiter_gain_pp: float = 2.0
     rca_id_by_cluster: Mapping[str, str] = field(default_factory=dict)
     cluster_by_qid: Mapping[str, str] = field(default_factory=dict)
+    # Optimizer Control-Plane Hardening Plan — Task A. When False, the
+    # control-plane gate's attribution-drift branch rejects below-
+    # threshold acceptances. Default True preserves legacy behaviour;
+    # the harness flips this to the actual thresholds state behind
+    # ``GSO_TARGET_AWARE_ACCEPTANCE``.
+    thresholds_met: bool = True
 
 
 @dataclass
@@ -150,6 +156,7 @@ def _decide_for_ag(
         baseline_pre_arbiter_accuracy=inp.baseline_pre_arbiter_accuracy,
         candidate_pre_arbiter_accuracy=inp.candidate_pre_arbiter_accuracy,
         min_pre_arbiter_gain_pp=inp.min_pre_arbiter_gain_pp,
+        thresholds_met=inp.thresholds_met,
     )
 
 

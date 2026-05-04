@@ -657,6 +657,7 @@ def decide_control_plane_acceptance(
     baseline_pre_arbiter_accuracy: float | None = None,
     candidate_pre_arbiter_accuracy: float | None = None,
     min_pre_arbiter_gain_pp: float = 2.0,
+    thresholds_met: bool = True,
 ) -> ControlPlaneAcceptance:
     """Accept only causal post-arbiter improvement with no hard regressions.
 
@@ -797,8 +798,19 @@ def decide_control_plane_acceptance(
         # cap, applier, and rollback all worked; the only reason the
         # candidate looks "wrong" is attribution drift between the
         # named target qid set and the qids that actually flipped.
-        reason = "accepted_with_attribution_drift"
-        accepted = True
+        #
+        # Optimizer Control-Plane Hardening Plan — Task A: when below
+        # thresholds, attribution drift is no longer a free pass. The
+        # caller passes ``thresholds_met=False`` to require the named
+        # target qid to actually move; legacy default
+        # ``thresholds_met=True`` preserves the prior behaviour.
+        if thresholds_met:
+            reason = "accepted_with_attribution_drift"
+            accepted = True
+        else:
+            reason = "rejected_below_threshold_no_target_progress"
+            accepted = False
+            target_fixed = ()
     elif not has_causal_fix:
         reason = "target_qids_not_improved"
         accepted = False

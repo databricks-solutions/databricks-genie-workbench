@@ -10440,6 +10440,23 @@ def _run_gate_checks(
         / max(1, len(_after_rows or []))
     )
 
+    # Optimizer Control-Plane Hardening Plan — Task A: when the
+    # GSO_TARGET_AWARE_ACCEPTANCE flag is on, derive thresholds_met
+    # from the candidate accuracy against the project's overall-
+    # accuracy bar (95.0% matches the airline pilot's exit
+    # criterion). When the flag is off, pass thresholds_met=True so
+    # the gate's behaviour is identical to today.
+    from genie_space_optimizer.common.config import (
+        target_aware_acceptance_enabled as _target_aware_acceptance_enabled,
+    )
+
+    _GATE_OVERALL_ACCURACY_BAR_PCT: float = 95.0
+    _gate_thresholds_met = (
+        float(full_accuracy) >= _GATE_OVERALL_ACCURACY_BAR_PCT
+        if _target_aware_acceptance_enabled()
+        else True
+    )
+
     _control_plane_decision = decide_control_plane_acceptance(
         baseline_accuracy=float(best_accuracy),
         candidate_accuracy=float(full_accuracy),
@@ -10451,6 +10468,7 @@ def _run_gate_checks(
         protected_qids=_protected_qids,
         baseline_pre_arbiter_accuracy=_baseline_pre_arbiter_pct,
         candidate_pre_arbiter_accuracy=_candidate_pre_arbiter_pct,
+        thresholds_met=_gate_thresholds_met,
     )
 
     # v2 Task 2 — Pre-arbiter regression guardrail. A candidate that drops
