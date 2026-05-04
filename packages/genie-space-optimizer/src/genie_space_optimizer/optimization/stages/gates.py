@@ -31,6 +31,10 @@ STAGE_KEY: str = "safety_gates"
 
 
 GATE_PIPELINE_ORDER: tuple[str, ...] = (
+    # Cycle 2 Task 1: intra_ag_dedup runs first as a safety pre-pass —
+    # collapse proposals with identical body text under different
+    # patch_type before any other gate sees them.
+    "intra_ag_dedup",
     # Phase H Completion Task 3 (F6 follow-up plan Path C): align F6
     # module's pipeline order with the harness's actual inline gate
     # firing order — lever5_structural, rca_groundedness, blast_radius
@@ -74,6 +78,60 @@ class GateOutcome:
     survived_by_ag: dict[str, tuple[dict[str, Any], ...]]
     dropped: tuple[GateDrop, ...] = ()
     new_dead_on_arrival_signatures: tuple[str, ...] = ()
+
+
+def _run_intra_ag_dedup(
+    ctx,
+    proposals_by_ag: dict[str, tuple[dict[str, Any], ...]],
+) -> tuple[dict[str, tuple[dict[str, Any], ...]], list[GateDrop]]:
+    """Cycle 2 Task 1 — collapse intra-AG body duplicates.
+
+    Two proposals in the same AG with identical body text but
+    different ``patch_type`` produce different ``content_fingerprint``
+    values today (since the fingerprint includes ``patch_type``) and
+    so survive the existing cross-iteration dedup gate. This pass runs
+    before content_fingerprint_dedup, keys on body alone, and keeps
+    the first occurrence. Disabling
+    ``GSO_INTRA_AG_PROPOSAL_DEDUP`` returns the input untouched.
+    """
+    from genie_space_optimizer.common.config import (
+        intra_ag_proposal_dedup_enabled,
+    )
+
+    if not intra_ag_proposal_dedup_enabled():
+        return proposals_by_ag, []
+
+    from genie_space_optimizer.optimization.reflection_retry import (
+        patch_body_fingerprint,
+    )
+
+    survived: dict[str, tuple[dict[str, Any], ...]] = {}
+    drops: list[GateDrop] = []
+    for ag_id, props in proposals_by_ag.items():
+        seen: set[str] = set()
+        kept: list[dict[str, Any]] = []
+        for p in props:
+            fp = patch_body_fingerprint(p)
+            if not fp:
+                kept.append(p)
+                continue
+            if fp in seen:
+                drops.append(
+                    GateDrop(
+                        proposal_id=str(p.get("proposal_id") or ""),
+                        gate="intra_ag_dedup",
+                        reason="duplicate_body_within_ag",
+                        detail=(
+                            f"body_fp={fp} duplicates earlier "
+                            f"proposal in ag={ag_id}"
+                        ),
+                    )
+                )
+                continue
+            seen.add(fp)
+            kept.append(p)
+        survived[ag_id] = tuple(kept)
+    return survived, drops
 
 
 def _run_content_fingerprint_dedup(
@@ -225,6 +283,9 @@ def _run_doa_gate(
 
 def run_gate(name: str, ctx, inp: GatesInput) -> GateOutcome:
     """Run a single gate sub-handler. Used by focused unit tests."""
+    if name == "intra_ag_dedup":
+        survived, drops = _run_intra_ag_dedup(ctx, inp.proposals_by_ag)
+        return GateOutcome(survived_by_ag=survived, dropped=tuple(drops))
     if name == "content_fingerprint_dedup":
         survived, drops = _run_content_fingerprint_dedup(
             ctx, inp.proposals_by_ag, inp.rolled_back_content_fingerprints,

@@ -5343,3 +5343,59 @@ def lever_aware_blast_radius_enabled() -> bool:
     Default ON. Set ``GSO_LEVER_AWARE_BLAST_RADIUS=0`` to disable.
     """
     return _flag_default_on("GSO_LEVER_AWARE_BLAST_RADIUS")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cycle 2 Optimizer Improvement Plan — proposal-survival and
+# safety-gate hardening flags. All default-on; set
+# ``GSO_<name>=0`` to disable.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def intra_ag_proposal_dedup_enabled() -> bool:
+    """Cycle 2 Task 1 — when on, the gates pipeline runs an intra-AG
+    body-fingerprint dedup pass before blast-radius. Two proposals in
+    the same AG with identical body text but different ``patch_type``
+    values collapse to the first occurrence.
+
+    Default ON. Set ``GSO_INTRA_AG_PROPOSAL_DEDUP=0`` to disable.
+    """
+    return _flag_default_on("GSO_INTRA_AG_PROPOSAL_DEDUP")
+
+
+def shared_cause_blast_radius_enabled() -> bool:
+    """Cycle 2 Task 2 — when on, ``patch_blast_radius_is_safe``
+    downgrades ``high_collateral_risk_flagged`` to
+    ``shared_cause_collateral_warning`` when every outside-target
+    dependent is itself currently-hard. Two hard failures sharing a
+    cause should not block each other's fix.
+
+    Default ON. Set ``GSO_SHARED_CAUSE_BLAST_RADIUS=0`` to disable.
+    """
+    return _flag_default_on("GSO_SHARED_CAUSE_BLAST_RADIUS")
+
+
+def doa_selected_proposal_signature_enabled() -> bool:
+    """Cycle 2 Task 3 — when on, the DOA ledger records and dedups by
+    selected-proposal-ID signatures (in addition to the applied-patch
+    signatures it already records). Closes the iter-3/iter-5 same-AG
+    replay loop where blast-radius drops every patch leaving an empty
+    applied-patch signature.
+
+    Default ON. Set ``GSO_DOA_SELECTED_PROPOSAL_SIGNATURE=0`` to
+    disable.
+    """
+    return _flag_default_on("GSO_DOA_SELECTED_PROPOSAL_SIGNATURE")
+
+
+def question_shape_lever_preference_enabled() -> bool:
+    """Cycle 2 Task 4 — when on, single-question clusters whose
+    root_cause is in the question-shape set
+    (``plural_top_n_collapse``, ``count_vs_distinct``, etc.) prefer
+    per-question levers (3 example_sql, 5 instructions) over the
+    space-wide lever 6 (SQL expressions).
+
+    Default ON. Set ``GSO_QUESTION_SHAPE_LEVER_PREFERENCE=0`` to
+    disable.
+    """
+    return _flag_default_on("GSO_QUESTION_SHAPE_LEVER_PREFERENCE")

@@ -94,6 +94,35 @@ def _target_content_fingerprint(patch: dict[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
 
 
+def patch_body_fingerprint(patch: dict[str, Any]) -> str:
+    """Body-only content fingerprint for intra-AG dedup.
+
+    Cycle 2 Task 1: ``patch_retry_signature`` keys on
+    ``(patch_type, target_table, target_column, section_set,
+    parent_proposal_id, content_fingerprint)``. That is correct for
+    cross-iteration rollback dedup but it cannot collapse two
+    proposals that carry identical body text under different
+    ``patch_type`` values (the iter-1 ``AG_DECOMPOSED_H001`` pattern
+    in run ``2afb0be2-88b6-4832-99aa-c7e78fbc90f7``). This helper
+    returns a stable hash keyed on body text alone, normalised by
+    stripping leading/trailing whitespace and collapsing internal
+    whitespace runs to single spaces. Patches with empty bodies
+    yield the empty string.
+    """
+    body = str(
+        patch.get("body")
+        or patch.get("content")
+        or patch.get("proposal_text")
+        or ""
+    ).strip()
+    if not body:
+        return ""
+    normalised = " ".join(body.split())
+    import hashlib
+
+    return hashlib.sha1(normalised.encode("utf-8")).hexdigest()[:12]
+
+
 def patch_retry_signature(
     patch: dict[str, Any],
 ) -> tuple[str, str, str, frozenset[str], str, str]:

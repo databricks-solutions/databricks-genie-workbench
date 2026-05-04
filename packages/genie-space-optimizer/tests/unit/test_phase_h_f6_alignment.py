@@ -10,6 +10,7 @@ from genie_space_optimizer.optimization.stages.gates import (
 
 def test_gate_pipeline_order_matches_harness_inline_order() -> None:
     expected = (
+        "intra_ag_dedup",
         "lever5_structural",
         "rca_groundedness",
         "blast_radius",

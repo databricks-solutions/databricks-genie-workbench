@@ -60,8 +60,13 @@ def test_gate_pipeline_order_is_pinned() -> None:
     order matches the harness's actual inline gate firing order:
     lever5_structural → rca_groundedness → blast_radius (the three
     harness-emit sites), then content_fingerprint_dedup →
-    dead_on_arrival as F6-only observability sub-handlers."""
+    dead_on_arrival as F6-only observability sub-handlers.
+
+    Cycle 2 Task 1 prepends ``intra_ag_dedup`` as a safety pre-pass
+    that collapses proposals carrying identical body text under
+    different ``patch_type`` values."""
     assert GATE_PIPELINE_ORDER == (
+        "intra_ag_dedup",
         "lever5_structural",
         "rca_groundedness",
         "blast_radius",
