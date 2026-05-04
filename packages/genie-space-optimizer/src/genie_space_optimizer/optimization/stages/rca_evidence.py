@@ -181,3 +181,10 @@ def collect(ctx, inp: RcaEvidenceInput) -> Stage2Evidence:
         evidence_refs=evidence_refs,
         promoted_to_top_n_qids=tuple(promoted),
     )
+
+
+# ── G-lite: uniform execute() alias ───────────────────────────────────
+# The named verb above is preserved for human-readable harness call
+# sites. The ``execute`` alias is what the stage registry, conformance
+# test, and Phase H capture decorator import.
+execute = collect

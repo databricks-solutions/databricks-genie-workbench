@@ -243,3 +243,10 @@ def _evaluate(
         },
         raw=raw,
     )
+
+
+# ── G-lite: uniform execute() alias ───────────────────────────────────
+# The named verb above is preserved for human-readable harness call
+# sites. The ``execute`` alias is what the stage registry, conformance
+# test, and Phase H capture decorator import.
+execute = evaluate_post_patch

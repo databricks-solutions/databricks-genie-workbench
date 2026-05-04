@@ -125,3 +125,10 @@ def form(ctx, inp: ClusteringInput) -> ClusterFindings:
         soft_clusters=tuple(soft_clusters),
         rejected_cluster_alternatives=tuple(rejected_hard) + tuple(rejected_soft),
     )
+
+
+# ── G-lite: uniform execute() alias ───────────────────────────────────
+# The named verb above is preserved for human-readable harness call
+# sites. The ``execute`` alias is what the stage registry, conformance
+# test, and Phase H capture decorator import.
+execute = form

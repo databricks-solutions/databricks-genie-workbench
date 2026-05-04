@@ -87,3 +87,10 @@ def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
         ags=tuple(inp.action_groups),
         rejected_ag_alternatives=(),
     )
+
+
+# ── G-lite: uniform execute() alias ───────────────────────────────────
+# The named verb above is preserved for human-readable harness call
+# sites. The ``execute`` alias is what the stage registry, conformance
+# test, and Phase H capture decorator import.
+execute = select

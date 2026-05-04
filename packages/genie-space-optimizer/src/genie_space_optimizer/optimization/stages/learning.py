@@ -201,3 +201,10 @@ def update(ctx, inp: LearningInput) -> LearningUpdate:
         retired_ags=tuple(decision.retired_ags),
         ag_retired_records=ag_retired_records,
     )
+
+
+# ── G-lite: uniform execute() alias ───────────────────────────────────
+# The named verb above is preserved for human-readable harness call
+# sites. The ``execute`` alias is what the stage registry, conformance
+# test, and Phase H capture decorator import.
+execute = update

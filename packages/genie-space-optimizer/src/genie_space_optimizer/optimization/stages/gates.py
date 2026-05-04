@@ -271,3 +271,10 @@ def filter(ctx, inp: GatesInput) -> GateOutcome:
         dropped=tuple(all_drops),
         new_dead_on_arrival_signatures=tuple(new_doa_signatures),
     )
+
+
+# ── G-lite: uniform execute() alias ───────────────────────────────────
+# The named verb above is preserved for human-readable harness call
+# sites. The ``execute`` alias is what the stage registry, conformance
+# test, and Phase H capture decorator import.
+execute = filter

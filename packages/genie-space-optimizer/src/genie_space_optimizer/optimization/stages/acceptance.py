@@ -257,3 +257,10 @@ def decide(ctx, inp: AcceptanceInput) -> AgOutcome:
         qid_resolutions=qid_resolutions,
         rolled_back_content_fingerprints=rolled_back_fps,
     )
+
+
+# ── G-lite: uniform execute() alias ───────────────────────────────────
+# The named verb above is preserved for human-readable harness call
+# sites. The ``execute`` alias is what the stage registry, conformance
+# test, and Phase H capture decorator import.
+execute = decide
