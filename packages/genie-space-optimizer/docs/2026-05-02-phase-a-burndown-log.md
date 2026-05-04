@@ -195,3 +195,26 @@ budget is unchanged.
 Reference: planned in
 `.cursor/plans/fix_soft-cluster_currency_invariant_*.plan.md`. Tagged
 `control-plane invariant repairs` for the iteration ledger.
+
+## 2026-05-04 — Cycle 2: Proposal survival and safety-gate hardening
+
+Inspired by airline run `2afb0be2-88b6-4832-99aa-c7e78fbc90f7` which
+exhausted 5 iterations at 87.5% with zero accepted action groups,
+despite generating directionally-causal patches every iteration.
+
+| Defect | Stage | Fix | Flag (default ON) | Test file |
+|---|---|---|---|---|
+| Intra-AG body duplicates with mismatched `patch_type` | proposal generation / gates | New `_run_intra_ag_dedup` keyed on body-only fingerprint | `GSO_INTRA_AG_PROPOSAL_DEDUP` | `tests/unit/test_intra_ag_proposal_dedup.py` |
+| Shared-cause hard failures classified as collateral | `proposal_grounding.patch_blast_radius_is_safe` | `shared_cause_collateral_warning` downgrade when `outside ⊆ live_hard_qids` | `GSO_SHARED_CAUSE_BLAST_RADIUS` | `tests/unit/test_blast_radius_shared_cause.py` |
+| DOA ledger blind to empty applied-patch signatures | `harness._record_dead_on_arrival_signature` | Parallel ledger keyed on selected-proposal-ID signatures | `GSO_DOA_SELECTED_PROPOSAL_SIGNATURE` | `tests/unit/test_doa_selected_proposal_signature.py` |
+| Single-question shape RCAs routed to space-wide lever 6 | `stages.action_groups` | `recommended_levers_for_cluster` returns `(3, 5)` when `q_count==1` and root_cause ∈ `_QUESTION_SHAPE_ROOT_CAUSES` | `GSO_QUESTION_SHAPE_LEVER_PREFERENCE` | `tests/unit/test_question_shape_lever_preference.py` |
+
+**Replay impact:** none — every change is flag-gated default-on but
+byte-equivalent on the airline replay fixture (which does not
+exercise the affected paths in a way that changes its output shape).
+Replay byte-stability gate (`tests/replay/test_phase_f_h_wireup_byte_stable.py`)
+stays green across every commit.
+
+**Plan:** [`2026-05-04-cycle-2-optimizer-improvement-plan.md`](./2026-05-04-cycle-2-optimizer-improvement-plan.md).
+**Iteration ledger:** Cycle 2 in
+[`2026-05-05-optimizer-iteration-ledger.md`](./2026-05-05-optimizer-iteration-ledger.md).

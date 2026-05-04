@@ -291,3 +291,59 @@ C-<cycle>-<letter> (seed): <pattern>
 ```
 
 End of doc.
+
+---
+
+## Cycle 2 — Proposal survival and safety-gate hardening
+
+#### Section 1: Inspiration runs
+
+| Run id | Space | Outcome | Notes |
+|---|---|---|---|
+| `2afb0be2-88b6-4832-99aa-c7e78fbc90f7` | airline (7Now) | 87.5% → 87.5%, 0 accepted AGs across 5 iters | One-run baseline cycle pending a second run |
+
+#### Section 2: Postmortem clusters
+
+1. **Intra-AG body duplicates with mismatched `patch_type`** (iter 1 and iter 3) — `AG_DECOMPOSED_H001` emitted three proposals with identical body text under `lever=5 rewrite_instruction`, `lever=6 add_sql_snippet_filter`, and `lever=6 add_sql_snippet_filter`; today's content_fingerprint includes patch_type so cross-iteration dedup misses them.
+2. **Shared-cause hard failures classified as collateral risk** (iter 1 P001#2, iter 3 P001#1) — `gs_003` was itself hard in `H002`, but blast-radius treated it as a passing dependent and dropped a patch that could have unblocked both `gs_024` and `gs_003`.
+3. **Empty applied-patch DOA signature allowing same-AG retry** (iter 3 / iter 5) — `AG_COVERAGE_H001` ran with identical proposals in both iterations; blast-radius dropped every patch, so the applied-patch DOA signature collapsed to `()` and `_record_dead_on_arrival_signature` deliberately skipped recording, allowing verbatim retry.
+4. **Single-question clusters routed to space-wide lever 6** (iter 2 `AG_COVERAGE_H003`) — `gs_009` (top-N collapse) got a `lever=6 add_sql_snippet_expression` patch that touched every top-N query in the space; blast-radius correctly dropped it but the per-question fix never materialised.
+
+#### Section 3: AG hypothesis
+
+If outside-target qids that are themselves currently-hard route as shared-cause beneficiaries (Task 2), DOA dedup keys on selected proposals (Task 3), intra-AG duplicates collapse (Task 1), and single-question shape RCAs prefer per-question levers (Task 4), then a 7Now/airline run with `H001`+`H002` sharing a `tkt_payment` filter cause should converge in ≤ 3 iterations.
+
+#### Section 4: Feature flags
+
+| Flag | Default | Disable |
+|---|---|---|
+| `GSO_INTRA_AG_PROPOSAL_DEDUP` | ON | `=0` |
+| `GSO_SHARED_CAUSE_BLAST_RADIUS` | ON | `=0` |
+| `GSO_DOA_SELECTED_PROPOSAL_SIGNATURE` | ON | `=0` |
+| `GSO_QUESTION_SHAPE_LEVER_PREFERENCE` | ON | `=0` |
+
+#### Section 5: Gate result
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Byte-stable replay (flags off) | PASS | `pytest tests/replay/test_phase_f_h_wireup_byte_stable.py` after each commit |
+| Full unit + integration sweep | PASS modulo 2 known pre-existing | 3306 passed; same 2 pre-existing failures as prior cycles |
+| Corpus delta (flags on) | TBD — corpus re-run pending | Baseline only; awaiting airline rerun + at least one additional space |
+
+#### Section 6: Decision
+
+**Cycle 2 status: IN FLIGHT.** All four flag-gated fixes landed default-on with full unit-test coverage. Replay byte-stability is preserved across every commit. The gate result row is blocked on the airline corpus re-run plus one additional space — until those two runs land, the cycle stays IN FLIGHT.
+
+#### Section 7: Seeds for next cycle
+
+```text
+C-2-A (seed): postmortem rollback-class miscategorization
+  Run(s) observed: 2afb0be2-88b6-4832-99aa-c7e78fbc90f7
+  Hypothesis for next cycle: gso-postmortem skill conflates content-regression with insufficient_gain — separate skill plan, not an optimizer gap
+  Blocking on: gso-postmortem skill plan + one corpus rerun
+
+C-2-B (seed): F3 strategist coverage gaps with missing RCA cards
+  Run(s) observed: 2afb0be2-88b6-4832-99aa-c7e78fbc90f7
+  Hypothesis for next cycle: Cycle 1's bucket_driven_ag_selection + no_causal_applyable_halt should already cover this; re-evaluate after Tasks 1-4 corpus re-run
+  Blocking on: airline corpus re-run on Cycle-2 flags-on path
+```
