@@ -200,6 +200,23 @@ def _bar(char: str = "-") -> str:
     return char * _W
 
 
+def _build_loop_out_with_pretty_print(
+    *,
+    loop_out_base: dict,
+    phase_h_full_transcript: str | None,
+    phase_h_anchor_run_id: str | None,
+) -> dict:
+    """Add ``pretty_print_transcript`` to the lever-loop return dict
+    when Phase H assembled a transcript. The notebook last step prints
+    this to stdout; absence is silent and means the run pre-dated
+    Phase H or assembly failed (the latter emits a loud marker via
+    ``bundle_assembly_failed_marker``)."""
+    out = dict(loop_out_base)
+    if phase_h_full_transcript and phase_h_anchor_run_id:
+        out["pretty_print_transcript"] = str(phase_h_full_transcript)
+    return out
+
+
 def _format_scoreboard_banner(*, loop_snapshot: dict) -> str:
     """Render an end-of-iteration scoreboard banner.
 
@@ -19085,7 +19102,7 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
-    return {
+    _loop_out_base = {
         "scores": best_scores,
         "accuracy": best_accuracy,
         "model_id": best_model_id,
@@ -19121,6 +19138,11 @@ def _run_lever_loop(
         "phase_h_artifact_index_path": _phase_h_artifact_index_path,
         "phase_h_iterations_completed": list(_phase_h_iterations_completed),
     }
+    return _build_loop_out_with_pretty_print(
+        loop_out_base=_loop_out_base,
+        phase_h_full_transcript=locals().get("_full_transcript"),
+        phase_h_anchor_run_id=_phase_h_anchor_run_id,
+    )
 
 
 # ── Stage 4: FINALIZE ───────────────────────────────────────────────
