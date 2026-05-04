@@ -26,6 +26,7 @@ class MarkerLog:
     phase_a_artifact: tuple[Mapping[str, Any], ...]
     phase_b_artifact: tuple[Mapping[str, Any], ...]
     convergence: Mapping[str, Any] | None
+    artifact_index: Mapping[str, Any] | None = None
     unknown: Mapping[str, tuple[Mapping[str, Any], ...]] = field(default_factory=dict)
     parse_errors: tuple[str, ...] = field(default_factory=tuple)
 
@@ -50,6 +51,7 @@ def parse_markers(stdout: str) -> MarkerLog:
     phase_a_artifact: list[Mapping[str, Any]] = []
     phase_b_artifact: list[Mapping[str, Any]] = []
     convergence: Mapping[str, Any] | None = None
+    artifact_index: Mapping[str, Any] | None = None
     unknown: dict[str, list[Mapping[str, Any]]] = {}
     errors: list[str] = []
 
@@ -80,6 +82,8 @@ def parse_markers(stdout: str) -> MarkerLog:
             phase_b_artifact.append(payload)
         elif name == "GSO_CONVERGENCE_V1":
             convergence = payload
+        elif name == "GSO_ARTIFACT_INDEX_V1":
+            artifact_index = payload
         else:
             unknown.setdefault(name, []).append(payload)
 
@@ -91,6 +95,7 @@ def parse_markers(stdout: str) -> MarkerLog:
         phase_a_artifact=tuple(phase_a_artifact),
         phase_b_artifact=tuple(phase_b_artifact),
         convergence=convergence,
+        artifact_index=artifact_index,
         unknown={k: tuple(v) for k, v in unknown.items()},
         parse_errors=tuple(errors),
     )

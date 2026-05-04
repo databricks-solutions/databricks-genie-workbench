@@ -188,6 +188,30 @@ def phase_b_end_marker(
     )
 
 
+def artifact_index_marker(
+    *,
+    optimization_run_id: str,
+    parent_bundle_run_id: str,
+    artifact_index_path: str,
+    iterations: list[int],
+) -> str:
+    """Emit GSO_ARTIFACT_INDEX_V1 with parent bundle pointers (Phase H).
+
+    Read by tools.marker_parser.parse_markers; consumed by evidence_bundle
+    and the gso-postmortem skill to locate the parent bundle in MLflow
+    even when stdout is truncated.
+    """
+    return marker_line(
+        "GSO_ARTIFACT_INDEX_V1",
+        {
+            "optimization_run_id": optimization_run_id,
+            "parent_bundle_run_id": parent_bundle_run_id,
+            "artifact_index_path": artifact_index_path,
+            "iterations": [int(n) for n in (iterations or [])],
+        },
+    )
+
+
 def lever_loop_exit_manifest(
     *,
     optimization_run_id: str,

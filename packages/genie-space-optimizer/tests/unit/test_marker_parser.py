@@ -65,3 +65,43 @@ def test_extract_replay_fixture_returns_none_when_absent() -> None:
     from genie_space_optimizer.tools.marker_parser import extract_replay_fixture
 
     assert extract_replay_fixture("no markers here") is None
+
+
+def test_parse_markers_extracts_artifact_index_v1() -> None:
+    """Phase H Task 8: GSO_ARTIFACT_INDEX_V1 parses into MarkerLog.artifact_index."""
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+    stdout = (
+        'GSO_ARTIFACT_INDEX_V1 {"artifact_index_path": "gso_postmortem_bundle/artifact_index.json", '
+        '"iterations": [1, 2], "optimization_run_id": "r1", "parent_bundle_run_id": "br1"}\n'
+    )
+    log = parse_markers(stdout)
+    assert log.artifact_index is not None
+    assert log.artifact_index["parent_bundle_run_id"] == "br1"
+    assert log.artifact_index["iterations"] == [1, 2]
+    assert log.artifact_index["artifact_index_path"] == "gso_postmortem_bundle/artifact_index.json"
+
+
+def test_parse_markers_artifact_index_absent_when_no_marker() -> None:
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+    log = parse_markers("(no markers)")
+    assert log.artifact_index is None
+
+
+def test_artifact_index_marker_emits_valid_marker_line() -> None:
+    """Phase H Task 8: artifact_index_marker round-trips through parse_markers."""
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        artifact_index_marker,
+    )
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    line = artifact_index_marker(
+        optimization_run_id="r1",
+        parent_bundle_run_id="br1",
+        artifact_index_path="gso_postmortem_bundle/artifact_index.json",
+        iterations=[1, 2, 3],
+    )
+    assert line.startswith("GSO_ARTIFACT_INDEX_V1 ")
+    log = parse_markers(line + "\n")
+    assert log.artifact_index is not None
+    assert log.artifact_index["parent_bundle_run_id"] == "br1"
+    assert log.artifact_index["iterations"] == [1, 2, 3]
