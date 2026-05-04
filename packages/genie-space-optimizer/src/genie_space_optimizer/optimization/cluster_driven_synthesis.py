@@ -798,7 +798,11 @@ def run_cluster_driven_synthesis_for_single_cluster(
             "cluster-driven: validate_afs rejected cluster=%s — %s",
             cluster_id, exc,
         )
-        return None
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=tuple(_attempted_archetypes_so_far),
+            skipped_reason="validate_afs_rejected",
+        )
 
     # ── Archetype + slice derivation (Invariant D fallback inside) ─
     derived = _derive_asset_slice_from_afs(afs, metadata_snapshot)
@@ -807,8 +811,16 @@ def run_cluster_driven_synthesis_for_single_cluster(
             "cluster", cluster_id=cluster_id, archetype="",
             outcome="skipped", skipped_reason="no_archetype_or_slice",
         )
-        return None
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=tuple(_attempted_archetypes_so_far),
+            skipped_reason="no_archetype_or_slice",
+        )
     slice_, archetype = derived
+    # P3: archetype was successfully picked; record provenance so
+    # downstream NO_STRUCTURAL_CANDIDATE records cite it on any
+    # later-stage skip (gate fail, arbiter reject, etc).
+    _attempted_archetypes_so_far.append(str(archetype.name))
     # Regression-mining hints are a leak-safe pre-rendered string that
     # the harness threads through the snapshot when the
     # ``GSO_ENABLE_REGRESSION_MINING_STRATEGIST`` flag is on. Default
@@ -925,7 +937,11 @@ def run_cluster_driven_synthesis_for_single_cluster(
             "cluster", cluster_id=cluster_id, archetype=archetype.name,
             outcome="synth_none",
         )
-        return None
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=tuple(_attempted_archetypes_so_far),
+            skipped_reason="synth_none",
+        )
 
     # ── 5-gate validation ──────────────────────────────────────────
     slice_allowlist = set(context.asset_slice.asset_ids())
@@ -1014,13 +1030,21 @@ def run_cluster_driven_synthesis_for_single_cluster(
 
     if not passed:
         first_fail = next((g for g in gate_results if not g.passed), None)
+        _gate_skipped_reason = (
+            f"gate:{first_fail.gate if first_fail else '?'}:"
+            f"{first_fail.reason if first_fail else ''}"
+        )
         _log_summary(
             "cluster", cluster_id=cluster_id, archetype=archetype.name,
             outcome="gate_fail",
             gate_results=gate_results,
-            skipped_reason=f"gate:{first_fail.gate if first_fail else '?'}:{first_fail.reason if first_fail else ''}",
+            skipped_reason=_gate_skipped_reason,
         )
-        return None
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=tuple(_attempted_archetypes_so_far),
+            skipped_reason=_gate_skipped_reason,
+        )
 
     # ── P2 Genie-vs-synthesized arbiter gate (always ON) ───────────
     # Reads space_id per Invariant B; fail-closed when missing so the
@@ -1038,7 +1062,11 @@ def run_cluster_driven_synthesis_for_single_cluster(
             gate_results=gate_results,
             skipped_reason="missing_space_id",
         )
-        return None
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=tuple(_attempted_archetypes_so_far),
+            skipped_reason="missing_space_id",
+        )
 
     from genie_space_optimizer.optimization.preflight_synthesis import (
         _gate_genie_agreement,
@@ -1054,13 +1082,18 @@ def run_cluster_driven_synthesis_for_single_cluster(
         arbiter=arbiter,
     )
     if not agreement.passed:
+        _arbiter_skipped_reason = f"genie_agreement:{agreement.reason}"
         _log_summary(
             "cluster", cluster_id=cluster_id, archetype=archetype.name,
             outcome="arbiter_reject",
             gate_results=list(gate_results) + [agreement],
-            skipped_reason=f"genie_agreement:{agreement.reason}",
+            skipped_reason=_arbiter_skipped_reason,
         )
-        return None
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=tuple(_attempted_archetypes_so_far),
+            skipped_reason=_arbiter_skipped_reason,
+        )
 
     # ── Success — shape a Lever 5 proposal dict ────────────────────
     final = {
@@ -1085,4 +1118,8 @@ def run_cluster_driven_synthesis_for_single_cluster(
         gate_results=list(gate_results) + [agreement],
         applied=1,
     )
-    return final
+    return ClusterSynthesisResult(
+        proposal=final,
+        attempted_archetypes=tuple(_attempted_archetypes_so_far),
+        skipped_reason="",
+    )

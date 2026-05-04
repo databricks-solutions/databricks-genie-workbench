@@ -781,10 +781,11 @@ class TestPhase3RetryClusterDriven:
                 True, "genie_agreement", "both_correct",
             ),
         ):
-            result = run_cluster_driven_synthesis_for_single_cluster(
+            synthesis = run_cluster_driven_synthesis_for_single_cluster(
                 cluster, snap, benchmarks=[], llm_caller=llm,
             )
 
+        result = synthesis.proposal
         assert result is not None
         assert validator.calls == 2, (
             f"validator called {validator.calls} times; expected exactly "

@@ -14372,7 +14372,11 @@ def generate_proposals_from_strategy(
                     )
                     continue
 
-                synth_proposal = run_cluster_driven_synthesis_for_single_cluster(
+                # P3 task 1: synthesis driver returns a typed
+                # ClusterSynthesisResult instead of dict-or-None;
+                # read .proposal to preserve the legacy dict-or-None
+                # contract at this call site.
+                _synth_result = run_cluster_driven_synthesis_for_single_cluster(
                     source_cluster,
                     metadata_snapshot,
                     benchmarks=benchmarks,
@@ -14380,6 +14384,7 @@ def generate_proposals_from_strategy(
                     warehouse_id=warehouse_id,
                     w=w, spark=spark,
                 )
+                synth_proposal = _synth_result.proposal
 
                 if synth_proposal is None:
                     # Synthesis or a gate rejected. Fall back to
@@ -14502,7 +14507,10 @@ def generate_proposals_from_strategy(
                         target_qids=_rca_bridge_target_qids,
                     ):
                         _cluster = _cluster_from_rca_example_theme(_theme)
-                        _proposal = run_cluster_driven_synthesis_for_single_cluster(
+                        # P3 task 1: read .proposal from the typed
+                        # ClusterSynthesisResult to preserve legacy
+                        # dict-or-None semantics at this call site.
+                        _synth_result_rca = run_cluster_driven_synthesis_for_single_cluster(
                             _cluster,
                             metadata_snapshot,
                             benchmarks=benchmarks,
@@ -14512,6 +14520,7 @@ def generate_proposals_from_strategy(
                             w=w,
                             spark=spark,
                         )
+                        _proposal = _synth_result_rca.proposal
                         if not _proposal:
                             continue
                         _proposal["source"] = "rca_teaching_kit"

@@ -263,9 +263,10 @@ class TestOrchestrator:
             calls.append(prompt)
             return _fake_llm(prompt)
 
-        result = run_cluster_driven_synthesis_for_single_cluster(
+        synthesis = run_cluster_driven_synthesis_for_single_cluster(
             _mk_cluster(), snap, benchmarks=[], llm_caller=tracking_llm,
         )
+        result = synthesis.proposal
         assert result is None
         assert calls == []
         assert snap["_cluster_synthesis_count"] == 0
@@ -280,9 +281,10 @@ class TestOrchestrator:
             calls.append(prompt)
             return _fake_llm(prompt)
 
-        result = run_cluster_driven_synthesis_for_single_cluster(
+        synthesis = run_cluster_driven_synthesis_for_single_cluster(
             _mk_cluster(), snap, benchmarks=[], llm_caller=tracking_llm,
         )
+        result = synthesis.proposal
         assert result is None
         assert calls == []
         assert snap["_cluster_synthesis_count"] == CLUSTER_SYNTHESIS_PER_ITERATION
@@ -296,9 +298,10 @@ class TestOrchestrator:
             "genie_space_optimizer.optimization.preflight_synthesis._gate_genie_agreement",
             side_effect=_genie_agreement_passes,
         ):
-            result = run_cluster_driven_synthesis_for_single_cluster(
+            synthesis = run_cluster_driven_synthesis_for_single_cluster(
                 _mk_cluster(), snap, benchmarks=[], llm_caller=_fake_llm,
             )
+        result = synthesis.proposal
         assert result is not None
         assert result["patch_type"] == "add_example_sql"
         assert result["example_question"]
@@ -314,9 +317,10 @@ class TestOrchestrator:
             "genie_space_optimizer.optimization.cluster_driven_synthesis.validate_synthesis_proposal",
             side_effect=_gate_fails_at("execute"),
         ):
-            result = run_cluster_driven_synthesis_for_single_cluster(
+            synthesis = run_cluster_driven_synthesis_for_single_cluster(
                 _mk_cluster(), snap, benchmarks=[], llm_caller=_fake_llm,
             )
+        result = synthesis.proposal
         assert result is None
         assert snap["_cluster_synthesis_count"] == 1
 
@@ -328,9 +332,10 @@ class TestOrchestrator:
             "genie_space_optimizer.optimization.cluster_driven_synthesis.validate_synthesis_proposal",
             side_effect=_all_gates_pass,
         ):
-            result = run_cluster_driven_synthesis_for_single_cluster(
+            synthesis = run_cluster_driven_synthesis_for_single_cluster(
                 _mk_cluster(), snap, benchmarks=[], llm_caller=_fake_llm,
             )
+        result = synthesis.proposal
         assert result is None
 
     def test_successful_path_returns_teaching_kit_supporting_proposals(self):
@@ -373,13 +378,14 @@ class TestOrchestrator:
                 },
             },
         ):
-            result = run_cluster_driven_synthesis_for_single_cluster(
+            synthesis = run_cluster_driven_synthesis_for_single_cluster(
                 _mk_cluster(),
                 snap,
                 benchmarks=[],
                 llm_caller=fake_kit_llm,
             )
 
+        result = synthesis.proposal
         assert result is not None
         assert result["patch_type"] == "add_example_sql"
         assert result["kit_id"].startswith("kit_C1_")
@@ -498,23 +504,29 @@ class TestLever5Intercept:
 
     def test_teaching_kit_primary_proposal_carries_target_qids_and_kit_provenance(self, monkeypatch):
         from genie_space_optimizer.optimization import optimizer
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            ClusterSynthesisResult,
+        )
 
         snap = _mk_snapshot()
         snap["_failure_clusters"] = [_mk_cluster("C1", "missing_aggregation")]
 
         def fake_synthesis(*_args, **_kwargs):
-            return {
-                "patch_type": "add_example_sql",
-                "example_question": "Which regions have the highest sales?",
-                "example_sql": "SELECT region, SUM(amount) FROM cat.sch.fact_sales GROUP BY region",
-                "usage_guidance": "Use for regional aggregation.",
-                "_archetype_name": "simple_group_by",
-                "_cluster_id": "C1",
-                "kit_id": "kit_C1_1",
-                "target_qids": ["q1"],
-                "rca_id": "rca_agg",
-                "_supporting_proposals": [],
-            }
+            return ClusterSynthesisResult(
+                proposal={
+                    "patch_type": "add_example_sql",
+                    "example_question": "Which regions have the highest sales?",
+                    "example_sql": "SELECT region, SUM(amount) FROM cat.sch.fact_sales GROUP BY region",
+                    "usage_guidance": "Use for regional aggregation.",
+                    "_archetype_name": "simple_group_by",
+                    "_cluster_id": "C1",
+                    "kit_id": "kit_C1_1",
+                    "target_qids": ["q1"],
+                    "rca_id": "rca_agg",
+                    "_supporting_proposals": [],
+                },
+                attempted_archetypes=("simple_group_by",),
+            )
 
         monkeypatch.setattr(
             "genie_space_optimizer.optimization.cluster_driven_synthesis.run_cluster_driven_synthesis_for_single_cluster",
@@ -545,33 +557,39 @@ class TestLever5Intercept:
 
     def test_lever5_intercept_appends_teaching_kit_supporting_proposals(self, monkeypatch):
         from genie_space_optimizer.optimization import optimizer
+        from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+            ClusterSynthesisResult,
+        )
 
         snap = _mk_snapshot()
         snap["_failure_clusters"] = [_mk_cluster("C1", "missing_aggregation")]
 
         def fake_synthesis(*_args, **_kwargs):
-            return {
-                "patch_type": "add_example_sql",
-                "example_question": "Which regions have the highest sales?",
-                "example_sql": "SELECT region, SUM(amount) FROM cat.sch.fact_sales GROUP BY region",
-                "usage_guidance": "Use for regional aggregation.",
-                "_archetype_name": "simple_group_by",
-                "_cluster_id": "C1",
-                "kit_id": "kit_C1_1",
-                "target_qids": ["q1", "q2"],
-                "_supporting_proposals": [
-                    {
-                        "patch_type": "add_column_synonym",
-                        "table": "cat.sch.fact_sales",
-                        "table_id": "cat.sch.fact_sales",
-                        "column": "region",
-                        "column_name": "region",
-                        "synonyms": ["sales region"],
-                        "kit_id": "kit_C1_1",
-                        "target_qids": ["q1", "q2"],
-                    }
-                ],
-            }
+            return ClusterSynthesisResult(
+                proposal={
+                    "patch_type": "add_example_sql",
+                    "example_question": "Which regions have the highest sales?",
+                    "example_sql": "SELECT region, SUM(amount) FROM cat.sch.fact_sales GROUP BY region",
+                    "usage_guidance": "Use for regional aggregation.",
+                    "_archetype_name": "simple_group_by",
+                    "_cluster_id": "C1",
+                    "kit_id": "kit_C1_1",
+                    "target_qids": ["q1", "q2"],
+                    "_supporting_proposals": [
+                        {
+                            "patch_type": "add_column_synonym",
+                            "table": "cat.sch.fact_sales",
+                            "table_id": "cat.sch.fact_sales",
+                            "column": "region",
+                            "column_name": "region",
+                            "synonyms": ["sales region"],
+                            "kit_id": "kit_C1_1",
+                            "target_qids": ["q1", "q2"],
+                        }
+                    ],
+                },
+                attempted_archetypes=("simple_group_by",),
+            )
 
         monkeypatch.setattr(
             "genie_space_optimizer.optimization.cluster_driven_synthesis.run_cluster_driven_synthesis_for_single_cluster",
@@ -776,9 +794,10 @@ class TestObservability:
             "genie_space_optimizer.optimization.preflight_synthesis._gate_genie_agreement",
             side_effect=_genie_agreement_passes,
         ):
-            result = run_cluster_driven_synthesis_for_single_cluster(
+            synthesis = run_cluster_driven_synthesis_for_single_cluster(
                 _mk_cluster(), snap, benchmarks=[], llm_caller=_fake_llm,
             )
+        result = synthesis.proposal
         assert result is not None
         summary_lines = [
             r.message for r in caplog.records
@@ -797,9 +816,10 @@ class TestObservability:
             "genie_space_optimizer.optimization.cluster_driven_synthesis.validate_synthesis_proposal",
             side_effect=_gate_fails_at("execute"),
         ):
-            result = run_cluster_driven_synthesis_for_single_cluster(
+            synthesis = run_cluster_driven_synthesis_for_single_cluster(
                 _mk_cluster(), snap, benchmarks=[], llm_caller=_fake_llm,
             )
+        result = synthesis.proposal
         assert result is None
         summary_lines = [
             r.message for r in caplog.records

@@ -40,6 +40,9 @@ def test_rca_example_synthesis_request_omits_benchmark_question_and_expected_sql
 
 def test_rca_example_synthesis_uses_cluster_driven_engine(monkeypatch):
     from genie_space_optimizer.optimization import optimizer
+    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        ClusterSynthesisResult,
+    )
     from genie_space_optimizer.optimization.rca import RcaKind, RcaPatchTheme
 
     calls = {"cluster_driven": 0}
@@ -50,17 +53,20 @@ def test_rca_example_synthesis_uses_cluster_driven_engine(monkeypatch):
         assert cluster["root_cause"] == "wrong_grouping"
         assert cluster["question_ids"] == ["q1"]
         assert cluster["rca_id"] == "rca_shape"
-        return {
-            "patch_type": "add_example_sql",
-            "example_question": "Show sales by category",
-            "example_sql": "SELECT category, SUM(sales) FROM cat.sch.orders GROUP BY category",
-            "usage_guidance": "Use for category aggregations.",
-            "_archetype_name": "simple_group_by",
-            "_cluster_id": "rca_shape",
-            "kit_id": "kit_rca_shape_1",
-            "target_qids": ["q1"],
-            "_supporting_proposals": [],
-        }
+        return ClusterSynthesisResult(
+            proposal={
+                "patch_type": "add_example_sql",
+                "example_question": "Show sales by category",
+                "example_sql": "SELECT category, SUM(sales) FROM cat.sch.orders GROUP BY category",
+                "usage_guidance": "Use for category aggregations.",
+                "_archetype_name": "simple_group_by",
+                "_cluster_id": "rca_shape",
+                "kit_id": "kit_rca_shape_1",
+                "target_qids": ["q1"],
+                "_supporting_proposals": [],
+            },
+            attempted_archetypes=("simple_group_by",),
+        )
 
     monkeypatch.setattr(
         "genie_space_optimizer.optimization.cluster_driven_synthesis.run_cluster_driven_synthesis_for_single_cluster",
