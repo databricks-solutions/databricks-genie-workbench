@@ -9929,6 +9929,7 @@ def _run_gate_checks(
     # surrounding orchestration into stages and let the wrapper own
     # journey/decision emission directly.
     from genie_space_optimizer.optimization.stages import (
+        RunEvaluationKwargs,
         StageContext as _StageCtx,
         evaluation as _eval_stage,
     )
@@ -9946,7 +9947,7 @@ def _run_gate_checks(
         mlflow_anchor_run_id=None,
         feature_flags={},
     )
-    _eval_kwargs_full = {
+    _eval_kwargs_full: RunEvaluationKwargs = {
         "space_id": space_id,
         "experiment_name": exp_name,
         "iteration": iteration_counter,

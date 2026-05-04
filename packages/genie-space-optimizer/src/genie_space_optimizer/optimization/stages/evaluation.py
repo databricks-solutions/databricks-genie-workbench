@@ -24,6 +24,9 @@ from genie_space_optimizer.optimization.decision_emitters import (
 from genie_space_optimizer.optimization.eval_entry import (
     _emit_eval_entry_journey,
 )
+from genie_space_optimizer.optimization.stages._run_evaluation_kwargs import (
+    RunEvaluationKwargs,
+)
 
 
 STAGE_KEY: str = "evaluation_state"
@@ -133,15 +136,18 @@ def _classify_eval_rows(
 
 
 def _run_full_evaluation(
-    inp: EvaluationInput, eval_kwargs: dict[str, Any],
+    inp: EvaluationInput, eval_kwargs: RunEvaluationKwargs,
 ) -> dict[str, Any]:
     """Thin wrapper around evaluation.run_evaluation.
 
     Production callers (harness line 9924) pass a long argument list;
     F1 forwards it through ``eval_kwargs`` so the wrapper stays narrow.
-    Phase G freezes ``eval_kwargs`` into a typed RunEvaluationKwargs
-    dataclass.
+    Phase G-lite typed ``eval_kwargs`` as ``RunEvaluationKwargs``
+    (TypedDict, total=False) — required keys are enforced by
+    ``run_evaluation``'s own signature at runtime.
     """
+    # type: ignore[arg-type] — RunEvaluationKwargs is total=False; required
+    # keys are enforced by run_evaluation's own signature at runtime.
     return _eval_primitives.run_evaluation(**eval_kwargs)
 
 
@@ -149,7 +155,7 @@ def evaluate_baseline(
     ctx,
     inp: EvaluationInput,
     *,
-    eval_kwargs: dict[str, Any],
+    eval_kwargs: RunEvaluationKwargs,
 ) -> EvaluationResult:
     """Stage 1 entry. Currently a placeholder kept for future migration
     of harness.py:2013 (the once-per-run baseline call). F1 does NOT
@@ -163,7 +169,7 @@ def evaluate_post_patch(
     ctx,
     inp: EvaluationInput,
     *,
-    eval_kwargs: dict[str, Any],
+    eval_kwargs: RunEvaluationKwargs,
 ) -> EvaluationResult:
     """Stage 8 entry. Wraps the per-iteration full eval call site at
     harness.py:9924. The harness still owns the post-eval logic that
@@ -181,7 +187,7 @@ def _evaluate(
     ctx,
     inp: EvaluationInput,
     *,
-    eval_kwargs: dict[str, Any],
+    eval_kwargs: RunEvaluationKwargs,
     run_role: str,
 ) -> EvaluationResult:
     raw = _run_full_evaluation(inp, eval_kwargs)
