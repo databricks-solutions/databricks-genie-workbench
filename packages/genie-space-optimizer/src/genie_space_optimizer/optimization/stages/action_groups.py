@@ -73,6 +73,25 @@ def recommended_levers_for_cluster(cluster: dict) -> tuple[int, ...]:
     return _DEFAULT_RECOMMENDED_LEVERS
 
 
+def stamp_recommended_levers_on_clusters(
+    clusters: list[dict],
+) -> list[dict]:
+    """Cycle 2 Task 4 closeout — stamp ``recommended_levers`` on each
+    cluster post-``rank_clusters`` so the strategist's ``ranking_text``
+    builder can surface the per-cluster lever hint to the LLM.
+
+    Returns a NEW list of NEW dicts (does not mutate input). Idempotent —
+    re-stamping a cluster overwrites the prior ``recommended_levers``
+    with the same value.
+    """
+    out: list[dict] = []
+    for cluster in clusters:
+        c = dict(cluster)
+        c["recommended_levers"] = list(recommended_levers_for_cluster(c))
+        out.append(c)
+    return out
+
+
 @dataclass
 class ActionGroupsInput:
     """Input to stages.action_groups.select.

@@ -13305,6 +13305,17 @@ def _run_lever_loop(
             reflection_buffer=reflection_buffer,
         )
 
+        # Cycle 2 Task 4 closeout — stamp per-cluster recommended_levers
+        # so the strategist's ranking_text surfaces the per-cluster
+        # lever hint in the LLM prompt. The IQ-scan space-wide override
+        # (``_scan_levers`` passed to ``rank_clusters``) remains the
+        # authoritative tiebreaker; this stamp is the per-cluster
+        # baseline recommendation single-question shape RCAs depend on.
+        from genie_space_optimizer.optimization.stages.action_groups import (
+            stamp_recommended_levers_on_clusters,
+        )
+        ranked = stamp_recommended_levers_on_clusters(ranked)
+
         # ── 3B.4: Adaptive strategist (1 LLM call → 1 AG) ───────────
         print(_section(f"ADAPTIVE STRATEGIST — Iteration ({_iteration_label(iteration_counter)})", "="))
 
