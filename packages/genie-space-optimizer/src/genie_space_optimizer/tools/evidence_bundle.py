@@ -64,6 +64,68 @@ class BundleResult:
     manifest: Manifest
 
 
+def _task_result_state(task: Mapping[str, Any]) -> str:
+    """Extract the terminal result state from a Databricks task dict.
+
+    The Jobs API nests result state under ``state.result_state``;
+    older fixtures place it directly on the task. Returns an upper-
+    case string ("SUCCESS", "FAILED", "CANCELED", ...) or "" when
+    the task is still running / no terminal state is recorded.
+    """
+    state = task.get("state")
+    if isinstance(state, Mapping):
+        rs = state.get("result_state") or ""
+    else:
+        rs = task.get("result_state") or ""
+    return str(rs).upper()
+
+
+def _select_lever_loop_task(
+    tasks: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any] | None, list[Mapping[str, Any]]]:
+    """Pick the lever_loop task to anchor evidence on, and return
+    every failed attempt for separate per-attempt artifacts.
+
+    Selection order:
+      1. Among ``task_key=='lever_loop'`` tasks, prefer SUCCESS.
+      2. Within the preferred-state set, prefer largest ``end_time``
+         (most recent terminal time), then largest ``start_time`` as
+         a tiebreaker.
+      3. If no SUCCESS exists, fall back to the latest FAILED. The
+         chosen task is also recorded in ``failed_attempts`` so the
+         caller emits a per-attempt artifact for it too.
+      4. If no ``lever_loop`` task exists, return ``(None, [])``.
+
+    Reproducer: run 2423b960 had 4 FAILED + 1 SUCCESS attempts; the
+    old ``next(t for ...)`` anchored to attempt 1 (FAILED). This
+    selector picks attempt 5 (SUCCESS) and records 200..203 as
+    failed_attempts.
+    """
+    lever_tasks = [
+        t for t in (tasks or []) if t.get("task_key") == "lever_loop"
+    ]
+    if not lever_tasks:
+        return None, []
+
+    def _sort_key(t: Mapping[str, Any]) -> tuple[int, int]:
+        return (int(t.get("end_time") or 0), int(t.get("start_time") or 0))
+
+    successes = sorted(
+        (t for t in lever_tasks if _task_result_state(t) == "SUCCESS"),
+        key=_sort_key,
+        reverse=True,
+    )
+    failures = sorted(
+        (t for t in lever_tasks if _task_result_state(t) != "SUCCESS"),
+        key=_sort_key,
+        reverse=True,
+    )
+    if successes:
+        return successes[0], list(failures)
+    # All failed: pick the latest, but also include it in failed_attempts.
+    return failures[0], list(failures)
+
+
 def download_parent_bundle(
     *,
     parent_run_id: str,
@@ -328,9 +390,8 @@ def build_bundle(
 ) -> BundleResult:
     job_run = databricks_runner.get_run(run_id=run_id, profile=profile)
 
-    lever_task = next(
-        (t for t in job_run.get("tasks", []) if t.get("task_key") == "lever_loop"),
-        None,
+    lever_task, failed_lever_loop_attempts = _select_lever_loop_task(
+        job_run.get("tasks", []) or []
     )
     lever_task_run_id = lever_task["run_id"] if lever_task else ""
     stdout_text = ""
