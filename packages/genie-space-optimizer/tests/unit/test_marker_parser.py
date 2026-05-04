@@ -105,3 +105,28 @@ def test_artifact_index_marker_emits_valid_marker_line() -> None:
     assert log.artifact_index is not None
     assert log.artifact_index["parent_bundle_run_id"] == "br1"
     assert log.artifact_index["iterations"] == [1, 2, 3]
+
+
+def test_bundle_assembly_failed_marker_extracted() -> None:
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    text = (
+        "some unrelated stuff\n"
+        'GSO_BUNDLE_ASSEMBLY_FAILED_V1 {"error_message": "boom", '
+        '"error_type": "RuntimeError", "optimization_run_id": "r1", '
+        '"parent_bundle_run_id": "a1"}\n'
+        "more unrelated stuff\n"
+    )
+    markers = parse_markers(text)
+    assert len(markers.bundle_assembly_failed) == 1
+    failure = markers.bundle_assembly_failed[0]
+    assert failure["optimization_run_id"] == "r1"
+    assert failure["parent_bundle_run_id"] == "a1"
+    assert failure["error_type"] == "RuntimeError"
+
+
+def test_bundle_assembly_failed_absent_when_no_marker() -> None:
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    markers = parse_markers("hello world")
+    assert markers.bundle_assembly_failed == ()

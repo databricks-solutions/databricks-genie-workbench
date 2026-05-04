@@ -27,6 +27,7 @@ class MarkerLog:
     phase_b_artifact: tuple[Mapping[str, Any], ...]
     convergence: Mapping[str, Any] | None
     artifact_index: Mapping[str, Any] | None = None
+    bundle_assembly_failed: tuple[Mapping[str, Any], ...] = ()
     unknown: Mapping[str, tuple[Mapping[str, Any], ...]] = field(default_factory=dict)
     parse_errors: tuple[str, ...] = field(default_factory=tuple)
 
@@ -52,6 +53,7 @@ def parse_markers(stdout: str) -> MarkerLog:
     phase_b_artifact: list[Mapping[str, Any]] = []
     convergence: Mapping[str, Any] | None = None
     artifact_index: Mapping[str, Any] | None = None
+    bundle_assembly_failed: list[Mapping[str, Any]] = []
     unknown: dict[str, list[Mapping[str, Any]]] = {}
     errors: list[str] = []
 
@@ -84,6 +86,8 @@ def parse_markers(stdout: str) -> MarkerLog:
             convergence = payload
         elif name == "GSO_ARTIFACT_INDEX_V1":
             artifact_index = payload
+        elif name == "GSO_BUNDLE_ASSEMBLY_FAILED_V1":
+            bundle_assembly_failed.append(payload)
         else:
             unknown.setdefault(name, []).append(payload)
 
@@ -96,6 +100,7 @@ def parse_markers(stdout: str) -> MarkerLog:
         phase_b_artifact=tuple(phase_b_artifact),
         convergence=convergence,
         artifact_index=artifact_index,
+        bundle_assembly_failed=tuple(bundle_assembly_failed),
         unknown={k: tuple(v) for k, v in unknown.items()},
         parse_errors=tuple(errors),
     )
