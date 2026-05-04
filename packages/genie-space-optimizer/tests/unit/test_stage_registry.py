@@ -56,3 +56,21 @@ def test_get_stage_raises_for_unknown_key() -> None:
 
     with pytest.raises(KeyError, match="unknown_stage"):
         get_stage("unknown_stage")
+
+
+def test_each_stage_entry_carries_input_and_output_class() -> None:
+    """Phase H Task 3: registry exposes input_class and output_class so
+    the capture decorator can serialize stage I/O without runtime
+    introspection."""
+    from genie_space_optimizer.optimization.stages import STAGES
+
+    for entry in STAGES:
+        assert isinstance(entry.input_class, type), (
+            f"{entry.stage_key}: input_class not a type"
+        )
+        assert isinstance(entry.output_class, type), (
+            f"{entry.stage_key}: output_class not a type"
+        )
+        # The classes must be the same objects as the module's declarations.
+        assert entry.input_class is entry.module.INPUT_CLASS
+        assert entry.output_class is entry.module.OUTPUT_CLASS

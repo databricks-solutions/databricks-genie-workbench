@@ -135,6 +135,13 @@ def generate(ctx, inp: ProposalsInput) -> ProposalSlate:
     )
 
 
+# ── Phase H: explicit Input/Output class declarations ─────────────────
+# Phase H's per-stage I/O capture decorator imports these to serialize
+# the stage's typed input and output to MLflow.
+INPUT_CLASS = ProposalsInput
+OUTPUT_CLASS = ProposalSlate
+
+
 # ── G-lite: uniform execute() alias ───────────────────────────────────
 # The named verb above is preserved for human-readable harness call
 # sites. The ``execute`` alias is what the stage registry, conformance

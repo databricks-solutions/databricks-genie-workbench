@@ -273,6 +273,13 @@ def filter(ctx, inp: GatesInput) -> GateOutcome:
     )
 
 
+# ── Phase H: explicit Input/Output class declarations ─────────────────
+# Phase H's per-stage I/O capture decorator imports these to serialize
+# the stage's typed input and output to MLflow.
+INPUT_CLASS = GatesInput
+OUTPUT_CLASS = GateOutcome
+
+
 # ── G-lite: uniform execute() alias ───────────────────────────────────
 # The named verb above is preserved for human-readable harness call
 # sites. The ``execute`` alias is what the stage registry, conformance
