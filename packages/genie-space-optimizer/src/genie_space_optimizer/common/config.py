@@ -5265,3 +5265,55 @@ is orthogonal — enforced upstream by ``PREFLIGHT_EXAMPLE_SQL_TARGET`` and
 cannot independently exceed 20. This cap is checked at the entry of
 ``run_cluster_driven_synthesis_for_single_cluster``. Env var matches
 constant name for grep-ability."""
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Optimizer Control-Plane Hardening Plan — Task 0 feature flags.
+#
+# Each flag is default-off; production runs flip them on via the
+# lever-loop task env-vars in databricks.yml. Default-off keeps the
+# byte-stable replay fixture and BURNDOWN_BUDGET = 0 invariants safe.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _flag_enabled(env_name: str) -> bool:
+    raw = (os.environ.get(env_name) or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def target_aware_acceptance_enabled() -> bool:
+    """Task A — when below thresholds, the
+    ``accepted_with_attribution_drift`` branch in
+    ``decide_control_plane_acceptance`` rejects instead of accepting."""
+    return _flag_enabled("GSO_TARGET_AWARE_ACCEPTANCE")
+
+
+def no_causal_applyable_halt_enabled() -> bool:
+    """Task B — when every RCA-grounded proposal in an AG is dropped
+    by upstream gates, halt the AG with reason
+    ``no_causal_applyable_patch`` instead of falling back to non-causal
+    proposals."""
+    return _flag_enabled("GSO_NO_CAUSAL_APPLYABLE_HALT")
+
+
+def bucket_driven_ag_selection_enabled() -> bool:
+    """Task C — strategist consumes prior-iteration failure buckets:
+    ``MODEL_CEILING`` qids drop from targets; clusters whose qids are
+    all ``EVIDENCE_GAP`` materialize as evidence-gathering AGs."""
+    return _flag_enabled("GSO_BUCKET_DRIVEN_AG_SELECTION")
+
+
+def rca_aware_patch_cap_enabled() -> bool:
+    """Task D — proposals inherit the parent AG's ``rca_id`` at the F5
+    stage entry so ``select_causal_patch_cap`` can rank by
+    ``causal_attribution_tier``."""
+    return _flag_enabled("GSO_RCA_AWARE_PATCH_CAP")
+
+
+def lever_aware_blast_radius_enabled() -> bool:
+    """Task E — non-semantic patch types
+    (``update_column_description``, ``add_column_synonym``,
+    ``add_metric_view_instruction``, ``add_table_instruction``,
+    ``update_table_description``) downgrade ``high_collateral_risk``
+    blast-radius rejection to a warning."""
+    return _flag_enabled("GSO_LEVER_AWARE_BLAST_RADIUS")
