@@ -7261,6 +7261,38 @@ def _format_strategist_budget_preamble(*, budget: int, n_clusters: int) -> str:
     )
 
 
+def format_strategist_ranking_text(
+    priority_ranking: list[dict],
+    *,
+    top_n: int = 10,
+) -> str:
+    """Render the strategist's per-cluster priority ranking text.
+
+    Cycle 2 Task 4 closeout — when ``cluster["recommended_levers"]`` is
+    set (post-``rank_clusters`` stamp via
+    ``stages.action_groups.stamp_recommended_levers_on_clusters``),
+    the per-cluster lever hint is appended to the cluster's ranking
+    line so the strategist LLM sees ``recommended_levers=[...]``
+    alongside cluster identity. Clusters without the field render
+    as before (backwards-compatible — pre-extraction format
+    preserved verbatim).
+    """
+    ranking_lines: list[str] = []
+    for c in priority_ranking[:top_n]:
+        line = (
+            f"  Rank {c.get('rank', '?')}: "
+            f"[{c.get('cluster_id', '?')}] {c.get('root_cause', '?')} "
+            f"(judge={c.get('affected_judge', '?')}, "
+            f"questions={len(c.get('question_ids', []))}, "
+            f"impact={c.get('impact_score', 0):.1f})"
+        )
+        levers = c.get("recommended_levers")
+        if levers:
+            line += f" recommended_levers={list(levers)}"
+        ranking_lines.append(line)
+    return "\n".join(ranking_lines) if ranking_lines else "(no clusters)"
+
+
 def _format_iq_scan_findings(scan_summary: dict | None) -> str:
     """Render the scan summary for the strategist prompt.
 
@@ -9428,16 +9460,7 @@ def _call_llm_for_adaptive_strategy(
     blame_set: list[str] | None = list(dict.fromkeys(_blame_items)) if _blame_items else None
 
     # ── Build priority ranking text ──────────────────────────────────
-    ranking_lines: list[str] = []
-    for c in priority_ranking[:10]:
-        ranking_lines.append(
-            f"  Rank {c.get('rank', '?')}: "
-            f"[{c.get('cluster_id', '?')}] {c.get('root_cause', '?')} "
-            f"(judge={c.get('affected_judge', '?')}, "
-            f"questions={len(c.get('question_ids', []))}, "
-            f"impact={c.get('impact_score', 0):.1f})"
-        )
-    ranking_text = "\n".join(ranking_lines) if ranking_lines else "(no clusters)"
+    ranking_text = format_strategist_ranking_text(priority_ranking)
 
     # ── Build success summary ────────────────────────────────────────
     failing = total_benchmarks - passing_benchmarks

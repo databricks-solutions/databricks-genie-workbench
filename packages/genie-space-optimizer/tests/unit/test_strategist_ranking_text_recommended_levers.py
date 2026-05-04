@@ -90,3 +90,94 @@ def test_stamp_recommended_levers_does_not_mutate_input():
     stamp_recommended_levers_on_clusters(inp)
     # Original dict must not gain the recommended_levers key.
     assert "recommended_levers" not in inp[0]
+
+
+def test_ranking_text_surfaces_recommended_levers_per_cluster():
+    """The strategist's ranking_text must include each cluster's
+    recommended_levers so the LLM sees the per-cluster lever hint.
+    """
+    from genie_space_optimizer.optimization.optimizer import (
+        format_strategist_ranking_text,
+    )
+
+    clusters = [
+        {
+            "cluster_id": "H003",
+            "rank": 1,
+            "root_cause": "plural_top_n_collapse",
+            "affected_judge": "schema_accuracy",
+            "question_ids": ["gs_009"],
+            "impact_score": 1.7,
+            "recommended_levers": [3, 5],
+        },
+        {
+            "cluster_id": "H_MULTI",
+            "rank": 2,
+            "root_cause": "plural_top_n_collapse",
+            "affected_judge": "schema_accuracy",
+            "question_ids": ["gs_001", "gs_002"],
+            "impact_score": 1.5,
+            "recommended_levers": [3, 5, 6],
+        },
+    ]
+    text = format_strategist_ranking_text(clusters)
+    # Each cluster's ranking line surfaces its recommended_levers.
+    assert "recommended_levers=[3, 5]" in text
+    assert "recommended_levers=[3, 5, 6]" in text
+    # Cluster identity stays present.
+    assert "H003" in text
+    assert "H_MULTI" in text
+
+
+def test_ranking_text_omits_levers_when_field_absent():
+    """Backwards-compatible: clusters without ``recommended_levers``
+    render as before (no levers field appended)."""
+    from genie_space_optimizer.optimization.optimizer import (
+        format_strategist_ranking_text,
+    )
+
+    clusters = [{
+        "cluster_id": "H001",
+        "rank": 1,
+        "root_cause": "missing_filter",
+        "affected_judge": "logical_accuracy",
+        "question_ids": ["gs_005"],
+        "impact_score": 1.0,
+    }]
+    text = format_strategist_ranking_text(clusters)
+    assert "H001" in text
+    assert "recommended_levers" not in text
+
+
+def test_ranking_text_empty_clusters_yields_placeholder():
+    """No clusters → '(no clusters)' placeholder, matching the
+    pre-extraction inline behaviour."""
+    from genie_space_optimizer.optimization.optimizer import (
+        format_strategist_ranking_text,
+    )
+
+    assert format_strategist_ranking_text([]) == "(no clusters)"
+
+
+def test_ranking_text_pre_existing_format_preserved():
+    """The pre-extraction format ('Rank N: [cluster_id] root_cause
+    (judge=..., questions=N, impact=X.X)') is the byte-stable contract
+    that downstream consumers (operator transcript, replay) depend on.
+    """
+    from genie_space_optimizer.optimization.optimizer import (
+        format_strategist_ranking_text,
+    )
+
+    clusters = [{
+        "cluster_id": "H001",
+        "rank": 1,
+        "root_cause": "missing_filter",
+        "affected_judge": "logical_accuracy",
+        "question_ids": ["gs_005", "gs_006"],
+        "impact_score": 1.7,
+    }]
+    text = format_strategist_ranking_text(clusters)
+    assert (
+        "Rank 1: [H001] missing_filter "
+        "(judge=logical_accuracy, questions=2, impact=1.7)"
+    ) in text
