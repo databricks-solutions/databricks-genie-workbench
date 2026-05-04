@@ -41,6 +41,9 @@ class DecisionType(str, Enum):
     ACCEPTANCE_DECIDED = "acceptance_decided"
     QID_RESOLUTION = "qid_resolution"
     AG_RETIRED = "ag_retired"
+    # Cycle 5 T1 — productive-iteration budget accounting; appears in
+    # the Learning / Next Action section of the operator transcript.
+    ITERATION_BUDGET_DECISION = "iteration_budget_decision"
 
 
 class DecisionOutcome(str, Enum):
@@ -85,6 +88,17 @@ class ReasonCode(str, Enum):
     POST_EVAL_HOLD_FAIL = "post_eval_hold_fail"
     POST_EVAL_PASS_TO_FAIL = "post_eval_pass_to_fail"
     AG_TARGET_NO_LONGER_HARD = "ag_target_no_longer_hard"
+    # Cycle 5 T1 — productive-iteration budget accounting outcomes.
+    # ``ITERATION_BUDGET_CONSUMED`` is the default productive path (≥1
+    # patch applied OR flag off). ``ITERATION_BUDGET_SKIPPED_NO_OP``
+    # fires when the iteration produced no applied patch AND the no-op
+    # cause is a typed P4 outcome AND the flag is on.
+    # ``ITERATION_BUDGET_STRATEGY_SWITCH`` (reserved) marks the
+    # follow-on iteration where the strategist is told to change
+    # approach after N consecutive deterministic no-ops.
+    ITERATION_BUDGET_CONSUMED = "iteration_budget_consumed"
+    ITERATION_BUDGET_SKIPPED_NO_OP = "iteration_budget_skipped_no_op"
+    ITERATION_BUDGET_STRATEGY_SWITCH = "iteration_budget_strategy_switch"
 
 
 class RejectReason(str, Enum):
@@ -510,6 +524,9 @@ TYPE_TO_SECTION: Mapping[DecisionType, str] = {
     # buffered AGs at plateau because their target qids reclassified out
     # of hard) — same section as the original AG emission.
     DecisionType.AG_RETIRED: SECTION_AG_DECISIONS,
+    # Cycle 5 T1: budget decisions answer "what did the loop do next?"
+    # — they belong in the Next Suggested Action section.
+    DecisionType.ITERATION_BUDGET_DECISION: SECTION_NEXT_ACTION,
 }
 
 

@@ -1462,3 +1462,54 @@ def groundedness_gate_records(
             )
         )
     return records
+
+
+def iteration_budget_decision_record(
+    *,
+    run_id: str,
+    iteration: int,
+    consumed: bool,
+    no_op_cause: str | None,
+    applied_patches: int,
+) -> DecisionRecord:
+    """Cycle 5 T1 — emit a typed iteration-budget decision so the
+    operator transcript and postmortem skill can audit which
+    iterations consumed budget and why.
+
+    ``no_op_cause`` is one of the typed P4 outcomes
+    (``proposal_generation_empty``,
+    ``structural_gate_dropped_instruction_only``,
+    ``no_structural_candidate``) when ``consumed=False``; otherwise
+    ``None``.
+
+    Reproducer: run 2423b960-16e8-41d4-a0cb-74c563378e05 burned 4/5
+    iterations on deterministic no-ops because every no-op consumed
+    budget. With the productive-iteration flag on, the same run
+    surfaces a SKIPPED record per no-op and only counts productive
+    iterations toward MAX_ITERATIONS.
+    """
+    if consumed:
+        reason = ReasonCode.ITERATION_BUDGET_CONSUMED
+        next_action = (
+            f"Iteration {iteration} consumed budget; "
+            f"{applied_patches} patch(es) applied."
+        )
+    else:
+        reason = ReasonCode.ITERATION_BUDGET_SKIPPED_NO_OP
+        next_action = (
+            f"Iteration {iteration} did not consume budget "
+            f"(no_op_cause={no_op_cause}); strategist re-runs."
+        )
+    return DecisionRecord(
+        run_id=run_id,
+        iteration=int(iteration),
+        decision_type=DecisionType.ITERATION_BUDGET_DECISION,
+        outcome=DecisionOutcome.INFO,
+        reason_code=reason,
+        next_action=next_action,
+        metrics={
+            "applied_patches": int(applied_patches),
+            "no_op_cause": str(no_op_cause or ""),
+            "consumed": bool(consumed),
+        },
+    )

@@ -52,3 +52,26 @@ def phase_b_artifact_marker(
         "exception_class": str(exception_class),
     }
     return "GSO_PHASE_B_ARTIFACT_V1 " + json.dumps(payload, sort_keys=True)
+
+
+def iteration_budget_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    consumed: bool,
+    no_op_cause: str,
+    applied_patches: int,
+    iteration_counter_after: int,
+) -> str:
+    """Cycle 5 T1 — one-line marker emitted at each iteration's
+    productive-budget decision so the postmortem analyzer can audit
+    which iterations consumed budget and why."""
+    payload = {
+        "optimization_run_id": str(optimization_run_id),
+        "iteration": int(iteration),
+        "consumed": bool(consumed),
+        "no_op_cause": str(no_op_cause),
+        "applied_patches": int(applied_patches),
+        "iteration_counter_after": int(iteration_counter_after),
+    }
+    return "GSO_ITERATION_BUDGET_V1 " + json.dumps(payload, sort_keys=True)

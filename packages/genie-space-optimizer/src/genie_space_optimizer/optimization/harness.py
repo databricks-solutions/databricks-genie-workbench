@@ -1119,6 +1119,36 @@ def _should_force_structural_synthesis(
     return str(cluster_root_cause or "") in _SQL_SHAPE_ROOT_CAUSES
 
 
+_PRODUCTIVE_ITERATION_NO_OP_REASON_CODES: tuple[str, ...] = (
+    "proposal_generation_empty",
+    "structural_gate_dropped_instruction_only",
+    "no_structural_candidate",
+)
+
+
+def _classify_iteration_no_op_cause(
+    records: list[dict] | None,
+) -> str:
+    """Cycle 5 T1 — return the most recent typed P4 no-progress reason
+    code from the iteration's decision records, or empty string when
+    none of the typed P4 outcomes were emitted.
+
+    The classifier walks the iteration's local decision-record
+    accumulator from newest to oldest so the most recent typed
+    no-progress reason wins. Used by the productive-iteration budget
+    accounting site to decide whether the iteration's no-op is a
+    deterministic-skip-worthy cause.
+    """
+    if not records:
+        return ""
+    typed = _PRODUCTIVE_ITERATION_NO_OP_REASON_CODES
+    for rec in reversed(records):
+        rc = str(rec.get("reason_code") or "")
+        if rc in typed:
+            return rc
+    return ""
+
+
 def _compute_selected_proposal_signature(
     proposals: list[dict] | None,
 ) -> tuple[str, ...]:

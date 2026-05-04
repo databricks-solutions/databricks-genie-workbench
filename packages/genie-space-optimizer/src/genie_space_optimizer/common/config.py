@@ -5410,3 +5410,27 @@ def force_structural_synthesis_on_lever5_drop_enabled() -> bool:
     proposal but no synthesis fallback was attempted.
     Production-locked: always on."""
     return True
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cycle 5 — Process-Spine Hardening flag helpers (default off).
+#
+# These flags guard cycle-5 behavioral changes pending corpus closeout.
+# Each maps a single behavioral change to a default-off env-var so the
+# byte-stable replay budget (``BURNDOWN_BUDGET=0``) holds at every
+# commit during the implementation cycle.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def productive_iteration_budget_enabled() -> bool:
+    """Cycle 5 T1 — when on, an iteration that produces no applied
+    candidate AND emits a typed P4 no-progress outcome
+    (``proposal_generation_empty``,
+    ``structural_gate_dropped_instruction_only``,
+    ``no_structural_candidate``) does not consume the iteration counter.
+
+    Closes the iter-2..5 budget burn in run
+    2423b960-16e8-41d4-a0cb-74c563378e05 where 4 of 5 iterations were
+    consumed by deterministic no-ops. Default off pending corpus
+    closeout."""
+    return _flag_enabled("GSO_PRODUCTIVE_ITERATION_BUDGET")

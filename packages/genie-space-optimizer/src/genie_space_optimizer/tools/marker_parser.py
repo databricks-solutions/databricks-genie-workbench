@@ -182,3 +182,22 @@ def parse_no_structural_candidate_marker(line: str) -> dict:
         "iteration": int(payload.get("iteration") or 0),
         "attempted_archetypes": list(payload.get("attempted_archetypes") or []),
     }
+
+
+def parse_iteration_budget_marker(line: str) -> dict:
+    """Parse ``GSO_ITERATION_BUDGET_V1 {json}`` (Cycle 5 T1).
+
+    Returns ``{"optimization_run_id", "iteration", "consumed",
+    "no_op_cause", "applied_patches", "iteration_counter_after"}``.
+    """
+    payload = _parse_named_marker(line, "GSO_ITERATION_BUDGET_V1")
+    return {
+        "optimization_run_id": str(payload.get("optimization_run_id") or ""),
+        "iteration": int(payload.get("iteration") or 0),
+        "consumed": bool(payload.get("consumed")),
+        "no_op_cause": str(payload.get("no_op_cause") or ""),
+        "applied_patches": int(payload.get("applied_patches") or 0),
+        "iteration_counter_after": int(
+            payload.get("iteration_counter_after") or 0
+        ),
+    }
