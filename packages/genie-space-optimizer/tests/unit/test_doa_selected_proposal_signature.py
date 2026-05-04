@@ -75,3 +75,22 @@ def test_doa_selected_signature_no_op_when_flag_off(monkeypatch) -> None:
     assert _is_doa_selected_signature_blocked(
         seen=seen, ag_id="AG_X", signature=sig,
     ) is False
+
+
+def test_compute_selected_proposal_signature_distinguishes_cross_lever_collisions() -> None:
+    """Regression for the iter-1 P001#2 / P001#2 collision in run
+    2423b960. Two patches under the same parent_proposal_id but
+    different levers must produce distinct signature elements.
+    """
+    from genie_space_optimizer.optimization.harness import (
+        _compute_selected_proposal_signature,
+    )
+
+    proposals = [
+        {"proposal_id": "P001#1", "expanded_patch_id": "L1:P001#1"},
+        {"proposal_id": "P001#2", "expanded_patch_id": "L1:P001#2"},
+        {"proposal_id": "P001#2", "expanded_patch_id": "L5:P001#2"},
+    ]
+    sig = _compute_selected_proposal_signature(proposals)
+    assert sig == ("L1:P001#1", "L1:P001#2", "L5:P001#2")
+    assert len(set(sig)) == 3, "all three proposals must be distinguishable"

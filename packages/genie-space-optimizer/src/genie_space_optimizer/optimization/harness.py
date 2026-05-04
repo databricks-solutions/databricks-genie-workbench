@@ -1057,13 +1057,19 @@ def _compute_selected_proposal_signature(
     proposal IDs. ``_selected_patch_signature`` is keyed on applied
     patches and therefore empty when blast-radius drops everything;
     this signature stays informative in that case.
+
+    P2: prefer ``expanded_patch_id`` over ``proposal_id`` so two
+    patches under the same parent but different levers (e.g.
+    ``L1:P001#2`` and ``L5:P001#2``) produce distinct signature
+    entries. Without this, the DOA dedup ledger silently conflates
+    cross-lever collisions on the legacy unqualified ``proposal_id``.
     """
     if not proposals:
         return ()
     ids = sorted(
-        str(p.get("proposal_id") or p.get("id") or "")
+        str(p.get("expanded_patch_id") or p.get("proposal_id") or p.get("id") or "")
         for p in proposals
-        if (p.get("proposal_id") or p.get("id"))
+        if (p.get("expanded_patch_id") or p.get("proposal_id") or p.get("id"))
     )
     return tuple(i for i in ids if i)
 
