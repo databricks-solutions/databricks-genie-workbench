@@ -182,6 +182,23 @@ def _build_full_iteration_fixture() -> dict:
                             "hard-failure set."
                         ),
                     },
+                    {
+                        # Cycle 5 T1: ITERATION_BUDGET_DECISION — every
+                        # iteration emits one of these at end-of-iter
+                        # under productive-iteration accounting.
+                        "run_id": "run_synth", "iteration": 1,
+                        "decision_type": "iteration_budget_decision",
+                        "outcome": "info",
+                        "reason_code": "iteration_budget_consumed",
+                        "next_action": (
+                            "Iteration 1 consumed budget; 1 patch(es) applied."
+                        ),
+                        "metrics": {
+                            "applied_patches": 1,
+                            "no_op_cause": "",
+                            "consumed": True,
+                        },
+                    },
                 ],
             }
         ],
