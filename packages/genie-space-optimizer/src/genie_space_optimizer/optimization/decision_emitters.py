@@ -474,6 +474,120 @@ def proposal_generated_records(
     return records
 
 
+def proposal_generation_empty_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str = "",
+    rca_id: str = "",
+    root_cause: str = "",
+    target_qids: tuple[str, ...] = (),
+) -> DecisionRecord:
+    """P4 — emit one PROPOSAL_GENERATED/DROPPED record when the
+    proposer returns zero proposals for an AG.
+
+    Different from STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY (proposal
+    existed but was dropped) and NO_STRUCTURAL_CANDIDATE (synthesis
+    attempted but no fallback). Reproducer: run 2423b960 iter 3 and
+    iter 4 each emitted ``Proposals (0 total)`` for AG_COVERAGE_H001
+    with no gate-drop reason — the proposer simply returned nothing.
+    """
+    evidence_refs = tuple(
+        v for v in (
+            f"ag:{ag_id}" if ag_id else "",
+            f"cluster:{cluster_id}" if cluster_id else "",
+            f"rca:{rca_id}" if rca_id else "",
+        ) if v
+    )
+    return DecisionRecord(
+        run_id=run_id,
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.DROPPED,
+        reason_code=ReasonCode.PROPOSAL_GENERATION_EMPTY,
+        ag_id=str(ag_id or ""),
+        cluster_id=str(cluster_id or ""),
+        rca_id=str(rca_id or ""),
+        root_cause=str(root_cause or ""),
+        proposal_id="",
+        proposal_ids=(),
+        evidence_refs=evidence_refs,
+        affected_qids=target_qids,
+        target_qids=target_qids,
+        source_cluster_ids=(cluster_id,) if cluster_id else (),
+        expected_effect=(
+            f"AG {ag_id} produced zero proposals; root cause "
+            f"{root_cause or '(none)'} did not match any patch shape."
+        ),
+        next_action=(
+            "Regenerate RCA, broaden lever set, or escalate to "
+            "operator review."
+        ),
+        metrics={"proposals_total": 0},
+    )
+
+
+def no_structural_candidate_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str = "",
+    rca_id: str = "",
+    root_cause: str = "",
+    target_qids: tuple[str, ...] = (),
+    attempted_archetypes: tuple[str, ...] = (),
+) -> DecisionRecord:
+    """P4 — emit one PROPOSAL_GENERATED/DROPPED record when synthesis
+    was attempted (lever-5 structural gate fired and a structural
+    fallback path was invoked) but no archetype produced a viable
+    structural candidate.
+
+    Distinct from PROPOSAL_GENERATION_EMPTY (proposer never tried
+    synthesis) and STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY (gate
+    dropped a non-structural proposal but no fallback was attempted).
+    """
+    evidence_refs = tuple(
+        v for v in (
+            f"ag:{ag_id}" if ag_id else "",
+            f"cluster:{cluster_id}" if cluster_id else "",
+            f"rca:{rca_id}" if rca_id else "",
+        ) if v
+    )
+    archetypes_str = (
+        ",".join(attempted_archetypes) if attempted_archetypes else "(none)"
+    )
+    return DecisionRecord(
+        run_id=run_id,
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.DROPPED,
+        reason_code=ReasonCode.NO_STRUCTURAL_CANDIDATE,
+        ag_id=str(ag_id or ""),
+        cluster_id=str(cluster_id or ""),
+        rca_id=str(rca_id or ""),
+        root_cause=str(root_cause or ""),
+        proposal_id="",
+        proposal_ids=(),
+        evidence_refs=evidence_refs,
+        affected_qids=target_qids,
+        target_qids=target_qids,
+        source_cluster_ids=(cluster_id,) if cluster_id else (),
+        gate="cluster_driven_synthesis",
+        reason_detail=f"attempted_archetypes={archetypes_str}",
+        expected_effect=(
+            f"Synthesis attempted for {root_cause or '(unknown root cause)'}; "
+            f"no archetype produced a structural candidate."
+        ),
+        next_action=(
+            "Regenerate RCA with sharper grounding, or escalate to "
+            "operator review."
+        ),
+        metrics={"proposals_total": 0, "synthesis_attempted": True},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Patch applied — PATCH_APPLIED
 # ---------------------------------------------------------------------------

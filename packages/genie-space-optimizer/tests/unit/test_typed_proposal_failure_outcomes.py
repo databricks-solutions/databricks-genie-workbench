@@ -35,3 +35,30 @@ def test_reason_code_no_structural_candidate_exists() -> None:
         ReasonCode,
     )
     assert ReasonCode.NO_STRUCTURAL_CANDIDATE.value == "no_structural_candidate"
+
+
+def test_proposal_generation_empty_record_shape() -> None:
+    from genie_space_optimizer.optimization.decision_emitters import (
+        proposal_generation_empty_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionType,
+        DecisionOutcome,
+        ReasonCode,
+    )
+
+    rec = proposal_generation_empty_record(
+        run_id="r1",
+        iteration=3,
+        ag_id="AG_COVERAGE_H001",
+        cluster_id="H001",
+        rca_id="rca_h001",
+        root_cause="wrong_aggregation",
+        target_qids=("gs_026",),
+    )
+    assert rec.decision_type == DecisionType.PROPOSAL_GENERATED
+    assert rec.outcome == DecisionOutcome.DROPPED
+    assert rec.reason_code == ReasonCode.PROPOSAL_GENERATION_EMPTY
+    assert rec.ag_id == "AG_COVERAGE_H001"
+    assert rec.cluster_id == "H001"
+    assert rec.target_qids == ("gs_026",)
