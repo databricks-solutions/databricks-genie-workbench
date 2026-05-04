@@ -94,3 +94,29 @@ def test_lever5_structural_gate_record_uses_specific_reason() -> None:
     assert len(records) == 1
     rec = records[0]
     assert rec.reason_code == ReasonCode.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY
+
+
+def test_no_structural_candidate_record_shape() -> None:
+    from genie_space_optimizer.optimization.decision_emitters import (
+        no_structural_candidate_record,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        DecisionType,
+        DecisionOutcome,
+        ReasonCode,
+    )
+
+    rec = no_structural_candidate_record(
+        run_id="r1",
+        iteration=2,
+        ag_id="AG_COVERAGE_H002",
+        cluster_id="H002",
+        rca_id="rca_h002",
+        root_cause="missing_filter",
+        target_qids=("gs_021",),
+        attempted_archetypes=("ordered_list_by_metric",),
+    )
+    assert rec.decision_type == DecisionType.PROPOSAL_GENERATED
+    assert rec.outcome == DecisionOutcome.DROPPED
+    assert rec.reason_code == ReasonCode.NO_STRUCTURAL_CANDIDATE
+    assert "ordered_list_by_metric" in rec.reason_detail
