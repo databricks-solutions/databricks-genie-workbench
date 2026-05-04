@@ -2,9 +2,14 @@
 
 1. The notebook source (run_lever_loop.py) contains a single cell
    that consumes loop_out['pretty_print_transcript'].
-2. The harness build helper attaches the transcript when
-   phase_h_full_transcript and phase_h_anchor_run_id are both truthy.
-3. The bundle-assembly marker round-trips through the parser.
+2. The notebook fallback log reads its reason from
+   ``loop_out.get("phase_h_pretty_print_reason")`` rather than a
+   hard-coded string, so the harness can explain why the transcript
+   is missing (no anchor vs render failure vs upload failure).
+3. The harness build helper attaches the transcript when
+   ``phase_h_full_transcript`` is present, regardless of whether an
+   MLflow anchor was resolved.
+4. The bundle-assembly marker round-trips through the parser.
 
 This is a structural test. It does not start a Spark session or
 talk to MLflow."""
@@ -32,6 +37,15 @@ def test_notebook_consumes_pretty_print_transcript():
     assert "GSO Run Pretty-Print" in src
 
 
+def test_notebook_fallback_reads_reason_from_loop_out():
+    """The fallback log must source its ``reason`` from the loop_out
+    diagnostic (``phase_h_pretty_print_reason``) so the harness can
+    distinguish render failures from upload failures without changing
+    the notebook source."""
+    src = _NOTEBOOK.read_text()
+    assert 'loop_out.get("phase_h_pretty_print_reason"' in src
+
+
 def test_pretty_print_attached_when_phase_h_succeeded():
     out = _build_loop_out_with_pretty_print(
         loop_out_base={"accuracy": 0.95, "scores": {}, "model_id": "m"},
@@ -41,6 +55,16 @@ def test_pretty_print_attached_when_phase_h_succeeded():
     assert out["pretty_print_transcript"].startswith("GSO LEVER LOOP RUN")
 
 
+def test_pretty_print_attached_when_rendered_without_anchor():
+    out = _build_loop_out_with_pretty_print(
+        loop_out_base={"accuracy": 0.95, "scores": {}, "model_id": "m"},
+        phase_h_full_transcript="GSO LEVER LOOP RUN\nbody",
+        phase_h_anchor_run_id=None,
+    )
+    assert out["pretty_print_transcript"].startswith("GSO LEVER LOOP RUN")
+    assert out["phase_h_pretty_print_status"] == "rendered_stdout_only"
+
+
 def test_pretty_print_absent_on_replay_path():
     out = _build_loop_out_with_pretty_print(
         loop_out_base={"accuracy": 0.95, "scores": {}, "model_id": "m"},
@@ -48,6 +72,7 @@ def test_pretty_print_absent_on_replay_path():
         phase_h_anchor_run_id=None,
     )
     assert "pretty_print_transcript" not in out
+    assert out["phase_h_pretty_print_status"] == "skipped"
 
 
 def test_bundle_assembly_failed_marker_round_trip():

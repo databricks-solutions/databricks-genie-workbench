@@ -9,7 +9,11 @@ so all three artifact prefixes land on a single, operator-discoverable
 run regardless of stage.
 
 Resolution rules (in priority order):
-1. Sibling run whose tag `genie.run_type=lever_loop`.
+1. Sibling run whose tag ``genie.run_role=lever_loop`` or
+   ``genie.run_type=lever_loop``. Both vocabularies are accepted because
+   the canonical parent-run vocabulary in
+   :mod:`genie_space_optimizer.common.mlflow_names` stamps
+   ``genie.run_role`` while older code paths stamped ``genie.run_type``.
 2. Earliest `start_time` sibling — typically the parent lever_loop.
 3. Empty string when no sibling matches the optimization_run_id tag.
 
@@ -44,8 +48,10 @@ def resolve_anchor_run_id(
     if not runs:
         return ""
     for run in runs:
-        run_type = (run.data.tags or {}).get("genie.run_type", "")
-        if run_type == _LEVER_LOOP_RUN_TYPE:
+        tags = run.data.tags or {}
+        run_role = tags.get("genie.run_role", "")
+        run_type = tags.get("genie.run_type", "")
+        if run_role == _LEVER_LOOP_RUN_TYPE or run_type == _LEVER_LOOP_RUN_TYPE:
             return run.info.run_id
     earliest = min(runs, key=lambda r: r.info.start_time or 0)
     return earliest.info.run_id

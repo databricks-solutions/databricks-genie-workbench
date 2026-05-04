@@ -538,9 +538,16 @@ if _pretty_print_transcript:
     print(_pretty_print_transcript)
     print()
 else:
+    # Phase-H reliability fix: the harness now stamps precise
+    # diagnostics on loop_out so we can distinguish render failures
+    # from upload failures from missing anchors from legacy skips.
+    # Fall back to ``phase_h_transcript_unavailable`` only when the
+    # harness is from a pre-fix build that doesn't emit the reason.
     _log(
         "Pretty-print transcript not available",
-        reason="phase_h_assembly_skipped_or_failed",
+        reason=loop_out.get("phase_h_pretty_print_reason", "phase_h_transcript_unavailable"),
+        status=loop_out.get("phase_h_pretty_print_status"),
+        upload_status=loop_out.get("phase_h_upload_status"),
         anchor_run_id=loop_out.get("phase_h_anchor_run_id"),
     )
 
@@ -603,6 +610,19 @@ if _phase_h_idx_path:
 _phase_h_iters = loop_out.get("phase_h_iterations_completed")
 if _phase_h_iters is not None:
     debug_info["iterations_completed"] = [int(n) for n in _phase_h_iters]
+
+# Phase-H reliability fix: include Phase H status diagnostics in the
+# exit JSON so ``databricks jobs get-run-output`` can explain what
+# happened even when stdout is unavailable. The vocabulary matches
+# ``_build_loop_out_with_pretty_print`` / harness termination.
+for _phase_h_key in (
+    "phase_h_pretty_print_status",
+    "phase_h_pretty_print_reason",
+    "phase_h_upload_status",
+):
+    _phase_h_val = loop_out.get(_phase_h_key)
+    if _phase_h_val is not None:
+        debug_info[_phase_h_key] = str(_phase_h_val)
 
 dbutils.jobs.taskValues.set(key="debug_info", value=json.dumps(debug_info, default=str))
 

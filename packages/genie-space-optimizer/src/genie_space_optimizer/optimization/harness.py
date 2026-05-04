@@ -207,13 +207,40 @@ def _build_loop_out_with_pretty_print(
     phase_h_anchor_run_id: str | None,
 ) -> dict:
     """Add ``pretty_print_transcript`` to the lever-loop return dict
-    when Phase H assembled a transcript. The notebook last step prints
-    this to stdout; absence is silent and means the run pre-dated
-    Phase H or assembly failed (the latter emits a loud marker via
-    ``bundle_assembly_failed_marker``)."""
+    whenever Phase H actually rendered a transcript.
+
+    Stdout rendering is deliberately decoupled from MLflow artifact
+    upload: the notebook prints the transcript to stdout (recoverable
+    via ``databricks jobs export-run``) whether or not a parent MLflow
+    anchor could be resolved. Absence of a transcript is silent for the
+    stdout path, but the dict always carries
+    ``phase_h_pretty_print_status`` / ``phase_h_pretty_print_reason``
+    diagnostics so the notebook fallback log can explain what happened
+    — even when stdout is unavailable (e.g. when a caller only reads
+    ``dbutils.notebook.exit(...)`` JSON via ``jobs get-run-output``).
+
+    Status vocabulary:
+
+    - ``rendered_and_uploaded`` — transcript rendered and an MLflow
+      parent anchor was available for bundle upload.
+    - ``rendered_stdout_only`` — transcript rendered but no anchor was
+      available; the bundle upload was skipped, but stdout still gets
+      the transcript.
+    - ``skipped`` — Phase H did not produce a transcript (replay path,
+      legacy harness, or an exception inside the rendering block).
+    """
     out = dict(loop_out_base)
-    if phase_h_full_transcript and phase_h_anchor_run_id:
+    if phase_h_full_transcript:
         out["pretty_print_transcript"] = str(phase_h_full_transcript)
+        if phase_h_anchor_run_id:
+            out["phase_h_pretty_print_status"] = "rendered_and_uploaded"
+            out["phase_h_pretty_print_reason"] = "ok"
+        else:
+            out["phase_h_pretty_print_status"] = "rendered_stdout_only"
+            out["phase_h_pretty_print_reason"] = "no_mlflow_anchor"
+    else:
+        out["phase_h_pretty_print_status"] = "skipped"
+        out["phase_h_pretty_print_reason"] = "no_transcript_rendered"
     return out
 
 
@@ -11151,22 +11178,47 @@ def _run_lever_loop(
     except Exception:
         logger.debug("GSO run analysis MLflow tags skipped", exc_info=True)
 
-    # Phase F+H C17 (v2): capture the parent MLflow run id so the
-    # capture decorator (Phase B wraps at A2/A3/A6 sites) routes its
-    # log_text calls to the right run. Stays None when no MLflow
-    # active_run is present (replay mode); the capture decorator
-    # noop-skips in that case (stage_io_capture.py:118-128).
+    # Phase F+H C17 (v2, Phase-H reliability fix): resolve a stable
+    # parent MLflow run id for Phase H artifacts without relying on
+    # ``mlflow.active_run()``. The lever-loop notebook does not open an
+    # explicit parent run before calling the harness, so the legacy
+    # ``active_run()`` path produced ``None`` in production and left
+    # the postmortem bundle unassembled. ``resolve_or_create_phase_h_anchor``
+    # searches the experiment for an existing parent tagged
+    # ``genie.run_role=lever_loop``/``genie.run_type=lever_loop`` for
+    # this optimization_run_id and creates one when missing. It returns
+    # ``None`` on any MLflow/client failure so observability never
+    # breaks the optimizer. As a final compatibility fallback, if the
+    # resolver returns ``None`` we still honor an existing
+    # ``active_run()`` anchor when one happens to be present.
     _phase_h_anchor_run_id: str | None = None
     try:
-        import mlflow as _mlflow_phase_h  # type: ignore[import-not-found]
-        _active_phase_h = _mlflow_phase_h.active_run()
-        if _active_phase_h is not None:
-            _phase_h_anchor_run_id = _active_phase_h.info.run_id
+        from genie_space_optimizer.optimization.phase_h_anchor import (
+            resolve_or_create_phase_h_anchor as _resolve_phase_h_anchor,
+        )
+        _phase_h_anchor_run_id = _resolve_phase_h_anchor(
+            experiment_name=exp_name,
+            optimization_run_id=str(run_id),
+            databricks_job_id=_db_job_id,
+            databricks_parent_run_id=_db_parent_run_id,
+            lever_loop_task_run_id=_db_task_run_id,
+        )
     except Exception:
         logger.debug(
-            "Phase F+H C17 v2: parent run id capture failed (non-fatal)",
+            "Phase H anchor: resolve_or_create_phase_h_anchor failed (non-fatal)",
             exc_info=True,
         )
+    if not _phase_h_anchor_run_id:
+        try:
+            import mlflow as _mlflow_phase_h  # type: ignore[import-not-found]
+            _active_phase_h = _mlflow_phase_h.active_run()
+            if _active_phase_h is not None:
+                _phase_h_anchor_run_id = _active_phase_h.info.run_id
+        except Exception:
+            logger.debug(
+                "Phase F+H C17 v2: parent run id capture failed (non-fatal)",
+                exc_info=True,
+            )
 
     # Phase F+H C17 (v2): bundle-input accumulators for C18's
     # termination-time bundle assembly. Populated minimally on this
@@ -19497,150 +19549,184 @@ def _run_lever_loop(
     except Exception:
         logger.debug("Phase B end marker emission skipped", exc_info=True)
 
-    # Phase F+H C18 (v2): assemble + upload the gso_postmortem_bundle/
-    # parent-run artifacts, render the operator transcript, emit the
-    # GSO_ARTIFACT_INDEX_V1 marker. Runs only when the parent MLflow
-    # run was captured by C17 (so replay paths and MLflow-less runs
-    # noop here exactly as before).
+    # Phase F+H C18 (v2, Phase-H reliability fix): split rendering from
+    # upload. Rendering the operator transcript and bundle JSONs runs
+    # unconditionally so the notebook can always print the transcript to
+    # stdout (recoverable via ``databricks jobs export-run``). The
+    # parent-run artifact upload and the GSO_ARTIFACT_INDEX_V1 marker
+    # only run when a stable Phase H anchor was resolved/created by
+    # ``resolve_or_create_phase_h_anchor``; upload failures are reported
+    # via GSO_BUNDLE_ASSEMBLY_FAILED_V1 without dropping the rendered
+    # transcript from the loop-out return value.
     _phase_h_artifact_index_path: str | None = None
     _phase_h_iterations_completed: list[int] = []
-    if _phase_h_anchor_run_id:
+    _full_transcript: str | None = None
+    _phase_h_upload_status: str = "not_attempted"
+
+    try:
+        import json as _json_phase_h_c18
+        from genie_space_optimizer.optimization.operator_process_transcript import (
+            render_full_transcript as _render_full_transcript,
+            render_iteration_transcript as _render_iteration_transcript,
+            render_run_overview as _render_run_overview,
+        )
+        from genie_space_optimizer.optimization.run_output_bundle import (
+            build_artifact_index as _build_artifact_index,
+            build_manifest as _build_manifest,
+            build_run_summary as _build_run_summary,
+        )
+        from genie_space_optimizer.optimization.run_output_contract import (
+            bundle_artifact_paths as _bundle_artifact_paths,
+        )
+
+        _phase_h_iterations_completed = list(
+            range(1, int(iteration_counter) + 1)
+        )
+        _manifest = _build_manifest(
+            optimization_run_id=run_id,
+            databricks_job_id=_db_job_id,
+            databricks_parent_run_id=_db_parent_run_id,
+            lever_loop_task_run_id=_db_task_run_id,
+            iterations=_phase_h_iterations_completed,
+            missing_pieces=[],
+        )
+        _artifact_index = _build_artifact_index(
+            iterations=_phase_h_iterations_completed,
+        )
+        # Terminal status — _lrn_update may be unbound if the
+        # final iteration's F9 stage errored out, so fall back to
+        # "max_iterations" (matches the harness's existing
+        # convergence-marker default).
         try:
-            import json as _json_phase_h_c18
-            from genie_space_optimizer.optimization.operator_process_transcript import (
-                render_full_transcript as _render_full_transcript,
-                render_iteration_transcript as _render_iteration_transcript,
-                render_run_overview as _render_run_overview,
+            _terminal_status = (
+                _lrn_update.terminal_decision.get("status")  # type: ignore[name-defined]
+                or "max_iterations"
             )
-            from genie_space_optimizer.optimization.run_output_bundle import (
-                build_artifact_index as _build_artifact_index,
-                build_manifest as _build_manifest,
-                build_run_summary as _build_run_summary,
-            )
-            from genie_space_optimizer.optimization.run_output_contract import (
-                bundle_artifact_paths as _bundle_artifact_paths,
-            )
-            from genie_space_optimizer.optimization.run_analysis_contract import (
-                artifact_index_marker as _artifact_index_marker,
-            )
+        except (NameError, AttributeError):
+            _terminal_status = "max_iterations"
 
-            _phase_h_iterations_completed = list(
-                range(1, int(iteration_counter) + 1)
+        _best_acc_for_delta = (
+            float(best_accuracy) if best_accuracy is not None
+            else float(prev_accuracy)
+        )
+        _run_summary = _build_run_summary(
+            baseline=_baseline_for_summary,
+            terminal_state={
+                "status": str(_terminal_status),
+                "should_continue": False,
+            },
+            iteration_count=len(_phase_h_iterations_completed),
+            accuracy_delta_pp=round(
+                (_best_acc_for_delta - float(prev_accuracy)) * 100, 1
+            ),
+        )
+
+        _run_overview = _render_run_overview(
+            run_id=run_id,
+            space_id=space_id,
+            domain=domain,
+            max_iters=int(max_iterations),
+            baseline=_baseline_for_summary,
+            hard_failures=_hard_failures_for_overview,
+        )
+        _iter_transcripts = [
+            _render_iteration_transcript(
+                iteration=_i,
+                trace=_iter_traces.get(_i),
+                iteration_summary=_iter_summaries.get(_i, {}),
             )
-            _manifest = _build_manifest(
-                optimization_run_id=run_id,
-                databricks_job_id=_db_job_id,
-                databricks_parent_run_id=_db_parent_run_id,
-                lever_loop_task_run_id=_db_task_run_id,
-                iterations=_phase_h_iterations_completed,
-                missing_pieces=[],
-            )
-            _artifact_index = _build_artifact_index(
-                iterations=_phase_h_iterations_completed,
-            )
-            # Terminal status — _lrn_update may be unbound if the
-            # final iteration's F9 stage errored out, so fall back to
-            # "max_iterations" (matches the harness's existing
-            # convergence-marker default).
+            for _i in _phase_h_iterations_completed
+            if _iter_traces.get(_i) is not None
+        ]
+        _full_transcript = _render_full_transcript(
+            run_overview=_run_overview,
+            iteration_transcripts=_iter_transcripts,
+        )
+
+        _paths = _bundle_artifact_paths(
+            iterations=_phase_h_iterations_completed,
+        )
+        _phase_h_artifact_index_path = _paths["artifact_index"]
+
+        # Upload path — only runs when a stable anchor is available.
+        # On upload failure we emit GSO_BUNDLE_ASSEMBLY_FAILED_V1 but
+        # keep the rendered transcript so stdout pretty-print still works.
+        if _phase_h_anchor_run_id:
             try:
-                _terminal_status = (
-                    _lrn_update.terminal_decision.get("status")  # type: ignore[name-defined]
-                    or "max_iterations"
+                from mlflow.tracking import MlflowClient as _MlflowClient
+                from genie_space_optimizer.optimization.run_analysis_contract import (
+                    artifact_index_marker as _artifact_index_marker,
                 )
-            except (NameError, AttributeError):
-                _terminal_status = "max_iterations"
 
-            _best_acc_for_delta = (
-                float(best_accuracy) if best_accuracy is not None
-                else float(prev_accuracy)
-            )
-            _run_summary = _build_run_summary(
-                baseline=_baseline_for_summary,
-                terminal_state={
-                    "status": str(_terminal_status),
-                    "should_continue": False,
-                },
-                iteration_count=len(_phase_h_iterations_completed),
-                accuracy_delta_pp=round(
-                    (_best_acc_for_delta - float(prev_accuracy)) * 100, 1
-                ),
-            )
-
-            _run_overview = _render_run_overview(
-                run_id=run_id,
-                space_id=space_id,
-                domain=domain,
-                max_iters=int(max_iterations),
-                baseline=_baseline_for_summary,
-                hard_failures=_hard_failures_for_overview,
-            )
-            _iter_transcripts = [
-                _render_iteration_transcript(
-                    iteration=_i,
-                    trace=_iter_traces.get(_i),
-                    iteration_summary=_iter_summaries.get(_i, {}),
+                _client_phase_h = _MlflowClient()
+                _client_phase_h.log_text(
+                    run_id=_phase_h_anchor_run_id,
+                    text=_json_phase_h_c18.dumps(
+                        _manifest, sort_keys=True, indent=2,
+                    ),
+                    artifact_file=_paths["manifest"],
                 )
-                for _i in _phase_h_iterations_completed
-                if _iter_traces.get(_i) is not None
-            ]
-            _full_transcript = _render_full_transcript(
-                run_overview=_run_overview,
-                iteration_transcripts=_iter_transcripts,
-            )
-
-            from mlflow.tracking import MlflowClient as _MlflowClient
-            _client_phase_h = _MlflowClient()
-            _paths = _bundle_artifact_paths(
-                iterations=_phase_h_iterations_completed,
-            )
-            _phase_h_artifact_index_path = _paths["artifact_index"]
-            _client_phase_h.log_text(
-                run_id=_phase_h_anchor_run_id,
-                text=_json_phase_h_c18.dumps(
-                    _manifest, sort_keys=True, indent=2,
-                ),
-                artifact_file=_paths["manifest"],
-            )
-            _client_phase_h.log_text(
-                run_id=_phase_h_anchor_run_id,
-                text=_json_phase_h_c18.dumps(
-                    _artifact_index, sort_keys=True, indent=2,
-                ),
-                artifact_file=_paths["artifact_index"],
-            )
-            _client_phase_h.log_text(
-                run_id=_phase_h_anchor_run_id,
-                text=_json_phase_h_c18.dumps(
-                    _run_summary, sort_keys=True, indent=2,
-                ),
-                artifact_file=_paths["run_summary"],
-            )
-            _client_phase_h.log_text(
-                run_id=_phase_h_anchor_run_id,
-                text=_full_transcript,
-                artifact_file=_paths["operator_transcript"],
-            )
-            print(_artifact_index_marker(
-                optimization_run_id=run_id,
-                parent_bundle_run_id=_phase_h_anchor_run_id,
-                artifact_index_path=_phase_h_artifact_index_path,
-                iterations=_phase_h_iterations_completed,
-            ))
-        except Exception as _phase_h_exc:
-            from genie_space_optimizer.optimization.run_analysis_contract import (
-                bundle_assembly_failed_marker as _bundle_assembly_failed_marker,
-            )
-            logger.warning(
-                "Phase H bundle assembly failed; postmortem will fall "
-                "back to legacy phase artifacts",
-                exc_info=True,
-            )
-            print(_bundle_assembly_failed_marker(
-                optimization_run_id=run_id,
-                parent_bundle_run_id=_phase_h_anchor_run_id,
-                error_type=type(_phase_h_exc).__name__,
-                error_message=str(_phase_h_exc),
-            ))
+                _client_phase_h.log_text(
+                    run_id=_phase_h_anchor_run_id,
+                    text=_json_phase_h_c18.dumps(
+                        _artifact_index, sort_keys=True, indent=2,
+                    ),
+                    artifact_file=_paths["artifact_index"],
+                )
+                _client_phase_h.log_text(
+                    run_id=_phase_h_anchor_run_id,
+                    text=_json_phase_h_c18.dumps(
+                        _run_summary, sort_keys=True, indent=2,
+                    ),
+                    artifact_file=_paths["run_summary"],
+                )
+                _client_phase_h.log_text(
+                    run_id=_phase_h_anchor_run_id,
+                    text=_full_transcript,
+                    artifact_file=_paths["operator_transcript"],
+                )
+                print(_artifact_index_marker(
+                    optimization_run_id=run_id,
+                    parent_bundle_run_id=_phase_h_anchor_run_id,
+                    artifact_index_path=_phase_h_artifact_index_path,
+                    iterations=_phase_h_iterations_completed,
+                ))
+                _phase_h_upload_status = "uploaded"
+            except Exception as _phase_h_upload_exc:
+                from genie_space_optimizer.optimization.run_analysis_contract import (
+                    bundle_assembly_failed_marker as _bundle_assembly_failed_marker,
+                )
+                logger.warning(
+                    "Phase H bundle upload failed; stdout pretty-print "
+                    "still available via loop_out['pretty_print_transcript']",
+                    exc_info=True,
+                )
+                print(_bundle_assembly_failed_marker(
+                    optimization_run_id=run_id,
+                    parent_bundle_run_id=_phase_h_anchor_run_id,
+                    error_type=type(_phase_h_upload_exc).__name__,
+                    error_message=str(_phase_h_upload_exc),
+                ))
+                _phase_h_upload_status = "upload_failed"
+        else:
+            _phase_h_upload_status = "skipped_no_anchor"
+    except Exception as _phase_h_render_exc:
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            bundle_assembly_failed_marker as _bundle_assembly_failed_marker,
+        )
+        logger.warning(
+            "Phase H bundle assembly (rendering) failed; stdout "
+            "pretty-print will be unavailable for this run",
+            exc_info=True,
+        )
+        print(_bundle_assembly_failed_marker(
+            optimization_run_id=run_id,
+            parent_bundle_run_id=_phase_h_anchor_run_id,
+            error_type=type(_phase_h_render_exc).__name__,
+            error_message=str(_phase_h_render_exc),
+        ))
+        _full_transcript = None
+        _phase_h_upload_status = "render_failed"
 
     _loop_out_base = {
         "scores": best_scores,
@@ -19677,10 +19763,17 @@ def _run_lever_loop(
         "phase_h_anchor_run_id": _phase_h_anchor_run_id,
         "phase_h_artifact_index_path": _phase_h_artifact_index_path,
         "phase_h_iterations_completed": list(_phase_h_iterations_completed),
+        # Phase-H reliability fix: surface the upload path outcome so
+        # the notebook fallback log can explain what happened
+        # (uploaded / skipped_no_anchor / upload_failed / render_failed
+        # / not_attempted). ``phase_h_pretty_print_status`` and
+        # ``phase_h_pretty_print_reason`` are stamped by
+        # ``_build_loop_out_with_pretty_print`` below.
+        "phase_h_upload_status": _phase_h_upload_status,
     }
     return _build_loop_out_with_pretty_print(
         loop_out_base=_loop_out_base,
-        phase_h_full_transcript=locals().get("_full_transcript"),
+        phase_h_full_transcript=_full_transcript,
         phase_h_anchor_run_id=_phase_h_anchor_run_id,
     )
 
