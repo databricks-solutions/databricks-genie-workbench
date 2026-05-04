@@ -11889,36 +11889,128 @@ def _run_lever_loop(
                 + _kv("Retired AGs", str(len(_resolved.retired_ags))) + "\n"
                 + _bar("!")
             )
-            # PR-B2 Task 5: emit one AG_RETIRED DecisionRecord per AG whose
-            # target qids reclassified out of hard before delivery, so the
-            # decision-trace artifact preserves the silent-drop event.
-            if _resolved.retired_ags:
-                from genie_space_optimizer.optimization.rca_decision_trace import (
-                    DecisionOutcome as _DOut_AGRet,
-                    DecisionRecord as _DRec_AGRet,
-                    DecisionType as _DType_AGRet,
-                    ReasonCode as _RCode_AGRet,
+            # Phase F+H A6 (v2): F9 learning — post-stage observability
+            # with atomic dedup. resolve_terminal_on_plateau at
+            # harness.py:11856 STAYS inline; this stage call emits
+            # AG_RETIRED records via _emit_ag_retired_records
+            # (stages/learning.py:114-142), replacing the inline
+            # AG_RETIRED list-comp + extend block (formerly here).
+            #
+            # F9.update() also re-calls resolve_terminal_on_plateau
+            # internally. PURE — verified by grep of rca_terminal.py
+            # for mlflow./spark./global; zero matches. Per-iteration
+            # re-call is byte-stable.
+            #
+            # The stage emits AG_RETIRED records with the same field
+            # shape as the deleted inline block (run_id, iteration,
+            # decision_type=AG_RETIRED, outcome=RETIRED, reason_code=
+            # AG_TARGET_NO_LONGER_HARD, ag_id, target_qids,
+            # affected_qids, reason_detail) — see stages/learning.py:
+            # 114-142 for the producer body.
+            #
+            # iteration: the inline emit used _iter_num (the outer
+            # loop variable). v2 uses _iter_num too (NOT
+            # iteration_counter — they align at this site but
+            # _iter_num is the literal source-of-truth the inline
+            # emit referenced).
+            #
+            # Verified against: stages/learning.py:38-51 (Input),
+            # 142-217 (update body), 54-62 (LearningUpdate),
+            # 114-142 (_emit_ag_retired_records).
+            try:
+                from genie_space_optimizer.optimization.stages import (
+                    StageContext as _StageCtx,
                 )
-                _retired_records = [
-                    _DRec_AGRet(
-                        run_id=str(run_id),
-                        iteration=int(_iter_num),
-                        decision_type=_DType_AGRet.AG_RETIRED,
-                        outcome=_DOut_AGRet.RETIRED,
-                        reason_code=_RCode_AGRet.AG_TARGET_NO_LONGER_HARD,
-                        ag_id=str(_retired_ag_id),
-                        target_qids=tuple(_retired_qids),
-                        affected_qids=tuple(_retired_qids),
-                        reason_detail=(
-                            f"AG {_retired_ag_id} retired at plateau because "
-                            f"target qids {list(_retired_qids)} are no longer "
-                            f"in the live hard-failure set."
-                        ),
-                    )
-                    for _retired_ag_id, _retired_qids in _resolved.retired_ags
-                ]
-                _current_iter_inputs.setdefault("decision_records", []).extend(
-                    [r.to_dict() for r in _retired_records]
+                from genie_space_optimizer.optimization.stages import (
+                    learning as _lrn_stage,
+                )
+
+                _stage_ctx_a6 = _StageCtx(
+                    run_id=str(run_id),
+                    iteration=int(_iter_num),
+                    space_id=str(space_id),
+                    domain=str(domain),
+                    catalog=str(catalog),
+                    schema=str(schema),
+                    apply_mode=str(apply_mode),
+                    journey_emit=_journey_emit,
+                    decision_emit=_decision_emit,
+                    mlflow_anchor_run_id=None,  # set by C17
+                    feature_flags={},
+                )
+
+                # Source do_not_retry / rolled_back from
+                # metadata_snapshot per the harness's existing
+                # thread-through pattern.
+                _prior_do_not_retry = set(
+                    metadata_snapshot.get("_do_not_retry_signatures") or set()
+                )
+                _prior_rolled_back = set(
+                    metadata_snapshot.get(
+                        "_rolled_back_content_fingerprints"
+                    ) or set()
+                )
+
+                # Build AG-outcomes-by-id from F8's _ag_outcome (A5).
+                # If A5 hasn't landed, _ag_outcome is undefined here;
+                # fall back to {} so F9.update() emits AG_RETIRED
+                # records based purely on _resolved.retired_ags
+                # (which matches the deleted inline block's behavior).
+                try:
+                    _f9_ag_outcomes_by_id = {
+                        ag_id: {
+                            "outcome": rec.outcome,
+                            "reason_code": rec.reason_code,
+                            "content_fingerprint": ";".join(
+                                rec.content_fingerprints
+                            ),
+                            "target_qids": list(rec.target_qids),
+                        }
+                        for ag_id, rec in _ag_outcome.outcomes_by_ag.items()
+                    }
+                except NameError:
+                    _f9_ag_outcomes_by_id = {}
+
+                _lrn_inp = _lrn_stage.LearningInput(
+                    prior_reflection_buffer=tuple(reflection_buffer),
+                    prior_do_not_retry=_prior_do_not_retry,
+                    prior_rolled_back_content_fingerprints=_prior_rolled_back,
+                    ag_outcomes_by_id=_f9_ag_outcomes_by_id,
+                    applied_signature="",
+                    accuracy_delta=float(full_accuracy - best_accuracy),
+                    # ✅ FIX (audit Section 4 A6 #2): current_hard_
+                    # failure_qids is the LIVE hard qid set, sourced
+                    # from harness.py:11830-11832, NOT
+                    # _resolved.retired_ags (different concept).
+                    current_hard_failure_qids=tuple(_current_hard_qids),
+                    regression_debt_qids=set(_regression_debt_qids),
+                    quarantined_qids=set(_quarantined_qids),
+                    sql_delta_qids=set(_sql_delta_qids),
+                    pending_buffered_ags=tuple(pending_action_groups),
+                    diagnostic_action_queue=tuple(diagnostic_action_queue),
+                )
+                _lrn_update = _lrn_stage.update(_stage_ctx_a6, _lrn_inp)
+                # _lrn_update.retired_ags / .ag_retired_records are
+                # observability surfaces; the AG_RETIRED records were
+                # emitted inside update() via ctx.decision_emit which
+                # routes through _decision_emit to
+                # _current_iter_inputs["decision_records"].
+                #
+                # _lrn_update.new_reflection_buffer /
+                # new_do_not_retry / new_rolled_back_content_
+                # fingerprints are observability-only here: the
+                # harness's existing reflection-buffer / do-not-retry
+                # update path is unchanged and remains the canonical
+                # mutation point.
+            except Exception:
+                _iter_producer_exceptions.setdefault("ag_retired", 0)
+                _iter_producer_exceptions["ag_retired"] += 1
+                _phase_b_producer_exceptions["ag_retired"] = (
+                    _phase_b_producer_exceptions.get("ag_retired", 0) + 1
+                )
+                logger.debug(
+                    "Phase F+H A6 v2: learning stage failed (non-fatal)",
+                    exc_info=True,
                 )
             break
         if (
