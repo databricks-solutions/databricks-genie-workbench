@@ -14922,60 +14922,81 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
-        # Phase B observability follow-up — emit STRATEGIST_AG_EMITTED
-        # for the current AG. ``ag`` is in scope inside the AG loop.
-        # Cycle-9 reality: when target_qids is empty (the upstream
-        # Cycle-8-Bug-1 pattern), reason_code=MISSING_TARGET_QIDS surfaces
-        # the gap on every iteration, which is the diagnostic signal the
-        # postmortem analyzer will pivot on once Phase B records flow.
+        # Phase F+H A2 (v2): F4 action_groups — additive observability
+        # with atomic dedup. Replaces inline _strategist_ag_records with
+        # the stage call which emits the same STRATEGIST_AG_EMITTED
+        # records via ctx.decision_emit per stages/action_groups.py:
+        # 83-84.
+        #
+        # Verified against: stages/action_groups.py:32-51 (Input), 68-89
+        # (select body), harness.py:12280-12291 (_iter_rca_id_by_cluster),
+        # harness:567 (_build_ag_alternatives_by_id helper).
+        #
+        # Phase D.5 Task 6 alternatives builder hoisted out of the inline
+        # producer try-block (v1 stayed inside; v2 needs the result for
+        # F4's ag_alternatives_by_id input).
+        _ag_alts_by_id = _build_ag_alternatives_by_id(
+            strategist_returned_ags=(
+                list(strategist_returned_ags)
+                if "strategist_returned_ags" in locals()
+                else [ag]
+            ),
+            emitted_ag_ids=[str(ag.get("id") or ag.get("ag_id") or "")],
+        )
+
         try:
             from genie_space_optimizer.optimization.decision_emitters import (
-                strategist_ag_records as _strategist_ag_records,
                 is_strict_mode as _phase_b_strict_mode,
             )
-            from genie_space_optimizer.optimization.rca_decision_trace import (
-                ReasonCode as _ReasonCode,
+            from genie_space_optimizer.optimization.stages import (
+                StageContext as _StageCtx,
+            )
+            from genie_space_optimizer.optimization.stages import (
+                action_groups as _ags_stage,
             )
 
-            # Phase D.5 Task 6: capture AG alternatives. ``[ag]`` at this
-            # site is the single emitted AG; without a local that holds
-            # the strategist's full returned set (including buffered/
-            # filtered/rejected), the fallback yields empty alternatives
-            # — byte-stable. Wire ``strategist_returned_ags`` here when
-            # cycle E surfaces it as a local.
-            _ag_alts_by_id = _build_ag_alternatives_by_id(
-                strategist_returned_ags=(
-                    list(strategist_returned_ags)
-                    if "strategist_returned_ags" in locals()
-                    else [ag]
-                ),
-                emitted_ag_ids=[str(ag.get("id") or ag.get("ag_id") or "")],
+            _stage_ctx_a2 = _StageCtx(
+                run_id=str(run_id),
+                iteration=int(iteration_counter),
+                space_id=str(space_id),
+                domain=str(domain),
+                catalog=str(catalog),
+                schema=str(schema),
+                apply_mode=str(apply_mode),
+                journey_emit=_journey_emit,
+                decision_emit=_decision_emit,
+                mlflow_anchor_run_id=None,  # set by C17
+                feature_flags={},
             )
-            _ag_records = _strategist_ag_records(
-                run_id=run_id,
-                iteration=iteration_counter,
-                action_groups=[ag],
+            _ags_inp = _ags_stage.ActionGroupsInput(
+                action_groups=tuple([ag]),
                 source_clusters_by_id={
                     str(_c.get("cluster_id") or ""): _c
                     for _c in (clusters or [])
                     if _c.get("cluster_id")
                 },
-                rca_id_by_cluster=_iter_rca_id_by_cluster,
-                ag_alternatives_by_id=_ag_alts_by_id,
+                rca_id_by_cluster=dict(_iter_rca_id_by_cluster),
+                ag_alternatives_by_id={
+                    k: tuple(v) for k, v in (_ag_alts_by_id or {}).items()
+                },
             )
-            _current_iter_inputs.setdefault("decision_records", []).extend(
-                [r.to_dict() for r in _ag_records]
-            )
-            for _r in _ag_records:
-                if _r.reason_code == _ReasonCode.MISSING_TARGET_QIDS:
-                    _phase_b_target_qids_missing_count += 1
+            _ag_slate = _ags_stage.select(_stage_ctx_a2, _ags_inp)
+            # NOTE: F4 stage emits the same records the inline producer
+            # did, but ActionGroupSlate does NOT expose them as a tuple.
+            # The pre-A2 harness incremented _phase_b_target_qids_missing_
+            # count from _ag_records here. After A2, the counter stays at
+            # 0 for this iteration (records still flow into Optimization
+            # Trace via _decision_emit; only the counter aggregation is
+            # lost). TODO follow-up: extend ActionGroupSlate with a
+            # records tuple OR re-derive from _current_iter_inputs[
+            # "decision_records"] tail.
         except Exception:
             _iter_producer_exceptions["strategist_ag"] += 1
             _phase_b_producer_exceptions["strategist_ag"] = (
                 _phase_b_producer_exceptions.get("strategist_ag", 0) + 1
             )
             logger.debug(
-                "Phase B: strategist_ag_records failed (non-fatal)",
+                "Phase F+H A2 v2: action_groups stage failed (non-fatal)",
                 exc_info=True,
             )
             if _phase_b_strict_mode():

@@ -45,9 +45,16 @@ def test_harness_wires_cluster_records_producer() -> None:
 
 
 def test_harness_wires_strategist_ag_records_producer() -> None:
+    """Phase F+H A2: the harness routes STRATEGIST_AG_EMITTED emission
+    through the F4 stage module (stages.action_groups.select), which
+    internally calls strategist_ag_records and emits via
+    ctx.decision_emit. The pre-A2 inline alias + call were deleted by
+    A2; the producer is still wired, just one indirection deeper."""
     src = _read_harness_source()
-    assert "strategist_ag_records as _strategist_ag_records" in src
-    assert "_strategist_ag_records(" in src
+    # F4 stage call is present at the post-strategist site.
+    assert "from genie_space_optimizer.optimization.stages import" in src
+    assert "action_groups as _ags_stage" in src
+    assert "_ags_stage.select(" in src
 
 
 def test_harness_wires_ag_outcome_record_producer() -> None:
