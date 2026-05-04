@@ -243,3 +243,16 @@ lerna-debug.log*
 
 # LevelUp presentation working tree (built locally; shared via docs folder)
 presentation/
+
+# GSO optimizer iteration planning and run-analysis artifacts
+packages/genie-space-optimizer/docs/2026-*.md
+packages/genie-space-optimizer/docs/*.html
+packages/genie-space-optimizer/docs/canonical-schema.md
+packages/genie-space-optimizer/docs/example-sql-isolation.md
+packages/genie-space-optimizer/docs/lever-loop-improvement-plan.md
+packages/genie-space-optimizer/docs/lever-loop-pipeline.md
+packages/genie-space-optimizer/docs/rca-themed-bundle-lever-loop-plan.md
+packages/genie-space-optimizer/docs/scoring_v2_rollout.md
+packages/genie-space-optimizer/docs/high level plans/
+packages/genie-space-optimizer/docs/runid_analysis/
+packages/genie-space-optimizer/docs/skills/
