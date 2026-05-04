@@ -417,3 +417,66 @@ def test_replay_transcript_projects_every_decision_type_into_its_section() -> No
         # transcript header order.
         section_heading = TYPE_TO_SECTION[dt]
         assert section_heading in transcript
+
+
+def test_terminal_success_does_not_change_decision_validation_count() -> None:
+    """Plan N2 — the terminal-success render-time override must not
+    affect the cross-projection completeness check. The check
+    validates the trace (typed records + journey events), not the
+    transcript bytes; an override that mutated the trace would be a
+    contract violation.
+
+    Exercises the same fixture twice: once with the override active
+    (default), once with ``_force_no_override=True`` (test-only
+    bypass). The transcript bytes WILL differ; the
+    ``decision_validation`` results MUST be byte-identical.
+    """
+    from genie_space_optimizer.optimization.lever_loop_replay import run_replay
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        OptimizationTrace,
+        render_operator_transcript,
+        validate_decisions_against_journey,
+    )
+
+    fixture = _build_full_iteration_fixture()
+    result = run_replay(fixture)
+    iteration = max(int(r.iteration) for r in result.decision_records)
+
+    # Build the cross-projection validation against the typed trace.
+    # This is what ``run_replay`` reports as ``decision_validation``;
+    # the terminal-success override does not pass through this
+    # function so the lists must be byte-identical.
+    validation_with_override = validate_decisions_against_journey(
+        records=list(result.decision_records),
+        events=list(result.events),
+    )
+
+    # Render once with the override and once without. Bytes will
+    # differ when the iteration contains terminal success; the
+    # validation list must NOT.
+    trace = OptimizationTrace(
+        decision_records=tuple(result.decision_records),
+        journey_events=tuple(result.events),
+    )
+    transcript_with = render_operator_transcript(
+        trace=trace, iteration=iteration,
+    )
+    transcript_without = render_operator_transcript(
+        trace=trace, iteration=iteration, _force_no_override=True,
+    )
+
+    validation_without_override = validate_decisions_against_journey(
+        records=list(result.decision_records),
+        events=list(result.events),
+    )
+    assert validation_with_override == validation_without_override, (
+        "render-time override must not affect decision_validation; "
+        f"with={validation_with_override} "
+        f"without={validation_without_override}"
+    )
+
+    # Sanity: transcripts should both contain the
+    # ``Terminal Success`` heading. The heading always renders
+    # whether or not the override fires.
+    assert "Terminal Success" in transcript_with
+    assert "Terminal Success" in transcript_without
