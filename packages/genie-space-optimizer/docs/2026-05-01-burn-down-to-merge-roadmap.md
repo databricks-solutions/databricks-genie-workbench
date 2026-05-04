@@ -134,11 +134,11 @@ Phase E.1 turns that process into the formal **GSO Run Output Contract**:
 | **PR-A→PR-E** | **Pre-rerun bug-fix batch from live run `407772af` (✅ complete — 6/6 plans landed)** | Mixed | 0 (replay-only during impl) | shipped | pre-merge (next live run gated by E.0) |
 | **E.0** | **MLflow artifact integrity audit + persistence fixes** | Mostly | 0 (replay-only) + 1 backfill smoke | ~2–3 days | pre-merge prerequisite for E |
 | E | Final integration + contract-gate flip + merge | No | 1 | ~1 day | merge point |
-| F | Stage-aligned `harness.py` modularization (9 stage modules) | Yes | 0 | ~10–14 days | post-merge follow-up |
-| G | Stage Protocol + registry + RunEvaluationKwargs (G-lite) | Yes | 0 | ~1–2 days | post-merge architecture follow-up |
-| **H** | **GSO Run Output Contract — process-first transcript + per-stage MLflow bundle (final unification)** | Yes | 0 | ~5–7 days | post-merge unification |
+| F | Stage-aligned `harness.py` modularization **(◐ partial — F1 wired in harness; F2–F9 modules shipped as observability-only surface, harness wire-up deferred to F+H combined wire-up follow-up)** | Yes | 0 | ~10–14 days estimated; F-modules portion landed, ~2 weeks of harness wire-up remaining | post-merge follow-up |
+| G | Stage Protocol + registry + RunEvaluationKwargs (G-lite) **(✅ implemented)** | Yes | 0 | ~1–2 days | post-merge architecture follow-up |
+| **H** | **GSO Run Output Contract — process-first transcript + per-stage MLflow bundle (final unification).** **Option 1 ✅ implemented** (T1-T11, T14-T16 modules + tests + docs landed; T12+T13 harness wire-up + dbutils exit deferred to the F+H wire-up follow-up plan). Detailed plan: [`2026-05-04-phase-h-gso-run-output-contract-plan.md`](./2026-05-04-phase-h-gso-run-output-contract-plan.md), which supersedes the architectural-only [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md) (kept as the authoritative schema reference). | Yes | 0 | Option 1 ✅ shipped; ~2 weeks for F+H wire-up follow-up (T12 + T13) | post-merge unification |
 | | **Pre-merge total** | | **10–11 runs (~20–22 hrs, 9 already spent)** | **~1 week remaining** | |
-| | **Post-merge follow-up (F → G → H)** | | 0 | ~2–3.5 weeks | |
+| | **Post-merge follow-up (F-modules ✅ + G-lite ✅ + H Option 1 + F+H wire-up)** | | 0 | F-modules + G-lite landed; Phase H Option 1 ~3-5 days; F+H wire-up follow-up ~2 weeks | |
 
 ## Why this sequencing
 
@@ -149,10 +149,10 @@ Nine reasons it has to be in this order:
 3. **Phase B must precede more observability.** Scoreboards, failure buckets, and stdout should not each invent their own schema. A canonical `DecisionRecord` first makes every later rendering a projection of one source of truth.
 4. **Phase C makes RCA reliability first-class.** The optimizer is only useful if evidence, root cause, causal patch, targeted qids, observed effect, and learned next action form a closed loop. Cycle 8's `target_qids: []` and GT-correction qid loss bugs are symptoms of that contract not being explicit enough.
 5. **Phase D can then build operator UX safely.** Scoreboard, bucketing, and initial extractions become consumers of `OptimizationTrace`, not parallel log parsers.
-6. **Phase F is stage-aligned, not just byte-stable.** Phases A–E and the PR-A→E batch made every stage-level decision (`EVAL_CLASSIFIED`, `CLUSTER_SELECTED`, `RCA_FORMED`, `STRATEGIST_AG_EMITTED`, `PROPOSAL_GENERATED`, `GATE_DECISION`, `PATCH_APPLIED`, `ACCEPTANCE_DECIDED`, `QID_RESOLUTION`, `AG_RETIRED`) typed and traceable. Phase F finally aligns the *executable code* with the same nine-stage process so the LLM postmortem can map a `decision_type` from stdout straight to one source file. Each extraction is its own commit, gated by byte-stable replay.
-7. **Phase G freezes the per-stage typed input/output contracts** so each stage module exposes a `StageInput` and `StageOutput` dataclass that LLMs and humans can reason about in isolation. Strong contracts become both safe and useful once the code has coherent stage-aligned homes.
-8. **Phase H lands the GSO Run Output Contract on top of F+G.** The process-first `operator_transcript.md`, the parent-run `gso_postmortem_bundle/` with per-stage `iter_NN/stages/<stage>/input.json + output.json + decisions.json`, and the `GSO_ARTIFACT_INDEX_V1` marker all become deterministic projections of the typed stage I/O. Without F+G, Phase H would have to re-invent stage attribution by parsing `harness.py`; with F+G, attribution is free.
-9. **The final unification reads as a tape.** After H lands, an iteration of `_run_lever_loop` reads as a linear sequence of `stages.evaluation.evaluate_post_patch` → `stages.rca_evidence.collect` → `stages.clustering.form` → `stages.action_groups.select` → `stages.proposals.generate` → `stages.gates.filter` → `stages.application.apply` → `stages.evaluation.evaluate_post_patch` → `stages.acceptance.decide` → `stages.learning.update`, each capturing typed I/O. That tape is what the operator transcript renders, what the LLM postmortem reasons over, and what scoreboard/failure bucketing project into operator metrics.
+6. **Phase F is stage-aligned, not just byte-stable.** Phases A–E and the PR-A→E batch made every stage-level decision (`EVAL_CLASSIFIED`, `CLUSTER_SELECTED`, `RCA_FORMED`, `STRATEGIST_AG_EMITTED`, `PROPOSAL_GENERATED`, `GATE_DECISION`, `PATCH_APPLIED`, `ACCEPTANCE_DECIDED`, `QID_RESOLUTION`, `AG_RETIRED`) typed and traceable. Phase F's modules half (the 9 typed stage modules under `optimization/stages/`) shipped on this foundation. Phase F's harness wire-up half — replacing inline `cluster_failures(...)` / `generate_proposals_from_strategy(...)` / `apply_patch_set(...)` / etc. with calls to the new stage modules — was deliberately deferred to the F+H combined wire-up follow-up so it can run alongside Phase H Task 12 (capture-decorator wrapping). Each per-stage wire-up commit is its own byte-stable replay gate.
+7. **Phase G in its lite form** ships a runtime-checkable `StageHandler` Protocol, the `STAGES` registry, uniform `execute` aliases on every stage module, and `RunEvaluationKwargs` TypedDict. The original full Phase G scope (frozen+slots dataclasses, mypy strict ratcheting) was scoped down after a cost/benefit review — freezing the F-plan stage Input/Output dataclasses introduced subclassing/pickling/mutation-site risk for marginal contract-safety gain. G-lite delivers what Phase H actually needs (registry + Protocol + uniform `execute` to wrap) without that risk.
+8. **Phase H lands the GSO Run Output Contract on top of F-modules + G-lite.** The process-first `operator_transcript.md`, the parent-run `gso_postmortem_bundle/` with per-stage `iter_NN/stages/<stage>/input.json + output.json + decisions.json`, and the `GSO_ARTIFACT_INDEX_V1` marker all become deterministic projections of the typed stage I/O. Without G-lite's registry, Phase H would have to re-invent stage attribution by parsing `harness.py`; with G-lite, the capture decorator iterates over `STAGES`. **Phase H ships in two batches:** Option 1 (modules + tests + docs only — no harness wire-up) lands first; the harness wire-up consolidates with the deferred F2-F9 wire-up into the F+H combined wire-up follow-up.
+9. **The final unification reads as a tape.** After the F+H wire-up follow-up lands, an iteration of `_run_lever_loop` reads as a linear sequence of `stages.evaluation.evaluate_post_patch` → `stages.rca_evidence.collect` → `stages.clustering.form` → `stages.action_groups.select` → `stages.proposals.generate` → `stages.gates.filter` → `stages.application.apply` → `stages.evaluation.evaluate_post_patch` → `stages.acceptance.decide` → `stages.learning.update`, each wrapped with the per-stage I/O capture decorator. That tape is what the operator transcript renders, what the LLM postmortem reasons over, and what scoreboard/failure bucketing project into operator metrics. Today (post-G-lite) only stage 1 (evaluation) is wired; the wire-up follow-up closes the gap.
 
 **Current guardrail:** avoid adding new substantial helpers directly to `harness.py`. If a helper is a reusable domain operation or grows beyond roughly 30–50 LOC, put it in the module it will eventually belong to and import it into `harness.py`. New instrumentation must add `DecisionRecord` / `OptimizationTrace` producers or renderer sections, not freeform print/log blocks. After Phase F1 lands, "the module it will eventually belong to" is concretely the corresponding `optimization/stages/<stage>.py` file.
 
@@ -173,7 +173,7 @@ The end-state target is: **given a stdout/stderr from a Lever Loop job, an opera
 | **RCA top-N intent classification** | A (~95%) | `RANK()` without `LIMIT N` now routes to `TOP_N_CARDINALITY_COLLAPSE` instead of `wrong_join_spec` (PR-D landed). | done |
 | **Pre-arbiter saturation acceptance** | A (~95%) | `accepted_pre_arbiter_improvement` branch now fires when post-arbiter is flat but pre-arbiter improved (PR-E landed). | done |
 | **Reflection content-fingerprint dedup** | A (~95%) | `_drop_proposals_matching_rolled_back_content_fingerprints` now blocks byte-identical re-proposals (PR-E landed). | done |
-| **Modularized code** (defect → one file mapped to one stage) | C+ (~40%) | 6 of 10 stages still live inside `harness.py` (~19,900 LOC) / `optimizer.py` (~15,600 LOC) / `synthesis.py` / `applier.py`. The PR-A→E fixes landed in the right files but the executable code is still not stage-aligned. | **Phase F (9 stage modules)** |
+| **Modularized code** (defect → one file mapped to one stage) | C+ (~50%) | 9 stage modules now exist in `optimization/stages/` with typed `StageInput` / `StageOutput` and named verbs, and G-lite ships the registry + Protocol. **However**, only F1 (evaluation) actually wired into `harness.py:9985`. F2–F9 are **observability-only surfaces** — `cluster_failures`, `generate_proposals_from_strategy`, `apply_patch_set`, `decide_control_plane_acceptance`, `resolve_terminal_on_plateau` are still called inline in `harness.py` (which remains ~19,954 LOC). The LLM postmortem can read the new modules to understand the contract, but mapping a `decision_type` from stdout to **a single source file** still requires reading harness for the F2–F9 stages. | **F+H combined wire-up follow-up** (post-Phase H Option 1) |
 | **Per-stage typed input/output** (LLM can reason about each stage in isolation) | F (~10%) | Stage I/O today is implicit through shared dicts and harness locals. | **Phase G (typed `StageInput` / `StageOutput`)** |
 | **Per-stage I/O capture in postmortem bundle** | F (~5%) | The `gso_postmortem_bundle/iterations/iter_NN/` plan exists but cannot be populated without per-stage modules. | **Phase H (built on F + G)** |
 | **Stdout-only diagnosability** | B (~70%) | (a) Hard gate not yet flipped; (b) MLflow artifacts (`phase_a/`, `phase_b/`) need anchoring (E.0). | Phase E.0 + E |
@@ -181,22 +181,24 @@ The end-state target is: **given a stdout/stderr from a Lever Loop job, an opera
 
 ### Stage → module localization map
 
-When stdout points at a `decision_type`, today this is where the reasoning lives. Phase F closes the right column by extracting one module per stage in `optimization/stages/`.
+When stdout points at a `decision_type`, today this is where the reasoning lives. The "Reasoning today (post-Phase-F-modules)" column reflects the **current** state: F1 wired, F2–F9 modules shipped but harness still calls primitives inline. The "Reasoning after F+H wire-up" column shows the target end-state once the combined F+H harness wire-up plan lands.
 
-| Stage (per `PROCESS_STAGE_ORDER`) | `decision_type` | Producer (`decision_emitters.py`) | Reasoning today | Reasoning after Phase F |
+| Stage (per `PROCESS_STAGE_ORDER`) | `decision_type` | Producer (`decision_emitters.py`) | Reasoning today (post-F-modules) | Reasoning after F+H wire-up |
 |---|---|---|---|---|
-| evaluation_state | `EVAL_CLASSIFIED` | `eval_classification_records:102` | `eval_entry.py` ✅ + `harness.py` + `evaluation.py` | `stages/evaluation.py` (entry + post-eval; F1) |
-| rca_evidence | (feeds RCA_FORMED) | (none direct — feeds `rca_formed_records`) | `harness.py` + `rca.py` + `judge_classes.py` | `stages/rca_evidence.py` (F2) |
-| cluster_formation | `CLUSTER_SELECTED` + `RCA_FORMED` | `cluster_records:161`, `rca_formed_records:220` | `harness.py` + `optimizer.py:cluster_failures:1865` + `rca.py` | `stages/clustering.py` (F3) |
-| action_group_selection | `STRATEGIST_AG_EMITTED` | `strategist_ag_records:284` | `harness.py` + `optimizer.py` + `strategist_constraints.py` | `stages/action_groups.py` (F4) |
-| proposal_generation | `PROPOSAL_GENERATED` | `proposal_generated_records:380` | `harness.py` + `synthesis.py` + `optimizer.py:generate_proposals_from_strategy` | `stages/proposals.py` (F5) |
-| safety_gates | `GATE_DECISION` (lever-5 / blast-radius / groundedness / DOA) | `lever5_structural_gate_records:855` / `blast_radius_decision_records:776` / `groundedness_gate_records:1220` / `dead_on_arrival_decision_records:911` | `harness.py` + `applier.py` + `proposal_grounding.py` + `iteration_acceptance.py` + `reflection_retry.py` | `stages/gates.py` (F6) |
-| applied_patches | `PATCH_APPLIED` / `PATCH_SKIPPED` | `patch_applied_records:466` | `harness.py` + `applier.py` | `stages/application.py` (F7) |
-| post_patch_evaluation | (re-uses EVAL stage) | (re-uses `eval_classification_records`) | `harness.py` + `post_eval.py` ✅ | `stages/evaluation.py` (post-eval entry; F1) |
-| acceptance_decision | `ACCEPTANCE_DECIDED` + `QID_RESOLUTION` | `ag_outcome_decision_record:592`, `post_eval_resolution_records:677` | `ag_outcome.py` ✅ + `post_eval.py` ✅ + `control_plane.py` + `iteration_acceptance.py` + `acceptance_policy.py` + `harness.py` | `stages/acceptance.py` (F8) |
-| learning_next_action | `AG_RETIRED` + terminal records | (terminal/AG_RETIRED records emitted inline in `harness.py:11801-11828`) | `harness.py` + `reflection_retry.py` + `rca_terminal.py` | `stages/learning.py` (F9) |
+| evaluation_state | `EVAL_CLASSIFIED` | `eval_classification_records:102` | ✅ **F1 wired** at `harness.py:9985`. `_eval_stage.evaluate_post_patch(...)` is the iteration-body call. | same — F1 already at end-state. |
+| rca_evidence | (feeds RCA_FORMED) | (none direct — feeds `rca_formed_records`) | ◐ Module shipped (`stages/rca_evidence.py`); harness still calls evidence shaping inline via `cluster_failures`. | `stages/rca_evidence.py` (after F+H wire-up) |
+| cluster_formation | `CLUSTER_SELECTED` + `RCA_FORMED` | `cluster_records:161`, `rca_formed_records:220` | ◐ Module shipped (`stages/clustering.py`); harness still calls `cluster_failures(...)` directly at `harness.py:9158` and `9171`. | `stages/clustering.py` (after F+H wire-up) |
+| action_group_selection | `STRATEGIST_AG_EMITTED` | `strategist_ag_records:284` | ◐ Module shipped (`stages/action_groups.py`); strategist invocation still inline in harness. | `stages/action_groups.py` (after F+H wire-up) |
+| proposal_generation | `PROPOSAL_GENERATED` | `proposal_generated_records:380` | ◐ Module shipped (`stages/proposals.py`); harness still calls `generate_proposals_from_strategy(...)` directly at `harness.py:14079`. | `stages/proposals.py` (after F+H wire-up) |
+| safety_gates | `GATE_DECISION` (lever-5 / blast-radius / groundedness / DOA) | `lever5_structural_gate_records:855` / `blast_radius_decision_records:776` / `groundedness_gate_records:1220` / `dead_on_arrival_decision_records:911` | ◐ Module shipped (`stages/gates.py`); gate primitives still called inline in harness. | `stages/gates.py` (after F+H wire-up) |
+| applied_patches | `PATCH_APPLIED` / `PATCH_SKIPPED` | `patch_applied_records:466` | ◐ Module shipped (`stages/application.py`); harness still calls `apply_patch_set(...)` directly at `harness.py:4127`, `13920`, `16155`. | `stages/application.py` (after F+H wire-up) |
+| post_patch_evaluation | (re-uses EVAL stage) | (re-uses `eval_classification_records`) | ✅ Re-uses F1's wired call — same code path as evaluation_state. | same |
+| acceptance_decision | `ACCEPTANCE_DECIDED` + `QID_RESOLUTION` | `ag_outcome_decision_record:592`, `post_eval_resolution_records:677` | ◐ Module shipped (`stages/acceptance.py`); harness still calls `decide_control_plane_acceptance(...)` directly at `harness.py:10347`. | `stages/acceptance.py` (after F+H wire-up) |
+| learning_next_action | `AG_RETIRED` + terminal records | (terminal/AG_RETIRED records emitted inline in `harness.py:11801-11828`) | ◐ Module shipped (`stages/learning.py`); harness still calls `resolve_terminal_on_plateau(...)` directly at `harness.py:11813` and emits AG_RETIRED records inline. | `stages/learning.py` (after F+H wire-up) |
 
-After Phase F lands, every `decision_type` in the operator transcript maps to exactly one stage module. Phase G adds typed `StageInput` / `StageOutput` per module. Phase H captures both into the parent-run `gso_postmortem_bundle/iterations/iter_NN/stages/<stage_key>/{input.json,output.json,decisions.json}` so an LLM postmortem can attribute any regression to a single stage with full per-stage I/O.
+**Legend:** ✅ = stage module wired in `harness.py`. ◐ = stage module exists with typed I/O + tests but harness still calls primitives inline (observability-only surface, awaiting F+H wire-up).
+
+**After the F+H combined wire-up follow-up lands**, every `decision_type` in the operator transcript maps to exactly one stage module, and Phase H captures the per-stage I/O into the parent-run `gso_postmortem_bundle/iterations/iter_NN/stages/<stage_key>/{input.json,output.json,decisions.json}` so an LLM postmortem can attribute any regression to a single stage with full per-stage I/O. Phase G-lite already shipped the typed Protocol + registry that the wire-up consumes.
 
 ### Pre-merge gap closures (Phase D.5, PR-A→PR-E batch, and Phase E.0)
 
@@ -221,8 +223,8 @@ The **GSO Run Output Contract** (formerly E.1) has been moved to **Phase H** as 
 
 ### Future work explicitly on the radar
 
-- **Phase F stage-aligned modularization** — see Phase F below. Index: [`2026-05-04-phase-f-stages-modularization-index.md`](./2026-05-04-phase-f-stages-modularization-index.md).
-- **Phase G typed `StageInput` / `StageOutput` contracts** — see Phase G below; concrete because each Phase F module already exposes the right input/output shape.
+- **Phase F stage-aligned modularization (◐ partial)** — modules half landed (9 stage modules + G-lite registry + F1 wired). Wire-up half (F2-F9 harness migration) consolidated into the **F+H combined wire-up follow-up** plan that runs after Phase H Option 1. Index: [`2026-05-04-phase-f-stages-modularization-index.md`](./2026-05-04-phase-f-stages-modularization-index.md).
+- **Phase G — Stage Protocol + registry + RunEvaluationKwargs (G-lite, ✅ implemented)** — see Phase G below.
 - **Phase H GSO Run Output Contract unification** — see Phase H below; the `gso_postmortem_bundle/iterations/iter_NN/stages/<stage_key>/` payload is generated automatically from per-stage I/O capture once F+G land.
 - **Production observability dashboard** — currently parked. Phase H's stable bundle layout is the precondition; E.0's anchoring fix is a prerequisite for dashboards to point at the right run.
 
@@ -529,9 +531,39 @@ Cycle 8 exposed two concrete gaps in this loop: decomposed strategist patches wi
 
 ---
 
-## Phase F — Stage-aligned `harness.py` modularization (post-merge)
+## Phase F — Stage-aligned `harness.py` modularization (post-merge) — ◐ partial
 
-**Why sixth:** Phases A–E and the PR-A→E batch made every stage-level decision typed and traceable, but the **executable code** remains a monolith — `harness.py` is ~19,900 LOC, `optimizer.py` is ~15,600 LOC, and 6 of 10 process stages still live inside one of those two files. The decision-emitter producers in `decision_emitters.py` are already stage-aligned (`eval_classification_records`, `cluster_records`, `rca_formed_records`, `strategist_ag_records`, `proposal_generated_records`, four gate producers, `patch_applied_records`, `ag_outcome_decision_record`, `post_eval_resolution_records`, AG_RETIRED via PR-B2). The `PROCESS_STAGE_ORDER` taxonomy in [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md) is already locked. Phase F finally aligns the source code with the same nine-stage process so the LLM postmortem maps a `decision_type` from stdout to exactly one source file — and so Phase H can capture per-stage I/O automatically.
+> **Status (2026-05-04):** Phase F shipped in **two halves** by deliberate execution choice. The "modules" half landed (~9 typed stage modules under `optimization/stages/`, plus G-lite registry + Protocol). The "harness wire-up" half — replacing inline `cluster_failures(...)` / `generate_proposals_from_strategy(...)` / `apply_patch_set(...)` / etc. with calls to the new stage modules — was deliberately deferred to a combined **F+H harness wire-up follow-up** plan that will run alongside Phase H Task 12. This section reflects both states honestly: what landed, and what's pending.
+>
+> **TL;DR:** F1 (evaluation) is fully wired in `harness.py:9985`. F2-F9 modules exist as observability-only surfaces; the harness still calls the original primitives inline (verifiable via `grep -n "cluster_failures\|generate_proposals_from_strategy\|apply_patch_set\|decide_control_plane_acceptance\|resolve_terminal_on_plateau" harness.py`). The F-plan replay byte-stability tests (`tests/replay/test_phase_f<N>_byte_stable.py`) pass tautologically because nothing changed in production for F2-F9 — their docstrings explicitly say "F<N> is observability-only ... harness is untouched." `harness.py` remains ~19,954 LOC; the originally targeted ~3,500-5,500 LOC reduction is the wire-up plan's deliverable.
+
+**Why sixth:** Phases A–E and the PR-A→E batch made every stage-level decision typed and traceable, but the **executable code** remains a monolith — `harness.py` is ~19,954 LOC, `optimizer.py` is ~15,600 LOC, and 8 of 9 executable stages (every stage except F1 evaluation) still live inside one of those two files. The decision-emitter producers in `decision_emitters.py` are already stage-aligned (`eval_classification_records`, `cluster_records`, `rca_formed_records`, `strategist_ag_records`, `proposal_generated_records`, four gate producers, `patch_applied_records`, `ag_outcome_decision_record`, `post_eval_resolution_records`, AG_RETIRED via PR-B2). The `PROCESS_STAGE_ORDER` taxonomy in [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md) is already locked. Phase F's modules portion finished the typed-surface side; the F+H wire-up follow-up finishes the harness migration so the LLM postmortem maps a `decision_type` from stdout to exactly one source file — and so Phase H can capture per-stage I/O automatically.
+
+### What landed (modules half)
+
+- ✅ All 9 stage modules exist under `optimization/stages/` (`evaluation.py`, `rca_evidence.py`, `clustering.py`, `action_groups.py`, `proposals.py`, `gates.py`, `application.py`, `acceptance.py`, `learning.py`) with typed `StageInput`/`StageOutput` dataclasses and named verbs (`evaluate_post_patch`, `collect`, `form`, `select`, `generate`, `filter`, `apply`, `decide`, `update`).
+- ✅ Phase G-lite registry (`stages/_registry.py:STAGES`), `@runtime_checkable StageHandler` Protocol, `RunEvaluationKwargs` TypedDict, uniform `execute` aliases on every stage module.
+- ✅ F1 (evaluation) wired in `harness.py:9985` — the per-iteration full eval routes through `_eval_stage.evaluate_post_patch(...)`.
+- ✅ Per-stage unit tests for every stage's I/O dataclasses + helper functions.
+- ✅ F-plan replay byte-stability tests (passing tautologically for F2-F9 since harness is untouched).
+
+### What's pending (harness wire-up half)
+
+- ❌ F2 (rca_evidence) — harness call site for evidence shaping not yet migrated.
+- ❌ F3 (clustering) — `cluster_failures(...)` still called directly at `harness.py:9158` and `9171`.
+- ❌ F4 (action_groups) — strategist invocation block still inline.
+- ❌ F5 (proposals) — `generate_proposals_from_strategy(...)` still called directly at `harness.py:14079`.
+- ❌ F6 (gates) — gate primitives still called inline.
+- ❌ F7 (application) — `apply_patch_set(...)` still called directly at `harness.py:4127`, `13920`, `16155`.
+- ❌ F8 (acceptance) — `decide_control_plane_acceptance(...)` still called directly at `harness.py:10347`.
+- ❌ F9 (learning) — `resolve_terminal_on_plateau(...)` still called directly at `harness.py:11813`; AG_RETIRED records still emitted inline at `harness.py:11801-11828`.
+
+These wire-ups will be folded into a single **F+H harness wire-up follow-up plan** that combines:
+
+(a) F2-F9 wire-up commits (replace inline primitive call with stage module call), and
+(b) Phase H Task 12 capture-decorator wrapping (wrap each stage call with `wrap_with_io_capture(execute=stages.<x>.execute, stage_key="<x>")`).
+
+Doing both as a single coordinated workstream avoids changing the harness twice per stage and gives a single byte-stability gate per stage. See **Phase H** below for the Option 1 batch that ships the H modules first; the F+H wire-up follow-up runs after H Option 1 lands.
 
 **Why post-merge:** these are behavior-preserving refactors with zero algorithmic change. They do not need to block the merge of the contract gate, the scoreboard, or the bucketing classifier. They land as nine small, individually reviewable, individually reversible PRs on `main`, each gated by byte-stable replay.
 
@@ -575,9 +607,17 @@ Each `stages/<stage>.py` module exposes:
 | F8 | [`2026-05-04-phase-f8-acceptance-stage-extraction-plan.md`](./2026-05-04-phase-f8-acceptance-stage-extraction-plan.md) | `acceptance_decision` | `stages/acceptance.py` | `ag_outcome_decision_record`, `post_eval_resolution_records` | `ag_outcome.py` + `post_eval.py` already extracted; PR-E pre-arbiter acceptance branch landed. |
 | F9 | [`2026-05-04-phase-f9-learning-stage-extraction-plan.md`](./2026-05-04-phase-f9-learning-stage-extraction-plan.md) | `learning_next_action` | `stages/learning.py` | terminal records + `AG_RETIRED` (PR-B2) | PR-B2 typed termination + AG_RETIRED, PR-E content-fingerprint blocklist landed. |
 
-**Validation strategy:** identical to Phase D. Each extraction is its own commit. The replay test (a hard gate post-Phase E) asserts byte-identical journey ledger, decision trace, scoreboard snapshot, and operator transcript before vs after. If anything reorders, CI fails closed and the commit is rolled back.
+**Validation strategy:** each per-stage extraction is its own commit. The replay test (`tests/replay/test_phase_f<N>_byte_stable.py`) asserts byte-identical journey ledger, decision trace, scoreboard snapshot, and operator transcript before vs after. For F1 (the only stage wired in production today), this gate is a real comparison. For F2-F9, the gate is tautological because the harness is untouched in production — it only verifies that constructing the new modules doesn't import-time-break replay.
 
-**Exit criterion:** all nine stage modules land on `main`; replay byte-stable across each; total LoC reduction in `harness.py` ≈ 14,000–16,000 lines (from ~19,900 post-merge to ~3,500–5,500 orchestration spine). The remaining `harness.py` reads as a linear tape over the nine stage modules — the loop body becomes:
+The byte-stability gate becomes a **real** gate per stage when the F+H harness wire-up follow-up runs each per-stage Commit A (replace inline primitive with stage call) and Commit B (wrap with capture decorator) — both replay-gated.
+
+### Exit criterion (modules half — landed)
+
+All nine stage modules exist on `main`; replay byte-stable across each; G-lite registry + Protocol + RunEvaluationKwargs landed; F1 wired in `harness.py:9985`.
+
+### Exit criterion (wire-up half — pending in F+H follow-up)
+
+After the F+H wire-up follow-up lands, total LoC reduction in `harness.py` ≈ 14,000–16,000 lines (from ~19,954 today to ~3,500–5,500 orchestration spine). The remaining `harness.py` reads as a linear tape over the nine stage modules:
 
 ```python
 for iter_num in range(1, max_iterations + 1):
@@ -594,11 +634,13 @@ for iter_num in range(1, max_iterations + 1):
     state       = state.advance(applied, post_eval, outcome, learning)
 ```
 
-**Real-Genie runs:** 0. Replay test is the only gate.
+**Real-Genie runs:** 0 for the wire-up follow-up. Replay test is the only gate per commit.
 
-**Detailed plans:** [`2026-05-04-phase-f-stages-modularization-index.md`](./2026-05-04-phase-f-stages-modularization-index.md) sequences F1 through F9, with one plan per stage module.
+**Detailed plans:**
+- [`2026-05-04-phase-f-stages-modularization-index.md`](./2026-05-04-phase-f-stages-modularization-index.md) sequences F1 through F9 (modules half — landed).
+- F+H harness wire-up follow-up plan (to be written after Phase H Option 1 lands; will combine F2-F9 wire-up with Phase H Task 12 capture-decorator wrapping).
 
-**Why the stage-aligned shape matters:** when stdout points at `decision_type=GATE_DECISION reason=blast_radius`, the LLM postmortem can navigate to exactly `stages/gates.py` and read its `StageInput`/`StageOutput` rather than chasing through 4 files. The eight existing decision-emitter producers are already stage-aligned; Phase F finishes the alignment by pulling the executable code into the same shape.
+**Why the stage-aligned shape matters:** when stdout points at `decision_type=GATE_DECISION reason=blast_radius`, the LLM postmortem should be able to navigate to exactly `stages/gates.py` and read its `StageInput`/`StageOutput` rather than chasing through 4 files. After F+H wire-up lands, that's true — the executable code lives in `stages/gates.py` and is wired in harness. Today, the LLM postmortem can read `stages/gates.py` for the **contract** but must still read `harness.py` to see what's actually called for the `GATE_DECISION` records.
 
 ---
 
@@ -764,13 +806,15 @@ After Phase H lands, this process is rendered to humans (`operator_transcript.md
 | PR-A → PR-E (pre-rerun bug-fix batch) | 1 actual (run `407772af`) | ~2 hr actual |
 | E.0 (MLflow artifact integrity audit) | 0 (replay-only) | 0 |
 | E (final integration) | 1 | ~2 hr |
-| F (stage-aligned modularization, replay-only, post-merge) | 0 | 0 |
-| G (per-stage typed contracts, replay-only, post-merge) | 0 | 0 |
-| H (GSO Run Output Contract unification, replay-only, post-merge) | 0 | 0 |
+| F (stage-aligned modules half ✅; harness wire-up half pending) | 0 | 0 |
+| G-lite (Stage Protocol + registry + RunEvaluationKwargs) ✅ | 0 | 0 |
+| H Option 1 (GSO Run Output Contract modules + tests + docs only) | 0 | 0 |
+| F+H wire-up follow-up (combined harness migration + per-stage I/O capture) | 0 | 0 |
 | **Pre-merge total** | **10–11** | **~22–24 hr (~22 hr already spent)** |
-| **Post-merge follow-up (F → G → H)** | **0** | **0** |
+| **Post-merge work landed so far** | **0** | F-modules + G-lite (no real-Genie cost) |
+| **Post-merge work remaining (H Option 1 + F+H wire-up)** | **0** | ~3-5 days + ~2 weeks |
 
-Calendar estimate from the current point: ~1 additional week pre-merge (E.0 + E pilot) with journey and decision gates live at the end, then ~2–3 weeks of small post-merge PRs for Phase F (one per stage module), ~1-2 days for Phase G-lite (Stage Protocol + registry + RunEvaluationKwargs), and ~1 week for Phase H to wire per-stage I/O capture and ship the parent-run `gso_postmortem_bundle/`.
+Calendar estimate from the current point: ~1 additional week pre-merge (E.0 + E pilot) with journey and decision gates live at the end. Post-merge: ~3-5 days for Phase H Option 1 (modules + tests + docs only), then ~2 weeks for the F+H combined harness wire-up follow-up that finishes Phase F's harness migration and lands Phase H's per-stage I/O capture in a single coordinated workstream. After F+H wire-up lands, `harness.py` reads as a 9-stage tape and the parent-run `gso_postmortem_bundle/` is populated on real runs.
 
 ---
 
@@ -788,13 +832,27 @@ Calendar estimate from the current point: ~1 additional week pre-merge (E.0 + E 
 
 ## Concrete next action
 
-**Phases 0 → D, Phase D.5, and the PR-A → PR-E batch are complete.** One pre-merge phase remains before Phase E flips the merge gate:
+**Phases 0 → D, Phase D.5, the PR-A → PR-E batch, Phase F (modules half), and Phase G-lite are complete.** Two workstreams remain:
+
+### Pre-merge
 
 1. **Phase E.0 — MLflow artifact integrity audit.** Required because Phase E's pilot validation depends on `phase_a/`/`phase_b/` artifacts being present on an operator-discoverable run, and current spot inspection shows they are not. ~9 TDD tasks across audit/anchoring/backfill phases. Plan ready at [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md).
 
 E.0 is replay-only during implementation. The next real-Genie cycle is the **Phase E pilot run**, which validates the PR-A→E fixes in a live run, validates E.0 artifact integrity, gates the `raise_on_violation=True` flip, and produces the merge-baseline fixture for `gso-replay-cycle-intake` to lock.
 
-**After Phase E merges**, the post-merge work runs in three stages: Phase F (9 small stage extractions, replay-gated), Phase G (per-stage typed contracts, replay + mypy gated), and Phase H (GSO Run Output Contract unification on top of F+G). The Phase F index is at [`2026-05-04-phase-f-stages-modularization-index.md`](./2026-05-04-phase-f-stages-modularization-index.md).
+### Post-merge
+
+After Phase E merges, the post-merge work is **two coordinated workstreams**:
+
+1. **Phase H Option 1 — modules + tests + docs only** (~3-5 days). Lands T1-T11 + T14-T17 of [`2026-05-04-phase-h-gso-run-output-contract-plan.md`](./2026-05-04-phase-h-gso-run-output-contract-plan.md): the `run_output_contract.py` vocabulary, capture decorator, transcript renderer, bundle assembler, marker emit/parse, mlflow_names + mlflow_audit + evidence_bundle integration, canonical-schema doc, `gso-postmortem` skill, integration smoke. **Skips T12 + T13** (harness wire-up + notebook exit JSON), which fold into the next workstream.
+
+2. **F+H combined harness wire-up follow-up** (~2 weeks). One coordinated plan that lands BOTH F2-F9 harness migration AND Phase H capture-decorator wrapping. Per stage, two commits:
+   - **Commit A:** replace inline primitive with stage module call (replay byte-stable).
+   - **Commit B:** wrap the stage call with `wrap_with_io_capture(...)` (replay byte-stable; per-stage I/O captured into `gso_postmortem_bundle/iterations/iter_NN/stages/<NN>_<stage_key>/`).
+   
+   Plus a final data-aggregation commit (the `_baseline_for_summary` / `_iter_traces` / `_iter_summaries` consolidation) and the termination-block commit (manifest assembly + `GSO_ARTIFACT_INDEX_V1` emission). 8 stages × 2 commits + 3 final commits ≈ 19 commits, each replay-gated. Plan: `2026-05-XX-phase-f-h-harness-wireup-plan.md` (to be written after Phase H Option 1 lands).
+
+After both workstreams complete, the Phase F+H end-state is reached: `harness.py` reads as a 9-stage tape, every `decision_type` maps to one source file, the parent-run `gso_postmortem_bundle/` is populated on real runs, and the `gso-postmortem` skill produces postmortems from the bundle alone.
 
 ---
 
@@ -827,17 +885,19 @@ E.0 is replay-only during implementation. The next real-Genie cycle is the **Pha
 | [`2026-05-03-pr-d-rca-classifier-top-n-cardinality-routing-plan.md`](./2026-05-03-pr-d-rca-classifier-top-n-cardinality-routing-plan.md) | Implemented | PR-D |
 | [`2026-05-03-pr-e-pre-arbiter-secondary-acceptance-and-reflection-dedup-plan.md`](./2026-05-03-pr-e-pre-arbiter-secondary-acceptance-and-reflection-dedup-plan.md) | Implemented | PR-E |
 | [`2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md`](./2026-05-04-mlflow-decision-artifacts-troubleshooting-plan.md) | Ready | E.0 |
-| [`2026-05-04-phase-f-stages-modularization-index.md`](./2026-05-04-phase-f-stages-modularization-index.md) | Ready | F (9-plan index) |
-| [`2026-05-04-phase-f1-stages-skeleton-and-evaluation-plan.md`](./2026-05-04-phase-f1-stages-skeleton-and-evaluation-plan.md) | Ready | F1 (skeleton + evaluation) |
-| [`2026-05-04-phase-f2-rca-evidence-stage-extraction-plan.md`](./2026-05-04-phase-f2-rca-evidence-stage-extraction-plan.md) | Ready | F2 (RCA evidence) |
-| [`2026-05-04-phase-f3-clustering-stage-extraction-plan.md`](./2026-05-04-phase-f3-clustering-stage-extraction-plan.md) | Ready | F3 (clustering) |
-| [`2026-05-04-phase-f4-action-groups-stage-extraction-plan.md`](./2026-05-04-phase-f4-action-groups-stage-extraction-plan.md) | Ready | F4 (action groups) |
-| [`2026-05-04-phase-f5-proposals-stage-extraction-plan.md`](./2026-05-04-phase-f5-proposals-stage-extraction-plan.md) | Ready | F5 (proposals) |
-| [`2026-05-04-phase-f6-gates-stage-extraction-plan.md`](./2026-05-04-phase-f6-gates-stage-extraction-plan.md) | Ready | F6 (gates) |
-| [`2026-05-04-phase-f7-application-stage-extraction-plan.md`](./2026-05-04-phase-f7-application-stage-extraction-plan.md) | Ready | F7 (application) |
-| [`2026-05-04-phase-f8-acceptance-stage-extraction-plan.md`](./2026-05-04-phase-f8-acceptance-stage-extraction-plan.md) | Ready | F8 (acceptance) |
-| [`2026-05-04-phase-f9-learning-stage-extraction-plan.md`](./2026-05-04-phase-f9-learning-stage-extraction-plan.md) | Ready | F9 (learning) |
+| [`2026-05-04-phase-f-stages-modularization-index.md`](./2026-05-04-phase-f-stages-modularization-index.md) | Modules half implemented; wire-up half deferred to F+H wire-up follow-up | F (9-plan index) |
+| [`2026-05-04-phase-f1-stages-skeleton-and-evaluation-plan.md`](./2026-05-04-phase-f1-stages-skeleton-and-evaluation-plan.md) | Implemented (module + harness wire-up at `harness.py:9985`) | F1 (skeleton + evaluation) |
+| [`2026-05-04-phase-f2-rca-evidence-stage-extraction-plan.md`](./2026-05-04-phase-f2-rca-evidence-stage-extraction-plan.md) | Module shipped (observability-only); harness wire-up deferred to F+H follow-up | F2 (RCA evidence) |
+| [`2026-05-04-phase-f3-clustering-stage-extraction-plan.md`](./2026-05-04-phase-f3-clustering-stage-extraction-plan.md) | Module shipped (observability-only); harness wire-up deferred to F+H follow-up | F3 (clustering) |
+| [`2026-05-04-phase-f4-action-groups-stage-extraction-plan.md`](./2026-05-04-phase-f4-action-groups-stage-extraction-plan.md) | Module shipped (observability-only); harness wire-up deferred to F+H follow-up | F4 (action groups) |
+| [`2026-05-04-phase-f5-proposals-stage-extraction-plan.md`](./2026-05-04-phase-f5-proposals-stage-extraction-plan.md) | Module shipped (observability-only); harness wire-up deferred to F+H follow-up | F5 (proposals) |
+| [`2026-05-04-phase-f6-gates-stage-extraction-plan.md`](./2026-05-04-phase-f6-gates-stage-extraction-plan.md) | Module shipped (observability-only); harness wire-up deferred to F+H follow-up | F6 (gates) |
+| [`2026-05-04-phase-f7-application-stage-extraction-plan.md`](./2026-05-04-phase-f7-application-stage-extraction-plan.md) | Module shipped (observability-only); harness wire-up deferred to F+H follow-up | F7 (application) |
+| [`2026-05-04-phase-f8-acceptance-stage-extraction-plan.md`](./2026-05-04-phase-f8-acceptance-stage-extraction-plan.md) | Module shipped (observability-only); harness wire-up deferred to F+H follow-up | F8 (acceptance) |
+| [`2026-05-04-phase-f9-learning-stage-extraction-plan.md`](./2026-05-04-phase-f9-learning-stage-extraction-plan.md) | Module shipped (observability-only); harness wire-up deferred to F+H follow-up | F9 (learning) |
 | [`2026-05-04-phase-g-stage-protocol-and-registry-plan.md`](./2026-05-04-phase-g-stage-protocol-and-registry-plan.md) | Implemented (G-lite scope) | G |
-| [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md) | Ready (final unification) | H |
+| [`2026-05-04-phase-h-gso-run-output-contract-plan.md`](./2026-05-04-phase-h-gso-run-output-contract-plan.md) | Implemented (Option 1: T1-T11 + T14-T16 landed; T12+T13 harness wire-up deferred to F+H wire-up follow-up) | H |
+| [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md) | Architectural reference for H (schemas, vocabulary) | H |
+| `2026-05-XX-phase-f-h-harness-wireup-plan.md` | To be written after Phase H Option 1 lands | F+H wire-up follow-up |
 | [`skills/gso-lever-loop-run-analysis/SKILL.md`](./skills/gso-lever-loop-run-analysis/SKILL.md) | Ready | B/C/D/E run analysis |
 | [`skills/gso-replay-cycle-intake/SKILL.md`](./skills/gso-replay-cycle-intake/SKILL.md) | Ready | A burn-down ledger intake |
