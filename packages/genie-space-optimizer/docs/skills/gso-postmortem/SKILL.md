@@ -106,3 +106,29 @@ This skill orchestrates; it does not analyze. Reasoning lives in `gso-lever-loop
 | Bundle short-circuited (manifest already exists) and you wanted a fresh pull | Delete `<bundle_dir>/evidence/manifest.json` and re-invoke. There is no `--force` flag. |
 | Lever-loop stdout file `lever_loop_stdout.txt` is empty even though the task ran | Lever-loop is a notebook task in production; `databricks jobs get-run-output` returns empty `logs` for notebook tasks. The structured result is in `notebook_output.result`. The analysis skill is responsible for falling back to that. |
 | Postmortem verdict = `INSUFFICIENT_EVIDENCE` | Ask the operator whether to widen the trace fetch beyond `--from-recommendations` (manual `--trace-id` flags). |
+
+## Phase H: GSO Run Output Contract
+
+When the run was produced by a lever-loop with Phase H landed, prefer the `gso_postmortem_bundle/` artifact tree over the legacy phase artifacts. The bundle is self-describing: every iteration's per-stage input/output/decisions is captured to MLflow under the parent lever-loop run.
+
+### Inputs
+
+- `optimization_run_id` (preferred): the canonical run id. Resolves the parent MLflow run via `genie.run_role=lever_loop` + `genie.optimization_run_id=<id>`.
+- `(job_id, run_id)`: also accepted; the bundle resolves `optimization_run_id` from the job's `run_id` parameter and proceeds.
+
+### Phase H workflow
+
+1. **Locate the parent bundle.** Read the `GSO_ARTIFACT_INDEX_V1` marker from stdout (or `MarkerLog.artifact_index`) for `parent_bundle_run_id` + `artifact_index_path`. If the marker is absent, fall back to `tools.mlflow_audit.audit_parent_bundle(optimization_run_id=...)` which discovers the parent run by tag and reports manifest presence.
+2. **Materialize the bundle locally.** Use `tools.evidence_bundle.download_parent_bundle(parent_run_id, target_dir=...)` to pull `gso_postmortem_bundle/*` into `runid_analysis/<opt>/evidence/gso_postmortem_bundle/`. The helper never raises — on failure it returns `(False, [MissingPiece(MLFLOW_AUDIT_FAILED, ...)])` so the postmortem can fall back to legacy phase artifacts.
+3. **Read the manifest.** `gso_postmortem_bundle/manifest.json` carries `iteration_count`, `iterations`, `missing_pieces`, and `stage_keys_in_process_order` (the 9 executable stages). Use it to discover what to read; do not walk directories.
+4. **For each iteration, read the per-stage capture.** `iter_NN/stages/<NN>_<stage_key>/{input,output,decisions}.json` is the authoritative typed record of every stage's I/O. The `<NN>_<stage_key>` directory name is process-ordered so a `ls` is naturally readable.
+5. **Cross-check the iteration transcript.** `iter_NN/operator_transcript.md` is the human-readable view; `iter_NN/decision_trace.json` is the machine view. The transcript renderer (Phase H T6) mirrors `PROCESS_STAGE_ORDER` exactly, so the section for stage *N* in the transcript matches the directory `<NN>_<stage_key>/`.
+6. **Inspect `journey_validation_all.json` for contract violations.** Phase H captures journey validation per iteration; the all-iterations view is the postmortem's canary for journey-contract gaps.
+7. **Stage I/O attribution.** Phase H's distinguishing capability over legacy artifacts: comparing `iter_(N-1)/stages/<X>/output.json` to `iter_N/stages/<X>/output.json` lets the postmortem answer "which stage's output changed between iterations and why?" without re-running the optimizer. Use this for "Stage I/O attribution" sections in `postmortem.md`.
+
+### Constraints
+
+- Never grep raw stdout when the bundle is present and `manifest.missing_pieces` does not declare a stdout fallback was needed.
+- Treat `manifest.missing_pieces` entries as authoritative: if a stage's capture failed, the postmortem must say so explicitly rather than silently presenting partial data.
+- The bundle is read-only; the postmortem skill never writes back to MLflow.
+
