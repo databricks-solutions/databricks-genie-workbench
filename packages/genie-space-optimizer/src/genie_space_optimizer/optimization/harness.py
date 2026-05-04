@@ -16539,13 +16539,31 @@ def _run_lever_loop(
                     exc_info=True,
                 )
 
-        # Phase B delta Task 7 — emit PATCH_APPLIED records per
-        # applied entry. Mirrors the per-entry _journey_emit calls in
-        # the loop above; emitted once per AG-iteration after the
-        # loop so we have the complete applied list in one shot.
+        # Phase F+H Commit A4: F7 application — post-stage observability
+        # with atomic dedup. apply_patch_set at harness.py:16187 STAYS
+        # inline; this stage call consumes the apply_log it produces and
+        # emits PATCH_APPLIED records via ctx.decision_emit per
+        # stages/application.py:159-171, replacing the inline
+        # _patch_applied_records producer (formerly at this site).
+        #
+        # Dedup is atomic with the stage insertion: the inline producer
+        # block (formerly Phase B delta Task 7 — emit PATCH_APPLIED
+        # records per applied entry) is removed; the stage call emits
+        # the same records via the same producer (decision_emitters.
+        # patch_applied_records) wrapped in StageContext.decision_emit
+        # which routes back to _current_iter_inputs["decision_records"].
+        # Without atomic dedup, both fire and break byte-stability.
+        #
+        # Verified against: stages/application.py:47-62 (Input dataclass),
+        # 137-176 (apply body — does NOT call apply_patch_set; emits
+        # PATCH_APPLIED via ctx.decision_emit at :170-171),
+        # 65-77 (AppliedPatchSet — fields applied + applied_signature).
         try:
-            from genie_space_optimizer.optimization.decision_emitters import (
-                patch_applied_records as _patch_applied_records,
+            from genie_space_optimizer.optimization.stages import (
+                StageContext as _StageCtx,
+            )
+            from genie_space_optimizer.optimization.stages import (
+                application as _app_stage,
             )
 
             _cluster_root_cause_by_id = {
@@ -16553,24 +16571,43 @@ def _run_lever_loop(
                 for _c in (clusters or [])
                 if _c.get("cluster_id")
             }
-            _applied_records = _patch_applied_records(
-                run_id=run_id,
-                iteration=iteration_counter,
-                ag_id=str(ag_id),
-                applied_entries=apply_log.get("applied", []) or [],
+            _stage_ctx_application = _StageCtx(
+                run_id=str(run_id),
+                iteration=int(iteration_counter),
+                space_id=str(space_id),
+                domain=str(domain),
+                catalog=str(catalog),
+                schema=str(schema),
+                apply_mode=str(apply_mode),
+                journey_emit=_journey_emit,
+                decision_emit=(
+                    lambda record:
+                        _current_iter_inputs.setdefault(
+                            "decision_records", []
+                        ).append(record.to_dict())
+                ),
+                mlflow_anchor_run_id=None,  # set by Phase C Commit 17
+                feature_flags={},
+            )
+            _app_inp = _app_stage.ApplicationInput(
+                applied_entries_by_ag={
+                    str(ag_id): tuple(apply_log.get("applied", []) or [])
+                },
+                ags=tuple([ag] if isinstance(ag, dict) else []),
                 rca_id_by_cluster=_iter_rca_id_by_cluster,
                 cluster_root_cause_by_id=_cluster_root_cause_by_id,
             )
-            _current_iter_inputs.setdefault("decision_records", []).extend(
-                [r.to_dict() for r in _applied_records]
-            )
+            _applied_set = _app_stage.apply(_stage_ctx_application, _app_inp)
+            # _applied_set.applied is tuple[AppliedPatch, ...]; available
+            # for downstream stages (F8 acceptance, F9 learning) when
+            # those wire-ups land.
         except Exception:
             _iter_producer_exceptions["patch_applied"] += 1
             _phase_b_producer_exceptions["patch_applied"] = (
                 _phase_b_producer_exceptions.get("patch_applied", 0) + 1
             )
             logger.debug(
-                "Phase B: patch_applied_records failed (non-fatal)",
+                "Phase F+H A4: patch_applied stage call failed (non-fatal)",
                 exc_info=True,
             )
             if _phase_b_strict_mode():
