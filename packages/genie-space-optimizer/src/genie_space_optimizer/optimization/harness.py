@@ -15986,6 +15986,65 @@ def _run_lever_loop(
                 )
             patches = _blast_kept
 
+        # Phase H Completion Task 4: wire F6 safety_gates as additive
+        # observability after the three harness inline gate sites
+        # (lever5_structural at the L5 emit site, rca_groundedness via
+        # _run_groundedness_gate inside _build_proposals, and
+        # blast_radius above). F6 sub-handlers emit zero DecisionRecords
+        # (verified at stages/gates.py — zero ctx.decision_emit calls);
+        # harness inline records remain authoritative. The wrap is purely
+        # additive — wrap_with_io_capture returns the GateOutcome
+        # unchanged; MLflow log_text calls are no-ops while
+        # mlflow_anchor_run_id is None. Replay-byte-stable.
+        try:
+            from genie_space_optimizer.optimization.stages import (
+                gates as _gates_stage,
+                StageContext as _StageCtx_f6,
+            )
+            from genie_space_optimizer.optimization.stage_io_capture import (
+                wrap_with_io_capture as _wrap_capture_f6,
+            )
+
+            _f6_inp = _gates_stage.GatesInput(
+                proposals_by_ag={str(ag_id): tuple(patches or [])},
+                ags=tuple([ag] if isinstance(ag, dict) else []),
+                rca_evidence=(
+                    dict(_rca_evidence_bundle.per_qid_evidence)
+                    if "_rca_evidence_bundle" in dir()
+                    and _rca_evidence_bundle is not None
+                    else {}
+                ),
+                applied_history=tuple(),
+                rolled_back_content_fingerprints=set(
+                    _rolled_back_content_fingerprints
+                ) if "_rolled_back_content_fingerprints" in dir() else set(),
+                forbidden_signatures=set(),
+                space_snapshot={},
+            )
+            _f6_stage_ctx = _StageCtx_f6(
+                run_id=str(run_id),
+                iteration=int(iteration_counter),
+                space_id=str(space_id),
+                domain=str(domain),
+                catalog=str(catalog),
+                schema=str(schema),
+                apply_mode="real",
+                journey_emit=lambda *a, **k: None,
+                decision_emit=lambda r: None,
+                mlflow_anchor_run_id=None,
+                feature_flags={},
+            )
+            _f6_wrapped = _wrap_capture_f6(
+                execute=_gates_stage.filter,
+                stage_key="safety_gates",
+            )
+            _gate_outcome = _f6_wrapped(_f6_stage_ctx, _f6_inp)
+        except Exception:
+            logger.debug(
+                "Phase H Task 4: F6 safety_gates stage failed (non-fatal)",
+                exc_info=True,
+            )
+
         # Task 5 — backfill AG/cluster causal metadata onto broad
         # strategist proposals so the cap can distinguish RCA-attributed
         # patches (tier 3) from broad AG-fallback patches (tier 1).
