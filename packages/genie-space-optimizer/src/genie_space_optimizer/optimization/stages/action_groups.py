@@ -29,6 +29,50 @@ from genie_space_optimizer.optimization.rca_decision_trace import (
 STAGE_KEY: str = "action_group_selection"
 
 
+# Cycle 2 Task 4 — root causes that are inherently question-local.
+# A single-question cluster with one of these root causes should be
+# fixed with a per-question lever, not a space-wide one.
+_QUESTION_SHAPE_ROOT_CAUSES: frozenset[str] = frozenset({
+    "plural_top_n_collapse",
+    "count_vs_distinct",
+    "row_ordering_drift",
+    "limit_vs_rank",
+})
+
+# Cycle 2 Task 4 — default per-question levers. 3 = example_sql
+# (benchmark anchor), 5 = instructions narrowed by question_id.
+_PER_QUESTION_PREFERRED_LEVERS: tuple[int, ...] = (3, 5)
+
+# Cycle 2 Task 4 — default space-wide levers when no preference fires.
+# Includes 6 (SQL expressions) which is appropriate for multi-
+# question patterns.
+_DEFAULT_RECOMMENDED_LEVERS: tuple[int, ...] = (3, 5, 6)
+
+
+def recommended_levers_for_cluster(cluster: dict) -> tuple[int, ...]:
+    """Cycle 2 Task 4 — return the strategist's preferred lever
+    ordering for a cluster.
+
+    When ``GSO_QUESTION_SHAPE_LEVER_PREFERENCE`` is on and the cluster
+    has ``q_count == 1`` AND ``root_cause`` is a question-shape root
+    cause, returns the per-question lever set (3, 5) WITHOUT lever 6.
+    Otherwise returns the default lever set that includes lever 6.
+    """
+    from genie_space_optimizer.common.config import (
+        question_shape_lever_preference_enabled,
+    )
+
+    if not question_shape_lever_preference_enabled():
+        return _DEFAULT_RECOMMENDED_LEVERS
+
+    qids = cluster.get("question_ids") or []
+    q_count = int(cluster.get("q_count") or len(qids) or 0)
+    root_cause = str(cluster.get("root_cause") or "")
+    if q_count == 1 and root_cause in _QUESTION_SHAPE_ROOT_CAUSES:
+        return _PER_QUESTION_PREFERRED_LEVERS
+    return _DEFAULT_RECOMMENDED_LEVERS
+
+
 @dataclass
 class ActionGroupsInput:
     """Input to stages.action_groups.select.
