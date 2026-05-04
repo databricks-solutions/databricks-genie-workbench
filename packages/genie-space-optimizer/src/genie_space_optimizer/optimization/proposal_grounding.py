@@ -514,6 +514,22 @@ def instruction_patch_scope_is_safe(
     return {"safe": True, "reason": "narrow_instruction_scope"}
 
 
+# Optimizer Control-Plane Hardening Plan — Task E.
+#
+# Non-semantic patch types do not change query semantics; they edit
+# metadata Genie reads (descriptions, synonyms, instructions). Their
+# collateral risk is structurally bounded — they cannot regress a
+# passing query — so when the GSO_LEVER_AWARE_BLAST_RADIUS flag is on,
+# the high_collateral_risk_flagged rejection downgrades to a warning.
+_NON_SEMANTIC_PATCH_TYPES: frozenset[str] = frozenset({
+    "update_column_description",
+    "add_column_synonym",
+    "add_metric_view_instruction",
+    "add_table_instruction",
+    "update_table_description",
+})
+
+
 def patch_blast_radius_is_safe(
     patch: dict,
     *,
@@ -536,6 +552,22 @@ def patch_blast_radius_is_safe(
     outside = [q for q in dependents if q not in target_set]
 
     if patch.get("high_collateral_risk") and outside:
+        from genie_space_optimizer.common.config import (
+            lever_aware_blast_radius_enabled,
+        )
+        patch_type = str(
+            patch.get("patch_type") or patch.get("type") or ""
+        )
+        if (
+            lever_aware_blast_radius_enabled()
+            and patch_type in _NON_SEMANTIC_PATCH_TYPES
+        ):
+            return {
+                "safe": True,
+                "reason": "non_semantic_collateral_warning",
+                "passing_dependents_outside_target": outside[:20],
+                "patch_type": patch_type,
+            }
         return {
             "safe": False,
             "reason": "high_collateral_risk_flagged",
