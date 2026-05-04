@@ -49,6 +49,12 @@ class ActionGroupsInput:
     ag_alternatives_by_id: Mapping[str, Sequence[AlternativeOption]] = field(
         default_factory=dict
     )
+    # Optimizer Control-Plane Hardening Plan — Task C. Maps qid -> the
+    # bucket the prior iteration assigned. When
+    # ``GSO_BUCKET_DRIVEN_AG_SELECTION`` is on, ``select`` drops
+    # MODEL_CEILING qids from AG target sets and tags AGs whose targets
+    # are all EVIDENCE_GAP with ``ag_kind="evidence_gathering"``.
+    prior_buckets_by_qid: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -65,17 +71,87 @@ class ActionGroupSlate:
     rejected_ag_alternatives: tuple[Mapping[str, Any], ...] = ()
 
 
+def _apply_bucket_policy(
+    action_groups: tuple[Mapping[str, Any], ...],
+    *,
+    buckets_by_qid: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Optimizer Control-Plane Hardening Plan — Task C policy.
+
+    Drop ``MODEL_CEILING`` qids from each AG's target set; if the AG
+    ends up with no qids, drop the AG entirely. AGs whose remaining
+    target qids are all ``EVIDENCE_GAP`` are tagged with
+    ``ag_kind="evidence_gathering"`` so the proposal stage emits a
+    no-op evidence-gathering proposal rather than mutating the space.
+    """
+    from genie_space_optimizer.optimization.failure_bucketing import (
+        FailureBucket,
+    )
+
+    out: list[dict[str, Any]] = []
+    for ag in action_groups:
+        target_qids = tuple(
+            str(q) for q in (ag.get("target_qids") or ())
+        )
+        kept_qids = tuple(
+            q for q in target_qids
+            if buckets_by_qid.get(q) is not FailureBucket.MODEL_CEILING
+        )
+        if not kept_qids:
+            continue
+        new_ag = dict(ag)
+        new_ag["target_qids"] = kept_qids
+        affected = tuple(
+            str(q) for q in (ag.get("affected_questions") or ())
+        )
+        if affected:
+            new_ag["affected_questions"] = tuple(
+                q for q in affected
+                if buckets_by_qid.get(q) is not FailureBucket.MODEL_CEILING
+            ) or kept_qids
+        all_evidence_gap = all(
+            buckets_by_qid.get(q) is FailureBucket.EVIDENCE_GAP
+            for q in kept_qids
+        )
+        if all_evidence_gap:
+            new_ag["ag_kind"] = "evidence_gathering"
+        out.append(new_ag)
+    return out
+
+
 def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
     """Stage 4 entry. Emits STRATEGIST_AG_EMITTED records and returns a
     typed slate. F4 is observability-only — does NOT invoke the
     strategist LLM, drain buffered AGs, or apply constraints. Harness
     still owns those steps and feeds the result into ``inp.action_groups``
     when the harness wire-up lands in a follow-up plan.
+
+    Optimizer Control-Plane Hardening Plan — Task C. When
+    ``GSO_BUCKET_DRIVEN_AG_SELECTION`` is on AND ``prior_buckets_by_qid``
+    is non-empty, the slate is filtered through ``_apply_bucket_policy``
+    before STRATEGIST_AG_EMITTED records are produced.
     """
+    from genie_space_optimizer.common.config import (
+        bucket_driven_ag_selection_enabled,
+    )
+
+    if (
+        bucket_driven_ag_selection_enabled()
+        and inp.prior_buckets_by_qid
+    ):
+        filtered_ags = tuple(
+            _apply_bucket_policy(
+                inp.action_groups,
+                buckets_by_qid=inp.prior_buckets_by_qid,
+            )
+        )
+    else:
+        filtered_ags = tuple(inp.action_groups)
+
     records = strategist_ag_records(
         run_id=ctx.run_id,
         iteration=ctx.iteration,
-        action_groups=inp.action_groups,
+        action_groups=filtered_ags,
         source_clusters_by_id=inp.source_clusters_by_id,
         rca_id_by_cluster=inp.rca_id_by_cluster,
         ag_alternatives_by_id=inp.ag_alternatives_by_id,
@@ -84,7 +160,7 @@ def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
         ctx.decision_emit(record)
 
     return ActionGroupSlate(
-        ags=tuple(inp.action_groups),
+        ags=filtered_ags,
         rejected_ag_alternatives=(),
     )
 
