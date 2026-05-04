@@ -15846,6 +15846,16 @@ def _run_lever_loop(
                 ag,
                 strategy.get("_source_clusters", []),
             )
+            # Cycle 2 Task 2: collect every currently-hard qid across
+            # all clusters so blast-radius can downgrade rejects whose
+            # outside-target dependents are themselves hard (shared-
+            # cause beneficiaries).
+            _live_hard_qids_for_blast = tuple(
+                str(q)
+                for cluster in (clusters or [])
+                for q in (cluster.get("question_ids") or [])
+                if str(q)
+            )
             _blast_kept: list[dict] = []
             _blast_dropped: list[dict] = []
             for _candidate in patches:
@@ -15853,6 +15863,7 @@ def _run_lever_loop(
                     _candidate,
                     ag_target_qids=_blast_target_qids,
                     max_outside_target=0,
+                    live_hard_qids=_live_hard_qids_for_blast,
                 )
                 if not _decision["safe"]:
                     _blast_dropped.append({
@@ -16017,6 +16028,15 @@ def _run_lever_loop(
                 ag,
                 strategy.get("_source_clusters", []),
             )
+            # Cycle 2 Task 2: shared-cause-aware blast radius — pass
+            # the full live-hard set so the gate can downgrade rejects
+            # whose outside-target dependents are themselves hard.
+            _live_hard_qids_for_blast = tuple(
+                str(q)
+                for cluster in (clusters or [])
+                for q in (cluster.get("question_ids") or [])
+                if str(q)
+            )
             _blast_kept = []
             _blast_dropped = []
             for _candidate in patches:
@@ -16024,6 +16044,7 @@ def _run_lever_loop(
                     _candidate,
                     ag_target_qids=_blast_target_qids,
                     max_outside_target=0,
+                    live_hard_qids=_live_hard_qids_for_blast,
                 )
                 if _decision["safe"]:
                     _blast_kept.append(_candidate)

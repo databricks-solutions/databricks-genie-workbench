@@ -535,6 +535,7 @@ def patch_blast_radius_is_safe(
     *,
     ag_target_qids: tuple[str, ...],
     max_outside_target: int = 0,
+    live_hard_qids: tuple[str, ...] | None = None,
 ) -> dict:
     """Reject patches whose passing-dependents footprint exceeds the AG target.
 
@@ -543,8 +544,15 @@ def patch_blast_radius_is_safe(
     the patch's target) and ``high_collateral_risk`` (set when dependents
     >= 2 * affected). This helper turns those informational stamps into a
     deterministic gate decision used right before the patch cap.
+
+    Cycle 2 Task 2: when the only ``outside_target`` qids are
+    themselves in ``live_hard_qids``, the patch's collateral risk is
+    on currently-failing questions (shared-cause beneficiaries) and
+    the rejection downgrades to ``shared_cause_collateral_warning``.
+    Gated by ``GSO_SHARED_CAUSE_BLAST_RADIUS`` (default-on).
     """
     target_set = {str(q) for q in ag_target_qids or () if str(q)}
+    hard_set = {str(q) for q in (live_hard_qids or ()) if str(q)}
     raw_dependents = patch.get("passing_dependents")
     if raw_dependents is None:
         return {"safe": True, "reason": "no_passing_dependents_field"}
@@ -554,6 +562,7 @@ def patch_blast_radius_is_safe(
     if patch.get("high_collateral_risk") and outside:
         from genie_space_optimizer.common.config import (
             lever_aware_blast_radius_enabled,
+            shared_cause_blast_radius_enabled,
         )
         patch_type = str(
             patch.get("patch_type") or patch.get("type") or ""
@@ -567,6 +576,16 @@ def patch_blast_radius_is_safe(
                 "reason": "non_semantic_collateral_warning",
                 "passing_dependents_outside_target": outside[:20],
                 "patch_type": patch_type,
+            }
+        if (
+            shared_cause_blast_radius_enabled()
+            and hard_set
+            and all(q in hard_set for q in outside)
+        ):
+            return {
+                "safe": True,
+                "reason": "shared_cause_collateral_warning",
+                "passing_dependents_outside_target": outside[:20],
             }
         return {
             "safe": False,
