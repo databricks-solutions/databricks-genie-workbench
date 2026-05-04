@@ -159,3 +159,32 @@ def test_lex_sort_orders_iterations_numerically():
         f"iter_02 / strategy / AG1 / {_RUN}",
         f"iter_10 / strategy / AG1 / {_RUN}",
     ]
+
+
+def test_lever_loop_parent_run_name_is_stable_per_optimization_run_id() -> None:
+    """Phase H Task 9: parent-run name is stable per optimization_run_id."""
+    from genie_space_optimizer.common.mlflow_names import (
+        lever_loop_parent_run_name,
+    )
+    name = lever_loop_parent_run_name("opt-abc-123")
+    assert "opt-abc-123" in name
+    assert "lever_loop" in name
+
+
+def test_run_role_tags_for_lever_loop_parent() -> None:
+    """Phase H Task 9: tags on the parent run carry run_role=lever_loop
+    so mlflow_audit and the gso-postmortem skill can discover it."""
+    from genie_space_optimizer.common.mlflow_names import (
+        lever_loop_parent_run_tags,
+    )
+    tags = lever_loop_parent_run_tags(
+        optimization_run_id="opt-abc-123",
+        databricks_job_id="j1",
+        databricks_parent_run_id="r1",
+        lever_loop_task_run_id="t1",
+    )
+    assert tags["genie.run_role"] == "lever_loop"
+    assert tags["genie.optimization_run_id"] == "opt-abc-123"
+    assert tags["genie.databricks.job_id"] == "j1"
+    assert tags["genie.databricks.parent_run_id"] == "r1"
+    assert tags["genie.databricks.lever_loop_task_run_id"] == "t1"

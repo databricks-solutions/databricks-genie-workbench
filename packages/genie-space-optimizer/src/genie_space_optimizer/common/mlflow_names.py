@@ -137,3 +137,37 @@ def default_tags(
     if ag_id:
         tags["genie.ag_id"] = str(ag_id)
     return tags
+
+
+# ── Phase H: parent lever-loop run ────────────────────────────────────
+
+
+def lever_loop_parent_run_name(optimization_run_id: str) -> str:
+    """Return the canonical parent-run name for a lever-loop run.
+
+    Phase H attaches gso_postmortem_bundle/ artifacts to this single run
+    so mlflow_audit and gso-postmortem can discover the bundle from a
+    flat experiment listing using the genie.run_role tag.
+    """
+    return f"lever_loop / opt={optimization_run_id}"
+
+
+def lever_loop_parent_run_tags(
+    *,
+    optimization_run_id: str,
+    databricks_job_id: str = "",
+    databricks_parent_run_id: str = "",
+    lever_loop_task_run_id: str = "",
+) -> dict[str, str]:
+    """Tags applied to the parent lever-loop MLflow run (Phase H).
+
+    The ``genie.run_role`` tag is what mlflow_audit and gso-postmortem
+    use to find this run from a flat experiment listing.
+    """
+    return {
+        "genie.run_role": "lever_loop",
+        "genie.optimization_run_id": optimization_run_id,
+        "genie.databricks.job_id": databricks_job_id,
+        "genie.databricks.parent_run_id": databricks_parent_run_id,
+        "genie.databricks.lever_loop_task_run_id": lever_loop_task_run_id,
+    }
