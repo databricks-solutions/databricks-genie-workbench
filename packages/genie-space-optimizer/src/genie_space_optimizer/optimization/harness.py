@@ -15087,56 +15087,84 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
-        # Phase B delta Task 5 — emit PROPOSAL_GENERATED decision
-        # records alongside the proposed journey events. The producer
-        # respects the same _grounding_target_qids -> target_qids
-        # precedence as the journey emit above.
+        # Phase F+H A3 (v2): F5 proposals — additive observability with
+        # atomic dedup. Replaces inline _proposal_generated_records (in
+        # the deleted block) with the stage call which emits
+        # PROPOSAL_GENERATED via ctx.decision_emit per
+        # stages/proposals.py:128-129 and stamps content_fingerprint per
+        # :108-115 using the SAME reflection_retry.patch_retry_signature
+        # function the harness already used at :14311 (algorithm parity
+        # confirmed — NO all_proposals replacement needed).
+        #
+        # Verified against: stages/proposals.py:39-55 (Input), 95-135
+        # (generate body), harness.py:14311 (PR-E content_fingerprint
+        # stamping site, same algorithm), harness.py:12280-12291
+        # (_iter_rca_id_by_cluster).
+        #
+        # Phase D.5 Task 7 alternatives builder hoisted out of the
+        # deleted inline producer try-block (v1 stayed inside; v2 needs
+        # the result for F5's proposal_alternatives_by_ag input).
+        _proposal_alts = _build_proposal_alternatives_for_ag(
+            raw_proposals=(
+                list(_raw_proposals_for_ag)
+                if "_raw_proposals_for_ag" in locals()
+                else (all_proposals or [])
+            ),
+            surviving_proposal_ids=[
+                str(p.get("proposal_id") or p.get("id") or "")
+                for p in (all_proposals or [])
+            ],
+        )
+
         try:
-            from genie_space_optimizer.optimization.decision_emitters import (
-                proposal_generated_records as _proposal_generated_records,
+            from genie_space_optimizer.optimization.stages import (
+                StageContext as _StageCtx,
+            )
+            from genie_space_optimizer.optimization.stages import (
+                proposals as _prop_stage,
             )
 
+            _stage_ctx_a3 = _StageCtx(
+                run_id=str(run_id),
+                iteration=int(iteration_counter),
+                space_id=str(space_id),
+                domain=str(domain),
+                catalog=str(catalog),
+                schema=str(schema),
+                apply_mode=str(apply_mode),
+                journey_emit=_journey_emit,
+                decision_emit=_decision_emit,
+                mlflow_anchor_run_id=None,  # set by C17
+                feature_flags={},
+            )
             _cluster_root_cause_by_id = {
                 str(_c.get("cluster_id") or ""): str(_c.get("root_cause") or "")
                 for _c in (clusters or [])
                 if _c.get("cluster_id")
             }
-            # Phase D.5 Task 7: capture proposal alternatives. Without a
-            # local that holds the strategist's full pre-filter set
-            # (including malformed/cap-dropped proposals), the fallback
-            # uses ``all_proposals`` (the surviving set) which yields
-            # empty alternatives — byte-stable. Wire ``_raw_proposals_for_ag``
-            # here when cycle E surfaces it as a local.
-            _proposal_alts = _build_proposal_alternatives_for_ag(
-                raw_proposals=(
-                    list(_raw_proposals_for_ag)
-                    if "_raw_proposals_for_ag" in locals()
-                    else (all_proposals or [])
-                ),
-                surviving_proposal_ids=[
-                    str(p.get("proposal_id") or p.get("id") or "")
-                    for p in (all_proposals or [])
-                ],
-            )
-            _proposal_records = _proposal_generated_records(
-                run_id=run_id,
-                iteration=iteration_counter,
-                ag_id=str(ag_id),
-                proposals=all_proposals or [],
-                rca_id_by_cluster=_iter_rca_id_by_cluster,
+            _prop_inp = _prop_stage.ProposalsInput(
+                proposals_by_ag={
+                    str(ag_id): tuple(all_proposals or []),
+                },
+                rca_id_by_cluster=dict(_iter_rca_id_by_cluster),
                 cluster_root_cause_by_id=_cluster_root_cause_by_id,
-                proposal_alternatives_for_ag=_proposal_alts,
+                proposal_alternatives_by_ag={
+                    str(ag_id): tuple(_proposal_alts or []),
+                },
             )
-            _current_iter_inputs.setdefault("decision_records", []).extend(
-                [r.to_dict() for r in _proposal_records]
-            )
+            _prop_slate = _prop_stage.generate(_stage_ctx_a3, _prop_inp)
+            # _prop_slate is observability-only: F6 (deferred) would
+            # consume _prop_slate.proposals_by_ag (fingerprint-stamped)
+            # when wired. Until F6 lands, the harness's all_proposals
+            # (already fingerprinted by :14311) is the canonical input
+            # to downstream gates — DO NOT replace.
         except Exception:
             _iter_producer_exceptions["proposal_generated"] += 1
             _phase_b_producer_exceptions["proposal_generated"] = (
                 _phase_b_producer_exceptions.get("proposal_generated", 0) + 1
             )
             logger.debug(
-                "Phase B: proposal_generated_records failed (non-fatal)",
+                "Phase F+H A3 v2: proposals stage failed (non-fatal)",
                 exc_info=True,
             )
             if _phase_b_strict_mode():
