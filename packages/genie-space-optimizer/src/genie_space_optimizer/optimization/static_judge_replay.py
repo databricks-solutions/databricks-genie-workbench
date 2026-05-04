@@ -39,9 +39,13 @@ class StaticJudgeReplayResult:
 
 
 def _proposal_id(item: dict[str, Any]) -> str:
+    # P2: prefer ``expanded_patch_id`` so judge-replay records key on
+    # the lever-qualified id (L{lever}:{parent_id}#{idx}) when one was
+    # stamped. Two patches under the same parent but different levers
+    # would otherwise collide on the legacy unqualified ``proposal_id``.
     return str(
-        item.get("proposal_id")
-        or item.get("expanded_patch_id")
+        item.get("expanded_patch_id")
+        or item.get("proposal_id")
         or item.get("source_proposal_id")
         or item.get("id")
         or "?"

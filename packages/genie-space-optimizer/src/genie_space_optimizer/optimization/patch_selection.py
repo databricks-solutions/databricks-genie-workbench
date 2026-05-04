@@ -8,9 +8,13 @@ _RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 
 
 def _proposal_id(patch: dict[str, Any], index: int) -> str:
+    # P2: prefer ``expanded_patch_id`` over ``proposal_id`` so downstream
+    # selection / dedup paths see the lever-qualified form
+    # (L{lever}:{parent_id}#{idx}) when one was stamped, instead of the
+    # legacy unqualified ``{parent_id}#{idx}`` form.
     return str(
-        patch.get("proposal_id")
-        or patch.get("expanded_patch_id")
+        patch.get("expanded_patch_id")
+        or patch.get("proposal_id")
         or patch.get("source_proposal_id")
         or patch.get("parent_proposal_id")
         or patch.get("id")
