@@ -120,3 +120,57 @@ def test_no_structural_candidate_record_shape() -> None:
     assert rec.outcome == DecisionOutcome.DROPPED
     assert rec.reason_code == ReasonCode.NO_STRUCTURAL_CANDIDATE
     assert "ordered_list_by_metric" in rec.reason_detail
+
+
+def test_marker_round_trip_proposal_generation_empty() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        proposal_generation_empty_marker,
+    )
+    from genie_space_optimizer.tools.marker_parser import (
+        parse_proposal_generation_empty_marker,
+    )
+
+    line = proposal_generation_empty_marker(
+        ag_id="AG_COVERAGE_H001",
+        iteration=3,
+        target_qids=["gs_026"],
+    )
+    parsed = parse_proposal_generation_empty_marker(line)
+    assert parsed["ag_id"] == "AG_COVERAGE_H001"
+    assert parsed["iteration"] == 3
+    assert parsed["target_qids"] == ["gs_026"]
+
+
+def test_marker_round_trip_structural_gate_dropped() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        structural_gate_dropped_marker,
+    )
+    from genie_space_optimizer.tools.marker_parser import (
+        parse_structural_gate_dropped_marker,
+    )
+
+    line = structural_gate_dropped_marker(
+        ag_id="AG_COVERAGE_H002",
+        iteration=2,
+        root_causes=["missing_filter"],
+        target_qids=["gs_021"],
+    )
+    parsed = parse_structural_gate_dropped_marker(line)
+    assert parsed["root_causes"] == ["missing_filter"]
+
+
+def test_marker_round_trip_no_structural_candidate() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        no_structural_candidate_marker,
+    )
+    from genie_space_optimizer.tools.marker_parser import (
+        parse_no_structural_candidate_marker,
+    )
+
+    line = no_structural_candidate_marker(
+        ag_id="AG_COVERAGE_H002",
+        iteration=2,
+        attempted_archetypes=["ordered_list_by_metric"],
+    )
+    parsed = parse_no_structural_candidate_marker(line)
+    assert parsed["attempted_archetypes"] == ["ordered_list_by_metric"]

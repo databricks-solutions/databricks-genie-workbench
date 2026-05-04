@@ -8,7 +8,7 @@ Databricks task stdout.
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 def _clean(value: Any) -> Any:
@@ -331,3 +331,68 @@ def bundle_assembly_failed_marker(
         "error_message": str(error_message)[:2000],
     }
     return "GSO_BUNDLE_ASSEMBLY_FAILED_V1 " + json.dumps(payload, sort_keys=True)
+
+
+def proposal_generation_empty_marker(
+    *,
+    ag_id: str,
+    iteration: int,
+    target_qids: Sequence[str] | None = None,
+) -> str:
+    """P4 — stdout marker emitted when an AG produces zero proposals.
+
+    Distinct from ``GSO_STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY_V1``
+    (proposal existed but was dropped) and
+    ``GSO_NO_STRUCTURAL_CANDIDATE_V1`` (synthesis attempted but no
+    archetype produced a candidate). Parsed by
+    ``tools.marker_parser.parse_proposal_generation_empty_marker``.
+    """
+    return marker_line(
+        "GSO_PROPOSAL_GENERATION_EMPTY_V1",
+        {
+            "ag_id": str(ag_id),
+            "iteration": int(iteration),
+            "target_qids": list(target_qids or ()),
+        },
+    )
+
+
+def structural_gate_dropped_marker(
+    *,
+    ag_id: str,
+    iteration: int,
+    root_causes: Sequence[str] | None = None,
+    target_qids: Sequence[str] | None = None,
+) -> str:
+    """P4 — stdout marker emitted when the lever-5 structural gate
+    drops an instruction-only proposal because the dominant cluster
+    root cause is SQL-shape but no ``example_sql`` is attached.
+    """
+    return marker_line(
+        "GSO_STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY_V1",
+        {
+            "ag_id": str(ag_id),
+            "iteration": int(iteration),
+            "root_causes": list(root_causes or ()),
+            "target_qids": list(target_qids or ()),
+        },
+    )
+
+
+def no_structural_candidate_marker(
+    *,
+    ag_id: str,
+    iteration: int,
+    attempted_archetypes: Sequence[str] | None = None,
+) -> str:
+    """P4 — stdout marker emitted when synthesis was attempted but no
+    archetype produced a viable structural candidate.
+    """
+    return marker_line(
+        "GSO_NO_STRUCTURAL_CANDIDATE_V1",
+        {
+            "ag_id": str(ag_id),
+            "iteration": int(iteration),
+            "attempted_archetypes": list(attempted_archetypes or ()),
+        },
+    )

@@ -119,3 +119,66 @@ def extract_replay_fixture(stdout: str) -> Mapping[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _parse_named_marker(line: str, expected_name: str) -> dict:
+    """Parse a single ``GSO_*_V1 {json}`` line emitted by
+    ``run_analysis_contract.marker_line`` and return the JSON payload.
+
+    Raises ``ValueError`` when the line does not start with the
+    expected marker name or the JSON payload is invalid.
+    """
+    stripped = line.strip()
+    match = _MARKER_RE.match(stripped)
+    if not match:
+        raise ValueError(f"not a GSO marker line: {line!r}")
+    name, raw = match.group(1), match.group(2)
+    if name != expected_name:
+        raise ValueError(f"expected {expected_name}, got {name}")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError(f"{expected_name}: payload not an object")
+    return payload
+
+
+def parse_proposal_generation_empty_marker(line: str) -> dict:
+    """Parse ``GSO_PROPOSAL_GENERATION_EMPTY_V1 {json}``.
+
+    Returns ``{"ag_id", "iteration", "target_qids"}``. Raises
+    ``ValueError`` if the line does not match.
+    """
+    payload = _parse_named_marker(line, "GSO_PROPOSAL_GENERATION_EMPTY_V1")
+    return {
+        "ag_id": str(payload.get("ag_id") or ""),
+        "iteration": int(payload.get("iteration") or 0),
+        "target_qids": list(payload.get("target_qids") or []),
+    }
+
+
+def parse_structural_gate_dropped_marker(line: str) -> dict:
+    """Parse ``GSO_STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY_V1 {json}``.
+
+    Returns ``{"ag_id", "iteration", "root_causes", "target_qids"}``.
+    """
+    payload = _parse_named_marker(
+        line, "GSO_STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY_V1"
+    )
+    return {
+        "ag_id": str(payload.get("ag_id") or ""),
+        "iteration": int(payload.get("iteration") or 0),
+        "root_causes": list(payload.get("root_causes") or []),
+        "target_qids": list(payload.get("target_qids") or []),
+    }
+
+
+def parse_no_structural_candidate_marker(line: str) -> dict:
+    """Parse ``GSO_NO_STRUCTURAL_CANDIDATE_V1 {json}``.
+
+    Returns ``{"ag_id", "iteration", "attempted_archetypes"}``.
+    """
+    payload = _parse_named_marker(line, "GSO_NO_STRUCTURAL_CANDIDATE_V1")
+    return {
+        "ag_id": str(payload.get("ag_id") or ""),
+        "iteration": int(payload.get("iteration") or 0),
+        "attempted_archetypes": list(payload.get("attempted_archetypes") or []),
+    }
