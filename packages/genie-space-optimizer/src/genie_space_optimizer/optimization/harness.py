@@ -11183,14 +11183,37 @@ def _run_lever_loop(
     _iter_traces: dict[int, _AnyPhaseH] = {}
     _iter_summaries: dict[int, dict[str, _AnyPhaseH]] = {}
     _hard_failures_for_overview: list[tuple[str, str, str]] = []
-    # P3 task 4 — buffer for cluster-driven synthesis proposals queued
-    # at the lever-5 structural-gate drop site. Drained at the start of
-    # each iteration via _consume_structural_synthesis_buffer; in the
-    # current wiring same-iteration injection at the drop site is
-    # preferred, so this buffer typically remains empty. The helper
-    # stays invoked each iteration for hygiene and as a future hook
-    # for cross-iteration carry-over.
+    # ── Modular spine carry-over state (cross-iteration) ─────────────
+    # The lever loop's modular spine is:
+    #   1. Evaluation State
+    #   2. RCA Evidence
+    #   3. Cluster Formation
+    #   4. Action Group Selection
+    #   5. Proposal Generation
+    #   6. Safety Gates
+    #   7. Applied Patches
+    #   8. Post-Patch Evaluation
+    #   9. Acceptance / Rollback
+    #   10. Learning / Next Action
+    # Two pieces of cross-iteration state ride here at function scope:
+    #
+    # (P3 task 4) ``_structural_synthesis_buffer`` — buffer for
+    # cluster-driven synthesis proposals queued at the lever-5
+    # structural-gate drop site (spine stage 6 fallback into stage 5).
+    # Drained at the start of each iteration via
+    # _consume_structural_synthesis_buffer. With same-iteration
+    # injection at the drop site preferred, this buffer typically
+    # remains empty; the drain runs each iteration for hygiene and
+    # as a future hook for cross-iteration carry-over.
     _structural_synthesis_buffer: list[dict] = []
+    # (Control-plane Task C) ``_prior_buckets_by_qid`` — qid →
+    # FailureBucket map produced by spine stage 10 (Learning) at the
+    # END of each iteration and consumed by spine stage 4 (Action
+    # Group Selection) at the START of the next iteration. Empty on
+    # iter 1 so the slate is unfiltered; populated post-trace
+    # classification. Active when GSO_BUCKET_DRIVEN_AG_SELECTION is
+    # on (production-locked: always on).
+    _prior_buckets_by_qid: dict[str, Any] = {}
 
     resume_state = _resume_lever_loop(spark, run_id, catalog, schema)
     # S10 — ``start_lever`` is informational only: the loop below always
@@ -15577,6 +15600,14 @@ def _run_lever_loop(
                 mlflow_anchor_run_id=_phase_h_anchor_run_id,  # C17 v2 — activates Phase B capture
                 feature_flags={},
             )
+            # Spine stage 4 — Action Group Selection. Consumes the
+            # carry-over from the prior iteration's spine stage 10
+            # (Learning) via ``prior_buckets_by_qid``. When the bucket
+            # map is non-empty, ``select`` drops MODEL_CEILING qids
+            # from each AG's target set and tags AGs whose remaining
+            # qids are all EVIDENCE_GAP with ``ag_kind=
+            # "evidence_gathering"``. Iter 1 sees an empty map (no
+            # carry-over yet), so the slate is unfiltered.
             _ags_inp = _ags_stage.ActionGroupsInput(
                 action_groups=tuple([ag]),
                 source_clusters_by_id={
@@ -15588,6 +15619,7 @@ def _run_lever_loop(
                 ag_alternatives_by_id={
                     k: tuple(v) for k, v in (_ag_alts_by_id or {}).items()
                 },
+                prior_buckets_by_qid=dict(_prior_buckets_by_qid),
             )
             # Phase F+H Commit B11: wrap F4 with stage_io_capture
             # decorator. Replay-byte-stable — wrap_with_io_capture
@@ -18909,6 +18941,44 @@ def _run_lever_loop(
                     journey_events=tuple(_journey_events),
                     decision_records=tuple(_decision_records),
                 )
+                # Spine stage 10 — Learning / Next Action. Classify
+                # each unresolved qid in this iteration's trace into a
+                # FailureBucket and refresh ``_prior_buckets_by_qid``
+                # so the next iteration's spine stage 4 (Action Group
+                # Selection) consumes it via ``ActionGroupsInput.
+                # prior_buckets_by_qid``. The classifier is pure (no
+                # side effects); the call is wrapped in try/except so
+                # any failure preserves the prior map rather than
+                # corrupting carry-over state.
+                try:
+                    from genie_space_optimizer.optimization.failure_bucketing import (
+                        classify_unresolved_qid as _classify_unresolved_qid,
+                    )
+                    from genie_space_optimizer.optimization.rca_decision_trace import (
+                        DecisionOutcome as _DecisionOutcome,
+                    )
+                    _next_buckets: dict[str, Any] = {}
+                    _qids_seen: set[str] = set()
+                    for _r in _decision_records:
+                        _qid = str(getattr(_r, "question_id", "") or "")
+                        if not _qid or _qid in _qids_seen:
+                            continue
+                        if getattr(_r, "outcome", None) != _DecisionOutcome.UNRESOLVED:
+                            continue
+                        _qids_seen.add(_qid)
+                        _classification = _classify_unresolved_qid(
+                            _trace, _qid, iteration=iteration_counter,
+                        )
+                        if _classification.bucket is not None:
+                            _next_buckets[_qid] = _classification.bucket
+                    _prior_buckets_by_qid = _next_buckets
+                except Exception:
+                    logger.debug(
+                        "Spine stage 10: bucket classification failed "
+                        "(non-fatal); prior_buckets_by_qid carried over "
+                        "unchanged",
+                        exc_info=True,
+                    )
                 _transcript = render_operator_transcript(
                     trace=_trace,
                     iteration=iteration_counter,
