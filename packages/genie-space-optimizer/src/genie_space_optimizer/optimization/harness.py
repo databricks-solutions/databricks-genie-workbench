@@ -15289,7 +15289,19 @@ def _run_lever_loop(
                     str(ag_id): tuple(_proposal_alts or []),
                 },
             )
-            _prop_slate = _prop_stage.generate(_stage_ctx_a3, _prop_inp)
+            # Phase F+H Commit B12: wrap F5 with stage_io_capture
+            # decorator. Replay-byte-stable — wrap_with_io_capture
+            # returns the stage output unchanged; MLflow log_text
+            # calls are no-ops while mlflow_anchor_run_id is None
+            # (C17 wires the anchor on real runs).
+            from genie_space_optimizer.optimization.stage_io_capture import (
+                wrap_with_io_capture as _wrap_with_io_capture_a3,
+            )
+            _prop_wrapped = _wrap_with_io_capture_a3(
+                execute=_prop_stage.execute,
+                stage_key="proposal_generation",
+            )
+            _prop_slate = _prop_wrapped(_stage_ctx_a3, _prop_inp)
             # _prop_slate is observability-only: F6 (deferred) would
             # consume _prop_slate.proposals_by_ag (fingerprint-stamped)
             # when wired. Until F6 lands, the harness's all_proposals
