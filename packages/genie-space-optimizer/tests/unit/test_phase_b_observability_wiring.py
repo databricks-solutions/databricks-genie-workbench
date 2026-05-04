@@ -45,16 +45,19 @@ def test_harness_wires_cluster_records_producer() -> None:
 
 
 def test_harness_wires_strategist_ag_records_producer() -> None:
-    """Phase F+H A2: the harness routes STRATEGIST_AG_EMITTED emission
-    through the F4 stage module (stages.action_groups.select), which
-    internally calls strategist_ag_records and emits via
-    ctx.decision_emit. The pre-A2 inline alias + call were deleted by
-    A2; the producer is still wired, just one indirection deeper."""
+    """Phase F+H A2 + B11: the harness routes STRATEGIST_AG_EMITTED
+    emission through the F4 stage module (stages.action_groups.select)
+    wrapped in stage_io_capture (B11). The wrap returns the stage
+    output unchanged; on real runs it captures input/output/decisions
+    to MLflow under the bundle path."""
     src = _read_harness_source()
-    # F4 stage call is present at the post-strategist site.
     assert "from genie_space_optimizer.optimization.stages import" in src
     assert "action_groups as _ags_stage" in src
-    assert "_ags_stage.select(" in src
+    # B11: wrap_with_io_capture is applied around _ags_stage.execute
+    # and the resulting wrapper is what the harness calls.
+    assert "execute=_ags_stage.execute" in src
+    assert '"action_group_selection"' in src
+    assert "_ags_wrapped(" in src
 
 
 def test_harness_wires_ag_outcome_record_producer() -> None:
@@ -86,17 +89,20 @@ def test_harness_wires_ag_outcome_record_producer() -> None:
     assert (
         "_phase_b_emit_ag_outcome_record(ag, _outcome_for_journey)" not in src
     ), "post-gate accepted closure call must be deleted by A5 v2.1"
-    # F8 stage call is wired at the post-gate anchor.
+    # F8 stage call is wired at the post-gate anchor (B15 wraps it).
     assert "from genie_space_optimizer.optimization.stages import" in src
     assert "acceptance as _accept_stage" in src
-    assert "_accept_stage.decide(" in src
+    assert "execute=_accept_stage.execute" in src
+    assert '"acceptance_decision"' in src
+    assert "_accept_wrapped(" in src
 
 
 def test_harness_wires_post_eval_resolution_producer() -> None:
-    """Phase F+H A5 v2.1 — the harness-inline post_eval_resolution_records
-    block is DELETED. F8.decide() emits QID_RESOLUTION via
+    """Phase F+H A5 v2.1 + B15 — the harness-inline
+    post_eval_resolution_records block is DELETED. F8 wrapped via
+    stage_io_capture (B15) emits QID_RESOLUTION via
     ``stages.acceptance.decide`` (which calls
-    ``post_eval_resolution_records`` internally). Pin the F8 stage
+    ``post_eval_resolution_records`` internally). Pin the wrapped F8
     call as the new active producer wiring."""
     src = _read_harness_source()
     # Pre-A5: the inline import block was active. Post-A5 v2.1: it is
@@ -105,10 +111,10 @@ def test_harness_wires_post_eval_resolution_producer() -> None:
         "post_eval_resolution_records as _post_eval_resolution_records"
         not in src
     ), "harness inline post_eval_resolution_records import must be deleted by A5 v2.1"
-    # F8 stage call wired at the post-gate anchor; QID_RESOLUTION emits
-    # from stages/acceptance.py:230-240 transitively.
+    # B15: wrap_with_io_capture is applied around _accept_stage.execute.
     assert "acceptance as _accept_stage" in src
-    assert "_accept_stage.decide(" in src
+    assert "execute=_accept_stage.execute" in src
+    assert "_accept_wrapped(" in src
 
 
 # ---------------------------------------------------------------------------

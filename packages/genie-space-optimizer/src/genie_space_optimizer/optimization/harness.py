@@ -12022,7 +12022,19 @@ def _run_lever_loop(
                     pending_buffered_ags=tuple(pending_action_groups),
                     diagnostic_action_queue=tuple(diagnostic_action_queue),
                 )
-                _lrn_update = _lrn_stage.update(_stage_ctx_a6, _lrn_inp)
+                # Phase F+H Commit B16: wrap F9 with stage_io_capture
+                # decorator. Replay-byte-stable — wrap_with_io_capture
+                # returns the stage output unchanged; MLflow log_text
+                # calls are no-ops while mlflow_anchor_run_id is None
+                # (C17 wires the anchor on real runs).
+                from genie_space_optimizer.optimization.stage_io_capture import (
+                    wrap_with_io_capture as _wrap_with_io_capture_a6,
+                )
+                _lrn_wrapped = _wrap_with_io_capture_a6(
+                    execute=_lrn_stage.execute,
+                    stage_key="learning_next_action",
+                )
+                _lrn_update = _lrn_wrapped(_stage_ctx_a6, _lrn_inp)
                 # _lrn_update.retired_ags / .ag_retired_records are
                 # observability surfaces; the AG_RETIRED records were
                 # emitted inside update() via ctx.decision_emit which
