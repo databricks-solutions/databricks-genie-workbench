@@ -12514,6 +12514,20 @@ def _run_lever_loop(
             iteration=iteration_counter,
         )
 
+        # Cycle 5 T1 — productive-iteration budget accounting locals.
+        # All three are populated unconditionally because their cost is
+        # negligible; they are READ only when
+        # ``productive_iteration_budget_enabled()`` is true (Option A:
+        # gate emission, not capture). With the flag off the locals are
+        # set but never consumed → zero behaviour change, zero new
+        # decision records, byte-stable replay. The most-recent typed
+        # P4 reason at the SKIPPING / NO_APPLIED sites is sourced from
+        # ``_current_iter_inputs["decision_records"]`` which the harness
+        # already accumulates per iteration.
+        _iter_consumed: bool = True
+        _iter_no_op_cause: str = ""
+        _iter_applied_count: int = 0
+
         # P3 task 4 — drain any structural-synthesis proposals queued
         # at the prior iteration's lever-5 drop site. Same-iteration
         # injection (below at the drop site) is the active path, so
@@ -17201,6 +17215,19 @@ def _run_lever_loop(
             w, space_id, patches, metadata_snapshot, apply_mode=apply_mode,
         )
 
+        # Cycle 5 T1 — productive-iteration accounting. Accumulate the
+        # number of applied patches across ALL AGs in this iteration so
+        # the end-of-iteration budget decision can tell a productive
+        # iteration (≥1 applied) from a deterministic no-op (0 applied
+        # AND a typed P4 reason in the iteration's decision records).
+        try:
+            _iter_applied_count += len(apply_log.get("applied") or [])
+        except Exception:
+            logger.debug(
+                "Cycle 5 T1: _iter_applied_count update failed (non-fatal)",
+                exc_info=True,
+            )
+
         # Task 4 (lever-loop-v2) — per-AG patch-survival ledger. Print a
         # cluster-coverage table across the proposed → normalized →
         # applyable → capped → applied gates so operators can see
@@ -19286,6 +19313,70 @@ def _run_lever_loop(
             )
             if _phase_b_strict_mode():
                 raise
+
+        # Cycle 5 T1 — productive-iteration budget accounting end-of-iter
+        # decision. Gated by ``GSO_PRODUCTIVE_ITERATION_BUDGET`` (Option
+        # A: zero behaviour change with flag off → no record emitted, no
+        # marker, no counter decrement). With flag on, an iteration that
+        # applied zero patches AND produced a typed P4 reason
+        # (``proposal_generation_empty``,
+        # ``structural_gate_dropped_instruction_only``,
+        # ``no_structural_candidate``) is classified as a deterministic
+        # no-op and does not consume the iteration counter; the
+        # iteration_budget_decision_record + GSO_ITERATION_BUDGET_V1
+        # marker make the accounting auditable.
+        try:
+            from genie_space_optimizer.common.config import (
+                productive_iteration_budget_enabled,
+            )
+            if productive_iteration_budget_enabled():
+                from genie_space_optimizer.optimization.decision_emitters import (
+                    iteration_budget_decision_record,
+                )
+                from genie_space_optimizer.common.mlflow_markers import (
+                    iteration_budget_marker,
+                )
+                if _iter_applied_count == 0:
+                    _iter_no_op_cause = _classify_iteration_no_op_cause(
+                        _current_iter_inputs.get("decision_records") or []
+                    )
+                    # Only treat as deterministic no-op when one of the
+                    # typed P4 reasons fired this iteration. Untyped /
+                    # unexplained no-ops still consume budget so the
+                    # loop terminates on plateau rather than spinning.
+                    if _iter_no_op_cause:
+                        _iter_consumed = False
+                _iter_budget_rec = iteration_budget_decision_record(
+                    run_id=str(run_id),
+                    iteration=int(iteration_counter),
+                    consumed=_iter_consumed,
+                    no_op_cause=(_iter_no_op_cause or None),
+                    applied_patches=int(_iter_applied_count),
+                )
+                _decision_emit(_iter_budget_rec)
+                _current_iter_inputs.setdefault(
+                    "decision_records", []
+                ).append(_iter_budget_rec.to_dict())
+                _counter_after = (
+                    iteration_counter
+                    if _iter_consumed
+                    else iteration_counter - 1
+                )
+                print(iteration_budget_marker(
+                    optimization_run_id=str(run_id),
+                    iteration=int(iteration_counter),
+                    consumed=_iter_consumed,
+                    no_op_cause=str(_iter_no_op_cause or ""),
+                    applied_patches=int(_iter_applied_count),
+                    iteration_counter_after=int(_counter_after),
+                ))
+                if not _iter_consumed:
+                    iteration_counter -= 1
+        except Exception:
+            logger.debug(
+                "Cycle 5 T1: iteration_budget emit failed (non-fatal)",
+                exc_info=True,
+            )
 
         # GSO run analysis: emit machine-readable per-iteration summary
         # so the analyzer skill can build a postmortem without scraping
