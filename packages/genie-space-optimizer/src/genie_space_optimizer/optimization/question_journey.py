@@ -44,6 +44,14 @@ class QuestionJourneyEvent:
     cluster_id: str = ""
     ag_id: str = ""
     proposal_id: str = ""
+    # Plan N1 Task 4 — parent proposal id for lane-key unification.
+    # When the producer emits ``proposed`` keyed on the parent
+    # (``P001``) and ``applied_targeted`` keyed on the expanded child
+    # (``P001#1``), both stamp the same ``parent_proposal_id`` so the
+    # validator's ``_split_trunk_and_lanes`` collapses them into the
+    # same lane. Defaults to "" so legacy call sites that have not
+    # yet stamped the field land in a per-``proposal_id`` lane.
+    parent_proposal_id: str = ""
     patch_type: str = ""
     root_cause: str = ""
     reason: str = ""

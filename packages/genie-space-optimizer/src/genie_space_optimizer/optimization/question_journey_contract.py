@@ -111,7 +111,19 @@ _LEGAL_NEXT: dict[JourneyStage, frozenset[JourneyStage]] = {
         JourneyStage.ROLLED_BACK,
         JourneyStage.POST_EVAL,
     }),
-    JourneyStage.PROPOSED: frozenset(_DROP_STAGES | {JourneyStage.APPLIED}),
+    # Plan N1 Task 5 — extend PROPOSED to legally transition to the
+    # Track 3/E split stages. APPLIED_TARGETED and APPLIED_BROAD_AG_SCOPE
+    # were introduced as splits of APPLIED but never wired into
+    # _LEGAL_NEXT as either successors of PROPOSED or predecessors of
+    # ACCEPTED/ROLLED_BACK. The new edges are the strict semantic
+    # equivalent of the legacy APPLIED edge.
+    JourneyStage.PROPOSED: frozenset(
+        _DROP_STAGES | {
+            JourneyStage.APPLIED,
+            JourneyStage.APPLIED_TARGETED,
+            JourneyStage.APPLIED_BROAD_AG_SCOPE,
+        }
+    ),
     JourneyStage.DROPPED_AT_GROUNDING: frozenset({JourneyStage.POST_EVAL}),
     JourneyStage.DROPPED_AT_NORMALIZE: frozenset({JourneyStage.POST_EVAL}),
     JourneyStage.DROPPED_AT_APPLYABILITY: frozenset({JourneyStage.POST_EVAL}),
@@ -119,6 +131,16 @@ _LEGAL_NEXT: dict[JourneyStage, frozenset[JourneyStage]] = {
     JourneyStage.DROPPED_AT_REFLECTION: frozenset({JourneyStage.POST_EVAL}),
     JourneyStage.DROPPED_AT_CAP: frozenset({JourneyStage.POST_EVAL}),
     JourneyStage.APPLIED: frozenset({
+        JourneyStage.ACCEPTED,
+        JourneyStage.ACCEPTED_WITH_REGRESSION_DEBT,
+        JourneyStage.ROLLED_BACK,
+    }),
+    JourneyStage.APPLIED_TARGETED: frozenset({
+        JourneyStage.ACCEPTED,
+        JourneyStage.ACCEPTED_WITH_REGRESSION_DEBT,
+        JourneyStage.ROLLED_BACK,
+    }),
+    JourneyStage.APPLIED_BROAD_AG_SCOPE: frozenset({
         JourneyStage.ACCEPTED,
         JourneyStage.ACCEPTED_WITH_REGRESSION_DEBT,
         JourneyStage.ROLLED_BACK,
@@ -248,27 +270,46 @@ def _trunk_anchor_stage(events: list[QuestionJourneyEvent]) -> str:
     return ""
 
 
+def _lane_key(ev: QuestionJourneyEvent) -> str:
+    """Plan N1 Task 4 — lane key for ``_split_trunk_and_lanes``.
+
+    Prefers ``parent_proposal_id`` so a ``proposed`` event keyed on
+    the parent (``P001``) and an ``applied_targeted`` event keyed on
+    the expanded child (``P001#1``) collapse into the same lane.
+    Falls back to ``proposal_id`` for legacy producer sites that
+    have not yet stamped the parent.
+    """
+    return ev.parent_proposal_id or ev.proposal_id
+
+
 def _split_trunk_and_lanes(
     events: list[QuestionJourneyEvent],
 ) -> tuple[list[str], dict[str, list[str]]]:
-    """Return (trunk_stages, lanes_by_proposal_id).
+    """Return (trunk_stages, lanes_by_lane_key).
 
     ``trunk_stages`` is the canonical-ordered list of stages for events
-    whose ``proposal_id`` is empty. ``lanes_by_proposal_id`` is a dict
-    keyed by ``proposal_id`` with each value the canonical-ordered list
-    of stages for that lane.
+    whose ``proposal_id`` is empty. ``lanes_by_lane_key`` is a dict
+    keyed by ``parent_proposal_id`` (or ``proposal_id`` when the parent
+    is empty), with each value the canonical-ordered list of stages
+    for that lane.
 
     Lane sorting uses the same ``_stage_rank`` ordering as the trunk so
     `proposed -> applied -> dropped_at_*` always validates in causal
     order.
+
+    Plan N1 Task 4 — intra-lane dedup: within a lane, two events that
+    share the same (stage, expanded proposal_id, drop reason) collapse
+    to one. Multi-cluster routing for the same qid (e.g., emitted once
+    under ``cluster_id=H001`` and again under ``cluster_id=rca_*``)
+    is metadata, not a state change.
     """
     from genie_space_optimizer.optimization.question_journey import _stage_rank
 
     trunk_events: list[QuestionJourneyEvent] = []
     lane_events: dict[str, list[QuestionJourneyEvent]] = {}
     for ev in events:
-        if ev.proposal_id and ev.stage in _LANE_STAGES:
-            lane_events.setdefault(ev.proposal_id, []).append(ev)
+        if (ev.parent_proposal_id or ev.proposal_id) and ev.stage in _LANE_STAGES:
+            lane_events.setdefault(_lane_key(ev), []).append(ev)
         else:
             trunk_events.append(ev)
 
@@ -276,12 +317,25 @@ def _split_trunk_and_lanes(
         ev.stage
         for ev in sorted(trunk_events, key=lambda e: _stage_rank(e.stage))
     ]
-    lanes_by_pid = {
-        pid: [
-            ev.stage for ev in sorted(lst, key=lambda e: _stage_rank(e.stage))
-        ]
-        for pid, lst in lane_events.items()
-    }
+
+    def _dedup_key(ev: QuestionJourneyEvent) -> tuple[str, str, str]:
+        # Collapse repeated (stage, expanded_proposal_id, reason) tuples
+        # so the same proposal emitted under two different cluster_ids
+        # appears once in the lane chain.
+        return (ev.stage, ev.proposal_id or "", ev.reason or "")
+
+    lanes_by_pid: dict[str, list[str]] = {}
+    for key, lst in lane_events.items():
+        ordered = sorted(lst, key=lambda e: _stage_rank(e.stage))
+        seen: set[tuple[str, str, str]] = set()
+        deduped: list[str] = []
+        for ev in ordered:
+            dk = _dedup_key(ev)
+            if dk in seen:
+                continue
+            seen.add(dk)
+            deduped.append(ev.stage)
+        lanes_by_pid[key] = deduped
     return trunk_stages, lanes_by_pid
 
 

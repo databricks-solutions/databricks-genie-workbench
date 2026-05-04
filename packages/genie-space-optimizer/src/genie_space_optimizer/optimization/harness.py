@@ -15726,11 +15726,23 @@ def _run_lever_loop(
                 _ptids = [str(q) for q in _ptids if q]
                 if not _ptids:
                     continue
+                # Plan N1 Task 4 — stamp parent_proposal_id so the
+                # validator's lane-key collapses this ``proposed``
+                # event into the same lane as the matching ``applied_*``
+                # / ``dropped_at_cap`` events keyed on the expanded
+                # child id. ``_p`` is at the proposal level so its
+                # ``proposal_id`` is the parent today.
+                _proposed_pid = str(
+                    _p.get("proposal_id") or _p.get("id") or ""
+                )
                 _journey_emit(
                     "proposed",
                     question_ids=_ptids,
-                    proposal_id=str(
-                        _p.get("proposal_id") or _p.get("id") or ""
+                    proposal_id=_proposed_pid,
+                    parent_proposal_id=str(
+                        _p.get("parent_proposal_id")
+                        or _p.get("source_proposal_id")
+                        or _proposed_pid
                     ),
                     patch_type=str(
                         _p.get("patch_type") or _p.get("type") or ""
@@ -16849,10 +16861,20 @@ def _run_lever_loop(
                         else f"cap_overflow_tier={_tier}"
                     )
                     if _dt_qids:
+                        # Plan N1 Task 4 — parent_proposal_id collapse.
+                        _dpid_parent = str(
+                            _d.get("parent_proposal_id")
+                            or _d.get("source_proposal_id")
+                            or _orig.get("parent_proposal_id")
+                            or _orig.get("proposal_id")
+                            or _orig.get("id")
+                            or _dpid
+                        )
                         _journey_emit(
                             "dropped_at_cap",
                             question_ids=_dt_qids,
                             proposal_id=_dpid,
+                            parent_proposal_id=_dpid_parent,
                             patch_type=str(_d.get("patch_type") or ""),
                             cluster_id=str(_d.get("cluster_id") or ""),
                             reason=_drop_reason,
@@ -17428,6 +17450,20 @@ def _run_lever_loop(
                     or _ap.get("id")
                     or ""
                 )
+                # Plan N1 Task 4 — parent for lane-key collapse.
+                # Patches stamped by ``_stamp_expanded_patch_identity``
+                # carry an explicit ``parent_proposal_id``; if absent,
+                # fall back to ``source_proposal_id`` or the unqualified
+                # id parsed out of the expanded form (``L1:P001#1`` or
+                # ``P001#1``).
+                _ap_parent_pid = str(
+                    _ap.get("parent_proposal_id")
+                    or _ap.get("source_proposal_id")
+                    or (
+                        _ap_pid.split(":", 1)[-1].split("#", 1)[0]
+                        if _ap_pid else ""
+                    )
+                )
                 _ap_target_qids = list(_ap.get("_grounding_target_qids") or [])
                 if not _ap_target_qids:
                     _ap_target_qids = list(_ap.get("target_qids") or [])
@@ -17449,6 +17485,7 @@ def _run_lever_loop(
                         "applied_targeted",
                         question_ids=sorted(_ap_target_qid_set),
                         proposal_id=_ap_pid,
+                        parent_proposal_id=_ap_parent_pid,
                         patch_type=_ap_patch_type,
                     )
                 if _ap_broad_qid_set:
@@ -17456,6 +17493,7 @@ def _run_lever_loop(
                         "applied_broad_ag_scope",
                         question_ids=sorted(_ap_broad_qid_set),
                         proposal_id=_ap_pid,
+                        parent_proposal_id=_ap_parent_pid,
                         patch_type=_ap_patch_type,
                     )
             except Exception:
