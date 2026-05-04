@@ -182,6 +182,9 @@ def test_operator_transcript_has_fixed_diagnostic_sections() -> None:
         "AG Decisions And Rationale",
         "Proposal Survival And Gate Drops",
         "Applied Patches And Acceptance",
+        # Plan N2 — Terminal Success surfaces clusters that closed
+        # cleanly via an ACCEPTED AG with no regression debt.
+        "Terminal Success",
         "Observed Results And Regressions",
         "Unresolved QID Buckets",
         "Next Suggested Action",

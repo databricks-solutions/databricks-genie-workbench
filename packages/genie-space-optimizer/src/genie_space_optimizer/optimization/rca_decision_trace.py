@@ -486,6 +486,11 @@ SECTION_RCA_CARDS = "RCA Cards With Evidence"
 SECTION_AG_DECISIONS = "AG Decisions And Rationale"
 SECTION_PROPOSAL_SURVIVAL = "Proposal Survival And Gate Drops"
 SECTION_APPLIED_PATCHES = "Applied Patches And Acceptance"
+# Plan N2 — Terminal Success surfaces clusters that closed in this
+# iteration via an ACCEPTED AG with no regression debt. Rendered
+# between Applied Patches (the cause) and Observed Results (the
+# consequence) so operators read causally top-down.
+SECTION_TERMINAL_SUCCESS = "Terminal Success"
 SECTION_OBSERVED_RESULTS = "Observed Results And Regressions"
 SECTION_UNRESOLVED_QIDS = "Unresolved QID Buckets"
 SECTION_NEXT_ACTION = "Next Suggested Action"
@@ -559,10 +564,130 @@ def _format_record_line(rec: "DecisionRecord") -> str:
     return "|    - " + "  ".join(parts)
 
 
+@dataclass(frozen=True)
+class TerminalSuccessAnnotation:
+    """Plan N2 — render-time annotation for a cluster that closed
+    cleanly in a single iteration.
+
+    Built by ``_derive_terminal_success`` from the iteration's
+    ``DecisionRecord`` stream. Pure projection: the underlying
+    records keep their original ``UNRESOLVED`` outcome; the
+    transcript renderer just appends the resolved-by marker so
+    the operator-visible projection matches the run state.
+    """
+
+    cluster_id: str
+    ag_id: str
+    resolved_qids: tuple[str, ...]
+
+
+def _derive_terminal_success(
+    *,
+    records: list["DecisionRecord"],
+    iteration: int,
+) -> dict[str, TerminalSuccessAnnotation]:
+    """Plan N2 — derive cluster_id → TerminalSuccessAnnotation for
+    clusters that reached terminal success during ``iteration``.
+
+    A cluster ``C`` is in terminal success at iteration ``N`` iff:
+      1. There exists an ``ACCEPTANCE_DECIDED`` record at iteration
+         ``N`` with ``outcome == ACCEPTED`` whose AG (``ag_id``)
+         targets ``C`` (``STRATEGIST_AG_EMITTED.source_cluster_ids``
+         contains ``C``).
+      2. Every QID in the cluster's ``target_qids`` projection has
+         a ``QID_RESOLUTION`` record at iteration ``N`` with
+         ``outcome == RESOLVED``.
+      3. None of the cluster's QIDs appear in the acceptance
+         record's regression-debt metrics (``passing_to_hard_*``,
+         ``soft_to_hard_*``, ``unknown_to_hard_*``).
+
+    Returns ``{}`` when no cluster meets the predicate; the caller
+    treats that as "no override" and renders today's transcript
+    unchanged.
+
+    Pure function: no I/O, no record mutation, no cross-iteration
+    state.
+    """
+    iter_recs = [r for r in records if int(r.iteration) == int(iteration)]
+    accepted = [
+        r for r in iter_recs
+        if r.decision_type == DecisionType.ACCEPTANCE_DECIDED
+        and r.outcome == DecisionOutcome.ACCEPTED
+    ]
+    if not accepted:
+        return {}
+
+    resolved_qids: set[str] = {
+        r.question_id
+        for r in iter_recs
+        if r.decision_type == DecisionType.QID_RESOLUTION
+        and r.outcome == DecisionOutcome.RESOLVED
+        and r.question_id
+    }
+
+    ag_to_clusters: dict[str, set[str]] = {}
+    for r in iter_recs:
+        if (
+            r.decision_type == DecisionType.STRATEGIST_AG_EMITTED
+            and r.ag_id
+        ):
+            ag_to_clusters.setdefault(r.ag_id, set()).update(
+                r.source_cluster_ids or ()
+            )
+
+    out: dict[str, TerminalSuccessAnnotation] = {}
+    for acc in accepted:
+        regression_qids: set[str] = set()
+        m = acc.metrics or {}
+        for k in (
+            "passing_to_hard_regressed_qids",
+            "soft_to_hard_regressed_qids",
+            "unknown_to_hard_regressed_qids",
+        ):
+            for q in (m.get(k) or ()):
+                regression_qids.add(str(q))
+
+        # Restrict cluster qid derivation to the cluster-level rows
+        # (CLUSTER_SELECTED, RCA_FORMED). STRATEGIST_AG_EMITTED's
+        # target_qids spans every cluster the AG touches, so unioning
+        # it would conflate sibling clusters' qids and break the
+        # partial-resolution case (one cluster resolved, the other
+        # still open under the same AG).
+        _CLUSTER_LEVEL = (
+            DecisionType.CLUSTER_SELECTED,
+            DecisionType.RCA_FORMED,
+        )
+        for cid in ag_to_clusters.get(acc.ag_id, ()):
+            cluster_qids: set[str] = set()
+            for r in iter_recs:
+                if r.cluster_id != cid:
+                    continue
+                if r.decision_type not in _CLUSTER_LEVEL:
+                    continue
+                for q in (r.target_qids or ()):
+                    if q:
+                        cluster_qids.add(str(q))
+            if not cluster_qids:
+                continue
+            if cluster_qids & regression_qids:
+                # regression debt rules out terminal success
+                continue
+            if not cluster_qids.issubset(resolved_qids):
+                # not all target qids resolved
+                continue
+            out[cid] = TerminalSuccessAnnotation(
+                cluster_id=cid,
+                ag_id=acc.ag_id,
+                resolved_qids=tuple(sorted(cluster_qids)),
+            )
+    return out
+
+
 def render_operator_transcript(
     *,
     trace: OptimizationTrace,
     iteration: int,
+    _force_no_override: bool = False,
 ) -> str:
     """Render the deterministic stdout projection of OptimizationTrace.
 
@@ -577,6 +702,16 @@ def render_operator_transcript(
     surface in ``Unresolved QID Buckets``; the ``Next Suggested
     Action`` section is rendered from the dominant un-passed cluster's
     ``next_action`` field if present, falling back to a static prompt.
+
+    Plan N2 — Terminal-Success override. When an iteration ends with
+    ``ACCEPTANCE_DECIDED.ACCEPTED`` for an AG that fully closes a
+    cluster (target qids resolved, no regression debt), the renderer
+    annotates the cluster's ``RCA Cards`` lines with
+    ``[RESOLVED BY {ag_id}]``, drops that cluster's stale next-action
+    prompts, and lists the cluster in a new ``Terminal Success``
+    section. Pure projection: no record mutation. Set
+    ``_force_no_override=True`` (test-only) to bypass the override
+    and render today's pre-N2 transcript bytes.
     """
     records = [
         r for r in trace.decision_records
@@ -594,6 +729,14 @@ def render_operator_transcript(
             section = SECTION_NEXT_ACTION
         by_section.setdefault(section, []).append(rec)
 
+    # Plan N2 — derive terminal-success annotations once per render.
+    if _force_no_override:
+        _terminal_success: dict[str, TerminalSuccessAnnotation] = {}
+    else:
+        _terminal_success = _derive_terminal_success(
+            records=records, iteration=iteration,
+        )
+
     bar = "-" * 100
     lines = [
         f"+{bar}",
@@ -609,6 +752,7 @@ def render_operator_transcript(
         SECTION_AG_DECISIONS,
         SECTION_PROPOSAL_SURVIVAL,
         SECTION_APPLIED_PATCHES,
+        SECTION_TERMINAL_SUCCESS,
         SECTION_OBSERVED_RESULTS,
         SECTION_UNRESOLVED_QIDS,
         SECTION_NEXT_ACTION,
@@ -671,15 +815,38 @@ def render_operator_transcript(
                     lines.append(_format_record_line(rec))
             continue
         if section == SECTION_NEXT_ACTION:
+            # Plan N2 — drop next_actions whose cluster reached
+            # terminal success this iteration. The pre-acceptance
+            # ``Re-run RCA prompt for H001.`` etc. are stale once
+            # the matching ACCEPTANCE_DECIDED lands.
             next_actions = [
                 r.next_action
                 for r in sorted_records
-                if r.next_action and r.outcome != DecisionOutcome.RESOLVED
+                if r.next_action
+                and r.outcome != DecisionOutcome.RESOLVED
+                and r.cluster_id not in _terminal_success
             ]
             if next_actions:
                 lines.append(f"|    - {next_actions[0]}")
             else:
                 lines.append("|    - (no open next action)")
+            continue
+        if section == SECTION_TERMINAL_SUCCESS:
+            # Plan N2 — one line per cluster that closed cleanly
+            # this iteration. Heading always renders so operators
+            # can scan for it; empty body when no terminal success.
+            if _terminal_success:
+                for cid in sorted(_terminal_success):
+                    ann = _terminal_success[cid]
+                    qids_str = ",".join(ann.resolved_qids)
+                    lines.append(
+                        f"|    - cluster={cid}  ag={ann.ag_id}  "
+                        f"resolved=[{qids_str}]"
+                    )
+            else:
+                lines.append(
+                    "|    - (no terminal success this iteration)"
+                )
             continue
         # Phase D.5 Task 8: surface alternatives_considered under each
         # chosen record in the three selection-point sections (RCA Cards,
@@ -692,7 +859,21 @@ def render_operator_transcript(
             SECTION_PROPOSAL_SURVIVAL,
         }
         for rec in by_section.get(section, []):
-            lines.append(_format_record_line(rec))
+            line = _format_record_line(rec)
+            # Plan N2 — annotate RCA-card lines for resolved
+            # clusters with [RESOLVED BY {ag_id}] so the auditor
+            # immediately sees the pre-acceptance UNRESOLVED row
+            # is stale-by-design, not a real RCA gap.
+            if (
+                section == SECTION_RCA_CARDS
+                and rec.cluster_id
+                and rec.cluster_id in _terminal_success
+            ):
+                line = (
+                    line
+                    + f"  [RESOLVED BY {_terminal_success[rec.cluster_id].ag_id} ✓]"
+                )
+            lines.append(line)
             if section in _ALT_SECTIONS:
                 alts_line = _format_alternatives_line(rec)
                 if alts_line is not None:
