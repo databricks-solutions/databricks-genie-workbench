@@ -103,7 +103,10 @@ C-<cycle>-<letter> (seed): <pattern>
 
 | Cycle | Date | Inspiration run(s) | Cluster(s) | AG hypothesis(es) | Flag(s) | Plan | Corpus before | Corpus after | Status | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | 2026-05-05 | `0ade1a99-9406-4a68-a3bc-8c77be78edcb` | C-1-A, C-1-B, C-1-C, C-1-D | AG-1-A → AG-1-F | `GSO_TARGET_AWARE_ACCEPTANCE`, `GSO_NO_CAUSAL_APPLYABLE_HALT`, `GSO_BUCKET_DRIVEN_AG_SELECTION`, `GSO_RCA_AWARE_PATCH_CAP`, `GSO_LEVER_AWARE_BLAST_RADIUS` | [`2026-05-05-optimizer-control-plane-plan.md`](./2026-05-05-optimizer-control-plane-plan.md) | airline 87.5% baseline → 91.7% final | TBD at Task G closeout | IN FLIGHT | Corpus-of-one is acceptable for Cycle 1 (establishes the ledger). Cycle 2 must hold ≥2 corpus runs. Skill-accountability gates closed by Plans 2 + 3. |
+| 1 | 2026-05-05 | `0ade1a99-9406-4a68-a3bc-8c77be78edcb` | C-1-A, C-1-B, C-1-C, C-1-D | AG-1-A → AG-1-F | `GSO_TARGET_AWARE_ACCEPTANCE`, `GSO_NO_CAUSAL_APPLYABLE_HALT`, `GSO_BUCKET_DRIVEN_AG_SELECTION`, `GSO_RCA_AWARE_PATCH_CAP`, `GSO_LEVER_AWARE_BLAST_RADIUS` | [`2026-05-05-optimizer-control-plane-plan.md`](./2026-05-05-optimizer-control-plane-plan.md) | airline 87.5% baseline → 91.7% final | airline 87.5% → 100.0% on retry attempt `993610879088298` (Cycle 2 corpus) | SHIPPED | Cycle-1 flags carried forward into Cycle 2. Corpus delta confirmed by retry attempt of `2afb0be2`. |
+| 2 | 2026-05-04 | `2afb0be2-88b6-4832-99aa-c7e78fbc90f7` (initial attempt `1002162264479628`); confirmed on retry attempt `993610879088298` | C-2-A, C-2-B, C-2-C, C-2-D | AG-2-A → AG-2-D | `GSO_INTRA_AG_PROPOSAL_DEDUP`, `GSO_SHARED_CAUSE_BLAST_RADIUS`, `GSO_DOA_SELECTED_PROPOSAL_SIGNATURE`, `GSO_QUESTION_SHAPE_LEVER_PREFERENCE` | [`2026-05-04-cycle-2-optimizer-improvement-plan.md`](./2026-05-04-cycle-2-optimizer-improvement-plan.md) | airline 87.5% (initial attempt: 0 accepted, 5 iters) | airline 87.5% → 95.8% (iter 1) → 100.0% (iter 2), `thresholds_met=true`, 2 of 5 iterations used, 0 rollbacks (retry attempt `993610879088298`) | SHIPPED | Corpus delta of +12.5pp on a single space; cycle-discipline rule of ≥2 corpus runs is **partially satisfied** — second corpus run on a different space is the open follow-up. P2 (Cycle 3) corrects DOA dedup non-injectivity that surfaced in this run's iter-1 inventory. |
+| 3 | 2026-05-04 | `2423b960-16e8-41d4-a0cb-74c563378e05` | C-3-A, C-3-B, C-3-C, C-3-D, C-3-E | P1, P2, P3, P4, P6 | `GSO_REGRESSION_DEBT_INVARIANT`, `GSO_LEVER_QUALIFIED_PATCH_IDS`, `GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP` (P4 + P6 are observability-only, no flag) | [`2026-05-04-evidence-bundle-attempt-aware-plan.md`](./2026-05-04-evidence-bundle-attempt-aware-plan.md), [`2026-05-04-regression-debt-accounting-completeness-plan.md`](./2026-05-04-regression-debt-accounting-completeness-plan.md), [`2026-05-04-patch-identity-normalization-plan.md`](./2026-05-04-patch-identity-normalization-plan.md), [`2026-05-04-typed-proposal-failure-outcomes-plan.md`](./2026-05-04-typed-proposal-failure-outcomes-plan.md), [`2026-05-04-question-shape-structural-synthesis-plan.md`](./2026-05-04-question-shape-structural-synthesis-plan.md) | 7Now 89.5% → 89.5% (5 iters, 0 accepted) | P6 + P1 + P2 SHIPPED (commits `7db2d0f`–`c9ef938`). P3 + P4 still PLANNED. | PARTIALLY SHIPPED | P6, P1, P2 land 2026-05-04 evening. P4 is observability that makes P3 measurable; P3 is the structural-synthesis change. The latest `2afb0be2` retry succeeded **without** P3, so P3 is now a robustness lever for harder corpora rather than a correctness gate for airline. |
+| 4 | 2026-05-04 | `2afb0be2-88b6-4832-99aa-c7e78fbc90f7` retry attempt `993610879088298` (post-success contract gaps) | C-4-A (journey violations on successful AGs), C-4-B (terminal-success transcript staleness) | AG-4-A (journey contract for accepted-AG transitions), AG-4-B (terminal-success transcript override) | (no behavioral flags — both are observability/contract fixes) | [`2026-05-04-journey-validation-successful-ag-plan.md`](./2026-05-04-journey-validation-successful-ag-plan.md), [`2026-05-04-terminal-success-transcript-override-plan.md`](./2026-05-04-terminal-success-transcript-override-plan.md) | airline retry: 12 journey violations iter 1, 8 iter 2; iter 2 transcript still names `gs_009` as `rca_ungrounded` after `AG2` fixed it | TBD — implementation pending | PLANNED | Both findings sit on the success path: the optimizer reached 100% but the postmortem-quality output is still noisy. Each plan ships independently; both are observability-only (no flag). |
 
 ## Cycles
 
@@ -334,6 +337,8 @@ If outside-target qids that are themselves currently-hard route as shared-cause 
 
 **Cycle 2 status: IN FLIGHT.** All four flag-gated fixes landed default-on with full unit-test coverage. Replay byte-stability is preserved across every commit. The gate result row is blocked on the airline corpus re-run plus one additional space — until those two runs land, the cycle stays IN FLIGHT.
 
+**Follow-up correction:** Cycle 3's run [`2423b960`](runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md) iter-1 evidence revealed that AG_DECOMPOSED_H001's CAP RECONCILIATION printed `P001#1, P001#2, P001#2` — two distinct patches under different levers (Lever-1 column-synonym and Lever-5 instruction-section) sharing the same expanded id. That makes Cycle 2 Task 3's `_compute_selected_proposal_signature` non-injective on cross-lever collisions, silently conflating distinct patches in the DOA dedup ledger. The fix is **Cycle 3 plan P2** ([`2026-05-04-patch-identity-normalization-plan.md`](./2026-05-04-patch-identity-normalization-plan.md)) which lever-qualifies the expanded id format to `L{lever}:{parent_id}#{child_index}` (e.g. `L1:P001#2` vs `L5:P001#2`). Cycle 2 corpus re-run **MUST** wait until P2 ships; otherwise the corpus-delta gate measures behavior on a non-injective DOA ledger and the result is uninterpretable.
+
 #### Section 7: Seeds for next cycle
 
 ```text
@@ -346,4 +351,202 @@ C-2-B (seed): F3 strategist coverage gaps with missing RCA cards
   Run(s) observed: 2afb0be2-88b6-4832-99aa-c7e78fbc90f7
   Hypothesis for next cycle: Cycle 1's bucket_driven_ag_selection + no_causal_applyable_halt should already cover this; re-evaluate after Tasks 1-4 corpus re-run
   Blocking on: airline corpus re-run on Cycle-2 flags-on path
+```
+
+### Cycle 3 — 2026-05-04 — Truth-of-state and causal-candidate generation from `2423b960`
+
+**Inspiration:** [`docs/runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md`](./runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md). The 7Now-delivery-analytics run on space `01f128aea2c210559cffb663d9c58282` had four lever-loop attempts fail before a successful retry: 2× `soft-cluster currency drift` (the assertion fixed in this branch's prior turn) and 2× `get_run_context: run_id_widget is required`. The successful attempt then exhausted 5 iterations at 89.47% with zero accepted action groups. Acceptance behaved correctly — AG1 regressed two qids and rolled back. The breakdowns are upstream of acceptance: cross-lever patch-id collisions, soft→hard regression accounting silently miscounting `gs_001`, lever-5 structural gate dropping instruction-only proposals for SQL-shape RCAs (`gs_021 missing_filter`) without any synthesis fallback, iter-3/iter-4 emitting `Proposals (0 total)` with no logged drop reason, and iter-5 replaying the same dead AG_COVERAGE_H002 because the DOA dedup didn't catch generator-emitted-then-gate-dropped proposals.
+
+**Implementation plans:** Five sibling plans, landing in dependency order.
+
+| Order | Plan | Priority | Independence |
+|---|---|---|---|
+| 1 | [`2026-05-04-evidence-bundle-attempt-aware-plan.md`](./2026-05-04-evidence-bundle-attempt-aware-plan.md) (P6) | postmortem-skill correctness | independent |
+| 2 | [`2026-05-04-regression-debt-accounting-completeness-plan.md`](./2026-05-04-regression-debt-accounting-completeness-plan.md) (P1) | observability invariant | independent |
+| 3 | [`2026-05-04-patch-identity-normalization-plan.md`](./2026-05-04-patch-identity-normalization-plan.md) (P2) | structural prerequisite for Cycle 2 Task 3 correctness | required-before-rerun |
+| 4 | [`2026-05-04-typed-proposal-failure-outcomes-plan.md`](./2026-05-04-typed-proposal-failure-outcomes-plan.md) (P4) | typed `NO_STRUCTURAL_CANDIDATE` reason supplier | required-before P3 |
+| 5 | [`2026-05-04-question-shape-structural-synthesis-plan.md`](./2026-05-04-question-shape-structural-synthesis-plan.md) (P3) | causal-candidate emission | depends on P1 + P2 + P4 |
+
+**Corpus discipline note:** Cycle 3 starts from a one-run baseline (7Now `2423b960`). The corpus-delta gate at closeout requires the 7Now space + at least one additional space (airline `2afb0be2` re-run is the natural second). Until both spaces re-run with Cycle 3 flags on, this cycle stays PLANNED → IN FLIGHT (no SHIPPED claim possible from one run).
+
+#### Section 1: Corpus runs
+
+| `opt_run_id` | Genie Space | Domain | Baseline % | Final % | Target QID(s) | Hard-fail QIDs at termination | Postmortem path |
+|---|---|---|---|---|---|---|---|
+| `2423b960-16e8-41d4-a0cb-74c563378e05` | `01f128aea2c210559cffb663d9c58282` | `7now_delivery_analytics_space` | 89.47% | 89.47% | `gs_026` (iter 1) | `gs_026` (`H001 plural_top_n_collapse`), `gs_021` (`H002 missing_filter`) | [`runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md`](./runid_analysis/2423b960-16e8-41d4-a0cb-74c563378e05/postmortem.md) |
+
+#### Section 2: Postmortem clustering
+
+| Cluster ID | Pattern | Run(s) it appears in | Stage / `decision_type` | Failure bucket | Skill that surfaced it |
+|---|---|---|---|---|---|
+| `C-3-A` | Cross-lever patch-id collision: two distinct patches under the same parent proposal but different levers (`L1` add_column_synonym + `L5` update_instruction_section) both stamp `expanded_patch_id = "P001#2"`. CAP RECONCILIATION displays `P001#1, P001#2, P001#2` — same string for unrelated patches. Cycle 2 Task 3's DOA selected-proposal signature collapses them, making the dedup non-injective. | `2423b960` (iter 1) | `applier` / `_stamp_expanded_patch_identity` | `INSTRUMENTATION_GAP` | required raw-stdout grep of CAP RECONCILIATION; `gso-postmortem` did not flag it |
+| `C-3-B` | Regression-debt accounting silently drops new-hard qids when `pre_row` is missing or `row_status` disagrees with `hard_failure_qids`. The marker has `soft_to_hard_regressed_qids` and `passing_to_hard_regressed_qids` but no `unknown_to_hard` residual, so no invariant catches the orphan. The `gs_001` soft→hard transition was undercounted in the iter-1 marker. | `2423b960` (iter 1) | `acceptance_decision` / `decide_control_plane_acceptance` | `OBSERVABILITY_GAP` | required cross-checking failed-question count vs marker; `gso-postmortem` did not flag it |
+| `C-3-C` | Lever-5 structural gate correctly drops instruction-only proposals for SQL-shape root causes (`missing_filter`, `plural_top_n_collapse`), but no synthesis fallback fires. The `ordered_list_by_metric` archetype exists at [`archetypes.py:220`](../src/genie_space_optimizer/optimization/archetypes.py) and `run_cluster_driven_synthesis_for_single_cluster` exists at [`cluster_driven_synthesis.py:658`](../src/genie_space_optimizer/optimization/cluster_driven_synthesis.py); the wiring gap is that the harness does not mandatorily invoke synthesis on a structural-gate drop. | `2423b960` (iters 2 + 5), `2afb0be2` (iter 2 `gs_009`) | `proposal_generation_structural_gate` / `lever5_structural_gate_records` | `GATE_OR_CAP_GAP` | `gso-postmortem` (with C-3-D below as the related observability gap) |
+| `C-3-D` | Three distinct "no candidate state" paths collapse into the same display: (a) generator returned 0 proposals (iter 3/4 of `2423b960`), (b) lever-5 gate dropped instruction-only (iters 2/5 of `2423b960`), (c) synthesis attempted-but-no-archetype-matched. Today only (b) emits a structured DecisionRecord (`RCA_UNGROUNDED`, generic). Postmortems must reverse-engineer (a) vs (b) by grepping for the gate's prose log line. | `2423b960` (iters 2-5), `2afb0be2` (iters 3-5) | `proposal_generation` | `OBSERVABILITY_GAP` | `gso-postmortem` (skill-accountability gate fail) |
+| `C-3-E` | Postmortem evidence bundle anchors to the **first** matching `lever_loop` task in `job_run.tasks` — when that task failed (this run's first 4 attempts), the bundle silently misses the analyzable success transcript. Author had to manually export run `611621809299494`. | `2423b960` (4 failed + 1 success attempts) | `tools/evidence_bundle.py` | `INSTRUMENTATION_GAP` | required manual `databricks jobs export-run`; `gso-postmortem` did not flag it |
+
+#### Section 3: AG hypotheses
+
+```text
+P6 (AG-3-E): Evidence-bundle attempt-aware lever_loop selection
+  Cluster: C-3-E
+  RCA: tools/evidence_bundle.py:331 picks the first task whose
+       task_key=='lever_loop'; ignores result_state.
+  Causal target: tools/evidence_bundle.py — _select_lever_loop_task
+       helper that ranks by (state==SUCCESS desc, end_time desc) and
+       records all failed attempts under
+       evidence/failed_lever_loop_attempts/<task_run_id>.json.
+  Expected effect: future runs with multiple lever_loop attempts
+       anchor to the latest SUCCESS automatically; failed attempts
+       are still available as per-attempt JSONs for error-class
+       scanning.
+  Negative-space: when only one attempt exists, behavior is
+       identical to today.
+  Feature flag: none (observability-only, strictly better)
+  Plan ref: 2026-05-04-evidence-bundle-attempt-aware-plan.md.
+
+P1 (AG-3-B): Regression-debt partition completeness
+  Cluster: C-3-B
+  RCA: decide_control_plane_acceptance partitions
+       out_of_target_regressed into soft_to_hard / passing_to_hard
+       only; missing pre_row or predicate disagreement silently
+       drops the qid out of attribution.
+  Causal target: control_plane.py — add
+       unknown_to_hard_regressed_qids field +
+       assert_regression_debt_partition_complete invariant,
+       wired into harness after each acceptance call.
+  Expected effect: every new-hard out-of-target qid lands in
+       exactly one of three buckets; orphan attribution fails
+       loud at runtime, not silently in markers.
+  Negative-space: partition is provably disjoint; replay
+       byte-stability holds.
+  Feature flag: GSO_REGRESSION_DEBT_INVARIANT (default on).
+  Plan ref: 2026-05-04-regression-debt-accounting-completeness-plan.md.
+
+P2 (AG-3-A): Lever-qualified expanded patch ids
+  Cluster: C-3-A
+  RCA: _stamp_expanded_patch_identity at applier.py:2233 builds
+       child_id = f"{parent_id}#{child_index}" without lever
+       qualification. Two parents under the same proposal_id but
+       different levers produce identical expanded ids.
+  Causal target: applier.py:_stamp_expanded_patch_identity (id
+       format) + patch_selection.py:_proposal_id +
+       static_judge_replay.py:_proposal_id (preference order).
+  Expected effect: cross-lever collisions disambiguate to
+       L1:P001#2 vs L5:P001#2; Cycle 2 Task 3 DOA dedup becomes
+       injective.
+  Negative-space: when flag off, legacy unqualified format is
+       preserved; replay byte-stability holds.
+  Feature flag: GSO_LEVER_QUALIFIED_PATCH_IDS (default on).
+  Plan ref: 2026-05-04-patch-identity-normalization-plan.md.
+
+P4 (AG-3-D): Typed proposal-failure outcomes
+  Cluster: C-3-D
+  RCA: three "no candidate state" failure modes collapse into one
+       display; lever5_structural_gate_records uses generic
+       RCA_UNGROUNDED reason.
+  Causal target: rca_decision_trace.ReasonCode (3 new values),
+       decision_emitters.py (proposal_generation_empty_record +
+       no_structural_candidate_record + lever-5 reason update),
+       run_output_contract.py (3 stdout markers),
+       tools/marker_parser.py (3 parsers).
+  Expected effect: postmortems can distinguish proposer-empty
+       from gate-dropped-instruction-only from no-structural-
+       candidate without raw-stdout grepping.
+  Negative-space: observability-only; no behavior change. Lever-5
+       reason code becomes more specific.
+  Feature flag: none (observability-only).
+  Plan ref: 2026-05-04-typed-proposal-failure-outcomes-plan.md.
+
+P3 (AG-3-C): Forced structural synthesis on lever-5 drop
+  Cluster: C-3-C
+  RCA: harness reads lever-5 gate drops but does not invoke
+       run_cluster_driven_synthesis_for_single_cluster as a
+       guaranteed fallback. When synthesis returns None (budget,
+       safety cap, archetype miss), the path silently moves on.
+  Causal target: cluster_driven_synthesis.py
+       (ClusterSynthesisResult dataclass with attempted_archetypes
+       provenance) + harness.py
+       (_should_force_structural_synthesis predicate +
+       _consume_structural_synthesis_buffer for next-iter pickup).
+  Expected effect: SQL-shape RCAs (plural_top_n_collapse,
+       missing_filter, etc.) get an add_example_sql proposal
+       generated by the existing ordered_list_by_metric
+       archetype; if synthesis legitimately can't, a
+       NO_STRUCTURAL_CANDIDATE record fires (P4 supplies the
+       reason).
+  Negative-space: when flag off, lever-5 gate drops without
+       synthesis fallback (legacy behavior).
+  Feature flag: GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP
+       (default on).
+  Plan ref: 2026-05-04-question-shape-structural-synthesis-plan.md.
+```
+
+#### Section 4: Feature flags
+
+| Flag | Default | Disable | Plan |
+|---|---|---|---|
+| `GSO_REGRESSION_DEBT_INVARIANT` | ON | `=0` | P1 |
+| `GSO_LEVER_QUALIFIED_PATCH_IDS` | ON | `=0` | P2 |
+| `GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP` | ON | `=0` | P3 |
+| (P4 + P6 are observability-only) | — | — | P4, P6 |
+
+#### Section 5: Gate result
+
+| Gate | Result | Evidence |
+|---|---|---|
+| Byte-stable replay (flags off) | TBD per task | Each plan's Task N step "Run the replay suite" — must hold 13 passed / 2 skipped after every commit |
+| Full unit + integration sweep | TBD per task | Each plan's Task N step "Run the broader suite" — only pre-existing failures (`test_no_applied_recovery::test_harness_marks_no_applied_bundle_as_dead_on_arrival`, `test_applier_audit::test_harness_prints_applier_decisions_on_skip_eval`) may persist |
+| Skill accountability | P6 (evidence-bundle) closes the C-3-E gap; P4 (typed outcomes) closes the C-3-C and C-3-D gaps. Both must SHIP before P3 and Cycle 2 corpus re-runs are run, otherwise postmortem analysis of the re-runs has the same observability holes. | n/a |
+| Corpus delta (flags on) | TBD — corpus re-run pending on 7Now + airline | Hypothesis: 7Now `2423b960` should converge in ≤ 3 iterations once P3 emits a top-N example_sql for `gs_026` and a missing_filter example_sql for `gs_021`. Airline `2afb0be2` should converge similarly once P3 covers `gs_009` top-N collapse. |
+
+#### Section 6: Decision
+
+**Cycle 3 status: PLANNED.** Five sibling plans saved; no implementation has landed. Recommended landing order is P6 → P1 → P2 → P4 → P3 — this respects every dependency:
+
+- P6 ships first because every subsequent corpus re-run's analysis depends on the bundle anchoring to the right attempt.
+- P1 + P2 are independent observability + structural fixes; either can ship next. P2 is the harder constraint because Cycle 2 corpus re-run **MUST NOT** run before P2 (the DOA ledger is non-injective until then).
+- P4 is the typed-reason-code supplier P3 emits. Without P4, P3's `NO_STRUCTURAL_CANDIDATE` record falls back to a generic reason and the postmortem can't tell it apart from the lever-5 gate drop.
+- P3 is the actual change that produces causal SQL-shape candidates. Lands last; corpus re-run gates open after P3 SHIPS.
+
+#### Section 7: Seeds for next cycle
+
+```text
+C-3-A-followup (seed): cycle 2 DOA dedup correctness audit
+  Run(s) observed: 2423b960-16e8-41d4-a0cb-74c563378e05
+  Hypothesis for next cycle: once P2 lands, the Cycle 2 corpus re-run
+       on the airline space MUST verify _doa_selected_proposal_signatures
+       contains lever-qualified ids. If still not, the DOA dedup is
+       still broken and Cycle 2 Task 3 needs a new behavioral test.
+  Blocking on: P2 SHIPPED + Cycle 2 corpus re-run on airline.
+
+C-3-B-followup (seed): retire C-2-A and C-2-B as legacy seeds
+  Run(s) observed: cross-cycle bookkeeping
+  Hypothesis for next cycle: C-2-A (postmortem rollback-class
+       miscategorization) and C-2-B (F3 strategist coverage gaps with
+       missing RCA cards) should be re-evaluated post-Cycle-3
+       corpus re-run. C-2-A may move into a dedicated gso-postmortem
+       skill plan; C-2-B may close as covered by Cycle 1's existing
+       bucket_driven_ag_selection work.
+  Blocking on: Cycle 3 corpus re-run.
+
+C-3-C (seed): notebook entrypoint run_id_widget regression
+  Run(s) observed: 2423b960 (2 of 5 lever_loop attempts failed on
+       RuntimeError: get_run_context: run_id_widget is required)
+  Hypothesis for next cycle: Databricks job repair re-creates the
+       widget context inconsistently. Fix is in the lever-loop
+       notebook entrypoint (cite the file in the next plan), not in
+       the optimizer logic.
+  Blocking on: a small dedicated plan ("preserve run_id widget on
+       Databricks job repair"); not a Cycle 3 task.
+
+C-3-D (seed): Phase H assembly degradation persists
+  Run(s) observed: 2423b960 + 2afb0be2 (both runs report
+       phase_h_assembly_skipped_or_failed and
+       phase_b decision_records_total=0 even though the export-only
+       fixture has all iteration records).
+  Hypothesis for next cycle: already covered by
+       2026-05-05-run-output-contract-stdout-flush-plan.md;
+       not a new cycle, just unblock the existing plan.
+  Blocking on: stdout-flush plan implementation.
 ```

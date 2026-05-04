@@ -183,6 +183,22 @@ def render_failure_context_block(failure_contexts: list[dict] | None) -> str:
 # ═══════════════════════════════════════════════════════════════════════
 
 
+@dataclass(frozen=True)
+class ClusterSynthesisResult:
+    """P3 — typed return from run_cluster_driven_synthesis_for_single_cluster.
+
+    Replaces the old ``dict | None`` contract. ``proposal`` carries
+    the legacy payload (or None on miss). ``attempted_archetypes``
+    is the ordered tuple of archetypes that were considered before
+    the result. ``skipped_reason`` is set when proposal is None and
+    documents which guard fired (budget, safety cap, archetype
+    mismatch, arbiter gate).
+    """
+    proposal: dict | None
+    attempted_archetypes: tuple[str, ...] = ()
+    skipped_reason: str = ""
+
+
 @dataclass
 class ClusterContext:
     """SynthesisContext wrapping (AFS + derived AssetSlice).
@@ -669,16 +685,16 @@ def run_cluster_driven_synthesis_for_single_cluster(
     genie_ask: Callable[[Any, str, str], dict] | None = None,
     warehouse_executor: Callable[[str], list[dict]] | None = None,
     arbiter: Callable[..., dict] | None = None,
-) -> dict | None:
+) -> ClusterSynthesisResult:
     """Synthesize ONE example-SQL proposal for ``cluster`` via the AFS engine.
 
     Pipeline — all invariants enforced here, not at the call site:
 
     1. **Safety cap** (Decision #4): if the space's current
        ``example_question_sqls`` count ≥ ``EXAMPLE_QUESTION_SQLS_SAFETY_CAP``,
-       return None immediately. Caller falls back to text instruction.
+       skip immediately. Caller falls back to text instruction.
     2. **Budget** (Invariant C): if ``metadata_snapshot["_cluster_synthesis_count"]``
-       ≥ ``CLUSTER_SYNTHESIS_PER_ITERATION``, return None. Counter is
+       ≥ ``CLUSTER_SYNTHESIS_PER_ITERATION``, skip. Counter is
        NOT bumped for cap-hit skips (the iteration made no LLM call).
     3. **AFS projection** (Invariant) + runtime leak validation.
     4. **Archetype pick + slice derivation** (Invariant D: missing-
@@ -692,12 +708,18 @@ def run_cluster_driven_synthesis_for_single_cluster(
 
     Returns
     -------
-    dict | None
-        A proposal dict shaped for the Lever 5 pipeline (patch_type=
+    ClusterSynthesisResult
+        Always a typed result. ``.proposal`` carries the legacy
+        proposal dict shaped for the Lever 5 pipeline (patch_type=
         ``"add_example_sql"``, example_question, example_sql,
         rationale, usage_guidance, provenance, and a sentinel
-        ``_archetype_name`` for observability). ``None`` when any step
-        declines — caller applies ``instruction_only_fallback``.
+        ``_archetype_name`` for observability), or ``None`` when any
+        step declines. ``.attempted_archetypes`` records the archetype
+        considered (empty if archetype derivation failed).
+        ``.skipped_reason`` documents which guard fired on the
+        ``proposal=None`` path (e.g. ``budget:N>=M``,
+        ``safety_cap:N>=M``, ``no_archetype_or_slice``,
+        ``gate:<gate>:<reason>``, ``genie_agreement:<reason>``).
 
     Does NOT call ``_apply_preflight_proposals`` (Invariant A) — the
     Lever 5 pipeline runs ``_validate_lever5_proposals`` +
@@ -705,27 +727,41 @@ def run_cluster_driven_synthesis_for_single_cluster(
     function returns.
     """
     cluster_id = str((cluster or {}).get("cluster_id") or "?")
+    # P3: track archetype provenance even on skipped paths so the
+    # caller (the harness lever-5 wiring) can emit a typed
+    # NO_STRUCTURAL_CANDIDATE record citing what was tried.
+    _attempted_archetypes_so_far: list[str] = []
 
     # ── Invariant safety checks ─────────────────────────────────────
     existing_count = _existing_example_count(metadata_snapshot)
     if existing_count >= EXAMPLE_QUESTION_SQLS_SAFETY_CAP:
+        _safety_cap_reason = (
+            f"safety_cap:{existing_count}>={EXAMPLE_QUESTION_SQLS_SAFETY_CAP}"
+        )
         _log_summary(
             "cluster", cluster_id=cluster_id, archetype="",
-            outcome="skipped", skipped_reason=(
-                f"safety_cap:{existing_count}>={EXAMPLE_QUESTION_SQLS_SAFETY_CAP}"
-            ),
+            outcome="skipped", skipped_reason=_safety_cap_reason,
         )
-        return None
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=tuple(_attempted_archetypes_so_far),
+            skipped_reason=_safety_cap_reason,
+        )
 
     budget_used = _read_budget_count(metadata_snapshot)
     if budget_used >= CLUSTER_SYNTHESIS_PER_ITERATION:
+        _budget_reason = (
+            f"budget:{budget_used}>={CLUSTER_SYNTHESIS_PER_ITERATION}"
+        )
         _log_summary(
             "cluster", cluster_id=cluster_id, archetype="",
-            outcome="skipped", skipped_reason=(
-                f"budget:{budget_used}>={CLUSTER_SYNTHESIS_PER_ITERATION}"
-            ),
+            outcome="skipped", skipped_reason=_budget_reason,
         )
-        return None
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=tuple(_attempted_archetypes_so_far),
+            skipped_reason=_budget_reason,
+        )
 
     # ── AFS projection + runtime leak validation ────────────────────
     try:
@@ -735,7 +771,11 @@ def run_cluster_driven_synthesis_for_single_cluster(
             "cluster-driven: format_afs failed for cluster=%s",
             cluster_id, exc_info=True,
         )
-        return None
+        return ClusterSynthesisResult(
+            proposal=None,
+            attempted_archetypes=tuple(_attempted_archetypes_so_far),
+            skipped_reason="format_afs_failed",
+        )
 
     # Build benchmark corpus once — reused by validate_afs and the
     # firewall gate inside validate_synthesis_proposal.

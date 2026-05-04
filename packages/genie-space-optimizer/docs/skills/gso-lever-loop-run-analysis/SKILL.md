@@ -5,14 +5,6 @@ description: Use when analyzing, validating, debugging, or postmortem-ing a Geni
 
 # GSO Lever Loop Run Analysis
 
-> **Canonical example.** Run
-> `0ade1a99-9406-4a68-a3bc-8c77be78edcb` is the canonical example
-> of a `MERGE_GATE_GAP` produced by stacked
-> `ACCEPTANCE_TARGET_BLIND` + `PATCH_CAP_RCA_BLIND_RANKING` +
-> `BLAST_RADIUS_OVERDROP_ON_NONSEMANTIC`. The fixture's analysis
-> is preserved at `docs/runid_analysis/0ade1a99-9406-4a68-a3bc-8c77be78edcb/postmortem.md`
-> for pattern matching against new runs.
-
 Use this skill when asked to analyze, validate, debug, or postmortem a Genie Space Optimizer lever-loop Databricks Job run, including the Phase E real-run pilot that gates the burn-down-to-merge roadmap.
 
 ## Required Inputs
@@ -30,7 +22,7 @@ Use this skill when asked to analyze, validate, debug, or postmortem a Genie Spa
 - `phase`: One of `A`, `B`, `C`, `D`, `E`, or `all` (default `all`). When set to `E`, the Phase E Merge-Readiness Health checklist runs in addition to the per-iteration checklists. When set to a single earlier phase, focus the report on that phase's checks.
 - `baseline_run_id`: Required when `phase=E`. The Phase A variance-baseline run ID used for the accuracy non-regression check. If omitted with `phase=E`, ask the user.
 - `repo_root`: Path to the repo for codebase-state checks (Phase E only). Default: workspace root. Used to verify `raise_on_violation`, the decision-trace hard-gate replay test, and the sanity-broken PR commit/CI artifact.
-- `bundle_dir`: Pre-built evidence bundle root directory. If supplied, the skill skips Step 0 and reads `bundle_dir/evidence/manifest.json` directly. If omitted, the skill runs `evidence_bundle` itself.
+- `bundle_dir`: Pre-built evidence bundle root directory. If supplied, read `bundle_dir/evidence/manifest.json` and use the bundle artifacts as the primary evidence source.
 - `auto_backfill`: When `true`, instructs the bundle invocation to run `mlflow_backfill` automatically if decision-trail artifacts are missing on the anchor run. Default: `false` (operator approves before any writes).
 
 ## Required Related Skills
@@ -49,7 +41,7 @@ Use these skills as needed:
 Do not guess. Follow systematic debugging:
 
 1. Gather evidence from Databricks Jobs state, task output, stdout markers, MLflow runs/artifacts/traces, replay fixture, and decision validation.
-2. Identify where the failure occurred: infrastructure, input handoff, eval, RCA, strategist, proposal, gate, applier, acceptance, Phase B trace persistence, convergence, or reporting.
+2. Identify where the failure occurred in the lever-loop process: infrastructure, input handoff, `evaluation_state`, `rca_evidence`, `cluster_formation`, `action_group_selection`, `proposal_generation`, `safety_gates`, `applied_patches`, `post_patch_evaluation`, `acceptance_decision`, `learning_next_action`, Phase B trace persistence, convergence, or reporting.
 3. State one root-cause hypothesis at a time.
 4. Recommend the smallest next diagnostic or code action.
 
@@ -61,7 +53,7 @@ For Phase E specifically, distinguish between three failure surfaces — the rec
 
 ## Analysis Workflow
 
-**0. Acquire the evidence bundle (preferred path).** If `bundle_dir` is not supplied:
+0. **Acquire or load the evidence bundle.** If `bundle_dir` is supplied by `gso-postmortem`, start from `bundle_dir/evidence/manifest.json` and cite on-disk artifacts from that bundle. If no bundle is supplied, run the bundle helper first:
 
    ```bash
    python -m genie_space_optimizer.tools.evidence_bundle \
@@ -70,49 +62,7 @@ For Phase E specifically, distinguish between three failure surfaces — the rec
        [--auto-backfill]
    ```
 
-   The bundle is idempotent — re-running is cheap. The CLI prints `manifest.json` to stdout and writes the canonical evidence layout to `<output-dir>/<opt_run_id>/evidence/`.
-
-   **Triage the manifest first.** Read `<bundle_dir>/evidence/manifest.json`. Every subsequent step reads from `manifest.artifacts_pulled` paths or directly from disk, never via live CLI:
-   - Phase A: `evidence/mlflow/<anchor>/phase_a/journey_validation/iter_*.json`
-   - Phase B: `evidence/mlflow/<anchor>/phase_b/decision_trace/iter_*.json` and `phase_b/operator_transcript/iter_*.txt`
-   - Markers: `evidence/markers.json`
-   - Job state: `evidence/job_run.json`
-   - Stdout/stderr: `evidence/lever_loop_stdout.txt`, `evidence/lever_loop_stderr.txt`
-   - **Notebook output**: `evidence/lever_loop_notebook_output.json` *(fall back to this whenever `lever_loop_stdout.txt` is empty — the lever-loop is a notebook task in production and `databricks jobs get-run-output` returns empty `logs` for notebook tasks; the structured per-iteration `phase_b` summary lives in `notebook_output.result`)*
-   - Replay fixture: `evidence/replay_fixture.json`
-   - MLflow audit: `evidence/mlflow_audit.{md,json}`
-
-   If the bundle does not yet capture `lever_loop_notebook_output.json` (older bundle versions don't), pull it manually before walking the checklist:
-
-   ```bash
-   databricks jobs get-run-output <lever_task_run_id> --profile <profile> --output json \
-     > <bundle_dir>/evidence/lever_loop_notebook_output.json
-   ```
-
-   Then parse `notebook_output.result` (a JSON-encoded string) for the canonical lever-loop result dict — `iteration_counter`, `levers_attempted`, `levers_accepted`, `levers_rolled_back`, and the `phase_b` summary block (`decision_records_total`, `iter_record_counts`, `iter_violation_counts`, `no_records_iterations`, `artifact_paths`, `producer_exceptions`, `target_qids_missing_count`, `total_violations`). This block is the de-facto "stdout" for any run whose harness predates the `GSO_*_V1` markers.
-
-   - If `manifest.exit_status == "incomplete"`, list every entry in `manifest.missing_pieces`. Decide whether each gap is blocking analysis (the postmortem cannot answer the operator's question without it) or merely informational.
-   - If a `PHASE_*_ARTIFACT_MISSING_ON_ANCHOR` gap is blocking and `replay_fixture` is present, recommend rerunning the bundle with `--auto-backfill`.
-
-   **Trace fetch decision rule.** Invoke `trace_fetcher` only if **all** of the following hold:
-   - The current root-cause hypothesis cannot be confirmed or refuted from `evidence/markers.json` + `phase_a/` + `phase_b/` artifacts alone.
-   - `manifest.trace_fetch_recommendations` contains at least one entry whose `reason` matches the open hypothesis (e.g., `UNRESOLVED_REASON_CODE` for opaque abandons, `INCOMPLETE_DECISION_TRACE` for journey-violation iterations).
-   - The trace ids requested are bounded (≤10 traces; reject if recommendations imply more — split into a follow-up).
-
-   When the rule fires, run:
-
-   ```bash
-   python -m genie_space_optimizer.tools.trace_fetcher \
-       --bundle-dir <bundle_dir> --from-recommendations
-   ```
-
-   Then re-read `manifest.json` (the trace fetcher updates `artifacts_pulled.traces`) and continue the checklist with the new evidence in `evidence/traces/<trace_id>.json`. **Do not pull traces speculatively.** If logs and decision-trail artifacts already explain the failure, traces are noise.
-
-   When writing the postmortem at `<output-dir>/<opt_run_id>/postmortem.md`, cite specific bundle files (e.g., `evidence/mlflow/mr-1/phase_b/decision_trace/iter_04.json:23`) so future readers can re-verify each claim from the same on-disk evidence.
-
-   The legacy live-CLI workflow below (Steps 1–10) is the **fallback path** when the bundle is unavailable (e.g., `databricks` CLI access is broken or `evidence_bundle` was not run). When using the bundle, Steps 1–10 still describe the *checks* the analysis should make; just substitute "read from bundle file at X" for "run CLI command X".
-
----
+   When the bundle is available, prefer bundle files over live CLI calls for analysis. Still inspect the parent job run for task-attempt ordering, because older bundle versions may have anchored to the first `lever_loop` task rather than the latest one.
 
 1. Validate Databricks CLI auth:
 
@@ -126,7 +76,7 @@ For Phase E specifically, distinguish between three failure surfaces — the rec
    databricks jobs get-run --run-id <run_id> --profile <profile> --output json
    ```
 
-3. Locate the task run whose `task_key` equals `lever_loop` unless the caller supplied another task key.
+3. Locate the task run whose `task_key` equals `lever_loop` unless the caller supplied another task key. If the parent run contains multiple `lever_loop` attempts, analyze the latest task run by task `start_time`/`end_time` when present, otherwise by the order returned in `job_run.tasks`. Record every attempt in the report. If the latest attempt failed while an earlier attempt succeeded, classify the latest attempt as the primary run outcome unless the operator explicitly asks to analyze the latest successful optimizer attempt.
 
 4. Fetch task output:
 
@@ -204,11 +154,6 @@ For Phase E specifically, distinguish between three failure surfaces — the rec
   - `Next Suggested Action`
 - Decision validation count is zero or listed.
 
-When `lever_loop_notebook_output.json` is available, run these two cross-checks before concluding:
-
-- **Producer-gap check.** Compare `notebook_output.phase_b.iter_record_counts` length against `notebook_output.result.iteration_counter`. If `len(iter_record_counts) < iteration_counter` AND the missing iters are not enumerated in `no_records_iterations`, classify as `PHASE_B_TRACE_GAP` — producer side. Iters that ran but emitted no records and aren't typed as "no records" are silently broken; the persistence layer can't help.
-- **Persistence-claim check.** For every path in `notebook_output.phase_b.artifact_paths`, verify it actually exists on at least one MLflow run in the experiment (recursive `MlflowClient.list_artifacts` over every sibling). When a path is *claimed* by the result block but *absent* on every run, classify as `PHASE_B_PERSIST_SILENT_FAILURE` — the harness's exception-suppressed Phase B persistence path swallowed a real error. Recommend deploying `genie.phase_b.partial=true` tagging (committed in the `fix/gso-lossless-contract-replay-gate` branch) so the next run surfaces the failure rather than burying it.
-
 ### RCA-Groundedness Health
 
 For each sampled or failing decision record, check:
@@ -240,51 +185,20 @@ If any field is missing, classify the run as `DEGRADED_TRACE_CONTRACT` unless th
 
 ### Lever-Loop Mechanics Health
 
-Run this section every analysis. It surfaces failure modes that look
-like generic "MERGE_GATE_GAP" in the verdict but actually point at a
-specific lever-loop policy. The signals come from
-`tools.lever_loop_stdout_parser.parse_lever_loop_stdout(...)`; if the
-bundle's `gso_postmortem_bundle/` is present, the same signals come
-from the typed per-stage capture instead of stdout grepping.
+For every unresolved hard QID and every rolled-back or skipped AG, map evidence to the first broken lever-loop stage:
 
-- **Acceptance target-blindness check.** For each accepted AG, assert
-  `target_fixed_qids ≠ ∅` OR `thresholds_met=True`. Any acceptance
-  with `target_fixed_qids=()` and unmet thresholds → emit
-  `ACCEPTANCE_TARGET_BLIND` finding.
-- **No-causal-applyable detection.** For each AG, count proposals
-  with `rca_id=parent_ag.rca_id` that were dropped by `blast_radius`,
-  `rca_groundedness`, or applyability gates. If non-zero AND any
-  non-RCA proposal was applied → emit
-  `CAUSAL_PATCH_BLOCKED_NONCAUSAL_APPLIED`.
-- **`patch_cap` RCA-blindness.** Inspect each iteration's
-  `PATCH SURVIVAL` block (or `06_safety_gates/output.json` under
-  Phase H). If a proposal with `rca_id≠None` was dropped at
-  `patch_cap` (`reason=lower_causal_rank`) while a sibling with
-  `rca=None` was selected (`patch_cap_selected`) → emit
-  `PATCH_CAP_RCA_BLIND_RANKING`.
-- **Blast-radius lever distribution.** Group `blast_radius` drops by
-  `patch_type`. If non-semantic levers
-  (`update_column_description`, `add_column_synonym`,
-  `add_metric_view_instruction`, `add_table_instruction`,
-  `update_table_description`) appear in the drop set → emit
-  `BLAST_RADIUS_OVERDROP_ON_NONSEMANTIC`.
-- **Strategist coverage.** Count strategist-emitted AGs per iteration
-  vs `len(hard_clusters)`. If less than one AG per cluster → emit
-  `STRATEGIST_SINGLE_AG_GAP`.
-- **Diagnostic-AG fallback rate.** Count proposals from AGs whose
-  `rca_id=None`. If high (>0 in any iteration) → emit
-  `DIAGNOSTIC_AG_RCA_INHERITANCE_GAP`.
-- **Incidental resolution detection.** For each iteration where
-  global accuracy improved, list QIDs that flipped from fail to
-  pass. Compare to that iteration's `target_fixed_qids`. Any flip
-  not in `target_fixed_qids` is annotated as `INCIDENTAL_RESOLUTION`
-  (informational; this is the trigger for the
-  `ACCEPTANCE_TARGET_BLIND` rule above).
-- **Instruction propagation completeness.** Where applied
-  `patch_type ∈ {add_*_instruction, add_example_sql}`, verify the
-  next iteration's Genie SQL for the targeted QID reflects the
-  instruction. Mismatch → emit `INSTRUCTION_NOT_HONORED_BY_GENIE`
-  (informational; not optimizer-fixable).
+- `evaluation_state`: stale or conflicting full-eval rows, soft-cluster currency drift, or failed-question/regression-bucket mismatch.
+- `rca_evidence`: missing RCA cards, `rca_cards_present=false`, weak counterfactuals, or ASI/root-cause conflicts.
+- `cluster_formation`: stale soft clusters, hard/soft bucket drift, or clusters built from non-current eval rows.
+- `action_group_selection`: uncovered hard clusters, repeated coverage-gap AGs, wrong lever selection for the root cause, or buffered AG reuse that ignores prior gate outcomes.
+- `proposal_generation`: `Proposals (0 total)`, no candidate for a causal root cause, or SQL-shape root causes producing only instruction/metadata proposals.
+- `safety_gates`: structural-gate drops, blast-radius drops, applyability drops, or cap decisions that remove the only causal patch.
+- `applied_patches`: patch ID collisions, selected/applied reconciliation conflicts, or applied patch surface not matching selected patch identity.
+- `post_patch_evaluation`: candidate eval missing, failed-question list inconsistent with accepted baseline, or QID status transitions not emitted.
+- `acceptance_decision`: target-fixed attribution drift, accepted non-causal gains, rejected/accepted regression debt, or regression buckets missing newly hard QIDs.
+- `learning_next_action`: repeated no-op iterations, repeated deterministic gate drops, missing DOA dedupe, or failure to switch strategy after a typed gate/proposer failure.
+
+When the run uses legacy stdout rather than Phase H artifacts, still produce this stage map from transcript sections, replay fixture, and markers. Do not collapse distinct failure modes: `structural_gate_dropped_instruction_only` means a proposal existed and was rejected; `proposal_generation_empty` means the proposer returned no proposals.
 
 ### MLflow Trace Health
 
@@ -319,7 +233,6 @@ These four items are read from `repo_root`, not from the run output:
 - **Decision-trace hard-gate replay test exists.** A test in `tests/replay/` must fail closed when a required `DecisionRecord` is missing — distinct from the cross-projection structure test which validates layout. Search for tests that assert presence-and-completeness of canonical record types (`PATCH_APPLIED`, `RCA_FORMED`, `ACCEPTANCE_DECIDED`, `QID_RESOLUTION`) and would CI-fail if any went missing on a synthetic gap fixture. Absence of such a test is `PHASE_E_MERGE_GATE_NOT_WIRED`.
 - **Sanity-broken PR CI evidence captured.** A closed PR (or saved CI run link) must exist proving CI failed loudly when one `_emit_ag_outcome_journey` call or one required decision record was dropped. Without this evidence, the gates are unproven even if they exist on paper.
 - **No partially-shipped Phase D plans.** All tasks across the three Phase D plans (`2026-05-04-operator-scoreboard-plan.md`, `2026-05-04-failure-bucketing-classifier-plan.md`, `2026-05-04-harness-extractions-phase-1-plan.md`) are landed against their respective task lists. Partial completion is a soft block — the pilot can run, but merge cannot.
-- **Decision-trail artifact integrity (E.0).** Run `python -m genie_space_optimizer.tools.mlflow_audit --opt-run-id <id>` and confirm `phase_a/journey_validation/`, `phase_b/decision_trace/`, and `phase_b/operator_transcript/` are present on the lever_loop anchor run for every iteration. If the audit reports any prefix missing on the anchor, this is `PHASE_E0_DECISION_TRAIL_MISSING` — see Degraded Analysis Rules for routing.
 
 #### Phase E verdict
 
@@ -346,40 +259,11 @@ Classify the primary failure as one of:
 - `GATE_OR_CAP_GAP`
 - `APPLIER_FAILURE`
 - `ROLLBACK_OR_ACCEPTANCE_GAP`
-- `PHASE_B_TRACE_GAP` — at least one of:
-  - **producer-gap subkind**: `len(iter_record_counts) < iteration_counter` and the missing iters are not in `no_records_iterations` (records were never emitted, never typed).
-  - **persistence-silent-failure subkind**: `phase_b.artifact_paths` claims artifacts that don't exist on any MLflow run (the persistence path's `try/except: logger.debug` block swallowed a real error). Pre-deployment of `genie.phase_b.partial` tagging, this is invisible from MLflow alone.
+- `PHASE_B_TRACE_GAP`
 - `MLFLOW_ARTIFACT_GAP`
 - `CONVERGENCE_OR_PLATEAU_GAP`
 - `MODEL_CEILING`
 - `UNKNOWN_NEEDS_MORE_EVIDENCE`
-- `ACCEPTANCE_TARGET_BLIND` — an AG was accepted via the
-  attribution-drift branch (`accepted_with_attribution_drift`) while
-  thresholds were unmet and the named target qid stayed hard.
-  Resolved by enabling `GSO_TARGET_AWARE_ACCEPTANCE`.
-- `CAUSAL_PATCH_BLOCKED_NONCAUSAL_APPLIED` — every RCA-matched
-  proposal in an AG was dropped upstream while non-causal proposals
-  were applied. Resolved by enabling `GSO_NO_CAUSAL_APPLYABLE_HALT`.
-- `PATCH_CAP_RCA_BLIND_RANKING` — `patch_cap` selected a proposal
-  with `rca_id=None` over a sibling with `rca_id≠None` at equal
-  relevance. Resolved by enabling `GSO_RCA_AWARE_PATCH_CAP`.
-- `BLAST_RADIUS_OVERDROP_ON_NONSEMANTIC` — non-semantic patches
-  (column descriptions, synonyms, instructions) dropped at the
-  blast-radius gate. Resolved by enabling
-  `GSO_LEVER_AWARE_BLAST_RADIUS`.
-- `STRATEGIST_SINGLE_AG_GAP` — strategist emitted one AG when
-  multiple hard clusters needed coverage. Tracked but not
-  flag-resolved; addressed by Tier-3 strategist multi-AG work.
-- `DIAGNOSTIC_AG_RCA_INHERITANCE_GAP` — diagnostic AG materialized
-  for a known cluster did not inherit the cluster's `rca_id`,
-  causing rca_groundedness drops. Resolved by Task F of the
-  optimizer plan.
-- `INCIDENTAL_RESOLUTION` — informational; a QID flipped from fail
-  to pass without being in any AG's `target_qids`. By itself benign;
-  becomes diagnostic when combined with `ACCEPTANCE_TARGET_BLIND`.
-- `INSTRUCTION_NOT_HONORED_BY_GENIE` — informational; Genie SQL did
-  not reflect an applied instruction patch. Not optimizer-fixable;
-  surfaces a Genie-side issue.
 
 ### Phase E specific (use only when `phase=E`)
 
@@ -418,10 +302,21 @@ Every report must contain:
 
 ## Root Cause Hypothesis
 
+## Optimizer Improvement Next Steps
+
 ## Recommended Next Actions
 
 ## Evidence Appendix
 ```
+
+`## Optimizer Improvement Next Steps` is required for every postmortem, even when the verdict is `READY_TO_MERGE`. It must be grounded and code-actionable:
+
+- Tie each next step to a specific lever-loop stage from the mechanics checklist.
+- Cite the run evidence: QID, AG, iteration, gate/drop/rollback marker, artifact path, or transcript section.
+- Name the likely module/file to change, for example `optimization/control_plane.py`, `optimization/harness.py`, `optimization/optimizer.py`, `optimization/rca.py`, `optimization/cluster_driven_synthesis.py`, `optimization/applier.py`, `optimization/static_judge_replay.py`, `tools/evidence_bundle.py`, or `tools/marker_parser.py`.
+- State the smallest code/test change needed before rerun.
+- Separate optimizer-improvement work from Databricks/harness reliability work.
+- Do not recommend "rerun" as the primary next step unless the failed stage was purely infrastructure and the transcript proves no optimizer logic executed.
 
 When `phase=E` (or `phase=all` for a Phase E pilot), the report must also contain:
 
@@ -458,53 +353,22 @@ One of `READY_TO_MERGE`, `PILOT_NEEDS_RERUN`, `MERGE_GATE_GAP`, `BASELINE_REGRES
 
 If task output is truncated, say so and rely on MLflow artifacts and markers.
 
-If MLflow experiment ID cannot be resolved, write the report with `MLFLOW_EXPERIMENT_UNRESOLVED` and ask the user for the experiment ID. Try this resolution chain first before asking:
-1. Explicit `experiment_id` input.
-2. `GSO_RUN_MANIFEST_V1.mlflow_experiment_id` from markers.
-3. `MLFLOW_EXPERIMENT_ID`/`mlflow_experiment_id`/`experiment_id` in `job_run.job_parameters`.
-4. `experiment_name` in `job_run.job_parameters` → resolve via `MlflowClient.get_experiment_by_name(name).experiment_id`.
-5. Ask the operator.
+If MLflow experiment ID cannot be resolved, write the report with `MLFLOW_EXPERIMENT_UNRESOLVED` and ask the user for the experiment ID.
 
-If `GSO_*_V1` markers are missing AND `lever_loop_stdout.txt` is empty, the lever-loop is a notebook task and stdout is not a capture surface. Pull `lever_loop_notebook_output.json` (see Step 0) and read `notebook_output.result.phase_b` instead. Do not declare missing markers a blocker on its own — the structured result is the substitute.
+If `GSO_*_V1` markers are missing, run legacy-mode analysis from existing section banners and replay markers, then recommend adding marker support.
 
-If the audit anchor resolved to `enrichment_snapshot` (or any non-`lever_loop` `genie.run_type`) AND `mlflow_audit.sibling_runs[*].artifact_paths` are empty for `phase_a/`/`phase_b/` prefixes, the deployed harness is not tagging any run with `genie.run_type=lever_loop`. The audit cannot find the canonical anchor. Recover by querying MLflow directly:
-
-```python
-from mlflow.tracking import MlflowClient
-client = MlflowClient()
-exp = client.get_experiment_by_name("<experiment_name from job_parameters>")
-runs = client.search_runs(
-    experiment_ids=[exp.experiment_id],
-    filter_string=f"tags.`genie.run_id` = '{opt_run_id}'",  # NOT genie.optimization_run_id
-    max_results=200,
-)
-```
-
-Then inspect each run's tags for `genie.stage=full_eval` and `genie.iteration=<N>` — those are the per-iteration anchors. List artifacts on each. If `phase_b/decision_trace/iter_<N>.json` and `phase_b/operator_transcript/iter_<N>.txt` are absent across **every** iteration run, you have confirmed the persistence-silent-failure subkind of `PHASE_B_TRACE_GAP`.
-
-If evidence conflicts, report the conflict rather than choosing one source silently. Specifically: when `notebook_output.phase_b.artifact_paths` lists a path that does not exist on any MLflow run, surface the conflict in the postmortem's "Evidence Collected" section — do not silently treat one as authoritative.
+If evidence conflicts, report the conflict rather than choosing one source silently.
 
 For Phase E specifically:
 
 - If `baseline_run_id` is unavailable when `phase=E`, write the report with `PHASE_E_BASELINE_UNRESOLVED` in the accuracy non-regression row and ask the user. Do not fabricate a baseline from this run's iteration 0.
 - If the pilot did not complete (truncation, infrastructure failure, run cancelled mid-iteration), classify the run with the appropriate non-Phase-E label (`DATABRICKS_JOB_FAILURE` etc.) and explicitly state that Phase E validation cannot proceed until a complete pilot run exists.
-- If the parent job run is `RUNNING` but the `lever_loop` task is `TERMINATED/SUCCESS` (i.e., `finalize` and `deploy` are still in progress), proceed with the Phase E checklist for the lever loop. Mark `Metadata` with `finalize_state`/`deploy_state` as `pending` and exclude finalize-only outputs (UC champion promotion, repeatability re-run results) from the verdict — they will need a separate follow-up postmortem once the parent terminates.
 - If merge-gate state checks find `repo_root` unset or inaccessible, mark each merge-gate row `UNVERIFIED` and ask the user to confirm or rerun with `repo_root` set.
 - If pilot-run validation passes but merge-gate state shows multiple gaps, do not classify as `READY_TO_MERGE` — use `MERGE_GATE_GAP` and list the missing items in priority order.
-- If the `mlflow_audit` CLI reports decision-trail artifacts missing on the lever_loop anchor for any iteration, classify the run as `MERGE_GATE_GAP` with the label `PHASE_E0_DECISION_TRAIL_MISSING`, and recommend running `python -m genie_space_optimizer.tools.mlflow_backfill --opt-run-id <id> --replay-fixture <path>` followed by a fresh audit pass before re-attempting the Phase E pilot.
-- **Disambiguating `MERGE_GATE_GAP` vs `PILOT_NEEDS_RERUN` when decision-trail artifacts are absent across the entire experiment.** This is the most common confusion. Use this routing:
-  - The lever loop terminated cleanly (TERMINATED/SUCCESS) AND `notebook_output.phase_b.artifact_paths` claims paths that don't exist anywhere in MLflow → **`MERGE_GATE_GAP`** with subkind `PHASE_B_PERSIST_SILENT_FAILURE`. Re-running the same harness will reproduce the same gap. The fix is to deploy the `genie.phase_b.partial` tagging branch so the next run surfaces the underlying exception, then patch the producer or persistence path it identifies.
-  - The lever loop terminated cleanly AND `notebook_output.phase_b.iter_violation_counts` contains any value > 0 → **`MERGE_GATE_GAP`** even without missing artifacts. Phase E exit criteria require zero validator warnings; this is a contract violation, not a re-run candidate.
-  - The lever loop terminated cleanly AND `len(notebook_output.phase_b.iter_record_counts) < iteration_counter` AND missing iters are not in `no_records_iterations` → **`MERGE_GATE_GAP`** with subkind `PHASE_B_PRODUCER_GAP`. Producers are silently not appending; re-running won't help.
-  - The lever loop did NOT terminate cleanly (FAILED, TIMEDOUT, INTERNAL_ERROR) → likely `PILOT_NEEDS_RERUN` after the underlying defect is fixed. Inspect the task error first.
-  - When in doubt, prefer `MERGE_GATE_GAP` over `PILOT_NEEDS_RERUN`. Re-runs are expensive (real Genie hours) and pre-deploy reruns reproduce pre-deploy bugs.
 
 ## Cross-Skill Hand-offs
 
 This skill is **read-only**; it never overwrites fixtures, edits the burn-down ledger, modifies test budget literals, or creates git commits. When the user's intent crosses into write-side ops, hand off explicitly to `gso-replay-cycle-intake` rather than attempting those actions here.
-
-- **Orchestration entry point.** When the operator says "postmortem this run" without specifying a bundle dir, the recommended path is the `gso-postmortem` skill, which sequences `evidence_bundle` → this skill → optional `trace_fetcher` → optional `gso-replay-cycle-intake` hand-off.
-- **Trace fetcher.** This skill *may* invoke `python -m genie_space_optimizer.tools.trace_fetcher` according to the "Trace fetch decision rule" in Step 0. It does not invoke any other write-side commands.
 
 This skill **calls** `gso-replay-cycle-intake` in two cases:
 
