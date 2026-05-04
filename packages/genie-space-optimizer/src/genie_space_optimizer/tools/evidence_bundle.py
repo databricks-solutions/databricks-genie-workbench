@@ -126,6 +126,20 @@ def _select_lever_loop_task(
     return failures[0], list(failures)
 
 
+def _failed_attempt_artifact_path(
+    evidence_dir: Path,
+    *,
+    task_run_id: str,
+) -> Path:
+    """Return the on-disk path for one failed lever_loop attempt's
+    ``get-run-output`` JSON. Lands under
+    ``<evidence_dir>/failed_lever_loop_attempts/<task_run_id>.json``
+    so the postmortem skill can scan failed-attempt error classes
+    without colliding with the chosen attempt's stdout/stderr.
+    """
+    return evidence_dir / "failed_lever_loop_attempts" / f"{task_run_id}.json"
+
+
 def download_parent_bundle(
     *,
     parent_run_id: str,
@@ -445,6 +459,31 @@ def build_bundle(
         (paths.evidence_dir / "lever_loop_stdout.txt").write_text(stdout_text)
     if stderr_text:
         (paths.evidence_dir / "lever_loop_stderr.txt").write_text(stderr_text)
+
+    # Emit one ``get-run-output`` JSON per failed lever_loop attempt so
+    # the postmortem skill can scan their error classes without
+    # affecting the chosen-attempt stdout/stderr files. Skipped silently
+    # when the per-attempt fetch fails (a truly broken attempt may have
+    # no recoverable output).
+    for failed in failed_lever_loop_attempts:
+        failed_run_id = str(failed.get("run_id") or "")
+        if not failed_run_id:
+            continue
+        try:
+            failed_output = databricks_runner.get_run_output(
+                run_id=failed_run_id, profile=profile,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Could not fetch get-run-output for failed lever_loop attempt %s",
+                failed_run_id,
+            )
+            continue
+        failed_path = _failed_attempt_artifact_path(
+            paths.evidence_dir, task_run_id=failed_run_id
+        )
+        failed_path.parent.mkdir(parents=True, exist_ok=True)
+        failed_path.write_text(json.dumps(failed_output, indent=2, default=str))
 
     paths.markers.write_text(_markers_to_json(markers))
 

@@ -95,3 +95,20 @@ def test_ignores_non_lever_loop_tasks() -> None:
     selected, failed_attempts = _select_lever_loop_task(tasks)
     assert selected["run_id"] == "400"
     assert failed_attempts == []
+
+
+def test_failed_attempts_paths_are_under_failed_lever_loop_attempts(tmp_path) -> None:
+    """When the bundle pulls outputs for failed attempts, each lands
+    under ``evidence/failed_lever_loop_attempts/<task_run_id>.json``
+    so the postmortem skill can scan their error classes without
+    affecting the main stdout/stderr files used for the chosen
+    attempt.
+    """
+    from genie_space_optimizer.tools.evidence_bundle import (
+        _failed_attempt_artifact_path,
+    )
+
+    base = tmp_path / "evidence"
+    p = _failed_attempt_artifact_path(base, task_run_id="647646803280997")
+    assert p == base / "failed_lever_loop_attempts" / "647646803280997.json"
+    assert p.parent.name == "failed_lever_loop_attempts"
