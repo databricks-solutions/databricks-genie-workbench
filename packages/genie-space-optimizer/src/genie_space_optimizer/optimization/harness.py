@@ -11296,6 +11296,18 @@ def _run_lever_loop(
     # classification. Active when GSO_BUCKET_DRIVEN_AG_SELECTION is
     # on (production-locked: always on).
     _prior_buckets_by_qid: dict[str, Any] = {}
+    # (Cycle 5 T2) ``_prior_iteration_dropped_causal_patches`` —
+    # gate-drops carrying a causal-target patch from the prior
+    # iteration. Empty on iter 1; populated at the END of each
+    # iteration from the per-iteration ``_iter_dropped_causal``
+    # accumulator and consumed by spine stage 4 (Action Group
+    # Selection) at the START of the next iteration via
+    # ``ActionGroupsInput.prior_iteration_dropped_causal_patches``.
+    # The strategist prompt-builder consumer surfaces these to the
+    # LLM when ``GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST`` is on so
+    # the next call can propose a narrower variant or shift levers
+    # instead of re-emitting the same dropped pattern.
+    _prior_iteration_dropped_causal_patches: list = []
 
     resume_state = _resume_lever_loop(spark, run_id, catalog, schema)
     # S10 — ``start_lever`` is informational only: the loop below always
@@ -12527,6 +12539,16 @@ def _run_lever_loop(
         _iter_consumed: bool = True
         _iter_no_op_cause: str = ""
         _iter_applied_count: int = 0
+
+        # Cycle 5 T2 — per-iteration accumulator for gate-drops carrying
+        # a causal-target patch. Populated unconditionally at the
+        # blast-radius drop site (capture is cheap memory; no behaviour
+        # change). Consumed at iteration end to refresh the outer-scope
+        # ``_prior_iteration_dropped_causal_patches`` list, which the
+        # next iteration's ``ActionGroupsInput`` reads — gated by
+        # ``GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST`` so byte-stability
+        # holds with the flag off.
+        _iter_dropped_causal: list = []
 
         # P3 task 4 — drain any structural-synthesis proposals queued
         # at the prior iteration's lever-5 drop site. Same-iteration
@@ -15719,6 +15741,17 @@ def _run_lever_loop(
                     k: tuple(v) for k, v in (_ag_alts_by_id or {}).items()
                 },
                 prior_buckets_by_qid=dict(_prior_buckets_by_qid),
+                # Cycle 5 T2 — gate-drops carrying a causal-target
+                # patch from the prior iteration. Threaded
+                # unconditionally (the dataclass field accepts an empty
+                # tuple as default); the strategist prompt-builder
+                # consumer surfaces these only when
+                # GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST is on, so
+                # passing the tuple here with the flag off is byte-
+                # stable. Iter 1 sees ().
+                prior_iteration_dropped_causal_patches=tuple(
+                    _prior_iteration_dropped_causal_patches
+                ),
             )
             # Phase F+H Commit B11: wrap F4 with stage_io_capture
             # decorator. Replay-byte-stable — wrap_with_io_capture
@@ -16513,6 +16546,48 @@ def _run_lever_loop(
                     )
                     if is_strict_mode():
                         raise
+
+                # Cycle 5 T2 — capture every blast-radius drop whose
+                # target_qids overlap the AG's causal target as a typed
+                # DroppedCausalPatch so the next iteration's strategist
+                # can see what was rejected. Capture is unconditional
+                # (cheap; just appends to ``_iter_dropped_causal``);
+                # consumption by the strategist prompt is gated by the
+                # flag at the AG construction site, preserving byte-
+                # stability with the flag off.
+                try:
+                    from genie_space_optimizer.optimization.stages.gates import (
+                        DroppedCausalPatch as _DroppedCausalPatch,
+                    )
+                    _t2_target_qids = tuple(
+                        str(q) for q in (ag.get("target_qids") or ()) if q
+                    )
+                    if _t2_target_qids:
+                        for _drop in _blast_dropped or ():
+                            _t2_dependents = tuple(
+                                str(q)
+                                for q in (
+                                    _drop.get("passing_dependents_outside_target")
+                                    or ()
+                                )
+                            )
+                            _iter_dropped_causal.append(_DroppedCausalPatch(
+                                gate="blast_radius",
+                                reason=str(_drop.get("reason") or ""),
+                                proposal_id=str(_drop.get("proposal_id") or ""),
+                                patch_type=str(_drop.get("patch_type") or ""),
+                                target=str(_drop.get("target") or ""),
+                                target_qids=_t2_target_qids,
+                                dependents_outside_target=_t2_dependents,
+                                rca_id=str(_br_rca_id or ""),
+                                root_cause=str(_br_root_cause or ""),
+                            ))
+                except Exception:
+                    logger.debug(
+                        "Cycle 5 T2: dropped-causal capture failed "
+                        "(non-fatal)",
+                        exc_info=True,
+                    )
             patches = _blast_kept
         except ImportError:
             # instruction_patch_scope_is_safe not yet implemented (Task 2A
@@ -19127,6 +19202,20 @@ def _run_lever_loop(
                         "Spine stage 10: bucket classification failed "
                         "(non-fatal); prior_buckets_by_qid carried over "
                         "unchanged",
+                        exc_info=True,
+                    )
+                # Cycle 5 T2 — refresh the cross-iteration carry-over
+                # for dropped causal patches. The next iteration's
+                # ActionGroupsInput threads this list into the
+                # strategist's prompt context (gated by the flag).
+                try:
+                    _prior_iteration_dropped_causal_patches = list(
+                        _iter_dropped_causal
+                    )
+                except Exception:
+                    logger.debug(
+                        "Cycle 5 T2: dropped-causal carry-over refresh "
+                        "failed (non-fatal); prior list unchanged",
                         exc_info=True,
                     )
                 _transcript = render_operator_transcript(
