@@ -1050,6 +1050,20 @@ def _record_dead_on_arrival_signature(
     seen.add(signature)
 
 
+def _consume_structural_synthesis_buffer(buffer: list[dict]) -> list[dict]:
+    """P3 task 4 — drain the structural-synthesis buffer and return its
+    contents.
+
+    Called at the start of each iteration after action-group selection
+    so a synthesis proposal queued at the prior iteration's lever-5
+    drop becomes a forced AG candidate this iteration. Mutates the
+    input buffer (clears it).
+    """
+    consumed = list(buffer)
+    buffer.clear()
+    return consumed
+
+
 def _should_force_structural_synthesis(
     *,
     gate_drop_reason: str,

@@ -110,3 +110,26 @@ def test_lever5_drop_does_not_invoke_synthesis_when_flag_off(monkeypatch) -> Non
         gate_drop_reason="lever5_structural_sql_shape_no_example_sql",
         cluster_root_cause="missing_filter",
     ) is False
+
+
+def test_synthesized_proposal_buffered_for_next_iteration(monkeypatch) -> None:
+    """A synthesized add_example_sql proposal must appear in the
+    next iteration's strategist input as a forced AG candidate.
+    """
+    monkeypatch.setenv("GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP", "1")
+    from genie_space_optimizer.optimization.harness import (
+        _consume_structural_synthesis_buffer,
+    )
+
+    buffer = [
+        {
+            "proposal_id": "SYN_001",
+            "patch_type": "add_example_sql",
+            "target_qids": ["gs_021"],
+            "_archetype_name": "ordered_list_by_metric",
+        },
+    ]
+    consumed = _consume_structural_synthesis_buffer(buffer)
+    assert len(consumed) == 1
+    assert consumed[0]["patch_type"] == "add_example_sql"
+    assert buffer == [], "buffer must be drained on consume"
