@@ -47,3 +47,35 @@ def test_stage_handler_protocol_accepts_conforming_module() -> None:
     assert handler.stage_key == "evaluation_state"
     out = handler.execute(None, FakeInput())
     assert isinstance(out, FakeOutput)
+
+
+def test_stage_handler_is_runtime_checkable() -> None:
+    """G-lite Task 1: StageHandler must be @runtime_checkable so the
+    conformance test can use isinstance() checks."""
+    # Protocols decorated with @runtime_checkable have a private
+    # ``_is_runtime_protocol`` attribute set to True. Other Protocols
+    # have it set to False or missing.
+    assert getattr(StageHandler, "_is_runtime_protocol", False) is True
+
+
+def test_stage_handler_isinstance_accepts_conforming_object() -> None:
+    """G-lite Task 1: a class with execute() satisfies StageHandler at runtime."""
+
+    class Conforming:
+        stage_key = "evaluation_state"
+        decision_producer = None
+
+        def execute(self, ctx, inp):
+            return None
+
+    assert isinstance(Conforming(), StageHandler)
+
+
+def test_stage_handler_isinstance_rejects_nonconforming_object() -> None:
+    """G-lite Task 1: a class without execute() does NOT satisfy."""
+
+    class NonConforming:
+        stage_key = "evaluation_state"
+        # no execute() method
+
+    assert not isinstance(NonConforming(), StageHandler)
