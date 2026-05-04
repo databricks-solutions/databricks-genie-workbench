@@ -5,6 +5,14 @@ description: Use when an operator asks to "postmortem", "diagnose", "troubleshoo
 
 # GSO Run Postmortem Orchestrator
 
+> **Canonical example.** Run
+> `0ade1a99-9406-4a68-a3bc-8c77be78edcb` is preserved as the
+> canonical postmortem of a `MERGE_GATE_GAP` produced by a
+> below-threshold attribution-drift acceptance. Reading
+> `docs/runid_analysis/0ade1a99-9406-4a68-a3bc-8c77be78edcb/postmortem.md`
+> alongside `evidence/lever_loop_export_run_text.txt` gives a
+> complete worked example of the workflow below.
+
 Use this skill when the operator says "postmortem", "diagnose", "analyze", or "troubleshoot" a lever-loop run and supplies `(job_id, run_id)`. The skill sequences three lower-level skills/tools into a single deterministic flow.
 
 ## Required Inputs
@@ -17,6 +25,7 @@ Use this skill when the operator says "postmortem", "diagnose", "analyze", or "t
 - `profile`: Databricks CLI profile. Default: ask the operator if not obvious from context.
 - `auto_backfill`: When `true`, the bundle invocation runs `mlflow_backfill` automatically for missing decision-trail artifacts. Default: `false` (operator approves before any writes).
 - `output_dir`: Bundle root. Default: `packages/genie-space-optimizer/docs/runid_analysis`.
+- `lever_loop_task_run_id`: Optional but useful when supplied by the operator. If missing, recover it from `job_run.tasks[*].task_key == "lever_loop"`.
 
 ## Required Related Skills
 
@@ -66,22 +75,71 @@ This skill orchestrates; it does not analyze. Reasoning lives in `gso-lever-loop
    - If the audit anchor resolved to `enrichment_snapshot` (or any non-`lever_loop` `genie.run_type`) **and** sibling artifacts are empty, the deployed harness is not tagging any run with `genie.run_type=lever_loop`. Do not treat this as `MLFLOW_AUDIT_FAILED`. Pass the bundle to the analysis skill — its degraded-mode rules cover this case by searching iteration full_eval runs by `genie.run_id`.
    - If `MLFLOW_AUDIT_FAILED`, surface the root error to the operator and stop. (This usually means the wrong workspace profile, or `MLFLOW_TRACKING_URI` is unset — see Step 0.)
 
-4. **Hand off to `gso-lever-loop-run-analysis`** with `bundle_dir=<output_dir>/<opt_run_id>`. The analysis skill reads `evidence/manifest.json`, walks its checklists, decides whether to invoke `trace_fetcher`, and writes `postmortem.md` + `postmortem.json`.
+4. **Recover the full notebook transcript when the Jobs output is only an exit JSON.** This is mandatory when `evidence/lever_loop_stdout.txt` lacks the expected human-readable sections such as `EVALUATION SUMMARY — Iteration`, `FULL EVAL [`, `GSO_CONVERGENCE_V1`, or `PHASE_A_REPLAY_FIXTURE_JSON_BEGIN`.
+
+   `databricks jobs get-run-output` often returns only `notebook_output.result` for notebook tasks. The full cell output is recoverable through `jobs export-run`:
+
+   ```bash
+   databricks jobs export-run <lever_loop_task_run_id> \
+     --profile <profile> --views-to-export ALL --output json \
+     > <bundle_dir>/evidence/lever_loop_export_run.json
+   ```
+
+   The JSON contains HTML with an encoded `__DATABRICKS_NOTEBOOK_MODEL`. Decode it and write the text to `<bundle_dir>/evidence/lever_loop_export_run_text.txt`. Use that file as the primary legacy transcript for:
+   - `GSO_RUN_MANIFEST_V1` start/end markers.
+   - `GSO_CONVERGENCE_V1` (`best_accuracy`, `iteration_counter`, `thresholds_met`).
+   - `FULL EVAL [...]` accept/rollback sections.
+   - `target_fixed_qids`, `target_still_hard_qids`, `out_of_target_regressed_qids`.
+   - `PHASE_A_REPLAY_FIXTURE_JSON_BEGIN/END` for replay-intake evidence.
+
+   **Then parse it with the typed parser.** Once `lever_loop_export_run_text.txt` is on disk, hand it to `tools.lever_loop_stdout_parser.parse_lever_loop_stdout(...)` rather than grepping the file directly:
+
+   ```python
+   from genie_space_optimizer.tools.lever_loop_stdout_parser import (
+       parse_lever_loop_stdout,
+   )
+   text = (bundle_dir / "evidence" / "lever_loop_export_run_text.txt").read_text()
+   view = parse_lever_loop_stdout(text)
+   # view.optimization_run_summary.final_accuracy_pct
+   # view.evaluation_summary[3].target_still_hard_qids
+   # view.evaluation_summary[3].target_still_hard_qids_source  # "explicit" | "derived" | "unknown"
+   # view.proposal_inventory[3]["AG_COVERAGE_H003"]
+   # view.blast_radius_drops[3]
+   # view.patch_survival[3]
+   # view.acceptance_decision[3]
+   ```
+
+   The parser is read-only and forgiving: missing blocks return `None` / empty rather than raising. Pass `view` to the analysis skill alongside the bundle directory; the analysis skill's "Lever-Loop Mechanics Health" checklist consumes it directly. When `target_still_hard_qids_source == "derived"`, footnote that fact in the postmortem (the harness omits the explicit field on accepted iters; the parser computed it from `target_qids - target_fixed_qids` — this is the canonical `ACCEPTANCE_TARGET_BLIND` evidence path).
+
+   **Do not ask the operator to paste notebook output until both `export-run` and the parser have run.** If the parser returns `optimization_run_summary=None`, then ask for the pasted transcript and save it as `<bundle_dir>/evidence/lever_loop_operator_paste.txt` before analysis.
+
+5. **Hand off to `gso-lever-loop-run-analysis`** with `bundle_dir=<output_dir>/<opt_run_id>`. The analysis skill reads `evidence/manifest.json`, walks its checklists, decides whether to invoke `trace_fetcher`, and writes `postmortem.md` + `postmortem.json`.
 
    **Partial-run policy.** When the parent job run is `RUNNING` but the `lever_loop` task is `TERMINATED/SUCCESS` (typically because `finalize` and `deploy` tasks are still pending), the lever-loop is fully analyzable. Proceed with the postmortem and annotate `Metadata` with `finalize_state`/`deploy_state` as `pending` so the reader knows post-loop steps were not evaluated. Do not wait for the parent run to finish.
 
-5. **Read the postmortem verdict** (`postmortem.json.status`):
+6. **Read the postmortem verdict** (`postmortem.json.status`):
    - `READY_TO_MERGE` → ask: "advance the burn-down? hand off to `gso-replay-cycle-intake` with `fixture_source=bundle://<opt_run_id>`?"
    - `PILOT_NEEDS_RERUN` → recommend the smallest defect fix; do not rerun automatically.
    - `MERGE_GATE_GAP` → recommend codebase work; do not rerun automatically.
    - `BASELINE_REGRESSION` → recommend rollback or rescope.
    - `INSUFFICIENT_EVIDENCE` → only possible if Trace Fetch Decision Rule was tripped and traces still didn't help; surface what's missing and ask for guidance.
 
-6. **Print a one-paragraph summary to the operator** with:
+7. **Print a one-paragraph summary to the operator** with:
    - Bundle path.
    - Postmortem path.
    - Verdict.
    - Recommended next step (a single sentence).
+
+## Legacy Lever-Loop Mechanism Checklist
+
+When Phase H is absent and the postmortem relies on `lever_loop_export_run_text.txt`, the analysis must separate Databricks task success from optimizer progress:
+
+- Extract `GSO_CONVERGENCE_V1`. If `thresholds_met=false`, do not call the run merge-ready even if the task result is `SUCCESS`.
+- For each `FULL EVAL [...]` section, record the AG ID, accept/rollback decision, primary and secondary accuracy deltas, `target_fixed_qids`, `target_still_hard_qids`, and regressed QIDs.
+- If a targeted AG is accepted while `target_fixed_qids` is empty and thresholds are still unmet, classify this as a `MERGE_GATE_GAP` in the full-eval acceptance/control-plane gate.
+- If a root cause has a narrow SQL-shape/filter signature (for example `LIMIT 10 vs RANK()`, `PAYMENT_CURRENCY_CD` unrequested filter) but the selected patches are broad join specs or broad metadata updates, call out the proposal-survival/patch-selection stage as secondary.
+- If coverage-gap AGs are used with `rca_cards_present=false` or repeated `rca_ungrounded` drops, call out the RCA/diagnostic-AG handoff. Missing RCA cards should force RCA regeneration or human review, not broad patch application.
+- Treat journey-validation violations as evidence-quality and gate-quality defects. They do not by themselves prove optimization failure, but they weaken attribution and should be included when recommending codebase work.
 
 ## Cross-Skill Hand-offs
 
@@ -104,7 +162,8 @@ This skill orchestrates; it does not analyze. Reasoning lives in `gso-lever-loop
 | `mlflow_audit` fails (wrong workspace) | Ask for the correct `--profile`. |
 | `mlflow_backfill` fails | Ask the operator before retrying; do not loop. |
 | Bundle short-circuited (manifest already exists) and you wanted a fresh pull | Delete `<bundle_dir>/evidence/manifest.json` and re-invoke. There is no `--force` flag. |
-| Lever-loop stdout file `lever_loop_stdout.txt` is empty even though the task ran | Lever-loop is a notebook task in production; `databricks jobs get-run-output` returns empty `logs` for notebook tasks. The structured result is in `notebook_output.result`. The analysis skill is responsible for falling back to that. |
+| Lever-loop stdout file `lever_loop_stdout.txt` is empty or only contains final JSON even though the task printed rich logs | Lever-loop is a notebook task in production; `databricks jobs get-run-output` often returns only `notebook_output.result`. Use `databricks jobs export-run <lever_loop_task_run_id> --views-to-export ALL` and decode `__DATABRICKS_NOTEBOOK_MODEL` before asking the operator to paste logs. |
+| `lever_loop_stdout_parser.parse_lever_loop_stdout(...)` returns `optimization_run_summary=None` | Either the recovered text is truncated or the harness emitted a different stdout format. Compare the text against `tests/unit/fixtures/lever_loop_stdout_0ade1a99.txt`; if shapes diverge, file a follow-up to extend the parser regexes. |
 | Postmortem verdict = `INSUFFICIENT_EVIDENCE` | Ask the operator whether to widen the trace fetch beyond `--from-recommendations` (manual `--trace-id` flags). |
 
 ## Phase H: GSO Run Output Contract
