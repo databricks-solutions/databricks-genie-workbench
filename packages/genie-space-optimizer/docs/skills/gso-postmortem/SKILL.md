@@ -132,3 +132,23 @@ When the run was produced by a lever-loop with Phase H landed, prefer the `gso_p
 - Treat `manifest.missing_pieces` entries as authoritative: if a stage's capture failed, the postmortem must say so explicitly rather than silently presenting partial data.
 - The bundle is read-only; the postmortem skill never writes back to MLflow.
 
+
+### Phase H verification
+
+The contract documented in this section is enforced by
+`tests/integration/test_phase_h_skills_retrieval_smoke.py`. If the
+test fails, this skill's Phase H workflow is out of sync with the
+bundle layout. Update either the skill or the bundle assembler so
+they agree, then update the test fixture.
+
+Concretely:
+
+- Step 3 (read manifest) must remain reachable as
+  `gso_postmortem_bundle/manifest.json` per
+  `run_output_contract.bundle_artifact_paths`.
+- Step 4 (per-stage capture) must remain reachable as
+  `gso_postmortem_bundle/iterations/iter_NN/stages/<NN>_<key>/{input,output,decisions}.json`
+  for every executable stage in `PROCESS_STAGE_ORDER` (today: 9 of 11).
+- Step 5 (transcript mirrors stage dirs) is a structural invariant
+  on `PROCESS_STAGE_ORDER` order; do not reorder without updating
+  the transcript renderer at the same time.
