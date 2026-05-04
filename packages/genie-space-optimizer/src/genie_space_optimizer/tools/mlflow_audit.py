@@ -21,7 +21,17 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Any
+
+
+# Phase H: import alias so tests can monkeypatch a single symbol on this
+# module instead of the third-party module path. The audit helper looks
+# this name up at call time.
+try:  # pragma: no cover — non-MLflow envs in tests stub this directly
+    from mlflow.tracking import MlflowClient as MlflowClient
+except Exception:  # pragma: no cover
+    MlflowClient = None  # type: ignore[assignment,misc]
 
 
 _DECISION_ARTIFACT_PREFIXES = (
@@ -239,6 +249,70 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--opt-run-id", required=True)
     parser.add_argument("--experiment-id", default=None)
     return parser.parse_args(argv)
+
+
+@dataclass(frozen=True)
+class ParentBundleAuditReport:
+    """Result of auditing the Phase H parent lever-loop bundle."""
+    optimization_run_id: str
+    parent_run_id: str | None
+    has_manifest: bool
+    missing_artifacts: tuple[str, ...] = ()
+    notes: str = ""
+
+
+def audit_parent_bundle(
+    *,
+    optimization_run_id: str,
+    experiment_id: str | None = None,
+) -> ParentBundleAuditReport:
+    """Find the parent lever-loop run for ``optimization_run_id`` and
+    assert that ``gso_postmortem_bundle/manifest.json`` exists (Phase H).
+
+    Searches by ``genie.run_role=lever_loop`` + ``genie.optimization_run_id``;
+    falls back to the legacy ``genie.run_id`` tag for back-compat.
+    """
+    client = MlflowClient()
+    search_filter = (
+        f"tags.genie.run_role = 'lever_loop' AND "
+        f"tags.genie.optimization_run_id = '{optimization_run_id}'"
+    )
+    runs = client.search_runs(
+        experiment_ids=[experiment_id] if experiment_id else [],
+        filter_string=search_filter,
+        max_results=10,
+    )
+    if not runs:
+        legacy_filter = f"tags.genie.run_id = '{optimization_run_id}'"
+        runs = client.search_runs(
+            experiment_ids=[experiment_id] if experiment_id else [],
+            filter_string=legacy_filter,
+            max_results=10,
+        )
+
+    manifest_path = "gso_postmortem_bundle/manifest.json"
+    if not runs:
+        return ParentBundleAuditReport(
+            optimization_run_id=optimization_run_id,
+            parent_run_id=None,
+            has_manifest=False,
+            missing_artifacts=(manifest_path,),
+            notes="parent run not found via genie.run_role or genie.run_id",
+        )
+
+    parent = runs[0]
+    parent_run_id = parent.info.run_id
+    artifacts = client.list_artifacts(parent_run_id, path="gso_postmortem_bundle")
+    artifact_paths = {a.path for a in artifacts}
+    has_manifest = manifest_path in artifact_paths
+    missing: tuple[str, ...] = () if has_manifest else (manifest_path,)
+
+    return ParentBundleAuditReport(
+        optimization_run_id=optimization_run_id,
+        parent_run_id=parent_run_id,
+        has_manifest=has_manifest,
+        missing_artifacts=missing,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
