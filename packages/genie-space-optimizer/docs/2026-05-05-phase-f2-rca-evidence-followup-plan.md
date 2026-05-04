@@ -456,3 +456,16 @@ After completing the chosen path:
 - Step C1.2 (if C): blocked by per-judge dispatch? <yes / no>
 - Implementer: <name>
 - Final commit hash: <hash>
+
+## Decision Log
+
+**Date:** 2026-05-05
+**Chosen path:** **Path C-prime** (consume F1's typed `EvaluationResult.per_qid_judge` and `.asi_metadata`).
+**Rationale:** F1 already populates these fields from
+`evaluation.run_evaluation`'s return dict (verified at
+`stages/evaluation.py:243-244`). No algorithm hoisting (Path B), no
+per-row field-name discovery (Path C as originally drafted), no
+deprecation (Path D).
+**Implementation:** see
+`packages/genie-space-optimizer/docs/2026-05-05-phase-h-completion-plan.md`
+Task 2.

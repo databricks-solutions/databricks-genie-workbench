@@ -710,6 +710,31 @@ follow-up plan rather than re-opening the full Phase G scope.
 
 ---
 
+## Phase H — GSO Run Output Contract ✅ COMPLETE
+
+**Status:** all wire-up commits landed; per-stage capture wired for
+all 9 executable stages; transcript renders 11 PROCESS_STAGE_ORDER
+sections; skills retrieval contract pinned by integration test.
+
+**Landed via:**
+- `2026-05-04-phase-h-gso-run-output-contract-plan.md` (Option 1
+  modules + capture decorator)
+- `2026-05-04-phase-f-h-harness-wireup-plan-v2.md` (A1-A6, B7-B16,
+  C17-C19; v2.1 patch for A5 acceptance semantic mismatch)
+- `2026-05-05-phase-h-completion-plan.md` (F1 wrap, F2 wire-up + wrap,
+  F6 alignment + wire-up + wrap, bundle smoke, skills retrieval pin,
+  this closeout)
+
+**Verified by:**
+- `tests/integration/test_phase_h_bundle_populated.py` (9 stages, 11
+  transcript sections, 27 distinct artifact paths per iteration)
+- `tests/integration/test_phase_h_skills_retrieval_smoke.py` (Phase H
+  SKILL.md Steps 3-5 reachable end-to-end)
+- `tests/replay/test_phase_f_h_wireup_byte_stable.py` (byte-stability
+  across all wire-up commits)
+
+---
+
 ## Phase H — GSO Run Output Contract: final unification on top of F + G
 
 **Why last:** the live run `407772af-9662-4803-be6b-f00a368c528a` proved that the loop can already improve a Genie Space, but humans and LLMs still have to stitch together stdout, notebook exit JSON, MLflow eval runs, strategy runs, logged model snapshots, and local evidence bundles manually. Phase H formalizes the **GSO Run Output Contract** as the final unification: a process-first human transcript, a parent-run `gso_postmortem_bundle/` with per-stage I/O capture, a `GSO_ARTIFACT_INDEX_V1` stdout marker for CLI discovery, and a `gso-postmortem` skill that consumes the bundle as the one-stop troubleshooting package. **Phase H exists because Phases F and G make it small.** Without per-stage modules, capturing per-stage I/O would require parsing `harness.py`. With per-stage typed `execute(ctx, inp) -> out` calls, the harness wraps each call with one decorator that dumps `inp` and `out` to `iter_NN/stages/<stage_key>/`. The bundle becomes a deterministic projection of typed stage I/O.
@@ -901,3 +926,56 @@ After both workstreams complete, the Phase F+H end-state is reached: `harness.py
 | `2026-05-XX-phase-f-h-harness-wireup-plan.md` | To be written after Phase H Option 1 lands | F+H wire-up follow-up |
 | [`skills/gso-lever-loop-run-analysis/SKILL.md`](./skills/gso-lever-loop-run-analysis/SKILL.md) | Ready | B/C/D/E run analysis |
 | [`skills/gso-replay-cycle-intake/SKILL.md`](./skills/gso-replay-cycle-intake/SKILL.md) | Ready | A burn-down ledger intake |
+
+## Post-Merge Backlog (intentionally out of scope for the burn-down)
+
+Two items remain documented but explicitly deferred so the roadmap
+ledger is honest about what "complete" means.
+
+### A. A5 v2.2 fidelity bump — F8 captures all 5 ACCEPTANCE_DECIDED outcomes
+
+The F+H wire-up plan v2.1 keeps three pre-gate `skipped_*` outcomes
+inline (closure at the harness AG-outcome closure + 3 pre-gate
+callsites) so byte-stability is preserved. F8's per-stage
+`decisions.json` therefore captures only the 2 post-gate outcomes
+(rolled_back, accepted). The run-level `decision_trace_all.json`
+captures all 5.
+
+**Why this is acceptable for Phase H spec compliance:** F8's surface
+is "the control plane decides accept/rollback for proposals that
+reach gate dispatch". The 3 pre-gate filtering decisions
+(dead_on_arrival, no_pre_ag_snapshot, no_applied_patches) are
+harness-level filtering, not control-plane acceptance. F8 capturing
+2 of 5 is semantically correct.
+
+**Why a v2.2 fidelity bump is desirable:** for LLM cross-stage
+attribution, having all 5 outcomes under F8 makes the postmortem
+prompt simpler ("read 09_acceptance_decision/decisions.json" vs.
+"read decisions.json + cross-reference run-level decision_trace
+for pre-gate skips").
+
+**Estimated cost:** 2-4 hours. Extend `AcceptanceInput` with a
+`pre_resolved_outcomes_by_ag` field, have the harness pre-gate
+filtering populate it, F8.decide() iterates that field first
+emitting the 3 pre-gate records, then proceeds to its current
+post-gate logic.
+
+**Why deferred:** byte-stability cost vs. observability gain is
+marginal. Schedule when an unrelated harness refactor lets the
+3 pre-gate filtering steps move into a typed surface naturally.
+
+### B. Harness DOA decision-type re-classification
+
+The harness emits all 5 acceptance closure outcomes as
+`DecisionType.ACCEPTANCE_DECIDED`. Three of those (DOA, no
+pre-snapshot, no applied patches) are taxonomically NOT acceptance
+decisions; they're patch-skipped or pre-gate-filtered. The
+mis-typing predates Phase H (Cycle 8 era).
+
+**Estimated cost:** 4-6 hours. New `DecisionType.PATCH_SKIPPED`
+variants, reason-coded; update decision-trace cross-projection,
+update operator transcript renderer's `_STAGE_DECISION_TYPE_MAP`.
+
+**Why deferred:** changes the canonical decision-record shape;
+requires fresh replay variance baseline; not on the merge critical
+path.

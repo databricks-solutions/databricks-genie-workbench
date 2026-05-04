@@ -405,3 +405,15 @@ After completing the chosen path:
 - Step C2.4 — chose (a) split handlers OR (b) double-fire? <a / b, rationale>
 - Implementer: <name>
 - Final commit hash: <hash>
+
+## Decision Log
+
+**Date:** 2026-05-05
+**Chosen path:** **Path C** (align F6 module to harness order).
+**Rationale:** No algorithm change; byte-stability preserved trivially;
+F6 wire-up becomes additive observability after the three harness inline
+gates. content_fingerprint_dedup and dead_on_arrival remain as F6-only
+observability sub-handlers.
+**Implementation:** see
+`packages/genie-space-optimizer/docs/2026-05-05-phase-h-completion-plan.md`
+Task 3.
