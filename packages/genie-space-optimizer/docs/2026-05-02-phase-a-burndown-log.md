@@ -100,3 +100,98 @@ Strict-additive widening of the per-iteration data-capture surface; no loop deci
 - Cycle 8 intake (Phase 5 Task 14 Step 4) will confirm MLflow artifact + tags appear post-run.
 
 Reference: `docs/2026-05-02-run-replay-per-iteration-fix-plan.md` Phase 4.5.
+
+## 2026-05-04 — Control-plane invariant repairs: `assert_soft_cluster_currency`
+
+A 7Now lever-loop run (`opt_run_id 2423b960-16e8-41d4-a0cb-74c563378e05`,
+job `195836514612090`) halted on the post-enrichment iteration with:
+
+```
+AssertionError: soft-cluster currency drift: currently-passing qids appear
+in soft clusters: [gs_001, gs_004, gs_006, gs_008, gs_010, gs_017, gs_018,
+gs_022, gs_030]
+```
+
+**Symptom.** Nine 7Now qids that were genuinely passing post-enrichment
+(`arbiter=both_correct`, `result_correctness=yes`) showed up in a soft
+cluster on the same iteration, tripping the invariant.
+
+**Root cause — invariant/semantics mismatch, not stale data.** The helper
+asserted `soft_qids ∩ currently_passing_qids == ∅`. The harness call site
+defined `currently_passing_qids = _all_eval_qids − _live_hard_qids` (any
+qid not in a *hard* cluster). But the soft pile is populated by
+`has_individual_judge_failure` (`evaluation.py:143`), whose docstring
+explicitly says: "the arbiter rescued the row (or `result_correctness=yes`)
+but individual judges still flagged suboptimal patterns." Those qids are,
+by construction, simultaneously not-hard (so "passing" by the call site's
+definition) and in the soft pile. The replay layer already canonicalizes
+this overlap as legal via `synthetic_already_passing_in_soft_cluster.json`
+and `test_run_replay_demotes_already_passing_when_qid_in_soft_cluster`.
+The runtime assertion was the only disagreeing voice, and on this 7Now
+run it fired the moment the strategy lane admitted a soft cluster (the
+`clusters_for_strategy` window opens when the hard set is small —
+exactly the post-enrichment shape).
+
+The May-01 23:04 7Now reproducer the helper was *originally* meant to
+catch (a just-fixed target re-emitted by a clusterer reading stale ASI)
+was a different thing: rows where the **fresh** eval shows zero judge
+complaints, yet the soft cluster still lists the qid. The old set-
+intersection invariant happened to catch that case, and also kept
+catching the legitimate Case A pattern as a false positive.
+
+**Fix.** Replaced the invariant with a row-grounded predicate
+(`control_plane.py::assert_soft_cluster_currency`):
+
+> Every qid emitted in any soft cluster must, on the same rows the
+> clusterer saw, exhibit at least one row where
+> `has_individual_judge_failure(row) == True`. If not, the clusterer is
+> reading stale ASI / cached rows that no longer reflect the latest eval.
+
+The call site at `harness.py` now plumbs `failure_rows` out of
+`_analyze_and_distribute` (new return-dict key) and passes it as
+`current_eval_rows`, so the assertion sees the exact rows the soft pile
+was built from (no Delta re-read skew). The `_all_eval_qids`,
+`_live_hard_qids`, `_live_passing_qids` locals on the soft path are
+removed; the audit path (`assert_quarantine_attribution_sound`) still
+uses its own `_for_audit` set and is untouched.
+
+`:vN` benchmark-suffix variants are normalized on both sides (mirroring
+`_is_quarantined_qid`) via a small `_base_qid` helper.
+
+**Replay impact.** None. The new accept set is a strict super-set of the
+old one on the legitimate Case A pattern (the in-tree fixture
+`synthetic_already_passing_in_soft_cluster.json` exercises this), and
+strictly more discriminating on the original stale-ASI case. The full
+replay suite (13 passed, 2 unrelated skips) holds; the airline burndown
+budget is unchanged.
+
+**Tests.** Six unit tests in
+`tests/unit/test_convergence_quarantine_attribution.py`:
+
+- `test_assert_soft_cluster_currency_rejects_stale_asi_drift` —
+  May-01 reproducer (qid in soft cluster, fresh rows clean) raises.
+- `test_assert_soft_cluster_currency_accepts_arbiter_rescued_judge_failure` —
+  Case A (arbiter rescued, judge=no) is allowed; the 7Now false-positive
+  no longer fires.
+- `test_assert_soft_cluster_currency_rejects_qid_with_no_row_in_current_eval` —
+  source-skew failure mode (qid in soft cluster, no row in current eval).
+- `test_assert_soft_cluster_currency_accepts_empty_soft_cluster` —
+  short-circuit on no soft clusters.
+- `test_assert_soft_cluster_currency_normalizes_vN_qid_suffixes` —
+  pins `:vN` normalization.
+- `test_assert_soft_cluster_currency_ignores_info_only_judge_failures` —
+  `repeatability` / `previous_sql` `no` values do not satisfy the
+  invariant.
+
+**Files touched:**
+- `src/genie_space_optimizer/optimization/control_plane.py` —
+  rewrote `assert_soft_cluster_currency`, added `_base_qid`.
+- `src/genie_space_optimizer/optimization/harness.py` — added
+  `failure_rows` to `_analyze_and_distribute` return, updated call site
+  to use the new signature, removed soft-path passing-set derivation.
+- `tests/unit/test_convergence_quarantine_attribution.py` — replaced
+  the two old tests with six row-grounded ones.
+
+Reference: planned in
+`.cursor/plans/fix_soft-cluster_currency_invariant_*.plan.md`. Tagged
+`control-plane invariant repairs` for the iteration ledger.

@@ -939,25 +939,65 @@ def assert_quarantine_attribution_sound(
         )
 
 
+def _base_qid(qid: str) -> str:
+    """Return the base qid by stripping any trailing ``:vN`` benchmark variant.
+
+    The benchmark-suffix scheme produces qids like ``retail_..._002:v2`` and
+    ``retail_..._002:v3`` whose canonical key is ``retail_..._002``. Mirrors
+    the normalization used by ``_is_quarantined_qid`` in the harness so the
+    soft-cluster currency check matches the row-routing behavior at the
+    source.
+    """
+    qid = str(qid or "")
+    if ":" in qid:
+        return qid.split(":", 1)[0]
+    return qid
+
+
 def assert_soft_cluster_currency(
     *,
     soft_cluster_qids: Iterable[str],
-    currently_passing_qids: Iterable[str],
+    current_eval_rows: Iterable[dict],
 ) -> None:
     """Track H — soft-clustering must read the current eval row state.
 
-    A qid that is currently passing all judges cannot legitimately appear
-    in any soft cluster on the same iteration. The May-01 23:04 7Now
-    run had ``gs_001`` (a just-fixed target) listed in soft cluster
-    ``S003 wrong_table`` because the soft-clusterer read stale ASI rather
-    than current eval rows. This helper makes that defect loud.
+    Invariant: every qid emitted in any soft cluster must, in the latest
+    eval rows, exhibit at least one row where
+    :func:`has_individual_judge_failure` returns ``True``. If a soft-cluster
+    qid has no such row, the soft-clusterer is reading stale ASI / cached
+    rows that no longer reflect the latest evaluation.
+
+    The May-01 23:04 7Now run originated this helper: ``gs_001`` (a
+    just-fixed target with all judges passing post-enrichment) appeared
+    in soft cluster ``S003 wrong_table`` because the clusterer read a
+    stale ASI snapshot. Under this invariant that case raises, while the
+    legitimate "arbiter rescued the row but a non-info judge still flagged
+    `no`" pattern (the design intent of the soft pile in
+    ``_analyze_and_distribute``) is silently allowed.
+
+    qids are compared on their *base* form (``:vN`` benchmark-suffix
+    variants are stripped on both sides) so a soft cluster listing
+    ``q_002`` matches a current row carrying ``q_002:v2``.
     """
-    soft = {str(q) for q in soft_cluster_qids if str(q)}
-    passing = {str(q) for q in currently_passing_qids if str(q)}
-    bad = sorted(soft & passing)
+    soft_bases = {_base_qid(q) for q in soft_cluster_qids if str(q)}
+    if not soft_bases:
+        return
+
+    judge_failing_bases: set[str] = set()
+    for row in current_eval_rows or ():
+        if not isinstance(row, dict):
+            continue
+        qid = _base_qid(_row_qid(row))
+        if not qid:
+            continue
+        if has_individual_judge_failure(row):
+            judge_failing_bases.add(qid)
+
+    bad = sorted(soft_bases - judge_failing_bases)
     if bad:
         raise AssertionError(
-            f"soft-cluster currency drift: currently-passing qids appear in soft "
-            f"clusters: {bad}; soft-clusterer must read current eval rows, not "
-            f"stale ASI"
+            f"soft-cluster currency drift: qids appear in soft clusters but "
+            f"no row in the current eval shows an actionable judge failure: "
+            f"{bad}; the soft-clusterer read stale ASI / cached rows that no "
+            f"longer reflect the latest eval"
         )

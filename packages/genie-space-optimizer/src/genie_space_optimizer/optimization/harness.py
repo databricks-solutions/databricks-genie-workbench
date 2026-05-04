@@ -9470,6 +9470,12 @@ def _analyze_and_distribute(
         "feature_diff_histogram": _feature_diff_histogram,
         "feature_diff_count": _feature_diff_count,
         "rca_ledger": _rca_ledger,
+        # Track H — expose the same row source the soft pile was built
+        # from so the caller can ground ``assert_soft_cluster_currency``
+        # against the *exact* rows the clusterer saw, not a re-read of
+        # Delta. Re-reads risk source skew if anything writes between
+        # ``_analyze_and_distribute`` and the assertion.
+        "failure_rows": failure_rows,
     }
 
 
@@ -12393,6 +12399,10 @@ def _run_lever_loop(
         clusters = _analysis["all_clusters"]
         soft_signal_clusters = _analysis["soft_signal_clusters"]
         rca_ledger = _analysis.get("rca_ledger") or {}
+        # Track H — same row source the soft pile was built from. Pinned
+        # to the analyze-distribute return so the soft-cluster currency
+        # check sees the exact rows the clusterer saw.
+        _analysis_failure_rows = _analysis.get("failure_rows") or []
 
         # Phase A — Defensive carrier seed at iteration start. The
         # primary seed (lever-loop pre-loop block) populates
@@ -13092,25 +13102,17 @@ def _run_lever_loop(
             list(soft_signal_clusters or []),
         )
 
-        # Track H — soft-cluster currency invariant. The clusterer must
-        # have read the latest eval, not stale ASI, so a currently-passing
-        # qid cannot legitimately appear in a soft cluster on this
-        # iteration. Same invariant for hard clusters: the qid set there
-        # MUST be a subset of the qids that just failed.
+        # Track H — soft-cluster currency invariant. Every qid emitted in
+        # any soft cluster must, on the *same* rows the clusterer saw,
+        # exhibit at least one row where ``has_individual_judge_failure``
+        # returns ``True``. If a soft-cluster qid has no such row, the
+        # clusterer is reading stale ASI / cached rows that no longer
+        # reflect the latest eval. Grounded against
+        # ``_analysis["failure_rows"]`` so the assertion sees the exact
+        # rows the soft pile was built from (no Delta re-read skew).
         from genie_space_optimizer.optimization.control_plane import (
             assert_soft_cluster_currency,
         )
-
-        _all_eval_qids = {
-            str(q) for q in (_latest_eval_result or {}).get("question_ids") or [] if str(q)
-        }
-        _live_hard_qids = {
-            str(q)
-            for cluster in (_strategy_hard_clusters or [])
-            for q in cluster.get("question_ids") or []
-            if str(q)
-        }
-        _live_passing_qids = _all_eval_qids - _live_hard_qids
 
         _soft_qids_in_strategy = {
             str(q)
@@ -13120,7 +13122,7 @@ def _run_lever_loop(
         }
         assert_soft_cluster_currency(
             soft_cluster_qids=_soft_qids_in_strategy,
-            currently_passing_qids=_live_passing_qids,
+            current_eval_rows=_analysis_failure_rows,
         )
 
         ranked = rank_clusters(
