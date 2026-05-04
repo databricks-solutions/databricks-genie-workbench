@@ -10450,6 +10450,7 @@ def _run_gate_checks(
     # runs the pure helper to decide whether the iteration actually
     # fixed what it claimed to fix without out-of-target regressions.
     from genie_space_optimizer.optimization.control_plane import (
+        assert_regression_debt_partition_complete,
         decide_control_plane_acceptance,
         format_control_plane_acceptance_detail,
     )
@@ -10576,6 +10577,12 @@ def _run_gate_checks(
         candidate_pre_arbiter_accuracy=_candidate_pre_arbiter_pct,
         thresholds_met=_gate_thresholds_met,
     )
+    # P1 invariant — partition every out-of-target regression into
+    # exactly one of soft/passing/unknown. Raises AssertionError when
+    # GSO_REGRESSION_DEBT_INVARIANT is on (default) and the partition
+    # is incomplete or non-disjoint, so unattributed regression debt
+    # fails loud at runtime instead of silently in the marker.
+    assert_regression_debt_partition_complete(_control_plane_decision)
 
     # v2 Task 2 — Pre-arbiter regression guardrail. A candidate that drops
     # broad pre-arbiter accuracy without flipping any declared target qid
