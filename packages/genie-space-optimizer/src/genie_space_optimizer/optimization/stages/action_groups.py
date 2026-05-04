@@ -165,6 +165,39 @@ def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
     )
 
 
+def materialize_diagnostic_ag(
+    *,
+    cluster: Mapping[str, Any],
+    rca_id_by_cluster: Mapping[str, str],
+) -> dict[str, Any]:
+    """Optimizer Control-Plane Hardening Plan — Task F.
+
+    Build a diagnostic AG for ``cluster`` that inherits its ``rca_id``.
+
+    Used when the strategist did not emit an AG for a hard cluster in
+    this iteration but the harness wants to attempt a diagnostic-only
+    pass. The inherited ``rca_id`` propagates to every proposal at the
+    F5 stage entry (Task D), keeping these proposals out of the
+    ``rca_groundedness`` gate's drop set.
+    """
+    cluster_id = str(cluster.get("id") or "")
+    rca_id = str(rca_id_by_cluster.get(cluster_id) or "")
+    return {
+        "id": f"AG_COVERAGE_{cluster_id}",
+        "ag_id": f"AG_COVERAGE_{cluster_id}",
+        "ag_kind": "diagnostic",
+        "rca_id": rca_id,
+        "primary_cluster_id": cluster_id,
+        "source_cluster_ids": (cluster_id,),
+        "target_qids": tuple(
+            str(q) for q in (cluster.get("qids") or ())
+        ),
+        "affected_questions": tuple(
+            str(q) for q in (cluster.get("qids") or ())
+        ),
+    }
+
+
 # ── Phase H: explicit Input/Output class declarations ─────────────────
 # Phase H's per-stage I/O capture decorator imports these to serialize
 # the stage's typed input and output to MLflow.

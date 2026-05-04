@@ -101,6 +101,17 @@ def generate(ctx, inp: ProposalsInput) -> ProposalSlate:
     into ``inp.proposals_by_ag`` when the harness wire-up lands in a
     follow-up plan.
     """
+    # Optimizer Control-Plane Hardening Plan — Task D. When the
+    # GSO_RCA_AWARE_PATCH_CAP flag is on, stamp ``rca_id`` from the
+    # parent cluster onto every proposal that doesn't already carry
+    # one, so ``select_causal_patch_cap`` can rank by
+    # ``causal_attribution_tier`` instead of insertion order. Default-
+    # off preserves legacy (insertion-order) ranking behaviour.
+    from genie_space_optimizer.common.config import (
+        rca_aware_patch_cap_enabled as _rca_aware_patch_cap_enabled,
+    )
+    stamp_rca = _rca_aware_patch_cap_enabled()
+
     fingerprinted: dict[str, tuple[dict[str, Any], ...]] = {}
     fingerprints: list[str] = []
 
@@ -108,6 +119,21 @@ def generate(ctx, inp: ProposalsInput) -> ProposalSlate:
         ag_fingerprinted: list[dict[str, Any]] = []
         for proposal in proposals:
             stamped = dict(proposal)
+            if stamp_rca and not stamped.get("rca_id"):
+                cluster_id = (
+                    str(stamped.get("primary_cluster_id") or "")
+                    or next(
+                        (
+                            str(c)
+                            for c in (stamped.get("source_cluster_ids") or ())
+                        ),
+                        "",
+                    )
+                )
+                if cluster_id:
+                    inherited = inp.rca_id_by_cluster.get(cluster_id)
+                    if inherited:
+                        stamped["rca_id"] = str(inherited)
             fingerprint = _content_fingerprint(proposal)
             stamped["content_fingerprint"] = fingerprint
             ag_fingerprinted.append(stamped)
