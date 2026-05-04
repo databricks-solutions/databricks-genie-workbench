@@ -9150,32 +9150,64 @@ def _analyze_and_distribute(
     # the DO-NOT-RETRY bookkeeping cannot reconcile those.
     _shared_qid_state: dict = {}
 
-    # ── Cluster hard failures ──────────────────────────────────────
-    # T1.9: explicit ``namespace="H"`` so hard clusters mint H001, H002 …
-    # and cannot collide with soft cluster IDs in the shared priority
-    # ranking / ``source_cluster_ids`` namespace.
-    eval_result_for_clustering = {"rows": filtered_failure_rows}
-    clusters = cluster_failures(
-        eval_result_for_clustering, metadata_snapshot,
-        spark=spark, run_id=run_id, catalog=catalog, schema=schema,
-        qid_state=_shared_qid_state,
-        signal_type="hard",
-        namespace="H",
-    )
+    # ── Cluster hard + soft failures via F3 stage ──────────────────
+    # Phase F+H Commit A1: F3 clustering — true replacement of the
+    # optimizer.cluster_failures hard+soft pair. ``stages.clustering.
+    # form()`` calls ``cluster_failures`` internally for both branches.
+    #
+    # Production-mode caveat: ``form()`` passes ``spark=None``; replay-
+    # fixture mode is unaffected because spark is None everywhere there,
+    # but real-Genie runs SKIP the spark-conditional ``read_asi_from_uc``
+    # UC enrichment at ``optimizer.py:1913-1915``. Verify in the next
+    # production pilot.
+    #
+    # Demoted-cluster invariant: ``cluster_failures`` does not stamp
+    # ``demoted_reason`` on its returns (verified at audit time by
+    # ``grep "demoted_reason" optimizer.py`` returning zero hits inside
+    # the function body), so ``form()``'s ``_split_by_demoted`` always
+    # yields ``rejected_cluster_alternatives=()``. If a future change
+    # makes ``cluster_failures`` inline demoted entries, this adapter
+    # must combine ``_cluster_findings.clusters +
+    # filter(_cluster_findings.rejected_cluster_alternatives, signal_type)``
+    # to preserve byte-stability.
+    #
+    # T1.9: ``namespace="H"`` / ``"S"`` is set internally by ``form()``;
+    # hard clusters mint H001..., soft clusters mint S001....
+    #
+    # Verified against: stages/clustering.py:32-46 (Input), 86-127 (form).
+    from genie_space_optimizer.optimization.stages import StageContext as _StageCtx
+    from genie_space_optimizer.optimization.stages import clustering as _clust_stage
 
-    # ── Cluster soft signals ───────────────────────────────────────
-    # T1.9: explicit ``namespace="S"`` so soft clusters mint S001, S002 …
-    soft_clusters: list[dict] = []
+    eval_result_for_clustering = {"rows": filtered_failure_rows}
+    _stage_ctx_clustering = _StageCtx(
+        run_id=str(run_id),
+        iteration=int(iteration_counter),
+        space_id="",      # form() does not read; see clustering.py:96-103
+        domain="",        # form() does not read
+        catalog=str(catalog),
+        schema=str(schema),
+        apply_mode="",    # form() does not read
+        journey_emit=lambda *a, **k: None,  # form() does not emit
+        decision_emit=lambda r: None,        # form() does not emit
+        mlflow_anchor_run_id=None,
+        feature_flags={},
+    )
+    _clust_inp = _clust_stage.ClusteringInput(
+        eval_result_for_clustering=eval_result_for_clustering,
+        metadata_snapshot=metadata_snapshot,
+        soft_eval_result={"rows": soft_signal_rows} if soft_signal_rows else None,
+        qid_state=_shared_qid_state,
+    )
+    _cluster_findings = _clust_stage.form(_stage_ctx_clustering, _clust_inp)
+    clusters = list(_cluster_findings.clusters)
+    soft_clusters: list[dict] = list(_cluster_findings.soft_clusters)
+
     if soft_signal_rows:
-        soft_eval = {"rows": soft_signal_rows}
-        soft_clusters = cluster_failures(
-            soft_eval, metadata_snapshot,
-            spark=spark, run_id=run_id, catalog=catalog, schema=schema,
-            verbose=False,
-            qid_state=_shared_qid_state,
-            signal_type="soft",
-            namespace="S",
-        )
+        # Preserve the harness's defensive signal_type=soft setdefault
+        # that guarded against cluster_failures variants returning soft
+        # clusters without the field stamped. ``cluster_failures`` sets
+        # it natively per ``optimizer.py:9277, 9292``; this loop is
+        # defense-in-depth.
         for sc in soft_clusters:
             sc.setdefault("signal_type", "soft")
         _soft_qids_total = sum(len(sc.get("question_ids", [])) for sc in soft_clusters)

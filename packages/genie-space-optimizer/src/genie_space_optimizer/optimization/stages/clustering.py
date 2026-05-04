@@ -7,14 +7,24 @@ harness locals. Also splits promoted vs rejected clusters by
 ``demoted_reason`` so Phase D.5 alternatives capture has a typed
 surface.
 
-F3 is observability-only: it does NOT modify any harness call sites.
-The two existing inline ``cluster_failures(...)`` calls at
-``harness.py:9158`` (hard) and ``9171`` (soft) plus the
-``cluster_records`` / ``rca_formed_records`` emissions in
-``_run_lever_loop`` (lines 12296+ / 12345+) stay in place.
-``stages.clustering.form`` exposes a parallel typed surface that F4
-will consume; harness wiring + emission move are deferred to a
-follow-up plan to preserve byte-stability.
+F3 wires the harness's hard + soft ``cluster_failures`` pair into a
+single typed call (Phase F+H Commit A1). ``form(ctx, inp)`` calls
+``optimizer.cluster_failures`` internally for both branches with
+identical args except ``spark`` (form passes ``spark=None``; replay-
+fixture mode is unaffected because spark is None everywhere there,
+but production runs skip the spark-conditional ``read_asi_from_uc``
+UC enrichment at ``optimizer.py:1913-1915``). The harness inline
+``cluster_failures(...)`` calls (formerly at ``harness.py:9158``
+hard, ``9171`` soft) are deleted by A1. The ``cluster_records`` /
+``rca_formed_records`` emissions at ``harness.py:12318+`` /
+``:12349+`` continue to read the harness's ``clusters`` /
+``soft_clusters`` locals which the A1 adapter populates from
+``_cluster_findings.clusters`` / ``_cluster_findings.soft_clusters``.
+
+The promoted-vs-rejected split assumes ``cluster_failures`` may stamp
+``demoted_reason`` on its returns; today (verified at A1 audit time)
+it does not, so ``rejected_cluster_alternatives`` is always empty —
+``_split_by_demoted`` is a forward-compatible no-op.
 """
 
 from __future__ import annotations
