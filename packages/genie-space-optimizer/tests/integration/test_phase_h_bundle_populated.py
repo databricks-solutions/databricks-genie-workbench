@@ -207,3 +207,94 @@ def test_root_paths_are_consistent_across_helpers() -> None:
     # Per-stage path is rooted at the iteration prefix.
     f7_paths = stage_artifact_paths(1, "applied_patches")
     assert f7_paths["input"].startswith("gso_postmortem_bundle/iterations/iter_01/")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase H Completion Task 5: 9 executable stages + 11 transcript
+# sections + 27 distinct artifact paths per iteration.
+# ──────────────────────────────────────────────────────────────────────
+from genie_space_optimizer.optimization.run_output_contract import (  # noqa: E402
+    PROCESS_STAGE_ORDER,
+)
+
+
+_EXECUTABLE_STAGES: tuple[str, ...] = (
+    "evaluation_state",
+    "rca_evidence",
+    "cluster_formation",
+    "action_group_selection",
+    "proposal_generation",
+    "safety_gates",
+    "applied_patches",
+    "acceptance_decision",
+    "learning_next_action",
+)
+
+
+def test_executable_stages_match_process_stage_order_minus_two() -> None:
+    keys = tuple(s.key for s in PROCESS_STAGE_ORDER)
+    expected_skipped = ("post_patch_evaluation", "contract_health")
+    actual_executable = tuple(k for k in keys if k not in expected_skipped)
+    assert actual_executable == _EXECUTABLE_STAGES
+
+
+def test_all_nine_executable_stages_have_distinct_artifact_paths() -> None:
+    seen: set[str] = set()
+    for stage_key in _EXECUTABLE_STAGES:
+        paths = stage_artifact_paths(iteration=1, stage_key=stage_key)
+        for label in ("input", "output", "decisions"):
+            assert paths[label] not in seen, (
+                f"duplicate artifact path {paths[label]!r} for stage "
+                f"{stage_key!r}"
+            )
+            seen.add(paths[label])
+    assert len(seen) == len(_EXECUTABLE_STAGES) * 3
+
+
+def test_transcript_renders_all_11_process_order_sections() -> None:
+    from genie_space_optimizer.optimization.operator_process_transcript import (
+        render_iteration_transcript,
+        render_run_overview,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        OptimizationTrace,
+    )
+
+    overview = render_run_overview(
+        run_id="opt-h-smoke",
+        space_id="space-x",
+        domain="airline_ticketing_and_fare_analysis",
+        max_iters=5,
+        baseline={
+            "overall_accuracy": 0.875,
+            "all_judge_pass_rate": 0.50,
+            "hard_failures": 3,
+            "soft_signals": 8,
+        },
+        hard_failures=[
+            ("gs_009", "wrong_join_spec",
+             "top-N returned wrong rows"),
+            ("gs_016", "tvf_parameter_error",
+             "status transition query shape wrong"),
+            ("gs_024", "wrong_aggregation",
+             "currency/filter aggregation mismatch"),
+        ],
+    )
+    assert "GSO LEVER LOOP RUN" in overview
+    assert "Run ID:        opt-h-smoke" in overview
+    assert "Overall accuracy:        87.5%" in overview
+    assert "All-judge pass:          50.0%" in overview
+    assert "Hard failures:           3" in overview
+    assert "gs_009  root=wrong_join_spec" in overview
+
+    empty_trace = OptimizationTrace(decision_records=())
+    body = render_iteration_transcript(
+        iteration=1, trace=empty_trace, iteration_summary={},
+    )
+    for stage_idx, stage in enumerate(PROCESS_STAGE_ORDER, start=1):
+        heading = f"### {stage_idx}. {stage.title}"
+        assert heading in body, (
+            f"Transcript missing heading {heading!r}; renderer + "
+            f"PROCESS_STAGE_ORDER are out of sync"
+        )
+    assert "11. Contract Health" in body
