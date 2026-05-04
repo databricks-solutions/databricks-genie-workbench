@@ -17256,7 +17256,19 @@ def _run_lever_loop(
                 rca_id_by_cluster=dict(_iter_rca_id_by_cluster),
                 cluster_by_qid={},
             )
-            _ag_outcome = _accept_stage.decide(_stage_ctx_a5, _accept_inp)
+            # Phase F+H Commit B15: wrap F8 with stage_io_capture
+            # decorator. Replay-byte-stable — wrap_with_io_capture
+            # returns the stage output unchanged; MLflow log_text
+            # calls are no-ops while mlflow_anchor_run_id is None
+            # (C17 wires the anchor on real runs).
+            from genie_space_optimizer.optimization.stage_io_capture import (
+                wrap_with_io_capture as _wrap_with_io_capture_a5,
+            )
+            _accept_wrapped = _wrap_with_io_capture_a5(
+                execute=_accept_stage.execute,
+                stage_key="acceptance_decision",
+            )
+            _ag_outcome = _accept_wrapped(_stage_ctx_a5, _accept_inp)
         except Exception:
             _iter_producer_exceptions["ag_outcome"] = (
                 _iter_producer_exceptions.get("ag_outcome", 0) + 1
