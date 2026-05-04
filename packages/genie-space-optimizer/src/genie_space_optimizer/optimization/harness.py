@@ -14070,6 +14070,71 @@ def _run_lever_loop(
                             _diag_ag["_stable_signature"] = compute_ag_stable_signature(
                                 _diag_ag, [_c]
                             )
+                            # Cycle 5 T3 — when the cluster has no parent
+                            # RCA AND ``GSO_DIAGNOSTIC_AG_RCA_REGEN`` is
+                            # on, the AG enters the regeneration branch:
+                            # emit ``RCA_REGENERATION_TRIGGERED``,
+                            # attempt regen (no-op until the regen
+                            # helper lands), then emit
+                            # ``RCA_REGENERATION_EXHAUSTED`` and skip the
+                            # AG so we don't generate empty proposals.
+                            # With the flag off, every AG flows through
+                            # as before — byte-stable.
+                            try:
+                                from genie_space_optimizer.common.config import (
+                                    diagnostic_ag_rca_regen_enabled,
+                                )
+                                if (
+                                    diagnostic_ag_rca_regen_enabled()
+                                    and _diag_ag.get("needs_rca_regeneration")
+                                ):
+                                    from genie_space_optimizer.optimization.decision_emitters import (
+                                        rca_regeneration_triggered_record,
+                                        rca_regeneration_exhausted_record,
+                                    )
+                                    _t3_cluster_id = str(
+                                        _diag_ag.get("primary_cluster_id")
+                                        or _c.get("cluster_id") or ""
+                                    )
+                                    _t3_target_qids = tuple(
+                                        str(q)
+                                        for q in (_c.get("question_ids") or [])
+                                        if q
+                                    )
+                                    _t3_trig = rca_regeneration_triggered_record(
+                                        run_id=str(run_id),
+                                        iteration=int(iteration_counter),
+                                        cluster_id=_t3_cluster_id,
+                                        target_qids=_t3_target_qids,
+                                    )
+                                    _decision_emit(_t3_trig)
+                                    _current_iter_inputs.setdefault(
+                                        "decision_records", []
+                                    ).append(_t3_trig.to_dict())
+                                    # Regen helper is a follow-up; for
+                                    # now every regen attempt fails so
+                                    # the AG retires here.
+                                    _t3_exh = rca_regeneration_exhausted_record(
+                                        run_id=str(run_id),
+                                        iteration=int(iteration_counter),
+                                        cluster_id=_t3_cluster_id,
+                                        attempted_evidence_sources=(),
+                                    )
+                                    _decision_emit(_t3_exh)
+                                    _current_iter_inputs.setdefault(
+                                        "decision_records", []
+                                    ).append(_t3_exh.to_dict())
+                                    # Skip this AG entirely — do not
+                                    # append to action_groups or the
+                                    # diagnostic queue.
+                                    continue
+                            except Exception:
+                                logger.debug(
+                                    "Cycle 5 T3: RCA regen branch failed "
+                                    "(non-fatal); proceeding with the "
+                                    "original diagnostic AG",
+                                    exc_info=True,
+                                )
                             action_groups.append(_diag_ag)
                             diagnostic_action_queue.append(_diag_ag)
                             # Task 13 — diagnostic AG covers all qids in

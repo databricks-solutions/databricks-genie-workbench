@@ -285,6 +285,12 @@ def diagnostic_action_group_for_cluster(cluster: dict) -> dict:
             "guidance": fix_text,
             "target_qids": qids,
         }
+    # Cycle 5 T3 — coverage-gap AG marks itself as
+    # ``needs_rca_regeneration`` when the cluster has no parent RCA
+    # (the iter-2 H001/H002 case in run 2423b960). The harness routes
+    # ``needs_rca_regeneration=True`` AGs to the regen branch when
+    # GSO_DIAGNOSTIC_AG_RCA_REGEN is on.
+    has_parent_rca = bool(cluster.get("rca_id"))
     return {
         "id": f"AG_COVERAGE_{cid}",
         "root_cause_summary": f"{root}: {fix_text}",
@@ -292,6 +298,10 @@ def diagnostic_action_group_for_cluster(cluster: dict) -> dict:
         "source_cluster_ids": [cid],
         "coverage_reason": "strategist_omitted_patchable_hard_cluster",
         "lever_directives": lever_directives,
+        "ag_kind": "diagnostic" if has_parent_rca else "diagnostic_no_parent_rca",
+        "needs_rca_regeneration": not has_parent_rca,
+        "rca_id": str(cluster.get("rca_id") or ""),
+        "primary_cluster_id": cid,
     }
 
 
