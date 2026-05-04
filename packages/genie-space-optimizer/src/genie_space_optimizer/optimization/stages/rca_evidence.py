@@ -1,14 +1,17 @@
 """Stage 2: RCA Evidence shaping (Phase F2).
 
-Produces a typed Stage2Evidence dataclass from raw eval rows + judge
+Produces a typed RcaEvidenceBundle dataclass from raw eval rows + judge
 metadata. F2 is observability-only — the algorithms inside
 ``cluster_failures`` and ``rca._asi_finding_from_metadata`` stay where
 they are. F3 (clustering) reads this typed surface to populate
 ``ClusterFindings.rca_evidence_by_qid``.
 
-The class is named ``Stage2Evidence`` (not ``RcaEvidence``) to avoid
+The class is named ``RcaEvidenceBundle`` (not ``RcaEvidence``) to avoid
 the existing ``rca.RcaEvidence`` (a single-evidence-atom frozen
-dataclass).
+dataclass) and to match sibling stage output naming
+(``ClusterFindings``, ``ProposalSlate``, ``GateOutcome``,
+``AppliedPatchSet``, ``LearningUpdate``) — natural noun for the role,
+no stage-prefix or process-order numbering.
 """
 
 from __future__ import annotations
@@ -46,7 +49,7 @@ class RcaEvidenceInput:
 
 
 @dataclass
-class Stage2Evidence:
+class RcaEvidenceBundle:
     """Per-qid evidence record after Phase C grounding + PR-D top-N routing.
 
     ``per_qid_evidence[qid]`` is a dict carrying judge verdict, sql_diff,
@@ -108,14 +111,14 @@ def _build_metadata(
     return metadata, failure_type
 
 
-def collect(ctx, inp: RcaEvidenceInput) -> Stage2Evidence:
+def collect(ctx, inp: RcaEvidenceInput) -> RcaEvidenceBundle:
     """Stage 2 entry. Build per-qid evidence using the existing
     ``rca._asi_finding_from_metadata`` primitive, plus PR-D's top-N
     promotion tracking.
 
     F2 is observability-only: it does NOT modify any harness call
-    sites. F3 will consume the produced Stage2Evidence as part of its
-    ClusteringInput.
+    sites. F3 will consume the produced RcaEvidenceBundle as part of
+    its ClusteringInput.
     """
     rows_by_qid: dict[str, dict[str, Any]] = {
         _row_qid(r): r for r in (inp.eval_rows or []) if _row_qid(r)
@@ -175,7 +178,7 @@ def collect(ctx, inp: RcaEvidenceInput) -> Stage2Evidence:
             f"trace://{ctx.run_id}/iter/{ctx.iteration}/judge/{qstr}",
         )
 
-    return Stage2Evidence(
+    return RcaEvidenceBundle(
         per_qid_evidence=per_qid_evidence,
         rca_kinds_by_qid=rca_kinds_by_qid,
         evidence_refs=evidence_refs,

@@ -2,8 +2,8 @@ from unittest.mock import MagicMock
 
 from genie_space_optimizer.optimization.stages import StageContext
 from genie_space_optimizer.optimization.stages.rca_evidence import (
+    RcaEvidenceBundle,
     RcaEvidenceInput,
-    Stage2Evidence,
 )
 
 
@@ -35,8 +35,8 @@ def test_rca_evidence_input_required_fields() -> None:
     assert inp.per_qid_judge["q2"]["verdict"] == "wrong_join_spec"
 
 
-def test_stage2_evidence_required_fields() -> None:
-    ev = Stage2Evidence(
+def test_rca_evidence_bundle_required_fields() -> None:
+    ev = RcaEvidenceBundle(
         per_qid_evidence={
             "q2": {
                 "rca_kind": "top_n_cardinality_collapse",
