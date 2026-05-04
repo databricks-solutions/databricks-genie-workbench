@@ -9456,6 +9456,31 @@ def _analyze_and_distribute(
     }
 
 
+# Optimizer Control-Plane Hardening Plan — Task B helper.
+def _filter_to_causal_applyable_proposals(
+    *,
+    ag: dict,
+    proposals: list[dict],
+) -> tuple[list[dict], bool]:
+    """Return ``(matching_proposals, had_any_rca_matched)``.
+
+    When the parent AG declares an ``rca_id``, retain only proposals
+    whose ``rca_id`` equals the AG's. When the AG carries no ``rca_id``
+    (diagnostic AGs that did not yet inherit cluster RCA — see Task F),
+    retain all proposals to preserve legacy behaviour. Callers gate
+    the halt-on-empty behaviour behind
+    ``no_causal_applyable_halt_enabled()``.
+    """
+    ag_rca = str(ag.get("rca_id") or "").strip()
+    if not ag_rca:
+        return list(proposals), False
+    matched = [
+        p for p in proposals
+        if str(p.get("rca_id") or "").strip() == ag_rca
+    ]
+    return matched, bool(matched)
+
+
 def _run_gate_checks(
     *,
     spark: Any,
@@ -16287,13 +16312,63 @@ def _run_lever_loop(
             )
 
             _before_cap = list(patches)
-            patches, _patch_cap_decisions = select_target_aware_causal_patch_cap(
-                _before_cap,
-                target_qids=_patch_cap_target_qids,
-                max_patches=MAX_AG_PATCHES,
-                active_cluster_ids=_active_cluster_ids_for_cap,
-                per_cluster_slot_floor=_per_cluster_slot_floor,
+
+            # Optimizer Control-Plane Hardening Plan — Task B: when
+            # GSO_NO_CAUSAL_APPLYABLE_HALT is on and every RCA-matched
+            # proposal in the AG has been dropped by upstream gates,
+            # halt with reason no_causal_applyable_patch instead of
+            # falling back to non-causal proposals. Default-off
+            # preserves legacy behaviour.
+            from genie_space_optimizer.common.config import (
+                no_causal_applyable_halt_enabled as _no_causal_halt,
             )
+
+            if _no_causal_halt():
+                _causal_proposals, _had_rca_matched = (
+                    _filter_to_causal_applyable_proposals(
+                        ag=ag, proposals=_before_cap,
+                    )
+                )
+                if (
+                    not _causal_proposals
+                    and not _had_rca_matched
+                    and ag.get("rca_id")
+                ):
+                    logger.warning(
+                        "[%s] no_causal_applyable_patch: every RCA-"
+                        "matched proposal was dropped by upstream "
+                        "gates; halting AG before patch_cap",
+                        ag.get("id") or ag.get("ag_id"),
+                    )
+                    _audit_emit(
+                        stage_letter="L",
+                        gate_name="patch_cap",
+                        decision="skipped",
+                        reason_code="no_causal_applyable_patch",
+                        metrics={"input_count": len(_before_cap)},
+                    )
+                    patches = []
+                    _patch_cap_decisions = []
+                else:
+                    patches, _patch_cap_decisions = (
+                        select_target_aware_causal_patch_cap(
+                            _before_cap,
+                            target_qids=_patch_cap_target_qids,
+                            max_patches=MAX_AG_PATCHES,
+                            active_cluster_ids=_active_cluster_ids_for_cap,
+                            per_cluster_slot_floor=_per_cluster_slot_floor,
+                        )
+                    )
+            else:
+                patches, _patch_cap_decisions = (
+                    select_target_aware_causal_patch_cap(
+                        _before_cap,
+                        target_qids=_patch_cap_target_qids,
+                        max_patches=MAX_AG_PATCHES,
+                        active_cluster_ids=_active_cluster_ids_for_cap,
+                        per_cluster_slot_floor=_per_cluster_slot_floor,
+                    )
+                )
             _selected_ids = {
                 str(p.get("proposal_id") or p.get("id") or "")
                 for p in patches
