@@ -10048,6 +10048,42 @@ def _run_gate_checks(
     full_result_1 = _eval_result_full.raw
     new_model_id = full_result_1.get("model_id", "")
 
+    # Phase H Completion Task 2: F2 rca_evidence — additive
+    # observability immediately after F1 completes. Sources eval_rows,
+    # hard_failure_qids, soft_signal_qids, per_qid_judge, and
+    # asi_metadata directly from F1's typed EvaluationResult so F2 has
+    # the typed surface it needs without re-deriving from rows.
+    # Path C-prime per the F2 follow-up plan's Decision Log.
+    # Replay-byte-stable — wrap_with_io_capture returns the bundle
+    # unchanged; F2.collect emits zero DecisionRecords; MLflow log_text
+    # calls are no-ops while mlflow_anchor_run_id is None.
+    try:
+        from genie_space_optimizer.optimization.stages import (
+            rca_evidence as _rca_stage_f2,
+        )
+        from genie_space_optimizer.optimization.stage_io_capture import (
+            wrap_with_io_capture as _wrap_capture_f2,
+        )
+
+        _f2_inp = _rca_stage_f2.RcaEvidenceInput(
+            eval_rows=tuple(_eval_result_full.eval_rows),
+            hard_failure_qids=tuple(_eval_result_full.hard_failure_qids),
+            soft_signal_qids=tuple(_eval_result_full.soft_signal_qids),
+            per_qid_judge=dict(_eval_result_full.per_qid_judge),
+            asi_metadata=dict(_eval_result_full.asi_metadata),
+        )
+        _f2_wrapped = _wrap_capture_f2(
+            execute=_rca_stage_f2.collect, stage_key="rca_evidence",
+        )
+        _rca_evidence_bundle = _f2_wrapped(
+            _stage_ctx_full_eval, _f2_inp,
+        )
+    except Exception:
+        logger.debug(
+            "Phase H Task 2: F2 rca_evidence stage failed (non-fatal)",
+            exc_info=True,
+        )
+
     # Task 0 → Task 3: forward the ASI extraction audit row that
     # ``run_evaluation`` stamped on the result dict. This makes a
     # zero-trace eval visible in the lever-loop decision audit instead
