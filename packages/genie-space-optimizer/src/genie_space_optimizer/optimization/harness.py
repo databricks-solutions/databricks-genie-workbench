@@ -13956,6 +13956,21 @@ def _run_lever_loop(
                         metadata_snapshot["_strategist_constraints"] = (
                             _strategist_constraints.to_strategist_context()
                         )
+                    # Cycle 5 T2 closeout — when the flag is on, surface
+                    # the prior iteration's gate-drops of causal-target
+                    # patches to the strategist's prompt context so the
+                    # LLM can propose a narrower variant or shift levers
+                    # instead of re-emitting the same dropped pattern.
+                    # With the flag off, pass None — the strategist
+                    # prompt block is omitted (byte-stable).
+                    from genie_space_optimizer.common.config import (
+                        causal_drop_feedback_to_strategist_enabled,
+                    )
+                    _t2_drops_for_strategist = (
+                        list(_prior_iteration_dropped_causal_patches)
+                        if causal_drop_feedback_to_strategist_enabled()
+                        else None
+                    )
                     strategy = _call_llm_for_adaptive_strategy(
                         clusters=_strategy_hard_clusters,
                         soft_signal_clusters=_strategy_soft_clusters,
@@ -13974,6 +13989,9 @@ def _run_lever_loop(
                         ),
                         max_ag_patches=MAX_AG_PATCHES,
                         intent_collisions=_intent_collisions,
+                        prior_iteration_dropped_causal_patches=(
+                            _t2_drops_for_strategist
+                        ),
                     )
                     strategist_memo_cache[_memo_key] = copy.deepcopy(strategy)
                     strategy["_memoized"] = False

@@ -155,3 +155,68 @@ def test_action_groups_input_default_empty_dropped_causal_patches() -> None:
     )
     inp = ActionGroupsInput(action_groups=())
     assert inp.prior_iteration_dropped_causal_patches == ()
+
+
+def test_format_prior_dropped_causal_patches_text_renders_dataclass() -> None:
+    """The strategist-prompt renderer accepts DroppedCausalPatch
+    instances and produces a human-readable block."""
+    from genie_space_optimizer.optimization.optimizer import (
+        format_prior_dropped_causal_patches_text,
+    )
+    from genie_space_optimizer.optimization.stages.gates import (
+        DroppedCausalPatch,
+    )
+    drops = [
+        DroppedCausalPatch(
+            gate="blast_radius",
+            reason="high_collateral_risk_flagged",
+            proposal_id="P002",
+            patch_type="add_sql_snippet_measure",
+            target="catalog.schema.tkt_document",
+            target_qids=("gs_026",),
+            dependents_outside_target=("gs_004", "gs_007"),
+            rca_id="rca_x",
+            root_cause="plural_top_n_collapse",
+        ),
+    ]
+    text = format_prior_dropped_causal_patches_text(drops)
+    assert "PRIOR-ITERATION DROPPED CAUSAL PATCHES" in text
+    assert "blast_radius" in text
+    assert "high_collateral_risk_flagged" in text
+    assert "add_sql_snippet_measure" in text
+    assert "catalog.schema.tkt_document" in text
+    assert "gs_026" in text
+    assert "gs_007" in text
+
+
+def test_format_prior_dropped_causal_patches_text_empty_returns_empty() -> None:
+    """No drops → empty string so the caller can prepend without
+    a special case."""
+    from genie_space_optimizer.optimization.optimizer import (
+        format_prior_dropped_causal_patches_text,
+    )
+    assert format_prior_dropped_causal_patches_text([]) == ""
+    assert format_prior_dropped_causal_patches_text(()) == ""
+    assert format_prior_dropped_causal_patches_text(None or ()) == ""
+
+
+def test_format_prior_dropped_causal_patches_text_accepts_dict_form() -> None:
+    """The renderer accepts dict form for serialised drops (e.g.,
+    when restored from a fixture)."""
+    from genie_space_optimizer.optimization.optimizer import (
+        format_prior_dropped_causal_patches_text,
+    )
+    drops = [
+        {
+            "gate": "blast_radius",
+            "reason": "high_collateral_risk_flagged",
+            "patch_type": "add_sql_snippet_measure",
+            "target": "x",
+            "target_qids": ["q1"],
+            "dependents_outside_target": ["q2"],
+        },
+    ]
+    text = format_prior_dropped_causal_patches_text(drops)
+    assert "blast_radius" in text
+    assert "q1" in text
+    assert "q2" in text

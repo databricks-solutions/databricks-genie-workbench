@@ -7261,6 +7261,63 @@ def _format_strategist_budget_preamble(*, budget: int, n_clusters: int) -> str:
     )
 
 
+def format_prior_dropped_causal_patches_text(
+    drops: list[dict] | tuple,
+) -> str:
+    """Cycle 5 T2 closeout — render the prior iteration's gate-drops
+    of causal-target patches into a strategist-prompt block.
+
+    Each ``DroppedCausalPatch`` is summarised on one line with its
+    gate, drop reason, patch type, target table, and the
+    outside-target dependents that triggered the drop. The
+    strategist sees this BEFORE the cluster narrative so it can
+    propose a narrower variant or shift levers instead of re-emitting
+    the same dropped pattern.
+
+    Returns an empty string when ``drops`` is empty so the caller can
+    skip the prepend without a special case.
+    """
+    if not drops:
+        return ""
+    lines = [
+        "PRIOR-ITERATION DROPPED CAUSAL PATCHES — these were rejected "
+        "by safety gates and SHOULD NOT be re-emitted verbatim. "
+        "Propose a narrower variant or shift to a different lever:",
+    ]
+    for d in drops:
+        # ``d`` may be a frozen dataclass (DroppedCausalPatch) or a
+        # plain dict if the harness already converted via to_dict.
+        gate = getattr(d, "gate", None) if not isinstance(d, dict) else d.get("gate")
+        reason = (
+            getattr(d, "reason", None) if not isinstance(d, dict)
+            else d.get("reason")
+        )
+        patch_type = (
+            getattr(d, "patch_type", None) if not isinstance(d, dict)
+            else d.get("patch_type")
+        )
+        target = (
+            getattr(d, "target", None) if not isinstance(d, dict)
+            else d.get("target")
+        )
+        target_qids = (
+            getattr(d, "target_qids", ()) if not isinstance(d, dict)
+            else d.get("target_qids", ())
+        )
+        dependents = (
+            getattr(d, "dependents_outside_target", ())
+            if not isinstance(d, dict)
+            else d.get("dependents_outside_target", ())
+        )
+        lines.append(
+            f"  - gate={gate or '?'} reason={reason or '?'} "
+            f"patch_type={patch_type or '?'} target={target or '?'} "
+            f"target_qids={list(target_qids)} "
+            f"outside_target_dependents={list(dependents)}"
+        )
+    return "\n".join(lines)
+
+
 def format_strategist_ranking_text(
     priority_ranking: list[dict],
     *,
@@ -9411,6 +9468,7 @@ def _call_llm_for_adaptive_strategy(
     iq_scan_summary: dict | None = None,
     max_ag_patches: int | None = None,
     intent_collisions: list[dict] | None = None,
+    prior_iteration_dropped_causal_patches: list | tuple | None = None,
 ) -> dict:
     """Single-call strategist that produces exactly ONE action group.
 
@@ -9569,7 +9627,24 @@ def _call_llm_for_adaptive_strategy(
     # v2 Task 12: intent_collision_text follows the budget so collisions
     # are surfaced before the cluster narrative; it is empty when no
     # collisions were detected.
-    prompt = budget_text + "\n\n" + intent_collision_text + "\n" + prompt
+    # Cycle 5 T2 closeout: surface the prior iteration's dropped causal
+    # patches BEFORE the cluster narrative so the strategist sees what
+    # was rejected and can propose a narrower variant or shift levers.
+    # Gated by GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST at the harness
+    # caller; ``prior_iteration_dropped_causal_patches`` is None /
+    # empty when the flag is off, so the rendered text is empty.
+    _t2_dropped_text = format_prior_dropped_causal_patches_text(
+        prior_iteration_dropped_causal_patches or ()
+    )
+    if _t2_dropped_text:
+        prompt = (
+            budget_text + "\n\n"
+            + intent_collision_text + "\n"
+            + _t2_dropped_text + "\n\n"
+            + prompt
+        )
+    else:
+        prompt = budget_text + "\n\n" + intent_collision_text + "\n" + prompt
 
     _W = 78
     _iter_label = len(reflection_buffer) + 1
