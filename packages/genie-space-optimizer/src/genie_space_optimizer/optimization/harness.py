@@ -13388,20 +13388,64 @@ def _run_lever_loop(
         # reflect the latest eval. Grounded against
         # ``_analysis["failure_rows"]`` so the assertion sees the exact
         # rows the soft pile was built from (no Delta re-read skew).
+        #
+        # Cycle 5 T5 — survival fix: instead of raising and aborting
+        # the run on drift, drop the drifted qids (or the entire
+        # cluster if every qid drifted) and emit a typed
+        # SOFT_CLUSTER_DRIFT_RECOVERED decision record. The recovery
+        # helper is pure; it returns the cleaned slate plus an audit
+        # trail. Closes the run-aborting AssertionError that hit two
+        # early task attempts of run 2423b960-16e8-41d4-a0cb-74c563378e05.
+        from genie_space_optimizer.optimization.cluster_formation_recovery import (
+            recover_from_soft_cluster_drift,
+        )
         from genie_space_optimizer.optimization.control_plane import (
-            assert_soft_cluster_currency,
+            has_individual_judge_failure as _t5_has_jf,
         )
 
-        _soft_qids_in_strategy = {
-            str(q)
-            for cluster in (_strategy_soft_clusters or [])
-            for q in cluster.get("question_ids") or []
-            if str(q)
-        }
-        assert_soft_cluster_currency(
-            soft_cluster_qids=_soft_qids_in_strategy,
-            current_eval_rows=_analysis_failure_rows,
-        )
+        try:
+            _t5_judge_failing = {
+                str(_row.get("question_id") or "")
+                for _row in (_analysis_failure_rows or [])
+                if isinstance(_row, dict)
+                and _row.get("question_id")
+                and _t5_has_jf(_row)
+            }
+            _t5_recovery = recover_from_soft_cluster_drift(
+                soft_clusters=_strategy_soft_clusters or [],
+                judge_failing_qids=_t5_judge_failing,
+            )
+            if (
+                _t5_recovery.drifted_qids_by_cluster
+                or _t5_recovery.dropped_cluster_ids
+            ):
+                # Refresh the soft slate with the cleaned clusters.
+                _strategy_soft_clusters = _t5_recovery.recovered_clusters
+                # Emit one decision record per affected cluster.
+                from genie_space_optimizer.optimization.decision_emitters import (
+                    soft_cluster_drift_recovered_record,
+                )
+                _t5_dropped = set(_t5_recovery.dropped_cluster_ids)
+                for _cid, _drifted in (
+                    _t5_recovery.drifted_qids_by_cluster.items()
+                ):
+                    _t5_rec = soft_cluster_drift_recovered_record(
+                        run_id=str(run_id),
+                        iteration=int(iteration_counter),
+                        cluster_id=str(_cid),
+                        drifted_qids=_drifted,
+                        cluster_dropped=(_cid in _t5_dropped),
+                    )
+                    _decision_emit(_t5_rec)
+                    _current_iter_inputs.setdefault(
+                        "decision_records", []
+                    ).append(_t5_rec.to_dict())
+        except Exception:
+            logger.debug(
+                "Cycle 5 T5: soft-cluster drift recovery failed "
+                "(non-fatal); proceeding with original soft slate",
+                exc_info=True,
+            )
 
         ranked = rank_clusters(
             list(_strategy_hard_clusters) + list(_strategy_soft_clusters),

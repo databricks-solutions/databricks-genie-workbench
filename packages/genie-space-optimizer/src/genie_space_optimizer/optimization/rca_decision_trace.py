@@ -106,6 +106,12 @@ class ReasonCode(str, Enum):
     # produce a grounded card and the AG is retired.
     RCA_REGENERATION_TRIGGERED = "rca_regeneration_triggered"
     RCA_REGENERATION_EXHAUSTED = "rca_regeneration_exhausted"
+    # Cycle 5 T5 — soft-cluster drift recovery: emitted when the
+    # clusterer's soft pile carried a qid the current eval no longer
+    # flags as judge-failing, and the harness recovered by dropping
+    # the drifted qid (or the entire cluster if every qid drifted)
+    # instead of raising.
+    SOFT_CLUSTER_DRIFT_RECOVERED = "soft_cluster_drift_recovered"
 
 
 class RejectReason(str, Enum):

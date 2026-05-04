@@ -1565,3 +1565,43 @@ def rca_regeneration_exhausted_record(
             "attempted_evidence_sources": list(attempted_evidence_sources),
         },
     )
+
+
+def soft_cluster_drift_recovered_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    drifted_qids: tuple[str, ...],
+    cluster_dropped: bool,
+) -> DecisionRecord:
+    """Cycle 5 T5 — emit when the harness recovered from soft-cluster
+    drift by dropping drifted qids (or the entire cluster if every
+    qid drifted). Surfaced as ``CLUSTER_SELECTED + INFO`` so the
+    operator transcript records the recovery in the cluster-formation
+    section without flagging it as an unresolved failure."""
+    if cluster_dropped:
+        next_action = (
+            f"Soft cluster {cluster_id} dropped — every qid drifted "
+            f"out of judge-failing state. Cluster removed from this "
+            f"iteration's slate."
+        )
+    else:
+        next_action = (
+            f"Soft cluster {cluster_id} retained with "
+            f"{len(drifted_qids)} drifted qid(s) removed: "
+            f"{sorted(drifted_qids)}."
+        )
+    return DecisionRecord(
+        run_id=run_id,
+        iteration=int(iteration),
+        decision_type=DecisionType.CLUSTER_SELECTED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.SOFT_CLUSTER_DRIFT_RECOVERED,
+        cluster_id=str(cluster_id),
+        next_action=next_action,
+        metrics={
+            "drifted_qids": list(drifted_qids),
+            "cluster_dropped": bool(cluster_dropped),
+        },
+    )
