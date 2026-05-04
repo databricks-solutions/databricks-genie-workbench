@@ -75,6 +75,10 @@ This skill orchestrates; it does not analyze. Reasoning lives in `gso-lever-loop
    - If the audit anchor resolved to `enrichment_snapshot` (or any non-`lever_loop` `genie.run_type`) **and** sibling artifacts are empty, the deployed harness is not tagging any run with `genie.run_type=lever_loop`. Do not treat this as `MLFLOW_AUDIT_FAILED`. Pass the bundle to the analysis skill — its degraded-mode rules cover this case by searching iteration full_eval runs by `genie.run_id`.
    - If `MLFLOW_AUDIT_FAILED`, surface the root error to the operator and stop. (This usually means the wrong workspace profile, or `MLFLOW_TRACKING_URI` is unset — see Step 0.)
 
+3.5. **Check for loud bundle-assembly failure.** Parse stdout markers (via `tools.marker_parser.parse_markers(...)`) and inspect `MarkerLog.bundle_assembly_failed`. If non-empty:
+    - The Phase H bundle was *intended* (the harness reached the C18 block) but assembly raised. Treat this as a `PHASE_H_BUNDLE_ASSEMBLY_FAILED` finding, distinct from "harness predates Phase H" (which leaves the marker absent and `manifest.json` missing).
+    - Surface `error_type` and `error_message` from the marker payload to the operator. Do not silently fall back to legacy artifacts: legacy artifacts are still useful, but the postmortem must call out that Phase H was attempted and failed so the next run's harness deploy can be fixed.
+
 4. **Recover the full notebook transcript when the Jobs output is only an exit JSON.** This is mandatory when `evidence/lever_loop_stdout.txt` lacks the expected human-readable sections such as `EVALUATION SUMMARY — Iteration`, `FULL EVAL [`, `GSO_CONVERGENCE_V1`, or `PHASE_A_REPLAY_FIXTURE_JSON_BEGIN`.
 
    `databricks jobs get-run-output` often returns only `notebook_output.result` for notebook tasks. The full cell output is recoverable through `jobs export-run`:
@@ -164,6 +168,7 @@ When Phase H is absent and the postmortem relies on `lever_loop_export_run_text.
 | Bundle short-circuited (manifest already exists) and you wanted a fresh pull | Delete `<bundle_dir>/evidence/manifest.json` and re-invoke. There is no `--force` flag. |
 | Lever-loop stdout file `lever_loop_stdout.txt` is empty or only contains final JSON even though the task printed rich logs | Lever-loop is a notebook task in production; `databricks jobs get-run-output` often returns only `notebook_output.result`. Use `databricks jobs export-run <lever_loop_task_run_id> --views-to-export ALL` and decode `__DATABRICKS_NOTEBOOK_MODEL` before asking the operator to paste logs. |
 | `lever_loop_stdout_parser.parse_lever_loop_stdout(...)` returns `optimization_run_summary=None` | Either the recovered text is truncated or the harness emitted a different stdout format. Compare the text against `tests/unit/fixtures/lever_loop_stdout_0ade1a99.txt`; if shapes diverge, file a follow-up to extend the parser regexes. |
+| `GSO_BUNDLE_ASSEMBLY_FAILED_V1` marker present | The C18 block raised inside the harness. Read `error_type`/`error_message` from the marker; if it's an MLflow connection error, retry the bundle pull; if it's a Python error, file an issue and fall back to legacy `phase_a`/`phase_b` artifacts for the analysis. |
 | Postmortem verdict = `INSUFFICIENT_EVIDENCE` | Ask the operator whether to widen the trace fetch beyond `--from-recommendations` (manual `--trace-id` flags). |
 
 ## Phase H: GSO Run Output Contract
