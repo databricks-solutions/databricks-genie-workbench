@@ -12059,6 +12059,33 @@ def _run_lever_loop(
                     exc_info=True,
                 )
 
+        def _decision_emit(record):
+            """v2 Pre-Task 0.5: pin the iteration-body decision-emit closure.
+
+            The harness historically appends decision records via direct
+            calls to ``_current_iter_inputs.setdefault("decision_records",
+            []).append(record.to_dict())`` (~17 sites in this iteration
+            body). v2 introduces this closure with the SAME shape so every
+            Phase A wire-up routes ``ctx.decision_emit(record)`` through
+            one place.
+
+            Contract: ``record`` is a typed DecisionRecord (has
+            .to_dict()) OR a plain dict. On exception: log debug + swallow
+            (matches _journey_emit shape).
+            """
+            try:
+                rec_dict = (
+                    record.to_dict() if hasattr(record, "to_dict")
+                    else dict(record)
+                )
+                _current_iter_inputs.setdefault(
+                    "decision_records", []
+                ).append(rec_dict)
+            except Exception:
+                logger.debug(
+                    "decision_emit failed (non-fatal)", exc_info=True,
+                )
+
         def _render_current_journey() -> None:
             """Render this AG iteration's journey ledger exactly once."""
             try:
