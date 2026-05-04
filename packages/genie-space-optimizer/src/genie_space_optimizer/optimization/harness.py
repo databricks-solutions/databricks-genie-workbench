@@ -1050,6 +1050,64 @@ def _record_dead_on_arrival_signature(
     seen.add(signature)
 
 
+def _compute_selected_proposal_signature(
+    proposals: list[dict] | None,
+) -> tuple[str, ...]:
+    """Cycle 2 Task 3 — stable signature over selected (not applied)
+    proposal IDs. ``_selected_patch_signature`` is keyed on applied
+    patches and therefore empty when blast-radius drops everything;
+    this signature stays informative in that case.
+    """
+    if not proposals:
+        return ()
+    ids = sorted(
+        str(p.get("proposal_id") or p.get("id") or "")
+        for p in proposals
+        if (p.get("proposal_id") or p.get("id"))
+    )
+    return tuple(i for i in ids if i)
+
+
+def _record_doa_selected_signature(
+    *,
+    seen: dict[str, set[tuple[str, ...]]],
+    ag_id: str,
+    signature: tuple[str, ...],
+) -> None:
+    """Cycle 2 Task 3 — record a selected-proposal-ID signature on a
+    per-AG ledger. No-ops when the flag is off or when the signature
+    is empty.
+    """
+    from genie_space_optimizer.common.config import (
+        doa_selected_proposal_signature_enabled,
+    )
+
+    if not doa_selected_proposal_signature_enabled():
+        return
+    if not signature:
+        return
+    seen.setdefault(str(ag_id), set()).add(signature)
+
+
+def _is_doa_selected_signature_blocked(
+    *,
+    seen: dict[str, set[tuple[str, ...]]],
+    ag_id: str,
+    signature: tuple[str, ...],
+) -> bool:
+    """Cycle 2 Task 3 — return True when the given AG has already
+    been retired with the same selected-proposal-ID signature."""
+    from genie_space_optimizer.common.config import (
+        doa_selected_proposal_signature_enabled,
+    )
+
+    if not doa_selected_proposal_signature_enabled():
+        return False
+    if not signature:
+        return False
+    return signature in seen.get(str(ag_id), set())
+
+
 def _t24_counterfactual_scan(
     *,
     all_proposals: list[dict],
@@ -11869,6 +11927,11 @@ def _run_lever_loop(
 
     _dead_on_arrival_patch_signatures: set[tuple[str, ...]] = set()
     _dead_on_arrival_ag_ids: set[str] = set()
+    # Cycle 2 Task 3: ledger keyed on selected-proposal-ID signatures.
+    # Closes the iter-3/iter-5 same-AG replay loop in run
+    # 2afb0be2-88b6-4832-99aa-c7e78fbc90f7 where blast-radius drops
+    # every patch and the applied-patch signature collapses to ``()``.
+    _doa_selected_proposal_signatures: dict[str, set[tuple[str, ...]]] = {}
 
     # Track exclusion counts for the objective-complete check. These start
     # from the current baseline iteration and update each accepted candidate.
@@ -16551,16 +16614,40 @@ def _run_lever_loop(
             for p in patches
             if (p.get("expanded_patch_id") or p.get("id") or p.get("proposal_id"))
         ))
-        if _selected_patch_signature in _dead_on_arrival_patch_signatures:
+        # Cycle 2 Task 3: also compute the selected-proposal-ID
+        # signature so DOA replay can be caught even when blast-radius
+        # collapses the applied-patch signature to ``()``.
+        _doa_selected_proposal_signature = (
+            _compute_selected_proposal_signature(
+                (ag.get("proposals") or []) if isinstance(ag, dict) else []
+            )
+        )
+        _doa_selected_blocked = _is_doa_selected_signature_blocked(
+            seen=_doa_selected_proposal_signatures,
+            ag_id=str(ag_id),
+            signature=_doa_selected_proposal_signature,
+        )
+        if (
+            _selected_patch_signature in _dead_on_arrival_patch_signatures
+            or _doa_selected_blocked
+        ):
+            _doa_dedup_reason = (
+                "same selected proposal IDs already produced no applied patches"
+                if _doa_selected_blocked
+                else "same selected patch IDs already produced no applied patches"
+            )
             logger.warning(
-                "Skipping dead-on-arrival AG retry for %s with patch signature %s",
+                "Skipping dead-on-arrival AG retry for %s "
+                "(applied_sig=%s selected_sig=%s)",
                 ag_id,
                 _selected_patch_signature,
+                _doa_selected_proposal_signature,
             )
             print(
                 _section(f"[{ag_id}] DEAD-ON-ARRIVAL RETRY BLOCKED", "!") + "\n"
                 + _kv("Patch signature", _selected_patch_signature) + "\n"
-                + _kv("Reason", "same selected patch IDs already produced no applied patches") + "\n"
+                + _kv("Selected proposal signature", _doa_selected_proposal_signature) + "\n"
+                + _kv("Reason", _doa_dedup_reason) + "\n"
                 + _bar("!")
             )
             # Phase A — Replay-fixture capture: the AG never reached the
@@ -16785,6 +16872,22 @@ def _run_lever_loop(
                     seen=_dead_on_arrival_patch_signatures,
                     signature=_selected_patch_signature,
                     reason=_apply_skip.reason_code,
+                )
+                # Cycle 2 Task 3: also record the selected-proposal-ID
+                # signature (informative even when blast-radius drops
+                # every patch) so a future iteration can detect that
+                # the same AG is being retried with the same proposals
+                # and avoid wasting iteration budget.
+                _doa_selected_proposal_signature = (
+                    _compute_selected_proposal_signature(
+                        (ag.get("proposals") or [])
+                        if isinstance(ag, dict) else []
+                    )
+                )
+                _record_doa_selected_signature(
+                    seen=_doa_selected_proposal_signatures,
+                    ag_id=str(ag_id),
+                    signature=_doa_selected_proposal_signature,
                 )
                 # Cycle 9 T7: emit one PATCH_SKIPPED DecisionRecord per
                 # proposal_id in the dead-on-arrival signature. ACCEPTANCE_DECIDED
