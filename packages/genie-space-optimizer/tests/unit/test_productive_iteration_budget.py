@@ -12,15 +12,27 @@ import os
 from unittest.mock import patch
 
 
-def test_flag_helper_default_off() -> None:
+def test_flag_helper_default_on() -> None:
+    """Cycle 5 deploy — default on; emergency disable via env-var=0."""
     from genie_space_optimizer.common.config import (
         productive_iteration_budget_enabled,
     )
     with patch.dict(os.environ, {}, clear=True):
+        assert productive_iteration_budget_enabled() is True
+
+
+def test_flag_helper_disabled_by_env_falsy() -> None:
+    """Setting the env-var to a falsy value disables the flag."""
+    from genie_space_optimizer.common.config import (
+        productive_iteration_budget_enabled,
+    )
+    with patch.dict(
+        os.environ, {"GSO_PRODUCTIVE_ITERATION_BUDGET": "0"}, clear=True,
+    ):
         assert productive_iteration_budget_enabled() is False
 
 
-def test_flag_helper_on_when_env_set() -> None:
+def test_flag_helper_on_when_env_truthy() -> None:
     from genie_space_optimizer.common.config import (
         productive_iteration_budget_enabled,
     )

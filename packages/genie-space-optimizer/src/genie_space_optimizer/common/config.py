@@ -5413,12 +5413,13 @@ def force_structural_synthesis_on_lever5_drop_enabled() -> bool:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Cycle 5 — Process-Spine Hardening flag helpers (default off).
+# Cycle 5 — Process-Spine Hardening flag helpers (default on).
 #
-# These flags guard cycle-5 behavioral changes pending corpus closeout.
-# Each maps a single behavioral change to a default-off env-var so the
-# byte-stable replay budget (``BURNDOWN_BUDGET=0``) holds at every
-# commit during the implementation cycle.
+# Each flag was first introduced default-off behind ``_flag_enabled``
+# (Cycle 5 plan) and flipped default-on via ``_flag_default_on`` here
+# for the cycle-5 deploy. Set ``GSO_<NAME>=0`` for emergency disable.
+# Production-lock (return True unconditionally, env-var inert) lands
+# after corpus validation, mirroring the Cycle 1 flag-locking pattern.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -5431,9 +5432,9 @@ def productive_iteration_budget_enabled() -> bool:
 
     Closes the iter-2..5 budget burn in run
     2423b960-16e8-41d4-a0cb-74c563378e05 where 4 of 5 iterations were
-    consumed by deterministic no-ops. Default off pending corpus
-    closeout."""
-    return _flag_enabled("GSO_PRODUCTIVE_ITERATION_BUDGET")
+    consumed by deterministic no-ops. Default on for cycle-5 deploy;
+    set ``GSO_PRODUCTIVE_ITERATION_BUDGET=0`` for emergency disable."""
+    return _flag_default_on("GSO_PRODUCTIVE_ITERATION_BUDGET")
 
 
 def causal_drop_feedback_to_strategist_enabled() -> bool:
@@ -5447,9 +5448,10 @@ def causal_drop_feedback_to_strategist_enabled() -> bool:
     Closes the iter-1 → iter-2 silent-replay path in run
     2423b960-16e8-41d4-a0cb-74c563378e05 where blast_radius dropped
     ``add_sql_snippet_measure`` with 8 outside-target dependents and the
-    strategist re-emitted the same pattern next iteration. Default off
-    pending corpus closeout."""
-    return _flag_enabled("GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST")
+    strategist re-emitted the same pattern next iteration. Default on
+    for cycle-5 deploy; set
+    ``GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST=0`` for emergency disable."""
+    return _flag_default_on("GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST")
 
 
 def diagnostic_ag_rca_regen_enabled() -> bool:
@@ -5463,6 +5465,7 @@ def diagnostic_ag_rca_regen_enabled() -> bool:
     Closes the iter-2 ``Proposals (0 total) — SKIPPING`` path in run
     2423b960-16e8-41d4-a0cb-74c563378e05 where H001/H002 had no parent
     RCA and the diagnostic AG inherited an empty ``rca_id`` →
-    ungrounded proposal generation → empty slate. Default off pending
-    corpus closeout."""
-    return _flag_enabled("GSO_DIAGNOSTIC_AG_RCA_REGEN")
+    ungrounded proposal generation → empty slate. Default on for
+    cycle-5 deploy; set ``GSO_DIAGNOSTIC_AG_RCA_REGEN=0`` for
+    emergency disable."""
+    return _flag_default_on("GSO_DIAGNOSTIC_AG_RCA_REGEN")
