@@ -6,8 +6,10 @@ dominant cluster root cause is SQL-shape but no ``example_sql`` is
 attached. Phase B's operator transcript renders nothing for the drop
 because no ``DecisionRecord`` is emitted. This producer mirrors
 ``blast_radius_decision_records`` and surfaces every Lever 5 drop as a
-``GATE_DECISION`` / ``DROPPED`` / ``RCA_UNGROUNDED`` row in the
-``Proposal Survival And Gate Drops`` section of the operator transcript.
+``GATE_DECISION`` / ``DROPPED`` / ``STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY``
+row in the ``Proposal Survival And Gate Drops`` section of the
+operator transcript. (P4 task 3 specialised the reason code from the
+generic ``RCA_UNGROUNDED`` to the lever-5-specific value.)
 
 Plan: ``docs/2026-05-04-cycle8-bug1-phase3b-lever5-structural-gate-rerouting-plan.md``
 Task B.
@@ -55,7 +57,11 @@ def test_one_record_per_drop_with_correct_decision_shape() -> None:
     rec = records[0]
     assert rec.decision_type == DecisionType.GATE_DECISION
     assert rec.outcome == DecisionOutcome.DROPPED
-    assert rec.reason_code == ReasonCode.RCA_UNGROUNDED
+    # P4 task 3: lever-5 gate now emits the specific
+    # STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY reason instead of the
+    # generic RCA_UNGROUNDED so postmortems can tell this drop apart
+    # from other ungrounded-RCA cases.
+    assert rec.reason_code == ReasonCode.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY
     assert rec.gate == "lever5_structural_gate"
     assert rec.ag_id == "AG_DECOMPOSED_H001"
     assert rec.rca_id == "rca_h001"

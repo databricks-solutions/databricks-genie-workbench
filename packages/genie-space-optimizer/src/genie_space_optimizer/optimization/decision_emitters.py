@@ -1029,7 +1029,12 @@ def lever5_structural_gate_records(
                 root_cause=str(root_cause or ""),
                 decision_type=DecisionType.GATE_DECISION,
                 outcome=DecisionOutcome.DROPPED,
-                reason_code=ReasonCode.RCA_UNGROUNDED,
+                # P4: specific reason — the lever-5 gate dropped a
+                # non-structural (instruction-only) proposal because
+                # the dominant cluster root cause was SQL-shape and
+                # no example_sql was attached. Distinct from the
+                # generic RCA_UNGROUNDED case.
+                reason_code=ReasonCode.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY,
                 gate="lever5_structural_gate",
                 reason_detail=f"sql_shape_without_example_sql:{','.join(root_causes)}",
                 evidence_refs=(f"ag:{ag_id}", "lever5_structural_gate"),

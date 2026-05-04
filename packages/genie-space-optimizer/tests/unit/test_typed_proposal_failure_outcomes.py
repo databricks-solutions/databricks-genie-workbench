@@ -62,3 +62,35 @@ def test_proposal_generation_empty_record_shape() -> None:
     assert rec.ag_id == "AG_COVERAGE_H001"
     assert rec.cluster_id == "H001"
     assert rec.target_qids == ("gs_026",)
+
+
+def test_lever5_structural_gate_record_uses_specific_reason() -> None:
+    from genie_space_optimizer.optimization.decision_emitters import (
+        lever5_structural_gate_records,
+    )
+    from genie_space_optimizer.optimization.rca_decision_trace import (
+        ReasonCode,
+    )
+
+    drops = [
+        {
+            "ag_id": "AG_COVERAGE_H002",
+            "cluster_id": "H002",
+            "root_causes": ["missing_filter"],
+            "target_qids": ["gs_021"],
+            "patch_type": "rewrite_instruction",
+            "proposal_id": "P001",
+        }
+    ]
+    records = lever5_structural_gate_records(
+        run_id="r1",
+        iteration=2,
+        ag_id="AG_COVERAGE_H002",
+        rca_id="rca_h002",
+        root_cause="missing_filter",
+        target_qids=["gs_021"],
+        drops=drops,
+    )
+    assert len(records) == 1
+    rec = records[0]
+    assert rec.reason_code == ReasonCode.STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY
