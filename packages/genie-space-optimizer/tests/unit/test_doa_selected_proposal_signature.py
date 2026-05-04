@@ -60,23 +60,6 @@ def test_doa_selected_signature_blocks_repeat_when_flag_on(monkeypatch) -> None:
     ) is False
 
 
-def test_doa_selected_signature_no_op_when_flag_off(monkeypatch) -> None:
-    monkeypatch.setenv("GSO_DOA_SELECTED_PROPOSAL_SIGNATURE", "0")
-    from genie_space_optimizer.optimization.harness import (
-        _is_doa_selected_signature_blocked,
-        _record_doa_selected_signature,
-    )
-
-    seen: dict[str, set[tuple[str, ...]]] = {}
-    sig = ("P001", "P002")
-    _record_doa_selected_signature(seen=seen, ag_id="AG_X", signature=sig)
-    # Recording is a no-op when flag is off.
-    assert seen == {}
-    assert _is_doa_selected_signature_blocked(
-        seen=seen, ag_id="AG_X", signature=sig,
-    ) is False
-
-
 def test_compute_selected_proposal_signature_distinguishes_cross_lever_collisions() -> None:
     """Regression for the iter-1 P001#2 / P001#2 collision in run
     2423b960. Two patches under the same parent_proposal_id but

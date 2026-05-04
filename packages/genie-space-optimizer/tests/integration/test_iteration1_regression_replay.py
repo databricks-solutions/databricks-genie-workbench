@@ -4,8 +4,14 @@ Iteration 1 shipped 3 patches (column description, add_instruction,
 add_sql_snippet_filter). The filter snippet was flagged by the
 counterfactual scan with 10+ passing dependents and broke q001
 (previously a soft failure) into a hard failure. This frozen replay
-asserts the new gate drops the broad SQL filter snippet before the
-patch cap so q001 cannot regress.
+asserts the production-locked lever-aware contract:
+
+* Semantic patches (e.g. ``add_sql_snippet_filter``) with
+  ``high_collateral_risk`` and outside-target dependents are still
+  rejected with ``high_collateral_risk_flagged``.
+* Non-semantic patches (e.g. ``update_column_description``) downgrade
+  to ``non_semantic_collateral_warning`` so they continue to land —
+  metadata edits cannot regress a passing query.
 """
 
 from __future__ import annotations
@@ -48,14 +54,10 @@ def _patches_for_replay() -> list[dict]:
     ]
 
 
-def test_iteration1_blast_radius_gate_drops_broad_filter_and_column(
-    monkeypatch,
-) -> None:
-    """Legacy uniform-rejection regression replay — pinned with the
-    lever-aware flag explicitly disabled. The default-on lever-aware
-    contract (non-semantic patches downgrade to a warning) is pinned
-    by ``test_blast_radius_lever_aware.py``."""
-    monkeypatch.setenv("GSO_LEVER_AWARE_BLAST_RADIUS", "0")
+def test_iteration1_blast_radius_gate_drops_broad_filter_snippet() -> None:
+    """The semantic ``add_sql_snippet_filter`` with high collateral
+    risk is rejected; the non-semantic ``update_column_description``
+    downgrades to a warning under the lever-aware contract."""
     target_qids = ("q009", "q021")
     decisions = [
         (
@@ -70,22 +72,19 @@ def test_iteration1_blast_radius_gate_drops_broad_filter_and_column(
     ]
     by_id = {pid: d for pid, d in decisions}
     assert by_id["P006#1"]["safe"] is True
-    assert by_id["P001#1"]["safe"] is False
-    assert by_id["P001#1"]["reason"] == "high_collateral_risk_flagged"
+    # Non-semantic patch: lever-aware contract downgrades to warning.
+    assert by_id["P001#1"]["safe"] is True
+    assert by_id["P001#1"]["reason"] == "non_semantic_collateral_warning"
     assert "q001" not in by_id["P001#1"]["passing_dependents_outside_target"]
+    # Semantic patch: still rejected.
     assert by_id["P007#1"]["safe"] is False
     assert by_id["P007#1"]["reason"] == "high_collateral_risk_flagged"
     assert "q001" in by_id["P007#1"]["passing_dependents_outside_target"]
 
 
-def test_replay_bundle_after_blast_radius_gate_excludes_broad_filter_snippet(
-    monkeypatch,
-) -> None:
-    """Simulate the harness-style filter loop and assert the
-    survivors. Pinned to the legacy uniform-rejection contract;
-    lever-aware behaviour is pinned by
-    ``test_blast_radius_lever_aware.py``."""
-    monkeypatch.setenv("GSO_LEVER_AWARE_BLAST_RADIUS", "0")
+def test_replay_bundle_after_blast_radius_gate_excludes_broad_filter_snippet() -> None:
+    """Simulate the harness-style filter loop and assert the survivors
+    under the lever-aware contract."""
     target_qids = ("q009", "q021")
     patches = _patches_for_replay()
 
@@ -102,13 +101,13 @@ def test_replay_bundle_after_blast_radius_gate_excludes_broad_filter_snippet(
 
     survivor_ids = sorted(s["proposal_id"] for s in survivors)
     assert "P006#1" in survivor_ids, "low-risk add_instruction must survive"
+    # Non-semantic update_column_description survives as a warning.
+    assert "P001#1" in survivor_ids, (
+        "non-semantic update_column_description downgrades to a warning "
+        "under the lever-aware blast-radius contract"
+    )
     assert "P007#1" not in survivor_ids, (
         "broad add_sql_snippet_filter must be rejected — this is the "
         "exact patch that broke q001 in the 7now iter-1 run"
     )
-    assert "P001#1" not in survivor_ids, (
-        "high-risk update_column_description on a 10+ dependent table "
-        "must also be rejected"
-    )
     assert dropped_reasons["P007#1"] == "high_collateral_risk_flagged"
-    assert dropped_reasons["P001#1"] == "high_collateral_risk_flagged"

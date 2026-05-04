@@ -5268,11 +5268,19 @@ constant name for grep-ability."""
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Optimizer Control-Plane Hardening Plan — Task 0 feature flags.
+# Optimizer Control-Plane Hardening Plan — flag helpers.
 #
-# Defaults flipped to ON for cycle-9 deploy: each helper returns True
-# unless the env-var is explicitly set to a falsy value
-# (``0``/``false``/``no``/``off``). Set ``GSO_<name>=0`` to disable.
+# Production-locked: every helper below returns ``True`` unconditionally.
+# The associated env-vars (``GSO_*``) are no longer honored; the
+# behaviour is part of the canonical optimizer pipeline. The helper
+# functions remain so existing call sites compile unchanged; if a
+# future regression demands an emergency disable, restore the
+# ``_flag_default_on`` body and document the env-var on the helper.
+#
+# Historical context: each flag was first introduced default-off behind
+# ``_flag_enabled`` (Cycle 1 plan), flipped default-on via
+# ``_flag_default_on`` for the cycle-9 deploy, then locked
+# unconditional here for the production release.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -5293,71 +5301,49 @@ def _flag_default_on(env_name: str) -> bool:
 
 
 def target_aware_acceptance_enabled() -> bool:
-    """Task A — when below thresholds, the
-    ``accepted_with_attribution_drift`` branch in
-    ``decide_control_plane_acceptance`` rejects instead of accepting.
-
-    Default ON. Set ``GSO_TARGET_AWARE_ACCEPTANCE=0`` to disable.
-    """
-    return _flag_default_on("GSO_TARGET_AWARE_ACCEPTANCE")
+    """Task A — below thresholds, ``decide_control_plane_acceptance``'s
+    ``accepted_with_attribution_drift`` branch rejects instead of
+    accepting. Production-locked: always on."""
+    return True
 
 
 def regression_debt_invariant_enabled() -> bool:
-    """When on, ``assert_regression_debt_partition_complete`` raises
-    AssertionError when out_of_target_regressed_qids is not the
-    disjoint union of soft_to_hard / passing_to_hard /
-    unknown_to_hard. When off, it is a no-op.
-
-    Default ON. Set ``GSO_REGRESSION_DEBT_INVARIANT=0`` to disable.
-    """
-    return _flag_default_on("GSO_REGRESSION_DEBT_INVARIANT")
+    """``assert_regression_debt_partition_complete`` raises when
+    out_of_target_regressed_qids is not the disjoint union of
+    soft_to_hard / passing_to_hard / unknown_to_hard.
+    Production-locked: always on."""
+    return True
 
 
 def lever_qualified_patch_ids_enabled() -> bool:
-    """When on, ``_stamp_expanded_patch_identity`` builds expanded
-    child ids as ``L{lever}:{parent_id}#{child_index}`` (e.g.
-    ``L1:P001#2``). When off, the legacy
-    ``{parent_id}#{child_index}`` format is preserved.
-
-    Required for Cycle 2 Task 3's DOA selected-proposal signature
-    to be injective: without lever qualification, two patches under
-    the same parent but different levers collide on the same id and
-    the DOA dedup ledger silently conflates them.
-
-    Default ON. Set ``GSO_LEVER_QUALIFIED_PATCH_IDS=0`` to disable.
-    """
-    return _flag_default_on("GSO_LEVER_QUALIFIED_PATCH_IDS")
+    """``_stamp_expanded_patch_identity`` builds expanded child ids as
+    ``L{lever}:{parent_id}#{child_index}``. Required for Cycle 2 Task 3's
+    DOA selected-proposal signature to be injective.
+    Production-locked: always on."""
+    return True
 
 
 def no_causal_applyable_halt_enabled() -> bool:
     """Task B — when every RCA-grounded proposal in an AG is dropped
     by upstream gates, halt the AG with reason
     ``no_causal_applyable_patch`` instead of falling back to non-causal
-    proposals.
-
-    Default ON. Set ``GSO_NO_CAUSAL_APPLYABLE_HALT=0`` to disable.
-    """
-    return _flag_default_on("GSO_NO_CAUSAL_APPLYABLE_HALT")
+    proposals. Production-locked: always on."""
+    return True
 
 
 def bucket_driven_ag_selection_enabled() -> bool:
     """Task C — strategist consumes prior-iteration failure buckets:
     ``MODEL_CEILING`` qids drop from targets; clusters whose qids are
     all ``EVIDENCE_GAP`` materialize as evidence-gathering AGs.
-
-    Default ON. Set ``GSO_BUCKET_DRIVEN_AG_SELECTION=0`` to disable.
-    """
-    return _flag_default_on("GSO_BUCKET_DRIVEN_AG_SELECTION")
+    Production-locked: always on."""
+    return True
 
 
 def rca_aware_patch_cap_enabled() -> bool:
     """Task D — proposals inherit the parent AG's ``rca_id`` at the F5
     stage entry so ``select_causal_patch_cap`` can rank by
-    ``causal_attribution_tier``.
-
-    Default ON. Set ``GSO_RCA_AWARE_PATCH_CAP=0`` to disable.
-    """
-    return _flag_default_on("GSO_RCA_AWARE_PATCH_CAP")
+    ``causal_attribution_tier``. Production-locked: always on."""
+    return True
 
 
 def lever_aware_blast_radius_enabled() -> bool:
@@ -5366,70 +5352,54 @@ def lever_aware_blast_radius_enabled() -> bool:
     ``add_metric_view_instruction``, ``add_table_instruction``,
     ``update_table_description``) downgrade ``high_collateral_risk``
     blast-radius rejection to a warning.
-
-    Default ON. Set ``GSO_LEVER_AWARE_BLAST_RADIUS=0`` to disable.
-    """
-    return _flag_default_on("GSO_LEVER_AWARE_BLAST_RADIUS")
+    Production-locked: always on."""
+    return True
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Cycle 2 Optimizer Improvement Plan — proposal-survival and
-# safety-gate hardening flags. All default-on; set
-# ``GSO_<name>=0`` to disable.
+# safety-gate hardening helpers. Production-locked: all return True.
 # ──────────────────────────────────────────────────────────────────────
 
 
 def intra_ag_proposal_dedup_enabled() -> bool:
-    """Cycle 2 Task 1 — when on, the gates pipeline runs an intra-AG
+    """Cycle 2 Task 1 — the gates pipeline runs an intra-AG
     body-fingerprint dedup pass before blast-radius. Two proposals in
     the same AG with identical body text but different ``patch_type``
     values collapse to the first occurrence.
-
-    Default ON. Set ``GSO_INTRA_AG_PROPOSAL_DEDUP=0`` to disable.
-    """
-    return _flag_default_on("GSO_INTRA_AG_PROPOSAL_DEDUP")
+    Production-locked: always on."""
+    return True
 
 
 def shared_cause_blast_radius_enabled() -> bool:
-    """Cycle 2 Task 2 — when on, ``patch_blast_radius_is_safe``
-    downgrades ``high_collateral_risk_flagged`` to
+    """Cycle 2 Task 2 — ``patch_blast_radius_is_safe`` downgrades
+    ``high_collateral_risk_flagged`` to
     ``shared_cause_collateral_warning`` when every outside-target
     dependent is itself currently-hard. Two hard failures sharing a
     cause should not block each other's fix.
-
-    Default ON. Set ``GSO_SHARED_CAUSE_BLAST_RADIUS=0`` to disable.
-    """
-    return _flag_default_on("GSO_SHARED_CAUSE_BLAST_RADIUS")
+    Production-locked: always on."""
+    return True
 
 
 def doa_selected_proposal_signature_enabled() -> bool:
-    """Cycle 2 Task 3 — when on, the DOA ledger records and dedups by
+    """Cycle 2 Task 3 — the DOA ledger records and dedups by
     selected-proposal-ID signatures (in addition to the applied-patch
     signatures it already records). Closes the iter-3/iter-5 same-AG
     replay loop where blast-radius drops every patch leaving an empty
-    applied-patch signature.
-
-    Default ON. Set ``GSO_DOA_SELECTED_PROPOSAL_SIGNATURE=0`` to
-    disable.
-    """
-    return _flag_default_on("GSO_DOA_SELECTED_PROPOSAL_SIGNATURE")
+    applied-patch signature. Production-locked: always on."""
+    return True
 
 
 def question_shape_lever_preference_enabled() -> bool:
-    """Cycle 2 Task 4 — when on, single-question clusters whose
-    root_cause is in the question-shape set
-    (``plural_top_n_collapse``, ``count_vs_distinct``, etc.) prefer
-    per-question levers (3 example_sql, 5 instructions) over the
-    space-wide lever 6 (SQL expressions).
-
-    Default ON. Set ``GSO_QUESTION_SHAPE_LEVER_PREFERENCE=0`` to
-    disable.
-    """
-    return _flag_default_on("GSO_QUESTION_SHAPE_LEVER_PREFERENCE")
+    """Cycle 2 Task 4 — single-question clusters whose root_cause is
+    in the question-shape set (``plural_top_n_collapse``,
+    ``count_vs_distinct``, etc.) prefer per-question levers
+    (3, 5) over space-wide lever 6. Production-locked: always on."""
+    return True
 
 
 def force_structural_synthesis_on_lever5_drop_enabled() -> bool:
-    """When on, the harness mandatorily invokes
+    """The harness mandatorily invokes
     ``run_cluster_driven_synthesis_for_single_cluster`` whenever the
     lever-5 structural gate drops an instruction-only proposal for a
     SQL-shape root cause. When the synthesis returns no proposal, an
@@ -5438,8 +5408,5 @@ def force_structural_synthesis_on_lever5_drop_enabled() -> bool:
     Closes the iter-2/iter-5 silent-skip path in run
     2423b960-16e8-41d4-a0cb-74c563378e05 where the gate dropped the
     proposal but no synthesis fallback was attempted.
-
-    Default ON. Set ``GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP=0``
-    to disable.
-    """
-    return _flag_default_on("GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP")
+    Production-locked: always on."""
+    return True

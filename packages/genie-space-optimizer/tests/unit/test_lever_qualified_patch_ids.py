@@ -47,21 +47,6 @@ def test_two_parents_same_id_different_lever_produce_distinct_ids(monkeypatch) -
     assert patch_l5["expanded_patch_id"] == "L5:P001#2"
 
 
-def test_unqualified_id_when_flag_off(monkeypatch) -> None:
-    """Replay byte-stability: with the flag off, the format is the
-    legacy ``{parent_id}#{child_index}``.
-    """
-    monkeypatch.setenv("GSO_LEVER_QUALIFIED_PATCH_IDS", "0")
-    from genie_space_optimizer.optimization.applier import (
-        _stamp_expanded_patch_identity,
-    )
-
-    proposal = {"proposal_id": "P001"}
-    patch = {"lever": 1}
-    _stamp_expanded_patch_identity(patch, proposal, child_index=2)
-    assert patch["expanded_patch_id"] == "P001#2"
-
-
 def test_missing_lever_falls_back_to_unqualified(monkeypatch) -> None:
     """Defensive: if the patch has no ``lever`` field, the
     qualifier prefix is omitted so we don't accidentally produce

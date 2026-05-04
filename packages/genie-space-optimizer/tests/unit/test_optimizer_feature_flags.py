@@ -1,8 +1,10 @@
 """Optimizer Control-Plane Hardening Plan — Task 0.
 
-Feature-flag helpers in common.config now default ON for cycle-9
-deploy. Each helper returns True unless the env-var is explicitly set
-to a falsy value (``0``/``false``/``no``/``off``).
+Production-locked: every helper returns ``True`` unconditionally,
+regardless of env-var. The associated ``GSO_*`` env-vars are inert —
+the behaviours are part of the canonical optimizer pipeline. These
+tests pin the production lock so a future regression that quietly
+restores env-var gating is caught.
 """
 
 import pytest
@@ -10,58 +12,47 @@ import pytest
 from genie_space_optimizer.common import config as cfg
 
 
-def test_feature_flag_defaults_on(monkeypatch):
-    for env in (
-        "GSO_TARGET_AWARE_ACCEPTANCE",
-        "GSO_NO_CAUSAL_APPLYABLE_HALT",
-        "GSO_BUCKET_DRIVEN_AG_SELECTION",
-        "GSO_RCA_AWARE_PATCH_CAP",
-        "GSO_LEVER_AWARE_BLAST_RADIUS",
-    ):
-        monkeypatch.delenv(env, raising=False)
-    assert cfg.target_aware_acceptance_enabled() is True
-    assert cfg.no_causal_applyable_halt_enabled() is True
-    assert cfg.bucket_driven_ag_selection_enabled() is True
-    assert cfg.rca_aware_patch_cap_enabled() is True
-    assert cfg.lever_aware_blast_radius_enabled() is True
-
-
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        # Explicit truthy values — flag stays on.
-        ("1", True),
-        ("true", True),
-        ("yes", True),
-        ("on", True),
-        # Empty / unrecognized values fall through to the default-on.
-        ("", True),
-        # Explicit falsy values — disable.
-        ("0", False),
-        ("false", False),
-        ("no", False),
-        ("off", False),
-    ],
+_LOCKED_HELPERS_AND_ENV = (
+    ("target_aware_acceptance_enabled", "GSO_TARGET_AWARE_ACCEPTANCE"),
+    ("regression_debt_invariant_enabled", "GSO_REGRESSION_DEBT_INVARIANT"),
+    ("lever_qualified_patch_ids_enabled", "GSO_LEVER_QUALIFIED_PATCH_IDS"),
+    ("no_causal_applyable_halt_enabled", "GSO_NO_CAUSAL_APPLYABLE_HALT"),
+    ("bucket_driven_ag_selection_enabled", "GSO_BUCKET_DRIVEN_AG_SELECTION"),
+    ("rca_aware_patch_cap_enabled", "GSO_RCA_AWARE_PATCH_CAP"),
+    ("lever_aware_blast_radius_enabled", "GSO_LEVER_AWARE_BLAST_RADIUS"),
+    ("intra_ag_proposal_dedup_enabled", "GSO_INTRA_AG_PROPOSAL_DEDUP"),
+    ("shared_cause_blast_radius_enabled", "GSO_SHARED_CAUSE_BLAST_RADIUS"),
+    (
+        "doa_selected_proposal_signature_enabled",
+        "GSO_DOA_SELECTED_PROPOSAL_SIGNATURE",
+    ),
+    (
+        "question_shape_lever_preference_enabled",
+        "GSO_QUESTION_SHAPE_LEVER_PREFERENCE",
+    ),
+    (
+        "force_structural_synthesis_on_lever5_drop_enabled",
+        "GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP",
+    ),
 )
-def test_feature_flag_env_parsing(monkeypatch, value, expected):
-    monkeypatch.setenv("GSO_TARGET_AWARE_ACCEPTANCE", value)
-    assert cfg.target_aware_acceptance_enabled() is expected
 
 
-def test_each_flag_can_be_individually_disabled(monkeypatch):
-    """Per-flag disable: setting one env-var to ``0`` only turns off
-    that helper; the other four remain on at their default."""
-    for env in (
-        "GSO_TARGET_AWARE_ACCEPTANCE",
-        "GSO_NO_CAUSAL_APPLYABLE_HALT",
-        "GSO_BUCKET_DRIVEN_AG_SELECTION",
-        "GSO_RCA_AWARE_PATCH_CAP",
-        "GSO_LEVER_AWARE_BLAST_RADIUS",
-    ):
-        monkeypatch.delenv(env, raising=False)
-    monkeypatch.setenv("GSO_RCA_AWARE_PATCH_CAP", "0")
-    assert cfg.rca_aware_patch_cap_enabled() is False
-    assert cfg.target_aware_acceptance_enabled() is True
-    assert cfg.no_causal_applyable_halt_enabled() is True
-    assert cfg.bucket_driven_ag_selection_enabled() is True
-    assert cfg.lever_aware_blast_radius_enabled() is True
+@pytest.mark.parametrize("helper_name,env_name", _LOCKED_HELPERS_AND_ENV)
+def test_helper_returns_true_with_env_unset(
+    monkeypatch, helper_name, env_name,
+):
+    monkeypatch.delenv(env_name, raising=False)
+    helper = getattr(cfg, helper_name)
+    assert helper() is True
+
+
+@pytest.mark.parametrize("helper_name,env_name", _LOCKED_HELPERS_AND_ENV)
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "", "1", "on"])
+def test_helper_ignores_env_var(
+    monkeypatch, helper_name, env_name, value,
+):
+    """Production-lock: the env-var is inert. Setting it to any value
+    (truthy, falsy, or empty) must not change the helper's return."""
+    monkeypatch.setenv(env_name, value)
+    helper = getattr(cfg, helper_name)
+    assert helper() is True

@@ -58,18 +58,3 @@ def test_semantic_patch_still_blocked(monkeypatch):
         assert result["reason"] == "high_collateral_risk_flagged", patch_type
 
 
-def test_explicit_disable_legacy_behavior(monkeypatch):
-    """Flag was flipped default-on for cycle-9 deploy; setting the
-    env-var to ``0`` is the disable path that restores the uniform
-    rejection on every patch type."""
-    monkeypatch.setenv("GSO_LEVER_AWARE_BLAST_RADIUS", "0")
-    result = patch_blast_radius_is_safe(
-        {
-            "patch_type": "update_column_description",
-            "passing_dependents": ["gs_003"],
-            "high_collateral_risk": True,
-        },
-        ag_target_qids=("gs_024",),
-    )
-    assert result["safe"] is False
-    assert result["reason"] == "high_collateral_risk_flagged"

@@ -93,18 +93,3 @@ def test_intra_ag_dedup_keeps_distinct_bodies(monkeypatch) -> None:
     assert drops == []
 
 
-def test_intra_ag_dedup_no_op_when_flag_off(monkeypatch) -> None:
-    monkeypatch.setenv("GSO_INTRA_AG_PROPOSAL_DEDUP", "0")
-    from genie_space_optimizer.optimization.stages.gates import (
-        _run_intra_ag_dedup,
-    )
-
-    proposals = {
-        "AG_X": (
-            _proposal("P001", "rewrite_instruction"),
-            _proposal("P002", "add_sql_snippet_filter"),
-        ),
-    }
-    survived, drops = _run_intra_ag_dedup(ctx=None, proposals_by_ag=proposals)
-    assert len(survived["AG_X"]) == 2
-    assert drops == []

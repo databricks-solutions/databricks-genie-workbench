@@ -68,18 +68,3 @@ def test_recommended_levers_unchanged_for_non_question_shape_root_cause(
     assert 6 in levers
 
 
-def test_flag_off_returns_default_levers(monkeypatch) -> None:
-    monkeypatch.setenv("GSO_QUESTION_SHAPE_LEVER_PREFERENCE", "0")
-    from genie_space_optimizer.optimization.stages.action_groups import (
-        recommended_levers_for_cluster,
-    )
-
-    cluster = {
-        "cluster_id": "H003",
-        "question_ids": ["gs_009"],
-        "q_count": 1,
-        "root_cause": "plural_top_n_collapse",
-    }
-    levers = recommended_levers_for_cluster(cluster)
-    # With the flag off, today's behavior is preserved (includes 6).
-    assert 6 in levers

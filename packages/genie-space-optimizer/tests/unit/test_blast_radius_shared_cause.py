@@ -57,17 +57,6 @@ def test_outside_target_all_passing_still_blocks(monkeypatch) -> None:
     assert result["reason"] == "high_collateral_risk_flagged"
 
 
-def test_flag_off_preserves_existing_behaviour(monkeypatch) -> None:
-    monkeypatch.setenv("GSO_SHARED_CAUSE_BLAST_RADIUS", "0")
-    result = patch_blast_radius_is_safe(
-        _patch(["gs_003"]),
-        ag_target_qids=("gs_024",),
-        live_hard_qids=("gs_003", "gs_024"),
-    )
-    assert result["safe"] is False
-    assert result["reason"] == "high_collateral_risk_flagged"
-
-
 def test_no_live_hard_qids_argument_preserves_existing_behaviour(
     monkeypatch,
 ) -> None:

@@ -86,24 +86,3 @@ def test_evidence_gap_marks_evidence_gathering_ag(monkeypatch):
     )
 
 
-def test_explicit_disable_preserves_legacy_behavior(monkeypatch):
-    """Flag was flipped default-on for cycle-9 deploy; setting the
-    env-var to ``0`` is the disable path that preserves the legacy
-    behaviour."""
-    monkeypatch.setenv("GSO_BUCKET_DRIVEN_AG_SELECTION", "0")
-    inp = ActionGroupsInput(
-        action_groups=(
-            {
-                "id": "AG_H001",
-                "ag_id": "AG_H001",
-                "target_qids": ("gs_029",),
-                "affected_questions": ("gs_029",),
-                "source_cluster_ids": ("H001",),
-            },
-        ),
-        prior_buckets_by_qid={"gs_029": FailureBucket.MODEL_CEILING},
-    )
-    slate = select(_Ctx(), inp)
-    # MODEL_CEILING qid not removed when flag off.
-    assert slate.ags
-    assert "gs_029" in slate.ags[0].get("target_qids", ())

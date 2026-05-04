@@ -184,17 +184,3 @@ def test_assert_regression_debt_partition_complete_raises_on_orphan_qid(monkeypa
         assert_regression_debt_partition_complete(bad)
 
 
-def test_assert_regression_debt_partition_complete_no_op_when_flag_off(monkeypatch) -> None:
-    monkeypatch.setenv("GSO_REGRESSION_DEBT_INVARIANT", "0")
-    bad = ControlPlaneAcceptance(
-        accepted=False,
-        reason_code="rejected_unbounded_collateral",
-        baseline_accuracy=100.0,
-        candidate_accuracy=90.0,
-        delta_pp=-10.0,
-        target_qids=("target_qid",),
-        target_fixed_qids=(),
-        target_still_hard_qids=(),
-        out_of_target_regressed_qids=("orphan_qid",),
-    )
-    assert_regression_debt_partition_complete(bad)  # no raise
