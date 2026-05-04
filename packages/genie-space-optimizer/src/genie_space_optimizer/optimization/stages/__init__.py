@@ -16,5 +16,8 @@ from __future__ import annotations
 
 from genie_space_optimizer.optimization.stages._context import StageContext
 from genie_space_optimizer.optimization.stages._protocol import StageHandler
+from genie_space_optimizer.optimization.stages._run_evaluation_kwargs import (
+    RunEvaluationKwargs,
+)
 
-__all__ = ["StageContext", "StageHandler"]
+__all__ = ["RunEvaluationKwargs", "StageContext", "StageHandler"]
