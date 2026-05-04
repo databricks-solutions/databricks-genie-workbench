@@ -48,3 +48,22 @@ def test_synthesis_returns_result_object_not_dict_or_none() -> None:
     assert isinstance(result, ClusterSynthesisResult)
     assert result.proposal is None
     assert "budget" in (result.skipped_reason or "")
+
+
+def test_force_structural_synthesis_flag_default_on() -> None:
+    from genie_space_optimizer.common.config import (
+        force_structural_synthesis_on_lever5_drop_enabled,
+    )
+
+    # Default ON when env var is unset.
+    import os
+    os.environ.pop("GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP", None)
+    assert force_structural_synthesis_on_lever5_drop_enabled() is True
+
+
+def test_force_structural_synthesis_flag_off(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP", "0")
+    from genie_space_optimizer.common.config import (
+        force_structural_synthesis_on_lever5_drop_enabled,
+    )
+    assert force_structural_synthesis_on_lever5_drop_enabled() is False

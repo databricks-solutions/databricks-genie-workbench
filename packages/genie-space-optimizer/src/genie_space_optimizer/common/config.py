@@ -5426,3 +5426,20 @@ def question_shape_lever_preference_enabled() -> bool:
     disable.
     """
     return _flag_default_on("GSO_QUESTION_SHAPE_LEVER_PREFERENCE")
+
+
+def force_structural_synthesis_on_lever5_drop_enabled() -> bool:
+    """When on, the harness mandatorily invokes
+    ``run_cluster_driven_synthesis_for_single_cluster`` whenever the
+    lever-5 structural gate drops an instruction-only proposal for a
+    SQL-shape root cause. When the synthesis returns no proposal, an
+    explicit ``NO_STRUCTURAL_CANDIDATE`` DecisionRecord is emitted.
+
+    Closes the iter-2/iter-5 silent-skip path in run
+    2423b960-16e8-41d4-a0cb-74c563378e05 where the gate dropped the
+    proposal but no synthesis fallback was attempted.
+
+    Default ON. Set ``GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP=0``
+    to disable.
+    """
+    return _flag_default_on("GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP")
