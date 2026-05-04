@@ -67,3 +67,46 @@ def test_force_structural_synthesis_flag_off(monkeypatch) -> None:
         force_structural_synthesis_on_lever5_drop_enabled,
     )
     assert force_structural_synthesis_on_lever5_drop_enabled() is False
+
+
+def test_lever5_drop_invokes_synthesis_when_flag_on(monkeypatch) -> None:
+    """Reproducer for run 2423b960 iter 2: lever-5 gate drops the
+    instruction-only proposal for missing_filter, harness mandatorily
+    invokes synthesis. The exact path through the harness is large;
+    this test exercises the helper that decides whether to invoke
+    synthesis given a gate-drop record + cluster root cause.
+    """
+    monkeypatch.setenv("GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP", "1")
+    from genie_space_optimizer.optimization.harness import (
+        _should_force_structural_synthesis,
+    )
+
+    assert _should_force_structural_synthesis(
+        gate_drop_reason="lever5_structural_sql_shape_no_example_sql",
+        cluster_root_cause="missing_filter",
+    ) is True
+    assert _should_force_structural_synthesis(
+        gate_drop_reason="lever5_structural_sql_shape_no_example_sql",
+        cluster_root_cause="plural_top_n_collapse",
+    ) is True
+    # Non-SQL-shape root cause does not force synthesis.
+    assert _should_force_structural_synthesis(
+        gate_drop_reason="lever5_structural_sql_shape_no_example_sql",
+        cluster_root_cause="format_difference",
+    ) is False
+    # Different gate drop reason: not the lever-5 structural gate.
+    assert _should_force_structural_synthesis(
+        gate_drop_reason="blast_radius",
+        cluster_root_cause="missing_filter",
+    ) is False
+
+
+def test_lever5_drop_does_not_invoke_synthesis_when_flag_off(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP", "0")
+    from genie_space_optimizer.optimization.harness import (
+        _should_force_structural_synthesis,
+    )
+    assert _should_force_structural_synthesis(
+        gate_drop_reason="lever5_structural_sql_shape_no_example_sql",
+        cluster_root_cause="missing_filter",
+    ) is False

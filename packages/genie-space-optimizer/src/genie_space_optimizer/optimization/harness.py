@@ -1050,6 +1050,34 @@ def _record_dead_on_arrival_signature(
     seen.add(signature)
 
 
+def _should_force_structural_synthesis(
+    *,
+    gate_drop_reason: str,
+    cluster_root_cause: str,
+) -> bool:
+    """P3 — return True when a lever-5 structural gate drop should
+    mandatorily invoke cluster-driven synthesis.
+
+    Conditions:
+      1. ``GSO_FORCE_STRUCTURAL_SYNTHESIS_ON_LEVER5_DROP`` is on.
+      2. Gate drop reason indicates the lever-5 structural gate.
+      3. Cluster root cause is in the SQL-shape set (the same
+         ``_SQL_SHAPE_ROOT_CAUSES`` used by the gate itself).
+    """
+    from genie_space_optimizer.common.config import (
+        force_structural_synthesis_on_lever5_drop_enabled,
+    )
+    from genie_space_optimizer.optimization.optimizer import (
+        _SQL_SHAPE_ROOT_CAUSES,
+    )
+
+    if not force_structural_synthesis_on_lever5_drop_enabled():
+        return False
+    if not str(gate_drop_reason or "").startswith("lever5_structural"):
+        return False
+    return str(cluster_root_cause or "") in _SQL_SHAPE_ROOT_CAUSES
+
+
 def _compute_selected_proposal_signature(
     proposals: list[dict] | None,
 ) -> tuple[str, ...]:
