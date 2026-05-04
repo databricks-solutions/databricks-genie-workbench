@@ -11183,6 +11183,14 @@ def _run_lever_loop(
     _iter_traces: dict[int, _AnyPhaseH] = {}
     _iter_summaries: dict[int, dict[str, _AnyPhaseH]] = {}
     _hard_failures_for_overview: list[tuple[str, str, str]] = []
+    # P3 task 4 — buffer for cluster-driven synthesis proposals queued
+    # at the lever-5 structural-gate drop site. Drained at the start of
+    # each iteration via _consume_structural_synthesis_buffer; in the
+    # current wiring same-iteration injection at the drop site is
+    # preferred, so this buffer typically remains empty. The helper
+    # stays invoked each iteration for hygiene and as a future hook
+    # for cross-iteration carry-over.
+    _structural_synthesis_buffer: list[dict] = []
 
     resume_state = _resume_lever_loop(spark, run_id, catalog, schema)
     # S10 — ``start_lever`` is informational only: the loop below always
@@ -12400,6 +12408,25 @@ def _run_lever_loop(
             iterations_data=_replay_fixture_iterations,
             iteration=iteration_counter,
         )
+
+        # P3 task 4 — drain any structural-synthesis proposals queued
+        # at the prior iteration's lever-5 drop site. Same-iteration
+        # injection (below at the drop site) is the active path, so
+        # this list is empty in steady state; the drain runs each
+        # iteration for hygiene and to surface anything carried over
+        # for replay observability.
+        _forced_synthesis_proposals_carryover = (
+            _consume_structural_synthesis_buffer(_structural_synthesis_buffer)
+        )
+        if _forced_synthesis_proposals_carryover:
+            logger.info(
+                "P3: drained %d carry-over structural-synthesis proposal(s) "
+                "from prior iteration",
+                len(_forced_synthesis_proposals_carryover),
+            )
+            _current_iter_inputs.setdefault(
+                "carryover_structural_proposals", []
+            ).extend(_forced_synthesis_proposals_carryover)
 
         # ── Per-question journey ledger accumulator (Task 13) ────────
         # Stamp every stage that touches a question so the end-of-
@@ -14580,6 +14607,150 @@ def _run_lever_loop(
                 _current_iter_inputs.setdefault(
                     "decision_records", []
                 ).extend([r.to_dict() for r in _l5_records])
+
+                # P3 task 3+4 wiring — force structural synthesis when
+                # the lever-5 structural gate drops an instruction-only
+                # proposal for a SQL-shape root cause. Closes the iter-2
+                # / iter-5 silent-skip path in run
+                # 2423b960-16e8-41d4-a0cb-74c563378e05. Same-iteration
+                # injection: a synthesized add_example_sql is appended
+                # to ``all_proposals`` so it flows through the existing
+                # normalization / applyability / applier pipeline. On
+                # failure, a NO_STRUCTURAL_CANDIDATE record is emitted
+                # so the transcript shows synthesis was attempted.
+                try:
+                    from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+                        run_cluster_driven_synthesis_for_single_cluster,
+                    )
+                    from genie_space_optimizer.optimization.decision_emitters import (
+                        no_structural_candidate_record,
+                    )
+
+                    for _drop in _l5_ag_drops:
+                        _drop_cluster: dict | None = None
+                        _drop_root_cause = ""
+                        for _rc in (_drop.get("root_causes") or ()):
+                            if not _should_force_structural_synthesis(
+                                gate_drop_reason=(
+                                    "lever5_structural_sql_shape_no_example_sql"
+                                ),
+                                cluster_root_cause=str(_rc),
+                            ):
+                                continue
+                            for _cid in (_drop.get("source_clusters") or ()):
+                                _cand = _iter_source_clusters_by_id.get(str(_cid))
+                                if isinstance(_cand, dict) and str(
+                                    _cand.get("root_cause") or ""
+                                ) == str(_rc):
+                                    _drop_cluster = _cand
+                                    _drop_root_cause = str(_rc)
+                                    break
+                            if _drop_cluster is not None:
+                                break
+                        if _drop_cluster is None:
+                            continue
+                        _synth_result = run_cluster_driven_synthesis_for_single_cluster(
+                            _drop_cluster,
+                            metadata_snapshot,
+                            benchmarks=benchmarks,
+                            catalog=catalog,
+                            gold_schema=schema,
+                            warehouse_id=resolve_warehouse_id(""),
+                            w=w,
+                            spark=spark,
+                        )
+                        if _synth_result.proposal is not None:
+                            _sp = _synth_result.proposal
+                            _forced_proposal = {
+                                "proposal_id": f"P{len(all_proposals) + 1:03d}",
+                                "cluster_id": f"{ag_id}_FORCED_SYN",
+                                "lever": 5,
+                                "scope": "genie_config",
+                                "patch_type": "add_example_sql",
+                                "change_description": (
+                                    f"[{ag_id}] Forced structural synthesis: "
+                                    f"{str(_sp.get('example_question', ''))[:80]}"
+                                ),
+                                "proposed_value": _sp.get("example_question", ""),
+                                "example_question": _sp.get("example_question", ""),
+                                "example_sql": _sp.get("example_sql", ""),
+                                "parameters": _sp.get("parameters", []) or [],
+                                "usage_guidance": _sp.get("usage_guidance", ""),
+                                "rationale": (
+                                    f"Forced structural synthesis at L5 gate "
+                                    f"drop (archetype="
+                                    f"{_sp.get('_archetype_name', '?')}). "
+                                    f"Root cause: {_drop_root_cause}."
+                                ),
+                                "confidence": 0.85,
+                                "questions_fixed": 1,
+                                "questions_at_risk": 0,
+                                "net_impact": 0.85,
+                                "kit_id": _sp.get("kit_id", ""),
+                                "target_qids": _sp.get("target_qids", []),
+                                "rca_id": _sp.get("rca_id", ""),
+                                "_archetype_name": _sp.get("_archetype_name", ""),
+                                "_cluster_id": _sp.get("_cluster_id", ""),
+                                "provenance": {
+                                    "synthesis_source": "forced_lever5_drop",
+                                    "drop_root_cause": _drop_root_cause,
+                                    "kit_id": _sp.get("kit_id", ""),
+                                    "target_qids": _sp.get("target_qids", []),
+                                },
+                            }
+                            all_proposals.append(_forced_proposal)
+                            logger.info(
+                                "P3: forced structural synthesis succeeded "
+                                "for AG=%s root_cause=%s archetype=%s",
+                                ag_id, _drop_root_cause,
+                                _sp.get("_archetype_name", "?"),
+                            )
+                        else:
+                            _nsc = no_structural_candidate_record(
+                                run_id=run_id,
+                                iteration=iteration_counter,
+                                ag_id=str(ag_id),
+                                cluster_id=str(
+                                    _drop_cluster.get("cluster_id") or ""
+                                ),
+                                rca_id=_l5_ag_rca_id,
+                                root_cause=_drop_root_cause,
+                                target_qids=tuple(
+                                    str(q) for q in (
+                                        ag.get("affected_questions") or []
+                                    )
+                                    if str(q)
+                                ),
+                                attempted_archetypes=(
+                                    _synth_result.attempted_archetypes
+                                ),
+                            )
+                            _current_iter_inputs.setdefault(
+                                "decision_records", []
+                            ).append(_nsc.to_dict())
+                            logger.info(
+                                "P3: forced structural synthesis produced no "
+                                "candidate for AG=%s root_cause=%s "
+                                "skipped=%s archetypes=%s",
+                                ag_id, _drop_root_cause,
+                                _synth_result.skipped_reason,
+                                _synth_result.attempted_archetypes,
+                            )
+                except Exception:
+                    _phase_b_producer_exceptions[
+                        "forced_structural_synthesis"
+                    ] = (
+                        _phase_b_producer_exceptions.get(
+                            "forced_structural_synthesis", 0
+                        ) + 1
+                    )
+                    logger.debug(
+                        "P3: forced-structural-synthesis at L5 drop "
+                        "site failed (non-fatal)",
+                        exc_info=True,
+                    )
+                    if _phase_b_strict_mode():
+                        raise
         except Exception:
             _phase_b_producer_exceptions["lever5_structural_gate"] = (
                 _phase_b_producer_exceptions.get("lever5_structural_gate", 0) + 1
