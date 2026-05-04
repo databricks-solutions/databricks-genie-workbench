@@ -713,6 +713,11 @@ def decide_control_plane_acceptance(
       stale_or_candidate_pre_rows       — pre rows are not the accepted baseline
       post_arbiter_not_improved         — global accuracy did not move
       rejected_no_gain                  — gain below min_gain_pp threshold
+      target_fixed_offset_by_regression — Cycle 5 T4: target fixed but a
+        non-target qid moved from passing/soft to hard, net delta ≤ 0
+      target_fixed_with_unresolved_other_hard — Cycle 5 T4: target
+        fixed but pre-existing non-target hard qids remain hard, net
+        delta ≤ 0
       target_qids_not_improved          — none of the declared causal targets flipped
       accepted_pre_arbiter_improvement  — post saturated at the same value but pre-arbiter improved by >= min_pre_arbiter_gain_pp with no collateral hard regression
       accepted_with_attribution_drift   — net global gain, zero regressions, target unchanged
@@ -837,14 +842,33 @@ def decide_control_plane_acceptance(
                 reason = "accepted_pre_arbiter_improvement"
                 accepted = True
             else:
-                reason = "post_arbiter_not_improved"
+                # Cycle 5 T4 — granular reason codes when accuracy
+                # didn't move. Distinguish target-fixed-with-regression
+                # from target-fixed-with-unresolved from the legacy
+                # post_arbiter_not_improved (no target fix at all).
+                if has_causal_fix and (
+                    soft_to_hard or passing_to_hard or unknown_to_hard
+                ):
+                    reason = "target_fixed_offset_by_regression"
+                elif has_causal_fix and (post_hard - target_set):
+                    reason = "target_fixed_with_unresolved_other_hard"
+                else:
+                    reason = "post_arbiter_not_improved"
                 accepted = False
         else:
-            reason = (
-                "rejected_no_gain"
-                if float(min_gain_pp) > 0
-                else "post_arbiter_not_improved"
-            )
+            # Cycle 5 T4 — same granularity in the non-saturation path.
+            if has_causal_fix and (
+                soft_to_hard or passing_to_hard or unknown_to_hard
+            ):
+                reason = "target_fixed_offset_by_regression"
+            elif has_causal_fix and (post_hard - target_set):
+                reason = "target_fixed_with_unresolved_other_hard"
+            else:
+                reason = (
+                    "rejected_no_gain"
+                    if float(min_gain_pp) > 0
+                    else "post_arbiter_not_improved"
+                )
             accepted = False
     elif (
         not has_causal_fix
