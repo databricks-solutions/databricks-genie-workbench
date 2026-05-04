@@ -86,8 +86,11 @@ def test_evidence_gap_marks_evidence_gathering_ag(monkeypatch):
     )
 
 
-def test_default_off_preserves_legacy_behavior(monkeypatch):
-    monkeypatch.delenv("GSO_BUCKET_DRIVEN_AG_SELECTION", raising=False)
+def test_explicit_disable_preserves_legacy_behavior(monkeypatch):
+    """Flag was flipped default-on for cycle-9 deploy; setting the
+    env-var to ``0`` is the disable path that preserves the legacy
+    behaviour."""
+    monkeypatch.setenv("GSO_BUCKET_DRIVEN_AG_SELECTION", "0")
     inp = ActionGroupsInput(
         action_groups=(
             {

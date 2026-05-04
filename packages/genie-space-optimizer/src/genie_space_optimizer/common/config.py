@@ -5270,44 +5270,67 @@ constant name for grep-ability."""
 # ──────────────────────────────────────────────────────────────────────
 # Optimizer Control-Plane Hardening Plan — Task 0 feature flags.
 #
-# Each flag is default-off; production runs flip them on via the
-# lever-loop task env-vars in databricks.yml. Default-off keeps the
-# byte-stable replay fixture and BURNDOWN_BUDGET = 0 invariants safe.
+# Defaults flipped to ON for cycle-9 deploy: each helper returns True
+# unless the env-var is explicitly set to a falsy value
+# (``0``/``false``/``no``/``off``). Set ``GSO_<name>=0`` to disable.
 # ──────────────────────────────────────────────────────────────────────
+
+
+_TRUTHY_VALUES = {"1", "true", "yes", "on"}
+_FALSY_VALUES = {"0", "false", "no", "off"}
 
 
 def _flag_enabled(env_name: str) -> bool:
     raw = (os.environ.get(env_name) or "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    return raw in _TRUTHY_VALUES
+
+
+def _flag_default_on(env_name: str) -> bool:
+    raw = (os.environ.get(env_name) or "").strip().lower()
+    if raw in _FALSY_VALUES:
+        return False
+    return True
 
 
 def target_aware_acceptance_enabled() -> bool:
     """Task A — when below thresholds, the
     ``accepted_with_attribution_drift`` branch in
-    ``decide_control_plane_acceptance`` rejects instead of accepting."""
-    return _flag_enabled("GSO_TARGET_AWARE_ACCEPTANCE")
+    ``decide_control_plane_acceptance`` rejects instead of accepting.
+
+    Default ON. Set ``GSO_TARGET_AWARE_ACCEPTANCE=0`` to disable.
+    """
+    return _flag_default_on("GSO_TARGET_AWARE_ACCEPTANCE")
 
 
 def no_causal_applyable_halt_enabled() -> bool:
     """Task B — when every RCA-grounded proposal in an AG is dropped
     by upstream gates, halt the AG with reason
     ``no_causal_applyable_patch`` instead of falling back to non-causal
-    proposals."""
-    return _flag_enabled("GSO_NO_CAUSAL_APPLYABLE_HALT")
+    proposals.
+
+    Default ON. Set ``GSO_NO_CAUSAL_APPLYABLE_HALT=0`` to disable.
+    """
+    return _flag_default_on("GSO_NO_CAUSAL_APPLYABLE_HALT")
 
 
 def bucket_driven_ag_selection_enabled() -> bool:
     """Task C — strategist consumes prior-iteration failure buckets:
     ``MODEL_CEILING`` qids drop from targets; clusters whose qids are
-    all ``EVIDENCE_GAP`` materialize as evidence-gathering AGs."""
-    return _flag_enabled("GSO_BUCKET_DRIVEN_AG_SELECTION")
+    all ``EVIDENCE_GAP`` materialize as evidence-gathering AGs.
+
+    Default ON. Set ``GSO_BUCKET_DRIVEN_AG_SELECTION=0`` to disable.
+    """
+    return _flag_default_on("GSO_BUCKET_DRIVEN_AG_SELECTION")
 
 
 def rca_aware_patch_cap_enabled() -> bool:
     """Task D — proposals inherit the parent AG's ``rca_id`` at the F5
     stage entry so ``select_causal_patch_cap`` can rank by
-    ``causal_attribution_tier``."""
-    return _flag_enabled("GSO_RCA_AWARE_PATCH_CAP")
+    ``causal_attribution_tier``.
+
+    Default ON. Set ``GSO_RCA_AWARE_PATCH_CAP=0`` to disable.
+    """
+    return _flag_default_on("GSO_RCA_AWARE_PATCH_CAP")
 
 
 def lever_aware_blast_radius_enabled() -> bool:
@@ -5315,5 +5338,8 @@ def lever_aware_blast_radius_enabled() -> bool:
     (``update_column_description``, ``add_column_synonym``,
     ``add_metric_view_instruction``, ``add_table_instruction``,
     ``update_table_description``) downgrade ``high_collateral_risk``
-    blast-radius rejection to a warning."""
-    return _flag_enabled("GSO_LEVER_AWARE_BLAST_RADIUS")
+    blast-radius rejection to a warning.
+
+    Default ON. Set ``GSO_LEVER_AWARE_BLAST_RADIUS=0`` to disable.
+    """
+    return _flag_default_on("GSO_LEVER_AWARE_BLAST_RADIUS")

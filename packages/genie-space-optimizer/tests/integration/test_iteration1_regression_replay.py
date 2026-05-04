@@ -48,7 +48,14 @@ def _patches_for_replay() -> list[dict]:
     ]
 
 
-def test_iteration1_blast_radius_gate_drops_broad_filter_and_column() -> None:
+def test_iteration1_blast_radius_gate_drops_broad_filter_and_column(
+    monkeypatch,
+) -> None:
+    """Legacy uniform-rejection regression replay — pinned with the
+    lever-aware flag explicitly disabled. The default-on lever-aware
+    contract (non-semantic patches downgrade to a warning) is pinned
+    by ``test_blast_radius_lever_aware.py``."""
+    monkeypatch.setenv("GSO_LEVER_AWARE_BLAST_RADIUS", "0")
     target_qids = ("q009", "q021")
     decisions = [
         (
@@ -71,8 +78,14 @@ def test_iteration1_blast_radius_gate_drops_broad_filter_and_column() -> None:
     assert "q001" in by_id["P007#1"]["passing_dependents_outside_target"]
 
 
-def test_replay_bundle_after_blast_radius_gate_excludes_broad_filter_snippet() -> None:
-    """Simulate the harness-style filter loop and assert the survivors."""
+def test_replay_bundle_after_blast_radius_gate_excludes_broad_filter_snippet(
+    monkeypatch,
+) -> None:
+    """Simulate the harness-style filter loop and assert the
+    survivors. Pinned to the legacy uniform-rejection contract;
+    lever-aware behaviour is pinned by
+    ``test_blast_radius_lever_aware.py``."""
+    monkeypatch.setenv("GSO_LEVER_AWARE_BLAST_RADIUS", "0")
     target_qids = ("q009", "q021")
     patches = _patches_for_replay()
 

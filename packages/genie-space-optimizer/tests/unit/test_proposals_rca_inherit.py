@@ -61,8 +61,10 @@ def test_proposals_inherit_rca_id_from_parent_cluster(monkeypatch):
     assert stamped[1]["rca_id"] == "RCA_TOP10_LOGIC"
 
 
-def test_default_off_does_not_stamp(monkeypatch):
-    monkeypatch.delenv("GSO_RCA_AWARE_PATCH_CAP", raising=False)
+def test_explicit_disable_does_not_stamp(monkeypatch):
+    """Flag was flipped default-on for cycle-9 deploy; setting the
+    env-var to ``0`` is the disable path that skips the stamping."""
+    monkeypatch.setenv("GSO_RCA_AWARE_PATCH_CAP", "0")
     inp = ProposalsInput(
         proposals_by_ag={
             "AG_H003": (
