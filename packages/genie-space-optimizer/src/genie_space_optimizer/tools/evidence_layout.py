@@ -68,6 +68,15 @@ class BundlePaths:
     traces_dir: Path
     postmortem: Path
     intake: Path
+    # ── Phase H parent bundle ────────────────────────────────────
+    # Populated by Phase H so evidence_bundle can materialize the
+    # gso_postmortem_bundle/* artifacts pulled from the parent
+    # lever-loop MLflow run alongside the legacy phase artifacts.
+    parent_bundle_dir: Path = Path()
+    parent_bundle_manifest: Path = Path()
+    parent_bundle_artifact_index: Path = Path()
+    parent_bundle_operator_transcript: Path = Path()
+    parent_bundle_iterations_dir: Path = Path()
 
 
 @dataclass(frozen=True)
@@ -93,6 +102,7 @@ def bundle_paths_for(*, root: Path, optimization_run_id: str) -> BundlePaths:
         )
     run_root = root / optimization_run_id
     evidence = run_root / "evidence"
+    parent_bundle_dir = evidence / "gso_postmortem_bundle"
     return BundlePaths(
         root=run_root,
         evidence_dir=evidence,
@@ -108,6 +118,11 @@ def bundle_paths_for(*, root: Path, optimization_run_id: str) -> BundlePaths:
         traces_dir=evidence / "traces",
         postmortem=run_root / "postmortem.md",
         intake=run_root / "intake.md",
+        parent_bundle_dir=parent_bundle_dir,
+        parent_bundle_manifest=parent_bundle_dir / "manifest.json",
+        parent_bundle_artifact_index=parent_bundle_dir / "artifact_index.json",
+        parent_bundle_operator_transcript=parent_bundle_dir / "operator_transcript.md",
+        parent_bundle_iterations_dir=parent_bundle_dir / "iterations",
     )
 
 

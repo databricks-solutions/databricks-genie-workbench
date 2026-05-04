@@ -64,6 +64,46 @@ class BundleResult:
     manifest: Manifest
 
 
+def download_parent_bundle(
+    *,
+    parent_run_id: str,
+    target_dir: Path,
+) -> tuple[bool, list[MissingPiece]]:
+    """Download ``gso_postmortem_bundle/`` from the parent MLflow run (Phase H).
+
+    Materializes the parent bundle under ``target_dir.parent`` so the
+    files land at ``<target_dir.parent>/gso_postmortem_bundle/``.
+    Returns ``(success, missing_pieces)``. On any failure, success is
+    False and a ``MissingPiece(MLFLOW_AUDIT_FAILED)`` is recorded so
+    the caller can fall back to the legacy phase artifacts.
+
+    The parent bundle is the Phase H gso_postmortem_bundle artifact
+    tree on the lever-loop MLflow run discovered via
+    ``genie.run_role=lever_loop`` + ``genie.optimization_run_id``.
+    """
+    try:
+        from mlflow.tracking import MlflowClient
+        client = MlflowClient()
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        client.download_artifacts(
+            run_id=parent_run_id,
+            path="gso_postmortem_bundle",
+            dst_path=str(target_dir.parent),
+        )
+        return True, []
+    except Exception as exc:
+        return False, [MissingPiece(
+            kind=MissingPieceKind.MLFLOW_AUDIT_FAILED,
+            iteration=None,
+            diagnosis=f"parent bundle download failed: {exc}",
+            suggested_action=(
+                "Verify the parent run exists and gso_postmortem_bundle/* "
+                "artifacts are present on the run discovered via "
+                "genie.run_role=lever_loop + genie.optimization_run_id."
+            ),
+        )]
+
+
 def _extract_stdout_with_fallback(
     out: Mapping[str, Any] | dict[str, Any],
 ) -> tuple[str, str, MissingPiece | None]:

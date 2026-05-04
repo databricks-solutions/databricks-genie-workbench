@@ -439,3 +439,63 @@ def test_main_smoke(
             ]
         )
     assert rc == 0
+
+
+def test_download_parent_bundle_succeeds_with_stub_client(monkeypatch, tmp_path) -> None:
+    """Phase H Task 11: download_parent_bundle calls MlflowClient.
+    download_artifacts and reports success when the call returns."""
+    from pathlib import Path
+    from genie_space_optimizer.tools.evidence_bundle import download_parent_bundle
+
+    pulls: list[tuple[str, str, str]] = []
+
+    class _FakeClient:
+        def download_artifacts(self, run_id, path, dst_path):
+            pulls.append((str(run_id), str(path), str(dst_path)))
+            target = Path(dst_path) / "gso_postmortem_bundle"
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "manifest.json").write_text(
+                '{"schema_version":"v1","optimization_run_id":"opt-1"}'
+            )
+            return str(target)
+
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: _FakeClient())
+
+    target = tmp_path / "evidence" / "gso_postmortem_bundle"
+    success, missing = download_parent_bundle(
+        parent_run_id="br-1",
+        target_dir=target,
+    )
+
+    assert success is True
+    assert missing == []
+    assert ("br-1", "gso_postmortem_bundle", str(tmp_path / "evidence")) in pulls
+    assert (target / "manifest.json").exists()
+
+
+def test_download_parent_bundle_records_missing_piece_on_failure(
+    monkeypatch, tmp_path,
+) -> None:
+    """If the MLflow download raises, download_parent_bundle returns
+    (False, [MissingPiece]) so the caller can fall back without
+    propagating the exception."""
+    from genie_space_optimizer.tools.evidence_bundle import download_parent_bundle
+    from genie_space_optimizer.tools.evidence_layout import MissingPieceKind
+
+    class _FailingClient:
+        def download_artifacts(self, *a, **k):
+            raise RuntimeError("MLflow is down")
+
+    monkeypatch.setattr("mlflow.tracking.MlflowClient", lambda: _FailingClient())
+
+    target = tmp_path / "evidence" / "gso_postmortem_bundle"
+    success, missing = download_parent_bundle(
+        parent_run_id="br-1",
+        target_dir=target,
+    )
+
+    assert success is False
+    assert len(missing) == 1
+    assert missing[0].kind == MissingPieceKind.MLFLOW_AUDIT_FAILED
+    assert "parent bundle download failed" in missing[0].diagnosis
+    assert "MLflow is down" in missing[0].diagnosis

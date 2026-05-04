@@ -107,3 +107,16 @@ def test_missing_piece_kind_is_closed_enum() -> None:
         "BACKFILL_FAILED",
     }
     assert {m.name for m in MissingPieceKind} == expected
+
+
+def test_bundle_paths_includes_parent_bundle_paths(tmp_path) -> None:
+    """Phase H Task 11: BundlePaths exposes the parent-bundle layout
+    so evidence_bundle can materialize gso_postmortem_bundle/* under
+    runid_analysis/<opt>/evidence/."""
+    from genie_space_optimizer.tools.evidence_layout import bundle_paths_for
+    paths = bundle_paths_for(root=tmp_path, optimization_run_id="opt-1")
+    assert paths.parent_bundle_dir.name == "gso_postmortem_bundle"
+    assert paths.parent_bundle_manifest.name == "manifest.json"
+    assert paths.parent_bundle_artifact_index.name == "artifact_index.json"
+    assert paths.parent_bundle_iterations_dir.name == "iterations"
+    assert "gso_postmortem_bundle" in str(paths.parent_bundle_dir)
