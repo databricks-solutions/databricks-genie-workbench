@@ -5,6 +5,14 @@ description: Use when analyzing, validating, debugging, or postmortem-ing a Geni
 
 # GSO Lever Loop Run Analysis
 
+> **Canonical example.** Run
+> `0ade1a99-9406-4a68-a3bc-8c77be78edcb` is the canonical example
+> of a `MERGE_GATE_GAP` produced by stacked
+> `ACCEPTANCE_TARGET_BLIND` + `PATCH_CAP_RCA_BLIND_RANKING` +
+> `BLAST_RADIUS_OVERDROP_ON_NONSEMANTIC`. The fixture's analysis
+> is preserved at `docs/runid_analysis/0ade1a99-9406-4a68-a3bc-8c77be78edcb/postmortem.md`
+> for pattern matching against new runs.
+
 Use this skill when asked to analyze, validate, debug, or postmortem a Genie Space Optimizer lever-loop Databricks Job run, including the Phase E real-run pilot that gates the burn-down-to-merge roadmap.
 
 ## Required Inputs
@@ -230,6 +238,54 @@ If any field is missing, classify the run as `DEGRADED_TRACE_CONTRACT` unless th
 - Convergence reason.
 - Unresolved qid buckets and next suggested action.
 
+### Lever-Loop Mechanics Health
+
+Run this section every analysis. It surfaces failure modes that look
+like generic "MERGE_GATE_GAP" in the verdict but actually point at a
+specific lever-loop policy. The signals come from
+`tools.lever_loop_stdout_parser.parse_lever_loop_stdout(...)`; if the
+bundle's `gso_postmortem_bundle/` is present, the same signals come
+from the typed per-stage capture instead of stdout grepping.
+
+- **Acceptance target-blindness check.** For each accepted AG, assert
+  `target_fixed_qids ≠ ∅` OR `thresholds_met=True`. Any acceptance
+  with `target_fixed_qids=()` and unmet thresholds → emit
+  `ACCEPTANCE_TARGET_BLIND` finding.
+- **No-causal-applyable detection.** For each AG, count proposals
+  with `rca_id=parent_ag.rca_id` that were dropped by `blast_radius`,
+  `rca_groundedness`, or applyability gates. If non-zero AND any
+  non-RCA proposal was applied → emit
+  `CAUSAL_PATCH_BLOCKED_NONCAUSAL_APPLIED`.
+- **`patch_cap` RCA-blindness.** Inspect each iteration's
+  `PATCH SURVIVAL` block (or `06_safety_gates/output.json` under
+  Phase H). If a proposal with `rca_id≠None` was dropped at
+  `patch_cap` (`reason=lower_causal_rank`) while a sibling with
+  `rca=None` was selected (`patch_cap_selected`) → emit
+  `PATCH_CAP_RCA_BLIND_RANKING`.
+- **Blast-radius lever distribution.** Group `blast_radius` drops by
+  `patch_type`. If non-semantic levers
+  (`update_column_description`, `add_column_synonym`,
+  `add_metric_view_instruction`, `add_table_instruction`,
+  `update_table_description`) appear in the drop set → emit
+  `BLAST_RADIUS_OVERDROP_ON_NONSEMANTIC`.
+- **Strategist coverage.** Count strategist-emitted AGs per iteration
+  vs `len(hard_clusters)`. If less than one AG per cluster → emit
+  `STRATEGIST_SINGLE_AG_GAP`.
+- **Diagnostic-AG fallback rate.** Count proposals from AGs whose
+  `rca_id=None`. If high (>0 in any iteration) → emit
+  `DIAGNOSTIC_AG_RCA_INHERITANCE_GAP`.
+- **Incidental resolution detection.** For each iteration where
+  global accuracy improved, list QIDs that flipped from fail to
+  pass. Compare to that iteration's `target_fixed_qids`. Any flip
+  not in `target_fixed_qids` is annotated as `INCIDENTAL_RESOLUTION`
+  (informational; this is the trigger for the
+  `ACCEPTANCE_TARGET_BLIND` rule above).
+- **Instruction propagation completeness.** Where applied
+  `patch_type ∈ {add_*_instruction, add_example_sql}`, verify the
+  next iteration's Genie SQL for the targeted QID reflects the
+  instruction. Mismatch → emit `INSTRUCTION_NOT_HONORED_BY_GENIE`
+  (informational; not optimizer-fixable).
+
 ### MLflow Trace Health
 
 - Experiment ID resolved.
@@ -297,6 +353,33 @@ Classify the primary failure as one of:
 - `CONVERGENCE_OR_PLATEAU_GAP`
 - `MODEL_CEILING`
 - `UNKNOWN_NEEDS_MORE_EVIDENCE`
+- `ACCEPTANCE_TARGET_BLIND` — an AG was accepted via the
+  attribution-drift branch (`accepted_with_attribution_drift`) while
+  thresholds were unmet and the named target qid stayed hard.
+  Resolved by enabling `GSO_TARGET_AWARE_ACCEPTANCE`.
+- `CAUSAL_PATCH_BLOCKED_NONCAUSAL_APPLIED` — every RCA-matched
+  proposal in an AG was dropped upstream while non-causal proposals
+  were applied. Resolved by enabling `GSO_NO_CAUSAL_APPLYABLE_HALT`.
+- `PATCH_CAP_RCA_BLIND_RANKING` — `patch_cap` selected a proposal
+  with `rca_id=None` over a sibling with `rca_id≠None` at equal
+  relevance. Resolved by enabling `GSO_RCA_AWARE_PATCH_CAP`.
+- `BLAST_RADIUS_OVERDROP_ON_NONSEMANTIC` — non-semantic patches
+  (column descriptions, synonyms, instructions) dropped at the
+  blast-radius gate. Resolved by enabling
+  `GSO_LEVER_AWARE_BLAST_RADIUS`.
+- `STRATEGIST_SINGLE_AG_GAP` — strategist emitted one AG when
+  multiple hard clusters needed coverage. Tracked but not
+  flag-resolved; addressed by Tier-3 strategist multi-AG work.
+- `DIAGNOSTIC_AG_RCA_INHERITANCE_GAP` — diagnostic AG materialized
+  for a known cluster did not inherit the cluster's `rca_id`,
+  causing rca_groundedness drops. Resolved by Task F of the
+  optimizer plan.
+- `INCIDENTAL_RESOLUTION` — informational; a QID flipped from fail
+  to pass without being in any AG's `target_qids`. By itself benign;
+  becomes diagnostic when combined with `ACCEPTANCE_TARGET_BLIND`.
+- `INSTRUCTION_NOT_HONORED_BY_GENIE` — informational; Genie SQL did
+  not reflect an applied instruction patch. Not optimizer-fixable;
+  surfaces a Genie-side issue.
 
 ### Phase E specific (use only when `phase=E`)
 
