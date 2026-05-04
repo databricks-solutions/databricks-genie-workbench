@@ -16608,7 +16608,19 @@ def _run_lever_loop(
                 rca_id_by_cluster=_iter_rca_id_by_cluster,
                 cluster_root_cause_by_id=_cluster_root_cause_by_id,
             )
-            _applied_set = _app_stage.apply(_stage_ctx_application, _app_inp)
+            # Phase F+H Commit B14: wrap F7 with stage_io_capture decorator.
+            # Replay-byte-stable because wrap_with_io_capture returns out
+            # unchanged and the MLflow log_text calls are no-ops while
+            # _stage_ctx_application.mlflow_anchor_run_id is None (Phase C
+            # Commit 17 wires the anchor).
+            from genie_space_optimizer.optimization.stage_io_capture import (
+                wrap_with_io_capture as _wrap_with_io_capture_a4,
+            )
+            _app_wrapped = _wrap_with_io_capture_a4(
+                execute=_app_stage.execute,
+                stage_key="applied_patches",
+            )
+            _applied_set = _app_wrapped(_stage_ctx_application, _app_inp)
             # _applied_set.applied is tuple[AppliedPatch, ...]; available
             # for downstream stages (F8 acceptance, F9 learning) when
             # those wire-ups land.
