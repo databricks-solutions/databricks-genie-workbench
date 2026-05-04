@@ -19095,12 +19095,21 @@ def _run_lever_loop(
                 artifact_index_path=_phase_h_artifact_index_path,
                 iterations=_phase_h_iterations_completed,
             ))
-        except Exception:
+        except Exception as _phase_h_exc:
+            from genie_space_optimizer.optimization.run_analysis_contract import (
+                bundle_assembly_failed_marker as _bundle_assembly_failed_marker,
+            )
             logger.warning(
                 "Phase H bundle assembly failed; postmortem will fall "
                 "back to legacy phase artifacts",
                 exc_info=True,
             )
+            print(_bundle_assembly_failed_marker(
+                optimization_run_id=run_id,
+                parent_bundle_run_id=_phase_h_anchor_run_id,
+                error_type=type(_phase_h_exc).__name__,
+                error_message=str(_phase_h_exc),
+            ))
 
     _loop_out_base = {
         "scores": best_scores,

@@ -305,3 +305,29 @@ def finalize_exit_manifest(
         "promoted_to_champion": bool(promoted_to_champion),
     }
     return json.dumps(payload, default=str)
+
+
+def bundle_assembly_failed_marker(
+    *,
+    optimization_run_id: str,
+    parent_bundle_run_id: str | None,
+    error_type: str,
+    error_message: str,
+) -> str:
+    """Stable stdout marker emitted when Phase H ``gso_postmortem_bundle``
+    assembly fails. The postmortem skill (``gso-postmortem``) and
+    ``mlflow_audit`` recognize it as authoritative evidence that a
+    Phase H run was intended but the bundle did not land.
+
+    Parsed by ``tools.marker_parser`` alongside ``GSO_RUN_MANIFEST_V1``
+    and ``GSO_ARTIFACT_INDEX_V1``.
+    """
+    payload = {
+        "optimization_run_id": str(optimization_run_id),
+        "parent_bundle_run_id": (
+            str(parent_bundle_run_id) if parent_bundle_run_id else None
+        ),
+        "error_type": str(error_type),
+        "error_message": str(error_message)[:2000],
+    }
+    return "GSO_BUNDLE_ASSEMBLY_FAILED_V1 " + json.dumps(payload, sort_keys=True)
