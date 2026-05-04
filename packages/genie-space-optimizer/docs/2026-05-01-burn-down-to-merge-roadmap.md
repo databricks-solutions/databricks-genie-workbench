@@ -135,10 +135,10 @@ Phase E.1 turns that process into the formal **GSO Run Output Contract**:
 | **E.0** | **MLflow artifact integrity audit + persistence fixes** | Mostly | 0 (replay-only) + 1 backfill smoke | ~2–3 days | pre-merge prerequisite for E |
 | E | Final integration + contract-gate flip + merge | No | 1 | ~1 day | merge point |
 | F | Stage-aligned `harness.py` modularization (9 stage modules) | Yes | 0 | ~10–14 days | post-merge follow-up |
-| G | Per-stage typed `StageInput` / `StageOutput` contract hardening | Yes | 0 | ~7–10 days | post-merge architecture follow-up |
+| G | Stage Protocol + registry + RunEvaluationKwargs (G-lite) | Yes | 0 | ~1–2 days | post-merge architecture follow-up |
 | **H** | **GSO Run Output Contract — process-first transcript + per-stage MLflow bundle (final unification)** | Yes | 0 | ~5–7 days | post-merge unification |
 | | **Pre-merge total** | | **10–11 runs (~20–22 hrs, 9 already spent)** | **~1 week remaining** | |
-| | **Post-merge follow-up (F → G → H)** | | 0 | ~3–5 weeks | |
+| | **Post-merge follow-up (F → G → H)** | | 0 | ~2–3.5 weeks | |
 
 ## Why this sequencing
 
@@ -602,36 +602,69 @@ for iter_num in range(1, max_iterations + 1):
 
 ---
 
-## Phase G — Per-stage typed `StageInput` / `StageOutput` contract hardening
+## Phase G — Stage Protocol + registry + RunEvaluationKwargs (G-lite)
 
-**Why after Phase F:** Phase F gives every stage module a single `execute(...)` entry point with a stage-shaped input and output. Phase G freezes those shapes as typed dataclasses, declares the `StageHandler` Protocol that every module conforms to, and flips the contract gate into strict typing. This is the first point where strong typing is both safe (replay-gated) and useful (one freeze per module instead of one giant API redesign).
+**Why after Phase F:** Phase F gives every stage module a typed
+`StageInput` / `StageOutput` and a single named-verb entry point.
+Phase G in its **lite** form (the original full-freeze + mypy-strict
+scope was ruled out after a cost/benefit review) adds three small
+contract surfaces that Phase H's per-stage I/O capture builds on:
 
-**What ships:**
+1. `@runtime_checkable` on `StageHandler` so conformance can be
+   asserted via `isinstance(module, StageHandler)`.
+2. A uniform `execute` callable on every stage module (alias of the
+   named verb).
+3. A `stages/_registry.py` exposing `STAGES: tuple[StageEntry, ...]`
+   in canonical 9-stage process order — the iteration target Phase H
+   wraps with its capture decorator.
+4. A `RunEvaluationKwargs` `TypedDict` closing the F1 weak point
+   (`eval_kwargs: dict[str, Any]`).
+5. A conformance test pinning every stage module's `STAGE_KEY` and
+   Protocol satisfaction.
+6. A smoke test pinning F8's `ag_outcome.py` / `post_eval.py`
+   deletions.
 
-- `stages/__init__.py` exports a `StageHandler[StageInputT, StageOutputT]` Protocol with `stage_key: ClassVar[str]`, `decision_producer: ClassVar`, and `execute(ctx, inp) -> out`.
-- Every stage module's `StageInput` and `StageOutput` dataclass marked `@dataclass(frozen=True)` with `slots=True`.
-- A `StageContext` typed dataclass replacing today's loose `ctx: dict` plumbing — owns run id, iteration, MLflow client, journey emit hook, decision emit hook, and feature flags.
-- Per-module type-checking ratcheted in: `mypy --strict` clean per stage module, then per import boundary, then `harness.py` orchestration spine.
-- Explicit typed objects for recurring concepts:
-  - `LoopContext` — run IDs, space IDs, catalog/schema, warehouse, apply mode, lever set, feature flags.
-  - `IterationState` — iteration number, baseline/candidate accuracy, hard qids, cluster assignments, terminal state.
-  - `EvaluationResult`, `RcaEvidence`, `ClusterFindings`, `ActionGroupSlate`, `ProposalSlate`, `GateOutcome`, `AppliedPatchSet`, `AgOutcome`, `LearningUpdate` — one StageOutput dataclass per F-plan.
-  - `OptimizationTrace`, `DecisionRecord`, `JourneyLedger`, `ScoreboardSnapshot`, `OperatorTranscript` — already typed; Phase G hardens fields and adds Protocol conformance.
-- Cross-stage `StageHandler` Protocol conformance tests proving every module exports `stage_key`, `decision_producer`, and `execute` with compatible typing.
-- Compatibility adapters only where needed to keep persisted Delta payloads and replay fixtures byte-stable.
+**Why "lite" instead of full freeze + mypy strict:** the F-plan
+replay byte-stability tests already catch behavioral regressions
+in stage modules. Adding `frozen=True, slots=True` to every stage
+Input/Output dataclass introduces real breakage risk (subclassing,
+pickling, mutation sites the audit missed) for marginal contract-
+safety gain. Adding `mypy --strict` ratcheting introduces a
+permanent maintenance tax (false positives, `# type: ignore`
+proliferation) on top of a codebase that is fundamentally
+probabilistic (LLM-driven RCA, judges, ASI). Both are deferred
+until a real bug motivates them. If a specific stage shows a
+mutation bug, freeze that one stage in a focused follow-up plan.
 
-**Validation strategy:**
+**What ships:** see [`2026-05-04-phase-g-stage-protocol-and-registry-plan.md`](./2026-05-04-phase-g-stage-protocol-and-registry-plan.md).
 
-- Each module gets its own typed-contract PR after its F-plan extraction has landed.
-- Unit tests prove typed dataclass constructors reject malformed inputs and preserve happy-path shape.
-- Replay tests continue to assert journey, decision, scoreboard, and transcript behavior is byte-stable.
-- A new Protocol conformance test asserts every `stages/<stage>.py` module satisfies `StageHandler` and registers under the correct `stage_key`.
+**Validation strategy:** every existing F-plan replay byte-stability
+test continues to pass (G-lite is annotation-only at the harness
+call sites). New unit tests cover Protocol conformance, registry
+shape and lookup, RunEvaluationKwargs TypedDict shape, and F8
+no-resurrection.
 
-**Exit criterion:** the nine stage modules expose typed public APIs; `harness.py` orchestrates typed contracts rather than building and mutating open-ended dictionaries at every boundary; LLM-assisted edits can target one stage module plus its contract tests without loading the whole lever-loop harness into context. `mypy --strict` clean for every `stages/*.py` module.
+**Exit criterion:** the registry is importable from
+`stages/__init__.py`; every stage module satisfies the
+runtime-checkable `StageHandler` Protocol; the F1 weak point
+(`eval_kwargs: dict[str, Any]`) is replaced by `RunEvaluationKwargs`
+at all three sites; F8 deletions stay deleted.
 
-**Real-Genie runs:** 0. Replay + unit + type checks are the gates.
+**Real-Genie runs:** 0. Replay + unit tests are the only gates.
 
-**Detailed plan:** to be written as `2026-05-XX-phase-g-typed-stage-contracts-plan.md` after Phase F's module boundaries are real.
+**Detailed plan:** [`2026-05-04-phase-g-stage-protocol-and-registry-plan.md`](./2026-05-04-phase-g-stage-protocol-and-registry-plan.md).
+
+**Calendar:** ~1-2 days.
+
+**What's out of scope (explicitly deferred):**
+
+- Frozen + slots on stage Input/Output dataclasses.
+- `mypy --strict` per-stage ratcheting.
+- `LoopContext` and `IterationState` typed dataclasses.
+- Per-stage `to_dict()` / `from_dict()` round-trip tests.
+
+If any of these is later motivated by a real bug, file a focused
+follow-up plan rather than re-opening the full Phase G scope.
 
 ---
 
@@ -737,7 +770,7 @@ After Phase H lands, this process is rendered to humans (`operator_transcript.md
 | **Pre-merge total** | **10–11** | **~22–24 hr (~22 hr already spent)** |
 | **Post-merge follow-up (F → G → H)** | **0** | **0** |
 
-Calendar estimate from the current point: ~1 additional week pre-merge (E.0 + E pilot) with journey and decision gates live at the end, then ~2–3 weeks of small post-merge PRs for Phase F (one per stage module), ~1.5 weeks for Phase G typed-contract hardening, and ~1 week for Phase H to wire per-stage I/O capture and ship the parent-run `gso_postmortem_bundle/`.
+Calendar estimate from the current point: ~1 additional week pre-merge (E.0 + E pilot) with journey and decision gates live at the end, then ~2–3 weeks of small post-merge PRs for Phase F (one per stage module), ~1-2 days for Phase G-lite (Stage Protocol + registry + RunEvaluationKwargs), and ~1 week for Phase H to wire per-stage I/O capture and ship the parent-run `gso_postmortem_bundle/`.
 
 ---
 
@@ -804,7 +837,7 @@ E.0 is replay-only during implementation. The next real-Genie cycle is the **Pha
 | [`2026-05-04-phase-f7-application-stage-extraction-plan.md`](./2026-05-04-phase-f7-application-stage-extraction-plan.md) | Ready | F7 (application) |
 | [`2026-05-04-phase-f8-acceptance-stage-extraction-plan.md`](./2026-05-04-phase-f8-acceptance-stage-extraction-plan.md) | Ready | F8 (acceptance) |
 | [`2026-05-04-phase-f9-learning-stage-extraction-plan.md`](./2026-05-04-phase-f9-learning-stage-extraction-plan.md) | Ready | F9 (learning) |
-| `2026-05-XX-phase-g-typed-stage-contracts-plan.md` | To be written | G |
+| [`2026-05-04-phase-g-stage-protocol-and-registry-plan.md`](./2026-05-04-phase-g-stage-protocol-and-registry-plan.md) | Implemented (G-lite scope) | G |
 | [`2026-05-03-gso-run-output-contract-plan.md`](./2026-05-03-gso-run-output-contract-plan.md) | Ready (final unification) | H |
 | [`skills/gso-lever-loop-run-analysis/SKILL.md`](./skills/gso-lever-loop-run-analysis/SKILL.md) | Ready | B/C/D/E run analysis |
 | [`skills/gso-replay-cycle-intake/SKILL.md`](./skills/gso-replay-cycle-intake/SKILL.md) | Ready | A burn-down ledger intake |
