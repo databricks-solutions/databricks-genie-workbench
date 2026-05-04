@@ -17119,6 +17119,134 @@ def _run_lever_loop(
         # drift diagnostic.
         _prev_iter_pre_accept_baseline = _baseline_at_start_of_this_iter
 
+        # Phase F+H A5 (v2.1): F8 acceptance — post-stage observability
+        # with SELECTIVE atomic dedup at the 2 post-gate callsites + the
+        # post-eval block. The closure _phase_b_emit_ag_outcome_record
+        # STAYS inline because its 3 pre-gate callsites
+        # ("skipped_dead_on_arrival", "skipped_pre_ag_snapshot_failed",
+        # "skipped_no_applied_patches") are pre-gate filtering paths that
+        # bypass decide_control_plane_acceptance entirely — F8.decide()
+        # cannot reproduce them.
+        #
+        # decide_control_plane_acceptance is called once per AG INSIDE
+        # _run_gate_checks (verified PURE — zero mlflow./spark./global
+        # hits in control_plane.py). F8.decide() re-calls the same gate
+        # per AG with the same inputs, derives the same reason_code, and
+        # emits ACCEPTANCE_DECIDED + QID_RESOLUTION via stages/
+        # acceptance.py:decide.
+        #
+        # Why this anchor (best_accuracy drift trap):
+        # - At this point best_accuracy is still the pre-acceptance
+        #   baseline that _run_gate_checks consumed; best_accuracy is
+        #   only mutated later inside the accept branch.
+        # - AGs that hit the 3 pre-gate filters have already `continue`'d.
+        #   The in-scope `ag` is the SURVIVOR.
+        # - inp.ags=(ag,) captures the single-AG slate exactly (one AG
+        #   per outer iteration per the strategist invariant).
+        #
+        # Replaces:
+        # - 2 post-gate callsites further below: rolled_back (inside
+        #   the gate-failed branch) and accepted (after the accept
+        #   branch's _outcome_for_journey computation).
+        # - _post_eval_resolution_records block at iteration-end.
+        # Does NOT replace:
+        # - closure _phase_b_emit_ag_outcome_record (definition + 3
+        #   pre-gate callsites STAY inline).
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                is_strict_mode as _phase_b_strict_mode,
+            )
+            from genie_space_optimizer.optimization.stages import (
+                StageContext as _StageCtx,
+            )
+            from genie_space_optimizer.optimization.stages import (
+                acceptance as _accept_stage,
+            )
+
+            _stage_ctx_a5 = _StageCtx(
+                run_id=str(run_id),
+                iteration=int(iteration_counter),
+                space_id=str(space_id),
+                domain=str(domain),
+                catalog=str(catalog),
+                schema=str(schema),
+                apply_mode=str(apply_mode),
+                journey_emit=_journey_emit,
+                decision_emit=_decision_emit,
+                mlflow_anchor_run_id=_phase_h_anchor_run_id,  # C17 v2 — activates Phase B capture
+                feature_flags={},
+            )
+
+            # Group apply_log entries by AG. Always source from apply_log
+            # (no _applied_set check) — apply_log is the iteration-local
+            # bound earlier in this iteration; _applied_set may not be
+            # bound if A4 errored upstream.
+            _accept_applied_by_ag: dict[str, list[dict]] = {}
+            for _entry in (apply_log.get("applied") or []):
+                _patch = _entry.get("patch") or {}
+                _entry_ag = str(_patch.get("ag_id") or "")
+                if _entry_ag:
+                    _accept_applied_by_ag.setdefault(_entry_ag, []).append(
+                        _entry
+                    )
+            _accept_applied_by_ag_t: dict[str, tuple] = {
+                k: tuple(v) for k, v in _accept_applied_by_ag.items()
+            }
+
+            # Source candidate_accuracy + candidate_pre_arbiter_accuracy
+            # from gate_result (the values _run_gate_checks consumed
+            # internally). Recomputing from full_result_1 is forbidden —
+            # it would diverge.
+            _accept_candidate_accuracy = float(
+                gate_result.get("full_accuracy") or 0.0
+            )
+            _accept_candidate_pre_arbiter = (
+                float(gate_result.get("full_pre_arbiter_accuracy"))
+                if gate_result.get("full_pre_arbiter_accuracy") is not None
+                else float(full_pre_arbiter_accuracy or 0.0)
+            )
+            # post_rows: prefer gate_result.full_result.rows (what the
+            # gate actually consumed); fall back to full_result_1 only
+            # when the gate did not surface it.
+            _accept_gate_full_result = (
+                gate_result.get("full_result") or {}
+            )
+            _accept_post_rows = (
+                _accept_gate_full_result.get("rows")
+                or (full_result_1 or {}).get("rows")
+                or []
+            )
+
+            _accept_inp = _accept_stage.AcceptanceInput(
+                applied_entries_by_ag=_accept_applied_by_ag_t,
+                ags=(ag,),  # single-AG slate
+                baseline_accuracy=float(best_accuracy),
+                candidate_accuracy=_accept_candidate_accuracy,
+                baseline_pre_arbiter_accuracy=float(_best_pre_arbiter),
+                candidate_pre_arbiter_accuracy=_accept_candidate_pre_arbiter,
+                pre_rows=tuple(_baseline_rows_for_control_plane or []),
+                post_rows=tuple(_accept_post_rows),
+                protected_qids=(),
+                min_gain_pp=float(MIN_POST_ARBITER_GAIN_PP),
+                min_pre_arbiter_gain_pp=2.0,
+                rca_id_by_cluster=dict(_iter_rca_id_by_cluster),
+                cluster_by_qid={},
+            )
+            _ag_outcome = _accept_stage.decide(_stage_ctx_a5, _accept_inp)
+        except Exception:
+            _iter_producer_exceptions["ag_outcome"] = (
+                _iter_producer_exceptions.get("ag_outcome", 0) + 1
+            )
+            _phase_b_producer_exceptions["ag_outcome"] = (
+                _phase_b_producer_exceptions.get("ag_outcome", 0) + 1
+            )
+            logger.debug(
+                "Phase F+H A5 v2.1: acceptance stage failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
         # ── 3B.7: Accept or rollback ────────────────────────────────
         _target_objects = [
             p.get("target_object", "") for p in patches if p.get("target_object")
@@ -17141,7 +17269,7 @@ def _run_lever_loop(
                     "Phase A: AG-outcome (rolled_back) emit/capture failed (non-fatal)",
                     exc_info=True,
                 )
-            _phase_b_emit_ag_outcome_record(ag, "rolled_back")
+            # A5 v2.1: F8 emits ACCEPTANCE_DECIDED above.
             _render_current_journey()
             rollback(apply_log, w, space_id, metadata_snapshot)
             # Task 7 — verify the Genie Space actually returned to its
@@ -17558,7 +17686,10 @@ def _run_lever_loop(
                 "Phase A: ag_outcome capture (accepted) failed (non-fatal)",
                 exc_info=True,
             )
-        _phase_b_emit_ag_outcome_record(ag, _outcome_for_journey)
+        # Phase F+H A5 v2.1: F8.decide() (above, pre-3B.7) emits the
+        # ACCEPTANCE_DECIDED record for accepted /
+        # accepted_with_regression_debt. The closure callsite formerly
+        # here is deleted to prevent double-emission.
 
         # Phase C Task 3 — ObservedEffect per applied patch in this AG.
         # Best-effort with defensive defaults: empty pre/post passing
@@ -17994,41 +18125,11 @@ def _run_lever_loop(
                 exc_info=True,
             )
 
-        # Phase B observability follow-up — emit QID_RESOLUTION records
-        # (one per qid) at post-eval. Held-pass qids carry no rca_id
-        # (handled by the POST_EVAL_HOLD_PASS rca-exempt cross-check).
-        # Other transitions carry the rca_id from the qid's home cluster.
-        # Wrapped in locals()-guard because the post-eval try block above
-        # may have failed before defining the inner vars.
-        try:
-            from genie_space_optimizer.optimization.decision_emitters import (
-                post_eval_resolution_records as _post_eval_resolution_records,
-                is_strict_mode as _phase_b_strict_mode,
-            )
-
-            _qid_records = _post_eval_resolution_records(
-                run_id=run_id,
-                iteration=iteration_counter,
-                eval_qids=locals().get("_post_eval_eval_qids") or [],
-                prior_passing_qids=locals().get("_prev_passing_qids") or set(),
-                post_passing_qids=locals().get("_post_eval_is_passing") or [],
-                cluster_by_qid=_iter_cluster_by_qid,
-                rca_id_by_cluster=_iter_rca_id_by_cluster,
-            )
-            _current_iter_inputs.setdefault("decision_records", []).extend(
-                [r.to_dict() for r in _qid_records]
-            )
-        except Exception:
-            _iter_producer_exceptions["post_eval_resolution"] += 1
-            _phase_b_producer_exceptions["post_eval_resolution"] = (
-                _phase_b_producer_exceptions.get("post_eval_resolution", 0) + 1
-            )
-            logger.debug(
-                "Phase B: post_eval_resolution_records failed (non-fatal)",
-                exc_info=True,
-            )
-            if _phase_b_strict_mode():
-                raise
+        # Phase F+H A5 v2.1: F8.decide() (above, pre-3B.7) emits the
+        # QID_RESOLUTION records via stages/acceptance.py:decide →
+        # post_eval_resolution_records (acceptance.py:230-240). The
+        # harness inline post_eval_resolution_records emit block
+        # formerly here is deleted to prevent double-emission.
 
         # Phase A — note: the iteration snapshot was appended at
         # iteration begin via ``begin_iteration_capture``. No late append

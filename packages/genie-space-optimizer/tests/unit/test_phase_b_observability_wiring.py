@@ -58,30 +58,57 @@ def test_harness_wires_strategist_ag_records_producer() -> None:
 
 
 def test_harness_wires_ag_outcome_record_producer() -> None:
-    """The closure ``_phase_b_emit_ag_outcome_record`` must be invoked at
-    every ag_outcomes capture site (5 sites: dead_on_arrival,
-    pre_ag_snapshot_failed, no_applied_patches, rolled_back, accepted)."""
+    """Phase F+H A5 v2.1 — selective dedup. The closure
+    ``_phase_b_emit_ag_outcome_record`` STAYS inline for the 3 pre-gate
+    outcome strings (``skipped_*``) because F8.decide() iterates AGs
+    that REACHED the gate; pre-gate `continue` paths bypass the gate
+    entirely and F8 cannot reproduce them. The 2 post-gate callsites
+    (``rolled_back``, ``accepted`` / ``accepted_with_regression_debt``)
+    are deleted in v2.1 — F8 emits ACCEPTANCE_DECIDED via
+    ``stages.acceptance.decide`` at the post-gate anchor instead.
+    """
     src = _read_harness_source()
     assert "_phase_b_emit_ag_outcome_record" in src
-    # Pin all 5 outcome strings flow through the closure.
+    # The 3 pre-gate outcome strings still flow through the closure.
     for outcome in (
         "skipped_dead_on_arrival",
         "skipped_pre_ag_snapshot_failed",
         "skipped_no_applied_patches",
-        "rolled_back",
     ):
         assert (
             f'_phase_b_emit_ag_outcome_record(ag, "{outcome}")' in src
-        ), f"missing ACCEPTANCE_DECIDED wiring for outcome={outcome}"
-    # The "accepted"/"accepted_with_regression_debt" path uses a variable
-    # ``_outcome_for_journey`` rather than a literal — pin that anchor.
-    assert "_phase_b_emit_ag_outcome_record(ag, _outcome_for_journey)" in src
+        ), f"missing pre-gate ACCEPTANCE_DECIDED wiring for outcome={outcome}"
+    # The 2 post-gate sites must be GONE (deleted by A5 v2.1 selective
+    # dedup; F8 emits via stages.acceptance.decide instead).
+    assert (
+        '_phase_b_emit_ag_outcome_record(ag, "rolled_back")' not in src
+    ), "post-gate rolled_back closure call must be deleted by A5 v2.1"
+    assert (
+        "_phase_b_emit_ag_outcome_record(ag, _outcome_for_journey)" not in src
+    ), "post-gate accepted closure call must be deleted by A5 v2.1"
+    # F8 stage call is wired at the post-gate anchor.
+    assert "from genie_space_optimizer.optimization.stages import" in src
+    assert "acceptance as _accept_stage" in src
+    assert "_accept_stage.decide(" in src
 
 
 def test_harness_wires_post_eval_resolution_producer() -> None:
+    """Phase F+H A5 v2.1 — the harness-inline post_eval_resolution_records
+    block is DELETED. F8.decide() emits QID_RESOLUTION via
+    ``stages.acceptance.decide`` (which calls
+    ``post_eval_resolution_records`` internally). Pin the F8 stage
+    call as the new active producer wiring."""
     src = _read_harness_source()
-    assert "post_eval_resolution_records as _post_eval_resolution_records" in src
-    assert "_post_eval_resolution_records(" in src
+    # Pre-A5: the inline import block was active. Post-A5 v2.1: it is
+    # deleted; only doc-comment references remain.
+    assert (
+        "post_eval_resolution_records as _post_eval_resolution_records"
+        not in src
+    ), "harness inline post_eval_resolution_records import must be deleted by A5 v2.1"
+    # F8 stage call wired at the post-gate anchor; QID_RESOLUTION emits
+    # from stages/acceptance.py:230-240 transitively.
+    assert "acceptance as _accept_stage" in src
+    assert "_accept_stage.decide(" in src
 
 
 # ---------------------------------------------------------------------------
