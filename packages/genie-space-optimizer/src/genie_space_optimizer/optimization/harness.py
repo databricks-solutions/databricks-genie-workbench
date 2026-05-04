@@ -15105,7 +15105,19 @@ def _run_lever_loop(
                     k: tuple(v) for k, v in (_ag_alts_by_id or {}).items()
                 },
             )
-            _ag_slate = _ags_stage.select(_stage_ctx_a2, _ags_inp)
+            # Phase F+H Commit B11: wrap F4 with stage_io_capture
+            # decorator. Replay-byte-stable — wrap_with_io_capture
+            # returns the stage output unchanged; MLflow log_text
+            # calls are no-ops while mlflow_anchor_run_id is None
+            # (C17 wires the anchor on real runs).
+            from genie_space_optimizer.optimization.stage_io_capture import (
+                wrap_with_io_capture as _wrap_with_io_capture_a2,
+            )
+            _ags_wrapped = _wrap_with_io_capture_a2(
+                execute=_ags_stage.execute,
+                stage_key="action_group_selection",
+            )
+            _ag_slate = _ags_wrapped(_stage_ctx_a2, _ags_inp)
             # NOTE: F4 stage emits the same records the inline producer
             # did, but ActionGroupSlate does NOT expose them as a tuple.
             # The pre-A2 harness incremented _phase_b_target_qids_missing_
