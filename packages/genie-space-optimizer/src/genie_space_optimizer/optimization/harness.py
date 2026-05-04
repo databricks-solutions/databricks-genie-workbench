@@ -10919,6 +10919,39 @@ def _run_lever_loop(
     except Exception:
         logger.debug("GSO run analysis MLflow tags skipped", exc_info=True)
 
+    # Phase F+H C17 (v2): capture the parent MLflow run id so the
+    # capture decorator (Phase B wraps at A2/A3/A6 sites) routes its
+    # log_text calls to the right run. Stays None when no MLflow
+    # active_run is present (replay mode); the capture decorator
+    # noop-skips in that case (stage_io_capture.py:118-128).
+    _phase_h_anchor_run_id: str | None = None
+    try:
+        import mlflow as _mlflow_phase_h  # type: ignore[import-not-found]
+        _active_phase_h = _mlflow_phase_h.active_run()
+        if _active_phase_h is not None:
+            _phase_h_anchor_run_id = _active_phase_h.info.run_id
+    except Exception:
+        logger.debug(
+            "Phase F+H C17 v2: parent run id capture failed (non-fatal)",
+            exc_info=True,
+        )
+
+    # Phase F+H C17 (v2): bundle-input accumulators for C18's
+    # termination-time bundle assembly. Populated minimally on this
+    # commit; per-iteration trace population is deferred (C18 will
+    # render whatever is available — empty iteration transcripts are
+    # acceptable for the MVP bundle).
+    from typing import Any as _AnyPhaseH
+    _baseline_for_summary: dict[str, _AnyPhaseH] = {
+        "overall_accuracy": float(prev_accuracy),
+        "all_judge_pass_rate": 0.0,
+        "hard_failures": 0,
+        "soft_signals": 0,
+    }
+    _iter_traces: dict[int, _AnyPhaseH] = {}
+    _iter_summaries: dict[int, dict[str, _AnyPhaseH]] = {}
+    _hard_failures_for_overview: list[tuple[str, str, str]] = []
+
     resume_state = _resume_lever_loop(spark, run_id, catalog, schema)
     # S10 — ``start_lever`` is informational only: the loop below always
     # begins at Lever 1 and iterates the full ``levers`` sequence per
@@ -11935,7 +11968,7 @@ def _run_lever_loop(
                     apply_mode=str(apply_mode),
                     journey_emit=_journey_emit,
                     decision_emit=_decision_emit,
-                    mlflow_anchor_run_id=None,  # set by C17
+                    mlflow_anchor_run_id=_phase_h_anchor_run_id,  # C17 v2 — activates Phase B capture
                     feature_flags={},
                 )
 
@@ -15057,7 +15090,7 @@ def _run_lever_loop(
                 apply_mode=str(apply_mode),
                 journey_emit=_journey_emit,
                 decision_emit=_decision_emit,
-                mlflow_anchor_run_id=None,  # set by C17
+                mlflow_anchor_run_id=_phase_h_anchor_run_id,  # C17 v2 — activates Phase B capture
                 feature_flags={},
             )
             _ags_inp = _ags_stage.ActionGroupsInput(
@@ -15226,7 +15259,7 @@ def _run_lever_loop(
                 apply_mode=str(apply_mode),
                 journey_emit=_journey_emit,
                 decision_emit=_decision_emit,
-                mlflow_anchor_run_id=None,  # set by C17
+                mlflow_anchor_run_id=_phase_h_anchor_run_id,  # C17 v2 — activates Phase B capture
                 feature_flags={},
             )
             _cluster_root_cause_by_id = {
