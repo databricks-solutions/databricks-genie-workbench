@@ -15,7 +15,9 @@ def test_proposal_id_survives_update_column_description_conversion() -> None:
     }])
 
     assert len(patches) == 1
-    assert patches[0]["proposal_id"].startswith("AG1_COL1")
+    # P2: lever-qualified expanded ids (L{lever}:AG1_COL1#N) preserve
+    # parent identity via substring match on the unqualified parent id.
+    assert "AG1_COL1" in patches[0]["proposal_id"]
     assert patches[0]["source_proposal_id"] == "AG1_COL1"
     assert patches[0]["parent_proposal_id"] == "AG1_COL1"
     assert patches[0]["target_qids"] == ["q022"]
@@ -37,7 +39,8 @@ def test_proposal_id_survives_sql_snippet_conversion() -> None:
     }])
 
     assert len(patches) == 1
-    assert patches[0]["proposal_id"].startswith("AG1_SQL1")
+    # P2: see test above re: lever-qualified expanded ids.
+    assert "AG1_SQL1" in patches[0]["proposal_id"]
     assert patches[0]["source_proposal_id"] == "AG1_SQL1"
     assert patches[0]["parent_proposal_id"] == "AG1_SQL1"
     assert patches[0]["_grounding_target_qids"] == ["q022"]
@@ -88,8 +91,11 @@ def test_expanded_column_description_children_keep_parent_proposal_id() -> None:
 
     assert len(patches) >= 1
     assert {p["parent_proposal_id"] for p in patches} == {"AG1_COL1"}
-    assert all(p["proposal_id"].startswith("AG1_COL1#") for p in patches)
-    assert all(p["expanded_patch_id"].startswith("AG1_COL1#") for p in patches)
+    # P2: lever-qualified expanded ids contain the parent id as a
+    # substring (legacy format ``AG1_COL1#N`` or qualified
+    # ``L{lever}:AG1_COL1#N``).
+    assert all("AG1_COL1#" in p["proposal_id"] for p in patches)
+    assert all("AG1_COL1#" in p["expanded_patch_id"] for p in patches)
 
 
 def test_proposals_to_patches_preserves_risk_and_cluster_metadata() -> None:

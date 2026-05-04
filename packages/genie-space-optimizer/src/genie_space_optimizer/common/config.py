@@ -5313,6 +5313,22 @@ def regression_debt_invariant_enabled() -> bool:
     return _flag_default_on("GSO_REGRESSION_DEBT_INVARIANT")
 
 
+def lever_qualified_patch_ids_enabled() -> bool:
+    """When on, ``_stamp_expanded_patch_identity`` builds expanded
+    child ids as ``L{lever}:{parent_id}#{child_index}`` (e.g.
+    ``L1:P001#2``). When off, the legacy
+    ``{parent_id}#{child_index}`` format is preserved.
+
+    Required for Cycle 2 Task 3's DOA selected-proposal signature
+    to be injective: without lever qualification, two patches under
+    the same parent but different levers collide on the same id and
+    the DOA dedup ledger silently conflates them.
+
+    Default ON. Set ``GSO_LEVER_QUALIFIED_PATCH_IDS=0`` to disable.
+    """
+    return _flag_default_on("GSO_LEVER_QUALIFIED_PATCH_IDS")
+
+
 def no_causal_applyable_halt_enabled() -> bool:
     """Task B — when every RCA-grounded proposal in an AG is dropped
     by upstream gates, halt the AG with reason

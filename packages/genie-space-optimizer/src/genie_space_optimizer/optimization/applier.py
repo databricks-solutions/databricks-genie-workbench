@@ -2220,7 +2220,14 @@ def _stamp_expanded_patch_identity(
     *,
     child_index: int,
 ) -> dict:
-    """Stamp parent + expanded child identity onto a converted patch dict."""
+    """Stamp parent + expanded child identity onto a converted patch dict.
+
+    P2: when ``GSO_LEVER_QUALIFIED_PATCH_IDS`` is on, the expanded
+    child id is ``L{lever}:{parent_id}#{child_index}`` so two parents
+    with the same proposal_id but different levers produce distinct
+    expanded ids. ``parent_proposal_id`` stays unqualified for
+    cross-lever cluster lineage.
+    """
     parent_id = str(
         proposal.get("proposal_id")
         or proposal.get("id")
@@ -2230,7 +2237,21 @@ def _stamp_expanded_patch_identity(
     )
     if not parent_id:
         return patch
-    child_id = f"{parent_id}#{child_index}"
+
+    from genie_space_optimizer.common.config import (
+        lever_qualified_patch_ids_enabled,
+    )
+
+    lever = patch.get("lever")
+    if (
+        lever_qualified_patch_ids_enabled()
+        and lever is not None
+        and str(lever).strip() != ""
+    ):
+        child_id = f"L{int(lever)}:{parent_id}#{child_index}"
+    else:
+        child_id = f"{parent_id}#{child_index}"
+
     patch["parent_proposal_id"] = parent_id
     patch["source_proposal_id"] = parent_id
     patch["proposal_id"] = child_id
