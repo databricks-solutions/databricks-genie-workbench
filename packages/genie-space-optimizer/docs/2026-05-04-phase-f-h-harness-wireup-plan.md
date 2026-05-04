@@ -1,5 +1,15 @@
-# Phase F+H Harness Wire-up Implementation Plan
+# Phase F+H Harness Wire-up Implementation Plan (v1)
 
+> **⚠️ PARTIALLY SUPERSEDED BY v2 — read [`2026-05-04-phase-f-h-harness-wireup-plan-v2.md`](./2026-05-04-phase-f-h-harness-wireup-plan-v2.md).**
+>
+> Following the [audit findings](./2026-05-04-phase-f-h-wireup-audit-findings.md) Sections 4-6 and the executor's pre-A1 verification (terminal evidence; A1 reconciled), v2 was drafted to resolve all 8 audit action items. **The v1 plan stays valid for commits A1, A4, B9-B16, C19** (push-ready as drafted in v1). **For commits A2, A3, A5, A6, C17, C18 — use v2.** v2 also adds **Pre-Task 0.5** (pin the `_decision_emit` closure contract) and drops B9 + B13 as no-ops (F2 + F6 deferred to follow-up plans).
+>
+> **Executor sequencing:**
+> 1. Push v1's **Task 0** (pre-flight snapshot + byte-stability gate) — done already if `tests/replay/snapshots/before_f_h_wireup.json` exists.
+> 2. Push v1's **A1** (F3 clustering — verified push-ready by executor pre-A1 check; include the docstring update + defensive comment per executor's proposed text in terminal:973-1007).
+> 3. Push v1's **A4** (F7 application — verified CLEAR by audit Section 4 A4).
+> 4. **Switch to v2** for everything after A4: Pre-Task 0.5 → A2 v2 → A3 v2 → A5 v2 → A6 v2 → B10 → B11 → B12 → B14 → B15 → B16 → C17 v2 → C18 v2 → C19.
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Migrate the still-inline F2-F9 harness call sites to use their stage modules (Phase A — closes Phase F's deferred wire-up), then wrap every stage call with the `wrap_with_io_capture` decorator (Phase B — closes Phase H's deferred T12), then add data aggregation + bundle assembly + `GSO_ARTIFACT_INDEX_V1` emission at lever-loop termination (Phase C — closes Phase H's deferred T13). **Effective commit count: 17** (Phase A redrafted to 6 commits + 2 deferred per the citation-backed audit findings in [`2026-05-04-phase-f-h-wireup-audit-findings.md`](./2026-05-04-phase-f-h-wireup-audit-findings.md); Phase B retains 8 commits — but the F2 + F6 wraps are no-ops once F2 + F6 wire-ups are deferred, so 6 Phase B wraps fire effectively; Phase C retains 3 commits). Each replay-gated. **Zero regression** is the explicit goal — every commit runs the full pytest suite plus the per-stage replay byte-stability test.

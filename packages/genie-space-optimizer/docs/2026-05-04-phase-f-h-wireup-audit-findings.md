@@ -520,3 +520,166 @@ Plan §C19 creates `tests/integration/test_phase_h_bundle_populated.py`. Verifyi
 **Net assessment:** of the 17 redrafted commits, **only A4, B9-B16, and C19 are push-ready as drafted** (10 commits). The remaining **7 commits (A1, A2, A3, A5, A6, C17, C18) need plan patches** before they can be pushed without inviting another mid-flight stop. The redraft closed the worst of the original drift (no more invented fields raising TypeError), but inherited new drift in the form of unresolved `dir()` guards, undefined closure contracts, and unverified iteration-body local scope.
 
 **Recommended next step for the redraft author:** Section 4 + Section 6 action items 1-8 are a docs-only pass — no harness changes. ~60-90 minutes of harness reading + plan editing. The output is a self-contained, push-ready Phase A + C plan with no executor-side ambiguity.
+
+---
+
+## Section 7 — v2 redraft reconciliation (post-`<v2 plan SHA>`)
+
+**Status:** RESOLVED. The v2 redraft (`2026-05-04-phase-f-h-harness-wireup-plan-v2.md`) addresses all 8 action items from Sections 4 + 6 and reconciles the A1 discrepancy between this audit and the executor's pre-A1 verification.
+
+### 7.1 Action items 1-8 — resolution per item
+
+| # | Action item | v1 status | v2 resolution | Evidence in v2 |
+|---|---|---|---|---|
+| 1 | Pin `_decision_emit` / `_journey_emit` closure contract with concrete `harness.py:NNNN` citations | Plan note "introduce a thin closure"; contract undefined | **Pre-Task 0.5** introduces `_decision_emit` as a sibling closure to the existing `_journey_emit` at `harness.py:11998-12017`. Inserts the closure literal alongside `_journey_emit`. References the existing list-extend pattern at `harness.py:11877, 12244-12246, 12276, 12325, 12355, 12383, 14896, 15039, 16001, 16306, 16532, 17725, 17999`. | v2 §Pre-Task 0.5 |
+| 2 | Pre-locate iteration-body locals every commit references (`hard_qids`, `_ag_outcome`, `_lrn_update`, `_journey_events`, `_current_iter_inputs`) | `dir()` guards everywhere | Every v2 commit carries a "Verified iteration locals" table with each local's `harness.py:LINE` definition site (e.g. `_current_hard_qids` at `:11819-11821`; `_resolved` at `:11845`; `full_result_1` at `:10020`; `_best_pre_arbiter` at `:10149`; `MIN_POST_ARBITER_GAIN_PP` import at `:10114`). | v2 §A2/A3/A5/A6/C17 |
+| 3 | Replace every `dir()` guard with literal `harness.py:NNNN` reference | Forbidden by redraft constraints, but present | Zero `dir()` guards in v2. Where defensive scope handling is genuinely needed (e.g. F8 errored before F9), v2 uses idiomatic `try: x = local except NameError:` — a legal Python pattern that doesn't introspect runtime scope. | v2 §A6/C17/C18 |
+| 4 | Resolve A5/A6 purity gates for `decide_control_plane_acceptance` and `resolve_terminal_on_plateau` BEFORE authoring the commits | "STOP" pending purity check | **VERIFIED PURE.** `rg -n 'mlflow\.\|spark\.\|global ' control_plane.py` → zero matches. `rg -n 'mlflow\.\|spark\.\|global ' rca_terminal.py` → zero matches. Both gates pass; v2 unblocks A5 + A6 with re-run-this-grep pre-flight steps. | v2 §A5 Step 1, §A6 Step 1 |
+| 5 | Fix the `setdefault().__add__()` Python bug in A5 plan-snippet | Dict-mutation bug | Replaced with idiomatic `setdefault(..., []).append(...)` then immutable cast `{k: tuple(v) for k, v in dict.items()}`. | v2 §A5 Step 2 |
+| 6 | Update F3 docstring + adapter-level demoted-cluster combine in A1 | A1 marked NEEDS PLAN PATCH | **Reconciled with executor pre-A1 verification (terminal:927-1009).** `cluster_failures` never sets `demoted_reason` (zero hits in `optimizer.py`); `_split_by_demoted` always returns `(promoted=full, rejected=[])`. **A1 adapter as written in v1 is byte-stable; no combine-with-rejected fix needed.** Docstring update is still required and is now spelled out in v2 §A1 Step 4 with executor's proposed text. Defensive comment about the demoted invariant added per executor's suggestion. | v2 §A1 Steps 3-4 |
+| 7 | Pre-locate PR-E content_fingerprint stamping site by `file:line` | "Reconcile before committing" left to executor | **Pinned: `harness.py:14180` (import), `:14213` (rolled-back stamping), `:14311` (proposal stamping).** All use `reflection_retry.patch_retry_signature` — the exact same function `proposals._content_fingerprint` calls at `stages/proposals.py:85`. Algorithm parity confirmed. v2 commits to NOT replacing `lever_proposals` (already stamped upstream). | v2 §A3 Step 1 |
+| 8 | Clarify C18 exit JSON path (extend `lever_loop_exit_manifest` vs parallel dict) | Ambiguous parallel-dict construction | **Decision: extend `lever_loop_exit_manifest()`** with 3 new optional kwargs (`parent_bundle_run_id: str \| None = None`, `artifact_index_path: str \| None = None`, `iterations_completed: list[int] \| None = None`). Backward-compat: defaults preserve existing JSON shape. Single source of truth for exit-manifest schema. | v2 §C18 v2 Step 1 |
+
+### 7.2 A1 reconciliation between audit and executor
+
+The audit (Section 4 A1) flagged A1 as "NEEDS PLAN PATCH" specifically for:
+
+- **Demoted-cluster downstream consumption.** Audit feared `_split_by_demoted` would shrink the cluster set the harness emits for. **Executor pre-A1 verification (terminal:947-960) refuted this by direct grep evidence:** `cluster_failures` never sets `demoted_reason` anywhere in its body. `_split_by_demoted` always returns `(promoted=full_list, rejected=[])`. Adapter is byte-stable as written.
+- **F3 docstring contradicting "true replacement" classification.** **Both audit and executor agreed this is required.** v2 §A1 Step 4 carries the executor's proposed replacement docstring text.
+
+**Final A1 verdict:** push-ready, contingent on:
+
+1. v2 §A1 Step 4 docstring update lands in the same A1 commit.
+2. Defensive comment about the demoted invariant included in the A1 wire-up snippet (executor's wording, carried forward in v2 §A1 Step 3).
+
+The audit's A1 "NEEDS PLAN PATCH" verdict was overly cautious — the demoted invariant is a hypothetical drift risk, not a current-state bug. v2 §A1 documents the invariant for future-proofing without modifying the adapter.
+
+### 7.3 Phase B + Phase C reconciliation summary
+
+| Section | v1 Status | v2 Resolution |
+|---|---|---|
+| Phase B (B9-B16) | Push-ready as drafted; no patches needed | v2 keeps the wrap pattern unchanged; renumbers to drop B9 (F2) + B13 (F6) as no-ops since F2/F6 deferred. Effective Phase B count: 6 (B10/B11/B12/B14/B15/B16). |
+| Phase C C17 | NEEDS PLAN PATCH (`dir()` guards, undefined closure contract) | All `dir()` guards resolved; closure contract pinned by Pre-Task 0.5; iteration locals cited (`prev_accuracy:10776`, `_journey_events:11995`, `_current_hard_qids:11819-11821`, etc.). |
+| Phase C C18 | NEEDS PLAN PATCH (`dir()` guard for `_lrn_update`, ambiguous exit JSON path) | `dir()` guard replaced with `try/except NameError`; exit JSON path resolved by extending `lever_loop_exit_manifest()`. |
+| Phase C C19 | Push-ready as drafted | Carried forward unchanged. |
+
+### 7.4 Net effect
+
+**v1 → v2 commit count:** 17 → 15.
+
+| Phase | v1 commits | v2 commits | Delta |
+|---|---|---|---|
+| Pre-Task 0 | 0 | 0 (unchanged) | — |
+| Pre-Task 0.5 (NEW in v2) | 0 | 1 | +1 (closure contract introduction) |
+| Phase A | 6 (with F2 + F6 deferred) | 6 (same) | unchanged |
+| Phase B | 8 | 6 (B9 + B13 dropped as no-ops) | -2 |
+| Phase C | 3 | 3 (unchanged) | unchanged |
+| **Total** | **17** | **15** | **-2** |
+
+**Push-ready status (v2):**
+
+| Commit | Status |
+|---|---|
+| Pre-Task 0 (snapshot + gate) | already landed |
+| Pre-Task 0.5 (closure pin) | push-ready (NEW in v2) |
+| A1 v1 (F3) | push-ready in v1; v2 §A1 documents docstring + comment |
+| A2 v2 (F4) | push-ready (v2) |
+| A3 v2 (F5) | push-ready (v2) |
+| A4 v1 (F7) | push-ready in v1 |
+| A5 v2.1 (F8) | push-ready (v2.1; **selectively dedup'd** — see Section 8 for executor-driven re-cut) |
+| A6 v2 (F9) | push-ready (v2; purity gate verified PURE) |
+| B10-B12, B14-B16 | push-ready (carry forward from v1) |
+| C17 v2 | push-ready (v2) |
+| C18 v2 | push-ready (v2; extends `lever_loop_exit_manifest()`) |
+| C19 v1 | push-ready (carry forward) |
+
+**Section 7 conclusion:** the v2 redraft is fully executable end-to-end with zero remaining `NEEDS PLAN PATCH` or `STOP` items. The executor can push v1's A1 + A4 in parallel with the v2 drafting, then switch to v2 for everything else. Audit work is complete.
+
+---
+
+## Section 8 — A5 v2 → v2.1 re-cut: pre-gate vs. post-gate outcome semantics
+
+**Trigger:** the executor's pre-A5 verification (terminal:949-1011) STOPPED at A5 with a fundamental semantic mismatch the v2 plan (and v1 plan, and Sections 4-7 of this audit) all missed. This section documents the issue, why earlier rounds missed it, and the resolution (now landed as A5 v2.1 in [`2026-05-04-phase-f-h-harness-wireup-plan-v2.md`](./2026-05-04-phase-f-h-harness-wireup-plan-v2.md)).
+
+### 8.1 The semantic mismatch
+
+The closure `_phase_b_emit_ag_outcome_record(_ag_obj, _outcome_str)` at `harness.py:12298` is called from 5 callsites with 5 distinct outcome strings, partitioned by **whether the AG reaches the control-plane gate or bypasses it**:
+
+| Callsite | Outcome string | Pre-gate or post-gate? | Source of outcome |
+|---|---|---|---|
+| `:16173` | `"skipped_dead_on_arrival"` | **pre-gate** (DOA filter; `continue` before `_run_gate_checks`) | harness DOA detection |
+| `:16254` | `"skipped_pre_ag_snapshot_failed"` | **pre-gate** (snapshot capture failure; `continue` before `_run_gate_checks`) | harness snapshot capture try/except |
+| `:16566` | `"skipped_no_applied_patches"` | **pre-gate** (no patch survivors after applier filtering; `continue` before `_run_gate_checks`) | harness apply-log inspection |
+| `:17019` | `"rolled_back"` | **post-gate** (inside `if not gate_result.get("passed"):` branch) | `gate_result["acceptance_decision"]["reason_code"]` |
+| `:17436` | `_outcome_for_journey` (`"accepted"` / `"accepted_with_regression_debt"`) | **post-gate** (inside accept branch) | `gate_result["acceptance_decision"]["reason_code"]` |
+
+F8.decide() at `stages/acceptance.py:156-273` iterates `for ag in inp.ags:` and for each AG calls `_decide_for_ag(ag=ag, inp=inp)` which **always re-invokes** `decide_control_plane_acceptance(...)` with the success-path parameter shape (`baseline_accuracy`, `candidate_accuracy`, `target_qids`, `pre_rows`, `post_rows`, `min_gain_pp`, `protected_qids`, `baseline_pre_arbiter_accuracy`, `candidate_pre_arbiter_accuracy`, `min_pre_arbiter_gain_pp`).
+
+The gate's possible return values (per `control_plane.py:decide_control_plane_acceptance`) are `accepted=True/False` with reason codes that map (via `_outcome_string` at `acceptance.py:122-130`) to `"accepted"`, `"accepted_with_regression_debt"`, or `"rolled_back"`. **None of the 3 `skipped_*` outcomes are reachable from any input combination** — those represent harness-level failure paths that bypass the gate entirely.
+
+**Consequence of v2's "delete all 5 callsites + closure" approach:** the 3 pre-gate `skipped_*` records would be silently dropped from the trace. The byte-stability snapshot (which contains every emitted `DecisionRecord` in `canonical_decision_json`) would catch this as a record-count regression on the very first replay.
+
+### 8.2 The hidden secondary trap (`best_accuracy` drift)
+
+Even if option (a) (extend `AcceptanceInput` with a `pre_resolved_outcomes_by_ag` map) were implemented, v2's insertion point — "after the harness's `decide_control_plane_acceptance` block" — was still wrong. v2 located that block at `harness.py:10347` (an iteration-INTERNAL site, inside `_run_gate_checks`'s body), but the actual harness flow is:
+
+1. `_run_gate_checks(...)` at `:16865` is called **per AG** in the iteration body (with `affected_question_ids=set(ag.get("affected_questions", []))` plumbed in at `:16889`).
+2. `_run_gate_checks` internally calls `decide_control_plane_acceptance(...)` once at `:10390`.
+3. Outcome string is derived at `:17411-17416` from `gate_result["acceptance_decision"]["reason_code"]`.
+4. **`best_accuracy = full_accuracy` mutates at `:17598`** inside the accept branch — meaning if F8 is called at iteration-body END (after the per-AG block completes), an accepted AG's gate re-call sees `baseline == candidate`, gain = 0, and the gate flips to `rolled_back`. **Byte-stability fails.**
+
+The unique safe iteration-body anchor is **between `:16897` (gate returns) and `:17002` (accept/rollback dispatch begins)**. v2.1 places F8 at `:16898` (just before the `# ── 3B.7: Accept or rollback ─` block introduction at `:16997`).
+
+### 8.3 Why earlier rounds missed this
+
+| Round | Why missed |
+|---|---|
+| v1 plan | Authored against an "imagined" stage API; no per-callsite outcome-string analysis. |
+| v1 audit (Sections 4-6) | Focused on syntactic drift (field names, `dir()` guards, Python bugs). Did not enumerate the 5 callsites or check outcome-string reachability against F8.decide()'s gate re-call. |
+| v2 redraft | Added "atomic THREE dedup sites" framing (closure + 5 callsites + post-eval block) but did not verify that F8.decide() could PRODUCE the same 5 outcome strings. v2's purity-gate verification proved the gate is byte-stable on **input parity**; it did NOT prove **outcome-set parity** (3 of 5 outcomes are unreachable from any gate input). |
+| v2 Section 7 reconciliation | Treated A5 as RESOLVED based on resolving syntactic findings; did not re-verify outcome reachability. |
+| Executor pre-A5 verification | **CAUGHT the issue.** Executor enumerated the 5 callsites by `grep -n "_phase_b_emit_ag_outcome_record("`, traced each outcome string back to its code path, and observed that F8.decide()'s control-flow could not produce the 3 pre-gate strings. STOPPED execution per the executing-plans skill's "critical gaps preventing starting" rule. |
+
+**Audit lesson learned:** outcome-string reachability is a separate verification axis from input parity / purity / atomicity. Future stage-replacement audits should enumerate every distinct outcome the inline producer can emit, then verify each one is reachable from the replacement stage's `decide()` body's control flow.
+
+### 8.4 Resolution: A5 v2.1 selective dedup
+
+| Site | Action | Rationale |
+|---|---|---|
+| Closure def `:12298` (`:12260-12289` block) | **STAYS** | 3 callsites still use it |
+| Callsite `:16173` (`skipped_dead_on_arrival`) | **STAYS inline** | pre-gate; F8 cannot reproduce |
+| Callsite `:16254` (`skipped_pre_ag_snapshot_failed`) | **STAYS inline** | pre-gate; F8 cannot reproduce |
+| Callsite `:16566` (`skipped_no_applied_patches`) | **STAYS inline** | pre-gate; F8 cannot reproduce |
+| Callsite `:17019` (`rolled_back`) | **DELETED** | post-gate; F8.decide() reproduces via `_decide_for_ag` → `_outcome_string(decision == not accepted)` returns `"rolled_back"` |
+| Callsite `:17436` (`accepted` / `accepted_with_regression_debt`) | **DELETED** | post-gate; F8.decide() reproduces via `_decide_for_ag` → `_outcome_string(decision.reason_code)` |
+| `_post_eval_resolution_records` block `:17877-17905` | **DELETED** | F8.decide() emits via `post_eval_resolution_records(...)` at `acceptance.py:230-240` |
+| Insertion point | `:16898` (post-gate, pre-acceptance-side-effects; right after `_run_gate_checks` at `:16897`, before `:17002` accept/rollback branch) | avoids `best_accuracy` drift trap; AG bound at `:13585` is the survivor; `inp.ags=(ag,)` captures single-AG slate per `:13585` invariant |
+
+**Outcome-string parity verified:** the harness's `_outcome_for_journey` at `:17411-17416` derives from `gate_result["acceptance_decision"]["reason_code"]`. Inside `_run_gate_checks`, that reason_code is set from `_control_plane_decision.reason_code` at `:10764-10765`. F8's `_outcome_string(decision)` at `acceptance.py:122-130` reads `decision.reason_code` directly. Both source from the same `decide_control_plane_acceptance(...)` invocation (or its byte-stable re-call) → same string.
+
+**Net commit-count delta:** zero (v2's 1 A5 commit becomes v2.1's 1 A5 commit; insertion location and dedup scope change but the structure is the same).
+
+### 8.5 Verification
+
+Post-A5-v2.1 grep expectation:
+
+```bash
+grep -n "_phase_b_emit_ag_outcome_record(" src/genie_space_optimizer/optimization/harness.py
+# Expected: exactly 4 matches —
+#   :12298 (def line — STAYS because 3 callsites still use it)
+#   :16173 (skipped_dead_on_arrival — pre-gate, STAYS)
+#   :16254 (skipped_pre_ag_snapshot_failed — pre-gate, STAYS)
+#   :16566 (skipped_no_applied_patches — pre-gate, STAYS)
+
+grep -n "_post_eval_resolution_records\|post_eval_resolution_records" \
+    src/genie_space_optimizer/optimization/harness.py
+# Expected: zero ACTIVE matches (only matches inside removed-code comments).
+```
+
+Byte-stability gate must pass after A5 v2.1 lands. If it fails, the most likely failure modes are:
+
+1. F8 input plumbing differs from `_run_gate_checks`'s internal `decide_control_plane_acceptance(...)` call at `:10390-10393` — re-read the inline call's parameter values and compare to `_accept_inp` field-by-field.
+2. `inp.ags` was wired as `tuple(action_groups)` instead of `(ag,)` — the slate must be SINGLE-AG to match the harness's per-iteration emit pattern (`:13585` invariant).
+3. The 2 post-gate dedup deletions were incomplete — re-run the verification grep above.
+
+**Section 8 conclusion:** A5 v2.1 is the third and final cut for this commit. Outcome reachability is now verified end-to-end. Push-ready.
