@@ -218,3 +218,82 @@ stays green across every commit.
 **Plan:** [`2026-05-04-cycle-2-optimizer-improvement-plan.md`](./2026-05-04-cycle-2-optimizer-improvement-plan.md).
 **Iteration ledger:** Cycle 2 in
 [`2026-05-05-optimizer-iteration-ledger.md`](./2026-05-05-optimizer-iteration-ledger.md).
+
+## 2026-05-04 — Cycle 4: Successful-AG observability
+
+Inspired by airline run `2afb0be2-88b6-4832-99aa-c7e78fbc90f7` retry
+attempt `993610879088298`. Loop reached 100% in 2 iterations, but the
+operator-facing output had two contract gaps that hid the success:
+the journey contract emitted false violations on resolved iterations
+(N1), and the operator transcript still rendered unresolved RCA
+cards / next-action prompts for a cluster the optimizer had just
+resolved (N2).
+
+### N1 — Journey-validation contract for successful-AG iterations
+
+- Symptom: `GSO_ITERATION_SUMMARY_V1.journey_violation_count` was
+  `12` / `8` on the SUCCESSFUL retry attempt of `2afb0be2`; not
+  surfaced because postmortem reported `READY_TO_MERGE`.
+- Root causes (two, both producer-side):
+  - (a) producer emitted trunk `soft_signal` once per cluster, not
+    once per qid — multi-cluster qids appeared as
+    `soft_signal -> soft_signal`.
+  - (b) producer keyed `proposed` events on parent `proposal_id`
+    but `applied_targeted` / `applied_broad_ag_scope` /
+    `dropped_at_cap` on the expanded patch id, so the lane
+    splitter put them in different lanes.
+- Fixes:
+  - (a) `optimization/question_journey.emit_cluster_membership_events`
+    helper dedups trunk emit; multi-cluster membership preserved on
+    `extra.additional_cluster_ids`.
+  - (b) `parent_proposal_id` field added to `QuestionJourneyEvent`,
+    stamped at every lane-emit site; `_split_trunk_and_lanes` keys
+    on parent (falls back to `proposal_id`); intra-lane dedup
+    collapses repeat `proposed` for the same qid under different
+    `cluster_id` values.
+  - Contract: `_LEGAL_NEXT[PROPOSED]` extended to permit
+    `APPLIED_TARGETED` / `APPLIED_BROAD_AG_SCOPE` (Track 3/E
+    splits of `APPLIED` that were emitted but never validated).
+- Replay impact: `BURNDOWN_BUDGET=0` byte-stability holds; airline
+  fixture's `journey_violation_count` block moves from 12 → 0 / 8 → 0
+  on the next live regen (deferred to operator).
+- Tests: 5 new unit tests in
+  `test_journey_contract_trunk_repeats.py` (×2) and
+  `test_journey_contract_lane_keys.py` (×3).
+- Commits: `688ef11` (T1+T2 trunk dedup), `9b4ebb8` (T3+T4+T5
+  lane-key + contract).
+
+### N2 — Terminal-success transcript override
+
+- Symptom: `2afb0be2` retry iter 2 reached 100% via AG2 accepting on
+  cluster H001, but the rendered operator transcript still showed
+  `RCA Cards With Evidence: outcome=unresolved reason=rca_ungrounded`
+  for H001 and `Next Suggested Action: Generate proposals for H001`.
+- Root cause: `render_operator_transcript` filtered by
+  `outcome != RESOLVED` but did not retroactively suppress earlier-
+  in-iteration `UNRESOLVED` records once a later
+  `ACCEPTANCE_DECIDED.ACCEPTED` record landed in the same iteration.
+  Trace was correct; the projection lagged.
+- Fix: pure-function `_derive_terminal_success(records, iteration)`
+  in `optimization/rca_decision_trace.py` returns
+  `cluster_id → TerminalSuccessAnnotation` for clusters where
+  acceptance + target qid resolution + no regression debt all hold.
+  Render-time override of `SECTION_RCA_CARDS` /
+  `SECTION_NEXT_ACTION`, plus a new `SECTION_TERMINAL_SUCCESS`
+  heading rendered every iteration. Test-only
+  `_force_no_override=True` kwarg bypasses the override; the
+  cross-projection completeness check is unaffected.
+- Replay impact: `BURNDOWN_BUDGET=0` holds; airline fixture's
+  operator-transcript bytes move on the next live regen (deferred
+  to operator).
+- Tests: 4 new unit tests in
+  `test_terminal_success_transcript_override.py` + 1 cross-projection
+  regression test in `test_cross_projection_completeness.py`.
+- Commits: `cbe13a7` (T1+T2+T3 predicate + render),
+  `6349441` (T5 cross-projection regression test).
+
+**Plans:**
+[`2026-05-04-journey-validation-successful-ag-plan.md`](./2026-05-04-journey-validation-successful-ag-plan.md),
+[`2026-05-04-terminal-success-transcript-override-plan.md`](./2026-05-04-terminal-success-transcript-override-plan.md).
+**Iteration ledger:** Cycle 4 in
+[`2026-05-05-optimizer-iteration-ledger.md`](./2026-05-05-optimizer-iteration-ledger.md).

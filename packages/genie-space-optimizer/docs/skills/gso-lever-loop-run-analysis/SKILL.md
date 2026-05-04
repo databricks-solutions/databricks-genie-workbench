@@ -51,6 +51,29 @@ For Phase E specifically, distinguish between three failure surfaces — the rec
 - **Merge-gate gap** (code/test work): the codebase has not yet flipped `raise_on_violation`, lacks the decision-trace hard-gate replay test, or has no sanity-broken PR CI evidence. Independent of any pilot run; does not need a rerun.
 - **Baseline regression** (rollback or rescope): the pilot completed cleanly but accuracy regressed against the Phase A variance baseline. Investigate the regressing iteration's decision trace; consider rolling back the offending PR or rescoping Phase E.
 
+## Successful-AG observability (Cycle 4)
+
+Two contract gaps were closed in 2026-05-04 (plans N1 + N2). When
+analyzing a run that reached `READY_TO_MERGE`, distinguish
+**optimizer-quality** from **contract-quality** explicitly:
+
+- **Terminal Success first.** Read `SECTION "Terminal Success"` in
+  the operator transcript before `RCA Cards With Evidence` or
+  `Next Suggested Action`. Any cluster listed there is RESOLVED for
+  the iteration; pre-acceptance `rca_ungrounded` rows for that
+  cluster are stale-by-design (annotated `[RESOLVED BY {ag_id} ✓]`)
+  and must not be reported as RCA gaps.
+- **Journey violations on success.** `GSO_ITERATION_SUMMARY_V1.
+  journey_violation_count > 0` is a contract-quality finding even
+  when the iteration succeeded. Report it under
+  `Contract gaps to fix before next merge`, not under
+  `What Failed`. Cite kind + detail from
+  `phase_a/journey_validation/iter_N.json`, capped at 5 examples.
+
+Misdiagnosing a successful iteration's pre-acceptance UNRESOLVED
+records as real RCA gaps is the exact failure mode the 2026-05-04
+plans were written to prevent.
+
 ## Analysis Workflow
 
 0. **Acquire or load the evidence bundle.** If `bundle_dir` is supplied by `gso-postmortem`, start from `bundle_dir/evidence/manifest.json` and cite on-disk artifacts from that bundle. If no bundle is supplied, run the bundle helper first:

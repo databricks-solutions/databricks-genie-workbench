@@ -37,6 +37,40 @@ Use this skill when the operator says "postmortem", "diagnose", "analyze", or "t
 
 This skill orchestrates; it does not analyze. Reasoning lives in `gso-lever-loop-run-analysis`. Writes live in `gso-replay-cycle-intake`. This skill is read-only by default and only invokes write-side commands when the operator confirms.
 
+## Terminal-success first (read this before any other section)
+
+For each iteration `N` in the operator transcript:
+
+  - Read `SECTION "Terminal Success"` first (Plan N2 cycle 4).
+  - For every `cluster_id` listed there:
+    - Mark it `RESOLVED` in the postmortem analysis.
+    - Skip any `Re-run RCA prompt for {cluster_id}` or
+      `rca_ungrounded` finding for that cluster — that is
+      stale-by-design pre-acceptance noise that the renderer is
+      annotating with `[RESOLVED BY {ag_id} ✓]`, not a real RCA gap.
+
+This avoids the 2afb0be2-style misdiagnosis where the transcript said
+`outcome=unresolved reason=rca_ungrounded` for a cluster the
+optimizer just resolved.
+
+## Contract quality (always report, even on READY_TO_MERGE)
+
+For each iteration in `GSO_ITERATION_SUMMARY_V1` (Plan N1 cycle 4):
+
+  - if `journey_violation_count > 0`:
+    - report iteration `N` had `K` violations (cite kind + detail
+      from `phase_a/journey_validation/iter_N.json`, capped at
+      5 examples).
+    - file under `Contract gaps to fix before next merge`, NOT
+      under `What Failed`. The optimizer can have reached 100%
+      accuracy and still produced contract violations; both
+      facts are real and both belong in the postmortem.
+  - Distinguish `READY_TO_MERGE optimizer-quality` (accuracy +
+    convergence + acceptance-decisions clean) from
+    `READY_TO_MERGE contract-quality` (journey + decision-trace
+    + transcript projections clean). A run can be the former and
+    not the latter; the postmortem must surface that.
+
 ## Workflow
 
 0. **Verify the environment can reach the workspace.** Two prerequisites are easy to miss and produce silent empty audits:
