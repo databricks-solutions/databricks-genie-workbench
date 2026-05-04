@@ -5302,6 +5302,17 @@ def target_aware_acceptance_enabled() -> bool:
     return _flag_default_on("GSO_TARGET_AWARE_ACCEPTANCE")
 
 
+def regression_debt_invariant_enabled() -> bool:
+    """When on, ``assert_regression_debt_partition_complete`` raises
+    AssertionError when out_of_target_regressed_qids is not the
+    disjoint union of soft_to_hard / passing_to_hard /
+    unknown_to_hard. When off, it is a no-op.
+
+    Default ON. Set ``GSO_REGRESSION_DEBT_INVARIANT=0`` to disable.
+    """
+    return _flag_default_on("GSO_REGRESSION_DEBT_INVARIANT")
+
+
 def no_causal_applyable_halt_enabled() -> bool:
     """Task B — when every RCA-grounded proposal in an AG is dropped
     by upstream gates, halt the AG with reason

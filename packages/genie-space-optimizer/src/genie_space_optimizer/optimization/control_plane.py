@@ -619,6 +619,11 @@ class ControlPlaneAcceptance:
     protected_regressed_qids: tuple[str, ...] = ()
     soft_to_hard_regressed_qids: tuple[str, ...] = ()
     passing_to_hard_regressed_qids: tuple[str, ...] = ()
+    # P1 — residual bucket: every out-of-target new-hard qid that
+    # is NOT classified as soft_to_hard or passing_to_hard. Catches
+    # missing-pre-row and predicate-disagreement cases that today
+    # silently slip out of attribution.
+    unknown_to_hard_regressed_qids: tuple[str, ...] = ()
 
 
 def _fmt_qids(qids: Iterable[str]) -> str:
@@ -639,8 +644,48 @@ def format_control_plane_acceptance_detail(
         f"regression_debt_qids={_fmt_qids(decision.regression_debt_qids)}; "
         f"protected_regressed_qids={_fmt_qids(decision.protected_regressed_qids)}; "
         f"soft_to_hard_regressed_qids={_fmt_qids(decision.soft_to_hard_regressed_qids)}; "
-        f"passing_to_hard_regressed_qids={_fmt_qids(decision.passing_to_hard_regressed_qids)}"
+        f"passing_to_hard_regressed_qids={_fmt_qids(decision.passing_to_hard_regressed_qids)}; "
+        f"unknown_to_hard_regressed_qids={_fmt_qids(decision.unknown_to_hard_regressed_qids)}"
     )
+
+
+def assert_regression_debt_partition_complete(
+    decision: ControlPlaneAcceptance,
+) -> None:
+    """P1 invariant — out_of_target_regressed_qids must equal the
+    disjoint union of soft_to_hard / passing_to_hard / unknown_to_hard.
+
+    Disabled when ``GSO_REGRESSION_DEBT_INVARIANT=0``. Default ON.
+    """
+    from genie_space_optimizer.common.config import (
+        regression_debt_invariant_enabled,
+    )
+
+    if not regression_debt_invariant_enabled():
+        return
+
+    out_of_target = {str(q) for q in decision.out_of_target_regressed_qids if str(q)}
+    soft = {str(q) for q in decision.soft_to_hard_regressed_qids if str(q)}
+    passing = {str(q) for q in decision.passing_to_hard_regressed_qids if str(q)}
+    unknown = {str(q) for q in decision.unknown_to_hard_regressed_qids if str(q)}
+
+    union = soft | passing | unknown
+    missing = sorted(out_of_target - union)
+    if missing:
+        raise AssertionError(
+            f"regression-debt partition incomplete: out_of_target qids "
+            f"{missing} are not in soft_to_hard / passing_to_hard / "
+            f"unknown_to_hard. Bucket attribution silently dropped these."
+        )
+
+    overlaps = sorted(
+        (soft & passing) | (soft & unknown) | (passing & unknown)
+    )
+    if overlaps:
+        raise AssertionError(
+            f"regression-debt partition not disjoint: qids {overlaps} "
+            f"appear in multiple sub-buckets simultaneously."
+        )
 
 
 def decide_control_plane_acceptance(
@@ -706,14 +751,31 @@ def decide_control_plane_acceptance(
         for row in pre_rows_list
         if isinstance(row, dict)
     }
-    soft_to_hard = tuple(
-        q for q in out_of_target_regressed
-        if row_status(pre_by_qid.get(q, {})) == "soft"
-    )
-    passing_to_hard = tuple(
-        q for q in out_of_target_regressed
-        if row_status(pre_by_qid.get(q, {})) == "passing"
-    )
+    # P1 — partition out_of_target_regressed into three disjoint
+    # buckets. ``row_status`` returns "passing" for a missing pre_row,
+    # so we explicitly distinguish "no pre_row at all" (unknown) from
+    # "pre_row exists and was passing".
+    soft_to_hard_list: list[str] = []
+    passing_to_hard_list: list[str] = []
+    unknown_to_hard_list: list[str] = []
+    for q in out_of_target_regressed:
+        pre_row = pre_by_qid.get(q)
+        if pre_row is None:
+            unknown_to_hard_list.append(q)
+            continue
+        status = row_status(pre_row)
+        if status == "soft":
+            soft_to_hard_list.append(q)
+        elif status == "passing":
+            passing_to_hard_list.append(q)
+        else:
+            # row_status returned "hard" - the pre_row says hard but
+            # hard_failure_qids said not pre-hard. Predicate
+            # disagreement; route to the residual.
+            unknown_to_hard_list.append(q)
+    soft_to_hard = tuple(soft_to_hard_list)
+    passing_to_hard = tuple(passing_to_hard_list)
+    unknown_to_hard = tuple(unknown_to_hard_list)
     has_gain = delta >= float(min_gain_pp) and delta > 0
     has_causal_fix = bool(target_fixed)
     # Task 7 — when callers do not specify a tighter passing-to-hard cap,
@@ -842,6 +904,7 @@ def decide_control_plane_acceptance(
         protected_regressed_qids=protected_regressed,
         soft_to_hard_regressed_qids=soft_to_hard,
         passing_to_hard_regressed_qids=passing_to_hard,
+        unknown_to_hard_regressed_qids=unknown_to_hard,
     )
 
 
