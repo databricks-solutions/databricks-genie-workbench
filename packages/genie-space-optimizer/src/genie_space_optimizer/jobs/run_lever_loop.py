@@ -523,6 +523,30 @@ except Exception as exc:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## 🪞 GSO Run Pretty-Print
+# MAGIC
+# MAGIC When Phase H bundle assembly succeeded, the harness returns the rendered process-first transcript via
+# MAGIC `loop_out["pretty_print_transcript"]`. Print it once here so it appears in the lever-loop notebook
+# MAGIC stdout (recoverable via `databricks jobs export-run --views-to-export ALL`). When the key is absent
+# MAGIC (replay path, legacy harness, or bundle assembly failed loudly), this cell is a no-op.
+
+# COMMAND ----------
+
+_pretty_print_transcript = loop_out.get("pretty_print_transcript")
+if _pretty_print_transcript:
+    print()
+    print(_pretty_print_transcript)
+    print()
+else:
+    _log(
+        "Pretty-print transcript not available",
+        reason="phase_h_assembly_skipped_or_failed",
+        anchor_run_id=loop_out.get("phase_h_anchor_run_id"),
+    )
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## 📤 Publishing Task Values
 # MAGIC
 # MAGIC Task 5 (finalize) and Task 6 (deploy) consume these values. The keys must match what downstream notebooks expect.
