@@ -14558,6 +14558,30 @@ def _run_lever_loop(
             )
             all_proposals.extend(lever_proposals)
 
+        # P4 task 5 — stdout marker when an AG produced zero proposals.
+        # Distinct from STRUCTURAL_GATE_DROPPED (proposal existed but
+        # was dropped) and NO_STRUCTURAL_CANDIDATE (synthesis attempted
+        # but no archetype matched). Emitted before the L5-drop block
+        # so the empty-proposals signal fires regardless of L5 state.
+        if not all_proposals:
+            try:
+                from genie_space_optimizer.optimization.run_analysis_contract import (
+                    proposal_generation_empty_marker,
+                )
+                print(proposal_generation_empty_marker(
+                    ag_id=str(ag_id),
+                    iteration=iteration_counter,
+                    target_qids=tuple(
+                        str(q) for q in (ag.get("affected_questions") or [])
+                        if str(q)
+                    ),
+                ), flush=True)
+            except Exception:
+                logger.debug(
+                    "P4: proposal_generation_empty_marker emit failed (non-fatal)",
+                    exc_info=True,
+                )
+
         # Cycle 8 Bug 1 Phase 3b Task B — drain Lever 5 structural-gate
         # drops for this AG into the iteration's decision_records. The
         # gate fires inside generate_proposals_from_strategy and stashes
@@ -14607,6 +14631,33 @@ def _run_lever_loop(
                 _current_iter_inputs.setdefault(
                     "decision_records", []
                 ).extend([r.to_dict() for r in _l5_records])
+
+                # P4 task 5 — stdout marker for the L5 structural-gate
+                # drop. Aggregates root_causes across the AG's drops.
+                try:
+                    from genie_space_optimizer.optimization.run_analysis_contract import (
+                        structural_gate_dropped_marker,
+                    )
+                    _l5_marker_root_causes: list[str] = []
+                    for _md in _l5_ag_drops:
+                        for _rc in (_md.get("root_causes") or ()):
+                            _rc_s = str(_rc)
+                            if _rc_s and _rc_s not in _l5_marker_root_causes:
+                                _l5_marker_root_causes.append(_rc_s)
+                    print(structural_gate_dropped_marker(
+                        ag_id=str(ag_id),
+                        iteration=iteration_counter,
+                        root_causes=_l5_marker_root_causes,
+                        target_qids=tuple(
+                            str(q) for q in (ag.get("affected_questions") or [])
+                            if str(q)
+                        ),
+                    ), flush=True)
+                except Exception:
+                    logger.debug(
+                        "P4: structural_gate_dropped_marker emit failed (non-fatal)",
+                        exc_info=True,
+                    )
 
                 # P3 task 3+4 wiring — force structural synthesis when
                 # the lever-5 structural gate drops an instruction-only
@@ -14728,6 +14779,23 @@ def _run_lever_loop(
                             _current_iter_inputs.setdefault(
                                 "decision_records", []
                             ).append(_nsc.to_dict())
+                            try:
+                                from genie_space_optimizer.optimization.run_analysis_contract import (
+                                    no_structural_candidate_marker,
+                                )
+                                print(no_structural_candidate_marker(
+                                    ag_id=str(ag_id),
+                                    iteration=iteration_counter,
+                                    attempted_archetypes=(
+                                        _synth_result.attempted_archetypes
+                                    ),
+                                ), flush=True)
+                            except Exception:
+                                logger.debug(
+                                    "P4: no_structural_candidate_marker emit "
+                                    "failed (non-fatal)",
+                                    exc_info=True,
+                                )
                             logger.info(
                                 "P3: forced structural synthesis produced no "
                                 "candidate for AG=%s root_cause=%s "
