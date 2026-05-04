@@ -879,6 +879,12 @@ After Phase E merges, the post-merge work is **two coordinated workstreams**:
 
 After both workstreams complete, the Phase F+H end-state is reached: `harness.py` reads as a 9-stage tape, every `decision_type` maps to one source file, the parent-run `gso_postmortem_bundle/` is populated on real runs, and the `gso-postmortem` skill produces postmortems from the bundle alone.
 
+### Beyond merge: behavioral iteration ledger
+
+After Phase H + the F+H wire-up follow-up land, the optimizer's structural surface is complete and the iteration cadence shifts from **per-phase** to **per-cycle**. Each cycle runs the optimizer on a real-Genie corpus, clusters the postmortems, lands targeted control-plane fixes behind feature flags, and records the corpus delta. This is tracked in the **Optimizer Iteration Ledger** ([`2026-05-05-optimizer-iteration-ledger.md`](./2026-05-05-optimizer-iteration-ledger.md)), the post-merge sibling to [`2026-05-02-phase-a-burndown-log.md`](./2026-05-02-phase-a-burndown-log.md).
+
+Cycle 1 is in flight: control-plane hardening seeded by the airline pilot `0ade1a99-9406-4a68-a3bc-8c77be78edcb` and implemented by [`2026-05-05-optimizer-control-plane-plan.md`](./2026-05-05-optimizer-control-plane-plan.md). The ledger and this roadmap are append-only and never edit each other's rows; cross-references stay one-way (this section points at the ledger; ledger entries cite the roadmap when a cycle's RCA touches structural contracts).
+
 ---
 
 ## Cross-references
@@ -926,6 +932,7 @@ After both workstreams complete, the Phase F+H end-state is reached: `harness.py
 | `2026-05-XX-phase-f-h-harness-wireup-plan.md` | To be written after Phase H Option 1 lands | F+H wire-up follow-up |
 | [`skills/gso-lever-loop-run-analysis/SKILL.md`](./skills/gso-lever-loop-run-analysis/SKILL.md) | Ready | B/C/D/E run analysis |
 | [`skills/gso-replay-cycle-intake/SKILL.md`](./skills/gso-replay-cycle-intake/SKILL.md) | Ready | A burn-down ledger intake |
+| [`2026-05-05-optimizer-iteration-ledger.md`](./2026-05-05-optimizer-iteration-ledger.md) | Open (Cycle 1 in flight) | Post-merge behavioral iteration |
 
 ## Post-Merge Backlog (intentionally out of scope for the burn-down)
 
