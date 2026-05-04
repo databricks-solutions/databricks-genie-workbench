@@ -31,10 +31,15 @@ STAGE_KEY: str = "safety_gates"
 
 
 GATE_PIPELINE_ORDER: tuple[str, ...] = (
-    "content_fingerprint_dedup",
+    # Phase H Completion Task 3 (F6 follow-up plan Path C): align F6
+    # module's pipeline order with the harness's actual inline gate
+    # firing order — lever5_structural, rca_groundedness, blast_radius
+    # (matching harness inline emit sites). content_fingerprint_dedup
+    # and dead_on_arrival run after as F6-only observability gates.
     "lever5_structural",
     "rca_groundedness",
     "blast_radius",
+    "content_fingerprint_dedup",
     "dead_on_arrival",
 )
 

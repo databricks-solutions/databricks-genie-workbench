@@ -56,13 +56,16 @@ def test_gate_outcome_required_fields() -> None:
 
 
 def test_gate_pipeline_order_is_pinned() -> None:
-    """The pipeline order must match the plan: content_fingerprint_dedup
-    → lever5_structural → rca_groundedness → blast_radius → dead_on_arrival."""
+    """Phase H Completion Task 3 — F6 Path C alignment. The pipeline
+    order matches the harness's actual inline gate firing order:
+    lever5_structural → rca_groundedness → blast_radius (the three
+    harness-emit sites), then content_fingerprint_dedup →
+    dead_on_arrival as F6-only observability sub-handlers."""
     assert GATE_PIPELINE_ORDER == (
-        "content_fingerprint_dedup",
         "lever5_structural",
         "rca_groundedness",
         "blast_radius",
+        "content_fingerprint_dedup",
         "dead_on_arrival",
     )
 
