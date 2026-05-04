@@ -126,15 +126,24 @@ def get_run_context(
         RuntimeError: if ``run_id_widget`` is empty AND no taskValue ran_id
             is available — there is nothing to look up in Delta.
     """
-    if not run_id_widget:
-        raise RuntimeError(
-            "get_run_context: run_id_widget is required (Databricks Jobs "
-            "widget). Pass dbutils.widgets.get('run_id') from the notebook."
-        )
-
-    # Try taskValues first for the bootstrap key
+    # Cycle 5 T6 — Repair-Run widget context preservation. Widgets
+    # SHOULD survive Repair Run, but tests confirm there are paths
+    # where the widget arrives empty even on Repair Runs (e.g., when
+    # the operator triggers Repair via the API before the notebook
+    # widget DOM has finished bootstrapping). Defer the
+    # widget-required raise to AFTER the taskValues fallback so a
+    # Repair Run with non-empty taskValues survives a transient
+    # empty widget. The "both empty" path below still raises with a
+    # clear message.
     tv_run_id = _tv_get(dbutils, "preflight", "run_id")
     bootstrap_run_id = tv_run_id or run_id_widget
+    if not bootstrap_run_id:
+        raise RuntimeError(
+            "get_run_context: run_id is required. Both "
+            "run_id_widget and dbutils.jobs.taskValues "
+            "preflight.run_id are empty — Repair Run cannot "
+            "proceed."
+        )
 
     delta_query = (
         f"SELECT * FROM {catalog_widget}.{schema_widget}.genie_opt_runs "
