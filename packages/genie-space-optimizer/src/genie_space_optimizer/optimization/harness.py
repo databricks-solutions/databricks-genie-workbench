@@ -10025,9 +10025,26 @@ def _run_gate_checks(
         iteration_label=_iteration_label(iteration_counter),
         scope="full",
     )
-    _eval_result_full = _eval_stage.evaluate_post_patch(
-        _stage_ctx_full_eval, _eval_inp_full, eval_kwargs=_eval_kwargs_full,
+    # Phase H Completion Task 1: wrap F1 with stage_io_capture via a
+    # closure-bound adapter. The decorator demands a 2-arg (ctx, inp)
+    # callable; F1's evaluate_post_patch takes eval_kwargs as a kwarg-
+    # only argument, so the adapter captures _eval_kwargs_full from
+    # local scope and forwards it. Replay-byte-stable — the wrapper
+    # returns the EvaluationResult unchanged; MLflow log_text calls
+    # are no-ops while mlflow_anchor_run_id is None.
+    from genie_space_optimizer.optimization.stage_io_capture import (
+        wrap_with_io_capture as _wrap_capture_f1,
     )
+
+    def _f1_capture_adapter(ctx, inp):
+        return _eval_stage.evaluate_post_patch(
+            ctx, inp, eval_kwargs=_eval_kwargs_full,
+        )
+
+    _f1_wrapped = _wrap_capture_f1(
+        execute=_f1_capture_adapter, stage_key="evaluation_state",
+    )
+    _eval_result_full = _f1_wrapped(_stage_ctx_full_eval, _eval_inp_full)
     full_result_1 = _eval_result_full.raw
     new_model_id = full_result_1.get("model_id", "")
 
