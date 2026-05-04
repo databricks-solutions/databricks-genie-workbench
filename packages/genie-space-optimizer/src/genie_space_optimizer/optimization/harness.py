@@ -18595,6 +18595,142 @@ def _run_lever_loop(
     except Exception:
         logger.debug("Phase B end marker emission skipped", exc_info=True)
 
+    # Phase F+H C18 (v2): assemble + upload the gso_postmortem_bundle/
+    # parent-run artifacts, render the operator transcript, emit the
+    # GSO_ARTIFACT_INDEX_V1 marker. Runs only when the parent MLflow
+    # run was captured by C17 (so replay paths and MLflow-less runs
+    # noop here exactly as before).
+    _phase_h_artifact_index_path: str | None = None
+    _phase_h_iterations_completed: list[int] = []
+    if _phase_h_anchor_run_id:
+        try:
+            import json as _json_phase_h_c18
+            from genie_space_optimizer.optimization.operator_process_transcript import (
+                render_full_transcript as _render_full_transcript,
+                render_iteration_transcript as _render_iteration_transcript,
+                render_run_overview as _render_run_overview,
+            )
+            from genie_space_optimizer.optimization.run_output_bundle import (
+                build_artifact_index as _build_artifact_index,
+                build_manifest as _build_manifest,
+                build_run_summary as _build_run_summary,
+            )
+            from genie_space_optimizer.optimization.run_output_contract import (
+                bundle_artifact_paths as _bundle_artifact_paths,
+            )
+            from genie_space_optimizer.optimization.run_analysis_contract import (
+                artifact_index_marker as _artifact_index_marker,
+            )
+
+            _phase_h_iterations_completed = list(
+                range(1, int(iteration_counter) + 1)
+            )
+            _manifest = _build_manifest(
+                optimization_run_id=run_id,
+                databricks_job_id=_db_job_id,
+                databricks_parent_run_id=_db_parent_run_id,
+                lever_loop_task_run_id=_db_task_run_id,
+                iterations=_phase_h_iterations_completed,
+                missing_pieces=[],
+            )
+            _artifact_index = _build_artifact_index(
+                iterations=_phase_h_iterations_completed,
+            )
+            # Terminal status — _lrn_update may be unbound if the
+            # final iteration's F9 stage errored out, so fall back to
+            # "max_iterations" (matches the harness's existing
+            # convergence-marker default).
+            try:
+                _terminal_status = (
+                    _lrn_update.terminal_decision.get("status")  # type: ignore[name-defined]
+                    or "max_iterations"
+                )
+            except (NameError, AttributeError):
+                _terminal_status = "max_iterations"
+
+            _best_acc_for_delta = (
+                float(best_accuracy) if best_accuracy is not None
+                else float(prev_accuracy)
+            )
+            _run_summary = _build_run_summary(
+                baseline=_baseline_for_summary,
+                terminal_state={
+                    "status": str(_terminal_status),
+                    "should_continue": False,
+                },
+                iteration_count=len(_phase_h_iterations_completed),
+                accuracy_delta_pp=round(
+                    (_best_acc_for_delta - float(prev_accuracy)) * 100, 1
+                ),
+            )
+
+            _run_overview = _render_run_overview(
+                run_id=run_id,
+                space_id=space_id,
+                domain=domain,
+                max_iters=int(max_iterations),
+                baseline=_baseline_for_summary,
+                hard_failures=_hard_failures_for_overview,
+            )
+            _iter_transcripts = [
+                _render_iteration_transcript(
+                    iteration=_i,
+                    trace=_iter_traces.get(_i),
+                    iteration_summary=_iter_summaries.get(_i, {}),
+                )
+                for _i in _phase_h_iterations_completed
+                if _iter_traces.get(_i) is not None
+            ]
+            _full_transcript = _render_full_transcript(
+                run_overview=_run_overview,
+                iteration_transcripts=_iter_transcripts,
+            )
+
+            from mlflow.tracking import MlflowClient as _MlflowClient
+            _client_phase_h = _MlflowClient()
+            _paths = _bundle_artifact_paths(
+                iterations=_phase_h_iterations_completed,
+            )
+            _phase_h_artifact_index_path = _paths["artifact_index"]
+            _client_phase_h.log_text(
+                run_id=_phase_h_anchor_run_id,
+                text=_json_phase_h_c18.dumps(
+                    _manifest, sort_keys=True, indent=2,
+                ),
+                artifact_file=_paths["manifest"],
+            )
+            _client_phase_h.log_text(
+                run_id=_phase_h_anchor_run_id,
+                text=_json_phase_h_c18.dumps(
+                    _artifact_index, sort_keys=True, indent=2,
+                ),
+                artifact_file=_paths["artifact_index"],
+            )
+            _client_phase_h.log_text(
+                run_id=_phase_h_anchor_run_id,
+                text=_json_phase_h_c18.dumps(
+                    _run_summary, sort_keys=True, indent=2,
+                ),
+                artifact_file=_paths["run_summary"],
+            )
+            _client_phase_h.log_text(
+                run_id=_phase_h_anchor_run_id,
+                text=_full_transcript,
+                artifact_file=_paths["operator_transcript"],
+            )
+            print(_artifact_index_marker(
+                optimization_run_id=run_id,
+                parent_bundle_run_id=_phase_h_anchor_run_id,
+                artifact_index_path=_phase_h_artifact_index_path,
+                iterations=_phase_h_iterations_completed,
+            ))
+        except Exception:
+            logger.warning(
+                "Phase H bundle assembly failed; postmortem will fall "
+                "back to legacy phase artifacts",
+                exc_info=True,
+            )
+
     return {
         "scores": best_scores,
         "accuracy": best_accuracy,
@@ -18623,6 +18759,13 @@ def _run_lever_loop(
             "target_qids_missing_count": int(_phase_b_target_qids_missing_count),
             "total_violations": int(_phase_b_total_violations),
         },
+        # Phase F+H C18 (v2) — Phase H T13: bundle pointers for the
+        # exit JSON. None when the parent MLflow run wasn't captured
+        # (replay path); run_lever_loop.py's call to
+        # lever_loop_exit_manifest() omits the keys in that case.
+        "phase_h_anchor_run_id": _phase_h_anchor_run_id,
+        "phase_h_artifact_index_path": _phase_h_artifact_index_path,
+        "phase_h_iterations_completed": list(_phase_h_iterations_completed),
     }
 
 

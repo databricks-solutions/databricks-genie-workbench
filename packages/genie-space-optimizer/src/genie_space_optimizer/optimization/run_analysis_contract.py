@@ -226,6 +226,13 @@ def lever_loop_exit_manifest(
     no_decision_record_reasons: list[str],
     phase_b_decision_artifacts: list[str],
     phase_b_transcript_artifacts: list[str],
+    # Phase F+H C18 (v2) — Phase H T13 bundle pointers.
+    # Optional: defaults preserve the existing JSON shape so callers
+    # that don't yet plumb the bundle (replay, legacy paths) emit the
+    # same payload as before.
+    parent_bundle_run_id: str | None = None,
+    artifact_index_path: str | None = None,
+    iterations_completed: list[int] | None = None,
 ) -> str:
     """Build the JSON string passed to ``dbutils.notebook.exit`` from
     the lever-loop task.
@@ -234,6 +241,11 @@ def lever_loop_exit_manifest(
     paths so ``databricks jobs get-run-output`` reveals the same numbers
     MLflow has. Returned as a JSON string (not dict) so the call site
     stays a single ``dbutils.notebook.exit(lever_loop_exit_manifest(...))``.
+
+    The Phase F+H C18 (v2) bundle pointers are optional: when provided
+    by the harness, the parent bundle's MLflow run id and the artifact
+    index path land in the exit JSON so postmortem tooling can locate
+    the gso_postmortem_bundle/ artifacts even when stdout is truncated.
     """
     payload = {
         "optimization_run_id": str(optimization_run_id),
@@ -259,6 +271,14 @@ def lever_loop_exit_manifest(
             str(p) for p in (phase_b_transcript_artifacts or [])
         ],
     }
+    if parent_bundle_run_id:
+        payload["parent_bundle_run_id"] = str(parent_bundle_run_id)
+    if artifact_index_path:
+        payload["artifact_index_path"] = str(artifact_index_path)
+    if iterations_completed is not None:
+        payload["iterations_completed"] = [
+            int(n) for n in iterations_completed
+        ]
     return json.dumps(payload, default=str)
 
 

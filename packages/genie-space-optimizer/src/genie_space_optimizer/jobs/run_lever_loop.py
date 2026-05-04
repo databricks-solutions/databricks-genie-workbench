@@ -562,6 +562,24 @@ debug_info = {
         "phase_b",
     )
 }
+
+# Phase F+H C18 (v2) — Phase H T13: surface the bundle pointers in
+# the exit JSON under the contract names defined in
+# ``run_analysis_contract.lever_loop_exit_manifest`` (``parent_bundle_run_id``,
+# ``artifact_index_path``, ``iterations_completed``). The harness names
+# them ``phase_h_*`` internally; we re-key here so postmortem tooling
+# reads the same field names whether it consumes ``debug_info`` or a
+# future ``lever_loop_exit_manifest(...)`` call.
+_phase_h_anchor = loop_out.get("phase_h_anchor_run_id")
+if _phase_h_anchor:
+    debug_info["parent_bundle_run_id"] = str(_phase_h_anchor)
+_phase_h_idx_path = loop_out.get("phase_h_artifact_index_path")
+if _phase_h_idx_path:
+    debug_info["artifact_index_path"] = str(_phase_h_idx_path)
+_phase_h_iters = loop_out.get("phase_h_iterations_completed")
+if _phase_h_iters is not None:
+    debug_info["iterations_completed"] = [int(n) for n in _phase_h_iters]
+
 dbutils.jobs.taskValues.set(key="debug_info", value=json.dumps(debug_info, default=str))
 
 _log(
