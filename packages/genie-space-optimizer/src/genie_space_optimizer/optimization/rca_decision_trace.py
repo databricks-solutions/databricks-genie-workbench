@@ -66,6 +66,13 @@ class ReasonCode(str, Enum):
     RCA_UNGROUNDED = "rca_ungrounded"
     STRATEGIST_SELECTED = "strategist_selected"
     PROPOSAL_EMITTED = "proposal_emitted"
+    # P4 — three typed proposal-failure outcomes that today collapse
+    # into "no candidate state". Surfaced as DecisionRecord reason
+    # codes + stdout markers + parser fields so an iter-by-iter
+    # postmortem can tell them apart.
+    PROPOSAL_GENERATION_EMPTY = "proposal_generation_empty"
+    STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY = "structural_gate_dropped_instruction_only"
+    NO_STRUCTURAL_CANDIDATE = "no_structural_candidate"
     NO_CAUSAL_TARGET = "no_causal_target"
     PATCH_CAP_SELECTED = "patch_cap_selected"
     PATCH_CAP_DROPPED = "patch_cap_dropped"
