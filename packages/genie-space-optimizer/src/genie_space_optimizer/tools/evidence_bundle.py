@@ -200,10 +200,24 @@ def _derive_trace_fetch_recommendations(
             data = json.loads(trace_file.read_text())
         except Exception:  # noqa: BLE001
             continue
-        iteration = data.get("iteration")
+        if isinstance(data, list):
+            decisions = [entry for entry in data if isinstance(entry, dict)]
+            iteration = next(
+                (
+                    decision.get("iteration")
+                    for decision in decisions
+                    if decision.get("iteration") is not None
+                ),
+                None,
+            )
+        elif isinstance(data, dict):
+            decisions = data.get("decisions", [])
+            iteration = data.get("iteration")
+        else:
+            continue
         unresolved_trace_ids: list[str] = []
         unresolved_reasons = 0
-        for decision in data.get("decisions", []):
+        for decision in decisions:
             reason = decision.get("reason_code", "")
             if reason in {"UNKNOWN", "UNCLASSIFIED", ""} and decision.get(
                 "outcome"

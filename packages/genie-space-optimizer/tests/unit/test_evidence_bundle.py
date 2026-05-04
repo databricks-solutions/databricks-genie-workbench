@@ -214,6 +214,35 @@ def test_build_bundle_invokes_mlflow_audit_and_downloads_artifacts(
     assert any(p["run_id"] == "mr-1" for p in pulled)
 
 
+def test_trace_fetch_recommendations_accept_list_decision_trace(tmp_path: Path) -> None:
+    from genie_space_optimizer.tools.evidence_bundle import (
+        _derive_trace_fetch_recommendations,
+    )
+    from genie_space_optimizer.tools.evidence_layout import TraceFetchReason
+
+    trace_file = tmp_path / "run-1" / "phase_b" / "decision_trace" / "iter_3.json"
+    trace_file.parent.mkdir(parents=True)
+    trace_file.write_text(
+        json.dumps(
+            [
+                {
+                    "iteration": 3,
+                    "outcome": "FAILED",
+                    "reason_code": "UNKNOWN",
+                    "evidence_refs": [{"trace_id": "trace-1"}],
+                }
+            ]
+        )
+    )
+
+    recommendations = _derive_trace_fetch_recommendations(mlflow_dir=tmp_path)
+
+    assert len(recommendations) == 1
+    assert recommendations[0].reason is TraceFetchReason.UNRESOLVED_REASON_CODE
+    assert recommendations[0].iteration == 3
+    assert recommendations[0].trace_ids == ("trace-1",)
+
+
 def test_build_bundle_records_phase_b_missing_on_anchor(
     tmp_path: Path,
     fake_databricks_runner: MagicMock,
