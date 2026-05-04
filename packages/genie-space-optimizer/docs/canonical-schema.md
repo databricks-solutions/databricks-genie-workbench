@@ -84,3 +84,122 @@ Use this document as a schema contract, not as an implementation plan.
 ## Thirty-Day Freeze
 
 The initial version should be reviewed by 2-3 engineers who have worked on the loop. After approval, freeze the document for 30 days. During the freeze, edits are limited to correctness fixes that reduce ambiguity. After the freeze, each schema edit must delete, rename, or explicitly deprecate at least one existing alias.
+
+## GSO Run Output Contract (Phase H)
+
+Phase H attaches a single MLflow artifact tree — `gso_postmortem_bundle/` — to the parent lever-loop run. It is the canonical input for every postmortem skill, CLI tool, and integration test that needs to inspect a completed run. Implementation lives in `optimization/run_output_contract.py`, `optimization/stage_io_capture.py`, `optimization/run_output_bundle.py`, `optimization/operator_process_transcript.py`, and the `tools/marker_parser.py` + `tools/evidence_layout.py` + `tools/mlflow_audit.py` triplet that consumes it.
+
+### Bundle directory tree
+
+```
+gso_postmortem_bundle/
+├── manifest.json
+├── run_summary.json
+├── artifact_index.json
+├── operator_transcript.md
+├── decision_trace_all.json
+├── journey_validation_all.json
+├── replay_fixture.json
+├── scoreboard.json
+├── failure_buckets.json
+└── iterations/
+    ├── iter_01/
+    │   ├── summary.json
+    │   ├── operator_transcript.md
+    │   ├── decision_trace.json
+    │   ├── journey_validation.json
+    │   ├── rca_ledger.json
+    │   ├── proposal_inventory.json
+    │   ├── patch_survival.json
+    │   └── stages/
+    │       ├── 01_evaluation_state/{input,output,decisions}.json
+    │       ├── 02_rca_evidence/{input,output,decisions}.json
+    │       ├── 03_cluster_formation/{input,output,decisions}.json
+    │       ├── 04_action_group_selection/{input,output,decisions}.json
+    │       ├── 05_proposal_generation/{input,output,decisions}.json
+    │       ├── 06_safety_gates/{input,output,decisions}.json
+    │       ├── 07_applied_patches/{input,output,decisions}.json
+    │       ├── 09_acceptance_decision/{input,output,decisions}.json
+    │       └── 10_learning_next_action/{input,output,decisions}.json
+    └── iter_02/...
+```
+
+The `<NN>_<stage_key>` directory name comes from the stage's position in `PROCESS_STAGE_ORDER`. Position 8 (`post_patch_evaluation`) and position 11 (`contract_health`) are transcript-only — they appear in the operator transcript but not under `iterations/iter_NN/stages/`. A `ls` of the iteration's `stages/` directory is naturally process-ordered.
+
+### `manifest.json`
+
+```json
+{
+  "schema_version": "v1",
+  "optimization_run_id": "opt-abc-123",
+  "databricks_job_id": "j1",
+  "databricks_parent_run_id": "r1",
+  "lever_loop_task_run_id": "t1",
+  "iteration_count": 3,
+  "iterations": [1, 2, 3],
+  "missing_pieces": [],
+  "stage_keys_in_process_order": [
+    "evaluation_state", "rca_evidence", "cluster_formation",
+    "action_group_selection", "proposal_generation", "safety_gates",
+    "applied_patches", "acceptance_decision", "learning_next_action"
+  ]
+}
+```
+
+Built by `optimization/run_output_bundle.build_manifest`. `missing_pieces` records any per-stage capture failure so a postmortem can distinguish "stage didn't run" from "stage ran but capture failed."
+
+### `artifact_index.json`
+
+A flat path map for postmortem skills. Top-level keys mirror the bundle tree; per-iteration keys carry per-stage paths so the skill can read every stage's I/O without walking directories. Built by `optimization/run_output_bundle.build_artifact_index`.
+
+### `run_summary.json`
+
+```json
+{
+  "schema_version": "v1",
+  "baseline": {"overall_accuracy": 0.875, ...},
+  "terminal_state": {"status": "convergence", "should_continue": false},
+  "iteration_count": 5,
+  "accuracy_delta_pp": 4.2
+}
+```
+
+Built by `optimization/run_output_bundle.build_run_summary`.
+
+### Per-stage `iter_NN/stages/<NN>_<stage_key>/{input,output,decisions}.json`
+
+`stage_io_capture.wrap_with_io_capture(execute, stage_key)` writes:
+
+- `input.json`: `dataclasses.asdict(stage_input)` serialized via `json.dumps`. Set fields are normalized to sorted lists for deterministic output.
+- `output.json`: same shape, for the stage output.
+- `decisions.json`: list of every `DecisionRecord` (or other emitted record) the stage emitted via `ctx.decision_emit` during the call.
+
+The decorator NEVER raises. MLflow log_text failures are caught and warned — diagnostic capture must never break the optimizer.
+
+### `GSO_ARTIFACT_INDEX_V1` marker
+
+Single-line stdout marker emitted by `optimization/run_analysis_contract.artifact_index_marker(...)` and parsed by `tools/marker_parser.parse_markers` into `MarkerLog.artifact_index`:
+
+```
+GSO_ARTIFACT_INDEX_V1 {"artifact_index_path":"gso_postmortem_bundle/artifact_index.json","iterations":[1,2],"optimization_run_id":"opt-1","parent_bundle_run_id":"br-1"}
+```
+
+The marker carries `parent_bundle_run_id` so the gso-postmortem skill can locate the bundle in MLflow even when stdout is truncated.
+
+### Run-role tags on the parent MLflow run
+
+Built by `common/mlflow_names.lever_loop_parent_run_tags(...)`:
+
+| Tag | Value |
+| --- | --- |
+| `genie.run_role` | `lever_loop` |
+| `genie.optimization_run_id` | `<optimization_run_id>` |
+| `genie.databricks.job_id` | `<job_id>` |
+| `genie.databricks.parent_run_id` | `<parent_run_id>` |
+| `genie.databricks.lever_loop_task_run_id` | `<task_run_id>` |
+
+`tools/mlflow_audit.audit_parent_bundle(...)` discovers the parent run by `genie.run_role=lever_loop` + `genie.optimization_run_id`, with a fallback to the legacy `genie.run_id` tag.
+
+### Reconciliation with the stage registry
+
+`PROCESS_STAGE_ORDER` (11 entries: 9 executable stages + Stage 1/8 split (`post_patch_evaluation`) + `contract_health` meta) is the human-readable transcript ordering. `STAGES` (9 entries) in `optimization/stages/_registry.py` is the executable iteration target. The reconciliation rule is locked by `tests/unit/test_process_stage_order_matches_stages_registry.py`: every `STAGES.stage_key` must appear in `PROCESS_STAGE_ORDER` in the same relative order. Transcript-only keys (`post_patch_evaluation`, `contract_health`) must be explicitly listed.
