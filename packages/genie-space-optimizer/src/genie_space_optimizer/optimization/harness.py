@@ -12960,29 +12960,21 @@ def _run_lever_loop(
 
         # Task 13 — emit ``clustered`` events per qid in each hard cluster
         # and ``soft_signal`` events for soft clusters.
+        # Plan N1 Task 2 — delegate to ``emit_cluster_membership_events``
+        # so a qid that appears in multiple clusters produces exactly
+        # one event per stage. Multi-cluster membership is preserved on
+        # ``extra.additional_cluster_ids``. Closes the trunk-repeat
+        # ``soft_signal -> soft_signal`` defect on 2afb0be2 retry
+        # attempt 993610879088298.
         try:
-            for _c in (clusters or []):
-                _cid = str(_c.get("cluster_id") or "")
-                _rc = str(_c.get("root_cause") or _c.get("asi_failure_type") or "")
-                _qids = [str(q) for q in (_c.get("question_ids") or []) if q]
-                if _qids:
-                    _journey_emit(
-                        "clustered",
-                        question_ids=_qids,
-                        cluster_id=_cid,
-                        root_cause=_rc,
-                    )
-            for _sc in (soft_signal_clusters or []):
-                _scid = str(_sc.get("cluster_id") or "")
-                _src = str(_sc.get("root_cause") or _sc.get("asi_failure_type") or "")
-                _sqids = [str(q) for q in (_sc.get("question_ids") or []) if q]
-                if _sqids:
-                    _journey_emit(
-                        "soft_signal",
-                        question_ids=_sqids,
-                        cluster_id=_scid,
-                        root_cause=_src,
-                    )
+            from genie_space_optimizer.optimization.question_journey import (
+                emit_cluster_membership_events,
+            )
+            emit_cluster_membership_events(
+                journey_emit=_journey_emit,
+                hard_clusters=list(clusters or []),
+                soft_clusters=list(soft_signal_clusters or []),
+            )
         except Exception:
             logger.debug(
                 "Task 13: cluster journey emit failed (non-fatal)",

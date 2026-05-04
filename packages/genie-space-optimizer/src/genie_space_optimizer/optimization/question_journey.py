@@ -60,6 +60,93 @@ def _stage_rank(stage: str) -> int:
         return len(_STAGE_ORDER)
 
 
+def emit_cluster_membership_events(
+    *,
+    journey_emit,
+    hard_clusters: list[dict] | None = None,
+    soft_clusters: list[dict] | None = None,
+) -> None:
+    """Plan N1 Task 2 — emit one trunk event per (qid, stage) pair
+    across all clusters.
+
+    Multi-cluster membership for a qid is preserved by stamping the
+    primary cluster_id on the event and recording every other cluster
+    on ``extra={"additional_cluster_ids": [...]}``. Validators see
+    exactly one trunk event per qid; auditors still see the full
+    membership.
+
+    Closes the trunk-repeat journey-validation defect observed on
+    2afb0be2-88b6-4832-99aa-c7e78fbc90f7 retry attempt
+    993610879088298 where 7 + 5 ``soft_signal -> soft_signal``
+    self-transitions came from qids appearing in multiple soft
+    clusters.
+    """
+    def _emit_loop(
+        clusters: list[dict],
+        stage: str,
+        seen: set[str],
+        primary_cid: dict[str, str],
+        extras: dict[str, list[str]],
+    ) -> None:
+        # First pass: pick a primary cluster per qid (insertion order
+        # of clusters wins) and accumulate additional cluster ids.
+        primary_qids_by_cluster: dict[str, list[str]] = {}
+        primary_root_by_cluster: dict[str, str] = {}
+        for c in clusters:
+            cid = str(c.get("cluster_id") or "")
+            rc = str(c.get("root_cause") or c.get("asi_failure_type") or "")
+            primary_root_by_cluster[cid] = rc
+            primary_qids_by_cluster.setdefault(cid, [])
+            for q in (c.get("question_ids") or []):
+                qid = str(q)
+                if not qid:
+                    continue
+                if qid in seen:
+                    extras.setdefault(qid, []).append(cid)
+                    continue
+                seen.add(qid)
+                primary_cid[qid] = cid
+                primary_qids_by_cluster[cid].append(qid)
+
+        # Second pass: emit one event per (cluster, primary_qids).
+        # additional_cluster_ids carries the secondary memberships.
+        for cid, qids in primary_qids_by_cluster.items():
+            if not qids:
+                continue
+            for qid in qids:
+                journey_emit(
+                    stage,
+                    question_ids=[qid],
+                    cluster_id=cid,
+                    root_cause=primary_root_by_cluster.get(cid, ""),
+                    extra={
+                        "additional_cluster_ids": list(extras.get(qid, []))
+                    },
+                )
+
+    seen_clustered: set[str] = set()
+    seen_soft: set[str] = set()
+    primary_clustered: dict[str, str] = {}
+    primary_soft: dict[str, str] = {}
+    extras_clustered: dict[str, list[str]] = {}
+    extras_soft: dict[str, list[str]] = {}
+
+    _emit_loop(
+        list(hard_clusters or []),
+        "clustered",
+        seen_clustered,
+        primary_clustered,
+        extras_clustered,
+    )
+    _emit_loop(
+        list(soft_clusters or []),
+        "soft_signal",
+        seen_soft,
+        primary_soft,
+        extras_soft,
+    )
+
+
 def _format_event(ev: QuestionJourneyEvent) -> str:
     parts: list[str] = [ev.stage]
     if ev.cluster_id:
