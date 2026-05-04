@@ -99,6 +99,13 @@ class ReasonCode(str, Enum):
     ITERATION_BUDGET_CONSUMED = "iteration_budget_consumed"
     ITERATION_BUDGET_SKIPPED_NO_OP = "iteration_budget_skipped_no_op"
     ITERATION_BUDGET_STRATEGY_SWITCH = "iteration_budget_strategy_switch"
+    # Cycle 5 T3 — coverage-gap diagnostic AG RCA regeneration outcomes.
+    # ``RCA_REGENERATION_TRIGGERED`` fires when a diagnostic AG with
+    # rca_cards_present[c]=False enters the regeneration step;
+    # ``RCA_REGENERATION_EXHAUSTED`` fires when regeneration cannot
+    # produce a grounded card and the AG is retired.
+    RCA_REGENERATION_TRIGGERED = "rca_regeneration_triggered"
+    RCA_REGENERATION_EXHAUSTED = "rca_regeneration_exhausted"
 
 
 class RejectReason(str, Enum):

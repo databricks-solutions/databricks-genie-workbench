@@ -5450,3 +5450,19 @@ def causal_drop_feedback_to_strategist_enabled() -> bool:
     strategist re-emitted the same pattern next iteration. Default off
     pending corpus closeout."""
     return _flag_enabled("GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST")
+
+
+def diagnostic_ag_rca_regen_enabled() -> bool:
+    """Cycle 5 T3 — when on, a coverage-gap diagnostic AG materialized
+    for a cluster with ``rca_cards_present[c]=False`` triggers an RCA
+    regeneration step before proposal generation. If regeneration
+    fails, the AG is retired with ``RCA_REGENERATION_EXHAUSTED``
+    instead of producing empty proposals that the rca_groundedness
+    gate would drop.
+
+    Closes the iter-2 ``Proposals (0 total) — SKIPPING`` path in run
+    2423b960-16e8-41d4-a0cb-74c563378e05 where H001/H002 had no parent
+    RCA and the diagnostic AG inherited an empty ``rca_id`` →
+    ungrounded proposal generation → empty slate. Default off pending
+    corpus closeout."""
+    return _flag_enabled("GSO_DIAGNOSTIC_AG_RCA_REGEN")

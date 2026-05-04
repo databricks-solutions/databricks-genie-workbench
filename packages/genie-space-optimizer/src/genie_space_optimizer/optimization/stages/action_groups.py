@@ -253,10 +253,20 @@ def materialize_diagnostic_ag(
     """
     cluster_id = str(cluster.get("id") or "")
     rca_id = str(rca_id_by_cluster.get(cluster_id) or "")
+    has_parent_rca = bool(rca_id)
     return {
         "id": f"AG_COVERAGE_{cluster_id}",
         "ag_id": f"AG_COVERAGE_{cluster_id}",
-        "ag_kind": "diagnostic",
+        # Cycle 5 T3 — split the diagnostic AG kind so the harness can
+        # route the no-parent-RCA case to a regeneration step before
+        # proposal generation. With parent RCA present (existing AG-1-F
+        # path), the AG is ``"diagnostic"`` and proceeds normally;
+        # without it, ``"diagnostic_no_parent_rca"`` signals to the
+        # harness that ``ag_kind == "diagnostic_no_parent_rca"`` AND
+        # ``needs_rca_regeneration is True`` together require an RCA
+        # regen attempt before generating proposals.
+        "ag_kind": "diagnostic" if has_parent_rca else "diagnostic_no_parent_rca",
+        "needs_rca_regeneration": not has_parent_rca,
         "rca_id": rca_id,
         "primary_cluster_id": cluster_id,
         "source_cluster_ids": (cluster_id,),

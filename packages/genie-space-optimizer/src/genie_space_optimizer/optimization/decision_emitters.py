@@ -1513,3 +1513,55 @@ def iteration_budget_decision_record(
             "consumed": bool(consumed),
         },
     )
+
+
+def rca_regeneration_triggered_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    target_qids: tuple[str, ...],
+) -> DecisionRecord:
+    """Cycle 5 T3 — emit when a ``diagnostic_no_parent_rca`` AG triggers
+    RCA regeneration before proposal generation. Emitted as
+    ``DecisionType.RCA_FORMED`` with outcome ``INFO`` so the operator
+    transcript surfaces the regeneration attempt in the RCA Cards
+    section."""
+    return DecisionRecord(
+        run_id=run_id,
+        iteration=int(iteration),
+        decision_type=DecisionType.RCA_FORMED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.RCA_REGENERATION_TRIGGERED,
+        cluster_id=str(cluster_id),
+        target_qids=tuple(target_qids),
+        next_action=(
+            "Re-run RCA prompt with broader evidence "
+            "(failure_buckets, ASI, cluster cohort)."
+        ),
+    )
+
+
+def rca_regeneration_exhausted_record(
+    *,
+    run_id: str,
+    iteration: int,
+    cluster_id: str,
+    attempted_evidence_sources: tuple[str, ...],
+) -> DecisionRecord:
+    """Cycle 5 T3 — emit when RCA regeneration cannot produce a
+    grounded card; the AG is retired with ``UNRESOLVED`` so the
+    cluster appears in the operator transcript's Unresolved QID
+    Buckets section instead of generating empty proposals."""
+    return DecisionRecord(
+        run_id=run_id,
+        iteration=int(iteration),
+        decision_type=DecisionType.RCA_FORMED,
+        outcome=DecisionOutcome.UNRESOLVED,
+        reason_code=ReasonCode.RCA_REGENERATION_EXHAUSTED,
+        cluster_id=str(cluster_id),
+        next_action="Promote cluster to benchmark-review queue.",
+        metrics={
+            "attempted_evidence_sources": list(attempted_evidence_sources),
+        },
+    )
