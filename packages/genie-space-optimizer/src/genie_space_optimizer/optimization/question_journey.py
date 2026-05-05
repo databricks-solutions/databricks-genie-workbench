@@ -155,6 +155,40 @@ def emit_cluster_membership_events(
     )
 
 
+def dedupe_consecutive_trunk_events(
+    events: list[QuestionJourneyEvent],
+) -> list[QuestionJourneyEvent]:
+    """Cycle 6 F-5 — collapse consecutive identical trunk events for
+    the same qid. Trunk events are those with empty ``proposal_id``;
+    lane events are intentionally per-patch and never deduped here.
+
+    The dedup key is ``(question_id, stage)``; equal-keyed consecutive
+    trunk events collapse to a single event (the first occurrence).
+    A lane event between two trunk emits resets the tracker so a later
+    same-stage trunk re-emit is preserved (legitimate cycle).
+
+    Run 833969815458299 emitted 13 ``soft_signal -> soft_signal`` trunk
+    transitions because the soft-pile classifier and the cluster-
+    formation pass both append a soft_signal event for the same qid.
+    N1's contract validator and lane-keys landed; this is the missing
+    producer-side dedup.
+    """
+    deduped: list[QuestionJourneyEvent] = []
+    last_trunk_key_by_qid: dict[str, tuple[str, str]] = {}
+    for ev in events or ():
+        is_trunk = not (ev.proposal_id or "")
+        if is_trunk:
+            key = (str(ev.question_id), str(ev.stage))
+            if last_trunk_key_by_qid.get(str(ev.question_id)) == key:
+                continue
+            last_trunk_key_by_qid[str(ev.question_id)] = key
+            deduped.append(ev)
+        else:
+            last_trunk_key_by_qid.pop(str(ev.question_id), None)
+            deduped.append(ev)
+    return deduped
+
+
 def _format_event(ev: QuestionJourneyEvent) -> str:
     parts: list[str] = [ev.stage]
     if ev.cluster_id:

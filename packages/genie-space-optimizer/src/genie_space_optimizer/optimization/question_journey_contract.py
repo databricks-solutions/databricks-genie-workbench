@@ -365,6 +365,16 @@ def validate_question_journeys(
     trunk anchor (``ag_assigned`` or ``diagnostic_ag``) prepended so the
     first transition is the lane's anchor -> proposed.
     """
+    # Cycle 6 F-5 — collapse consecutive identical trunk events at the
+    # validator boundary. The producer-side emit can legitimately call
+    # ``_journey_emit`` twice for the same (qid, stage) on adjacent
+    # passes (soft-pile classifier + cluster-formation), and validating
+    # the raw stream produces noise that obscures real violations.
+    from genie_space_optimizer.optimization.question_journey import (
+        dedupe_consecutive_trunk_events,
+    )
+    events = dedupe_consecutive_trunk_events(list(events or ()))
+
     legal_stages = {s.value for s in JourneyStage}
     eval_qid_set = {str(q) for q in eval_qids if q}
 
