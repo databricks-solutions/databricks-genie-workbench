@@ -415,13 +415,22 @@ def proposal_generated_records(
     alternatives_tuple = tuple(proposal_alternatives_for_ag or ())
     records: list[DecisionRecord] = []
     for proposal in proposals or []:
-        proposal_id = str(
+        bare_id = str(
             proposal.get("proposal_id")
             or proposal.get("id")
             or ""
         )
-        if not proposal_id:
+        if not bare_id:
             continue
+        # Cycle 6 F-4 — prefer expanded_patch_id (lever-qualified, e.g.
+        # "L1:P001#1") so cross-lever patches sharing a parent
+        # ``proposal_id`` ("P001" under L1, L5, L6) emit distinct
+        # canonical ids. The bare id is preserved on
+        # ``metrics.parent_proposal_id`` for legitimate parent-grouping
+        # (N1 lane semantics intentionally group patches sharing a
+        # parent).
+        expanded_id = str(proposal.get("expanded_patch_id") or "")
+        canonical_id = expanded_id or bare_id
         target_qids = tuple(
             str(q) for q in (proposal.get("_grounding_target_qids") or []) if str(q)
         )
@@ -455,19 +464,22 @@ def proposal_generated_records(
                 cluster_id=cluster_id,
                 rca_id=rca_id,
                 root_cause=root_cause,
-                proposal_id=proposal_id,
-                proposal_ids=(proposal_id,),
+                proposal_id=canonical_id,
+                proposal_ids=(canonical_id,),
                 evidence_refs=evidence_refs,
                 affected_qids=target_qids,
                 target_qids=target_qids,
                 source_cluster_ids=(cluster_id,) if cluster_id else (),
                 expected_effect=(
-                    f"Proposal {proposal_id} ({patch_type}) should "
+                    f"Proposal {canonical_id} ({patch_type}) should "
                     f"resolve {root_cause or 'failure pattern'} on "
                     f"{len(target_qids)} target qid(s)."
                 ),
                 next_action="Apply proposal and observe target qid outcome.",
-                metrics={"patch_type": patch_type},
+                metrics={
+                    "patch_type": patch_type,
+                    "parent_proposal_id": bare_id,
+                },
                 alternatives_considered=alternatives_tuple,
             )
         )
