@@ -1216,6 +1216,33 @@ _PRODUCTIVE_ITERATION_NO_OP_REASON_CODES: tuple[str, ...] = (
 )
 
 
+def _emit_idempotency_key(record: dict) -> tuple:
+    """Cycle 6 F-1 — idempotency key for the per-iteration emit-dedup
+    set. A record duplicate is detected on::
+
+      (decision_type, reason_code, cluster_id, iteration, proposal_id)
+
+    ``proposal_id`` is included so ``proposal_generated`` records
+    (intentionally one-per-proposal) don't collapse, while
+    ``iteration_budget_decision``, ``soft_cluster_drift_recovered``,
+    and ``rca_regeneration_*`` records (which carry no
+    ``proposal_id``) collapse correctly when emitted twice.
+
+    Reproducer: run 833969815458299 emitted two
+    ``iteration_budget_consumed`` records and two
+    ``soft_cluster_drift_recovered`` records for S001 in iter 1
+    because the Cycle 5 emit sites were wired at both the AG-
+    materialization loop and the iteration-end consolidation.
+    """
+    return (
+        str(record.get("decision_type") or ""),
+        str(record.get("reason_code") or ""),
+        str(record.get("cluster_id") or ""),
+        int(record.get("iteration") or 0),
+        str(record.get("proposal_id") or ""),
+    )
+
+
 def _classify_iteration_no_op_cause(
     records: list[dict] | None,
 ) -> str:
@@ -12640,6 +12667,14 @@ def _run_lever_loop(
         # holds with the flag off.
         _iter_dropped_causal: list = []
 
+        # Cycle 6 F-1 — per-iteration emit-dedup set for Cycle 5 records
+        # (iteration_budget_decision, soft_cluster_drift_recovered,
+        # rca_regeneration_*). Each Cycle 5 emit site checks
+        # ``_emit_idempotency_key(rec)`` against this set before
+        # emitting and skips on hit. Reset at every iteration body
+        # entry so cross-iteration repeats (intentional) still flow.
+        _iter_emitted_keys: set[tuple] = set()
+
         # P3 task 4 — drain any structural-synthesis proposals queued
         # at the prior iteration's lever-5 drop site. Same-iteration
         # injection (below at the drop site) is the active path, so
@@ -13526,6 +13561,11 @@ def _run_lever_loop(
                         drifted_qids=_drifted,
                         cluster_dropped=(_cid in _t5_dropped),
                     )
+                    # Cycle 6 F-1 — skip duplicate emits within an iteration.
+                    _t5_key = _emit_idempotency_key(_t5_rec.to_dict())
+                    if _t5_key in _iter_emitted_keys:
+                        continue
+                    _iter_emitted_keys.add(_t5_key)
                     _decision_emit(_t5_rec)
                     _current_iter_inputs.setdefault(
                         "decision_records", []
@@ -14215,10 +14255,16 @@ def _run_lever_loop(
                                         cluster_id=_t3_cluster_id,
                                         target_qids=_t3_target_qids,
                                     )
-                                    _decision_emit(_t3_trig)
-                                    _current_iter_inputs.setdefault(
-                                        "decision_records", []
-                                    ).append(_t3_trig.to_dict())
+                                    # Cycle 6 F-1 — gate duplicate emits.
+                                    _t3_trig_key = _emit_idempotency_key(
+                                        _t3_trig.to_dict()
+                                    )
+                                    if _t3_trig_key not in _iter_emitted_keys:
+                                        _iter_emitted_keys.add(_t3_trig_key)
+                                        _decision_emit(_t3_trig)
+                                        _current_iter_inputs.setdefault(
+                                            "decision_records", []
+                                        ).append(_t3_trig.to_dict())
                                     # Regen helper is a follow-up; for
                                     # now every regen attempt fails so
                                     # the AG retires here.
@@ -14228,10 +14274,15 @@ def _run_lever_loop(
                                         cluster_id=_t3_cluster_id,
                                         attempted_evidence_sources=(),
                                     )
-                                    _decision_emit(_t3_exh)
-                                    _current_iter_inputs.setdefault(
-                                        "decision_records", []
-                                    ).append(_t3_exh.to_dict())
+                                    _t3_exh_key = _emit_idempotency_key(
+                                        _t3_exh.to_dict()
+                                    )
+                                    if _t3_exh_key not in _iter_emitted_keys:
+                                        _iter_emitted_keys.add(_t3_exh_key)
+                                        _decision_emit(_t3_exh)
+                                        _current_iter_inputs.setdefault(
+                                            "decision_records", []
+                                        ).append(_t3_exh.to_dict())
                                     # Skip this AG entirely — do not
                                     # append to action_groups or the
                                     # diagnostic queue.
@@ -19659,25 +19710,33 @@ def _run_lever_loop(
                     no_op_cause=(_iter_no_op_cause or None),
                     applied_patches=int(_iter_applied_count),
                 )
-                _decision_emit(_iter_budget_rec)
-                _current_iter_inputs.setdefault(
-                    "decision_records", []
-                ).append(_iter_budget_rec.to_dict())
-                _counter_after = (
-                    iteration_counter
-                    if _iter_consumed
-                    else iteration_counter - 1
+                # Cycle 6 F-1 — gate duplicate emits within the iteration.
+                # The counter decrement and marker print live inside the
+                # gate too, since both are non-idempotent side effects.
+                _iter_budget_key = _emit_idempotency_key(
+                    _iter_budget_rec.to_dict()
                 )
-                print(iteration_budget_marker(
-                    optimization_run_id=str(run_id),
-                    iteration=int(iteration_counter),
-                    consumed=_iter_consumed,
-                    no_op_cause=str(_iter_no_op_cause or ""),
-                    applied_patches=int(_iter_applied_count),
-                    iteration_counter_after=int(_counter_after),
-                ))
-                if not _iter_consumed:
-                    iteration_counter -= 1
+                if _iter_budget_key not in _iter_emitted_keys:
+                    _iter_emitted_keys.add(_iter_budget_key)
+                    _decision_emit(_iter_budget_rec)
+                    _current_iter_inputs.setdefault(
+                        "decision_records", []
+                    ).append(_iter_budget_rec.to_dict())
+                    _counter_after = (
+                        iteration_counter
+                        if _iter_consumed
+                        else iteration_counter - 1
+                    )
+                    print(iteration_budget_marker(
+                        optimization_run_id=str(run_id),
+                        iteration=int(iteration_counter),
+                        consumed=_iter_consumed,
+                        no_op_cause=str(_iter_no_op_cause or ""),
+                        applied_patches=int(_iter_applied_count),
+                        iteration_counter_after=int(_counter_after),
+                    ))
+                    if not _iter_consumed:
+                        iteration_counter -= 1
         except Exception:
             logger.debug(
                 "Cycle 5 T1: iteration_budget emit failed (non-fatal)",
