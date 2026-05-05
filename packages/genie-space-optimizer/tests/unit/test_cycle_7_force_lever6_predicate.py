@@ -14,25 +14,27 @@ def _isolate_flag(monkeypatch):
     monkeypatch.delenv("GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA", raising=False)
 
 
-def test_flag_default_off() -> None:
-    from genie_space_optimizer.common.config import (
-        require_lever6_for_sql_shape_rca_enabled,
-    )
-    assert require_lever6_for_sql_shape_rca_enabled() is False
-
-
-def test_flag_on_when_env_true(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA", "1")
+def test_flag_default_on() -> None:
+    """Code-freeze flip 2026-05-04: default-on so Cycle 7 doesn't
+    ship as dead code. Env-var=0 disables for rollback."""
     from genie_space_optimizer.common.config import (
         require_lever6_for_sql_shape_rca_enabled,
     )
     assert require_lever6_for_sql_shape_rca_enabled() is True
 
 
+def test_flag_off_when_env_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA", "0")
+    from genie_space_optimizer.common.config import (
+        require_lever6_for_sql_shape_rca_enabled,
+    )
+    assert require_lever6_for_sql_shape_rca_enabled() is False
+
+
 def test_predicate_false_when_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    """All five conditions met but the flag is off => no force-emit.
-    This is the byte-stability guarantee."""
-    monkeypatch.delenv("GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA", raising=False)
+    """All five conditions met but the flag is explicitly disabled
+    via env-var=0 => no force-emit. Rollback path."""
+    monkeypatch.setenv("GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA", "0")
     from genie_space_optimizer.optimization.harness import (
         _should_force_lever6_proposal,
     )

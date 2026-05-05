@@ -32,7 +32,8 @@ def _stub_l6_proposal() -> dict:
 def test_force_lever6_helper_returns_none_when_predicate_false(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv("GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA", raising=False)
+    """Rollback path: env-var=0 disables the predicate's flag guard."""
+    monkeypatch.setenv("GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA", "0")
     from genie_space_optimizer.optimization import harness as _harness
 
     out = _harness._force_lever6_proposal_for_ag(

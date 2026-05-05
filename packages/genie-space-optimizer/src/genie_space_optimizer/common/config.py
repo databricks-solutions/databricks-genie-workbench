@@ -5423,12 +5423,17 @@ def require_lever6_for_sql_shape_rca_enabled() -> bool:
     Closes the run-to-run variance on ``gs_009 missing_filter``
     observed between attempts ``993610879088298`` (L6 emitted, 100%
     in 2 iters) and ``596465849524605`` (no L6, terminal 95.8%) of
-    run ``2afb0be2-88b6-4832-99aa-c7e78fbc90f7``. Default off; flip
-    on after corpus validation. Set
-    ``GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA=1`` to enable; flip default
-    on via ``_flag_default_on`` for the cycle-7 deploy after corpus
-    measurement closes."""
-    return _flag_enabled("GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA")
+    run ``2afb0be2-88b6-4832-99aa-c7e78fbc90f7``.
+
+    Default-on (default on): the predicate's 5 narrow guards mean
+    only AGs in the exact variance lane fire, the forced candidate
+    flows through existing safety gates, and LLM exceptions are
+    caught non-fatally. Set
+    ``GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA=0`` to disable for
+    rollback. Corpus-validated on a future deploy via the
+    ``596465849524605`` analog; flipped default-on at code-freeze on
+    2026-05-04 to avoid Cycle 7 shipping as dead code."""
+    return _flag_default_on("GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA")
 
 
 # ──────────────────────────────────────────────────────────────────────
