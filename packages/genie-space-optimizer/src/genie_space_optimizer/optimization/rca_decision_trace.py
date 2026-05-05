@@ -76,6 +76,10 @@ class ReasonCode(str, Enum):
     PROPOSAL_GENERATION_EMPTY = "proposal_generation_empty"
     STRUCTURAL_GATE_DROPPED_INSTRUCTION_ONLY = "structural_gate_dropped_instruction_only"
     NO_STRUCTURAL_CANDIDATE = "no_structural_candidate"
+    # Cycle 7 N3: emitted at PROPOSAL_GENERATED/INFO when the harness
+    # forces a Lever-6 add_sql_snippet_* candidate onto an AG whose
+    # cluster has a SQL-shape root cause and no L6 from the strategist.
+    LEVER6_FORCED_FOR_SQL_SHAPE_RCA = "lever6_forced_for_sql_shape_rca"
     NO_CAUSAL_TARGET = "no_causal_target"
     PATCH_CAP_SELECTED = "patch_cap_selected"
     PATCH_CAP_DROPPED = "patch_cap_dropped"

@@ -600,6 +600,79 @@ def no_structural_candidate_record(
     )
 
 
+def lever6_forced_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str = "",
+    rca_id: str = "",
+    root_cause: str = "",
+    target_qids: tuple[str, ...] = (),
+    recommended_levers: tuple[int, ...] = (),
+    existing_patch_types: tuple[str, ...] = (),
+) -> DecisionRecord:
+    """Cycle 7 N3 — emit one PROPOSAL_GENERATED/INFO record when the
+    harness forces a Lever-6 candidate onto an AG whose cluster has
+    a SQL-shape root cause and the strategist did not propose any
+    add_sql_snippet_* patch.
+
+    INFO outcome (not DROPPED, not ACCEPTED): the forced L6 candidate
+    is appended to the AG's proposal slate and flows through the
+    existing safety gates. This record documents the *force-emit*
+    decision; the candidate's ultimate fate is captured by the
+    downstream gate / acceptance records.
+    """
+    levers_str = (
+        ",".join(str(int(L)) for L in recommended_levers)
+        if recommended_levers
+        else "(none)"
+    )
+    patches_str = (
+        ",".join(str(p) for p in existing_patch_types)
+        if existing_patch_types
+        else "(empty)"
+    )
+    evidence_refs = tuple(
+        v for v in (
+            f"ag:{ag_id}" if ag_id else "",
+            f"cluster:{cluster_id}" if cluster_id else "",
+            f"rca:{rca_id}" if rca_id else "",
+        ) if v
+    )
+    return DecisionRecord(
+        run_id=run_id,
+        iteration=int(iteration),
+        decision_type=DecisionType.PROPOSAL_GENERATED,
+        outcome=DecisionOutcome.INFO,
+        reason_code=ReasonCode.LEVER6_FORCED_FOR_SQL_SHAPE_RCA,
+        ag_id=str(ag_id or ""),
+        cluster_id=str(cluster_id or ""),
+        rca_id=str(rca_id or ""),
+        root_cause=str(root_cause or ""),
+        proposal_id="",
+        proposal_ids=(),
+        evidence_refs=evidence_refs,
+        affected_qids=target_qids,
+        target_qids=target_qids,
+        source_cluster_ids=(cluster_id,) if cluster_id else (),
+        gate="proposal_generation",
+        reason_detail=(
+            f"recommended_levers={levers_str};"
+            f" existing_patch_types={patches_str}"
+        ),
+        expected_effect=(
+            "Forced add_sql_snippet_* candidate appended to AG to "
+            "close run-to-run variance on SQL-shape hard failures."
+        ),
+        next_action=(
+            "Generated L6 candidate flows through normal blast_radius "
+            "and leakage gates."
+        ),
+        metrics={"forced_lever6_candidates": 1},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Patch applied — PATCH_APPLIED
 # ---------------------------------------------------------------------------

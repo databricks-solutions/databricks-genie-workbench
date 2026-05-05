@@ -75,3 +75,30 @@ def iteration_budget_marker(
         "iteration_counter_after": int(iteration_counter_after),
     }
     return "GSO_ITERATION_BUDGET_V1 " + json.dumps(payload, sort_keys=True)
+
+
+def lever6_forced_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    root_cause: str,
+    target_qids: tuple[str, ...],
+    recommended_levers: tuple[int, ...],
+    existing_patch_types: tuple[str, ...],
+) -> str:
+    """Cycle 7 N3 — one-line marker emitted at each forced-L6
+    decision so the postmortem analyzer can audit which AGs got a
+    forced Lever-6 candidate and what slate they had before."""
+    payload = {
+        "optimization_run_id": str(optimization_run_id),
+        "iteration": int(iteration),
+        "ag_id": str(ag_id),
+        "cluster_id": str(cluster_id),
+        "root_cause": str(root_cause),
+        "target_qids": [str(q) for q in target_qids],
+        "recommended_levers": [int(L) for L in recommended_levers],
+        "existing_patch_types": [str(p) for p in existing_patch_types],
+    }
+    return "GSO_LEVER6_FORCED_V1 " + json.dumps(payload, sort_keys=True)

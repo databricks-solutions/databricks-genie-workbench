@@ -201,3 +201,30 @@ def parse_iteration_budget_marker(line: str) -> dict:
             payload.get("iteration_counter_after") or 0
         ),
     }
+
+
+def parse_lever6_forced_marker(line: str) -> dict:
+    """Parse ``GSO_LEVER6_FORCED_V1 {json}`` (Cycle 7 N3).
+
+    Returns ``{"optimization_run_id", "iteration", "ag_id",
+    "cluster_id", "root_cause", "target_qids", "recommended_levers",
+    "existing_patch_types"}``. Missing fields default to empty strings,
+    zero, or empty lists so older fixtures parse cleanly.
+    """
+    payload = _parse_named_marker(line, "GSO_LEVER6_FORCED_V1")
+    return {
+        "optimization_run_id": str(payload.get("optimization_run_id") or ""),
+        "iteration": int(payload.get("iteration") or 0),
+        "ag_id": str(payload.get("ag_id") or ""),
+        "cluster_id": str(payload.get("cluster_id") or ""),
+        "root_cause": str(payload.get("root_cause") or ""),
+        "target_qids": [
+            str(q) for q in (payload.get("target_qids") or [])
+        ],
+        "recommended_levers": [
+            int(L) for L in (payload.get("recommended_levers") or [])
+        ],
+        "existing_patch_types": [
+            str(p) for p in (payload.get("existing_patch_types") or [])
+        ],
+    }
