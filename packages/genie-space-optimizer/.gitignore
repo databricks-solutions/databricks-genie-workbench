@@ -56,5 +56,6 @@ mlflow.db
 browser-test-output/
 genie_space_optimizer_docs/
 
-# docs
-docs/
+# docs — exclude all planning artifacts; keep only the process design reference
+docs/*
+!docs/optimizer-process-design

@@ -1,0 +1,3340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Genie Space Optimizer · A Scientific Loop For Better Answers</title>
+<meta name="description" content="An interactive guide to the Databricks Genie Space Optimizer: the scientific improvement loop, the six-task DAG, the RCA process spine, the six levers, MLflow evidence, and cross-workspace deployment.">
+<style>
+/* ============================================================
+   THEME TOKENS
+   ============================================================ */
+:root {
+  --bg:        #0b1120;
+  --bg-2:      #0f172a;
+  --surface:   #1e293b;
+  --surface-2: #334155;
+  --border:    #334155;
+  --border-2:  #475569;
+  --text:      #e2e8f0;
+  --text-dim:  #94a3b8;
+  --text-mute: #64748b;
+
+  --accent:        #ff3621;     /* Databricks red-orange — interventions */
+  --accent-glow:   rgba(255, 54, 33, 0.18);
+  --evidence:      #06b6d4;     /* cyan — evidence/traces */
+  --evidence-glow: rgba(6, 182, 212, 0.18);
+  --accept:        #10b981;     /* green — accepted improvement */
+  --accept-glow:   rgba(16, 185, 129, 0.20);
+  --gate:          #f59e0b;     /* amber — gates / caution */
+  --gate-glow:     rgba(245, 158, 11, 0.18);
+  --info:          #3b82f6;
+  --info-glow:     rgba(59, 130, 246, 0.18);
+  --rose:          #f43f5e;
+  --rose-glow:     rgba(244, 63, 94, 0.16);
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 16px;
+  --r-xl: 22px;
+
+  --gap-2: 0.5rem;
+  --gap-3: 0.75rem;
+  --gap-4: 1rem;
+  --gap-6: 1.5rem;
+  --gap-8: 2rem;
+  --gap-12: 3rem;
+
+  --max-w: 1200px;
+
+  --shadow-md: 0 6px 20px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 16px 50px rgba(0, 0, 0, 0.55);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
+               "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono",
+               Menlo, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.55;
+  font-size: 16px;
+  overflow-x: hidden;
+  background-image:
+    radial-gradient(ellipse at 20% -10%, rgba(255, 54, 33, 0.06), transparent 50%),
+    radial-gradient(ellipse at 80% 110%, rgba(6, 182, 212, 0.06), transparent 50%),
+    linear-gradient(rgba(255,255,255,0.012) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.012) 1px, transparent 1px);
+  background-size: auto, auto, 48px 48px, 48px 48px;
+  background-attachment: fixed;
+}
+
+/* ============================================================
+   NAVIGATION
+   ============================================================ */
+header.topnav {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--gap-8);
+  background: rgba(11, 17, 32, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  z-index: 100;
+}
+.brand {
+  display: flex; align-items: center; gap: var(--gap-3);
+  font-weight: 600; font-size: 0.95rem; color: var(--text);
+  text-decoration: none;
+}
+.brand-mark {
+  width: 32px; height: 32px;
+  border-radius: var(--r-sm);
+  background: linear-gradient(135deg, var(--accent), #ff7a5c);
+  display: flex; align-items: center; justify-content: center;
+  color: white; font-weight: 700;
+  box-shadow: 0 0 16px var(--accent-glow);
+}
+.brand-mark svg { width: 18px; height: 18px; }
+.nav-links {
+  display: flex; gap: var(--gap-6);
+  font-size: 0.85rem;
+}
+.nav-links a {
+  color: var(--text-dim);
+  text-decoration: none;
+  transition: color 0.18s ease;
+}
+.nav-links a:hover, .nav-links a.active { color: var(--text); }
+.nav-cta {
+  display: inline-flex; align-items: center; gap: var(--gap-2);
+  padding: 8px 14px;
+  font-size: 0.8rem; font-weight: 500;
+  color: var(--bg);
+  background: var(--evidence);
+  border-radius: var(--r-sm);
+  text-decoration: none;
+  transition: filter 0.18s ease;
+}
+.nav-cta:hover { filter: brightness(1.15); }
+
+/* ============================================================
+   STORY PROGRESS RAIL
+   ============================================================ */
+aside.story-rail {
+  position: fixed;
+  top: 50%;
+  left: 1.5rem;
+  transform: translateY(-50%);
+  z-index: 50;
+  display: flex; flex-direction: column; gap: var(--gap-4);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-mute);
+  user-select: none;
+}
+.rail-act {
+  display: flex; align-items: center; gap: var(--gap-3);
+  opacity: 0.55;
+  transition: opacity 0.25s ease, color 0.25s ease;
+}
+.rail-act.active { opacity: 1; color: var(--text); }
+.rail-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  transition: background 0.25s ease, box-shadow 0.25s ease;
+}
+.rail-act.active .rail-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-glow);
+}
+@media (max-width: 1100px) { aside.story-rail { display: none; } }
+
+/* ============================================================
+   GENERIC LAYOUT
+   ============================================================ */
+main { padding-top: 64px; }
+section.scene {
+  padding: var(--gap-12) var(--gap-8);
+  max-width: var(--max-w);
+  margin: 0 auto;
+}
+.eyebrow {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--evidence);
+  margin-bottom: var(--gap-3);
+  padding: 4px 10px;
+  border: 1px solid var(--evidence);
+  border-radius: 999px;
+  background: var(--evidence-glow);
+}
+.eyebrow.act-stakes { color: var(--rose); border-color: var(--rose); background: var(--rose-glow); }
+.eyebrow.act-method { color: var(--gate); border-color: var(--gate); background: var(--gate-glow); }
+.eyebrow.act-proof  { color: var(--accept); border-color: var(--accept); background: var(--accept-glow); }
+
+h1 { font-size: clamp(2.1rem, 5vw, 3.6rem); line-height: 1.1; font-weight: 700; letter-spacing: -0.02em; }
+h2 { font-size: clamp(1.6rem, 3.4vw, 2.3rem); line-height: 1.18; font-weight: 700; letter-spacing: -0.015em; margin-bottom: var(--gap-4); }
+h3 { font-size: 1.15rem; font-weight: 600; margin-bottom: var(--gap-3); color: var(--text); }
+h4 { font-size: 0.95rem; font-weight: 600; margin-bottom: var(--gap-2); color: var(--text); }
+
+.lede {
+  font-size: 1.05rem;
+  color: var(--text-dim);
+  max-width: 720px;
+  margin-bottom: var(--gap-8);
+}
+.takeaway {
+  display: flex; gap: var(--gap-3); align-items: flex-start;
+  padding: var(--gap-4) var(--gap-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-md);
+  font-size: 0.95rem;
+  color: var(--text);
+  margin-bottom: var(--gap-6);
+}
+.takeaway-icon {
+  width: 22px; height: 22px;
+  flex-shrink: 0;
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.split { display: grid; grid-template-columns: 1fr 2fr; gap: var(--gap-8); align-items: start; }
+@media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+
+/* ============================================================
+   HERO
+   ============================================================ */
+section.hero {
+  min-height: 92vh;
+  display: flex;
+  align-items: center;
+  padding: var(--gap-12) var(--gap-8);
+  max-width: var(--max-w);
+  margin: 0 auto;
+}
+.hero-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap-12);
+  align-items: center;
+  width: 100%;
+}
+@media (max-width: 900px) { .hero-grid { grid-template-columns: 1fr; } }
+.hero-title { margin-bottom: var(--gap-6); }
+.hero-title .accent { color: var(--accent); }
+.hero-sub {
+  font-size: 1.15rem;
+  color: var(--text-dim);
+  margin-bottom: var(--gap-8);
+  max-width: 540px;
+}
+.pillars { display: flex; flex-wrap: wrap; gap: var(--gap-3); margin-bottom: var(--gap-8); }
+.pillar {
+  padding: 6px 14px;
+  border: 1px solid var(--border-2);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  color: var(--text);
+  font-family: var(--font-mono);
+  background: var(--surface);
+  letter-spacing: 0.04em;
+}
+.pillar.evid { border-color: var(--evidence); color: var(--evidence); background: var(--evidence-glow); }
+.pillar.gain { border-color: var(--accept); color: var(--accept); background: var(--accept-glow); }
+.pillar.repeat { border-color: var(--info); color: var(--info); background: var(--info-glow); }
+.pillar.audit { border-color: var(--gate); color: var(--gate); background: var(--gate-glow); }
+
+.hero-instrument {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  max-width: 480px;
+  margin-left: auto;
+}
+.dial {
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 50% 50%, var(--bg-2), var(--bg) 70%);
+  border: 1px solid var(--border-2);
+  box-shadow: 0 0 80px var(--accent-glow), inset 0 0 60px rgba(0,0,0,0.5);
+}
+.dial-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px dashed var(--evidence);
+  opacity: 0.45;
+}
+.dial-ring.r1 { inset: 14%; }
+.dial-ring.r2 { inset: 28%; }
+.dial-tick {
+  position: absolute;
+  width: 60px; height: 60px;
+  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 0.04em;
+  text-align: center;
+  box-shadow: var(--shadow-md);
+}
+.dial-tick svg { width: 18px; height: 18px; margin-bottom: 2px; }
+.dial-tick.measure  { top: -10px; left: 50%; transform: translateX(-50%); border-color: var(--evidence); color: var(--evidence); }
+.dial-tick.diagnose { right: -10px; top: 50%; transform: translateY(-50%); border-color: var(--gate); color: var(--gate); }
+.dial-tick.intervene { bottom: -10px; left: 50%; transform: translateX(-50%); border-color: var(--accent); color: var(--accent); }
+.dial-tick.prove    { left: -10px; top: 50%; transform: translateY(-50%); border-color: var(--accept); color: var(--accept); }
+.dial-tick.learn    { top: 8%; right: 8%; border-color: var(--info); color: var(--info); }
+.dial-center {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--text);
+  width: 60%;
+  line-height: 1.4;
+}
+.dial-center strong { display: block; font-size: 1.1rem; color: var(--accent); margin-bottom: 4px; }
+
+@keyframes spinSlow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.dial-needle {
+  position: absolute;
+  top: 50%; left: 50%;
+  width: 2px; height: 35%;
+  background: linear-gradient(to top, var(--accent), transparent);
+  transform-origin: 50% 100%;
+  animation: spinSlow 22s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dial-needle { animation: none; }
+}
+
+/* ============================================================
+   BEFORE / AFTER CONTRAST
+   ============================================================ */
+.contrast-toggle {
+  display: inline-flex;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px;
+  margin-bottom: var(--gap-6);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+.contrast-toggle button {
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  transition: background 0.2s ease, color 0.2s ease;
+}
+.contrast-toggle button.active { background: var(--accent); color: white; }
+
+.contrast-grid {
+  display: grid;
+  grid-template-columns: 1fr 60px 1fr;
+  gap: var(--gap-6);
+  align-items: stretch;
+}
+.contrast-divider {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: var(--gap-2);
+}
+.contrast-divider .arrow-large {
+  font-size: 2.5rem; color: var(--accent); font-weight: 300;
+}
+.contrast-card {
+  padding: var(--gap-6);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  display: flex; flex-direction: column; gap: var(--gap-3);
+}
+.contrast-card.bad { border-left: 3px solid var(--rose); opacity: 0.78; }
+.contrast-card.good { border-left: 3px solid var(--accept); }
+.contrast-card .label {
+  font-family: var(--font-mono); font-size: 0.7rem;
+  text-transform: uppercase; letter-spacing: 0.14em;
+  color: var(--text-mute); margin-bottom: 2px;
+}
+.contrast-card.good .label { color: var(--accept); }
+.contrast-card.bad .label { color: var(--rose); }
+.contrast-card .item {
+  display: flex; align-items: flex-start; gap: var(--gap-3);
+  font-size: 0.9rem; color: var(--text);
+}
+.contrast-card .item .ic {
+  width: 18px; height: 18px;
+  flex-shrink: 0; margin-top: 2px;
+  color: var(--text-mute);
+}
+.contrast-card.good .item .ic { color: var(--accept); }
+.contrast-card.bad .item .ic { color: var(--rose); }
+@media (max-width: 800px) {
+  .contrast-grid { grid-template-columns: 1fr; }
+  .contrast-divider { flex-direction: row; justify-content: center; }
+}
+
+/* ============================================================
+   DAG
+   ============================================================ */
+.dag-strip {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: var(--gap-3);
+  margin-bottom: var(--gap-8);
+}
+.dag-step {
+  position: relative;
+  padding: var(--gap-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+  text-align: left;
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+.dag-step:hover, .dag-step:focus-visible {
+  transform: translateY(-3px);
+  border-color: var(--evidence);
+  box-shadow: 0 6px 24px var(--evidence-glow);
+}
+.dag-step.active {
+  border-color: var(--accent);
+  background: linear-gradient(180deg, var(--surface), var(--surface-2));
+  box-shadow: 0 8px 30px var(--accent-glow);
+}
+.dag-step .num {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-mute);
+  letter-spacing: 0.08em;
+}
+.dag-step .ic {
+  width: 28px; height: 28px;
+  margin: var(--gap-2) 0;
+  color: var(--evidence);
+}
+.dag-step.active .ic { color: var(--accent); }
+.dag-step .name {
+  font-weight: 600; font-size: 0.95rem;
+  margin-bottom: 2px;
+}
+.dag-step .out {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--text-mute);
+}
+@media (max-width: 800px) {
+  .dag-strip { grid-template-columns: repeat(2, 1fr); }
+}
+
+.dag-detail {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap-6);
+  padding: var(--gap-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+@media (max-width: 800px) { .dag-detail { grid-template-columns: 1fr; } }
+.dag-detail .why { color: var(--text-dim); font-size: 0.95rem; line-height: 1.6; }
+.dag-detail .iolist { display: flex; flex-direction: column; gap: var(--gap-3); }
+.iolist .iorow {
+  padding: var(--gap-3);
+  background: var(--bg-2);
+  border-radius: var(--r-sm);
+  border-left: 2px solid var(--evidence);
+}
+.iolist .iorow.out-row { border-left-color: var(--accent); }
+.iolist .iorow .lab {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--text-mute);
+  margin-bottom: 4px;
+}
+.iolist .iorow .val {
+  font-family: var(--font-mono); font-size: 0.78rem;
+  color: var(--text); line-height: 1.5;
+}
+.dag-detail .source {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-mute);
+  margin-top: var(--gap-3);
+  padding-top: var(--gap-3);
+  border-top: 1px dashed var(--border);
+}
+
+/* ============================================================
+   SCIENTIFIC LOOP
+   ============================================================ */
+.loop-wrap {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap-8);
+  align-items: center;
+}
+@media (max-width: 900px) { .loop-wrap { grid-template-columns: 1fr; } }
+.loop-svg-wrap { aspect-ratio: 1 / 1; max-width: 460px; margin: 0 auto; position: relative; }
+.score-card {
+  padding: var(--gap-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.score-row {
+  display: grid;
+  grid-template-columns: 130px 1fr 60px;
+  align-items: center;
+  gap: var(--gap-3);
+  margin-bottom: var(--gap-3);
+}
+.score-row .lab {
+  font-family: var(--font-mono); font-size: 0.78rem;
+  color: var(--text-dim);
+}
+.score-bar {
+  height: 8px; background: var(--bg-2); border-radius: 4px; overflow: hidden;
+}
+.score-fill {
+  height: 100%; border-radius: 4px;
+  transition: width 0.6s ease;
+}
+.score-fill.baseline { background: var(--rose); }
+.score-fill.candidate { background: var(--accept); }
+.score-fill.floor    { background: var(--gate); width: 4px; height: 100%; }
+.score-row .val {
+  text-align: right; font-family: var(--font-mono); font-size: 0.9rem;
+  color: var(--text);
+}
+.score-verdict {
+  margin-top: var(--gap-4);
+  padding: var(--gap-3);
+  border-radius: var(--r-md);
+  font-family: var(--font-mono); font-size: 0.78rem;
+  display: flex; align-items: center; gap: var(--gap-2);
+}
+.score-verdict.accept { background: var(--accept-glow); color: var(--accept); border: 1px solid var(--accept); }
+
+/* ============================================================
+   RCA SPINE
+   ============================================================ */
+.rca-wrap {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: var(--gap-6);
+}
+@media (max-width: 900px) { .rca-wrap { grid-template-columns: 1fr; } }
+.rca-rail {
+  display: flex; flex-direction: column; gap: var(--gap-2);
+  position: relative;
+}
+.rca-rail::before {
+  content: ""; position: absolute;
+  left: 14px; top: 12px; bottom: 12px;
+  width: 1px; background: var(--border-2);
+}
+.rca-step {
+  display: flex; align-items: center; gap: var(--gap-3);
+  padding: var(--gap-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-sans);
+  color: var(--text-dim);
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+  position: relative;
+  z-index: 1;
+}
+.rca-step:hover { color: var(--text); background: var(--surface); }
+.rca-step.active {
+  background: var(--surface);
+  border-color: var(--accent);
+  color: var(--text);
+  box-shadow: 0 4px 16px var(--accent-glow);
+}
+.rca-step .step-num {
+  width: 28px; height: 28px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-size: 0.72rem;
+  color: var(--text-mute);
+}
+.rca-step.active .step-num { background: var(--accent); color: white; border-color: var(--accent); }
+.rca-step .step-name { font-size: 0.85rem; font-weight: 500; }
+.rca-step .group-tint { width: 4px; height: 16px; border-radius: 2px; }
+.rca-step .group-tint.t-diag  { background: var(--evidence); }
+.rca-step .group-tint.t-plan  { background: var(--gate); }
+.rca-step .group-tint.t-act   { background: var(--accent); }
+.rca-step .group-tint.t-judge { background: var(--accept); }
+.rca-step .group-tint.t-learn { background: var(--info); }
+
+.rca-detail {
+  padding: var(--gap-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.rca-detail .stage-tag {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-mute);
+}
+.rca-detail h3 { font-size: 1.4rem; margin: var(--gap-2) 0 var(--gap-3); }
+.rca-detail .detail-text { color: var(--text-dim); font-size: 0.95rem; line-height: 1.65; margin-bottom: var(--gap-4); }
+.artifact-list { display: flex; flex-direction: column; gap: var(--gap-2); margin-top: var(--gap-3); }
+.artifact-row {
+  display: flex; align-items: center; gap: var(--gap-3);
+  padding: var(--gap-2) var(--gap-3);
+  background: var(--bg-2);
+  border-radius: var(--r-sm);
+  border-left: 2px solid var(--evidence);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text);
+}
+.artifact-row .desc { color: var(--text-mute); font-family: var(--font-sans); font-size: 0.8rem; }
+
+/* ============================================================
+   FUNNEL
+   ============================================================ */
+.funnel {
+  display: flex; flex-direction: column;
+  align-items: stretch;
+  max-width: 720px; margin: 0 auto;
+}
+.funnel-row {
+  margin: 0 auto;
+  padding: var(--gap-3) var(--gap-4);
+  border: 1px solid var(--gate);
+  background: var(--gate-glow);
+  border-radius: var(--r-md);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--gate);
+  text-align: center;
+  margin-bottom: var(--gap-2);
+  position: relative;
+}
+.funnel-row .rejected {
+  position: absolute;
+  right: -120px;
+  top: 50%; transform: translateY(-50%);
+  font-size: 0.7rem; color: var(--text-mute);
+  font-family: var(--font-mono);
+}
+.funnel-row.r1 { width: 100%; }
+.funnel-row.r2 { width: 92%; }
+.funnel-row.r3 { width: 84%; }
+.funnel-row.r4 { width: 76%; }
+.funnel-row.r5 { width: 68%; }
+.funnel-row.r6 { width: 60%; }
+.funnel-row.r7 { width: 52%; }
+.funnel-survivors {
+  width: 44%; margin: var(--gap-3) auto;
+  padding: var(--gap-3) var(--gap-4);
+  background: var(--surface);
+  border: 1px solid var(--evidence);
+  color: var(--evidence);
+  border-radius: var(--r-md);
+  text-align: center;
+  font-family: var(--font-mono); font-size: 0.85rem;
+}
+.funnel-outcomes {
+  display: flex; gap: var(--gap-4); justify-content: center;
+  margin-top: var(--gap-4);
+}
+.funnel-outcomes .outcome {
+  padding: var(--gap-3) var(--gap-6);
+  border-radius: var(--r-md);
+  font-family: var(--font-mono); font-size: 0.85rem;
+  font-weight: 500;
+  display: flex; align-items: center; gap: var(--gap-2);
+}
+.outcome.accept { background: var(--accept-glow); color: var(--accept); border: 1px solid var(--accept); }
+.outcome.reject { background: var(--rose-glow); color: var(--rose); border: 1px solid var(--rose); }
+
+/* ============================================================
+   SIX LEVERS HEXAGON
+   ============================================================ */
+.lever-wrap {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: var(--gap-8);
+  align-items: center;
+}
+@media (max-width: 900px) { .lever-wrap { grid-template-columns: 1fr; } }
+
+/* Hex stage — polar layout. Nodes are positioned by their CENTER on a
+   circle of radius 36% of the stage; node size scales with stage size. */
+.hex-stage {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  width: 100%;
+  max-width: 460px;
+  min-width: 280px;
+  margin: 0 auto;
+}
+.hex-spokes {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+.hex-center {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 32%; aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--accent-glow), transparent 75%);
+  border: 1px solid var(--accent);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  text-align: center;
+  padding: 6%;
+  font-family: var(--font-mono);
+  font-size: clamp(0.6rem, 1.4vw, 0.75rem);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 0 40px var(--accent-glow);
+  z-index: 1;
+}
+.hex-center strong {
+  display: block; color: white;
+  font-size: clamp(0.78rem, 1.7vw, 0.95rem);
+  margin-bottom: 2px;
+  white-space: nowrap;
+}
+
+.hex-node {
+  position: absolute;
+  width: 27%;
+  aspect-ratio: 1 / 1;
+  background: var(--surface);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-md);
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, transform 0.18s ease;
+  text-align: center;
+  padding: 4%;
+  font-family: var(--font-sans);
+  color: var(--text-dim);
+  font-size: clamp(0.6rem, 1.3vw, 0.72rem);
+  /* Default: position by node center using transform */
+  transform: translate(-50%, -50%);
+  z-index: 2;
+}
+.hex-node:hover {
+  border-color: var(--evidence);
+  color: var(--text);
+  background: var(--surface-2);
+  transform: translate(-50%, -50%) scale(1.06);
+  z-index: 3;
+}
+.hex-node.active {
+  border-color: var(--accent);
+  color: var(--text);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  box-shadow: 0 8px 30px var(--accent-glow);
+  transform: translate(-50%, -50%) scale(1.08);
+  z-index: 3;
+}
+.hex-node .ic { width: 22px; height: 22px; margin-bottom: 4px; flex-shrink: 0; }
+.hex-node.fam-data .ic { color: var(--evidence); }
+.hex-node.fam-route .ic { color: #a855f7; }
+.hex-node.fam-answer .ic { color: var(--accept); }
+.hex-node .id {
+  font-family: var(--font-mono);
+  font-size: clamp(0.55rem, 1vw, 0.62rem);
+  color: var(--text-mute);
+  margin-bottom: 2px;
+  letter-spacing: 0.04em;
+}
+.hex-node .label {
+  font-weight: 500;
+  line-height: 1.2;
+  font-size: clamp(0.62rem, 1.2vw, 0.72rem);
+}
+
+/* Pointy-top hexagon: nodes at 12 / 2 / 4 / 6 / 8 / 10 o'clock.
+   Center positions are on a circle of radius 36% from stage center.
+   Vertical 36%·cos(60°) = 18%; horizontal 36%·sin(60°) ≈ 31.18%. */
+.hex-node.n-12 { top: 14%; left: 50%; }
+.hex-node.n-2  { top: 32%; left: 81.18%; }
+.hex-node.n-4  { top: 68%; left: 81.18%; }
+.hex-node.n-6  { top: 86%; left: 50%; }
+.hex-node.n-8  { top: 68%; left: 18.82%; }
+.hex-node.n-10 { top: 32%; left: 18.82%; }
+
+@media (max-width: 600px) {
+  .hex-stage { max-width: 360px; }
+  .hex-node { width: 30%; }
+}
+
+/* ============================================================
+   SYSTEM MAP — full-width capstone
+   ============================================================ */
+section.scene.scene-fullwidth {
+  max-width: none;
+  padding: var(--gap-6) var(--gap-6) var(--gap-6);
+}
+@media (max-width: 700px) {
+  section.scene.scene-fullwidth { padding-left: var(--gap-4); padding-right: var(--gap-4); }
+}
+
+/* Header row: intro on the left, tour bar on the right */
+.map-header-row {
+  max-width: 1600px;
+  margin: 0 auto var(--gap-3);
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: var(--gap-6);
+  align-items: end;
+}
+@media (max-width: 1180px) {
+  .map-header-row { grid-template-columns: 1fr; gap: var(--gap-3); align-items: start; }
+}
+.map-intro { min-width: 0; }
+.map-intro h2 {
+  font-size: clamp(1.3rem, 2vw, 1.7rem);
+  margin-bottom: 4px;
+}
+.map-intro .lede {
+  max-width: 820px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+  margin-bottom: 0;
+}
+.map-intro .eyebrow { margin-bottom: 6px; padding: 2px 8px; font-size: 0.62rem; }
+
+/* Tour control bar (sits in header row, right column) */
+.map-tours-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-2) var(--gap-3);
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+@media (max-width: 1180px) {
+  .map-tours-bar { justify-content: flex-start; }
+}
+.map-tour-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-2);
+  align-items: center;
+}
+.map-tour-picker .picker-lab {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+  margin-right: 4px;
+}
+.map-tour-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease, background 0.18s ease;
+}
+.map-tour-btn:hover { border-color: var(--evidence); color: var(--text); }
+.map-tour-btn.active {
+  border-color: var(--accent);
+  color: var(--text);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.map-tour-transport {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 4px 4px var(--gap-2);
+}
+.tour-tx-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  width: 34px; height: 34px;
+  border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+.tour-tx-btn:hover:not(:disabled) {
+  background: var(--bg-2);
+  color: var(--text);
+  border-color: var(--border);
+}
+.tour-tx-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.tour-tx-btn.tour-play {
+  background: var(--accent);
+  color: white;
+  width: 38px; height: 38px;
+}
+.tour-tx-btn.tour-play:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+  border-color: transparent;
+}
+.tour-tx-btn.tour-play:disabled {
+  background: var(--surface-2);
+  color: var(--text-mute);
+}
+.tour-tx-btn.tour-reset {
+  width: auto;
+  padding: 0 14px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  margin-left: var(--gap-2);
+}
+.tour-status {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  padding: 0 var(--gap-3);
+  white-space: nowrap;
+  min-width: 200px;
+  text-align: center;
+}
+.tour-status .step {
+  color: var(--accent);
+  font-weight: 600;
+  margin-right: 6px;
+}
+.tour-status .name {
+  color: var(--text);
+}
+
+/* Stage — 2/3 canvas + 1/3 detail panel, both fit within viewport */
+.map-stage {
+  max-width: 1600px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+  gap: var(--gap-4);
+  align-items: stretch;
+}
+@media (max-width: 1080px) {
+  .map-stage { grid-template-columns: 1fr; }
+}
+.map-canvas-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--gap-3);
+  position: relative;
+  overflow: hidden;
+  height: clamp(420px, calc(100vh - 260px), 760px);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-2);
+}
+.map-canvas {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  display: block;
+}
+
+/* Zones */
+.map-zone { stroke: rgba(255,255,255,0.04); stroke-width: 1; }
+.map-zone.z-inputs   { fill: rgba(59, 130, 246, 0.06); }
+.map-zone.z-harness  { fill: rgba(6, 182, 212, 0.06); }
+.map-zone.z-judges   { fill: rgba(245, 158, 11, 0.05); }
+.map-zone.z-diag     { fill: rgba(244, 63, 94, 0.06); }
+.map-zone.z-strat    { fill: rgba(255, 54, 33, 0.06); }
+.map-zone.z-gates    { fill: rgba(16, 185, 129, 0.06); }
+.map-zone.z-mem      { fill: rgba(168, 85, 247, 0.07); }
+
+.map-zone-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  fill: var(--text-mute);
+  font-weight: 600;
+}
+.map-zone-label.z-inputs   { fill: #60a5fa; }
+.map-zone-label.z-harness  { fill: var(--evidence); }
+.map-zone-label.z-judges   { fill: var(--gate); }
+.map-zone-label.z-diag     { fill: var(--rose); }
+.map-zone-label.z-strat    { fill: var(--accent); }
+.map-zone-label.z-gates    { fill: var(--accept); }
+.map-zone-label.z-mem      { fill: #c084fc; }
+
+/* Edges */
+.map-edge {
+  stroke: var(--border-2);
+  stroke-width: 1.5;
+  color: var(--border-2);  /* drives marker fill via currentColor */
+  opacity: 0.5;
+  transition: opacity 0.18s ease, stroke 0.18s ease, stroke-width 0.18s ease;
+}
+.map-edge-dashed { stroke-dasharray: 4 3; }
+.map-edge-loop {
+  stroke: var(--accent);
+  color: var(--accent);
+  opacity: 0.55;
+  stroke-dasharray: 5 4;
+}
+.map-edge-rose {
+  stroke: var(--rose);
+  color: var(--rose);
+  opacity: 0.55;
+}
+.map-edge.active {
+  opacity: 1;
+  stroke-width: 2.4;
+  stroke: var(--accent);
+  color: var(--accent);
+}
+.map-edge.active.map-edge-rose { stroke: var(--rose); color: var(--rose); }
+
+/* Nodes */
+.map-node { cursor: pointer; outline: none; }
+.map-node rect {
+  fill: var(--bg-2);
+  stroke: var(--border-2);
+  stroke-width: 1.4;
+  transition: stroke 0.18s ease, fill 0.18s ease, filter 0.18s ease;
+}
+.map-node text {
+  fill: var(--text-dim);
+  font-family: var(--font-sans);
+  pointer-events: none;
+  transition: fill 0.18s ease;
+}
+.map-node .n-title {
+  font-size: 13px;
+  font-weight: 600;
+  fill: var(--text);
+}
+.map-node .n-sub {
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  fill: var(--text-mute);
+}
+
+.map-node.n-inputs   rect { stroke: rgba(96,165,250,0.5); }
+.map-node.n-harness  rect { stroke: rgba(6,182,212,0.55); }
+.map-node.n-code     rect { stroke: rgba(96,165,250,0.55); fill: rgba(59,130,246,0.06); }
+.map-node.n-llm      rect { stroke: rgba(245,158,11,0.55); fill: rgba(245,158,11,0.05); }
+.map-node.n-hybrid   rect { stroke: rgba(168,85,247,0.55); fill: rgba(168,85,247,0.05); }
+.map-node.n-finalize rect { stroke: rgba(16,185,129,0.5);  fill: rgba(16,185,129,0.04); stroke-dasharray: 4 3; }
+.map-node.n-feedback rect { stroke: rgba(245,158,11,0.55); fill: rgba(245,158,11,0.06); }
+.map-node.n-diag     rect { stroke: rgba(244,63,94,0.55); }
+.map-node.n-strat    rect { stroke: rgba(255,54,33,0.55); }
+.map-node.n-gate     rect { stroke: rgba(16,185,129,0.55); }
+.map-node.n-apply    rect { stroke: rgba(16,185,129,0.7); }
+.map-node.n-mem      rect { stroke: rgba(168,85,247,0.55); }
+
+.map-node:hover rect,
+.map-node:focus-visible rect {
+  stroke: var(--accent);
+  stroke-width: 2;
+  filter: drop-shadow(0 4px 14px var(--accent-glow));
+}
+.map-node.active rect {
+  stroke: var(--accent);
+  stroke-width: 2.4;
+  fill: var(--surface-2);
+  filter: drop-shadow(0 6px 20px var(--accent-glow));
+}
+.map-node.active .n-title { fill: white; }
+.map-node.dim rect { opacity: 0.35; }
+.map-node.dim text { opacity: 0.45; }
+.map-edge.dim { opacity: 0.12; }
+
+/* Legend — slim row inside canvas-wrap, sits below the SVG */
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--gap-3);
+  padding: 6px var(--gap-2) 0;
+  border-top: 1px dashed var(--border);
+  flex: 0 0 auto;
+}
+.leg-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+.leg-chip .dot {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--border-2);
+}
+.leg-chip.leg-inputs   .dot { background: #60a5fa; }
+.leg-chip.leg-harness  .dot { background: var(--evidence); }
+.leg-chip.leg-judges   .dot { background: var(--gate); }
+.leg-chip.leg-diag     .dot { background: var(--rose); }
+.leg-chip.leg-strat    .dot { background: var(--accent); }
+.leg-chip.leg-gates    .dot { background: var(--accept); }
+.leg-chip.leg-mem      .dot { background: #c084fc; }
+.leg-chip.leg-loop     .dot { background: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.leg-chip.leg-rollback .dot { background: var(--rose); box-shadow: 0 0 0 1px var(--rose) inset; }
+
+/* Detail panel — side column, single column, scrolls inside */
+.map-detail {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: var(--gap-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-3);
+  height: clamp(420px, calc(100vh - 260px), 760px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-2) transparent;
+}
+@media (max-width: 1080px) {
+  .map-detail { height: auto; max-height: 60vh; }
+}
+.map-detail::-webkit-scrollbar { width: 8px; }
+.map-detail::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 4px; }
+.map-detail .col {
+  display: flex; flex-direction: column;
+  gap: var(--gap-3);
+  min-width: 0;
+}
+.map-detail .col + .col {
+  border-top: 1px dashed var(--border);
+  padding-top: var(--gap-3);
+  margin-top: var(--gap-2);
+}
+.map-detail .zone-tag {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-mute);
+  padding: 4px 10px;
+  background: var(--bg-2);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  align-self: flex-start;
+}
+.map-detail .zone-tag .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+}
+.map-detail .name {
+  font-size: 1.2rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.map-detail .role {
+  color: var(--text-dim);
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+.map-detail .sub-title {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--text-mute);
+  margin-top: var(--gap-2);
+}
+.map-detail .iolist {
+  display: flex; flex-direction: column; gap: 6px;
+}
+.map-detail .iorow {
+  padding: var(--gap-3);
+  background: var(--bg-2);
+  border-radius: var(--r-sm);
+  border-left: 2px solid var(--evidence);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text);
+  line-height: 1.5;
+}
+.map-detail .iorow.out-row { border-left-color: var(--accent); }
+.map-detail .shape {
+  background: var(--bg-2);
+  border-radius: var(--r-sm);
+  padding: var(--gap-3);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-dim);
+  border-left: 2px solid var(--gate);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.map-detail .code-list {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.map-detail .code-list .code-row { color: var(--text-dim); }
+.map-detail .code-list .code-row b { color: var(--text); font-weight: 500; }
+.map-detail .chip-row {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.map-detail .chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease;
+}
+.map-detail .chip:hover { border-color: var(--accent); color: var(--text); }
+.map-detail .chip.up::before  { content: "←"; color: var(--evidence); }
+.map-detail .chip.down::before { content: "→"; color: var(--accent); }
+
+.lever-detail {
+  padding: var(--gap-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.lever-detail .name { font-size: 1.2rem; font-weight: 600; margin-bottom: var(--gap-2); }
+.lever-detail .fam-tag {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: var(--gap-3);
+}
+.fam-tag.fam-data { background: var(--evidence-glow); color: var(--evidence); }
+.fam-tag.fam-route { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+.fam-tag.fam-answer { background: var(--accept-glow); color: var(--accept); }
+.lever-detail .desc { color: var(--text-dim); font-size: 0.93rem; margin-bottom: var(--gap-4); line-height: 1.6; }
+.lever-detail .sub { margin-top: var(--gap-4); }
+.lever-detail .sub-title {
+  font-family: var(--font-mono); font-size: 0.7rem;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--text-mute); margin-bottom: var(--gap-2);
+}
+.lever-detail .sub ul { list-style: none; padding: 0; }
+.lever-detail .sub ul li {
+  padding: 6px 0;
+  font-size: 0.86rem;
+  color: var(--text-dim);
+  display: flex; gap: var(--gap-2); align-items: flex-start;
+}
+.lever-detail .sub ul li::before {
+  content: "—"; color: var(--accent); font-weight: 600;
+  flex-shrink: 0;
+}
+.lever-detail .gate-line {
+  margin-top: var(--gap-4);
+  padding: var(--gap-3);
+  background: var(--gate-glow);
+  border-left: 2px solid var(--gate);
+  border-radius: var(--r-sm);
+  font-size: 0.84rem;
+  color: var(--text);
+}
+.lever-detail .gate-line strong { color: var(--gate); }
+
+/* ============================================================
+   EVIDENCE ROOM
+   ============================================================ */
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--gap-3);
+}
+.evidence-card {
+  padding: var(--gap-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--evidence);
+  border-radius: var(--r-md);
+  transition: transform 0.18s ease, border-color 0.18s ease;
+  cursor: pointer;
+}
+.evidence-card:hover { transform: translateY(-3px); border-color: var(--evidence); box-shadow: 0 6px 20px var(--evidence-glow); }
+.evidence-card .ic { width: 22px; height: 22px; color: var(--evidence); margin-bottom: var(--gap-2); }
+.evidence-card .ttl { font-weight: 600; font-size: 0.92rem; margin-bottom: 4px; color: var(--text); }
+.evidence-card .role {
+  font-family: var(--font-mono); font-size: 0.65rem;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--text-mute); margin-bottom: var(--gap-2);
+}
+.evidence-card .body { font-size: 0.82rem; color: var(--text-dim); line-height: 1.5; }
+.evidence-card .file {
+  margin-top: var(--gap-2);
+  font-family: var(--font-mono); font-size: 0.7rem; color: var(--accent);
+}
+
+/* ============================================================
+   FINALIZE / DEPLOY
+   ============================================================ */
+.deploy-wrap {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: var(--gap-6);
+  align-items: stretch;
+}
+@media (max-width: 900px) { .deploy-wrap { grid-template-columns: 1fr; } }
+.deploy-lane {
+  padding: var(--gap-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  display: flex; flex-direction: column; gap: var(--gap-4);
+}
+.deploy-lane h3 {
+  display: flex; align-items: center; gap: var(--gap-2);
+}
+.deploy-lane .step {
+  padding: var(--gap-3);
+  background: var(--bg-2);
+  border-radius: var(--r-sm);
+  border-left: 2px solid var(--evidence);
+}
+.deploy-lane .step .label {
+  font-family: var(--font-mono); font-size: 0.7rem;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--text-mute); margin-bottom: 4px;
+}
+.deploy-lane .step .body { font-size: 0.85rem; color: var(--text); line-height: 1.5; }
+.deploy-bridge {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: var(--gap-4);
+  position: relative;
+}
+.bridge-arch {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--accent-glow), transparent 70%);
+  border: 1px solid var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--accent);
+}
+.bridge-arch svg { width: 28px; height: 28px; }
+.bridge-line {
+  font-family: var(--font-mono); font-size: 0.72rem;
+  color: var(--accent); margin-top: var(--gap-2);
+  text-align: center;
+}
+.bridge-note {
+  font-size: 0.78rem; color: var(--text-mute);
+  margin-top: var(--gap-3); max-width: 180px; text-align: center;
+}
+
+/* ============================================================
+   CLOSING
+   ============================================================ */
+.closing {
+  text-align: center;
+  padding: var(--gap-12) var(--gap-8);
+  max-width: 900px; margin: 0 auto;
+}
+.closing-words {
+  display: flex; flex-wrap: wrap; justify-content: center; gap: var(--gap-6);
+  margin: var(--gap-8) 0;
+}
+.cw {
+  font-family: var(--font-mono);
+  font-size: clamp(1.3rem, 2.5vw, 2rem);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.cw.measure   { color: var(--evidence); }
+.cw.diagnose  { color: var(--gate); }
+.cw.intervene { color: var(--accent); }
+.cw.prove     { color: var(--accept); }
+.cw.learn     { color: var(--info); }
+.talk-track {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--gap-4);
+  margin-top: var(--gap-8);
+}
+.talk-card {
+  padding: var(--gap-6);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  text-align: left;
+}
+.talk-card .num {
+  font-family: var(--font-mono); font-size: 1.5rem; font-weight: 700;
+  color: var(--accent); margin-bottom: var(--gap-2);
+}
+.talk-card .ttl { font-weight: 600; margin-bottom: var(--gap-2); color: var(--text); }
+.talk-card .body { font-size: 0.85rem; color: var(--text-dim); line-height: 1.55; }
+
+/* ============================================================
+   FOOTER
+   ============================================================ */
+footer.site-foot {
+  padding: var(--gap-8);
+  border-top: 1px solid var(--border);
+  font-size: 0.78rem; color: var(--text-mute);
+  text-align: center;
+}
+footer.site-foot a { color: var(--text-dim); text-decoration: none; }
+footer.site-foot a:hover { color: var(--text); }
+.foot-grid {
+  display: flex; gap: var(--gap-6); justify-content: center; flex-wrap: wrap;
+  margin-bottom: var(--gap-3);
+  font-family: var(--font-mono); font-size: 0.7rem;
+}
+
+/* ============================================================
+   UTILITIES
+   ============================================================ */
+.muted { color: var(--text-mute); }
+.mono  { font-family: var(--font-mono); }
+.stack { display: flex; flex-direction: column; gap: var(--gap-3); }
+.stack-tight { display: flex; flex-direction: column; gap: var(--gap-2); }
+.row { display: flex; gap: var(--gap-3); flex-wrap: wrap; }
+.center { text-align: center; }
+.hidden { display: none; }
+.glow { text-shadow: 0 0 12px currentColor; }
+
+/* ============================================================
+   RESPONSIVE
+   ============================================================ */
+@media (max-width: 700px) {
+  header.topnav { padding: 0 var(--gap-4); }
+  .nav-links { display: none; }
+  section.scene { padding: var(--gap-8) var(--gap-4); }
+}
+</style>
+</head>
+<body>
+
+<!-- ====================================================================
+     NAVIGATION
+==================================================================== -->
+<header class="topnav" role="banner">
+  <a href="#hero" class="brand">
+    <span class="brand-mark">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M10 2v6c0 2.2-1.8 4-4 4H2"/>
+        <path d="M14 2v6c0 2.2 1.8 4 4 4h4"/>
+        <path d="M8 22v-8M16 22v-8M2 22h20"/>
+        <path d="M12 2c4.4 0 8 3.6 8 8v2c0 1.6-1.1 3-2.7 3H6.7C5.1 15 4 13.6 4 12v-2c0-4.4 3.6-8 8-8Z"/>
+      </svg>
+    </span>
+    Genie Space Optimizer
+  </a>
+  <nav class="nav-links" aria-label="Section navigation">
+    <a href="#dag">Pipeline</a>
+    <a href="#loop">Method</a>
+    <a href="#rca">Process</a>
+    <a href="#funnel">Gates</a>
+    <a href="#levers">Levers</a>
+    <a href="#map">Map</a>
+    <a href="#evidence">Evidence</a>
+    <a href="#deploy">Ship It</a>
+  </nav>
+  <a href="#closing" class="nav-cta">SA Talk Track →</a>
+</header>
+
+<!-- ====================================================================
+     STORY PROGRESS RAIL
+==================================================================== -->
+<aside class="story-rail" aria-hidden="true">
+  <div class="rail-act" data-act="stakes"><span class="rail-dot"></span>STAKES</div>
+  <div class="rail-act" data-act="method"><span class="rail-dot"></span>METHOD</div>
+  <div class="rail-act" data-act="proof"><span class="rail-dot"></span>PROOF</div>
+</aside>
+
+<main>
+
+<!-- ====================================================================
+     HERO — PROMISE
+==================================================================== -->
+<section class="hero" id="hero" data-act="stakes">
+  <div class="hero-grid">
+    <div>
+      <div class="eyebrow act-stakes">Genie Space Optimizer</div>
+      <h1 class="hero-title">A Scientific Loop For <span class="accent">Better Answers</span>.</h1>
+      <p class="hero-sub">
+        The optimizer treats a Databricks Genie Space as a system under test. It measures it against a benchmark, diagnoses why specific questions fail, applies bounded interventions, and only keeps changes that demonstrably improve the score.
+      </p>
+      <div class="pillars">
+        <span class="pillar evid">Measured</span>
+        <span class="pillar gain">Improved</span>
+        <span class="pillar audit">Auditable</span>
+        <span class="pillar repeat">Repeatable</span>
+      </div>
+      <div class="row">
+        <a href="#contrast" class="nav-cta">See the contrast</a>
+        <a href="#dag" class="nav-cta" style="background:var(--surface);color:var(--text);border:1px solid var(--border-2);">Skip to the pipeline</a>
+      </div>
+    </div>
+    <div class="hero-instrument" aria-label="Optimizer instrument dial showing the five-step scientific loop">
+      <div class="dial"></div>
+      <div class="dial-ring r1"></div>
+      <div class="dial-ring r2"></div>
+      <div class="dial-needle"></div>
+      <div class="dial-tick measure">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg></span>
+      </div>
+      <div class="dial-tick diagnose">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span>
+      </div>
+      <div class="dial-tick intervene">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>
+      </div>
+      <div class="dial-tick prove">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span>
+      </div>
+      <div class="dial-tick learn">
+        <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m2 9 3-3 3 3"/><path d="M13 18H7a4 4 0 0 1-4-4V6"/><path d="m22 15-3 3-3-3"/><path d="M11 6h6a4 4 0 0 1 4 4v8"/></svg></span>
+      </div>
+      <div class="dial-center">
+        <strong>Evidence</strong>
+        not intuition
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     CONTRAST — WHAT IS vs WHAT COULD BE
+==================================================================== -->
+<section class="scene" id="contrast" data-act="stakes">
+  <div class="eyebrow act-stakes">The Stakes</div>
+  <h2>Most Genie Spaces Are Tuned By Intuition. They Don't Have To Be.</h2>
+  <p class="lede">A Genie Space can look impressive in demos and be quietly wrong in production. The classic failure pattern is to edit instructions, glance at a few questions, and ship — until a different question silently breaks weeks later. The optimizer replaces this loop with one that produces evidence, not vibes.</p>
+
+  <div class="contrast-toggle" role="tablist" aria-label="Compare tuning approaches">
+    <button class="active" data-mode="both" role="tab" aria-selected="true">Show both</button>
+    <button data-mode="bad" role="tab" aria-selected="false">Old way</button>
+    <button data-mode="good" role="tab" aria-selected="false">Optimizer way</button>
+  </div>
+
+  <div class="contrast-grid" id="contrastGrid">
+    <div class="contrast-card bad">
+      <span class="label">What is — Tune by intuition</span>
+      <div class="item"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18M9 9a3 3 0 0 1 4.5-2.6"/><path d="M14.12 14.12A3 3 0 0 1 9 12V8"/></svg></span><div><strong>Manual prompt edits.</strong> No record of what changed or why.</div></div>
+      <div class="item"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg></span><div><strong>A few "golden questions"</strong> tested informally.</div></div>
+      <div class="item"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 1 21h22L12 2z"/><path d="M12 9v4M12 17h.01"/></svg></span><div><strong>Subjective verdict.</strong> "Looks better." Ship.</div></div>
+      <div class="item"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span><div><strong>Silent regression</strong> discovered weeks later.</div></div>
+    </div>
+    <div class="contrast-divider">
+      <span class="arrow-large">→</span>
+      <span class="mono muted">replace with</span>
+    </div>
+    <div class="contrast-card good">
+      <span class="label">What could be — Optimize by evidence</span>
+      <div class="item"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 12l3 3 7-7"/></svg></span><div><strong>Versioned benchmarks</strong> in Unity Catalog. Train + held-out splits.</div></div>
+      <div class="item"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span><div><strong>RCA evidence per failure.</strong> Patches start from diagnosis.</div></div>
+      <div class="item"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span><div><strong>Judged re-evaluation.</strong> Same scorer panel as baseline.</div></div>
+      <div class="item"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></span><div><strong>Accept only proven gains.</strong> Roll back the rest.</div></div>
+    </div>
+  </div>
+
+  <div class="takeaway" style="margin-top: var(--gap-8);">
+    <span class="takeaway-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.6V17h8v-2.4A7 7 0 0 0 12 2z"/></svg></span>
+    <div><strong>The optimizer's promise:</strong> the Genie Space configuration that ships is the one that was proven against a held-out set of questions, not the one that was last edited.</div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     DAG — INTERACTIVE PIPELINE
+==================================================================== -->
+<section class="scene" id="dag" data-act="method">
+  <div class="eyebrow act-method">The Journey</div>
+  <h2>Six Tasks. One Databricks Job. Clear Handoffs.</h2>
+  <p class="lede">Each optimization run is one Databricks Job execution with six tasks defined in <span class="mono">databricks.yml</span>. Click any task to see what it does, what flows in, what flows out, and where the source of truth lives in the codebase.</p>
+
+  <div class="dag-strip" role="tablist" aria-label="Pipeline tasks">
+    <button class="dag-step active" data-step="preflight" role="tab" aria-selected="true">
+      <span class="num">01 / 06</span>
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2v6c0 2.2-1.8 4-4 4H2"/><path d="M14 2v6c0 2.2 1.8 4 4 4h4"/><path d="M8 22v-8M16 22v-8M2 22h20"/><path d="M12 2c4.4 0 8 3.6 8 8v2c0 1.6-1.1 3-2.7 3H6.7C5.1 15 4 13.6 4 12v-2c0-4.4 3.6-8 8-8Z"/></svg></span>
+      <div class="name">Preflight</div>
+      <div class="out">space_config + benchmarks</div>
+    </button>
+    <button class="dag-step" data-step="baseline" role="tab" aria-selected="false">
+      <span class="num">02 / 06</span>
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 16l3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M2 16l3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10M12 12V6M3 7V3h4M17 3h4v4"/></svg></span>
+      <div class="name">Baseline</div>
+      <div class="out">scoreboard.json</div>
+    </button>
+    <button class="dag-step" data-step="enrichment" role="tab" aria-selected="false">
+      <span class="num">03 / 06</span>
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m16 6 4 2v13H6v-2.3"/><path d="M11.7 5C13.4 4 16 4 16 6v15"/><path d="M3 4h6"/></svg></span>
+      <div class="name">Enrichment</div>
+      <div class="out">enriched space_config</div>
+    </button>
+    <button class="dag-step" data-step="loop" role="tab" aria-selected="false">
+      <span class="num">04 / 06</span>
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10c1.1 0 2 .9 2 2s-.9 2-2 2"/><path d="M18 10c1.1 0 2 .9 2 2s-.9 2-2 2"/><path d="M22 12H4"/><path d="m18 7-5 5 5 5"/></svg></span>
+      <div class="name">Lever Loop</div>
+      <div class="out">candidate config</div>
+    </button>
+    <button class="dag-step" data-step="finalize" role="tab" aria-selected="false">
+      <span class="num">05 / 06</span>
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="6"/><path d="M15.5 12.9 17 22l-5-3-5 3 1.5-9.1"/></svg></span>
+      <div class="name">Finalize</div>
+      <div class="out">champion model URI</div>
+    </button>
+    <button class="dag-step" data-step="deploy" role="tab" aria-selected="false">
+      <span class="num">06 / 06</span>
+      <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg></span>
+      <div class="name">Deploy</div>
+      <div class="out">target Genie Space</div>
+    </button>
+  </div>
+
+  <div class="dag-detail" id="dagDetail" aria-live="polite">
+    <!-- populated by JS -->
+  </div>
+</section>
+
+<!-- ====================================================================
+     SCIENTIFIC LOOP
+==================================================================== -->
+<section class="scene" id="loop" data-act="method">
+  <div class="eyebrow act-method">The Method</div>
+  <h2>Inside The Lever Loop, Every Iteration Is A Controlled Experiment.</h2>
+  <p class="lede">This is the dial from the hero — now powered. Each iteration runs five mental moves in order. The score card on the right shows the single criterion that decides accept-or-rollback: <em>did the post-arbiter accuracy clear the gain floor?</em></p>
+
+  <div class="loop-wrap">
+    <div class="loop-svg-wrap" aria-label="Scientific loop diagram">
+      <svg viewBox="0 0 400 400" xmlns="http://www.w3.org/2000/svg" style="width: 100%; height: 100%;">
+        <defs>
+          <radialGradient id="loopGlow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#ff3621" stop-opacity="0.15"/>
+            <stop offset="100%" stop-color="#ff3621" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <circle cx="200" cy="200" r="170" fill="url(#loopGlow)"/>
+        <circle cx="200" cy="200" r="170" fill="none" stroke="#06b6d4" stroke-width="1.5" stroke-dasharray="6 10" opacity="0.55"/>
+        <circle cx="200" cy="200" r="120" fill="none" stroke="#475569" stroke-width="1" stroke-dasharray="3 5" opacity="0.5"/>
+
+        <g class="lp-node" transform="translate(200, 30)">
+          <circle r="34" fill="#1e293b" stroke="#06b6d4" stroke-width="1.5"/>
+          <text y="-2" text-anchor="middle" fill="#06b6d4" font-size="12" font-family="monospace" font-weight="700">MEASURE</text>
+          <text y="14" text-anchor="middle" fill="#94a3b8" font-size="9">scoreboard</text>
+        </g>
+        <g class="lp-node" transform="translate(348, 130)">
+          <circle r="34" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5"/>
+          <text y="-2" text-anchor="middle" fill="#f59e0b" font-size="11" font-family="monospace" font-weight="700">DIAGNOSE</text>
+          <text y="14" text-anchor="middle" fill="#94a3b8" font-size="9">RCA ledger</text>
+        </g>
+        <g class="lp-node" transform="translate(310, 318)">
+          <circle r="34" fill="#1e293b" stroke="#ff3621" stroke-width="1.5"/>
+          <text y="-2" text-anchor="middle" fill="#ff3621" font-size="10" font-family="monospace" font-weight="700">INTERVENE</text>
+          <text y="14" text-anchor="middle" fill="#94a3b8" font-size="9">apply patch</text>
+        </g>
+        <g class="lp-node" transform="translate(90, 318)">
+          <circle r="34" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
+          <text y="-2" text-anchor="middle" fill="#10b981" font-size="13" font-family="monospace" font-weight="700">PROVE</text>
+          <text y="14" text-anchor="middle" fill="#94a3b8" font-size="9">re-evaluate</text>
+        </g>
+        <g class="lp-node" transform="translate(52, 130)">
+          <circle r="34" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+          <text y="-2" text-anchor="middle" fill="#3b82f6" font-size="13" font-family="monospace" font-weight="700">LEARN</text>
+          <text y="14" text-anchor="middle" fill="#94a3b8" font-size="9">reflect</text>
+        </g>
+
+        <g transform="translate(200, 200)" text-anchor="middle">
+          <circle r="50" fill="#0f172a" stroke="#ff3621" stroke-width="2"/>
+          <text y="-4" fill="#fff" font-size="13" font-weight="700">Evidence,</text>
+          <text y="14" fill="#ff3621" font-size="13" font-weight="700">not intuition</text>
+        </g>
+      </svg>
+    </div>
+
+    <div class="score-card" aria-label="Iteration acceptance score card">
+      <div class="mono muted" style="font-size:0.7rem;letter-spacing:0.14em;text-transform:uppercase;margin-bottom:var(--gap-3);">Acceptance criterion (illustrative)</div>
+      <h3 style="font-size:1.05rem;margin-bottom:var(--gap-4);">Did the score clear the gain floor?</h3>
+
+      <div class="score-row">
+        <span class="lab">Baseline</span>
+        <div class="score-bar"><div class="score-fill baseline" style="width:72%"></div></div>
+        <span class="val">72%</span>
+      </div>
+      <div class="score-row">
+        <span class="lab">Gain floor</span>
+        <div class="score-bar"><div class="score-fill" style="width:75%; background:linear-gradient(to right, transparent 72%, var(--gate) 72%, var(--gate) 75%, transparent 75%);"></div></div>
+        <span class="val mono" style="color:var(--gate);">+3pp</span>
+      </div>
+      <div class="score-row">
+        <span class="lab">Candidate</span>
+        <div class="score-bar"><div class="score-fill candidate" style="width:80%"></div></div>
+        <span class="val">80%</span>
+      </div>
+
+      <div class="score-verdict accept">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        Accept &amp; snapshot LoggedModel — gain +8pp ≥ floor.
+      </div>
+      <div class="muted" style="font-size:0.78rem;margin-top:var(--gap-3);">
+        Numbers are illustrative. Real runs log per-question verdicts in MLflow with traces and judge feedback.
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     RCA PROCESS SPINE
+==================================================================== -->
+<section class="scene" id="rca" data-act="method">
+  <div class="eyebrow act-method">The Process Spine</div>
+  <h2>Eleven Stages, Every Iteration. Same Order Every Time.</h2>
+  <p class="lede">Inside one iteration, the optimizer walks the same eleven stages in the same order. Each stage produces an artifact that the next stage consumes. Click any stage to see what it does and what file it writes.</p>
+
+  <div class="rca-wrap">
+    <div class="rca-rail" role="tablist" aria-label="Process stages">
+      <!-- populated by JS -->
+    </div>
+    <div class="rca-detail" id="rcaDetail" aria-live="polite">
+      <!-- populated by JS -->
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     PATCH SURVIVAL FUNNEL
+==================================================================== -->
+<section class="scene" id="funnel" data-act="method">
+  <div class="eyebrow act-method">The Gates</div>
+  <h2>Many Proposals Enter. Few Survive. That's The Point.</h2>
+  <p class="lede">The optimizer is skeptical by design. Every patch must pass independent gates before it even reaches re-evaluation, and only patches whose post-arbiter accuracy beats the gain floor are kept.</p>
+
+  <div class="funnel" aria-label="Patch survival funnel">
+    <div class="funnel-row r1">Many proposals — ideas from RCA evidence
+      <span class="rejected">↓ candidates: ~30</span>
+    </div>
+    <div class="funnel-row r2">① Causal grounding — does an RCA row support this patch?</div>
+    <div class="funnel-row r3">② Blast radius — does it modify only scoped paths?</div>
+    <div class="funnel-row r4">③ Patch cap — is the change set under budget?</div>
+    <div class="funnel-row r5">④ Teaching safety — does any instruction conflict?</div>
+    <div class="funnel-row r6">⑤ Leakage firewall — is anything from held-out leaking?</div>
+    <div class="funnel-row r7">⑥ Structural &amp; ⑦ Regression gates — valid + non-breaking?</div>
+
+    <div class="funnel-survivors">
+      ⇣ surviving patch set
+    </div>
+    <div class="funnel-survivors" style="border-color: var(--evidence); color: var(--evidence);">
+      Re-evaluation against the train benchmark
+    </div>
+    <div class="funnel-outcomes">
+      <div class="outcome accept">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        Accepted &amp; snapshotted
+      </div>
+      <div class="outcome reject">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        Rolled back &amp; recorded
+      </div>
+    </div>
+  </div>
+
+  <div class="takeaway" style="margin-top: var(--gap-8);">
+    <span class="takeaway-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s-8-4.5-8-11.8A8 8 0 0 1 12 2a8 8 0 0 1 8 8.2c0 7.3-8 11.8-8 11.8z"/><circle cx="12" cy="10" r="3"/></svg></span>
+    <div><strong>What stops a bad patch?</strong> Seven independent gates plus a single acceptance criterion: post-arbiter accuracy ≥ baseline + <span class="mono">min_gain_pp</span>. The optimizer rejects most of its own ideas — that's how you trust the few it ships.</div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     SIX LEVERS HEXAGON
+==================================================================== -->
+<section class="scene" id="levers" data-act="method">
+  <div class="eyebrow act-method">The Toolbox</div>
+  <h2>Six Levers. Three Families. One Score To Move.</h2>
+  <p class="lede">The lever loop changes the Genie Space configuration along six surfaces. Click any lever to see the defect it addresses, the kind of patch it produces, and the gate that bounds its risk.</p>
+
+  <div class="lever-wrap">
+    <div class="hex-stage" aria-label="Six levers around the Genie Space score">
+      <svg class="hex-spokes" viewBox="0 0 100 100" aria-hidden="true">
+        <g stroke="#475569" stroke-width="0.35" stroke-dasharray="1.5 1.5" opacity="0.5" fill="none">
+          <line x1="50" y1="50" x2="50"    y2="14"/>
+          <line x1="50" y1="50" x2="81.18" y2="32"/>
+          <line x1="50" y1="50" x2="81.18" y2="68"/>
+          <line x1="50" y1="50" x2="50"    y2="86"/>
+          <line x1="50" y1="50" x2="18.82" y2="68"/>
+          <line x1="50" y1="50" x2="18.82" y2="32"/>
+        </g>
+      </svg>
+      <button class="hex-node fam-data n-12" data-lever="L1" aria-label="Lever 1 — Tables and columns">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></svg></span>
+        <div class="id">L1</div>
+        <div class="label">Tables &amp; Columns</div>
+      </button>
+      <button class="hex-node fam-data n-2" data-lever="L2" aria-label="Lever 2 — Metric views">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="3" x2="3" y2="21"/><line x1="3" y1="21" x2="21" y2="21"/><path d="M7 14l4-4 4 4 5-5"/></svg></span>
+        <div class="id">L2</div>
+        <div class="label">Metric Views</div>
+      </button>
+      <button class="hex-node fam-route n-4" data-lever="L3" aria-label="Lever 3 — Table-valued functions">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>
+        <div class="id">L3</div>
+        <div class="label">TVFs</div>
+      </button>
+      <button class="hex-node fam-route n-6" data-lever="L4" aria-label="Lever 4 — Join specifications">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="6"/><circle cx="15" cy="12" r="6"/></svg></span>
+        <div class="id">L4</div>
+        <div class="label">Joins</div>
+      </button>
+      <button class="hex-node fam-answer n-8" data-lever="L5" aria-label="Lever 5 — Genie Space instructions">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/></svg></span>
+        <div class="id">L5</div>
+        <div class="label">Instructions</div>
+      </button>
+      <button class="hex-node fam-answer n-10" data-lever="L6" aria-label="Lever 6 — SQL expressions">
+        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 6 2 12 8 18"/><polyline points="16 6 22 12 16 18"/></svg></span>
+        <div class="id">L6</div>
+        <div class="label">SQL Expressions</div>
+      </button>
+      <div class="hex-center">
+        <strong>Genie Space</strong>
+        <span>score</span>
+      </div>
+    </div>
+
+    <div class="lever-detail" id="leverDetail" aria-live="polite">
+      <!-- populated by JS -->
+    </div>
+  </div>
+
+  <div class="takeaway" style="margin-top: var(--gap-8);">
+    <span class="takeaway-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span>
+    <div><strong>Plus Lever 0 — Proactive Enrichment</strong> runs in DAG task 3 (Enrichment), not the lever loop. It inlines existing UC metadata as non-behavioral context — the easy wins handed to the lever loop before adaptive changes start.</div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     SYSTEM MAP — full network of the optimizer
+==================================================================== -->
+<section class="scene scene-fullwidth" id="map" data-act="method">
+  <div class="map-header-row">
+    <div class="map-intro">
+      <div class="eyebrow act-method">The Whole Machine</div>
+      <h2>System Map: Every Part, One Picture.</h2>
+      <p class="lede">Every part of the optimizer on one canvas — judges, clustering, causal grounding, gates, apply, accept, memory. Click a node for its role, inputs/outputs, structured shape, and file. Pick a tour and step through end-to-end.</p>
+    </div>
+
+    <div class="map-tours-bar">
+      <div class="map-tour-picker" role="tablist" aria-label="Guided tours">
+        <span class="picker-lab">Tour</span>
+        <button class="map-tour-btn" data-tour="happy">Question → Patch</button>
+        <button class="map-tour-btn" data-tour="rca">Failure → RCA → Cluster</button>
+        <button class="map-tour-btn" data-tour="ground">Proposal → Grounding → Gate</button>
+        <button class="map-tour-btn" data-tour="memory">Patch → Memory → Next Cycle</button>
+      </div>
+      <div class="map-tour-transport" role="group" aria-label="Tour playback controls">
+        <button class="tour-tx-btn" id="tourPrev" aria-label="Previous step" disabled>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+        </button>
+        <button class="tour-tx-btn tour-play" id="tourPlay" aria-label="Play tour" disabled>
+          <svg class="ic-play" viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><polygon points="6 4 20 12 6 20 6 4"/></svg>
+          <svg class="ic-pause" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="display:none;"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+        </button>
+        <button class="tour-tx-btn" id="tourNext" aria-label="Next step" disabled>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+        </button>
+        <div class="tour-status" id="tourStatus" aria-live="polite">Pick a tour to begin</div>
+        <button class="tour-tx-btn tour-reset" id="tourReset" aria-label="Reset map">Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="map-stage">
+    <div class="map-canvas-wrap">
+      <svg class="map-canvas" viewBox="0 0 1000 760" role="img" aria-label="Network diagram of all optimizer subsystems" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <marker id="mapArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+          <marker id="mapArrowAccent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#ff3621"/>
+          </marker>
+          <marker id="mapArrowRose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#f43f5e"/>
+          </marker>
+        </defs>
+
+        <!-- Zone backgrounds -->
+        <g class="map-zones" aria-hidden="true">
+          <rect class="map-zone z-inputs"   x="20"  y="20"  width="960" height="90"  rx="14"/>
+          <rect class="map-zone z-harness"  x="20"  y="120" width="960" height="80"  rx="14"/>
+          <rect class="map-zone z-judges"   x="20"  y="210" width="960" height="170" rx="14"/>
+          <rect class="map-zone z-diag"     x="20"  y="390" width="960" height="80"  rx="14"/>
+          <rect class="map-zone z-strat"    x="20"  y="480" width="960" height="80"  rx="14"/>
+          <rect class="map-zone z-gates"    x="20"  y="570" width="960" height="80"  rx="14"/>
+          <rect class="map-zone z-mem"      x="20"  y="660" width="960" height="80"  rx="14"/>
+
+          <text class="map-zone-label z-inputs"  x="970" y="38"  text-anchor="end">INPUTS</text>
+          <text class="map-zone-label z-harness" x="970" y="138" text-anchor="end">EVAL HARNESS</text>
+          <text class="map-zone-label z-judges"  x="970" y="228" text-anchor="end">JUDGE PANEL</text>
+          <text class="map-zone-label z-diag"    x="970" y="408" text-anchor="end">DIAGNOSTICS</text>
+          <text class="map-zone-label z-strat"   x="970" y="498" text-anchor="end">STRATEGY</text>
+          <text class="map-zone-label z-gates"   x="970" y="588" text-anchor="end">GATES · APPLY · ACCEPT</text>
+          <text class="map-zone-label z-mem"     x="970" y="678" text-anchor="end">MEMORY</text>
+        </g>
+
+        <!-- Edges (drawn before nodes so nodes sit on top) -->
+        <g class="map-edges" fill="none">
+          <!-- Inputs → Harness -->
+          <path class="map-edge" data-from="gsl"   data-to="harness" d="M 140 80 C 140 100, 360 100, 360 130" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="bench" data-to="harness" d="M 380 80 C 380 105, 440 105, 440 130" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="uc"    data-to="harness" d="M 620 80 C 620 105, 520 105, 520 130" marker-end="url(#mapArrow)"/>
+
+          <!-- Harness → Judges -->
+          <path class="map-edge" data-from="harness" data-to="codeJ" d="M 360 200 C 360 225, 140 225, 140 230" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="harness" data-to="llmJ"  d="M 440 200 C 440 220, 380 220, 380 230" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="harness" data-to="arb"   d="M 520 200 C 520 220, 620 220, 620 230" marker-end="url(#mapArrow)"/>
+          <!-- Repeatability — finalize-only, dashed -->
+          <path class="map-edge map-edge-dashed" data-from="harness" data-to="rep" d="M 600 165 C 720 165, 850 165, 850 230" marker-end="url(#mapArrow)"/>
+
+          <!-- Judges → Feedback -->
+          <path class="map-edge" data-from="codeJ"    data-to="feedback" d="M 140 290 C 140 320, 380 320, 380 320" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="llmJ"     data-to="feedback" d="M 380 290 C 380 305, 440 305, 440 320" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="arb"      data-to="feedback" d="M 620 290 C 620 320, 520 320, 500 320" marker-end="url(#mapArrow)"/>
+
+          <!-- Feedback → Diagnostics -->
+          <path class="map-edge" data-from="feedback" data-to="rcaE"   d="M 320 380 C 320 395, 140 395, 140 410" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="feedback" data-to="clust"  d="M 440 380 C 440 395, 380 395, 380 410" marker-end="url(#mapArrow)"/>
+
+          <!-- Diagnostics chain -->
+          <path class="map-edge" data-from="rcaE"  data-to="clust" d="M 240 440 L 270 440" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="clust" data-to="rank"  d="M 490 440 L 520 440" marker-end="url(#mapArrow)"/>
+
+          <!-- Rank → Strategy -->
+          <path class="map-edge" data-from="rank" data-to="agSel" d="M 620 470 C 620 480, 140 480, 140 500" marker-end="url(#mapArrow)"/>
+
+          <!-- Strategy chain -->
+          <path class="map-edge" data-from="agSel"  data-to="adaptS" d="M 240 530 L 270 530" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="agSel"  data-to="synth"  d="M 220 545 C 320 555, 470 555, 520 545" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="adaptS" data-to="propGen" d="M 490 530 L 750 530" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="synth"  data-to="propGen" d="M 720 530 L 750 530" marker-end="url(#mapArrow)"/>
+
+          <!-- Strategy → Gates -->
+          <path class="map-edge" data-from="propGen" data-to="ground" d="M 850 560 C 850 580, 140 580, 140 590" marker-end="url(#mapArrow)"/>
+
+          <!-- Gates → Apply → Accept -->
+          <path class="map-edge" data-from="ground" data-to="gateP"  d="M 240 620 L 270 620" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="gateP"  data-to="patch"  d="M 490 620 L 520 620" marker-end="url(#mapArrow)"/>
+          <path class="map-edge" data-from="patch"  data-to="accept" d="M 720 620 L 750 620" marker-end="url(#mapArrow)"/>
+
+          <!-- Loop-back: patch → harness (re-eval) -->
+          <path class="map-edge map-edge-loop" data-from="patch" data-to="harness" d="M 620 600 C 620 100, 460 100, 440 130" marker-end="url(#mapArrowAccent)"/>
+
+          <!-- Accept → Memory (mlf) and rollback -->
+          <path class="map-edge" data-from="accept" data-to="mlf" d="M 850 650 C 850 680, 440 680, 440 670" marker-end="url(#mapArrow)"/>
+          <path class="map-edge map-edge-rose" data-from="accept" data-to="gsl" d="M 880 600 C 920 60, 260 60, 220 70" marker-end="url(#mapArrowRose)" stroke-dasharray="5 5"/>
+
+          <!-- Memory → Reflect → Strategy -->
+          <path class="map-edge" data-from="mlf"     data-to="reflect" d="M 720 690 L 750 690" marker-end="url(#mapArrow)"/>
+          <path class="map-edge map-edge-loop"      data-from="reflect" data-to="adaptS"  d="M 850 660 C 850 720, 380 720, 380 560" marker-end="url(#mapArrowAccent)"/>
+        </g>
+
+        <!-- Nodes -->
+        <g class="map-nodes">
+          <!-- INPUTS row -->
+          <g class="map-node n-inputs"  data-node="gsl"   tabindex="0" role="button" aria-label="Genie Space config">
+            <rect x="40"  y="40" width="200" height="60" rx="10"/>
+            <text class="n-title" x="140" y="68" text-anchor="middle">Genie Space config</text>
+            <text class="n-sub"   x="140" y="86" text-anchor="middle">serialized_space (GSL)</text>
+          </g>
+          <g class="map-node n-inputs"  data-node="bench" tabindex="0" role="button" aria-label="Benchmark dataset">
+            <rect x="270" y="40" width="220" height="60" rx="10"/>
+            <text class="n-title" x="380" y="68" text-anchor="middle">Benchmark dataset</text>
+            <text class="n-sub"   x="380" y="86" text-anchor="middle">train + held-out splits</text>
+          </g>
+          <g class="map-node n-inputs"  data-node="uc"    tabindex="0" role="button" aria-label="Unity Catalog metadata">
+            <rect x="520" y="40" width="200" height="60" rx="10"/>
+            <text class="n-title" x="620" y="68" text-anchor="middle">UC metadata</text>
+            <text class="n-sub"   x="620" y="86" text-anchor="middle">tables, columns, comments</text>
+          </g>
+
+          <!-- HARNESS row -->
+          <g class="map-node n-harness" data-node="harness" tabindex="0" role="button" aria-label="Evaluation harness">
+            <rect x="270" y="130" width="450" height="60" rx="10"/>
+            <text class="n-title" x="495" y="158" text-anchor="middle">Evaluation Harness</text>
+            <text class="n-sub"   x="495" y="176" text-anchor="middle">predict_fn + mlflow.genai.evaluate(scorers=…)</text>
+          </g>
+
+          <!-- JUDGES row -->
+          <g class="map-node n-code" data-node="codeJ" tabindex="0" role="button" aria-label="Code judges">
+            <rect x="40"  y="230" width="200" height="60" rx="10"/>
+            <text class="n-title" x="140" y="258" text-anchor="middle">CODE judges (3)</text>
+            <text class="n-sub"   x="140" y="276" text-anchor="middle">syntax · routing · result</text>
+          </g>
+          <g class="map-node n-llm" data-node="llmJ" tabindex="0" role="button" aria-label="LLM judges">
+            <rect x="270" y="230" width="220" height="60" rx="10"/>
+            <text class="n-title" x="380" y="258" text-anchor="middle">LLM judges (5)</text>
+            <text class="n-sub"   x="380" y="276" text-anchor="middle">schema · logical · semantic · completeness · response</text>
+          </g>
+          <g class="map-node n-hybrid" data-node="arb" tabindex="0" role="button" aria-label="Arbiter">
+            <rect x="520" y="230" width="200" height="60" rx="10"/>
+            <text class="n-title" x="620" y="258" text-anchor="middle">Arbiter (hybrid)</text>
+            <text class="n-sub"   x="620" y="276" text-anchor="middle">CODE short-circuit · LLM tiebreak</text>
+          </g>
+          <g class="map-node n-finalize" data-node="rep" tabindex="0" role="button" aria-label="Repeatability scorer">
+            <rect x="750" y="230" width="200" height="60" rx="10"/>
+            <text class="n-title" x="850" y="258" text-anchor="middle">Repeatability ✦</text>
+            <text class="n-sub"   x="850" y="276" text-anchor="middle">finalize-only, heuristic CODE</text>
+          </g>
+
+          <!-- FEEDBACK (still in judges zone) -->
+          <g class="map-node n-feedback" data-node="feedback" tabindex="0" role="button" aria-label="Feedback rows">
+            <rect x="270" y="310" width="450" height="60" rx="10"/>
+            <text class="n-title" x="495" y="338" text-anchor="middle">Feedback rows · eval state</text>
+            <text class="n-sub"   x="495" y="356" text-anchor="middle">mlflow.entities.Feedback{name, value, rationale, source}</text>
+          </g>
+
+          <!-- DIAGNOSTICS row -->
+          <g class="map-node n-diag" data-node="rcaE" tabindex="0" role="button" aria-label="RCA evidence bundle">
+            <rect x="40"  y="410" width="200" height="60" rx="10"/>
+            <text class="n-title" x="140" y="438" text-anchor="middle">RCA Evidence (F2)</text>
+            <text class="n-sub"   x="140" y="456" text-anchor="middle">RcaEvidenceBundle</text>
+          </g>
+          <g class="map-node n-diag" data-node="clust" tabindex="0" role="button" aria-label="Cluster formation">
+            <rect x="270" y="410" width="220" height="60" rx="10"/>
+            <text class="n-title" x="380" y="438" text-anchor="middle">Cluster Formation</text>
+            <text class="n-sub"   x="380" y="456" text-anchor="middle">cluster_failures → ClusterFindings</text>
+          </g>
+          <g class="map-node n-diag" data-node="rank" tabindex="0" role="button" aria-label="Cluster ranking">
+            <rect x="520" y="410" width="200" height="60" rx="10"/>
+            <text class="n-title" x="620" y="438" text-anchor="middle">Cluster Ranking</text>
+            <text class="n-sub"   x="620" y="456" text-anchor="middle">rank_clusters · cluster_impact</text>
+          </g>
+
+          <!-- STRATEGY row -->
+          <g class="map-node n-strat" data-node="agSel" tabindex="0" role="button" aria-label="Action group selection">
+            <rect x="40"  y="500" width="200" height="60" rx="10"/>
+            <text class="n-title" x="140" y="528" text-anchor="middle">AG Selection</text>
+            <text class="n-sub"   x="140" y="546" text-anchor="middle">clusters_for_strategy</text>
+          </g>
+          <g class="map-node n-strat" data-node="adaptS" tabindex="0" role="button" aria-label="Adaptive strategist">
+            <rect x="270" y="500" width="220" height="60" rx="10"/>
+            <text class="n-title" x="380" y="528" text-anchor="middle">Adaptive Strategist</text>
+            <text class="n-sub"   x="380" y="546" text-anchor="middle">_call_llm_for_adaptive_strategy (LLM)</text>
+          </g>
+          <g class="map-node n-strat" data-node="synth" tabindex="0" role="button" aria-label="Cluster-driven synthesis">
+            <rect x="520" y="500" width="200" height="60" rx="10"/>
+            <text class="n-title" x="620" y="528" text-anchor="middle">Cluster Synthesis</text>
+            <text class="n-sub"   x="620" y="546" text-anchor="middle">teaching kit, per cluster (LLM)</text>
+          </g>
+          <g class="map-node n-strat" data-node="propGen" tabindex="0" role="button" aria-label="Proposal generation">
+            <rect x="750" y="500" width="200" height="60" rx="10"/>
+            <text class="n-title" x="850" y="528" text-anchor="middle">Proposal Generation</text>
+            <text class="n-sub"   x="850" y="546" text-anchor="middle">per AG, per target lever</text>
+          </g>
+
+          <!-- GATES + APPLY row -->
+          <g class="map-node n-gate" data-node="ground" tabindex="0" role="button" aria-label="Proposal grounding">
+            <rect x="40"  y="590" width="200" height="60" rx="10"/>
+            <text class="n-title" x="140" y="618" text-anchor="middle">Causal Grounding</text>
+            <text class="n-sub"   x="140" y="636" text-anchor="middle">proposal_grounding · deterministic</text>
+          </g>
+          <g class="map-node n-gate" data-node="gateP" tabindex="0" role="button" aria-label="Safety gate panel">
+            <rect x="270" y="590" width="220" height="60" rx="10"/>
+            <text class="n-title" x="380" y="618" text-anchor="middle">Safety Gate Panel</text>
+            <text class="n-sub"   x="380" y="636" text-anchor="middle">RCA-grounded · cap · structural · regression</text>
+          </g>
+          <g class="map-node n-apply" data-node="patch" tabindex="0" role="button" aria-label="Applied patches">
+            <rect x="520" y="590" width="200" height="60" rx="10"/>
+            <text class="n-title" x="620" y="618" text-anchor="middle">Applied Patches</text>
+            <text class="n-sub"   x="620" y="636" text-anchor="middle">space_config_post · loops to harness</text>
+          </g>
+          <g class="map-node n-apply" data-node="accept" tabindex="0" role="button" aria-label="Acceptance and rollback">
+            <rect x="750" y="590" width="200" height="60" rx="10"/>
+            <text class="n-title" x="850" y="618" text-anchor="middle">Accept / Rollback</text>
+            <text class="n-sub"   x="850" y="636" text-anchor="middle">min_gain_pp · post-arbiter</text>
+          </g>
+
+          <!-- MEMORY row -->
+          <g class="map-node n-mem" data-node="mlf" tabindex="0" role="button" aria-label="MLflow memory">
+            <rect x="270" y="670" width="450" height="60" rx="10"/>
+            <text class="n-title" x="495" y="698" text-anchor="middle">MLflow · Experiment · LoggedModel · Datasets · Ledger</text>
+            <text class="n-sub"   x="495" y="716" text-anchor="middle">every artifact a reviewer can open</text>
+          </g>
+          <g class="map-node n-mem" data-node="reflect" tabindex="0" role="button" aria-label="Reflection feedback">
+            <rect x="750" y="670" width="200" height="60" rx="10"/>
+            <text class="n-title" x="850" y="698" text-anchor="middle">Reflection feedback</text>
+            <text class="n-sub"   x="850" y="716" text-anchor="middle">tried patches → next strategist</text>
+          </g>
+        </g>
+      </svg>
+
+      <div class="map-legend" role="list" aria-label="Zone legend">
+        <span class="leg-chip leg-inputs"  role="listitem"><span class="dot"></span>Inputs</span>
+        <span class="leg-chip leg-harness" role="listitem"><span class="dot"></span>Harness</span>
+        <span class="leg-chip leg-judges"  role="listitem"><span class="dot"></span>Judges</span>
+        <span class="leg-chip leg-diag"    role="listitem"><span class="dot"></span>Diagnostics</span>
+        <span class="leg-chip leg-strat"   role="listitem"><span class="dot"></span>Strategy</span>
+        <span class="leg-chip leg-gates"   role="listitem"><span class="dot"></span>Gates · Apply</span>
+        <span class="leg-chip leg-mem"     role="listitem"><span class="dot"></span>Memory</span>
+        <span class="leg-chip leg-loop"    role="listitem"><span class="dot"></span>Loop / feedback</span>
+        <span class="leg-chip leg-rollback" role="listitem"><span class="dot"></span>Rollback</span>
+      </div>
+    </div>
+
+    <aside class="map-detail" id="mapDetail" aria-live="polite">
+      <!-- populated by JS -->
+    </aside>
+  </div>
+</section>
+
+<!-- ====================================================================
+     MLFLOW EVIDENCE ROOM
+==================================================================== -->
+<section class="scene" id="evidence" data-act="proof">
+  <div class="eyebrow act-proof">The Proof</div>
+  <h2>MLflow Is The Evidence Room. Every Decision Is A File.</h2>
+  <p class="lede">When a stakeholder asks "why did you change this?" — the answer is an artifact in MLflow, not a story. Each card below is a concrete object the optimizer logs and a reviewer can inspect.</p>
+
+  <div class="evidence-grid" id="evidenceGrid">
+    <!-- populated by JS -->
+  </div>
+
+  <div class="takeaway" style="margin-top: var(--gap-8);">
+    <span class="takeaway-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9 12l2 2 4-4"/></svg></span>
+    <div>
+      <strong>The audit trail is end-to-end.</strong>
+      Champion model → finalize run → lever-loop run → RCA &amp; reflection → trace feedback → benchmark version → original snapshot. Every link is an MLflow object.
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     FINALIZE / DEPLOY
+==================================================================== -->
+<section class="scene" id="deploy" data-act="proof">
+  <div class="eyebrow act-proof">Ship It</div>
+  <h2>Prove It Generalizes. Prove It Repeats. Then Promote.</h2>
+  <p class="lede">Finalize runs the held-out benchmark and the repeatability passes. Deploy carries the proven configuration — the champion <span class="mono">LoggedModel</span> — across to the target Genie Space (same workspace or cross-workspace).</p>
+
+  <div class="deploy-wrap">
+    <div class="deploy-lane">
+      <h3>
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--evidence)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        Proof of quality
+      </h3>
+      <div class="step">
+        <div class="label">Held-out evaluation</div>
+        <div class="body">Run the candidate against questions the lever loop never saw. Catches overfitting before it ships.</div>
+      </div>
+      <div class="step" style="border-left-color: var(--accept);">
+        <div class="label">Repeatability passes</div>
+        <div class="body">Run the train benchmark N times (default 3) to measure score stability under retries. Variance is a visible metric.</div>
+      </div>
+      <div class="step" style="border-left-color: var(--info);">
+        <div class="label">Review session</div>
+        <div class="body">An MLflow GenAI dashboard aggregates traces, judgements, and reflection entries for human sign-off.</div>
+      </div>
+    </div>
+
+    <div class="deploy-bridge">
+      <div class="bridge-arch">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </div>
+      <div class="bridge-line">patch_space_config</div>
+      <div class="bridge-note">Carries the champion config, not the latest edit.</div>
+    </div>
+
+    <div class="deploy-lane">
+      <h3>
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/></svg>
+        Promotion &amp; deployment
+      </h3>
+      <div class="step" style="border-left-color: var(--gate);">
+        <div class="label">Champion alias</div>
+        <div class="body">Promoted candidate registered as a LoggedModel; <span class="mono">champion</span> alias is the immutable carrier.</div>
+      </div>
+      <div class="step" style="border-left-color: var(--gate);">
+        <div class="label">deploy_check (read-only)</div>
+        <div class="body">Validates target dependencies, auth context, and approval state — without touching the target.</div>
+      </div>
+      <div class="step" style="border-left-color: var(--accept);">
+        <div class="label">deploy_execute</div>
+        <div class="body">PATCHes the proven configuration to the target Genie Space. Same workspace or cross-workspace; the carrier is identical.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====================================================================
+     SA TALK TRACK / CLOSING
+==================================================================== -->
+<section class="scene closing" id="closing" data-act="proof">
+  <div class="eyebrow act-proof">The 60-Second Pitch</div>
+  <h2>What An SA Should Remember.</h2>
+  <p class="lede" style="margin-left:auto;margin-right:auto;">Three claims a customer needs to hear. Each one has an MLflow artifact backing it. Together, they explain why the optimizer's changes are safe to ship.</p>
+
+  <div class="closing-words" aria-label="The five-word story">
+    <span class="cw measure">Measure.</span>
+    <span class="cw diagnose">Diagnose.</span>
+    <span class="cw intervene">Intervene.</span>
+    <span class="cw prove">Prove.</span>
+    <span class="cw learn">Learn.</span>
+  </div>
+
+  <div class="talk-track">
+    <div class="talk-card">
+      <div class="num">01</div>
+      <div class="ttl">Measurable improvement</div>
+      <div class="body">The score moved by a number we can defend. Same benchmark. Same scorer panel. Post-arbiter accuracy beat the gain floor.</div>
+    </div>
+    <div class="talk-card">
+      <div class="num">02</div>
+      <div class="ttl">Auditable evidence</div>
+      <div class="body">Every score, judge verdict, gate decision, and configuration snapshot is in MLflow. The audit trail is a file tree, not a conversation.</div>
+    </div>
+    <div class="talk-card">
+      <div class="num">03</div>
+      <div class="ttl">Safe promotion</div>
+      <div class="body">The configuration that ships is the one that survived held-out evaluation, repeatability passes, and human sign-off. Not the latest edit.</div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer class="site-foot">
+  <div class="foot-grid">
+    <a href="00-index.md">00 — Index</a>
+    <a href="01-optimizer-mental-model.md">01 — Mental Model</a>
+    <a href="02-six-task-dag.md">02 — DAG</a>
+    <a href="04-lever-loop-rca-process-spine.md">04 — Process Spine</a>
+    <a href="05-six-optimization-levers.md">05 — Levers</a>
+    <a href="07-mlflow-observability-and-judges.md">07 — MLflow</a>
+    <a href="08-slide-outline.md">08 — Slide Outline</a>
+  </div>
+  <div>Genie Space Optimizer — interactive guide. All artifacts and decision points reference the source code in <span class="mono">packages/genie-space-optimizer/</span>.</div>
+</footer>
+
+<!-- ====================================================================
+     DATA + INTERACTIONS
+==================================================================== -->
+<script>
+"use strict";
+
+// ---------- DAG steps data ----------
+const DAG_STEPS = {
+  preflight: {
+    title: "01 — Preflight",
+    role: "Setup the experiment",
+    why: "A Genie Space cannot be optimized until it is measurable. Preflight snapshots the configuration, resolves UC metadata, runs the IQ scan, generates or refreshes benchmarks, splits them into train and held-out, and initializes the MLflow experiment.",
+    inputs: [
+      "Genie Space ID",
+      "Workspace + catalog/schema for benchmark + run state",
+      "Job parameters (max iterations, gain floor, lever set)"
+    ],
+    outputs: [
+      "space_config.json (snapshot)",
+      "UC metadata bundle",
+      "Benchmark dataset rows in UC with split column",
+      "MLflow experiment + run scaffolding"
+    ],
+    source: "_run_preflight in optimization/harness.py · helpers in optimization/preflight.py"
+  },
+  baseline: {
+    title: "02 — Baseline Evaluation",
+    role: "Establish the starting line",
+    why: "Without a baseline, no improvement claim is possible. Every later iteration is compared to this number, not to opinions.",
+    inputs: [
+      "Train benchmark from preflight",
+      "Unmodified space_config.json"
+    ],
+    outputs: [
+      "baseline/scoreboard.json",
+      "Trace IDs per question, tagged in MLflow",
+      "Initial signals required for RCA in iteration 1"
+    ],
+    source: "_run_baseline in optimization/harness.py · run_evaluation in optimization/evaluation.py"
+  },
+  enrichment: {
+    title: "03 — Enrichment (Lever 0)",
+    role: "Add safe context first",
+    why: "Many failures aren't because Genie is wrong — they're because the space wasn't told enough. Lever 0 inlines existing UC comments and tags as non-behavioral context, then re-evaluates. The new score is the effective baseline.",
+    inputs: [
+      "Baseline scoreboard",
+      "UC metadata bundle from preflight"
+    ],
+    outputs: [
+      "enrichment/patches.json",
+      "Updated space_config.json (post-enrichment)",
+      "Updated effective baseline scoreboard"
+    ],
+    source: "_run_enrichment in optimization/harness.py · Lever 0 in optimization/levers/"
+  },
+  loop: {
+    title: "04 — Lever Loop",
+    role: "Run experiments, keep what works",
+    why: "Each iteration walks the eleven-stage process spine: Evaluation State, RCA Evidence, Cluster Formation, Action Group Selection, Proposal Generation, Safety Gates, Applied Patches, Post-Patch Evaluation, Acceptance/Rollback, Learning, Contract Health.",
+    inputs: [
+      "Post-enrichment space_config.json + scoreboard",
+      "Train benchmark, RCA config, lever set, gain floor, max iterations"
+    ],
+    outputs: [
+      "Per-iteration artifacts: RCA ledger, action group, proposals, gate decisions, applied patches, post-patch scoreboard, acceptance verdict, reflection entry",
+      "LoggedModel snapshot per accepted iteration",
+      "Final candidate space_config.json"
+    ],
+    source: "_run_lever_loop in optimization/harness.py · STAGES in optimization/stages/_registry.py · PROCESS_STAGE_ORDER in optimization/run_output_contract.py"
+  },
+  finalize: {
+    title: "05 — Finalize",
+    role: "Prove it generalizes and repeats",
+    why: "A configuration that beat the train benchmark could still be overfit. Finalize runs the held-out benchmark and N repeatability passes to verify generalization and stability. Then it opens an MLflow review session and promotes the candidate to champion.",
+    inputs: [
+      "Final space_config.json from the lever loop",
+      "Held-out benchmark from preflight",
+      "Repeatability passes (default 3)"
+    ],
+    outputs: [
+      "finalize/held_out_scoreboard.json",
+      "finalize/repeatability_scoreboard.json",
+      "Champion model URI + review session URL"
+    ],
+    source: "_run_finalize in optimization/harness.py · run_repeatability_evaluation in optimization/evaluation.py"
+  },
+  deploy: {
+    title: "06 — Deploy",
+    role: "Promote the proven configuration",
+    why: "Deploy carries the champion LoggedModel — the artifact that was reviewed — to the target Genie Space. deploy_check validates without writing; deploy_execute is the only writing step. Same workspace or cross-workspace; the carrier is identical.",
+    inputs: [
+      "Champion model URI from finalize",
+      "Target workspace + space ID",
+      "Approval state"
+    ],
+    outputs: [
+      "Genie Space PATCH applied to target",
+      "Deployment record in MLflow",
+      "Cross-env decision trace (if applicable)"
+    ],
+    source: "deploy_check + deploy_execute in optimization/harness.py · cross-env in jobs/run_cross_env_deploy.py"
+  }
+};
+
+// ---------- RCA stages data ----------
+const RCA_STAGES = [
+  { id: 1,  group: "diag",  name: "Evaluation State",       why: "Freeze the current scoreboard so RCA and clustering operate on a stable snapshot. Every later stage works against this view.", artifacts: [{f:"evaluation_state.json", d:"per-question verdicts, judge breakdown, deltas"}] },
+  { id: 2,  group: "diag",  name: "RCA Evidence",           why: "Walk every failing trace and write a structured row: question, observed SQL, judge verdicts, hypothesized root cause type. This replaces guessing with diagnosis.", artifacts: [{f:"rca_ledger.json", d:"failure rows with hypothesized root causes"}, {f:"rca_execution_plan.json", d:"prioritized root cause → lever mapping"}] },
+  { id: 3,  group: "diag",  name: "Cluster Formation",      why: "Group RCA rows by root-cause signature so a single patch can address a theme of failures, not just one question.", artifacts: [{f:"clusters.json", d:"clusters ranked by impact (failures resolved per patch)"}] },
+  { id: 4,  group: "plan",  name: "Action Group Selection", why: "Pick exactly one cluster + lever pairing. One controlled change per iteration keeps causal attribution intact.", artifacts: [{f:"action_group.json", d:"chosen cluster, lever, and rationale"}] },
+  { id: 5,  group: "plan",  name: "Proposal Generation",    why: "Translate the action group into concrete patch JSON — diff-style operations on the space config, scoped to the chosen lever.", artifacts: [{f:"proposals.json", d:"candidate patch sets per lever"}] },
+  { id: 6,  group: "plan",  name: "Safety Gates",           why: "Funnel proposals through seven independent checks: causal grounding, blast radius, patch cap, teaching safety, leakage firewall, structural validity, regression guardrail.", artifacts: [{f:"gate_decisions.json", d:"gate verdicts and reasons per proposal"}] },
+  { id: 7,  group: "act",   name: "Applied Patches",        why: "Apply surviving patches to the candidate config. Stage a pre-iteration snapshot so rollback is possible if post-patch evaluation fails.", artifacts: [{f:"applied_patches.json", d:"exact operations applied this iteration"}, {f:"space_config_pre.json + space_config_post.json", d:"pre/post snapshots"}] },
+  { id: 8,  group: "judge", name: "Post-Patch Evaluation",  why: "Re-run the train benchmark through the patched space. Same scorer panel, same judges — only the config changed. Score movement is attributable to this iteration.", artifacts: [{f:"post_patch_scoreboard.json", d:"per-judge deltas + trace IDs with feedback"}] },
+  { id: 9,  group: "judge", name: "Acceptance / Rollback",  why: "Single criterion: post-arbiter accuracy ≥ baseline + min_gain_pp. If not, rollback via apply_patch_set inverse and record the reason.", artifacts: [{f:"acceptance_decision.json", d:"verdict, gain (pp), reason; LoggedModel snapshot if accepted"}] },
+  { id: 10, group: "learn", name: "Learning / Next Action", why: "Write a reflection entry so the next strategist call sees what was tried, what happened, and which root causes are now in the do-not-retry set.", artifacts: [{f:"reflection_entry.json", d:"appended to the run's reflection log"}] },
+  { id: 11, group: "learn", name: "Contract Health",        why: "Verify the run-output contract is intact: every required artifact exists and is consistent. If a clause fails, the iteration is flagged for operator review.", artifacts: [{f:"contract_health.json", d:"pass/fail per contract clause"}] }
+];
+
+// ---------- Levers data ----------
+const LEVERS = {
+  L1: {
+    name: "Lever 1 — Tables & Columns",
+    family: "data",
+    famLabel: "Data understanding",
+    desc: "Adjust the table allowlist and per-column metadata: aliases, synonyms, deprecation tags. Fixes wrong-table routing and column-not-found failures.",
+    fixes: [
+      "Add a previously-excluded table when RCA shows questions consistently misrouting",
+      "Add a synonym list so technical column names (dlvr_st_cd) match natural-language phrasing",
+      "Mark a column as deprecated to steer Genie away from it"
+    ],
+    safety: "Strong structural validation (allowlist must reference real UC objects) and regression guardrail (a new alias must not break a previously accepted theme)."
+  },
+  L2: {
+    name: "Lever 2 — Metric Views",
+    family: "data",
+    famLabel: "Data understanding",
+    desc: "Define or refine reusable, governed business metrics expressed as YAML with measures and dimensions. The highest-leverage lever for stable question families.",
+    fixes: [
+      "Promote a frequently-asked aggregation to a metric view (one patch can fix dozens of questions)",
+      "Refine an existing metric view's dimensions to support a new slicing question",
+      "Mark a metric view as canonical so Genie stops reinventing the SQL"
+    ],
+    safety: "Structural gates validate the YAML before apply. Strongest regression guardrail because a metric view is consumed by many questions."
+  },
+  L3: {
+    name: "Lever 3 — Table-Valued Functions",
+    family: "route",
+    famLabel: "Question routing",
+    desc: "Register or refine TVFs that encapsulate parameterized SQL patterns (e.g., sales_by_region(start_date, end_date, region)). Stops Genie from regenerating the same complex SQL each call.",
+    fixes: [
+      "Add a TVF for a recurring parameterized query pattern",
+      "Add or rename TVF parameters so Genie can match natural-language slot fillers",
+      "Document the TVF inside the space so routing prefers it for the right question shapes"
+    ],
+    safety: "Structural gates validate definitions; applyability gates check the function is callable in the warehouse before the patch is declared live."
+  },
+  L4: {
+    name: "Lever 4 — Join Specifications",
+    family: "route",
+    famLabel: "Question routing",
+    desc: "Add, refine, or correct join specifications between tables. The highest-risk lever — joins change result semantics across many questions at once.",
+    fixes: [
+      "Add a join spec when RCA shows Genie inferring a wrong key",
+      "Mark a join as preferred between two tables that share multiple keys",
+      "Add a directional hint when the join is asymmetric"
+    ],
+    safety: "Strongest cross-question regression guardrail. A join change that helps revenue questions can silently break churn questions if the gate doesn't catch it."
+  },
+  L5: {
+    name: "Lever 5 — Genie Space Instructions",
+    family: "answer",
+    famLabel: "Answering",
+    desc: "Edit the natural-language instructions block (GSL near-term schema). Domain definitions, routing rules, guardrails. The most visible lever; not always the right one.",
+    fixes: [
+      "Define a domain term ('churned' = inactive ≥ 30 days)",
+      "Add a routing rule (revenue questions → metric_view.revenue_v1)",
+      "Add a guardrail (never join users to events on email)"
+    ],
+    safety: "Teaching-safety gate checks for contradictions with existing instructions. Structural gate validates against the GSL near-term schema. Regression guardrail confirms accepted themes still pass."
+  },
+  L6: {
+    name: "Lever 6 — SQL Expressions",
+    family: "answer",
+    famLabel: "Answering",
+    desc: "Curate the SQL example library used as in-context exemplars. Quietly powerful because LLMs are highly sensitive to in-context examples.",
+    fixes: [
+      "Add a worked SQL example for a question family the RCA cluster keeps failing on",
+      "Replace a stale example that uses outdated metric views or TVFs",
+      "Remove a misleading example that consistently appears in wrong-pathway failures"
+    ],
+    safety: "Structural validation of SQL syntax + table references; teaching-safety gate checks examples don't contradict instructions."
+  }
+};
+
+// ---------- MLflow evidence cards ----------
+const EVIDENCE = [
+  { ttl: "Experiment", role: "Per-space run history", body: "One MLflow experiment per Genie Space. Parent runs are tagged with space_id, lever_set, gain_floor.", file: "mlflow.start_run() + tags", icon: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M9 11H5a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2h-4'/><circle cx='12' cy='6' r='4'/></svg>" },
+  { ttl: "UC Dataset", role: "Versioned benchmarks", body: "Train and held-out splits live in Unity Catalog as mlflow.genai.datasets. Governed, versioned, and inspectable.", file: "mlflow.genai.datasets", icon: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><ellipse cx='12' cy='5' rx='9' ry='3'/><path d='M3 5v14a9 3 0 0 0 18 0V5'/></svg>" },
+  { ttl: "Evaluate", role: "Scoring orchestration", body: "mlflow.genai.evaluate runs the benchmark through the scorer panel with retry handling.", file: "mlflow.genai.evaluate(...)", icon: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='20 6 9 17 4 12'/></svg>" },
+  { ttl: "CODE judges", role: "Deterministic checks", body: "Python @scorer functions: SQL executes, schema matches, expected tables used. Cheap, fast, and always available.", file: "make_all_scorers()", icon: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='16 18 22 12 16 6'/><polyline points='8 6 2 12 8 18'/></svg>" },
+  { ttl: "LLM judges", role: "Model-graded checks", body: "Foundation-model scorers for business intent, metric view selection, edge-case handling. Higher fidelity, noisier than CODE.", file: "@scorer (LLM-backed)", icon: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='12' r='10'/><path d='M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z'/></svg>" },
+  { ttl: "Trace + feedback", role: "Per-question audit", body: "Every Genie call runs under @mlflow.trace; every judge attaches feedback to the trace it judged. The audit unit.", file: "mlflow.log_feedback(trace_id, ...)", icon: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z'/></svg>" },
+  { ttl: "LoggedModel", role: "Configuration version", body: "Each accepted iteration registers a LoggedModel snapshot of the candidate space. Champion alias points at the proven version.", file: "mlflow.register_model(...)", icon: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='12' cy='8' r='6'/><path d='M15.5 12.9 17 22l-5-3-5 3 1.5-9.1'/></svg>" },
+  { ttl: "Phase H bundle", role: "Postmortem artifact", body: "Run-output contract tree: operator transcript, decision trace, scoreboard, configs, reflection log, repeatability summary, held-out summary.", file: "phase_h_anchor.py", icon: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4'/><polyline points='17 8 12 3 7 8'/><line x1='12' y1='3' x2='12' y2='15'/></svg>" },
+  { ttl: "Operator transcript", role: "Human-readable narrative", body: "One Markdown file with one block per iteration. Action group, proposals, gates, applied patches, gain, reflection. The 'show your work' page.", file: "operator_transcript.md", icon: "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/><polyline points='14 2 14 8 20 8'/><line x1='9' y1='13' x2='15' y2='13'/></svg>" }
+];
+
+// ============================================================
+// DAG INTERACTIONS
+// ============================================================
+function setActiveDagStep(key) {
+  document.querySelectorAll(".dag-step").forEach(b => {
+    const isActive = b.dataset.step === key;
+    b.classList.toggle("active", isActive);
+    b.setAttribute("aria-selected", String(isActive));
+  });
+  const data = DAG_STEPS[key];
+  const detail = document.getElementById("dagDetail");
+  detail.innerHTML = `
+    <div>
+      <div class="mono muted" style="font-size:0.7rem;letter-spacing:0.14em;text-transform:uppercase;margin-bottom:6px;">${data.role}</div>
+      <h3 style="font-size:1.4rem;margin-bottom:var(--gap-3);">${data.title}</h3>
+      <p class="why">${data.why}</p>
+      <div class="source">${data.source}</div>
+    </div>
+    <div class="iolist">
+      <div class="iorow">
+        <div class="lab">Inputs</div>
+        <div class="val">${data.inputs.map(i => "• " + i).join("<br>")}</div>
+      </div>
+      <div class="iorow out-row">
+        <div class="lab">Outputs</div>
+        <div class="val">${data.outputs.map(i => "• " + i).join("<br>")}</div>
+      </div>
+    </div>
+  `;
+}
+document.querySelectorAll(".dag-step").forEach(b => {
+  b.addEventListener("click", () => setActiveDagStep(b.dataset.step));
+});
+
+// ============================================================
+// CONTRAST TOGGLE
+// ============================================================
+const contrastButtons = document.querySelectorAll(".contrast-toggle button");
+contrastButtons.forEach(btn => {
+  btn.addEventListener("click", () => {
+    const mode = btn.dataset.mode;
+    contrastButtons.forEach(b => {
+      b.classList.toggle("active", b === btn);
+      b.setAttribute("aria-selected", String(b === btn));
+    });
+    const grid = document.getElementById("contrastGrid");
+    const bad = grid.querySelector(".contrast-card.bad");
+    const good = grid.querySelector(".contrast-card.good");
+    const div = grid.querySelector(".contrast-divider");
+    if (mode === "both") {
+      bad.style.display = ""; good.style.display = ""; div.style.display = "";
+      grid.style.gridTemplateColumns = "1fr 60px 1fr";
+    } else if (mode === "bad") {
+      bad.style.display = ""; good.style.display = "none"; div.style.display = "none";
+      grid.style.gridTemplateColumns = "1fr";
+    } else {
+      bad.style.display = "none"; good.style.display = ""; div.style.display = "none";
+      grid.style.gridTemplateColumns = "1fr";
+    }
+  });
+});
+
+// ============================================================
+// RCA SPINE
+// ============================================================
+function renderRcaRail() {
+  const rail = document.querySelector(".rca-rail");
+  rail.innerHTML = RCA_STAGES.map(s => `
+    <button class="rca-step" data-stage="${s.id}" role="tab">
+      <span class="step-num">${String(s.id).padStart(2, "0")}</span>
+      <span class="step-name">${s.name}</span>
+      <span class="group-tint t-${s.group}" aria-hidden="true"></span>
+    </button>
+  `).join("");
+  rail.querySelectorAll(".rca-step").forEach(b => {
+    b.addEventListener("click", () => setActiveRcaStage(parseInt(b.dataset.stage, 10)));
+  });
+}
+function setActiveRcaStage(id) {
+  const stage = RCA_STAGES.find(s => s.id === id);
+  document.querySelectorAll(".rca-step").forEach(b => {
+    b.classList.toggle("active", parseInt(b.dataset.stage, 10) === id);
+  });
+  const groupLabels = { diag: "Diagnose", plan: "Plan", act: "Act", judge: "Judge", learn: "Learn" };
+  const detail = document.getElementById("rcaDetail");
+  detail.innerHTML = `
+    <div class="stage-tag">Stage ${String(stage.id).padStart(2, "0")} · ${groupLabels[stage.group]}</div>
+    <h3>${stage.name}</h3>
+    <div class="detail-text">${stage.why}</div>
+    <div class="mono muted" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.12em;">Artifacts produced</div>
+    <div class="artifact-list">
+      ${stage.artifacts.map(a => `
+        <div class="artifact-row">
+          <span style="color:var(--evidence);">▸</span>
+          <span>${a.f}</span>
+          <span class="desc">— ${a.d}</span>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+// ============================================================
+// LEVERS HEXAGON
+// ============================================================
+function setActiveLever(id) {
+  document.querySelectorAll(".hex-node").forEach(b => {
+    b.classList.toggle("active", b.dataset.lever === id);
+  });
+  const lev = LEVERS[id];
+  const detail = document.getElementById("leverDetail");
+  detail.innerHTML = `
+    <span class="fam-tag fam-${lev.family}">${lev.famLabel}</span>
+    <div class="name">${lev.name}</div>
+    <div class="desc">${lev.desc}</div>
+    <div class="sub">
+      <div class="sub-title">Typical patches</div>
+      <ul>${lev.fixes.map(f => `<li>${f}</li>`).join("")}</ul>
+    </div>
+    <div class="gate-line">
+      <strong>Safety:</strong> ${lev.safety}
+    </div>
+  `;
+}
+document.querySelectorAll(".hex-node").forEach(b => {
+  b.addEventListener("click", () => setActiveLever(b.dataset.lever));
+});
+
+// ============================================================
+// EVIDENCE GRID
+// ============================================================
+function renderEvidence() {
+  const grid = document.getElementById("evidenceGrid");
+  grid.innerHTML = EVIDENCE.map(e => `
+    <div class="evidence-card" tabindex="0">
+      <span class="ic">${e.icon}</span>
+      <div class="role">${e.role}</div>
+      <div class="ttl">${e.ttl}</div>
+      <div class="body">${e.body}</div>
+      <div class="file">${e.file}</div>
+    </div>
+  `).join("");
+}
+
+// ============================================================
+// SYSTEM MAP
+// ============================================================
+const MAP_NODES = {
+  gsl: {
+    name: "Genie Space config",
+    zone: "inputs", zoneLabel: "Inputs",
+    role: "The Genie Space serialized configuration (GSL) — the only thing the optimizer ever changes. Tables, columns, joins, metric views, table-valued functions, instructions, SQL example expressions, and routing.",
+    inputs: ["Original space JSON fetched from the Genie API"],
+    outputs: ["space_config.json snapshot referenced by every later stage"],
+    shape: null,
+    code: [
+      { f: "optimization/preflight.py", s: "snapshot_space_config" },
+      { f: "backend/references/schema.md", s: "(serialized_space schema)" }
+    ],
+    upstream: [],
+    downstream: ["harness"]
+  },
+  bench: {
+    name: "Benchmark dataset",
+    zone: "inputs", zoneLabel: "Inputs",
+    role: "Train and held-out question/answer pairs for the Genie Space. Generated or refreshed in DAG task 2 and stored as a Delta table in UC, then registered as an mlflow.genai.dataset.",
+    inputs: ["Seed questions (synthesized or supplied)", "Reference answers (queried via SQL)"],
+    outputs: ["UC Delta table with split column", "mlflow.genai.dataset reference"],
+    shape: null,
+    code: [
+      { f: "jobs/run_benchmark.py", s: "(task 2 entry point)" },
+      { f: "optimization/benchmark.py", s: "build_benchmark / split_train_holdout" }
+    ],
+    upstream: [],
+    downstream: ["harness"]
+  },
+  uc: {
+    name: "Unity Catalog metadata",
+    zone: "inputs", zoneLabel: "Inputs",
+    role: "Source of truth for table and column comments, tags, and PK/FK relationships. Powers Lever 0 (Proactive Enrichment) and grounds asset-routing judges.",
+    inputs: ["UC catalog/schema scope"],
+    outputs: ["Per-table metadata bundle (descriptions, columns, tags)"],
+    shape: null,
+    code: [
+      { f: "optimization/uc_metadata.py", s: "fetch_uc_bundle" }
+    ],
+    upstream: [],
+    downstream: ["harness"]
+  },
+  harness: {
+    name: "Evaluation Harness",
+    zone: "harness", zoneLabel: "Eval Harness",
+    role: "Wraps mlflow.genai.evaluate. Calls predict_fn for every benchmark question, then runs the assembled scorer panel against each row. The single chokepoint where Genie behavior is measured.",
+    inputs: [
+      "predict_fn (Genie API client wired to the candidate space)",
+      "Benchmark dataset (train or held-out)",
+      "Scorer list from make_all_scorers (or make_repeatability_scorers in finalize)"
+    ],
+    outputs: [
+      "MLflow Run with per-question Trace IDs",
+      "Per-row Feedback objects, one per scorer",
+      "Aggregate metrics on the Run"
+    ],
+    shape: "mlflow.genai.evaluate(\n  data: dataset,\n  predict_fn: fn,\n  scorers: [9 @scorer fns]\n) -> EvaluationResult",
+    code: [
+      { f: "optimization/evaluation.py", s: "run_evaluation" },
+      { f: "optimization/evaluation.py", s: "_run_evaluate_with_retries" },
+      { f: "optimization/scorers/__init__.py", s: "make_all_scorers" }
+    ],
+    upstream: ["gsl", "bench", "uc"],
+    downstream: ["codeJ", "llmJ", "arb", "rep"]
+  },
+  codeJ: {
+    name: "CODE judges (3)",
+    zone: "judges", zoneLabel: "Judges · CODE",
+    role: "Three deterministic, non-LLM scorers. Fast, hermetic, reproducible. Cheapest per call and the floor of trust under the LLM judges.",
+    inputs: ["Trace per question (input, predicted SQL, executed result)"],
+    outputs: ["3 Feedback rows per question"],
+    shape: "Feedback{\n  name: 'syntax_validity' | 'asset_routing' | 'result_correctness',\n  value: 'yes' | 'no' | 'excluded' | 'skipped',\n  rationale: <markdown>,\n  source: CODE_SOURCE\n}",
+    code: [
+      { f: "optimization/scorers/syntax_validity.py", s: "syntax_validity_scorer (SQL EXPLAIN)" },
+      { f: "optimization/scorers/asset_routing.py",    s: "asset_routing_scorer" },
+      { f: "optimization/scorers/result_correctness.py", s: "result_correctness_scorer" }
+    ],
+    upstream: ["harness"],
+    downstream: ["feedback"]
+  },
+  llmJ: {
+    name: "LLM judges (5)",
+    zone: "judges", zoneLabel: "Judges · LLM",
+    role: "Five LLM-backed @scorer functions calling a Databricks model serving endpoint. They handle nuance the CODE judges cannot — schema fit, reasoning, semantic equivalence, completeness, response quality.",
+    inputs: ["Trace per question", "Reference answer + reference SQL when available"],
+    outputs: ["5 Feedback rows per question"],
+    shape: "Feedback{\n  name: 'schema_accuracy' | 'logical_accuracy' | 'semantic_equivalence' | 'completeness' | 'response_quality',\n  value: <verdict token>,\n  rationale: <ASI-style markdown>,\n  source: LLM_SOURCE\n}",
+    code: [
+      { f: "optimization/scorers/schema_accuracy.py",      s: "_make_schema_accuracy_judge" },
+      { f: "optimization/scorers/logical_accuracy.py",     s: "_make_logical_accuracy_judge" },
+      { f: "optimization/scorers/semantic_equivalence.py", s: "_make_semantic_equivalence_judge" },
+      { f: "optimization/scorers/completeness.py",         s: "_make_completeness_judge" },
+      { f: "optimization/scorers/response_quality.py",     s: "_make_response_quality_judge" }
+    ],
+    upstream: ["harness"],
+    downstream: ["feedback"]
+  },
+  arb: {
+    name: "Arbiter (hybrid)",
+    zone: "judges", zoneLabel: "Judges · Hybrid",
+    role: "The headline accuracy judge. Short-circuits to CODE when the result tables already match the reference; falls back to LLM arbitration when they disagree. Outputs the value used by the acceptance policy (post-arbiter accuracy).",
+    inputs: ["Trace per question", "Result of result_correctness", "Reference answer"],
+    outputs: ["1 Feedback row per question (arbiter verdict)"],
+    shape: "Feedback{\n  name: 'arbiter',\n  value: 'yes' | 'no' | 'excluded' | 'skipped',\n  rationale: <markdown>,\n  source: CODE_SOURCE  (short-circuit) | LLM_SOURCE (tiebreak)\n}",
+    code: [
+      { f: "optimization/scorers/arbiter.py", s: "_make_arbiter_scorer" }
+    ],
+    upstream: ["harness"],
+    downstream: ["feedback", "accept"]
+  },
+  rep: {
+    name: "Repeatability scorer ✦",
+    zone: "judges", zoneLabel: "Judges · Finalize-only",
+    role: "Heuristic CODE judge run only in Finalize. Compares N replays of the same question to detect non-determinism in Genie's behavior on the candidate config.",
+    inputs: ["N repeatability passes from Finalize over the same questions"],
+    outputs: ["Per-question repeatability tier and rationale"],
+    shape: "Feedback{ name: 'repeatability', value: <tier>, source: CODE_SOURCE }",
+    code: [
+      { f: "optimization/scorers/repeatability.py", s: "repeatability_scorer" },
+      { f: "optimization/scorers/__init__.py", s: "make_repeatability_scorers" },
+      { f: "optimization/evaluation.py", s: "run_repeatability_evaluation" }
+    ],
+    upstream: ["harness"],
+    downstream: []
+  },
+  feedback: {
+    name: "Feedback rows · evaluation state",
+    zone: "judges", zoneLabel: "Eval state",
+    role: "The per-question, per-judge verdict matrix. Every later diagnostic stage operates on this stable snapshot — never on raw judge output.",
+    inputs: ["All Feedback objects emitted by the scorer panel"],
+    outputs: ["evaluation_state.json (frozen scoreboard for the iteration)"],
+    shape: "Feedback{\n  name: <judge id>,\n  value: <verdict token>,     # 'yes' / 'no' / 'excluded' / 'skipped' / arbiter token\n  rationale: <markdown>,\n  source: CODE_SOURCE | LLM_SOURCE\n}",
+    code: [
+      { f: "optimization/stages/evaluation_state.py", s: "snapshot_state" }
+    ],
+    upstream: ["codeJ", "llmJ", "arb"],
+    downstream: ["rcaE", "clust"]
+  },
+  rcaE: {
+    name: "RCA Evidence Bundle (F2)",
+    zone: "diag", zoneLabel: "Diagnostics",
+    role: "Walks every failing trace and writes a structured per-question evidence row: question, observed SQL, judge verdicts, hypothesized RCA kind. Replaces guessing with diagnosis.",
+    inputs: ["Failing rows from feedback", "RCA config and ASI rules"],
+    outputs: ["RcaEvidenceBundle: per-qid evidence + rca_kinds_by_qid"],
+    shape: "RcaEvidenceBundle{\n  per_qid_evidence: { qid -> Evidence },\n  rca_kinds_by_qid: { qid -> [RcaKind] }\n}",
+    code: [
+      { f: "optimization/stages/rca_evidence.py", s: "collect" }
+    ],
+    upstream: ["feedback"],
+    downstream: ["clust"]
+  },
+  clust: {
+    name: "Cluster Formation",
+    zone: "diag", zoneLabel: "Diagnostics",
+    role: "Groups failure rows by judge + ASI failure type + blame set, optionally enriched with UC ASI signals. One patch can address a theme, not just one question.",
+    inputs: ["evaluation rows", "rca_evidence bundle", "qid state"],
+    outputs: ["ClusterFindings (hard clusters + soft advisory clusters)"],
+    shape: "Cluster{\n  cluster_id, root_cause, signature,\n  question_ids: [qid], traces: [trace_id]\n}",
+    code: [
+      { f: "optimization/stages/clustering.py", s: "form" },
+      { f: "optimization/optimizer.py", s: "cluster_failures" }
+    ],
+    upstream: ["feedback", "rcaE"],
+    downstream: ["rank"]
+  },
+  rank: {
+    name: "Cluster Ranking",
+    zone: "diag", zoneLabel: "Diagnostics",
+    role: "Sorts clusters by impact (failures resolved per fix). Optional IQ-scan lever tiebreaker and reflection-history penalty (avoid repeating losing strategies).",
+    inputs: ["ClusterFindings", "Reflection history", "IQ-scan signal (optional)"],
+    outputs: ["Ranked cluster list ready for the strategist"],
+    shape: null,
+    code: [
+      { f: "optimization/optimizer.py", s: "rank_clusters" },
+      { f: "optimization/optimizer.py", s: "cluster_impact" }
+    ],
+    upstream: ["clust"],
+    downstream: ["agSel"]
+  },
+  agSel: {
+    name: "Action Group Selection",
+    zone: "strat", zoneLabel: "Strategy",
+    role: "Picks which clusters are eligible strategist inputs this cycle. Filters out clusters already covered by surviving prior patches and clusters with no patchable lever path.",
+    inputs: ["Ranked clusters", "Coverage map of prior accepted patches"],
+    outputs: ["Filtered cluster slate fed into the strategist"],
+    shape: null,
+    code: [
+      { f: "optimization/control_plane.py", s: "clusters_for_strategy" },
+      { f: "optimization/control_plane.py", s: "uncovered_patchable_clusters" },
+      { f: "optimization/stages/action_groups.py", s: "select" }
+    ],
+    upstream: ["rank"],
+    downstream: ["adaptS", "synth"]
+  },
+  adaptS: {
+    name: "Adaptive Strategist",
+    zone: "strat", zoneLabel: "Strategy",
+    role: "Primary strategist path. One LLM call returns one JSON action_groups entry per iteration: which cluster to act on, which lever, and a directive guiding proposal generation. Reads reflection memory so it stops repeating losers.",
+    inputs: ["Cluster slate", "Reflection memory (tried patches / root causes)"],
+    outputs: ["action_group.json with chosen cluster, lever, directive"],
+    shape: "action_group:\n  cluster_id, lever, rca_id,\n  directive (LLM-authored guidance for proposal generation)",
+    code: [
+      { f: "optimization/optimizer.py", s: "_call_llm_for_adaptive_strategy" },
+      { f: "optimization/optimizer.py", s: "_generate_holistic_strategy (multi-AG fallback)" }
+    ],
+    upstream: ["agSel", "reflect"],
+    downstream: ["propGen"]
+  },
+  synth: {
+    name: "Cluster-driven Synthesis",
+    zone: "strat", zoneLabel: "Strategy",
+    role: "Per-cluster LLM 'teaching kit' synthesis. Builds example SQL and supporting context patches grounded in the cluster's failures. Used alongside the adaptive strategist for example-SQL / instructions levers.",
+    inputs: ["A single cluster (failures, signatures, traces)"],
+    outputs: ["Candidate example SQL / supporting patches for the proposal"],
+    shape: null,
+    code: [
+      { f: "optimization/cluster_driven_synthesis.py", s: "run_cluster_driven_synthesis_for_single_cluster" }
+    ],
+    upstream: ["agSel"],
+    downstream: ["propGen"]
+  },
+  propGen: {
+    name: "Proposal Generation",
+    zone: "strat", zoneLabel: "Strategy",
+    role: "Expands the chosen action group into concrete patch JSON: per AG, per target lever, per directive. The output of this stage is what the gates evaluate.",
+    inputs: ["Action group + directive", "Cluster context", "Synthesis outputs"],
+    outputs: ["proposals.json — candidate patch sets per lever"],
+    shape: "Patch{\n  lever, op (add | replace | remove),\n  path, value,\n  rca_id (link to clusters/findings),\n  fingerprint\n}",
+    code: [
+      { f: "optimization/optimizer.py", s: "generate_proposals_from_strategy" },
+      { f: "optimization/stages/proposals.py", s: "generate" },
+      { f: "optimization/proposal_grounding.py", s: "select_patch_bundle" }
+    ],
+    upstream: ["adaptS", "synth"],
+    downstream: ["ground"]
+  },
+  ground: {
+    name: "Causal Grounding",
+    zone: "gates", zoneLabel: "Gates",
+    role: "Deterministic relevance scoring between a patch's targets (tables, columns, levers) and the failure surface of the questions the strategist claims it will fix. No remote LLM — pure computation.",
+    inputs: ["Proposed patch", "Cluster's failure surface (qids + RCA terms)"],
+    outputs: ["Relevance score, causal relevance score, selected patch bundle"],
+    shape: "extract_patch_targets(patch)\nextract_failure_surface(cluster)\nrelevance_score / causal_relevance_score\nselect_patch_bundle",
+    code: [
+      { f: "optimization/proposal_grounding.py", s: "extract_patch_targets" },
+      { f: "optimization/proposal_grounding.py", s: "extract_failure_surface" },
+      { f: "optimization/proposal_grounding.py", s: "relevance_score · causal_relevance_score" },
+      { f: "optimization/proposal_grounding.py", s: "select_patch_bundle" }
+    ],
+    upstream: ["propGen"],
+    downstream: ["gateP"]
+  },
+  gateP: {
+    name: "Safety Gate Panel",
+    zone: "gates", zoneLabel: "Gates",
+    role: "Funnels every proposal through independent acceptance checks. Each gate emits a typed verdict the run-output contract can audit. The RCA-groundedness gate is the canonical causal check; structural/regression gates bound blast radius.",
+    inputs: ["Proposed patches with grounding scores"],
+    outputs: ["gate_decisions.json with verdict + reason per patch"],
+    shape: "GroundednessVerdict{\n  accepted: bool,\n  reason_code: ReasonCode,\n  finding_id: <rca_id>\n}",
+    code: [
+      { f: "optimization/rca_groundedness.py", s: "is_rca_grounded → GroundednessVerdict" },
+      { f: "optimization/stages/gates.py",     s: "_run_rca_groundedness_gate (and structural / regression / cap gates)" },
+      { f: "optimization/patch_selection.py",  s: "causal_attribution_tier · select_causal_patch_cap" }
+    ],
+    upstream: ["ground"],
+    downstream: ["patch"]
+  },
+  patch: {
+    name: "Applied Patches",
+    zone: "gates", zoneLabel: "Apply",
+    role: "Applies surviving patches to the candidate config. Stages a pre-iteration snapshot so rollback is exact if post-patch evaluation regresses. Triggers a re-eval through the harness.",
+    inputs: ["Surviving patches", "space_config_pre"],
+    outputs: ["space_config_post", "applied_patches.json"],
+    shape: null,
+    code: [
+      { f: "optimization/patch_apply.py", s: "apply_patch_set" },
+      { f: "optimization/stages/apply.py", s: "run" }
+    ],
+    upstream: ["gateP"],
+    downstream: ["accept", "harness"]
+  },
+  accept: {
+    name: "Accept / Rollback",
+    zone: "gates", zoneLabel: "Accept",
+    role: "Single criterion: post-arbiter accuracy ≥ baseline + min_gain_pp. If yes, snapshot a LoggedModel and update champion; if no, rollback via the inverse patch and record the reason. Decision provenance written to the trace ledger.",
+    inputs: ["Post-patch arbiter score", "Baseline score", "min_gain_pp"],
+    outputs: ["acceptance_decision.json", "Champion LoggedModel update (if accepted)"],
+    shape: "AcceptanceDecision{\n  accepted: bool,\n  gain_pp: float,\n  reason: <code>,\n  rollback_applied: bool\n}",
+    code: [
+      { f: "optimization/optimizer.py", s: "evaluate_acceptance" },
+      { f: "optimization/decision_emitters.py", s: "emit_acceptance_record" }
+    ],
+    upstream: ["patch", "arb"],
+    downstream: ["mlf", "gsl"]
+  },
+  mlf: {
+    name: "MLflow · Evidence Memory",
+    zone: "mem", zoneLabel: "Memory",
+    role: "MLflow Experiment, GenAI Datasets, LoggedModel snapshots, Trace feedback, decision ledger. Every artifact a reviewer can open. The optimizer never claims an improvement without a file behind it.",
+    inputs: ["Run, traces, feedback, decisions, snapshots from every stage"],
+    outputs: ["Permanent, queryable record of the run for review and audit"],
+    shape: null,
+    code: [
+      { f: "optimization/mlflow_logger.py", s: "(experiment / dataset / model logging)" },
+      { f: "optimization/decision_emitters.py", s: "(decision-trace ledger)" }
+    ],
+    upstream: ["accept"],
+    downstream: ["reflect"]
+  },
+  reflect: {
+    name: "Reflection feedback",
+    zone: "mem", zoneLabel: "Memory",
+    role: "Strategist memory: tried clusters, tried patches, root causes that failed acceptance. Read by the next adaptive strategist call so the optimizer learns instead of looping on the same losing move.",
+    inputs: ["Acceptance decisions across iterations"],
+    outputs: ["Reflection log appended to the run; do-not-retry set"],
+    shape: null,
+    code: [
+      { f: "optimization/reflection.py", s: "append_reflection" },
+      { f: "optimization/optimizer.py", s: "(consumed in _call_llm_for_adaptive_strategy)" }
+    ],
+    upstream: ["mlf"],
+    downstream: ["adaptS"]
+  }
+};
+
+const MAP_TOURS = {
+  happy:  { label: "Question → Patch",          steps: ["bench", "harness", "arb", "feedback", "clust", "agSel", "adaptS", "propGen", "ground", "gateP", "patch", "accept"] },
+  rca:    { label: "Failure → RCA → Cluster",   steps: ["feedback", "rcaE", "clust", "rank", "agSel"] },
+  ground: { label: "Proposal → Grounding → Gate", steps: ["propGen", "ground", "gateP", "patch"] },
+  memory: { label: "Patch → Memory → Next Cycle", steps: ["accept", "mlf", "reflect", "adaptS"] }
+};
+
+const MAP_TOUR_INTERVAL_MS = 1600;
+
+const mapTour = {
+  id: null,
+  step: 0,
+  playing: false,
+  timer: null
+};
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+}
+
+function renderMapDetail(id) {
+  const node = MAP_NODES[id];
+  if (!node) return;
+  const detail = document.getElementById("mapDetail");
+  const dotColor = {
+    inputs:  "#60a5fa",
+    harness: "var(--evidence)",
+    judges:  "var(--gate)",
+    diag:    "var(--rose)",
+    strat:   "var(--accent)",
+    gates:   "var(--accept)",
+    mem:     "#c084fc"
+  }[node.zone] || "var(--border-2)";
+
+  const ioRow = (s, cls) => `<div class="iorow ${cls}">${s}</div>`;
+  const upstream = (node.upstream || []).map(u =>
+    `<button type="button" class="chip up" data-jump="${u}">${MAP_NODES[u]?.name || u}</button>`
+  ).join("");
+  const downstream = (node.downstream || []).map(d =>
+    `<button type="button" class="chip down" data-jump="${d}">${MAP_NODES[d]?.name || d}</button>`
+  ).join("");
+
+  const colA = `
+    <div class="col">
+      <span class="zone-tag"><span class="dot" style="background:${dotColor}"></span>${node.zoneLabel}</span>
+      <div class="name">${node.name}</div>
+      <div class="role">${node.role}</div>
+      ${(upstream || downstream) ? `
+        <div class="sub-title">Connects to</div>
+        <div class="chip-row">${upstream}${downstream}</div>
+      ` : ""}
+    </div>
+  `;
+
+  const colB = `
+    <div class="col">
+      ${node.inputs && node.inputs.length ? `
+        <div class="sub-title">Inputs</div>
+        <div class="iolist">${node.inputs.map(i => ioRow(i, "")).join("")}</div>
+      ` : ""}
+      ${node.outputs && node.outputs.length ? `
+        <div class="sub-title">Outputs</div>
+        <div class="iolist">${node.outputs.map(o => ioRow(o, "out-row")).join("")}</div>
+      ` : ""}
+    </div>
+  `;
+
+  const colC = `
+    <div class="col">
+      ${node.shape ? `
+        <div class="sub-title">Structured output</div>
+        <div class="shape">${escapeHtml(node.shape)}</div>
+      ` : ""}
+      ${node.code && node.code.length ? `
+        <div class="sub-title">Code anchors</div>
+        <div class="code-list">${node.code.map(c =>
+          `<div class="code-row"><b>${c.f}</b> :: ${c.s}</div>`
+        ).join("")}</div>
+      ` : ""}
+    </div>
+  `;
+
+  detail.innerHTML = colA + colB + colC;
+
+  detail.querySelectorAll("[data-jump]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      tourStop();
+      setActiveMapNode(btn.dataset.jump);
+    });
+  });
+}
+
+function setActiveMapNode(id, opts = {}) {
+  if (!MAP_NODES[id]) return;
+  const nodes = document.querySelectorAll(".map-node");
+  const edges = document.querySelectorAll(".map-edge");
+  const adjacent = new Set([id, ...(MAP_NODES[id].upstream || []), ...(MAP_NODES[id].downstream || [])]);
+
+  nodes.forEach(n => {
+    const nid = n.dataset.node;
+    n.classList.toggle("active", nid === id);
+    n.classList.toggle("dim", !adjacent.has(nid));
+  });
+  edges.forEach(e => {
+    const from = e.dataset.from;
+    const to   = e.dataset.to;
+    const touches = (from === id) || (to === id);
+    e.classList.toggle("active", touches);
+    e.classList.toggle("dim", !touches);
+  });
+
+  if (!opts.skipDetail) renderMapDetail(id);
+}
+
+function clearMapHighlight() {
+  document.querySelectorAll(".map-node").forEach(n => {
+    n.classList.remove("active", "dim");
+  });
+  document.querySelectorAll(".map-edge").forEach(e => {
+    e.classList.remove("active", "dim");
+  });
+  document.querySelectorAll(".map-tour-btn").forEach(b => b.classList.remove("active"));
+}
+
+// ----- Tour state machine -----
+function tourSelect(id) {
+  // If clicking the active tour, toggle play/pause
+  if (mapTour.id === id) {
+    tourTogglePlay();
+    return;
+  }
+  // Otherwise, switch to that tour and start playing from step 0
+  tourStop({ keepHighlight: false });
+  mapTour.id = id;
+  mapTour.step = 0;
+  mapTour.playing = true;
+  document.querySelectorAll(".map-tour-btn").forEach(b => {
+    b.classList.toggle("active", b.dataset.tour === id);
+  });
+  tourShowCurrent();
+  tourScheduleNext();
+  updateTourUI();
+}
+
+function tourTogglePlay() {
+  if (!mapTour.id) return;
+  if (mapTour.playing) {
+    mapTour.playing = false;
+    if (mapTour.timer) { clearTimeout(mapTour.timer); mapTour.timer = null; }
+  } else {
+    const tour = MAP_TOURS[mapTour.id];
+    // If we were paused at the end, restart from beginning
+    if (mapTour.step >= tour.steps.length - 1) {
+      mapTour.step = 0;
+      tourShowCurrent();
+    }
+    mapTour.playing = true;
+    tourScheduleNext();
+  }
+  updateTourUI();
+}
+
+function tourStep(delta) {
+  if (!mapTour.id) return;
+  const tour = MAP_TOURS[mapTour.id];
+  const next = Math.min(Math.max(mapTour.step + delta, 0), tour.steps.length - 1);
+  if (next === mapTour.step) { updateTourUI(); return; }
+  mapTour.step = next;
+  // Stepping always pauses
+  mapTour.playing = false;
+  if (mapTour.timer) { clearTimeout(mapTour.timer); mapTour.timer = null; }
+  tourShowCurrent();
+  updateTourUI();
+}
+
+function tourShowCurrent() {
+  if (!mapTour.id) return;
+  const tour = MAP_TOURS[mapTour.id];
+  const nodeId = tour.steps[mapTour.step];
+  setActiveMapNode(nodeId);
+}
+
+function tourScheduleNext() {
+  if (mapTour.timer) { clearTimeout(mapTour.timer); mapTour.timer = null; }
+  if (!mapTour.playing || !mapTour.id) return;
+  const tour = MAP_TOURS[mapTour.id];
+  if (mapTour.step >= tour.steps.length - 1) {
+    // Reached the end — stop playback but keep state visible
+    mapTour.playing = false;
+    updateTourUI();
+    return;
+  }
+  mapTour.timer = setTimeout(() => {
+    mapTour.step += 1;
+    tourShowCurrent();
+    updateTourUI();
+    tourScheduleNext();
+  }, MAP_TOUR_INTERVAL_MS);
+}
+
+function tourStop(opts = {}) {
+  if (mapTour.timer) { clearTimeout(mapTour.timer); mapTour.timer = null; }
+  mapTour.id = null;
+  mapTour.step = 0;
+  mapTour.playing = false;
+  document.querySelectorAll(".map-tour-btn").forEach(b => b.classList.remove("active"));
+  if (!opts.keepHighlight) clearMapHighlight();
+  updateTourUI();
+}
+
+function tourReset() {
+  tourStop({ keepHighlight: false });
+  const detail = document.getElementById("mapDetail");
+  if (detail) detail.innerHTML = mapHintHtml();
+  wireDetailJumps();
+}
+
+function updateTourUI() {
+  const prevBtn = document.getElementById("tourPrev");
+  const playBtn = document.getElementById("tourPlay");
+  const nextBtn = document.getElementById("tourNext");
+  const status  = document.getElementById("tourStatus");
+  const playIc  = playBtn?.querySelector(".ic-play");
+  const pauseIc = playBtn?.querySelector(".ic-pause");
+
+  if (!mapTour.id) {
+    if (prevBtn) prevBtn.disabled = true;
+    if (nextBtn) nextBtn.disabled = true;
+    if (playBtn) {
+      playBtn.disabled = true;
+      playBtn.setAttribute("aria-label", "Play tour");
+    }
+    if (playIc)  playIc.style.display  = "";
+    if (pauseIc) pauseIc.style.display = "none";
+    if (status) status.textContent = "Pick a tour to begin";
+    return;
+  }
+  const tour = MAP_TOURS[mapTour.id];
+  const total = tour.steps.length;
+  const nodeId = tour.steps[mapTour.step];
+  const nodeName = MAP_NODES[nodeId]?.name || nodeId;
+  if (prevBtn) prevBtn.disabled = mapTour.step <= 0;
+  if (nextBtn) nextBtn.disabled = mapTour.step >= total - 1;
+  if (playBtn) {
+    playBtn.disabled = false;
+    playBtn.setAttribute("aria-label", mapTour.playing ? "Pause tour" : "Play tour");
+  }
+  if (playIc)  playIc.style.display  = mapTour.playing ? "none" : "";
+  if (pauseIc) pauseIc.style.display = mapTour.playing ? "" : "none";
+  if (status) {
+    status.innerHTML = `<span class="step">Step ${mapTour.step + 1} / ${total}</span><span class="name">${nodeName}</span>`;
+  }
+}
+
+function mapHintHtml() {
+  return `
+    <div class="col">
+      <span class="zone-tag"><span class="dot" style="background:var(--evidence)"></span>Start here</span>
+      <div class="name">Click any node — or press a tour button.</div>
+      <div class="role">Each box is one piece of the optimizer. The detail panel shows what it does, what it consumes, what it produces, and the file that owns it. Pick a tour and use ◀ ▶ to step through, or press play to auto-walk.</div>
+    </div>
+    <div class="col">
+      <div class="sub-title">Suggested first click</div>
+      <div class="chip-row">
+        <button type="button" class="chip down" data-jump="harness">Evaluation Harness</button>
+        <button type="button" class="chip down" data-jump="arb">Arbiter</button>
+        <button type="button" class="chip down" data-jump="ground">Causal Grounding</button>
+        <button type="button" class="chip down" data-jump="gateP">Safety Gate Panel</button>
+      </div>
+    </div>
+    <div class="col">
+      <div class="sub-title">Tours</div>
+      <div class="chip-row">
+        <button type="button" class="chip down" data-tour-jump="happy">Question → Patch</button>
+        <button type="button" class="chip down" data-tour-jump="rca">Failure → RCA → Cluster</button>
+        <button type="button" class="chip down" data-tour-jump="ground">Proposal → Grounding → Gate</button>
+        <button type="button" class="chip down" data-tour-jump="memory">Patch → Memory → Next Cycle</button>
+      </div>
+    </div>
+  `;
+}
+
+function wireDetailJumps() {
+  const detail = document.getElementById("mapDetail");
+  if (!detail) return;
+  detail.querySelectorAll("[data-jump]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      tourStop();
+      setActiveMapNode(btn.dataset.jump);
+    });
+  });
+  detail.querySelectorAll("[data-tour-jump]").forEach(btn => {
+    btn.addEventListener("click", () => tourSelect(btn.dataset.tourJump));
+  });
+}
+
+function initMap() {
+  const detail = document.getElementById("mapDetail");
+  if (detail) {
+    detail.innerHTML = mapHintHtml();
+    wireDetailJumps();
+  }
+  document.querySelectorAll(".map-node").forEach(n => {
+    n.addEventListener("click", () => {
+      tourStop();
+      setActiveMapNode(n.dataset.node);
+    });
+    n.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        tourStop();
+        setActiveMapNode(n.dataset.node);
+      }
+    });
+  });
+  document.querySelectorAll(".map-tour-btn").forEach(b => {
+    b.addEventListener("click", () => tourSelect(b.dataset.tour));
+  });
+  document.getElementById("tourPrev")?.addEventListener("click", () => tourStep(-1));
+  document.getElementById("tourNext")?.addEventListener("click", () => tourStep(1));
+  document.getElementById("tourPlay")?.addEventListener("click", () => tourTogglePlay());
+  document.getElementById("tourReset")?.addEventListener("click", () => tourReset());
+  updateTourUI();
+}
+
+// ============================================================
+// STORY RAIL — scroll progress
+// ============================================================
+function setupStoryRail() {
+  const rail = document.querySelectorAll(".rail-act");
+  const sections = document.querySelectorAll("[data-act]");
+  const update = () => {
+    let activeAct = "stakes";
+    const mid = window.scrollY + window.innerHeight / 2;
+    sections.forEach(s => {
+      const r = s.getBoundingClientRect();
+      const top = r.top + window.scrollY;
+      const bot = top + r.height;
+      if (mid >= top && mid <= bot) {
+        activeAct = s.dataset.act;
+      }
+    });
+    rail.forEach(el => {
+      el.classList.toggle("active", el.dataset.act === activeAct);
+    });
+    // Also update top nav active
+    document.querySelectorAll(".nav-links a").forEach(a => {
+      const targetId = a.getAttribute("href").slice(1);
+      const target = document.getElementById(targetId);
+      if (!target) return;
+      const tr = target.getBoundingClientRect();
+      const isActive = tr.top <= 120 && tr.bottom > 120;
+      a.classList.toggle("active", isActive);
+    });
+  };
+  update();
+  let ticking = false;
+  window.addEventListener("scroll", () => {
+    if (!ticking) {
+      window.requestAnimationFrame(() => { update(); ticking = false; });
+      ticking = true;
+    }
+  }, { passive: true });
+}
+
+// ============================================================
+// INIT
+// ============================================================
+function init() {
+  setActiveDagStep("preflight");
+  renderRcaRail();
+  setActiveRcaStage(1);
+  setActiveLever("L2");
+  renderEvidence();
+  initMap();
+  setupStoryRail();
+}
+document.addEventListener("DOMContentLoaded", init);
+</script>
+
+</body>
+</html>
