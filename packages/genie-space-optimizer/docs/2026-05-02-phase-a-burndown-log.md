@@ -297,3 +297,56 @@ resolved (N2).
 [`2026-05-04-terminal-success-transcript-override-plan.md`](./2026-05-04-terminal-success-transcript-override-plan.md).
 **Iteration ledger:** Cycle 4 in
 [`2026-05-05-optimizer-iteration-ledger.md`](./2026-05-05-optimizer-iteration-ledger.md).
+
+### Cycle 6 — Shipped-Code Defect Sweep
+
+- Symptom (run `2423b960-16e8-41d4-a0cb-74c563378e05` attempt
+  `833969815458299`): the optimizer converged on the hard objective
+  (89.47% → 100.0%) but the live decision-record stream and the
+  Phase H bundle revealed seven implementation defects in already-
+  shipped code.
+  1. Cycle 5 T1/T3/T5 records emitted twice per iteration.
+  2. Cycle 5 T3 RCA-regeneration helper had an empty body
+     (`attempted_evidence_sources=[]`).
+  3. Post-eval `QID_RESOLUTION` emit gap claimed by the postmortem
+     was already closed by Phase F+H A5 v2.1 (`stages/acceptance.py:
+     decide → post_eval_resolution_records`); F-3 marked
+     "already shipped" and amended in the ledger.
+  4. `proposal_generated` decision records still emitted bare
+     `proposal_id`, breaking N1 lane-keys cross-lever (P2 normalization
+     was incomplete).
+  5. Producer-side trunk dedup for `soft_signal` events not landed
+     (13 of 18 journey violations on this run).
+  6. Phase H bundle: RecursionError on stage capture, lying
+     `manifest.missing_pieces=[]`, baseline accuracy printed as
+     `8947.0%`.
+  7. `gs_021` misclassified as `terminal_unactionable` because the
+     T3 regen path didn't emit a `diagnostic_ag` trunk event and
+     the classifier had no rule for tried-and-exhausted hard qids.
+- Fixes (six surgical landed tasks, F-3 already shipped): F-1 emit
+  dedup; F-2 regen body; F-4 expanded_patch_id on
+  `proposal_generated`; F-5 trunk dedup; F-6 Phase H hardening; F-7
+  diagnostic_ag emit + classifier.
+- Replay impact: BURNDOWN_BUDGET=0 holds with no fixture diffs —
+  every Cycle 6 fix is invariant on the airline replay because the
+  defective code paths (T3 regen, expanded_patch_id stamping, deep
+  recursion in stage capture) aren't exercised on iter-1 of the
+  airline corpus.
+- Tests: 6 new unit test files
+  (`test_cycle_6_emit_dedup.py`,
+  `test_rca_regeneration_evidence_sources.py`,
+  `test_proposal_generated_expanded_patch_id.py`,
+  `test_journey_soft_signal_trunk_dedup.py`,
+  `test_phase_h_bundle_resilience.py`,
+  `test_terminal_state_after_rca_exhausted.py`).
+- gs_021 triage finding: the user's `clustered → soft_signal`
+  hypothesis was disproven by evidence (gs_021 has no `soft_signal`
+  trunk event in this run); the real defect was an adjacent
+  `diagnostic_ag` emit gap and classifier under-specification (F-7).
+- Commits: `592c6d2` (F-1), `fa92f0c` (F-2), `8a1cdbf` (F-4),
+  `c16dd0a` (F-5), `c2bc387` (F-6), `cd5d86f` (F-7).
+
+**Plan:**
+[`2026-05-04-cycle-6-shipped-code-defect-sweep-plan.md`](./2026-05-04-cycle-6-shipped-code-defect-sweep-plan.md).
+**Iteration ledger:** Cycle 6 in
+[`2026-05-05-optimizer-iteration-ledger.md`](./2026-05-05-optimizer-iteration-ledger.md).
