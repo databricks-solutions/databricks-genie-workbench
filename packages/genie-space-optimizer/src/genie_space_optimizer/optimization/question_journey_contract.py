@@ -211,8 +211,9 @@ def _classify_terminal_state(
       3. accepted/accepted_with_regression_debt + post_eval is_passing → HARD_FAILURE_RESOLVED
       4. rolled_back → ROLLED_BACK_NO_PROGRESS
       5. soft_signal only (no clustered) → SOFT_SIGNAL_ONLY
-      6. clustered but no ag_assigned/diagnostic_ag → TERMINAL_UNACTIONABLE
-      7. otherwise → HARD_FAILURE_UNRESOLVED
+      6. clustered + diagnostic_ag + rca_exhausted → HARD_FAILURE_UNRESOLVED  (Cycle 6 F-7)
+      7. clustered, no ag_assigned, no diagnostic_ag → TERMINAL_UNACTIONABLE
+      8. otherwise → HARD_FAILURE_UNRESOLVED
     """
     stages = {ev.stage for ev in events}
     if "already_passing" in stages:
@@ -231,6 +232,19 @@ def _classify_terminal_state(
         return JourneyTerminalState.ROLLED_BACK_NO_PROGRESS
     if "soft_signal" in stages and "clustered" not in stages:
         return JourneyTerminalState.SOFT_SIGNAL_ONLY
+    # Cycle 6 F-7 — diagnostic_ag + rca_exhausted means we tried and
+    # exhausted the regen ladder, not "never tried". Distinguish from
+    # the case-7 fall-through below so gs_021 (and similar T3-regen-
+    # exhausted hard qids) classify correctly. Run 833969815458299
+    # misclassified gs_021 as TERMINAL_UNACTIONABLE because the T3
+    # path emitted decision records but no diagnostic_ag trunk event;
+    # F-7 emits the trunk event and lets the classifier consume it.
+    if (
+        "clustered" in stages
+        and "diagnostic_ag" in stages
+        and "rca_exhausted" in stages
+    ):
+        return JourneyTerminalState.HARD_FAILURE_UNRESOLVED
     if (
         "clustered" in stages
         and "ag_assigned" not in stages

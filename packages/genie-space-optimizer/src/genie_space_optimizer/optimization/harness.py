@@ -1243,6 +1243,36 @@ def _emit_idempotency_key(record: dict) -> tuple:
     )
 
 
+def _emit_diagnostic_ag_trunk_events(
+    *,
+    journey_emit,
+    cluster_qids: tuple[str, ...],
+    cluster_id: str,
+) -> None:
+    """Cycle 6 F-7 — emit a ``diagnostic_ag`` trunk event for every
+    qid in a cluster being routed to a diagnostic AG (whether the AG
+    succeeds, exhausts via T3 RCA regen, or is retired). The
+    classifier in ``question_journey_contract._classify_terminal_state``
+    uses the diagnostic_ag stage to pick HARD_FAILURE_UNRESOLVED over
+    the misleading TERMINAL_UNACTIONABLE state. Run 833969815458299
+    misclassified gs_021 because the T3 regen path emitted
+    ``rca_regeneration_*`` decision records but no ``diagnostic_ag``
+    trunk event.
+    """
+    for q in cluster_qids or ():
+        try:
+            journey_emit(
+                "diagnostic_ag",
+                question_id=str(q),
+                cluster_id=str(cluster_id),
+            )
+        except Exception:
+            logger.debug(
+                "F-7: diagnostic_ag trunk emit failed (non-fatal)",
+                exc_info=True,
+            )
+
+
 def _regenerate_rca_for_cluster(
     *,
     spark,
@@ -14307,6 +14337,17 @@ def _run_lever_loop(
                                         for q in (_c.get("question_ids") or [])
                                         if q
                                     )
+                                    # Cycle 6 F-7 — emit diagnostic_ag
+                                    # trunk events so the journey
+                                    # classifier picks
+                                    # HARD_FAILURE_UNRESOLVED rather
+                                    # than TERMINAL_UNACTIONABLE for
+                                    # T3-regen-exhausted hard qids.
+                                    _emit_diagnostic_ag_trunk_events(
+                                        journey_emit=_journey_emit,
+                                        cluster_qids=_t3_target_qids,
+                                        cluster_id=_t3_cluster_id,
+                                    )
                                     _t3_trig = rca_regeneration_triggered_record(
                                         run_id=str(run_id),
                                         iteration=int(iteration_counter),
@@ -14341,6 +14382,25 @@ def _run_lever_loop(
                                         _current_iter_inputs.setdefault(
                                             "decision_records", []
                                         ).append(_t3_exh.to_dict())
+                                        # Cycle 6 F-7 — also emit the
+                                        # rca_exhausted trunk event so
+                                        # the classifier can
+                                        # distinguish tried-and-
+                                        # exhausted from never-tried.
+                                        for _q in _t3_target_qids:
+                                            try:
+                                                _journey_emit(
+                                                    "rca_exhausted",
+                                                    question_id=str(_q),
+                                                    cluster_id=_t3_cluster_id,
+                                                )
+                                            except Exception:
+                                                logger.debug(
+                                                    "F-7: rca_exhausted "
+                                                    "trunk emit failed "
+                                                    "(non-fatal)",
+                                                    exc_info=True,
+                                                )
                                     # Skip this AG entirely — do not
                                     # append to action_groups or the
                                     # diagnostic queue.
