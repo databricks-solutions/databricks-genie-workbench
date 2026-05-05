@@ -1420,3 +1420,30 @@ def build_rca_ledger(
         "theme_count": len(themes),
         "conflict_count": len(conflicts),
     }
+
+
+def build_rca_card(
+    *,
+    cluster_id: str,
+    qids: tuple[str, ...],
+    failure_buckets: dict | None = None,
+    asi_metadata: dict | None = None,
+) -> dict:
+    """Cycle 6 F-2 — single-cluster RCA regeneration entry point.
+
+    Called by ``harness._regenerate_rca_for_cluster`` to attempt a
+    fresh RCA card from a single evidence pack (failure_buckets or
+    ASI). Returns ``{"rca_id": str}`` — empty string indicates the
+    pack produced no usable signal so the caller falls through to
+    the next source.
+
+    The current minimal contract returns ``{"rca_id": ""}``: T3
+    regen never fires on the airline replay, so this stub keeps
+    byte-stability while making the helper testable via mock. Real
+    regen (LLM call against the cluster's qids and the supplied
+    evidence pack) is a follow-up — the function lives here so it
+    can be patched by tests today and replaced by a proper builder
+    once the L4-style regen path stabilises.
+    """
+    _ = cluster_id, qids, failure_buckets, asi_metadata
+    return {"rca_id": ""}

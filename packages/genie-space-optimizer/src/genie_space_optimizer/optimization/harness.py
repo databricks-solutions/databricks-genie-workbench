@@ -1243,6 +1243,64 @@ def _emit_idempotency_key(record: dict) -> tuple:
     )
 
 
+def _regenerate_rca_for_cluster(
+    *,
+    spark,
+    run_id: str,
+    cluster: dict,
+    metadata_snapshot: dict,
+) -> dict:
+    """Cycle 5 T3 / Cycle 6 F-2 — re-invoke RCA on a single cluster
+    with broader evidence after the diagnostic-AG path flagged it as
+    ``needs_rca_regeneration``.
+
+    Two attempts in priority order:
+
+      1. ``failure_buckets``: bucket signature for cluster qids.
+      2. ``asi``: ASI-mined hints for cluster qids.
+
+    Returns ``{"rca_id": str, "attempted_sources": tuple[str, ...]}``.
+    The T3 emit site uses ``attempted_sources`` so the
+    ``rca_regeneration_exhausted`` record reflects what was actually
+    tried (run 833969815458299 emitted ``attempted_evidence_sources=[]``
+    which is wrong — both packs were available).
+    """
+    from genie_space_optimizer.optimization.rca import build_rca_card
+
+    _ = spark, run_id  # accepted for future LLM wiring; not used today
+    cluster_id = str(cluster.get("primary_cluster_id") or "")
+    qids = tuple(str(q) for q in (cluster.get("target_qids") or ()))
+    attempted: list[str] = []
+
+    attempted.append("failure_buckets")
+    card = build_rca_card(
+        cluster_id=cluster_id,
+        qids=qids,
+        failure_buckets=metadata_snapshot.get("_failure_buckets") or {},
+        asi_metadata={},
+    )
+    if card and str(card.get("rca_id") or ""):
+        return {
+            "rca_id": str(card["rca_id"]),
+            "attempted_sources": tuple(attempted),
+        }
+
+    attempted.append("asi")
+    card = build_rca_card(
+        cluster_id=cluster_id,
+        qids=qids,
+        failure_buckets=metadata_snapshot.get("_failure_buckets") or {},
+        asi_metadata=metadata_snapshot.get("_asi_metadata") or {},
+    )
+    if card and str(card.get("rca_id") or ""):
+        return {
+            "rca_id": str(card["rca_id"]),
+            "attempted_sources": tuple(attempted),
+        }
+
+    return {"rca_id": "", "attempted_sources": tuple(attempted)}
+
+
 def _classify_iteration_no_op_cause(
     records: list[dict] | None,
 ) -> str:
