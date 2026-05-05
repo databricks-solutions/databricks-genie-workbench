@@ -200,6 +200,96 @@ def _bar(char: str = "-") -> str:
     return char * _W
 
 
+def _build_baseline_overview_dict(
+    *,
+    prev_accuracy_percent: float,
+    prev_scores: dict[str, float] | None,
+    hard_failure_count: int,
+    soft_signal_count: int,
+) -> dict[str, Any]:
+    """Build the baseline dict consumed by ``render_run_overview``.
+
+    ``render_run_overview`` multiplies ``overall_accuracy`` and
+    ``all_judge_pass_rate`` by 100 to format them as percentages, so
+    callers must hand fractions in the [0.0, 1.0] range. The harness
+    historically tracks ``prev_accuracy`` as a 0-100 percentage; this
+    helper converts and clamps so the transcript no longer prints
+    values like ``8947.0%``.
+
+    ``all_judge_pass_rate`` is approximated as the minimum per-judge
+    pass rate (a lower bound on "every judge agreed pass"). When
+    ``prev_scores`` is empty, the value is 0.0 — but the renderer
+    always emits the row so humans can still see the placeholder.
+    """
+    try:
+        acc_fraction = float(prev_accuracy_percent) / 100.0
+    except (TypeError, ValueError):
+        acc_fraction = 0.0
+    if acc_fraction < 0.0:
+        acc_fraction = 0.0
+    elif acc_fraction > 1.0:
+        acc_fraction = 1.0
+
+    judge_values: list[float] = []
+    if prev_scores:
+        for v in prev_scores.values():
+            try:
+                judge_values.append(float(v))
+            except (TypeError, ValueError):
+                continue
+    if judge_values:
+        min_judge = min(judge_values) / 100.0
+        if min_judge < 0.0:
+            min_judge = 0.0
+        elif min_judge > 1.0:
+            min_judge = 1.0
+    else:
+        min_judge = 0.0
+
+    return {
+        "overall_accuracy": acc_fraction,
+        "all_judge_pass_rate": min_judge,
+        "hard_failures": int(hard_failure_count or 0),
+        "soft_signals": int(soft_signal_count or 0),
+    }
+
+
+def _build_iteration_summary_dict(
+    *,
+    iteration: int,
+    accepted_count: int,
+    rolled_back_count: int,
+    skipped_count: int,
+    gate_drop_count: int,
+    decision_record_count: int,
+    journey_violation_count: int,
+    iteration_accuracy_percent: float | None = None,
+) -> dict[str, Any]:
+    """Build the per-iteration summary dict for the operator transcript.
+
+    The transcript renderer iterates ``sorted(iteration_summary.items())``
+    and emits ``- {k}: {v}`` lines, so this returns small primitives
+    only. ``iteration_accuracy`` is rendered as a percent string when
+    known and omitted when ``None`` so the transcript does not show a
+    misleading 0.0% for iterations whose post-eval is unavailable.
+    """
+    out: dict[str, Any] = {
+        "iteration": int(iteration),
+        "accepted_count": int(accepted_count or 0),
+        "rolled_back_count": int(rolled_back_count or 0),
+        "skipped_count": int(skipped_count or 0),
+        "gate_drop_count": int(gate_drop_count or 0),
+        "decision_record_count": int(decision_record_count or 0),
+        "journey_violation_count": int(journey_violation_count or 0),
+    }
+    if iteration_accuracy_percent is not None:
+        try:
+            out["iteration_accuracy"] = f"{float(iteration_accuracy_percent):.1f}%"
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def _build_loop_out_with_pretty_print(
     *,
     loop_out_base: dict,
@@ -11256,12 +11346,12 @@ def _run_lever_loop(
     # render whatever is available — empty iteration transcripts are
     # acceptable for the MVP bundle).
     from typing import Any as _AnyPhaseH
-    _baseline_for_summary: dict[str, _AnyPhaseH] = {
-        "overall_accuracy": float(prev_accuracy),
-        "all_judge_pass_rate": 0.0,
-        "hard_failures": 0,
-        "soft_signals": 0,
-    }
+    _baseline_for_summary: dict[str, _AnyPhaseH] = _build_baseline_overview_dict(
+        prev_accuracy_percent=float(prev_accuracy),
+        prev_scores=prev_scores,
+        hard_failure_count=0,
+        soft_signal_count=0,
+    )
     _iter_traces: dict[int, _AnyPhaseH] = {}
     _iter_summaries: dict[int, dict[str, _AnyPhaseH]] = {}
     _hard_failures_for_overview: list[tuple[str, str, str]] = []
@@ -19656,6 +19746,60 @@ def _run_lever_loop(
         except Exception:
             logger.debug("GSO iteration summary marker skipped", exc_info=True)
 
+        # Phase H content population — every iteration that reaches end-of-body
+        # MUST appear in the operator transcript, even when no decision records
+        # were produced (those iterations still rendered the per-stage "no
+        # decisions emitted" placeholder via PROCESS_STAGE_ORDER). Without this
+        # block the transcript only renders the run-overview header.
+        try:
+            from genie_space_optimizer.optimization.rca_decision_trace import (
+                DecisionRecord as _PhaseH_DecisionRecord,
+                OptimizationTrace as _PhaseH_OptimizationTrace,
+            )
+
+            _phase_h_records_raw = list(
+                _current_iter_inputs.get("decision_records") or []
+            )
+            _phase_h_records: list[Any] = []
+            for _r in _phase_h_records_raw:
+                try:
+                    _phase_h_records.append(
+                        _PhaseH_DecisionRecord.from_dict(_r)
+                    )
+                except Exception:
+                    continue
+            _iter_traces[iteration_counter] = _PhaseH_OptimizationTrace(
+                journey_events=tuple(_journey_events or ()),
+                decision_records=tuple(_phase_h_records),
+            )
+            _iter_acc_pct: float | None
+            try:
+                _iter_acc_pct = (
+                    float(best_accuracy)
+                    if iteration_counter == best_iteration
+                    else None
+                )
+            except Exception:
+                _iter_acc_pct = None
+            _iter_summaries[iteration_counter] = _build_iteration_summary_dict(
+                iteration=int(iteration_counter),
+                accepted_count=int(_accepted_count or 0),
+                rolled_back_count=int(_rolled_back_count or 0),
+                skipped_count=int(_skipped_count or 0),
+                gate_drop_count=int(_gate_drop_count or 0),
+                decision_record_count=len(_phase_h_records),
+                journey_violation_count=(
+                    0 if _journey_report is None
+                    else len(_journey_report.violations)
+                ),
+                iteration_accuracy_percent=_iter_acc_pct,
+            )
+        except Exception:
+            logger.debug(
+                "Phase H content population skipped (non-fatal)",
+                exc_info=True,
+            )
+
         # Task 13 — render the per-question journey ledger at normal
         # iteration end. Early-exit paths call the same idempotent helper
         # before continuing.
@@ -19954,7 +20098,7 @@ def _run_lever_loop(
             },
             iteration_count=len(_phase_h_iterations_completed),
             accuracy_delta_pp=round(
-                (_best_acc_for_delta - float(prev_accuracy)) * 100, 1
+                _best_acc_for_delta - float(prev_accuracy), 1
             ),
         )
 
