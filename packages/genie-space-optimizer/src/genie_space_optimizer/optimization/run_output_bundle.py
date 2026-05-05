@@ -20,6 +20,28 @@ from genie_space_optimizer.optimization.stages import STAGES
 SCHEMA_VERSION = "v1"
 
 
+def _normalize_accuracy_pct(value: Any) -> Any:
+    """Cycle 6 F-6 — collapse 0-1 fraction inputs and 0-100 percent
+    inputs to a single canonical 0-100 representation, rounded to one
+    decimal. The harness has historically passed both shapes for
+    ``overall_accuracy`` and ``accuracy_delta_pp`` depending on call
+    site; the bundle write must speak one unit so the operator
+    transcript no longer prints ``Baseline accuracy: 8947.0%``.
+
+    Non-numeric values pass through unchanged so the helper is safe
+    to call on partial/legacy payloads.
+    """
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return value
+    if 0.0 <= f <= 1.0:
+        f = f * 100.0
+    return round(f, 1)
+
+
 def build_manifest(
     *,
     optimization_run_id: str,
@@ -93,11 +115,20 @@ def build_run_summary(
     iteration_count: int,
     accuracy_delta_pp: float,
 ) -> dict[str, Any]:
-    """Build run_summary.json — the high-level run outcome."""
+    """Build run_summary.json — the high-level run outcome.
+
+    Cycle 6 F-6: accuracy fields are normalized to 0-100 percent
+    units at the boundary so downstream renderers never multiply.
+    """
+    normalized_baseline = dict(baseline or {})
+    if "overall_accuracy" in normalized_baseline:
+        normalized_baseline["overall_accuracy"] = _normalize_accuracy_pct(
+            normalized_baseline["overall_accuracy"]
+        )
     return {
         "schema_version": SCHEMA_VERSION,
-        "baseline": baseline,
+        "baseline": normalized_baseline,
         "terminal_state": terminal_state,
         "iteration_count": iteration_count,
-        "accuracy_delta_pp": accuracy_delta_pp,
+        "accuracy_delta_pp": _normalize_accuracy_pct(accuracy_delta_pp),
     }

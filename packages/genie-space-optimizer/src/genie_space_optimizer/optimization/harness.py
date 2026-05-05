@@ -20180,13 +20180,31 @@ def _run_lever_loop(
         _phase_h_iterations_completed = list(
             range(1, int(iteration_counter) + 1)
         )
+        # Cycle 6 F-6 — drain any stage_io_capture failures so the
+        # manifest's missing_pieces reflects what the bundle actually
+        # contains. Without this drain the manifest would claim
+        # missing_pieces=[] even when stage_io_capture caught a
+        # RecursionError and skipped the artifact write.
+        from genie_space_optimizer.optimization.stage_io_capture import (
+            consume_capture_failures,
+        )
+        _capture_failures = consume_capture_failures()
+        _missing_pieces = [
+            {
+                "kind": "stage_io_capture_failed",
+                "stage_key": _f["stage_key"],
+                "artifact_path": _f["artifact_path"],
+                "error_class": _f["error_class"],
+            }
+            for _f in _capture_failures
+        ]
         _manifest = _build_manifest(
             optimization_run_id=run_id,
             databricks_job_id=_db_job_id,
             databricks_parent_run_id=_db_parent_run_id,
             lever_loop_task_run_id=_db_task_run_id,
             iterations=_phase_h_iterations_completed,
-            missing_pieces=[],
+            missing_pieces=_missing_pieces,
         )
         _artifact_index = _build_artifact_index(
             iterations=_phase_h_iterations_completed,

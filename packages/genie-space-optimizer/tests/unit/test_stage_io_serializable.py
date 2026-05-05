@@ -15,6 +15,7 @@ from dataclasses import asdict, fields, is_dataclass
 
 import pytest
 
+from genie_space_optimizer.optimization.stage_io_capture import _serialize_io
 from genie_space_optimizer.optimization.stages import STAGES
 
 
@@ -82,3 +83,19 @@ def test_stage_io_dataclass_is_json_serializable(
     )
     parsed = json.loads(serialized)
     assert isinstance(parsed, dict)
+
+
+def test_stage_io_serializer_handles_cyclic_nested_payload() -> None:
+    """Diagnostic capture should not recurse forever on back-referenced payloads."""
+
+    @_dc.dataclass
+    class CyclicPayload:
+        raw: dict[str, object]
+
+    raw: dict[str, object] = {"qid": "q1"}
+    raw["self"] = raw
+
+    serialized = _serialize_io(CyclicPayload(raw=raw))
+
+    parsed = json.loads(serialized)
+    assert parsed == {"raw": {"qid": "q1", "self": "<cycle:dict>"}}
