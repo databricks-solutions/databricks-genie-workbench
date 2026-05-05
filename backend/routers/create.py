@@ -21,6 +21,45 @@ router = APIRouter(prefix="/api/create")
 logger = logging.getLogger(__name__)
 
 
+# ── Preflight check ──────────────────────────────────────────────────────────
+
+@router.get("/preflight")
+async def create_preflight(request: Request):
+    """Check warehouse availability and OBO auth status for the Create flow."""
+    import os
+    from backend.services.auth import get_workspace_client
+
+    obo_enabled = bool(getattr(request.state, "user_token", ""))
+    app_name = os.environ.get("DATABRICKS_APP_NAME", "this app")
+
+    warehouses_available = False
+    try:
+        from backend.services.create_agent_tools import get_sql_warehouse_id
+        configured_id = get_sql_warehouse_id()
+        if configured_id:
+            # App has an explicitly granted warehouse resource — confirmed access
+            warehouses_available = True
+        else:
+            # No app resource assigned; fall back to checking OBO user's warehouses
+            if obo_enabled:
+                client = get_workspace_client()
+                for wh in client.warehouses.list():
+                    is_serverless = getattr(wh, "enable_serverless_compute", False)
+                    warehouse_type = getattr(wh, "warehouse_type", "")
+                    wh_type = getattr(warehouse_type, "value", warehouse_type)
+                    if is_serverless or wh_type == "PRO":
+                        warehouses_available = True
+                        break
+    except Exception as e:
+        logger.warning("preflight: warehouse check failed: %s", e)
+
+    return {
+        "warehouses_available": warehouses_available,
+        "obo_enabled": obo_enabled,
+        "app_name": app_name,
+    }
+
+
 # ── UC discovery ──────────────────────────────────────────────────────────────
 
 @router.get("/discover/catalogs")

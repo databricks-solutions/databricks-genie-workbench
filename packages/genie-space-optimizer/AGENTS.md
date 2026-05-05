@@ -16,7 +16,7 @@ uv build                          # Build the distributable wheel
 uv run pytest                     # Run tests
 ```
 
-### Frontend (uses Bun, not npm)
+### Frontend
 
 ```bash
 npm ci                            # Install from package-lock.json (strict)
@@ -24,8 +24,8 @@ npm run build                     # Production build
 ```
 
 > This package standardizes on **npm** (matches the repo-wide convention
-> used by `frontend/` and `scripts/build.sh`). An older `bun.lock` was
-> removed in PR #79. Don't reintroduce it — either add new dependencies
+> used by `frontend/` and `scripts/build.sh`). An older Bun lockfile was
+> removed in PR #79. Don't reintroduce one — either add new dependencies
 > via `npm install --save-exact` or open a discussion first.
 
 ## Package Layout
@@ -35,7 +35,7 @@ src/genie_space_optimizer/
   backend/              # FastAPI app for the GSO service
   optimization/         # Benchmark-driven optimization pipeline (6 stages)
   jobs/                 # Databricks Job notebooks/tasks
-  ui/                   # React frontend (Vite + Bun)
+  ui/                   # React frontend (Vite + npm)
   genie_optimizer_skills/ # Excluded from type-checking (see pyproject.toml)
 ```
 

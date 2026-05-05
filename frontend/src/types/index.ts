@@ -167,6 +167,7 @@ export interface BenchmarkQuestion {
 export interface UcCatalog {
   name: string
   comment?: string
+  is_home?: boolean
 }
 
 export interface UcSchema {
