@@ -1209,6 +1209,59 @@ def _should_force_structural_synthesis(
     return str(cluster_root_cause or "") in _SQL_SHAPE_ROOT_CAUSES
 
 
+_LEVER6_PATCH_TYPES: frozenset[str] = frozenset({
+    "add_sql_snippet_measure",
+    "add_sql_snippet_filter",
+    "add_sql_snippet_expression",
+})
+
+
+def _should_force_lever6_proposal(
+    *,
+    cluster_root_cause: str,
+    cluster_recommended_levers: tuple[int, ...],
+    ag_target_qids: tuple[str, ...],
+    ag_proposals_so_far: list[dict],
+) -> bool:
+    """Cycle 7 N3 — return True when this AG must receive a forced
+    Lever-6 candidate to close the run-to-run variance on SQL-shape
+    hard failures.
+
+    All five conditions must hold:
+
+    1. ``GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA`` is on.
+    2. ``cluster_root_cause`` ∈ ``_SQL_SHAPE_ROOT_CAUSES`` (the same
+       set the lever-5 structural gate and B2 weighted tie-break use).
+    3. ``cluster_recommended_levers`` includes 6 (so we never override
+       Cycle 2 Task 4's per-question-shape preference of (3, 5)).
+    4. ``ag_target_qids`` is non-empty (only force on AGs that target
+       hard qids — diagnostic-AG path is not the variance lane).
+    5. ``ag_proposals_so_far`` contains zero ``add_sql_snippet_*``
+       patches (don't duplicate a Lever-6 the strategist already
+       emitted).
+    """
+    from genie_space_optimizer.common.config import (
+        require_lever6_for_sql_shape_rca_enabled,
+    )
+    from genie_space_optimizer.optimization.optimizer import (
+        _SQL_SHAPE_ROOT_CAUSES,
+    )
+
+    if not require_lever6_for_sql_shape_rca_enabled():
+        return False
+    if str(cluster_root_cause or "") not in _SQL_SHAPE_ROOT_CAUSES:
+        return False
+    if 6 not in tuple(cluster_recommended_levers or ()):
+        return False
+    if not tuple(ag_target_qids or ()):
+        return False
+    for proposal in ag_proposals_so_far or ():
+        ptype = str((proposal or {}).get("patch_type") or "")
+        if ptype in _LEVER6_PATCH_TYPES:
+            return False
+    return True
+
+
 _PRODUCTIVE_ITERATION_NO_OP_REASON_CODES: tuple[str, ...] = (
     "proposal_generation_empty",
     "structural_gate_dropped_instruction_only",

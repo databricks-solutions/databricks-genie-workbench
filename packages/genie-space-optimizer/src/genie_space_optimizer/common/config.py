@@ -5412,6 +5412,25 @@ def force_structural_synthesis_on_lever5_drop_enabled() -> bool:
     return True
 
 
+def require_lever6_for_sql_shape_rca_enabled() -> bool:
+    """Cycle 7 N3 — when on, every Action Group whose cluster has
+    ``root_cause`` in ``_SQL_SHAPE_ROOT_CAUSES`` AND
+    ``recommended_levers`` containing 6 AND at least one hard target
+    qid AND zero ``add_sql_snippet_*`` patches in its already-
+    aggregated proposal slate gets one forced
+    ``_generate_lever6_proposal`` candidate appended.
+
+    Closes the run-to-run variance on ``gs_009 missing_filter``
+    observed between attempts ``993610879088298`` (L6 emitted, 100%
+    in 2 iters) and ``596465849524605`` (no L6, terminal 95.8%) of
+    run ``2afb0be2-88b6-4832-99aa-c7e78fbc90f7``. Default off; flip
+    on after corpus validation. Set
+    ``GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA=1`` to enable; flip default
+    on via ``_flag_default_on`` for the cycle-7 deploy after corpus
+    measurement closes."""
+    return _flag_enabled("GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA")
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Cycle 5 — Process-Spine Hardening flag helpers (default on).
 #
