@@ -109,6 +109,7 @@ C-<cycle>-<letter> (seed): <pattern>
 | 4 | 2026-05-04 | `2afb0be2-88b6-4832-99aa-c7e78fbc90f7` retry attempt `993610879088298` (post-success contract gaps) | C-4-A (journey violations on successful AGs), C-4-B (terminal-success transcript staleness) | AG-4-A (journey contract for accepted-AG transitions), AG-4-B (terminal-success transcript override) | (no behavioral flags — both are observability/contract fixes) | [`2026-05-04-journey-validation-successful-ag-plan.md`](./2026-05-04-journey-validation-successful-ag-plan.md), [`2026-05-04-terminal-success-transcript-override-plan.md`](./2026-05-04-terminal-success-transcript-override-plan.md) | airline retry: 12 journey violations iter 1, 8 iter 2; iter 2 transcript still names `gs_009` as `rca_ungrounded` after `AG2` fixed it | N1 commits `688ef11` + `9b4ebb8`; N2 commits `cbe13a7` + `6349441`; 5 + 4 new unit tests + 1 cross-projection regression test pass; replay byte-stable; airline fixture live regen + skill replay against `2afb0be2` evidence deferred to operator | SHIPPED-PENDING-CORPUS | Both findings sit on the success path: the optimizer reached 100% but the postmortem-quality output was still noisy. Each plan shipped independently; both are observability-only (no behavioral flag). Live airline fixture regen + skill verification against `2afb0be2` flips status to SHIPPED. **2026-05-04 audit (run `833969815458299`):** N1 producer-side dedup for consecutive `soft_signal` trunk events did NOT land — 13 of 18 journey violations are duplicate soft-signal trunks. N2's `_derive_terminal_success` predicate trivially returns `{}` because no `QID_RESOLUTION.RESOLVED` records are emitted at post-patch eval. Closed by [Cycle 6 F-5 + F-3](./2026-05-04-cycle-6-shipped-code-defect-sweep-plan.md). |
 | 5 | 2026-05-04 | `2423b960-16e8-41d4-a0cb-74c563378e05` attempt `587549760880226` (MERGE_GATE_GAP), confirmed by attempt `833969815458299` (READY_TO_MERGE with contract gaps) | C-5-A (no-op iteration budget consumption), C-5-B (causal-drop strategist feedback), C-5-C (diagnostic-AG RCA regeneration), C-5-D (acceptance reason granularity), C-5-E (soft-cluster drift recovery), C-5-F (Repair-Run widget context preservation) | T1 → T6 (process-spine hardening) | `GSO_PRODUCTIVE_ITERATION_BUDGET`, `GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST`, `GSO_DIAGNOSTIC_AG_RCA_REGEN` (T4–T6 observability/reliability, no flag) | [`2026-05-04-cycle-5-process-spine-plan.md`](./2026-05-04-cycle-5-process-spine-plan.md) | 7Now 89.47% (attempt `587549760880226`: 0 accepted, 5 iters, structural drops on iters 2 + 5, empty-proposer on iters 3 + 4) | 7Now 89.47% → 100.0% in one accepted iteration on attempt `833969815458299`; `thresholds_met=true`; control-flow paths verified shipped | PARTIALLY SHIPPED | All six tasks landed code; T2/T4/T6 verified shipped and effective. **2026-05-04 audit (run `833969815458299`):** T1 emit-site idempotency missing — `iteration_budget_consumed` × 2, `soft_cluster_drift_recovered` × 2, `rca_regeneration_triggered` × 2, `rca_regeneration_exhausted` × 2 in the same iteration. T3 `_regenerate_rca_for_cluster` body returns immediately with `attempted_evidence_sources=[]` (helper wired but body empty). T3 does not emit a `diagnostic_ag` trunk journey event so terminal-state classification on RCA-exhausted hard qids is wrong. Closed by [Cycle 6 F-1, F-2, F-7](./2026-05-04-cycle-6-shipped-code-defect-sweep-plan.md). |
 | 6 | 2026-05-04 | `2423b960-16e8-41d4-a0cb-74c563378e05` attempt `833969815458299` (READY_TO_MERGE with contract gaps) | C-6-A (Cycle 5 emit-site duplication), C-6-B (Cycle 5 T3 stub helper), C-6-C (post-eval missing QID_RESOLUTION emits), C-6-D (P2 `proposal_generated` normalization gap), C-6-E (N1 producer-side trunk dedup gap), C-6-F (Phase H bundle hardening: RecursionError + lying manifest + unit-cascade), C-6-G (T3 missing `diagnostic_ag` trunk emit + classifier under-specification — gs_021 case) | F-1 → F-7 (defect fixes; no behavioral flags) | (none — defect sweep, all changes ship behind existing flag scopes or are pure observability) | [`2026-05-04-cycle-6-shipped-code-defect-sweep-plan.md`](./2026-05-04-cycle-6-shipped-code-defect-sweep-plan.md) | 7Now 89.47% → 100.0% (already converged on `833969815458299`; defect fixes do not change optimizer outcome) | terminal-success projected, journey violations reduced from 18 → ≤2, manifest.missing_pieces accurate, gs_021 classified `hard_failure_unresolved`, no duplicate emits, baseline accuracy printed correctly | IN FLIGHT | Audit of run `833969815458299` revealed every Cycle 1-5 plan has shipped code, but five plans (Cycle 5 T1/T3/T5, P2, N1, N2) carry implementation defects. Cycle 6 is the targeted sweep — seven surgical fixes (~30–80 LOC each), TDD-disciplined, byte-stable. gs_021 triage finding: user's `clustered → soft_signal` hypothesis was disproven by evidence (gs_021 has no soft_signal trunk event in this run); the real defect is an adjacent `diagnostic_ag` trunk-emit gap surfaced as F-7. |
+| 7 | 2026-05-04 | `2afb0be2-88b6-4832-99aa-c7e78fbc90f7` (variance source attempt `596465849524605`); fix exemplar attempt `993610879088298` | C-7-A (Lever-6 coverage gap on SQL-shape RCA) | AG-7-A (`_should_force_lever6_proposal` predicate + `_force_lever6_proposal_for_ag` helper wired in `harness.py` immediately after the P3 forced-structural-synthesis block) | `GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA` (default off; flip default-on after corpus measurement) | [`2026-05-04-cycle-7-lever-6-coverage-sql-shape-plan.md`](./2026-05-04-cycle-7-lever-6-coverage-sql-shape-plan.md) | airline `596465849524605`: 87.5% → 95.8% (5 iters, 1 accepted, `gs_009 missing_filter` hard at termination) | airline target: terminal 100% on a fresh post-enrichment run with flag on; `gs_009` resolved by the forced L6 candidate (matches the `993610879088298` trajectory) | IN FLIGHT | Code lands flag-off independently of Cycle 6 validation. Cycle 6 must be validated before Cycle 7's flag flips on so the corpus measurement is uncontaminated by Cycle 6 defects. T1+T2+T3 are byte-stable replay-safe at `BURNDOWN_BUDGET=0`; T4 is this row. |
 
 ## Cycles
 
@@ -551,4 +552,74 @@ C-3-D (seed): Phase H assembly degradation persists
        2026-05-05-run-output-contract-stdout-flush-plan.md;
        not a new cycle, just unblock the existing plan.
   Blocking on: stdout-flush plan implementation.
+```
+
+### Cycle 7 — 2026-05-04 — Lever-6 coverage for SQL-shape root causes
+
+**Inspiration:** [`docs/runid_analysis/2afb0be2-88b6-4832-99aa-c7e78fbc90f7/postmortem.md`](./runid_analysis/2afb0be2-88b6-4832-99aa-c7e78fbc90f7/postmortem.md). Two attempts of the same airline space, post-Cycle-2:
+
+- Attempt `993610879088298` (retry): converged to 100% in 2 iterations. Iter-1 AG1 carried a Lever-6 `add_sql_snippet_filter`; iter-2 AG2 also emitted L6. `gs_009 missing_filter` was resolved by the L6 candidate.
+- Attempt `596465849524605` (fresh post-enrichment run): exhausted 5 iterations at 95.8%. No iteration's strategist response included any `add_sql_snippet_*` patch. `gs_009 missing_filter` remained hard at termination.
+
+Both runs hit the same cluster (`H001 gs_009 missing_filter`, `recommended_levers=[3,5,6]`, `root_cause=missing_filter`) with the same RCA. The variance source is the LLM strategist's non-deterministic patch-type choice. Cycle 7 closes the variance by deterministically forcing one Lever-6 candidate when the predicate fires.
+
+#### Section 1: Corpus runs
+
+| `opt_run_id` | Genie Space | Domain | Baseline % | Final % | Target QID(s) | Hard-fail QIDs at termination | Postmortem path |
+|---|---|---|---|---|---|---|---|
+| `2afb0be2-88b6-4832-99aa-c7e78fbc90f7` (`596465849524605`) | airline | airline_ticketing_and_fare_analysis | 87.5% | 95.8% | gs_009 | gs_009 | [`postmortem.md`](./runid_analysis/2afb0be2-88b6-4832-99aa-c7e78fbc90f7/postmortem.md) |
+| `2afb0be2-88b6-4832-99aa-c7e78fbc90f7` (`993610879088298`) | airline | airline_ticketing_and_fare_analysis | 87.5% | 100.0% | gs_009 | (none) | (same; retry attempt) |
+
+#### Section 2: Postmortem clustering — findings that recur
+
+| Cluster ID | Pattern | Run(s) it appears in | Stage / `decision_type` | Failure bucket | Skill that surfaced it |
+|---|---|---|---|---|---|
+| C-7-A | Strategist non-deterministically omits Lever-6 (`add_sql_snippet_*`) for SQL-shape root causes (`missing_filter`, `wrong_aggregation`, etc.) even when the cluster's `recommended_levers` includes `6` and L6 is the recommended fix; produces run-to-run variance on otherwise resolvable hard QIDs. | `596465849524605` (variance source); `993610879088298` (variance fix exemplar) | `Proposal Generation` / `proposal_generated` | `LEVER_COVERAGE_GAP` (new bucket; not yet wired into `failure_bucketing.py` — observability deferred to Cycle 8 if pattern recurs) | `gso-lever-loop-run-analysis` cross-attempt diff |
+
+#### Section 3: AG hypothesis(es)
+
+```text
+AG-7-A: Force one Lever-6 candidate when SQL-shape AG has no add_sql_snippet_* patch
+  Cluster: C-7-A
+  RCA: When the strategist's AG slate for a hard SQL-shape cluster contains zero add_sql_snippet_* patches, the loop never explores the lever that closed `gs_009` on the retry. Forcing one L6 attempt (gated on root_cause ∈ _SQL_SHAPE_ROOT_CAUSES, recommended_levers ∋ 6, hard target_qids non-empty, no L6 already present) eliminates the variance.
+  Causal target: src/.../optimization/harness.py — predicate (`_should_force_lever6_proposal`), force-emit helper (`_force_lever6_proposal_for_ag`), and one guarded call at the per-AG post-aggregation site immediately following the P3 forced-structural-synthesis block.
+  Expected effect: airline `596465849524605` retry on flag-on lands an `add_sql_snippet_filter` for `gs_009` and converges to 100% (matching `993610879088298`).
+  Negative-space: flags-off airline replay byte-stable at `BURNDOWN_BUDGET=0`; per-question-shape clusters (`recommended_levers=(3,5)` from Cycle 2 Task 4) MUST NOT be touched.
+  Feature flag: GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA
+  Plan ref: 2026-05-04-cycle-7-lever-6-coverage-sql-shape-plan.md (T1, T2, T3)
+```
+
+#### Section 4: Feature flags introduced this cycle
+
+| Flag | Default | Touches | Isolated test |
+|---|---|---|---|
+| `GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA` | off | `harness._should_force_lever6_proposal`; `harness._force_lever6_proposal_for_ag`; harness per-AG post-aggregation insertion site | `tests/unit/test_cycle_7_force_lever6_predicate.py::test_predicate_false_when_flag_off`, `..._true_when_all_conditions_met` |
+
+#### Section 5: Gate results
+
+| Gate | Status | Evidence |
+|---|---|---|
+| Byte-stable replay (flags off) | PASS at each T1-T3 commit | `pytest packages/genie-space-optimizer/tests/replay/test_lever_loop_replay.py::test_run_replay_airline_real_v1_within_burndown_budget -xvs` at `BURNDOWN_BUDGET=0` (13 active gates green) |
+| Corpus delta (flag on) | PENDING fresh airline pilot post-Cycle-6-validation | airline `596465849524605` post-enrichment retry with `GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA=1`; expect terminal 100% with `gs_009` resolved by `add_sql_snippet_filter` |
+| Skill accountability — `gso-lever-loop-run-analysis` surfaces `GSO_LEVER6_FORCED_V1` | LANDED at T2 | `parse_lever6_forced_marker` exposed; postmortem template adds a `Lever-6 forced (Cycle 7)` row alongside the existing `Iteration budget (Cycle 5 T1)` row |
+
+#### Section 6: Decision
+
+`HOLD` — Code lands flag-off independently of Cycle 6 validation. Decision flips to `SHIPPED` after:
+1. Cycle 6 validation closes on a fresh real-Genie airline run.
+2. Cycle 7 corpus delta gate passes on a fresh airline run with `GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA=1`.
+3. `_flag_default_on` migration commits (one-line change to `require_lever6_for_sql_shape_rca_enabled`).
+
+#### Section 7: Seeds for next cycle
+
+```text
+C-7-B (seed): Strategist's AG-emit prompt does not enumerate `recommended_levers` from the cluster.
+  Run(s) observed: `596465849524605`
+  Hypothesis for next cycle: feeding `recommended_levers` into the strategist prompt as a hard constraint reduces the variance source upstream of the post-hoc force-emit fix.
+  Blocking on: Cycle 7 corpus measurement; if N3 fully closes the variance, this seed is downgraded to "nice to have."
+
+C-7-C (seed): Clusterer / RCA root-cause flips for the same QID across iterations (N4 from `596465849524605` postmortem).
+  Run(s) observed: `596465849524605` (gs_009 root_cause flips `plural_top_n_collapse` -> `missing_filter` between iterations).
+  Hypothesis for next cycle: per-QID root-cause memory persists RCA findings across re-clustering unless explicitly contradicted.
+  Blocking on: ≥2 corpus runs reproducing the flip pattern.
 ```
