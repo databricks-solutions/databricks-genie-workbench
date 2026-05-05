@@ -1262,6 +1262,101 @@ def _should_force_lever6_proposal(
     return True
 
 
+def _force_lever6_proposal_for_ag(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster: dict,
+    ag_target_qids: tuple[str, ...],
+    ag_proposals_so_far: list[dict],
+    metadata_snapshot: dict,
+    decision_emit,
+    generate_lever6,
+    **lever6_kwargs,
+) -> dict | None:
+    """Cycle 7 N3 — when the predicate fires, invoke ``generate_lever6``
+    against ``cluster`` and emit a typed record + stdout marker.
+    Returns the proposal dict (which the caller appends to its proposal
+    list) or None when:
+
+      - the predicate is false (most common path: flag off),
+      - the predicate is true but ``generate_lever6`` returns None
+        (LLM / validation declined the candidate).
+
+    ``generate_lever6`` is parameterized so the unit test can pass a
+    deterministic stub. Production call site passes
+    ``optimizer._generate_lever6_proposal``. Keyword-only kwargs in
+    ``**lever6_kwargs`` (e.g. ``benchmarks=...``, ``catalog=...``)
+    forward to the generator without this helper having to know the
+    exact LLM-side wiring.
+    """
+    cluster_root_cause = str(cluster.get("root_cause") or "")
+    cluster_recommended_levers = tuple(
+        int(L) for L in (cluster.get("recommended_levers") or ())
+    )
+    if not _should_force_lever6_proposal(
+        cluster_root_cause=cluster_root_cause,
+        cluster_recommended_levers=cluster_recommended_levers,
+        ag_target_qids=tuple(ag_target_qids or ()),
+        ag_proposals_so_far=list(ag_proposals_so_far or ()),
+    ):
+        return None
+
+    try:
+        proposal = generate_lever6(
+            cluster, metadata_snapshot, **lever6_kwargs,
+        )
+    except Exception:
+        logger.warning(
+            "Cycle 7 N3 forced lever-6 generation raised; skipping.",
+            exc_info=True,
+        )
+        return None
+    if not proposal:
+        return None
+
+    proposal = dict(proposal)
+    provenance = dict(proposal.get("provenance") or {})
+    provenance["lever6_force_reason"] = "lever6_forced_for_sql_shape_rca"
+    proposal["provenance"] = provenance
+
+    from genie_space_optimizer.common.mlflow_markers import (
+        lever6_forced_marker,
+    )
+    from genie_space_optimizer.optimization.decision_emitters import (
+        lever6_forced_record,
+    )
+
+    existing_patch_types = tuple(
+        str((p or {}).get("patch_type") or "")
+        for p in (ag_proposals_so_far or ())
+    )
+    record = lever6_forced_record(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        ag_id=str(ag_id),
+        cluster_id=str(cluster.get("cluster_id") or ""),
+        rca_id=str(cluster.get("rca_id") or ""),
+        root_cause=cluster_root_cause,
+        target_qids=tuple(str(q) for q in ag_target_qids or ()),
+        recommended_levers=cluster_recommended_levers,
+        existing_patch_types=existing_patch_types,
+    )
+    decision_emit(record)
+    print(lever6_forced_marker(
+        optimization_run_id=str(run_id),
+        iteration=int(iteration),
+        ag_id=str(ag_id),
+        cluster_id=str(cluster.get("cluster_id") or ""),
+        root_cause=cluster_root_cause,
+        target_qids=tuple(str(q) for q in ag_target_qids or ()),
+        recommended_levers=cluster_recommended_levers,
+        existing_patch_types=existing_patch_types,
+    ))
+    return proposal
+
+
 _PRODUCTIVE_ITERATION_NO_OP_REASON_CODES: tuple[str, ...] = (
     "proposal_generation_empty",
     "structural_gate_dropped_instruction_only",
@@ -15408,6 +15503,101 @@ def _run_lever_loop(
             )
             logger.debug(
                 "Cycle 8 3b: lever5_structural_gate_records failed (non-fatal)",
+                exc_info=True,
+            )
+            if _phase_b_strict_mode():
+                raise
+
+        # Cycle 7 N3: force one Lever-6 add_sql_snippet_* candidate
+        # when the AG's source cluster has a SQL-shape root cause,
+        # ``recommended_levers`` includes 6, and no L6 patch is
+        # already in this AG's slate. Closes the run-to-run variance
+        # on gs_009 missing_filter between attempts 596465849524605
+        # (no L6, terminal 95.8%) and 993610879088298 (L6 emitted,
+        # 100% in 2 iters). Default off behind
+        # ``GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA``.
+        try:
+            from genie_space_optimizer.optimization.optimizer import (
+                _generate_lever6_proposal,
+            )
+            for _force_cid in (ag.get("source_cluster_ids") or ()):
+                _force_cluster = _iter_source_clusters_by_id.get(
+                    str(_force_cid)
+                )
+                if not isinstance(_force_cluster, dict):
+                    continue
+                _force_target_qids = tuple(
+                    str(q) for q in (ag.get("target_qids") or ())
+                    if str(q)
+                )
+                _forced_l6 = _force_lever6_proposal_for_ag(
+                    run_id=str(run_id),
+                    iteration=int(iteration_counter),
+                    ag_id=str(ag_id),
+                    cluster=dict(_force_cluster),
+                    ag_target_qids=_force_target_qids,
+                    ag_proposals_so_far=list(all_proposals),
+                    metadata_snapshot=metadata_snapshot,
+                    decision_emit=lambda _rec: (
+                        _current_iter_inputs.setdefault(
+                            "decision_records", []
+                        ).append(_rec.to_dict())
+                    ),
+                    generate_lever6=_generate_lever6_proposal,
+                    w=w,
+                    spark=spark,
+                    catalog=catalog,
+                    gold_schema=schema,
+                    warehouse_id=resolve_warehouse_id(""),
+                    benchmarks=benchmarks,
+                )
+                if _forced_l6 is not None:
+                    _forced_l6 = dict(_forced_l6)
+                    _forced_l6["proposal_id"] = (
+                        f"P{len(all_proposals) + 1:03d}"
+                    )
+                    _forced_l6.setdefault(
+                        "cluster_id",
+                        _force_cluster.get("cluster_id", ag_id),
+                    )
+                    _forced_l6.setdefault("scope", "genie_config")
+                    _forced_l6["change_description"] = (
+                        f"[{ag_id}] FORCED Lever-6 SQL Expression: "
+                        f"{_forced_l6.get('display_name', 'unnamed')} "
+                        f"({_forced_l6.get('snippet_type', '?')})"
+                    )
+                    _forced_l6.setdefault(
+                        "proposed_value", _forced_l6.get("sql", "")
+                    )
+                    _forced_l6.setdefault(
+                        "rationale",
+                        f"Cycle 7 N3 forced Lever-6 for "
+                        f"{_force_cluster.get('root_cause', '?')}",
+                    )
+                    _forced_l6.setdefault("questions_at_risk", 0)
+                    _forced_l6.setdefault(
+                        "net_impact",
+                        max(
+                            _forced_l6.get("questions_fixed", 0) * 0.7,
+                            1.0,
+                        ),
+                    )
+                    all_proposals.append(_forced_l6)
+                    logger.info(
+                        "Cycle 7 N3: forced Lever-6 candidate succeeded "
+                        "for AG=%s cluster=%s root_cause=%s",
+                        ag_id,
+                        _force_cluster.get("cluster_id", "?"),
+                        _force_cluster.get("root_cause", "?"),
+                    )
+        except Exception:
+            _phase_b_producer_exceptions["forced_lever6_n3"] = (
+                _phase_b_producer_exceptions.get(
+                    "forced_lever6_n3", 0
+                ) + 1
+            )
+            logger.debug(
+                "Cycle 7 N3: forced Lever-6 emit failed (non-fatal)",
                 exc_info=True,
             )
             if _phase_b_strict_mode():
