@@ -23008,6 +23008,19 @@ def _run_lever_loop(
             space_id=space_id,
             event="end",
         ))
+        if gso_run_manifest_v2_enabled():
+            try:
+                print(assemble_run_manifest_v2_line(
+                    optimization_run_id=run_id,
+                    databricks_job_id=_db_job_id,
+                    databricks_parent_run_id=_db_parent_run_id,
+                    lever_loop_task_run_id=_db_task_run_id,
+                    mlflow_experiment_id=str(os.environ.get("MLFLOW_EXPERIMENT_ID") or ""),
+                    space_id=space_id,
+                    event="end",
+                ))
+            except Exception:
+                logger.debug("GSO run manifest V2 (end) emission skipped", exc_info=True)
     except Exception:
         logger.debug("GSO convergence/end marker skipped", exc_info=True)
 
