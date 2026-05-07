@@ -8,7 +8,11 @@ Databricks task stdout.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Mapping, Sequence
+
+
+_MARKER_NAME_RE = re.compile(r"^GSO_[A-Z0-9_]+_V[1-9]\d*$")
 
 
 def _clean(value: Any) -> Any:
@@ -26,7 +30,7 @@ def _clean(value: Any) -> Any:
 def marker_line(marker: str, payload: Mapping[str, Any]) -> str:
     """Return one stable stdout marker line."""
     clean_marker = str(marker).strip()
-    if not clean_marker.startswith("GSO_") or not clean_marker.endswith("_V1"):
+    if not _MARKER_NAME_RE.match(clean_marker):
         raise ValueError(f"invalid GSO marker name: {marker!r}")
     clean_payload = {str(k): _clean(v) for k, v in payload.items()}
     encoded = json.dumps(clean_payload, sort_keys=True, separators=(",", ":"))

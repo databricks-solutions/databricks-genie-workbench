@@ -216,3 +216,28 @@ def test_invariant_violation_marker_carries_payload_dict() -> None:
     assert payload["payload"]["decisions_in"] == 3
     assert payload["payload"]["decisions_out"] == 2
     assert payload["payload"]["input_count"] == 2
+
+
+# Cycle 12-T1 — marker_line accepts any _V<N> suffix
+import pytest
+
+
+def test_marker_line_accepts_v2_and_higher() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import marker_line
+
+    line_v2 = marker_line("GSO_FOO_V2", {"a": 1})
+    line_v42 = marker_line("GSO_FOO_V42", {"a": 1})
+
+    assert line_v2.startswith("GSO_FOO_V2 ")
+    assert line_v42.startswith("GSO_FOO_V42 ")
+
+
+def test_marker_line_rejects_v0_and_unversioned() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import marker_line
+
+    with pytest.raises(ValueError):
+        marker_line("GSO_FOO_V0", {})
+    with pytest.raises(ValueError):
+        marker_line("GSO_FOO", {})
+    with pytest.raises(ValueError):
+        marker_line("FOO_V1", {})
