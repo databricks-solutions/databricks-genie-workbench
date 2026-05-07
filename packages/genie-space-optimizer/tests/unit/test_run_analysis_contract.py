@@ -302,3 +302,76 @@ def test_collect_effective_flags_swallows_accessor_exceptions(monkeypatch) -> No
     flags = collect_effective_flags()
 
     assert flags.get("boom") is None
+
+
+def test_run_manifest_v2_marker_has_all_v1_and_v2_fields() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        run_manifest_v2_marker,
+    )
+
+    line = run_manifest_v2_marker(
+        optimization_run_id="opt_run_1",
+        databricks_job_id="123",
+        databricks_parent_run_id="456",
+        lever_loop_task_run_id="789",
+        mlflow_experiment_id="42",
+        space_id="space_1",
+        event="start",
+        wheel_sha="1.2.3+g0a1b2c3",
+        git_sha="0a1b2c3d" * 5,
+        effective_flags={"target_aware_acceptance": True, "regression_debt_invariant": True},
+        python_version="3.11.6",
+        domain="airline",
+    )
+
+    assert line.startswith("GSO_RUN_MANIFEST_V2 ")
+    payload = _json_payload(line)
+    # V1 fields preserved.
+    assert payload["optimization_run_id"] == "opt_run_1"
+    assert payload["databricks_job_id"] == "123"
+    assert payload["space_id"] == "space_1"
+    assert payload["event"] == "start"
+    # V2 fields added.
+    assert payload["wheel_sha"] == "1.2.3+g0a1b2c3"
+    assert payload["git_sha"] == "0a1b2c3d" * 5
+    assert payload["python_version"] == "3.11.6"
+    assert payload["domain"] == "airline"
+    assert payload["effective_flags"] == {
+        "regression_debt_invariant": True,
+        "target_aware_acceptance": True,
+    }
+
+
+def test_run_manifest_v2_marker_v2_fields_default_to_empty() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        run_manifest_v2_marker,
+    )
+
+    line = run_manifest_v2_marker(
+        optimization_run_id="opt_run_1",
+        event="end",
+    )
+
+    payload = _json_payload(line)
+    assert payload["wheel_sha"] == ""
+    assert payload["git_sha"] == ""
+    assert payload["python_version"] == ""
+    assert payload["domain"] == ""
+    assert payload["effective_flags"] == {}
+
+
+def test_run_manifest_v2_marker_payload_under_16kb() -> None:
+    """Defensive size check on the assembled V2 line. The known
+    production-flag count keeps this well under 16KB."""
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        collect_effective_flags,
+        run_manifest_v2_marker,
+    )
+
+    line = run_manifest_v2_marker(
+        optimization_run_id="opt_run_1",
+        event="end",
+        effective_flags=collect_effective_flags(),
+    )
+
+    assert len(line.encode("utf-8")) < 16 * 1024

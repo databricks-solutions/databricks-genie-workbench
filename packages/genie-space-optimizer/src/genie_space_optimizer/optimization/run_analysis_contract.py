@@ -102,6 +102,48 @@ def run_manifest_marker(
     )
 
 
+def run_manifest_v2_marker(
+    *,
+    optimization_run_id: str,
+    databricks_job_id: str = "",
+    databricks_parent_run_id: str = "",
+    lever_loop_task_run_id: str = "",
+    mlflow_experiment_id: str = "",
+    space_id: str = "",
+    event: str,
+    wheel_sha: str = "",
+    git_sha: str = "",
+    effective_flags: Mapping[str, Any] | None = None,
+    python_version: str = "",
+    domain: str = "",
+) -> str:
+    """Cycle 12-T1 — extended run manifest with experimental-setup metadata.
+
+    Emitted alongside (not in place of) ``GSO_RUN_MANIFEST_V1`` so existing
+    parsers and replay fixtures keep working unchanged. The V2 line carries
+    every V1 field plus ``wheel_sha`` / ``git_sha`` / ``effective_flags`` /
+    ``python_version`` / ``domain`` so a postmortem can answer
+    "what code/flags actually ran?" by reading exactly one record.
+    """
+    return marker_line(
+        "GSO_RUN_MANIFEST_V2",
+        {
+            "optimization_run_id": optimization_run_id,
+            "databricks_job_id": databricks_job_id,
+            "databricks_parent_run_id": databricks_parent_run_id,
+            "lever_loop_task_run_id": lever_loop_task_run_id,
+            "mlflow_experiment_id": mlflow_experiment_id,
+            "space_id": space_id,
+            "event": event,
+            "wheel_sha": wheel_sha,
+            "git_sha": git_sha,
+            "effective_flags": dict(effective_flags) if effective_flags else {},
+            "python_version": python_version,
+            "domain": domain,
+        },
+    )
+
+
 def iteration_summary_marker(
     *,
     optimization_run_id: str,
