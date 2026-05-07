@@ -761,3 +761,15 @@ I4 (`no_silent_retry`) is the invariant that catches both failure modes: identic
 **Status:** SHIPPED (Case B — failing invariant IDs I4 on both fixtures name Cycle 12 scope).
 
 **Status:** SHIPPED.
+
+
+## Cycle 12-T1 — Run Manifest V2 (experimental-setup metadata)
+
+- **Date shipped:** 2026-05-08
+- **Inspiration evidence:** [`runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097/postmortem.md`](./runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097/postmortem.md) F9 — no record of which wheel/flags ran.
+- **Stage(s) closed (partial):** Stage 11 `contract_health` — the experimental-setup-record subgoal is now contract-letter compliant.
+- **What changed:** New `GSO_RUN_MANIFEST_V2` stdout marker emitted alongside V1 at run start and run end, carrying `wheel_sha`, `git_sha`, `effective_flags`, `python_version`, `domain`. New helpers in `common/build_metadata.py` and `optimization/run_analysis_contract.py`. Parser surfaces V2 as `MarkerLog.run_manifest_v2`.
+- **Flag introduced:** `GSO_RUN_MANIFEST_V2_ENABLED` (default-on; rollback path keeps V1-only emit).
+- **Binary criterion:** Every postmortem can answer "what wheel/git_sha/flags/python ran?" by reading exactly one record. Verified by `test_v2_manifest_satisfies_binary_criterion`.
+- **Replay byte-stability:** preserved. V1 emission unchanged; existing fixture `lever_loop_stdout_0ade1a99.txt` parses identically with `run_manifest_v2=None`.
+- **Follow-up:** Cycles 12-T2/T3/T4 (manifest validator wiring, bundle assembler, closeout audit). Roadmap reference: [`2026-05-07-contract-spirit-compliance-roadmap.md`](./2026-05-07-contract-spirit-compliance-roadmap.md), Cycle 12.
