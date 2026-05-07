@@ -241,3 +241,64 @@ def test_marker_line_rejects_v0_and_unversioned() -> None:
         marker_line("GSO_FOO", {})
     with pytest.raises(ValueError):
         marker_line("FOO_V1", {})
+
+
+def test_collect_effective_flags_returns_known_flags() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        collect_effective_flags,
+    )
+
+    flags = collect_effective_flags()
+
+    assert isinstance(flags, dict)
+    # Production-locked flags must always appear and always be True.
+    assert flags.get("target_aware_acceptance") is True
+    assert flags.get("regression_debt_invariant") is True
+    assert flags.get("lever_qualified_patch_ids") is True
+
+
+def test_collect_effective_flags_strips_enabled_suffix_from_keys() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        collect_effective_flags,
+    )
+
+    flags = collect_effective_flags()
+
+    # No key ends in "_enabled" — that suffix is stripped for compactness.
+    for key in flags:
+        assert not key.endswith("_enabled"), key
+
+
+def test_collect_effective_flags_payload_under_8kb() -> None:
+    """Defensive ceiling: if a future PR pushes flag count past this, the
+    test surfaces it and the team can decide between truncation or
+    splitting into a sidecar marker."""
+    import json
+
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        collect_effective_flags,
+    )
+
+    flags = collect_effective_flags()
+    encoded = json.dumps(flags, sort_keys=True, separators=(",", ":"))
+
+    assert len(encoded.encode("utf-8")) < 8 * 1024, len(encoded)
+
+
+def test_collect_effective_flags_swallows_accessor_exceptions(monkeypatch) -> None:
+    """Any accessor that raises is recorded as ``None`` (not the boolean
+    truthy/falsy of the exception object)."""
+    from genie_space_optimizer.common import config as _config
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        collect_effective_flags,
+    )
+
+    def _boom() -> bool:  # pragma: no cover - shape only
+        raise RuntimeError("simulated")
+
+    _boom.__name__ = "boom_enabled"
+    monkeypatch.setattr(_config, "boom_enabled", _boom, raising=False)
+
+    flags = collect_effective_flags()
+
+    assert flags.get("boom") is None

@@ -37,6 +37,47 @@ def marker_line(marker: str, payload: Mapping[str, Any]) -> str:
     return f"{clean_marker} {encoded}"
 
 
+def collect_effective_flags() -> dict[str, Any]:
+    """Snapshot every public ``*_enabled()`` accessor in ``common/config``.
+
+    Returns a dict mapping the accessor's stem (e.g. ``"target_aware_acceptance"``
+    for ``target_aware_acceptance_enabled``) to its boolean return value.
+    Accessors that raise are recorded as ``None`` so the manifest still
+    surfaces their existence.
+    """
+    import inspect
+
+    from genie_space_optimizer.common import config as _config
+
+    flags: dict[str, Any] = {}
+    for name, member in inspect.getmembers(_config, callable):
+        if not name.endswith("_enabled"):
+            continue
+        if name.startswith("_"):
+            continue
+        # Only zero-required-arg callables qualify.
+        try:
+            sig = inspect.signature(member)
+        except (TypeError, ValueError):
+            continue
+        required = [
+            p for p in sig.parameters.values()
+            if p.default is inspect.Parameter.empty
+            and p.kind not in (
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            )
+        ]
+        if required:
+            continue
+        stem = name[: -len("_enabled")]
+        try:
+            flags[stem] = bool(member())
+        except Exception:
+            flags[stem] = None
+    return flags
+
+
 def run_manifest_marker(
     *,
     optimization_run_id: str,
