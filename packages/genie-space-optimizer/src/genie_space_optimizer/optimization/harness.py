@@ -12866,10 +12866,14 @@ def _run_lever_loop(
     thresholds = thresholds or DEFAULT_THRESHOLDS
 
     from genie_space_optimizer.optimization.run_analysis_contract import (
+        assemble_run_manifest_v2_line,
         convergence_marker,
         iteration_summary_marker,
         phase_b_marker,
         run_manifest_marker,
+    )
+    from genie_space_optimizer.common.config import (
+        gso_run_manifest_v2_enabled,
     )
 
     write_stage(
@@ -12906,6 +12910,19 @@ def _run_lever_loop(
             space_id=space_id,
             event="start",
         ))
+        if gso_run_manifest_v2_enabled():
+            try:
+                print(assemble_run_manifest_v2_line(
+                    optimization_run_id=run_id,
+                    databricks_job_id=_db_job_id,
+                    databricks_parent_run_id=_db_parent_run_id,
+                    lever_loop_task_run_id=_db_task_run_id,
+                    mlflow_experiment_id=str(os.environ.get("MLFLOW_EXPERIMENT_ID") or ""),
+                    space_id=space_id,
+                    event="start",
+                ))
+            except Exception:
+                logger.debug("GSO run manifest V2 (start) emission skipped", exc_info=True)
     except Exception:
         logger.debug("GSO run manifest start marker skipped", exc_info=True)
     try:

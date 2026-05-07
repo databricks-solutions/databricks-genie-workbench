@@ -375,3 +375,33 @@ def test_run_manifest_v2_marker_payload_under_16kb() -> None:
     )
 
     assert len(line.encode("utf-8")) < 16 * 1024
+
+
+def test_assemble_run_manifest_v2_payload_uses_build_metadata(monkeypatch) -> None:
+    """Verify the small assembly helper used by the harness produces a line
+    with the expected V2 fields populated from build_metadata + config."""
+    monkeypatch.setenv("GSO_GIT_SHA", "ab" * 20)
+    monkeypatch.setenv("GSO_DOMAIN", "airline_test")
+    monkeypatch.delenv("GSO_RUN_MANIFEST_V2_ENABLED", raising=False)
+
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        assemble_run_manifest_v2_line,
+    )
+
+    line = assemble_run_manifest_v2_line(
+        optimization_run_id="opt_run_1",
+        databricks_job_id="j1",
+        databricks_parent_run_id="r1",
+        lever_loop_task_run_id="t1",
+        mlflow_experiment_id="e1",
+        space_id="s1",
+        event="start",
+    )
+
+    assert line.startswith("GSO_RUN_MANIFEST_V2 ")
+    payload = _json_payload(line)
+    assert payload["git_sha"] == "ab" * 20
+    assert payload["domain"] == "airline_test"
+    assert payload["python_version"]  # non-empty
+    assert payload["effective_flags"]  # non-empty (config has many flags)
+    assert payload["effective_flags"]["target_aware_acceptance"] is True

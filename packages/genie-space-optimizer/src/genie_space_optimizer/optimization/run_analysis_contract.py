@@ -516,3 +516,38 @@ def gso_invariant_violation_marker(
             "payload": dict(payload or {}),
         },
     )
+
+
+def assemble_run_manifest_v2_line(
+    *,
+    optimization_run_id: str,
+    databricks_job_id: str = "",
+    databricks_parent_run_id: str = "",
+    lever_loop_task_run_id: str = "",
+    mlflow_experiment_id: str = "",
+    space_id: str = "",
+    event: str,
+) -> str:
+    """Convenience wrapper used by the harness — collects build_metadata +
+    effective flags and renders the V2 line in one call."""
+    from genie_space_optimizer.common.build_metadata import (
+        read_domain,
+        read_git_sha,
+        read_python_version,
+        read_wheel_sha,
+    )
+
+    return run_manifest_v2_marker(
+        optimization_run_id=optimization_run_id,
+        databricks_job_id=databricks_job_id,
+        databricks_parent_run_id=databricks_parent_run_id,
+        lever_loop_task_run_id=lever_loop_task_run_id,
+        mlflow_experiment_id=mlflow_experiment_id,
+        space_id=space_id,
+        event=event,
+        wheel_sha=read_wheel_sha("genie_space_optimizer"),
+        git_sha=read_git_sha(),
+        effective_flags=collect_effective_flags(),
+        python_version=read_python_version(),
+        domain=read_domain(),
+    )
