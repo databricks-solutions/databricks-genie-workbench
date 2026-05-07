@@ -29,6 +29,7 @@ class MarkerLog:
     artifact_index: Mapping[str, Any] | None = None
     bundle_assembly_failed: tuple[Mapping[str, Any], ...] = ()
     plateau_input_source: tuple[Mapping[str, Any], ...] = ()
+    run_manifest_v2: Mapping[str, Any] | None = None
     unknown: Mapping[str, tuple[Mapping[str, Any], ...]] = field(default_factory=dict)
     parse_errors: tuple[str, ...] = field(default_factory=tuple)
 
@@ -47,6 +48,7 @@ class MarkerLog:
 
 def parse_markers(stdout: str) -> MarkerLog:
     run_manifest: Mapping[str, Any] | None = None
+    run_manifest_v2: Mapping[str, Any] | None = None
     iter_summaries: list[Mapping[str, Any]] = []
     phase_b: list[Mapping[str, Any]] = []
     phase_b_no_records: list[Mapping[str, Any]] = []
@@ -74,6 +76,8 @@ def parse_markers(stdout: str) -> MarkerLog:
             continue
         if name == "GSO_RUN_MANIFEST_V1":
             run_manifest = payload
+        elif name == "GSO_RUN_MANIFEST_V2":
+            run_manifest_v2 = payload
         elif name == "GSO_ITERATION_SUMMARY_V1":
             iter_summaries.append(payload)
         elif name == "GSO_PHASE_B_V1":
@@ -106,6 +110,7 @@ def parse_markers(stdout: str) -> MarkerLog:
         artifact_index=artifact_index,
         bundle_assembly_failed=tuple(bundle_assembly_failed),
         plateau_input_source=tuple(plateau_input_source),
+        run_manifest_v2=run_manifest_v2,
         unknown={k: tuple(v) for k, v in unknown.items()},
         parse_errors=tuple(errors),
     )

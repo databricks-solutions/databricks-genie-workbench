@@ -194,3 +194,44 @@ def test_marker_parser_recognizes_ag_levers_unioned():
     assert out["ag_id"] == "AG_X"
     assert out["levers_before"] == ["5"]
     assert out["levers_after"] == ["3", "5", "6"]
+
+
+# Cycle 12-T1 — GSO_RUN_MANIFEST_V2 parsing
+import pathlib
+
+
+def test_parse_markers_captures_run_manifest_v2() -> None:
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "lever_loop_stdout_v2_minimal.txt"
+    log = parse_markers(fixture.read_text())
+
+    assert log.run_manifest is not None
+    assert log.run_manifest_v2 is not None
+    # V1 still authoritative for legacy keys.
+    assert log.run_manifest["optimization_run_id"] == "opt1"
+    # V2 carries the new metadata.
+    assert log.run_manifest_v2["wheel_sha"] == "1.2.3"
+    assert log.run_manifest_v2["git_sha"] == "abc"
+    assert log.run_manifest_v2["python_version"] == "3.11.6"
+    assert log.run_manifest_v2["domain"] == "airline"
+    assert log.run_manifest_v2["effective_flags"] == {"target_aware_acceptance": True}
+    # V2 is not in `unknown` — the parser routes it to its own field.
+    assert "GSO_RUN_MANIFEST_V2" not in log.unknown
+
+
+def test_parse_markers_v1_only_back_compat() -> None:
+    """Existing V1-only stdout (e.g. the 0ade1a99 fixture) keeps parsing
+    cleanly with run_manifest_v2 == None."""
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    fixture = (
+        pathlib.Path(__file__).parent
+        / "fixtures"
+        / "lever_loop_stdout_0ade1a99.txt"
+    )
+    log = parse_markers(fixture.read_text())
+
+    assert log.run_manifest is not None
+    assert log.run_manifest_v2 is None
+    assert log.parse_errors == ()
