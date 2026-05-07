@@ -405,3 +405,32 @@ def test_assemble_run_manifest_v2_payload_uses_build_metadata(monkeypatch) -> No
     assert payload["python_version"]  # non-empty
     assert payload["effective_flags"]  # non-empty (config has many flags)
     assert payload["effective_flags"]["target_aware_acceptance"] is True
+
+
+def test_v2_manifest_satisfies_binary_criterion(monkeypatch) -> None:
+    """Cycle 12-T1 binary criterion: every postmortem can answer
+    "what wheel/git_sha/flags/python ran?" by reading exactly one record."""
+    monkeypatch.setenv("GSO_GIT_SHA", "deadbeefcafe" + "0" * 28)
+    monkeypatch.setenv("GSO_DOMAIN", "test_domain")
+    monkeypatch.delenv("GSO_RUN_MANIFEST_V2_ENABLED", raising=False)
+
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        assemble_run_manifest_v2_line,
+    )
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    line = assemble_run_manifest_v2_line(
+        optimization_run_id="opt_run_1",
+        space_id="s1",
+        event="start",
+    )
+    log = parse_markers(line + "\n")
+
+    assert log.run_manifest_v2 is not None
+    payload = log.run_manifest_v2
+    # All four binary-criterion fields are present and non-empty.
+    assert payload["git_sha"], payload
+    assert payload["python_version"], payload
+    assert payload["domain"] == "test_domain"
+    assert payload["wheel_sha"], payload
+    assert payload["effective_flags"], payload
