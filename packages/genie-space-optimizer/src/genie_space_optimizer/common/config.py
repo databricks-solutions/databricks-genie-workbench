@@ -5702,3 +5702,12 @@ def plateau_input_uses_journey_after_rollback_enabled() -> bool:
     ``GSO_PLATEAU_INPUT_USES_JOURNEY_AFTER_ROLLBACK=0``.
     """
     return _flag_default_on("GSO_PLATEAU_INPUT_USES_JOURNEY_AFTER_ROLLBACK")
+
+
+def gso_run_manifest_v2_enabled() -> bool:
+    """Cycle 12-T1 — emit ``GSO_RUN_MANIFEST_V2`` alongside V1.
+
+    Default-on. Rollback path: set ``GSO_RUN_MANIFEST_V2_ENABLED=0`` and
+    only the legacy V1 marker is emitted.
+    """
+    return _flag_default_on("GSO_RUN_MANIFEST_V2_ENABLED")
