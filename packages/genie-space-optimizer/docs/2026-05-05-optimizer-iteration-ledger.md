@@ -789,3 +789,20 @@ I4 (`no_silent_retry`) is the invariant that catches both failure modes: identic
 - **Binary criterion:** Every run emits exactly one `GSO_PHASE_H_STRICT_VALIDATION_V1` line; the validator's three failure modes are distinguishable by `listing_status` × `validator_status` × `exception_class`. Verified by integration tests (5 paths covered).
 - **Replay byte-stability:** preserved. The helper returns identical missing-pieces output to the legacy code on the success path; only failure paths now emit a typed marker instead of being silent.
 - **Follow-up:** Cycle 12-T3 fixes the producers of the missing paths (5 parent-level paths today have no upload). Cycle 12-T4 closes the loop with a fresh-run audit.
+
+
+## Cycle 12-T3 — Phase H Bundle Assembler Producer Fix
+
+- **Date shipped:** 2026-05-08
+- **Inspiration evidence:** [`runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097/postmortem.md`](./runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097/postmortem.md) F9 — 40/163 declared paths externally measured materialized; 5 parent-level paths had no producer at all.
+- **Stage(s) closed (partial):** Stage 11 `contract_health` — every parent-level contract path now has a producer; remaining gaps are surfaced via `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1`.
+- **What changed:**
+  1. New producers in `optimization/run_output_bundle.py`: `build_decision_trace_all`, `build_journey_validation_all`, `build_scoreboard`, `build_failure_buckets`, plus the `aggregate_per_iteration_artifacts` helper.
+  2. Harness parent-bundle upload block now writes 9 parent-level artifacts (was 4).
+  3. New `assembler_completeness_check` in `optimization/run_output_contract.py` categorizes missing paths as `parent_level` vs `unmigrated_per_iteration`.
+  4. New `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1` stdout marker emitted post-upload when any path is missing; surfaced as `MarkerLog.bundle_assembly_incomplete`.
+  5. `tools/mlflow_audit.audit_parent_bundle` extended to verify all 9 parent paths (`missing_parent_paths` field added; `has_manifest` preserved for back-compat).
+- **Flag(s):** None (uploads ride the existing parent-bundle path; the completeness check is unconditional).
+- **Binary criterion:** For a fresh run after T3 ships: `audit_parent_bundle.missing_parent_paths == ()` AND either `complete == True` OR exactly one `GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1` marker enumerates the (per-iteration) gap. Verified by `test_phase_h_bundle_completeness.py`.
+- **Replay byte-stability:** preserved. Existing parent-level uploads are unchanged. New uploads add artifacts; no existing test asserts a strict artifact-count equality.
+- **Follow-up:** per-iteration path migration from legacy `phase_a/`/`phase_b/` to `gso_postmortem_bundle/iterations/iter_NN/...` becomes a separate cycle scope (Cycle 12-T5 or later). The completeness check makes that gap measurable.
