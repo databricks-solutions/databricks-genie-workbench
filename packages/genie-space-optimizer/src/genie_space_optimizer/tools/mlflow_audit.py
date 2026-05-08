@@ -258,6 +258,7 @@ class ParentBundleAuditReport:
     parent_run_id: str | None
     has_manifest: bool
     missing_artifacts: tuple[str, ...] = ()
+    missing_parent_paths: tuple[str, ...] = ()
     notes: str = ""
 
 
@@ -267,11 +268,17 @@ def audit_parent_bundle(
     experiment_id: str | None = None,
 ) -> ParentBundleAuditReport:
     """Find the parent lever-loop run for ``optimization_run_id`` and
-    assert that ``gso_postmortem_bundle/manifest.json`` exists (Phase H).
+    verify every parent-level path declared in ``bundle_artifact_paths``
+    is present.
 
-    Searches by ``genie.run_role=lever_loop`` + ``genie.optimization_run_id``;
-    falls back to the legacy ``genie.run_id`` tag for back-compat.
+    Cycle 12-T3 — extended from "manifest.json exists" to "all 9 parent
+    paths exist." ``has_manifest`` is preserved for back-compat;
+    ``missing_parent_paths`` enumerates the full gap.
     """
+    from genie_space_optimizer.optimization.run_output_contract import (
+        bundle_artifact_paths,
+    )
+
     client = MlflowClient()
     search_filter = (
         f"tags.genie.run_role = 'lever_loop' AND "
@@ -290,13 +297,20 @@ def audit_parent_bundle(
             max_results=10,
         )
 
-    manifest_path = "gso_postmortem_bundle/manifest.json"
+    declared = bundle_artifact_paths(iterations=[])
+    declared_parent = [
+        v for k, v in declared.items()
+        if k != "iterations" and isinstance(v, str)
+    ]
+    manifest_path = declared["manifest"]
+
     if not runs:
         return ParentBundleAuditReport(
             optimization_run_id=optimization_run_id,
             parent_run_id=None,
             has_manifest=False,
             missing_artifacts=(manifest_path,),
+            missing_parent_paths=tuple(declared_parent),
             notes="parent run not found via genie.run_role or genie.run_id",
         )
 
@@ -304,14 +318,21 @@ def audit_parent_bundle(
     parent_run_id = parent.info.run_id
     artifacts = client.list_artifacts(parent_run_id, path="gso_postmortem_bundle")
     artifact_paths = {a.path for a in artifacts}
+
+    missing_parent = tuple(
+        p for p in declared_parent if p not in artifact_paths
+    )
     has_manifest = manifest_path in artifact_paths
-    missing: tuple[str, ...] = () if has_manifest else (manifest_path,)
+    missing_legacy: tuple[str, ...] = (
+        () if has_manifest else (manifest_path,)
+    )
 
     return ParentBundleAuditReport(
         optimization_run_id=optimization_run_id,
         parent_run_id=parent_run_id,
         has_manifest=has_manifest,
-        missing_artifacts=missing,
+        missing_artifacts=missing_legacy,
+        missing_parent_paths=missing_parent,
     )
 
 
