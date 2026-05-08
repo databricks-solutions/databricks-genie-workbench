@@ -248,3 +248,27 @@ def build_failure_buckets(
         "bucket_counts": bucket_counts,
         "iterations": safe,
     }
+
+
+def aggregate_per_iteration_artifacts(
+    *,
+    iterations: list[int],
+    kind: str,
+    fetch_fn,
+) -> list[dict[str, Any]]:
+    """Cycle 12-T3 — Pull per-iteration artifacts via ``fetch_fn(iteration, kind)``
+    and return a flat list, skipping ``None`` returns (treated as absent).
+
+    ``fetch_fn`` signature: ``(iteration: int, kind: str) -> dict | None``.
+    Pure: no I/O; the caller injects the fetch implementation.
+    """
+    aggregated: list[dict[str, Any]] = []
+    for it in iterations or []:
+        try:
+            entry = fetch_fn(int(it), str(kind))
+        except Exception:
+            entry = None
+        if entry is None:
+            continue
+        aggregated.append(entry)
+    return aggregated

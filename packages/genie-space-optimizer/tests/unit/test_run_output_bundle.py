@@ -298,3 +298,47 @@ def test_build_failure_buckets_unrecognised_bucket_keys_pass_through() -> None:
 
     assert out["bucket_counts"]["existing_hard_still_hard_outside_target"] == 1
     assert out["bucket_counts"]["regression_debt"] == 2
+
+
+def test_aggregate_per_iteration_artifacts_via_fetcher() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        aggregate_per_iteration_artifacts,
+    )
+
+    fetched: list[tuple[int, str]] = []
+
+    def _fetch(iteration: int, kind: str) -> dict | None:
+        fetched.append((iteration, kind))
+        return {"iteration": iteration, "marker": f"iter_{iteration}_{kind}"}
+
+    out = aggregate_per_iteration_artifacts(
+        iterations=[1, 2, 3],
+        kind="decision_trace",
+        fetch_fn=_fetch,
+    )
+
+    assert len(out) == 3
+    assert out[0] == {"iteration": 1, "marker": "iter_1_decision_trace"}
+    assert all(call[1] == "decision_trace" for call in fetched)
+
+
+def test_aggregate_per_iteration_artifacts_skips_none_returns() -> None:
+    """A fetcher that returns None for a missing iteration is treated as
+    "absent"; the aggregate omits that entry."""
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        aggregate_per_iteration_artifacts,
+    )
+
+    def _fetch(iteration: int, kind: str) -> dict | None:
+        if iteration == 2:
+            return None
+        return {"iteration": iteration}
+
+    out = aggregate_per_iteration_artifacts(
+        iterations=[1, 2, 3],
+        kind="decision_trace",
+        fetch_fn=_fetch,
+    )
+
+    assert len(out) == 2
+    assert {entry["iteration"] for entry in out} == {1, 3}
