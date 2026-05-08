@@ -131,3 +131,47 @@ def test_build_decision_trace_all_handles_missing_records_key() -> None:
     out = build_decision_trace_all(iter_traces=iter_traces)
 
     assert out["total_record_count"] == 1
+
+
+def test_build_journey_validation_all_aggregates_per_iter_reports() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_journey_validation_all,
+    )
+
+    reports = [
+        {"iteration": 1, "is_valid": True, "violations": []},
+        {"iteration": 2, "is_valid": False, "violations": [{"qid": "q1", "kind": "illegal_transition"}]},
+    ]
+
+    out = build_journey_validation_all(iter_reports=reports)
+
+    assert out["schema_version"] == "v1"
+    assert out["iteration_count"] == 2
+    assert out["total_violation_count"] == 1
+    assert out["any_invalid"] is True
+    assert out["iterations"] == reports
+
+
+def test_build_journey_validation_all_handles_all_valid() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_journey_validation_all,
+    )
+
+    reports = [{"iteration": 1, "is_valid": True, "violations": []}]
+
+    out = build_journey_validation_all(iter_reports=reports)
+
+    assert out["any_invalid"] is False
+    assert out["total_violation_count"] == 0
+
+
+def test_build_journey_validation_all_handles_empty_input() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_journey_validation_all,
+    )
+
+    out = build_journey_validation_all(iter_reports=[])
+
+    assert out["iteration_count"] == 0
+    assert out["any_invalid"] is False
+    assert out["total_violation_count"] == 0

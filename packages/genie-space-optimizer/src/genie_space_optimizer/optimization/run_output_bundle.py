@@ -158,3 +158,19 @@ def build_decision_trace_all(
         "total_record_count": total,
         "iterations": safe,
     }
+
+
+def build_journey_validation_all(
+    *, iter_reports: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Cycle 12-T3 — parent-bundle journey_validation_all.json."""
+    safe = list(iter_reports or [])
+    total_v = sum(len((r or {}).get("violations") or []) for r in safe)
+    any_invalid = any(not bool((r or {}).get("is_valid", True)) for r in safe)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "iteration_count": len(safe),
+        "total_violation_count": total_v,
+        "any_invalid": any_invalid,
+        "iterations": safe,
+    }
