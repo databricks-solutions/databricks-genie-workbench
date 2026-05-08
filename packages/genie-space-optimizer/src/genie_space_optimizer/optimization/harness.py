@@ -13924,6 +13924,10 @@ def _run_lever_loop(
     # PHASE_A_REPLAY_FIXTURE_JSON_BEGIN/END markers) plus MLflow when an
     # active run exists.
     _replay_fixture_iterations: list[dict] = []
+    # Cycle 12-T3 — hoisted to _run_lever_loop scope so the parent-bundle
+    # upload block can reference it even if the inner serialization try
+    # block raised. Default to empty JSON object.
+    _replay_fixture_json: str = ""
 
     # Phase A — deterministic carrier for the most recent full-eval
     # result. Replaces opportunistic ``locals().get("full_result")``
@@ -23211,9 +23215,14 @@ def _run_lever_loop(
             render_run_overview as _render_run_overview,
         )
         from genie_space_optimizer.optimization.run_output_bundle import (
+            aggregate_per_iteration_artifacts as _aggregate_per_iter,
             build_artifact_index as _build_artifact_index,
+            build_decision_trace_all as _build_decision_trace_all,
+            build_failure_buckets as _build_failure_buckets,
+            build_journey_validation_all as _build_journey_validation_all,
             build_manifest as _build_manifest,
             build_run_summary as _build_run_summary,
+            build_scoreboard as _build_scoreboard,
         )
         from genie_space_optimizer.optimization.run_output_contract import (
             bundle_artifact_paths as _bundle_artifact_paths,
@@ -23399,12 +23408,193 @@ def _run_lever_loop(
                     text=_full_transcript,
                     artifact_file=_paths["operator_transcript"],
                 )
+
+                # Cycle 12-T3 — fetch per-iteration artifacts from their
+                # legacy (phase_a/phase_b) locations and aggregate.
+                def _fetch_iter_decision_trace(it: int, kind: str) -> dict | None:
+                    try:
+                        path = f"phase_b/decision_trace/iter_{int(it)}.json"
+                        local = _client_phase_h.download_artifacts(
+                            run_id=_phase_h_anchor_run_id,
+                            path=path,
+                        )
+                        with open(local, "r", encoding="utf-8") as f:
+                            return _json_phase_h_c18.load(f)
+                    except Exception:
+                        logger.debug(
+                            "Phase H: per-iter decision_trace fetch failed for iter=%s",
+                            it, exc_info=True,
+                        )
+                        return None
+
+                def _fetch_iter_journey_validation(it: int, kind: str) -> dict | None:
+                    try:
+                        path = f"phase_a/journey_validation/iter_{int(it)}.json"
+                        local = _client_phase_h.download_artifacts(
+                            run_id=_phase_h_anchor_run_id,
+                            path=path,
+                        )
+                        with open(local, "r", encoding="utf-8") as f:
+                            return _json_phase_h_c18.load(f)
+                    except Exception:
+                        logger.debug(
+                            "Phase H: per-iter journey_validation fetch failed for iter=%s",
+                            it, exc_info=True,
+                        )
+                        return None
+
+                _per_iter_decision_traces = _aggregate_per_iter(
+                    iterations=_phase_h_iterations_completed,
+                    kind="decision_trace",
+                    fetch_fn=_fetch_iter_decision_trace,
+                )
+                _per_iter_journey_reports = _aggregate_per_iter(
+                    iterations=_phase_h_iterations_completed,
+                    kind="journey_validation",
+                    fetch_fn=_fetch_iter_journey_validation,
+                )
+
+                _client_phase_h.log_text(
+                    run_id=_phase_h_anchor_run_id,
+                    text=_json_phase_h_c18.dumps(
+                        _build_decision_trace_all(
+                            iter_traces=_per_iter_decision_traces,
+                        ),
+                        sort_keys=True, indent=2,
+                    ),
+                    artifact_file=_paths["decision_trace_all"],
+                )
+                _client_phase_h.log_text(
+                    run_id=_phase_h_anchor_run_id,
+                    text=_json_phase_h_c18.dumps(
+                        _build_journey_validation_all(
+                            iter_reports=_per_iter_journey_reports,
+                        ),
+                        sort_keys=True, indent=2,
+                    ),
+                    artifact_file=_paths["journey_validation_all"],
+                )
+                _client_phase_h.log_text(
+                    run_id=_phase_h_anchor_run_id,
+                    text=(_replay_fixture_json or "{}"),
+                    artifact_file=_paths["replay_fixture"],
+                )
+                _client_phase_h.log_text(
+                    run_id=_phase_h_anchor_run_id,
+                    text=_json_phase_h_c18.dumps(
+                        _build_scoreboard(
+                            iter_record_counts=list(_phase_b_iter_record_counts),
+                            iter_violation_counts=list(_phase_b_iter_violation_counts),
+                            no_records_iterations=list(_phase_b_no_records_iterations),
+                            levers_attempted={
+                                int(k): int(levers_attempted.count(k))
+                                for k in set(levers_attempted or [])
+                            },
+                            levers_accepted={
+                                int(k): int(levers_accepted.count(k))
+                                for k in set(levers_accepted or [])
+                            },
+                            levers_rolled_back={
+                                int(k): int(levers_rolled_back.count(k))
+                                for k in set(levers_rolled_back or [])
+                            },
+                            best_accuracy=best_accuracy,
+                            baseline_accuracy=prev_accuracy,
+                            iteration_count=int(iteration_counter),
+                        ),
+                        sort_keys=True, indent=2,
+                    ),
+                    artifact_file=_paths["scoreboard"],
+                )
+                _client_phase_h.log_text(
+                    run_id=_phase_h_anchor_run_id,
+                    text=_json_phase_h_c18.dumps(
+                        _build_failure_buckets(
+                            # Per-iteration assignments are derived from
+                            # the per-iter journey_validation reports we
+                            # just fetched. If a richer in-memory source
+                            # is wired in a future cycle, switch to that.
+                            iter_assignments=[
+                                {
+                                    "iteration": (r or {}).get("iteration", 0),
+                                    "buckets": (r or {}).get("bucket_assignments") or {},
+                                }
+                                for r in _per_iter_journey_reports
+                            ],
+                        ),
+                        sort_keys=True, indent=2,
+                    ),
+                    artifact_file=_paths["failure_buckets"],
+                )
+
                 print(_artifact_index_marker(
                     optimization_run_id=run_id,
                     parent_bundle_run_id=_phase_h_anchor_run_id,
                     artifact_index_path=_phase_h_artifact_index_path,
                     iterations=_phase_h_iterations_completed,
                 ))
+
+                # Cycle 12-T3 — post-upload completeness check.
+                from genie_space_optimizer.optimization.run_output_contract import (
+                    assembler_completeness_check as _completeness_check,
+                )
+                from genie_space_optimizer.optimization.run_analysis_contract import (
+                    bundle_assembly_incomplete_marker as _incomplete_marker,
+                )
+
+                # Re-flatten declared paths from _paths (in scope) — T2's
+                # helper does not return _declared_paths.
+                _declared_paths_for_check: list[str] = []
+                for _k, _v in _paths.items():
+                    if _k == "iterations":
+                        for _iter_paths in (_v or {}).values():
+                            for _path in (_iter_paths or {}).values():
+                                if isinstance(_path, str):
+                                    _declared_paths_for_check.append(_path)
+                    elif isinstance(_v, str):
+                        _declared_paths_for_check.append(_v)
+
+                # Re-list the parent run's artifacts post-upload.
+                _post_upload_paths: list[str] = []
+                try:
+                    def _walk_post(prefix: str) -> None:
+                        for art in _client_phase_h.list_artifacts(
+                            _phase_h_anchor_run_id, prefix
+                        ):
+                            if art.is_dir:
+                                _walk_post(art.path)
+                            else:
+                                _post_upload_paths.append(art.path)
+                    _walk_post("gso_postmortem_bundle")
+                except Exception:
+                    logger.debug(
+                        "Phase H post-upload listing failed (non-fatal)",
+                        exc_info=True,
+                    )
+
+                _completeness = _completeness_check(
+                    declared_paths=_declared_paths_for_check,
+                    materialized_paths=_post_upload_paths,
+                )
+                if not _completeness["complete"]:
+                    try:
+                        print(_incomplete_marker(
+                            optimization_run_id=run_id,
+                            parent_bundle_run_id=_phase_h_anchor_run_id,
+                            total_declared=_completeness["total_declared"],
+                            total_materialized=_completeness["total_materialized"],
+                            missing_count=_completeness["missing_count"],
+                            parent_level_missing=_completeness["parent_level_missing"],
+                            unmigrated_per_iteration_missing=(
+                                _completeness["unmigrated_per_iteration_missing"]
+                            ),
+                        ))
+                    except Exception:
+                        logger.debug(
+                            "Phase H assembler-incomplete marker emission skipped",
+                            exc_info=True,
+                        )
+
                 _phase_h_upload_status = "uploaded"
             except Exception as _phase_h_upload_exc:
                 from genie_space_optimizer.optimization.run_analysis_contract import (
