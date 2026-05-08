@@ -434,3 +434,80 @@ def test_v2_manifest_satisfies_binary_criterion(monkeypatch) -> None:
     assert payload["domain"] == "test_domain"
     assert payload["wheel_sha"], payload
     assert payload["effective_flags"], payload
+
+
+# Cycle 12-T2 — Phase H strict validation marker
+def test_phase_h_strict_validation_marker_records_full_state() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        phase_h_strict_validation_marker,
+    )
+
+    line = phase_h_strict_validation_marker(
+        optimization_run_id="opt_run_1",
+        flag_enabled=True,
+        declared_count=163,
+        materialized_count=36,
+        self_write_count=4,
+        missing_count=123,
+        listing_status="ok",
+        validator_status="ok",
+        exception_class="",
+    )
+
+    assert line.startswith("GSO_PHASE_H_STRICT_VALIDATION_V1 ")
+    payload = _json_payload(line)
+    assert payload == {
+        "declared_count": 163,
+        "exception_class": "",
+        "flag_enabled": True,
+        "listing_status": "ok",
+        "materialized_count": 36,
+        "missing_count": 123,
+        "optimization_run_id": "opt_run_1",
+        "self_write_count": 4,
+        "validator_status": "ok",
+    }
+
+
+def test_phase_h_strict_validation_marker_captures_listing_failure() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        phase_h_strict_validation_marker,
+    )
+
+    line = phase_h_strict_validation_marker(
+        optimization_run_id="opt_run_1",
+        flag_enabled=True,
+        declared_count=163,
+        materialized_count=0,
+        self_write_count=4,
+        missing_count=0,
+        listing_status="failed",
+        validator_status="skipped",
+        exception_class="MlflowException",
+    )
+
+    payload = _json_payload(line)
+    assert payload["listing_status"] == "failed"
+    assert payload["validator_status"] == "skipped"
+    assert payload["exception_class"] == "MlflowException"
+
+
+def test_phase_h_strict_validation_marker_captures_flag_off() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        phase_h_strict_validation_marker,
+    )
+
+    line = phase_h_strict_validation_marker(
+        optimization_run_id="opt_run_1",
+        flag_enabled=False,
+        declared_count=0,
+        materialized_count=0,
+        self_write_count=0,
+        missing_count=0,
+        listing_status="skipped",
+        validator_status="skipped",
+        exception_class="",
+    )
+
+    payload = _json_payload(line)
+    assert payload["flag_enabled"] is False

@@ -275,6 +275,45 @@ def phase_b_end_marker(
     )
 
 
+def phase_h_strict_validation_marker(
+    *,
+    optimization_run_id: str,
+    flag_enabled: bool,
+    declared_count: int,
+    materialized_count: int,
+    self_write_count: int,
+    missing_count: int,
+    listing_status: str,
+    validator_status: str,
+    exception_class: str = "",
+) -> str:
+    """Cycle 12-T2 — typed observability for the Phase H strict path validator.
+
+    Statuses are one of:
+      ``listing_status``: ``"ok"`` | ``"skipped"`` | ``"failed"``
+      ``validator_status``: ``"ok"`` | ``"skipped"`` | ``"failed"``
+
+    A non-empty ``exception_class`` paired with ``listing_status="failed"``
+    or ``validator_status="failed"`` names the specific exception type that
+    was caught. ``"skipped"`` indicates the stage didn't run because an
+    upstream stage failed or the flag was off.
+    """
+    return marker_line(
+        "GSO_PHASE_H_STRICT_VALIDATION_V1",
+        {
+            "optimization_run_id": optimization_run_id,
+            "flag_enabled": bool(flag_enabled),
+            "declared_count": int(declared_count),
+            "materialized_count": int(materialized_count),
+            "self_write_count": int(self_write_count),
+            "missing_count": int(missing_count),
+            "listing_status": str(listing_status),
+            "validator_status": str(validator_status),
+            "exception_class": str(exception_class),
+        },
+    )
+
+
 def artifact_index_marker(
     *,
     optimization_run_id: str,
