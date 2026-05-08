@@ -239,3 +239,45 @@ def validate_phase_h_manifest_paths(
                 "artifact_path": path_str,
             })
     return missing
+
+
+def assembler_completeness_check(
+    *,
+    declared_paths,
+    materialized_paths,
+) -> dict:
+    """Cycle 12-T3 — categorize the gap between declared and materialized
+    Phase H paths, post-upload.
+
+    Returns a structured report with two mutually-exclusive missing-path
+    lists:
+      * ``parent_level_missing`` — declared paths under
+        ``gso_postmortem_bundle/`` that do not contain ``/iterations/``.
+        These are the assembler's primary responsibility; a non-empty list
+        is a producer bug.
+      * ``unmigrated_per_iteration_missing`` — declared paths that contain
+        ``/iterations/iter_NN/``. These reflect the not-yet-migrated
+        iteration-level producers (legacy ``phase_a/`` / ``phase_b/``
+        locations) and are addressed by a separate follow-up cycle.
+    """
+    declared = [str(p) for p in (declared_paths or [])]
+    materialized_set = {str(p) for p in (materialized_paths or [])}
+
+    parent_missing: list[str] = []
+    iter_missing: list[str] = []
+    for path in declared:
+        if path in materialized_set:
+            continue
+        if "/iterations/" in path:
+            iter_missing.append(path)
+        else:
+            parent_missing.append(path)
+
+    return {
+        "total_declared": len(declared),
+        "total_materialized": len(materialized_set),
+        "missing_count": len(parent_missing) + len(iter_missing),
+        "parent_level_missing": parent_missing,
+        "unmigrated_per_iteration_missing": sorted(iter_missing),
+        "complete": (not parent_missing) and (not iter_missing),
+    }

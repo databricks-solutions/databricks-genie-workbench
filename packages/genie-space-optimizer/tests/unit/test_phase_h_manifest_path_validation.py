@@ -104,3 +104,79 @@ def test_validate_phase_h_manifest_paths_self_write_param_is_optional() -> None:
 
     assert len(missing) == 1
     assert missing[0]["artifact_path"] == "b"
+
+
+# Cycle 12-T3 — assembler_completeness_check
+def test_assembler_completeness_check_categorizes_missing_paths() -> None:
+    from genie_space_optimizer.optimization.run_output_contract import (
+        assembler_completeness_check,
+    )
+
+    declared = [
+        "gso_postmortem_bundle/manifest.json",
+        "gso_postmortem_bundle/replay_fixture.json",
+        "gso_postmortem_bundle/iterations/iter_01/decision_trace.json",
+        "gso_postmortem_bundle/iterations/iter_01/operator_transcript.md",
+    ]
+    materialized = [
+        "gso_postmortem_bundle/manifest.json",
+        # replay_fixture.json missing → parent_level
+        # iterations/iter_01/decision_trace.json missing → unmigrated_per_iteration
+        # iterations/iter_01/operator_transcript.md missing → unmigrated_per_iteration
+    ]
+
+    report = assembler_completeness_check(
+        declared_paths=declared,
+        materialized_paths=materialized,
+    )
+
+    assert report["total_declared"] == 4
+    assert report["total_materialized"] == 1
+    assert report["missing_count"] == 3
+    assert report["parent_level_missing"] == [
+        "gso_postmortem_bundle/replay_fixture.json",
+    ]
+    assert sorted(report["unmigrated_per_iteration_missing"]) == [
+        "gso_postmortem_bundle/iterations/iter_01/decision_trace.json",
+        "gso_postmortem_bundle/iterations/iter_01/operator_transcript.md",
+    ]
+    assert report["complete"] is False
+
+
+def test_assembler_completeness_check_returns_complete_when_all_materialized() -> None:
+    from genie_space_optimizer.optimization.run_output_contract import (
+        assembler_completeness_check,
+    )
+
+    paths = ["gso_postmortem_bundle/manifest.json"]
+
+    report = assembler_completeness_check(
+        declared_paths=paths,
+        materialized_paths=paths,
+    )
+
+    assert report["complete"] is True
+    assert report["missing_count"] == 0
+    assert report["parent_level_missing"] == []
+    assert report["unmigrated_per_iteration_missing"] == []
+
+
+def test_assembler_completeness_check_treats_paths_after_iterations_as_per_iteration() -> None:
+    """Categorization uses the path's structure, not arbitrary heuristics."""
+    from genie_space_optimizer.optimization.run_output_contract import (
+        assembler_completeness_check,
+    )
+
+    declared = [
+        "gso_postmortem_bundle/iterations/iter_05/stages/03_strategy/output.json",
+    ]
+
+    report = assembler_completeness_check(
+        declared_paths=declared,
+        materialized_paths=[],
+    )
+
+    assert report["unmigrated_per_iteration_missing"] == [
+        "gso_postmortem_bundle/iterations/iter_05/stages/03_strategy/output.json",
+    ]
+    assert report["parent_level_missing"] == []
