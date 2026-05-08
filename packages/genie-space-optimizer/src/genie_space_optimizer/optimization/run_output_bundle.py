@@ -220,3 +220,31 @@ def build_scoreboard(
         "levers_accepted":  {str(k): int(v) for k, v in (levers_accepted or {}).items()},
         "levers_rolled_back": {str(k): int(v) for k, v in (levers_rolled_back or {}).items()},
     }
+
+
+def build_failure_buckets(
+    *, iter_assignments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Cycle 12-T3 — minimal failure_buckets.json.
+
+    Captures per-iteration failed-QID bucket assignments and a single
+    cross-iteration count summary. The richer "per-bucket QID list across
+    the whole run" view is a follow-up; this is enough to materialize the
+    contract-declared path with structured content.
+    """
+    safe = list(iter_assignments or [])
+    total = 0
+    bucket_counts: dict[str, int] = {}
+    for entry in safe:
+        buckets = (entry or {}).get("buckets") or {}
+        for name, qids in buckets.items():
+            n = len(qids or [])
+            bucket_counts[str(name)] = bucket_counts.get(str(name), 0) + n
+            total += n
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "iteration_count": len(safe),
+        "total_failed_qid_events": total,
+        "bucket_counts": bucket_counts,
+        "iterations": safe,
+    }

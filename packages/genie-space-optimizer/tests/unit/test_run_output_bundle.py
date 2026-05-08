@@ -228,3 +228,73 @@ def test_build_scoreboard_handles_none_accuracy() -> None:
     assert out["best_accuracy"] is None
     assert out["baseline_accuracy"] is None
     assert out["accuracy_delta_pp"] is None
+
+
+def test_build_failure_buckets_aggregates_per_iter_assignments() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_failure_buckets,
+    )
+
+    iter_assignments = [
+        {
+            "iteration": 1,
+            "buckets": {
+                "soft_to_hard": ["q1", "q2"],
+                "passing_to_hard": [],
+                "unknown_to_hard": ["q3"],
+            },
+        },
+        {
+            "iteration": 2,
+            "buckets": {
+                "soft_to_hard": ["q1"],
+                "passing_to_hard": ["q4"],
+                "unknown_to_hard": [],
+            },
+        },
+    ]
+
+    out = build_failure_buckets(iter_assignments=iter_assignments)
+
+    assert out["schema_version"] == "v1"
+    assert out["iteration_count"] == 2
+    assert out["total_failed_qid_events"] == 5
+    assert out["bucket_counts"] == {
+        "soft_to_hard": 3,
+        "passing_to_hard": 1,
+        "unknown_to_hard": 1,
+    }
+    assert out["iterations"] == iter_assignments
+
+
+def test_build_failure_buckets_handles_empty_input() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_failure_buckets,
+    )
+
+    out = build_failure_buckets(iter_assignments=[])
+
+    assert out["iteration_count"] == 0
+    assert out["total_failed_qid_events"] == 0
+    assert out["bucket_counts"] == {}
+
+
+def test_build_failure_buckets_unrecognised_bucket_keys_pass_through() -> None:
+    """Defensive: any bucket key (including new ones the harness adds in
+    future cycles) is preserved and counted."""
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_failure_buckets,
+    )
+
+    iter_assignments = [{
+        "iteration": 1,
+        "buckets": {
+            "existing_hard_still_hard_outside_target": ["q9"],
+            "regression_debt": ["q10", "q11"],
+        },
+    }]
+
+    out = build_failure_buckets(iter_assignments=iter_assignments)
+
+    assert out["bucket_counts"]["existing_hard_still_hard_outside_target"] == 1
+    assert out["bucket_counts"]["regression_debt"] == 2
