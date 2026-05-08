@@ -235,3 +235,41 @@ def test_parse_markers_v1_only_back_compat() -> None:
     assert log.run_manifest is not None
     assert log.run_manifest_v2 is None
     assert log.parse_errors == ()
+
+
+# Cycle 12-T2 — GSO_PHASE_H_STRICT_VALIDATION_V1 routing
+def test_parse_markers_captures_phase_h_strict_validation() -> None:
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    stdout = (
+        'GSO_RUN_MANIFEST_V1 {"databricks_job_id":"","databricks_parent_run_id":"",'
+        '"event":"start","lever_loop_task_run_id":"","mlflow_experiment_id":"e1",'
+        '"optimization_run_id":"opt1","space_id":"s1"}\n'
+        'GSO_PHASE_H_STRICT_VALIDATION_V1 {"declared_count":163,"exception_class":"",'
+        '"flag_enabled":true,"listing_status":"ok","materialized_count":36,'
+        '"missing_count":123,"optimization_run_id":"opt1","self_write_count":4,'
+        '"validator_status":"ok"}\n'
+    )
+
+    log = parse_markers(stdout)
+
+    assert log.phase_h_strict_validation is not None
+    assert log.phase_h_strict_validation["declared_count"] == 163
+    assert log.phase_h_strict_validation["missing_count"] == 123
+    assert log.phase_h_strict_validation["validator_status"] == "ok"
+    assert "GSO_PHASE_H_STRICT_VALIDATION_V1" not in log.unknown
+
+
+def test_parse_markers_phase_h_strict_validation_absent() -> None:
+    """Pre-Cycle-12-T2 stdout has no such marker; field is None."""
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    stdout = (
+        'GSO_RUN_MANIFEST_V1 {"databricks_job_id":"","databricks_parent_run_id":"",'
+        '"event":"start","lever_loop_task_run_id":"","mlflow_experiment_id":"e1",'
+        '"optimization_run_id":"opt1","space_id":"s1"}\n'
+    )
+
+    log = parse_markers(stdout)
+
+    assert log.phase_h_strict_validation is None

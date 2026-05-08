@@ -30,6 +30,7 @@ class MarkerLog:
     bundle_assembly_failed: tuple[Mapping[str, Any], ...] = ()
     plateau_input_source: tuple[Mapping[str, Any], ...] = ()
     run_manifest_v2: Mapping[str, Any] | None = None
+    phase_h_strict_validation: Mapping[str, Any] | None = None
     unknown: Mapping[str, tuple[Mapping[str, Any], ...]] = field(default_factory=dict)
     parse_errors: tuple[str, ...] = field(default_factory=tuple)
 
@@ -58,6 +59,7 @@ def parse_markers(stdout: str) -> MarkerLog:
     artifact_index: Mapping[str, Any] | None = None
     bundle_assembly_failed: list[Mapping[str, Any]] = []
     plateau_input_source: list[Mapping[str, Any]] = []
+    phase_h_strict_validation: Mapping[str, Any] | None = None
     unknown: dict[str, list[Mapping[str, Any]]] = {}
     errors: list[str] = []
 
@@ -96,6 +98,8 @@ def parse_markers(stdout: str) -> MarkerLog:
             bundle_assembly_failed.append(payload)
         elif name == "GSO_PLATEAU_INPUT_SOURCE_V1":
             plateau_input_source.append(payload)
+        elif name == "GSO_PHASE_H_STRICT_VALIDATION_V1":
+            phase_h_strict_validation = payload
         else:
             unknown.setdefault(name, []).append(payload)
 
@@ -111,6 +115,7 @@ def parse_markers(stdout: str) -> MarkerLog:
         bundle_assembly_failed=tuple(bundle_assembly_failed),
         plateau_input_source=tuple(plateau_input_source),
         run_manifest_v2=run_manifest_v2,
+        phase_h_strict_validation=phase_h_strict_validation,
         unknown={k: tuple(v) for k, v in unknown.items()},
         parse_errors=tuple(errors),
     )
