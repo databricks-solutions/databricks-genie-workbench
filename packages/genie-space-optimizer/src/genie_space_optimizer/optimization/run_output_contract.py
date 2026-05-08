@@ -213,18 +213,27 @@ def validate_phase_h_manifest_paths(
     *,
     declared_paths,
     materialized_paths,
+    self_write_paths=None,
 ) -> list[dict]:
     """Cycle 11 — return one ``manifest_path_missing`` entry per declared
     Phase H artifact path that is absent from the materialized set.
+
+    Cycle 12-T2 — accept an optional ``self_write_paths`` set: paths the
+    caller is about to write but that the listing-based ``materialized_paths``
+    cannot yet see. These are treated as materialized for the purposes of
+    this validation so the validator does not false-flag the assembler's
+    own imminently-written artifacts.
 
     Pure: no I/O. The harness performs the MLflow listing and feeds
     the result here.
     """
     materialized_set = {str(p) for p in (materialized_paths or [])}
+    self_write_set = {str(p) for p in (self_write_paths or [])}
+    effective_set = materialized_set | self_write_set
     missing: list[dict] = []
     for path in declared_paths or []:
         path_str = str(path)
-        if path_str not in materialized_set:
+        if path_str not in effective_set:
             missing.append({
                 "kind": "manifest_path_missing",
                 "artifact_path": path_str,
