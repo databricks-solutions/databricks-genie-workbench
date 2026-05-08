@@ -23098,24 +23098,47 @@ def _run_lever_loop(
             }
             for _f in _capture_failures
         ]
-        # Cycle 11 Task 8 — extend missing_pieces with declared-paths
-        # that are absent from the live MLflow artifact listing. Closes
-        # the 7NOW missing_pieces=[] while 130/163 paths absent
-        # inconsistency. Gated by GSO_PHASE_H_MANIFEST_STRICT_VALIDATION.
+        # Cycle 12-T2 — typed strict validator with narrow exception
+        # handling. After this block, exactly one GSO_PHASE_H_STRICT_VALIDATION_V1
+        # marker is emitted for the run, regardless of which path was taken.
+        from genie_space_optimizer.common.config import (
+            phase_h_manifest_strict_validation_enabled as _phase_h_strict,
+        )
+        from genie_space_optimizer.optimization.run_output_contract import (
+            validate_phase_h_manifest_paths as _validate_phase_h_paths,
+        )
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            phase_h_strict_validation_marker as _phase_h_strict_marker,
+        )
+
+        # Defaults — overwritten on each successful sub-step. The marker
+        # is always emitted at the end so postmortem can answer
+        # "what did the validator do?" in one record.
+        _phase_h_flag_enabled = False
+        _phase_h_declared_count = 0
+        _phase_h_materialized_count = 0
+        _phase_h_self_write_count = 0
+        _phase_h_missing_count = 0
+        _phase_h_listing_status = "skipped"
+        _phase_h_validator_status = "skipped"
+        _phase_h_exc_class = ""
+
         try:
-            from genie_space_optimizer.common.config import (
-                phase_h_manifest_strict_validation_enabled as _phase_h_strict,
-            )
-            from genie_space_optimizer.optimization.run_output_contract import (
-                validate_phase_h_manifest_paths as _validate_phase_h_paths,
+            _phase_h_flag_enabled = bool(_phase_h_strict())
+        except Exception as _flag_exc:
+            _phase_h_exc_class = type(_flag_exc).__name__
+            logger.debug(
+                "Phase H strict-validation flag check failed", exc_info=True,
             )
 
-            if _phase_h_strict():
-                # Flatten the nested bundle path dict into a flat list of strings.
+        if _phase_h_flag_enabled:
+            # Build the declared path set + the assembler's self-write set.
+            _declared_paths: list[str] = []
+            _decl_paths_dict: dict | None = None
+            try:
                 _decl_paths_dict = _bundle_artifact_paths(
                     iterations=_phase_h_iterations_completed,
                 )
-                _declared_paths: list[str] = []
                 for _k, _v in _decl_paths_dict.items():
                     if _k == "iterations":
                         for _iter_paths in (_v or {}).values():
@@ -23124,44 +23147,108 @@ def _run_lever_loop(
                                     _declared_paths.append(_path)
                     elif isinstance(_v, str):
                         _declared_paths.append(_v)
+                _phase_h_declared_count = len(_declared_paths)
+            except Exception as _decl_exc:
+                _declared_paths = []
+                _phase_h_declared_count = 0
+                _phase_h_listing_status = "failed"
+                _phase_h_validator_status = "skipped"
+                _phase_h_exc_class = type(_decl_exc).__name__
+                logger.debug(
+                    "Phase H: declared-paths flatten failed", exc_info=True,
+                )
 
-                _materialized_paths: list[str] = []
+            # Self-write paths — what the assembler is about to upload at
+            # harness.py:~23271-23295. These are excluded from the missing
+            # set because the listing happens BEFORE the upload.
+            _self_write_paths: set[str] = set()
+            if _decl_paths_dict is not None:
                 try:
-                    if _phase_h_anchor_run_id:
-                        import mlflow as _mlflow
-                        _client = _mlflow.tracking.MlflowClient()
-                        # list_artifacts is non-recursive — walk recursively.
-                        def _walk_artifacts(prefix: str) -> None:
-                            try:
-                                for _art in _client.list_artifacts(
-                                    _phase_h_anchor_run_id, prefix
-                                ):
-                                    if _art.is_dir:
-                                        _walk_artifacts(_art.path)
-                                    else:
-                                        _materialized_paths.append(_art.path)
-                            except Exception:
-                                logger.debug(
-                                    "Phase H: list_artifacts walk failed at prefix=%s",
-                                    prefix, exc_info=True,
-                                )
-                        _walk_artifacts("gso_postmortem_bundle")
-                except Exception:
+                    _self_write_paths = {
+                        str(_decl_paths_dict["manifest"]),
+                        str(_decl_paths_dict["artifact_index"]),
+                        str(_decl_paths_dict["run_summary"]),
+                        str(_decl_paths_dict["operator_transcript"]),
+                    }
+                    _phase_h_self_write_count = len(_self_write_paths)
+                except KeyError:
+                    # One of the expected keys vanished — leave self_write_paths
+                    # empty so the validator behaves like the legacy code
+                    # (false-positives but never silently drops).
+                    _self_write_paths = set()
+                    _phase_h_self_write_count = 0
+                    logger.debug(
+                        "Phase H: self_write_paths seed failed; running without "
+                        "self-writes exclusion",
+                        exc_info=True,
+                    )
+
+            _materialized_paths: list[str] = []
+            if (
+                _phase_h_anchor_run_id
+                and _phase_h_listing_status != "failed"
+            ):
+                try:
+                    import mlflow as _mlflow
+                    _client = _mlflow.tracking.MlflowClient()
+
+                    def _walk_artifacts(prefix: str) -> None:
+                        for _art in _client.list_artifacts(
+                            _phase_h_anchor_run_id, prefix
+                        ):
+                            if _art.is_dir:
+                                _walk_artifacts(_art.path)
+                            else:
+                                _materialized_paths.append(_art.path)
+
+                    _walk_artifacts("gso_postmortem_bundle")
+                    _phase_h_materialized_count = len(_materialized_paths)
+                    _phase_h_listing_status = "ok"
+                except Exception as _list_exc:
+                    _phase_h_listing_status = "failed"
+                    _phase_h_validator_status = "skipped"
+                    _phase_h_exc_class = type(_list_exc).__name__
                     logger.debug(
                         "Phase H: MLflow listing for manifest validation failed",
                         exc_info=True,
                     )
 
-                _missing_pieces.extend(
-                    _validate_phase_h_paths(
+            if (
+                _phase_h_listing_status == "ok"
+                and _phase_h_validator_status != "failed"
+            ):
+                try:
+                    _new_missing = _validate_phase_h_paths(
                         declared_paths=_declared_paths,
                         materialized_paths=_materialized_paths,
+                        self_write_paths=_self_write_paths,
                     )
-                )
+                    _missing_pieces.extend(_new_missing)
+                    _phase_h_missing_count = len(_new_missing)
+                    _phase_h_validator_status = "ok"
+                except Exception as _val_exc:
+                    _phase_h_validator_status = "failed"
+                    _phase_h_exc_class = type(_val_exc).__name__
+                    logger.debug(
+                        "Phase H: validate_phase_h_manifest_paths raised",
+                        exc_info=True,
+                    )
+
+        try:
+            print(_phase_h_strict_marker(
+                optimization_run_id=run_id,
+                flag_enabled=_phase_h_flag_enabled,
+                declared_count=_phase_h_declared_count,
+                materialized_count=_phase_h_materialized_count,
+                self_write_count=_phase_h_self_write_count,
+                missing_count=_phase_h_missing_count,
+                listing_status=_phase_h_listing_status,
+                validator_status=_phase_h_validator_status,
+                exception_class=_phase_h_exc_class,
+            ))
         except Exception:
             logger.debug(
-                "Phase H: manifest path validation failed (non-fatal)",
-                exc_info=True,
+                "Phase H strict-validation marker emission skipped", exc_info=True,
             )
         _manifest = _build_manifest(
             optimization_run_id=run_id,
