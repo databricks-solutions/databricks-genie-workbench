@@ -511,3 +511,61 @@ def test_phase_h_strict_validation_marker_captures_flag_off() -> None:
 
     payload = _json_payload(line)
     assert payload["flag_enabled"] is False
+
+
+# Cycle 12-T3 — bundle_assembly_incomplete marker
+def test_bundle_assembly_incomplete_marker_carries_gap_lists() -> None:
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        bundle_assembly_incomplete_marker,
+    )
+
+    line = bundle_assembly_incomplete_marker(
+        optimization_run_id="opt_run_1",
+        parent_bundle_run_id="run_anchor",
+        total_declared=163,
+        total_materialized=40,
+        missing_count=123,
+        parent_level_missing=[
+            "gso_postmortem_bundle/replay_fixture.json",
+        ],
+        unmigrated_per_iteration_missing=[
+            "gso_postmortem_bundle/iterations/iter_01/decision_trace.json",
+        ],
+    )
+
+    assert line.startswith("GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1 ")
+    payload = _json_payload(line)
+    assert payload["optimization_run_id"] == "opt_run_1"
+    assert payload["parent_bundle_run_id"] == "run_anchor"
+    assert payload["total_declared"] == 163
+    assert payload["total_materialized"] == 40
+    assert payload["missing_count"] == 123
+    assert payload["parent_level_missing"] == [
+        "gso_postmortem_bundle/replay_fixture.json",
+    ]
+    assert payload["unmigrated_per_iteration_missing"] == [
+        "gso_postmortem_bundle/iterations/iter_01/decision_trace.json",
+    ]
+
+
+def test_bundle_assembly_incomplete_marker_handles_empty_missing_lists() -> None:
+    """When the assembler is fully complete, the helper still produces a
+    valid marker payload — the harness chooses whether to emit it."""
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        bundle_assembly_incomplete_marker,
+    )
+
+    line = bundle_assembly_incomplete_marker(
+        optimization_run_id="opt_run_1",
+        parent_bundle_run_id="run_anchor",
+        total_declared=163,
+        total_materialized=163,
+        missing_count=0,
+        parent_level_missing=[],
+        unmigrated_per_iteration_missing=[],
+    )
+
+    payload = _json_payload(line)
+    assert payload["missing_count"] == 0
+    assert payload["parent_level_missing"] == []
+    assert payload["unmigrated_per_iteration_missing"] == []

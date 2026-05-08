@@ -275,6 +275,37 @@ def phase_b_end_marker(
     )
 
 
+def bundle_assembly_incomplete_marker(
+    *,
+    optimization_run_id: str,
+    parent_bundle_run_id: str = "",
+    total_declared: int,
+    total_materialized: int,
+    missing_count: int,
+    parent_level_missing: Sequence[str],
+    unmigrated_per_iteration_missing: Sequence[str],
+) -> str:
+    """Cycle 12-T3 — emit a typed gap report after the parent-bundle
+    upload completes.
+
+    Distinct from ``GSO_BUNDLE_ASSEMBLY_FAILED_V1`` (which fires when the
+    whole assembly block raised). This marker fires when the assembler
+    completed but did not produce every declared path.
+    """
+    return marker_line(
+        "GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1",
+        {
+            "optimization_run_id": optimization_run_id,
+            "parent_bundle_run_id": parent_bundle_run_id,
+            "total_declared": int(total_declared),
+            "total_materialized": int(total_materialized),
+            "missing_count": int(missing_count),
+            "parent_level_missing": list(parent_level_missing),
+            "unmigrated_per_iteration_missing": list(unmigrated_per_iteration_missing),
+        },
+    )
+
+
 def phase_h_strict_validation_marker(
     *,
     optimization_run_id: str,
