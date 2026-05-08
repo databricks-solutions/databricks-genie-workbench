@@ -773,3 +773,19 @@ I4 (`no_silent_retry`) is the invariant that catches both failure modes: identic
 - **Binary criterion:** Every postmortem can answer "what wheel/git_sha/flags/python ran?" by reading exactly one record. Verified by `test_v2_manifest_satisfies_binary_criterion`.
 - **Replay byte-stability:** preserved. V1 emission unchanged; existing fixture `lever_loop_stdout_0ade1a99.txt` parses identically with `run_manifest_v2=None`.
 - **Follow-up:** Cycles 12-T2/T3/T4 (manifest validator wiring, bundle assembler, closeout audit). Roadmap reference: [`2026-05-07-contract-spirit-compliance-roadmap.md`](./2026-05-07-contract-spirit-compliance-roadmap.md), Cycle 12.
+
+
+## Cycle 12-T2 — Phase H Strict Validator Wiring
+
+- **Date shipped:** 2026-05-08
+- **Inspiration evidence:** [`runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097/postmortem.md`](./runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097/postmortem.md) F9 — `manifest.missing_pieces` empty while 127 declared paths externally measured missing.
+- **Stage(s) closed (partial):** Stage 11 `contract_health` — the strict-validator output now reaches `manifest.missing_pieces` whenever the listing succeeds.
+- **What changed:**
+  1. `validate_phase_h_manifest_paths` accepts an optional `self_write_paths` set so the validator does not false-flag paths the assembler is about to write.
+  2. The harness validator block is refactored into a pure helper `_run_phase_h_strict_validation`; the broad `try/except` is replaced with three narrow handlers (flag, listing, validator) each with typed observability.
+  3. New `GSO_PHASE_H_STRICT_VALIDATION_V1` stdout marker carries `flag_enabled`, `declared_count`, `materialized_count`, `self_write_count`, `missing_count`, `listing_status`, `validator_status`, `exception_class`.
+  4. Marker parser surfaces the new marker as `MarkerLog.phase_h_strict_validation`.
+- **Flag(s):** None (rides the existing default-on `phase_h_manifest_strict_validation_enabled`).
+- **Binary criterion:** Every run emits exactly one `GSO_PHASE_H_STRICT_VALIDATION_V1` line; the validator's three failure modes are distinguishable by `listing_status` × `validator_status` × `exception_class`. Verified by integration tests (5 paths covered).
+- **Replay byte-stability:** preserved. The helper returns identical missing-pieces output to the legacy code on the success path; only failure paths now emit a typed marker instead of being silent.
+- **Follow-up:** Cycle 12-T3 fixes the producers of the missing paths (5 parent-level paths today have no upload). Cycle 12-T4 closes the loop with a fresh-run audit.
