@@ -174,3 +174,49 @@ def build_journey_validation_all(
         "any_invalid": any_invalid,
         "iterations": safe,
     }
+
+
+def build_scoreboard(
+    *,
+    iter_record_counts: list[int],
+    iter_violation_counts: list[int],
+    no_records_iterations: list[int],
+    levers_attempted: dict[int, int],
+    levers_accepted: dict[int, int],
+    levers_rolled_back: dict[int, int],
+    best_accuracy: float | None,
+    baseline_accuracy: float | None,
+    iteration_count: int,
+) -> dict[str, Any]:
+    """Cycle 12-T3 — minimal scoreboard.json.
+
+    A 7-second read of the loop's outcome: per-iteration record/violation
+    counts, lever attempt/accept/rollback distribution, and a single
+    accuracy_delta_pp summary. Richer LoopSnapshot-based fields are a
+    follow-up; this is enough to materialize the contract-declared path
+    with structured content.
+    """
+    if best_accuracy is None or baseline_accuracy is None:
+        delta = None
+    else:
+        delta = round(_normalize_accuracy_pct(best_accuracy)
+                      - _normalize_accuracy_pct(baseline_accuracy), 1)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "iteration_count": int(iteration_count),
+        "best_accuracy": (
+            _normalize_accuracy_pct(best_accuracy)
+            if best_accuracy is not None else None
+        ),
+        "baseline_accuracy": (
+            _normalize_accuracy_pct(baseline_accuracy)
+            if baseline_accuracy is not None else None
+        ),
+        "accuracy_delta_pp": delta,
+        "iter_record_counts": list(iter_record_counts or []),
+        "iter_violation_counts": list(iter_violation_counts or []),
+        "no_records_iterations": list(no_records_iterations or []),
+        "levers_attempted": {str(k): int(v) for k, v in (levers_attempted or {}).items()},
+        "levers_accepted":  {str(k): int(v) for k, v in (levers_accepted or {}).items()},
+        "levers_rolled_back": {str(k): int(v) for k, v in (levers_rolled_back or {}).items()},
+    }

@@ -175,3 +175,56 @@ def test_build_journey_validation_all_handles_empty_input() -> None:
     assert out["iteration_count"] == 0
     assert out["any_invalid"] is False
     assert out["total_violation_count"] == 0
+
+
+def test_build_scoreboard_minimal_shape() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_scoreboard,
+    )
+
+    out = build_scoreboard(
+        iter_record_counts=[24, 24, 12, 0, 0],
+        iter_violation_counts=[0, 0, 0, 0, 0],
+        no_records_iterations=[4, 5],
+        levers_attempted={6: 3, 5: 2},
+        levers_accepted={5: 1},
+        levers_rolled_back={6: 3},
+        best_accuracy=85.7,
+        baseline_accuracy=82.1,
+        iteration_count=5,
+    )
+
+    assert out["schema_version"] == "v1"
+    assert out["iteration_count"] == 5
+    assert out["best_accuracy"] == 85.7
+    assert out["baseline_accuracy"] == 82.1
+    assert out["accuracy_delta_pp"] == 3.6
+    assert out["iter_record_counts"] == [24, 24, 12, 0, 0]
+    assert out["iter_violation_counts"] == [0, 0, 0, 0, 0]
+    assert out["no_records_iterations"] == [4, 5]
+    assert out["levers_attempted"] == {"5": 2, "6": 3}
+    assert out["levers_accepted"] == {"5": 1}
+    assert out["levers_rolled_back"] == {"6": 3}
+
+
+def test_build_scoreboard_handles_none_accuracy() -> None:
+    """Pre-baseline runs that crash before evaluation may have None accuracy."""
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_scoreboard,
+    )
+
+    out = build_scoreboard(
+        iter_record_counts=[],
+        iter_violation_counts=[],
+        no_records_iterations=[],
+        levers_attempted={},
+        levers_accepted={},
+        levers_rolled_back={},
+        best_accuracy=None,
+        baseline_accuracy=None,
+        iteration_count=0,
+    )
+
+    assert out["best_accuracy"] is None
+    assert out["baseline_accuracy"] is None
+    assert out["accuracy_delta_pp"] is None
