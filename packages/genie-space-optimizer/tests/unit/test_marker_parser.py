@@ -273,3 +273,35 @@ def test_parse_markers_phase_h_strict_validation_absent() -> None:
     log = parse_markers(stdout)
 
     assert log.phase_h_strict_validation is None
+
+
+# Cycle 12-T3 — GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1 routing
+def test_parse_markers_captures_bundle_assembly_incomplete() -> None:
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    stdout = (
+        'GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1 '
+        '{"missing_count":2,"optimization_run_id":"opt1",'
+        '"parent_bundle_run_id":"run1","parent_level_missing":'
+        '["gso_postmortem_bundle/replay_fixture.json"],'
+        '"total_declared":10,"total_materialized":8,'
+        '"unmigrated_per_iteration_missing":'
+        '["gso_postmortem_bundle/iterations/iter_01/decision_trace.json"]}\n'
+    )
+
+    log = parse_markers(stdout)
+
+    assert log.bundle_assembly_incomplete is not None
+    assert log.bundle_assembly_incomplete[0]["missing_count"] == 2
+    assert "gso_postmortem_bundle/replay_fixture.json" in (
+        log.bundle_assembly_incomplete[0]["parent_level_missing"]
+    )
+    assert "GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1" not in log.unknown
+
+
+def test_parse_markers_bundle_assembly_incomplete_absent() -> None:
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    log = parse_markers("(no markers)")
+
+    assert log.bundle_assembly_incomplete is None
