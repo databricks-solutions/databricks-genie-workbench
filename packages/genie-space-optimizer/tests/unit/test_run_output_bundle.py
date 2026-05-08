@@ -87,3 +87,47 @@ def test_build_manifest_includes_stage_keys_in_process_order() -> None:
     assert exec_keys[0] == "evaluation_state"
     assert exec_keys[-1] == "learning_next_action"
     assert len(exec_keys) == 9
+
+
+# Cycle 12-T3 — parent-bundle aggregators / minimal producers
+def test_build_decision_trace_all_aggregates_per_iter_traces() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_decision_trace_all,
+    )
+
+    iter_traces = [
+        {"iteration": 1, "records": [{"id": "r1"}, {"id": "r2"}]},
+        {"iteration": 2, "records": [{"id": "r3"}]},
+    ]
+
+    out = build_decision_trace_all(iter_traces=iter_traces)
+
+    assert out["schema_version"] == "v1"
+    assert out["iteration_count"] == 2
+    assert out["total_record_count"] == 3
+    assert out["iterations"] == iter_traces
+
+
+def test_build_decision_trace_all_handles_empty_input() -> None:
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_decision_trace_all,
+    )
+
+    out = build_decision_trace_all(iter_traces=[])
+
+    assert out["iteration_count"] == 0
+    assert out["total_record_count"] == 0
+    assert out["iterations"] == []
+
+
+def test_build_decision_trace_all_handles_missing_records_key() -> None:
+    """Defensive: per-iteration entries without ``records`` count as 0."""
+    from genie_space_optimizer.optimization.run_output_bundle import (
+        build_decision_trace_all,
+    )
+
+    iter_traces = [{"iteration": 1}, {"iteration": 2, "records": [{"id": "r1"}]}]
+
+    out = build_decision_trace_all(iter_traces=iter_traces)
+
+    assert out["total_record_count"] == 1

@@ -140,3 +140,21 @@ def build_run_summary(
         "iteration_count": iteration_count,
         "accuracy_delta_pp": _normalize_accuracy_pct(accuracy_delta_pp),
     }
+
+
+def build_decision_trace_all(
+    *, iter_traces: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Cycle 12-T3 — parent-bundle decision_trace_all.json.
+
+    Aggregates per-iteration decision-trace dicts into one document so a
+    postmortem can read every iteration's typed records from one path.
+    """
+    safe = list(iter_traces or [])
+    total = sum(len((t or {}).get("records") or []) for t in safe)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "iteration_count": len(safe),
+        "total_record_count": total,
+        "iterations": safe,
+    }
