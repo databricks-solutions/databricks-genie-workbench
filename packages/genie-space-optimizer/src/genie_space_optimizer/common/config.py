@@ -5343,6 +5343,160 @@ def no_causal_applyable_halt_enabled() -> bool:
     return True
 
 
+def target_delta_strict_enabled() -> bool:
+    """Cycle 14-T0 — when ``LOOKUP_FAILED`` appears in any target's
+    delta state at decision time, route the rollback reason to the
+    typed ``target_resolution_failed`` class instead of falling
+    through to ``target_qids_not_improved`` / ``missing_pre_rows``.
+
+    Default ON. The flag-off path retains the legacy fall-through
+    so byte-stable replay holds on fixtures committed before T0
+    shipped.
+
+    Disable with ``GSO_TARGET_DELTA_STRICT=0``.
+    """
+    return _flag_default_on("GSO_TARGET_DELTA_STRICT")
+
+
+def partial_harvest_with_debt_enabled() -> bool:
+    """Cycle 14B-T1+T2 — when on, ``decide_control_plane_acceptance``
+    can accept candidates that fix >=1 hard cluster AND meet
+    aggregate / threshold gates AND introduce only out-of-target
+    regressions under ``RegressionDebtPolicy``. When off, the new
+    branch is unreachable (legacy full-discard on any out-of-target
+    regression) and replay byte-stability holds on existing fixtures.
+
+    Default OFF for the initial pilot. Flip to default-on after one
+    corpus pilot validates the pilot-default policy.
+
+    Enable with ``GSO_PARTIAL_HARVEST_WITH_DEBT=1``.
+    """
+    return _flag_enabled("GSO_PARTIAL_HARVEST_WITH_DEBT")
+
+
+def patch_subset_isolation_enabled() -> bool:
+    """Cycle 14B-T3 — when on, the harness invokes the patch-subset
+    isolation orchestrator after a partial-harvest rejection. In
+    diagnostic-only mode (this flag on, the LIVE flag off), the
+    orchestrator runs the attribution helper and emits a typed
+    ``GSO_PATCH_ISOLATION_DIAGNOSTIC_V1`` marker but does not
+    perform a live re-eval.
+
+    Default OFF.
+
+    Enable with ``GSO_PATCH_SUBSET_ISOLATION=1``.
+    """
+    return _flag_enabled("GSO_PATCH_SUBSET_ISOLATION")
+
+
+def patch_subset_isolation_live_enabled() -> bool:
+    """Cycle 14B-T3 — when on AND the substrate check passes
+    (``patch_survival.json`` produced at the contract path by
+    Cycle 12-T5), the orchestrator performs a live re-eval after
+    building the isolation subset. Independent of
+    ``GSO_PATCH_SUBSET_ISOLATION``; requires it.
+
+    Default OFF. Flips after one corpus pilot validates
+    diagnostic-mode attribution accuracy.
+
+    Enable with ``GSO_PATCH_SUBSET_ISOLATION_LIVE=1``.
+    """
+    return _flag_enabled("GSO_PATCH_SUBSET_ISOLATION_LIVE")
+
+
+def phase_b_aggregator_in_finalize_enabled() -> bool:
+    """Cycle 14-T1 — when on, ``_finalize_iteration_summary`` invokes
+    ``record_phase_b_iter_accounting`` so producer exceptions earlier
+    in the iteration body cannot bypass the accounting block. The
+    legacy in-body call site at ``harness.py:22905`` is retained for
+    byte-stability; the helper's idempotency guard makes the second
+    call a no-op.
+
+    Default: on. Disable with ``GSO_PHASE_B_AGGREGATOR_IN_FINALIZE=0``
+    to retain the legacy in-body block as the sole producer (replay
+    byte-stable for pre-T1 fixtures).
+    """
+    return _flag_default_on("GSO_PHASE_B_AGGREGATOR_IN_FINALIZE")
+
+
+def canonical_acceptance_render_enabled() -> bool:
+    """Cycle 14-T2 — when on, the harness emits
+    ``GSO_FULL_EVAL_V1`` typed markers alongside the FULL EVAL text
+    block AND ``ag_outcome_decision_record`` consumes
+    ``format_full_eval_marker_payload`` as the canonical render
+    source. Default-on; flag-off retains the legacy text-only render
+    path so pre-T2 fixtures replay byte-stable.
+
+    Disable with ``GSO_CANONICAL_ACCEPTANCE_RENDER=0``.
+    """
+    return _flag_default_on("GSO_CANONICAL_ACCEPTANCE_RENDER")
+
+
+def forbidden_ag_admission_observe_enabled() -> bool:
+    """Cycle 14-V Task 1 — observability-only shadow of Cycle 13's
+    admission predicate.
+
+    When on (default), :func:`_compute_forbidden_ag_set` emits a
+    ``GSO_FORBIDDEN_AG_ADMISSION_OBSERVE_V1`` marker for every
+    ``NO_ACTION`` reflection entry, recording what the predicate
+    WOULD admit if ``GSO_FORBIDDEN_AG_ADMITS_NO_ACTION`` were
+    enabled. The actual admission set is unchanged — this is
+    corpus-measurement machinery so a postmortem can prove the
+    admission predicate behaves correctly on the current corpus
+    before flipping the behavior flag's default.
+
+    Default ON. Disable with ``GSO_FORBIDDEN_AG_ADMISSION_OBSERVE=0``.
+    """
+    return _flag_default_on("GSO_FORBIDDEN_AG_ADMISSION_OBSERVE")
+
+
+def patch_isolation_observe_enabled() -> bool:
+    """Cycle 14-V Task 2 — observability-only shadow of Cycle 14B-T3's
+    diagnostic-only orchestrator.
+
+    When on (default), :func:`_maybe_run_patch_isolation_orchestrator`
+    runs the pure attribution helper and emits a
+    ``GSO_PATCH_ISOLATION_OBSERVE_V1`` marker on the two canonical
+    reason codes, even when ``GSO_PATCH_SUBSET_ISOLATION`` is off.
+    No live re-eval, no behavior change — only attribution
+    evidence so corpus measurement can validate isolation accuracy
+    before the diagnostic-only flag default flips.
+
+    Default ON. Disable with ``GSO_PATCH_ISOLATION_OBSERVE=0``.
+    """
+    return _flag_default_on("GSO_PATCH_ISOLATION_OBSERVE")
+
+
+def canonical_render_invariant_enabled() -> bool:
+    """Cycle 14-V Task 4 — when on (default), the canonical render
+    self-checks its output for same-QID contradictions and emits
+    ``GSO_CANONICAL_RENDER_INVARIANT_V1`` on any violation.
+
+    Default ON. Disable with ``GSO_CANONICAL_RENDER_INVARIANT=0``.
+    """
+    return _flag_default_on("GSO_CANONICAL_RENDER_INVARIANT")
+
+
+def forbidden_ag_admits_no_action_enabled() -> bool:
+    """Cycle 13 — when on, ``_compute_forbidden_ag_set`` admits
+    reflections classified as ``RollbackClass.NO_ACTION`` (i.e.
+    ``no_proposals`` and ``ag_collision_with_forbidden_set``)
+    alongside the existing ``CONTENT_REGRESSION`` and
+    ``ACCEPTED_WITH_DEBT`` admissions. Closes the Stage 10 → Stage 4
+    arrow in the GSO Run Output Contract: the strategist's input
+    on iteration N+1 reflects that an empty-proposal AG signature
+    on iteration N should not be unconditionally retried.
+
+    Default OFF for the initial pilot. Flip to default-on after one
+    corpus pilot validates that AG retirement does not starve the
+    loop (i.e. that the strategist proposes an alternate AG family
+    rather than terminating).
+
+    Enable with ``GSO_FORBIDDEN_AG_ADMITS_NO_ACTION=1``.
+    """
+    return _flag_enabled("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION")
+
+
 def bucket_driven_ag_selection_enabled() -> bool:
     """Task C — strategist consumes prior-iteration failure buckets:
     ``MODEL_CEILING`` qids drop from targets; clusters whose qids are

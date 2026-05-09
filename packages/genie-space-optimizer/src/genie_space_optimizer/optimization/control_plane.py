@@ -9,6 +9,7 @@ without a Databricks workspace.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Iterable
 
 from genie_space_optimizer.common.config import (
@@ -162,6 +163,132 @@ def hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
             if qid:
                 qids.append(qid)
     return tuple(dict.fromkeys(qids))
+
+
+# ── Cycle 14-T0: per-QID target-delta classifier ─────────────────────
+#
+# Total function over target_qids. Every declared target lands in
+# exactly one DeltaState value. LOOKUP_FAILED is the explicit
+# "I could not resolve this target" answer that replaces the legacy
+# set-arithmetic fall-through where target_fixed=() AND
+# target_still=() could be simultaneously empty for an evaluated
+# target QID (new anchor 76457773587391 F2).
+
+
+class DeltaState(StrEnum):
+    """Per-target outcome of a single iteration's full eval.
+
+    Values are the lowercase names so that JSON serialisation
+    yields stable strings consumable by Cycle 14-T2's render and
+    Cycle 16-T4's contract-health marker without further mapping.
+    """
+
+    FIXED = "fixed"
+    STILL_HARD = "still_hard"
+    SOFT_TO_HARD = "soft_to_hard"
+    SOFT_PASSING = "soft_passing"
+    REGRESSED_TO_UNKNOWN = "regressed_to_unknown"
+    LOOKUP_FAILED = "lookup_failed"
+
+
+def compute_target_delta_states(
+    *,
+    target_qids: Iterable[str],
+    pre_rows: Iterable[dict],
+    post_rows: Iterable[dict],
+    candidate_failed_qids: Iterable[str],
+) -> dict[str, "DeltaState"]:
+    """Classify every declared target QID into one DeltaState.
+
+    Total over ``target_qids``: every QID appears in the returned
+    dict exactly once. Duplicates in ``target_qids`` are de-duped
+    via ``dict.fromkeys`` to preserve declaration order.
+
+    Resolution rules (first-match wins):
+      1. QID present in pre_rows AND post_rows                   -> use row_status delta
+      2. QID present in pre_rows only, absent from candidate     -> SOFT_PASSING / FIXED
+      3. QID absent from pre_rows but present in post_rows hard  -> REGRESSED_TO_UNKNOWN
+      4. QID absent from BOTH pre_rows and post_rows             -> LOOKUP_FAILED
+    """
+    targets = tuple(dict.fromkeys(str(q) for q in target_qids or [] if str(q)))
+    if not targets:
+        return {}
+
+    pre_by_qid: dict[str, dict] = {}
+    for row in pre_rows or []:
+        if not isinstance(row, dict):
+            continue
+        qid = _row_qid(row)
+        if qid:
+            pre_by_qid[qid] = row
+
+    post_by_qid: dict[str, dict] = {}
+    for row in post_rows or []:
+        if not isinstance(row, dict):
+            continue
+        qid = _row_qid(row)
+        if qid:
+            post_by_qid[qid] = row
+
+    candidate_failed = {str(q) for q in candidate_failed_qids or () if str(q)}
+
+    out: dict[str, DeltaState] = {}
+    for qid in targets:
+        pre_row = pre_by_qid.get(qid)
+        post_row = post_by_qid.get(qid)
+
+        if pre_row is None and post_row is None:
+            out[qid] = DeltaState.LOOKUP_FAILED
+            continue
+
+        if pre_row is not None and post_row is not None:
+            pre_status = row_status(pre_row)
+            post_status = row_status(post_row)
+            if pre_status == "hard" and post_status != "hard":
+                out[qid] = DeltaState.FIXED
+            elif pre_status == "hard" and post_status == "hard":
+                out[qid] = DeltaState.STILL_HARD
+            elif pre_status == "soft" and post_status == "hard":
+                out[qid] = DeltaState.SOFT_TO_HARD
+            elif pre_status == "soft" and post_status != "hard":
+                out[qid] = DeltaState.SOFT_PASSING
+            else:
+                out[qid] = DeltaState.SOFT_PASSING  # passing -> passing/soft
+            continue
+
+        if pre_row is not None and post_row is None:
+            # Target present in baseline, absent from candidate. The
+            # candidate_failed_qids list is the authoritative "did
+            # this fail in the candidate" signal; absence from both
+            # the failed list AND post_rows means the candidate
+            # passed it via omission (most candidates don't emit a
+            # row for trivially-passing QIDs).
+            if qid in candidate_failed:
+                # Listed as failed but no row materialised — predicate
+                # disagreement. Route to the residual rather than
+                # claiming FIXED.
+                out[qid] = DeltaState.LOOKUP_FAILED
+                continue
+            pre_status = row_status(pre_row)
+            if pre_status == "hard":
+                out[qid] = DeltaState.FIXED
+            elif pre_status == "soft":
+                out[qid] = DeltaState.SOFT_PASSING
+            else:
+                out[qid] = DeltaState.SOFT_PASSING  # was passing, still passing
+            continue
+
+        # pre_row is None and post_row is not None -> target wasn't
+        # in the baseline rows but appeared in the candidate eval.
+        # If hard in candidate, it's an unattributable regression
+        # for this target's slot.
+        post_status = row_status(post_row) if post_row else "passing"
+        if post_status == "hard":
+            out[qid] = DeltaState.REGRESSED_TO_UNKNOWN
+        else:
+            out[qid] = DeltaState.LOOKUP_FAILED
+
+    return out
 
 
 def row_is_passing(row: dict) -> bool:
@@ -692,6 +819,10 @@ class ControlPlaneAcceptance:
     # missing-pre-row and predicate-disagreement cases that today
     # silently slip out of attribution.
     unknown_to_hard_regressed_qids: tuple[str, ...] = ()
+    # Cycle 14-T0: per-target delta states, total over target_qids.
+    # Sorted tuple of (qid, DeltaState.value) pairs — frozen,
+    # JSON-friendly, byte-stable for MLflow replay.
+    target_delta_states: tuple[tuple[str, str], ...] = ()
 
 
 def _fmt_qids(qids: Iterable[str]) -> str:
@@ -715,6 +846,199 @@ def format_control_plane_acceptance_detail(
         f"passing_to_hard_regressed_qids={_fmt_qids(decision.passing_to_hard_regressed_qids)}; "
         f"unknown_to_hard_regressed_qids={_fmt_qids(decision.unknown_to_hard_regressed_qids)}"
     )
+
+
+def format_full_eval_marker_payload(
+    decision: ControlPlaneAcceptance,
+    *,
+    ag_id: str,
+    iteration: int,
+    accepted_label: str,
+) -> dict:
+    """Cycle 14-T2 — canonical render of one AG's full-eval outcome.
+
+    Returns a JSON-serialisable dict consumed by:
+      - ``GSO_FULL_EVAL_V1`` typed stdout marker
+        (``run_analysis_contract.full_eval_marker``).
+      - ``acceptance_decided`` ``DecisionRecord`` (decision_emitters
+        ``ag_outcome_decision_record``).
+      - ``FULL EVAL [...]`` human-readable print block (harness).
+      - Phase B / Phase H rendered transcript (via the
+        ``DecisionRecord`` above).
+
+    Behind ``GSO_CANONICAL_ACCEPTANCE_RENDER`` (default on); on
+    flag-off each surface continues to use its legacy renderer for
+    byte-stable replay of pre-T2 fixtures.
+
+    Cycle 14-V Task 3: when ``decision.target_delta_states`` is
+    populated, the rendered ``target_fixed_qids`` /
+    ``target_still_hard_qids`` are derived from it as the single
+    canonical source. This eliminates the contradiction surfaced by
+    7Now anchor 338386531912450 where ``gs_026`` simultaneously
+    rendered as ``soft_to_hard`` (in delta_states) AND
+    ``target_still_hard_qids``. Target QIDs are also subtracted
+    from ``unknown_to_hard_regressed_qids`` because
+    ``target_delta_states`` is exhaustive over targets — closes the
+    airline anchor 833709971504406 ``gs_016`` mis-classification.
+
+    Pre-T0 fixtures with empty ``target_delta_states`` fall through
+    to legacy fields verbatim for back-compat.
+    """
+    delta_states_pairs = tuple(decision.target_delta_states or ())
+    delta_states_list = [[str(qid), str(state)] for qid, state in delta_states_pairs]
+
+    if delta_states_pairs:
+        # Cycle 14-V T3: single source of truth.
+        derived_fixed = tuple(
+            str(q) for q, s in delta_states_pairs
+            if str(s) == DeltaState.FIXED.value
+        )
+        derived_still_hard = tuple(
+            str(q) for q, s in delta_states_pairs
+            if str(s) == DeltaState.STILL_HARD.value
+        )
+        target_fixed_qids = derived_fixed
+        target_still_hard_qids = derived_still_hard
+
+        # Subtract target QIDs from the unknown_to_hard bucket
+        # because target QIDs are exhaustively classified by
+        # target_delta_states.
+        target_qid_set = {str(q) for q, _ in delta_states_pairs}
+        unknown_to_hard_qids = tuple(
+            str(q) for q in (decision.unknown_to_hard_regressed_qids or ())
+            if str(q) not in target_qid_set
+        )
+    else:
+        # Pre-T0 back-compat: legacy fields verbatim.
+        target_fixed_qids = tuple(
+            str(q) for q in (decision.target_fixed_qids or ())
+        )
+        target_still_hard_qids = tuple(
+            str(q) for q in (decision.target_still_hard_qids or ())
+        )
+        unknown_to_hard_qids = tuple(
+            str(q) for q in (decision.unknown_to_hard_regressed_qids or ())
+        )
+
+    payload = {
+        "iteration": int(iteration),
+        "ag_id": str(ag_id),
+        "accepted": bool(decision.accepted),
+        "reason_code": str(decision.reason_code or ""),
+        "accepted_label": str(accepted_label),
+        "baseline_accuracy": float(decision.baseline_accuracy),
+        "candidate_accuracy": float(decision.candidate_accuracy),
+        "delta_pp": float(decision.delta_pp),
+        "target_qids": [str(q) for q in (decision.target_qids or ())],
+        "target_fixed_qids": list(target_fixed_qids),
+        "target_still_hard_qids": list(target_still_hard_qids),
+        "target_delta_states": delta_states_list,
+        "out_of_target_regressed_qids": [
+            str(q) for q in (decision.out_of_target_regressed_qids or ())
+        ],
+        "regression_debt_qids": [
+            str(q) for q in (decision.regression_debt_qids or ())
+        ],
+        "soft_to_hard_regressed_qids": [
+            str(q) for q in (decision.soft_to_hard_regressed_qids or ())
+        ],
+        "passing_to_hard_regressed_qids": [
+            str(q) for q in (decision.passing_to_hard_regressed_qids or ())
+        ],
+        "unknown_to_hard_regressed_qids": list(unknown_to_hard_qids),
+        "reason_detail": format_control_plane_acceptance_detail(decision),
+    }
+
+    # Cycle 14-V Task 4: self-check the rendered payload for same-QID
+    # contradictions. Silent on clean payloads; emits a typed alarm
+    # marker on regression. The check runs behind a default-on flag
+    # so flag-off (replay byte-stability) keeps the legacy silence.
+    try:
+        from genie_space_optimizer.common.config import (
+            canonical_render_invariant_enabled,
+        )
+        if canonical_render_invariant_enabled():
+            from genie_space_optimizer.optimization.run_analysis_contract import (
+                canonical_render_invariant_marker,
+            )
+            for violation in _detect_render_contradictions(payload):
+                print(canonical_render_invariant_marker(
+                    optimization_run_id="",
+                    iteration=int(iteration),
+                    ag_id=str(ag_id),
+                    violation_class=str(violation.get("class") or ""),
+                    contradicting_qids=tuple(violation.get("qids") or ()),
+                    detail=str(violation.get("detail") or ""),
+                ))
+    except Exception:
+        # Defensive: invariant self-check must never crash the render.
+        pass
+
+    return payload
+
+
+def _detect_render_contradictions(payload: dict) -> list[dict]:
+    """Cycle 14-V Task 4 — pure helper that returns one violation
+    per same-QID contradiction across rendered fields. Returns []
+    on clean payloads.
+
+    Detected violations:
+      - ``fixed_and_still_hard_overlap`` — a QID appears in BOTH
+        ``target_fixed_qids`` AND ``target_still_hard_qids``.
+      - ``target_in_out_of_target_set`` — a QID appears in BOTH
+        ``target_delta_states`` AND ``out_of_target_regressed_qids``.
+      - ``delta_state_disagrees_with_bucket`` — ``target_delta_states``
+        classifies a QID as FIXED but the QID is also in
+        ``target_still_hard_qids`` (and vice versa).
+    """
+    violations: list[dict] = []
+    fixed = set(payload.get("target_fixed_qids") or ())
+    still_hard = set(payload.get("target_still_hard_qids") or ())
+    delta_pairs = payload.get("target_delta_states") or ()
+    out_of_target = set(payload.get("out_of_target_regressed_qids") or ())
+
+    overlap = fixed & still_hard
+    if overlap:
+        violations.append({
+            "class": "fixed_and_still_hard_overlap",
+            "qids": sorted(overlap),
+            "detail": (
+                f"qids appear in both target_fixed_qids and "
+                f"target_still_hard_qids: {sorted(overlap)}"
+            ),
+        })
+
+    target_qids_in_delta = {str(p[0]) for p in delta_pairs if p}
+    target_in_out = target_qids_in_delta & out_of_target
+    if target_in_out:
+        violations.append({
+            "class": "target_in_out_of_target_set",
+            "qids": sorted(target_in_out),
+            "detail": (
+                f"qids classified by target_delta_states must not also "
+                f"appear in out_of_target_regressed_qids: "
+                f"{sorted(target_in_out)}"
+            ),
+        })
+
+    delta_dict = {str(p[0]): str(p[1]) for p in delta_pairs if p}
+    disagree = []
+    for qid, state in delta_dict.items():
+        if state == DeltaState.FIXED.value and qid in still_hard:
+            disagree.append((qid, state, "still_hard_qids"))
+        elif state == DeltaState.STILL_HARD.value and qid in fixed:
+            disagree.append((qid, state, "fixed_qids"))
+    if disagree:
+        violations.append({
+            "class": "delta_state_disagrees_with_bucket",
+            "qids": sorted({q for q, _, _ in disagree}),
+            "detail": (
+                f"target_delta_states disagrees with legacy bucket "
+                f"membership: {disagree}"
+            ),
+        })
+
+    return violations
 
 
 def assert_regression_debt_partition_complete(
@@ -771,6 +1095,9 @@ def decide_control_plane_acceptance(
     candidate_pre_arbiter_accuracy: float | None = None,
     min_pre_arbiter_gain_pp: float = 2.0,
     thresholds_met: bool = True,
+    # Cycle 14B-T2 — partial-harvest with debt
+    cumulative_debt: int = 0,
+    threshold_pass_rate: float = 1.0,
 ) -> ControlPlaneAcceptance:
     """Accept only causal post-arbiter improvement with no hard regressions.
 
@@ -790,6 +1117,10 @@ def decide_control_plane_acceptance(
       accepted_pre_arbiter_improvement  — post saturated at the same value but pre-arbiter improved by >= min_pre_arbiter_gain_pp with no collateral hard regression
       accepted_with_attribution_drift   — net global gain, zero regressions, target unchanged
       accepted_with_regression_debt     — net gain with bounded collateral debt
+      accepted_with_partial_harvest_debt — Cycle 14B-T2: candidate fixed
+        >= policy.min_target_clusters_fixed targets AND cleared the
+        policy's aggregate-gain / threshold / bucket / cumulative
+        gates with bounded debt. Behind GSO_PARTIAL_HARVEST_WITH_DEBT.
       out_of_target_hard_regression     — at least one prior-passing qid went hard
       rejected_unbounded_collateral     — collateral exceeds debt budget
       accepted                          — net causal win, no collateral regressions
@@ -978,6 +1309,91 @@ def decide_control_plane_acceptance(
         reason = "accepted"
         accepted = True
 
+    # Cycle 14-T0: total per-target classification (consumed by
+    # T2 render, C14B partial-harvest policy, C16-T3 enum
+    # extension). Independent of the existing target_fixed /
+    # target_still set arithmetic so this is byte-stable: the
+    # legacy fields stay populated as before; the new field adds
+    # information without removing any.
+    delta_state_map = compute_target_delta_states(
+        target_qids=targets,
+        pre_rows=pre_rows_list,
+        post_rows=post_rows_list,
+        candidate_failed_qids=hard_failure_qids(post_rows_list),
+    )
+
+    # Cycle 14-T0: when any target landed in LOOKUP_FAILED, the
+    # legacy reason codes (missing_pre_rows, target_qids_not_improved)
+    # under-describe the failure. Route to the typed
+    # target_resolution_failed reason behind the GSO_TARGET_DELTA_STRICT
+    # flag. Only flips the reason on rejections; never flips an
+    # accepted decision. The allowlist preserves more-specific
+    # misconfig reasons (stale_or_candidate_pre_rows, collateral
+    # codes) so they remain distinct in postmortems.
+    from genie_space_optimizer.common.config import target_delta_strict_enabled
+
+    _OVERRIDABLE_REASONS = {"missing_pre_rows", "target_qids_not_improved"}
+    has_lookup_failure = any(
+        state == DeltaState.LOOKUP_FAILED for state in delta_state_map.values()
+    )
+    if (
+        has_lookup_failure
+        and not accepted
+        and reason in _OVERRIDABLE_REASONS
+        and target_delta_strict_enabled()
+    ):
+        reason = "target_resolution_failed"
+
+    target_delta_states_tuple = tuple(
+        sorted((qid, state.value) for qid, state in delta_state_map.items())
+    )
+
+    # Cycle 14B-T2: partial-harvest with bounded debt. The branch
+    # fires on rejections the legacy code routed to
+    # rejected_unbounded_collateral / target_qids_not_improved /
+    # target_fixed_offset_by_regression — when a
+    # RegressionDebtPolicy says the candidate is under-policy, override
+    # the rejection with accepted_with_partial_harvest_debt. Never
+    # flips an already-accepted decision; never fires when there is
+    # no out-of-target debt to harvest (the legacy ``accepted`` reason
+    # is correct in that case).
+    from genie_space_optimizer.common.config import (
+        partial_harvest_with_debt_enabled,
+    )
+
+    if not accepted and partial_harvest_with_debt_enabled():
+        from genie_space_optimizer.optimization.acceptance_policy import (
+            regression_debt_policy_from_config,
+        )
+
+        synthetic = ControlPlaneAcceptance(
+            accepted=False,
+            reason_code=reason,
+            baseline_accuracy=round(float(baseline_accuracy), 1),
+            candidate_accuracy=round(float(candidate_accuracy), 1),
+            delta_pp=delta,
+            target_qids=targets,
+            target_fixed_qids=target_fixed,
+            target_still_hard_qids=target_still,
+            out_of_target_regressed_qids=out_of_target_regressed,
+            regression_debt_qids=(),
+            protected_regressed_qids=protected_regressed,
+            soft_to_hard_regressed_qids=soft_to_hard,
+            passing_to_hard_regressed_qids=passing_to_hard,
+            unknown_to_hard_regressed_qids=unknown_to_hard,
+            target_delta_states=target_delta_states_tuple,
+        )
+        verdict = evaluate_regression_debt(
+            decision=synthetic,
+            policy=regression_debt_policy_from_config(),
+            cumulative_debt=int(cumulative_debt),
+            threshold_pass_rate=float(threshold_pass_rate),
+        )
+        if verdict.under_policy and verdict.debt_qids:
+            reason = "accepted_with_partial_harvest_debt"
+            accepted = True
+            out_of_target_regressed = verdict.debt_qids
+
     regression_debt_qids = (
         out_of_target_regressed if accepted and out_of_target_regressed else ()
     )
@@ -997,6 +1413,173 @@ def decide_control_plane_acceptance(
         soft_to_hard_regressed_qids=soft_to_hard,
         passing_to_hard_regressed_qids=passing_to_hard,
         unknown_to_hard_regressed_qids=unknown_to_hard,
+        target_delta_states=target_delta_states_tuple,
+    )
+
+
+# ── Cycle 14B-T1: evaluate_regression_debt — pure policy evaluator ───
+
+
+@dataclass(frozen=True)
+class RegressionDebtVerdict:
+    """Result of evaluating a ControlPlaneAcceptance against a
+    RegressionDebtPolicy.
+
+    ``under_policy=True`` means the candidate satisfies every gate
+    in the policy and the partial-harvest branch in
+    ``decide_control_plane_acceptance`` should accept-with-debt.
+    ``under_policy=False`` reasons:
+
+      no_target_clusters_fixed         — zero FIXED targets
+      aggregate_gain_below_floor       — delta_pp < min_aggregate_improvement_pp
+      debt_exceeds_per_iter_max        — len(debt_qids) > max_debt_qids
+      debt_bucket_disallowed           — debt qid lands outside allowed_debt_buckets
+      cumulative_debt_cap_hit          — cumulative_debt + len(debt_qids) > cumulative_debt_max
+      threshold_pass_rate_below_floor  — threshold_pass_rate < min_threshold_pass_rate
+      no_debt_present                  — under_policy=True but with empty debt
+                                         (the legacy `accepted` reason is correct
+                                         here; partial-harvest does not apply)
+    """
+
+    under_policy: bool
+    reason_code: str
+    debt_qids: tuple[str, ...]
+    policy_diagnostics: dict
+
+
+def evaluate_regression_debt(
+    *,
+    decision: ControlPlaneAcceptance,
+    policy: "Any",
+    cumulative_debt: int = 0,
+    threshold_pass_rate: float = 1.0,
+) -> RegressionDebtVerdict:
+    """Evaluate a ControlPlaneAcceptance against a debt policy.
+
+    Pure: no I/O, no globals, no side effects. Suitable for unit
+    tests on synthetic inputs.
+
+    Order of gates (first-fail wins so reason_code is deterministic):
+      1. min_target_clusters_fixed
+      2. min_aggregate_improvement_pp
+      3. min_threshold_pass_rate
+      4. max_debt_qids (per-iteration cap)
+      5. allowed_debt_buckets (every debt qid must land in an allowed bucket)
+      6. cumulative_debt_max (running total cap)
+
+    ``policy`` is typed as ``Any`` (with the runtime expectation of
+    ``RegressionDebtPolicy``) to avoid a circular import: the policy
+    module imports ``DeltaState`` from this module.
+    """
+    delta_states = dict(decision.target_delta_states or ())
+    target_fixed_count = (
+        sum(1 for s in delta_states.values() if s == DeltaState.FIXED.value)
+        if delta_states
+        else len(decision.target_fixed_qids)
+    )
+
+    debt_qids = tuple(decision.out_of_target_regressed_qids or ())
+    debt_count = len(debt_qids)
+    aggregate_gain = float(decision.delta_pp)
+
+    diagnostics: dict = {
+        "debt_count": debt_count,
+        "debt_count_max": int(policy.max_debt_qids),
+        "aggregate_gain_pp": aggregate_gain,
+        "aggregate_gain_floor_pp": float(policy.min_aggregate_improvement_pp),
+        "target_clusters_fixed": target_fixed_count,
+        "target_clusters_fixed_min": int(policy.min_target_clusters_fixed),
+        "cumulative_debt_used": int(cumulative_debt),
+        "cumulative_debt_max": int(policy.cumulative_debt_max),
+        "threshold_pass_rate": float(threshold_pass_rate),
+        "threshold_pass_rate_min": float(policy.min_threshold_pass_rate),
+    }
+
+    if target_fixed_count < int(policy.min_target_clusters_fixed):
+        return RegressionDebtVerdict(
+            under_policy=False,
+            reason_code="no_target_clusters_fixed",
+            debt_qids=debt_qids,
+            policy_diagnostics=diagnostics,
+        )
+
+    if aggregate_gain < float(policy.min_aggregate_improvement_pp):
+        return RegressionDebtVerdict(
+            under_policy=False,
+            reason_code="aggregate_gain_below_floor",
+            debt_qids=debt_qids,
+            policy_diagnostics=diagnostics,
+        )
+
+    if float(threshold_pass_rate) < float(policy.min_threshold_pass_rate):
+        return RegressionDebtVerdict(
+            under_policy=False,
+            reason_code="threshold_pass_rate_below_floor",
+            debt_qids=debt_qids,
+            policy_diagnostics=diagnostics,
+        )
+
+    if debt_count > int(policy.max_debt_qids):
+        return RegressionDebtVerdict(
+            under_policy=False,
+            reason_code="debt_exceeds_per_iter_max",
+            debt_qids=debt_qids,
+            policy_diagnostics=diagnostics,
+        )
+
+    # Bucket admissibility: every debt qid's delta state must be in
+    # allowed_debt_buckets. The legacy fields soft_to_hard /
+    # passing_to_hard / unknown_to_hard are the source. Map each to
+    # the closest DeltaState value; passing_to_hard has no exact
+    # match in the current DeltaState (C16-T3 will extend) so it
+    # routes to REGRESSED_TO_UNKNOWN — disallowed by default.
+    bucket_for_qid: dict[str, DeltaState] = {}
+    for q in decision.soft_to_hard_regressed_qids or ():
+        bucket_for_qid[q] = DeltaState.SOFT_TO_HARD
+    for q in decision.passing_to_hard_regressed_qids or ():
+        bucket_for_qid[q] = DeltaState.REGRESSED_TO_UNKNOWN
+    for q in decision.unknown_to_hard_regressed_qids or ():
+        bucket_for_qid[q] = DeltaState.LOOKUP_FAILED
+
+    disallowed = [
+        q
+        for q in debt_qids
+        if bucket_for_qid.get(q, DeltaState.REGRESSED_TO_UNKNOWN)
+        not in policy.allowed_debt_buckets
+    ]
+    if disallowed:
+        diagnostics["disallowed_debt_qids"] = sorted(disallowed)
+        return RegressionDebtVerdict(
+            under_policy=False,
+            reason_code="debt_bucket_disallowed",
+            debt_qids=debt_qids,
+            policy_diagnostics=diagnostics,
+        )
+
+    if int(cumulative_debt) + debt_count > int(policy.cumulative_debt_max):
+        return RegressionDebtVerdict(
+            under_policy=False,
+            reason_code="cumulative_debt_cap_hit",
+            debt_qids=debt_qids,
+            policy_diagnostics=diagnostics,
+        )
+
+    if debt_count == 0:
+        # No debt to harvest — partial-harvest branch should not fire.
+        # The caller (decide_control_plane_acceptance) keeps the
+        # legacy `accepted` reason in this case.
+        return RegressionDebtVerdict(
+            under_policy=True,
+            reason_code="no_debt_present",
+            debt_qids=(),
+            policy_diagnostics=diagnostics,
+        )
+
+    return RegressionDebtVerdict(
+        under_policy=True,
+        reason_code="accepted_with_partial_harvest_debt",
+        debt_qids=debt_qids,
+        policy_diagnostics=diagnostics,
     )
 
 

@@ -257,6 +257,22 @@ def test_collect_effective_flags_returns_known_flags() -> None:
     assert flags.get("lever_qualified_patch_ids") is True
 
 
+def test_effective_flags_includes_forbidden_ag_admits_no_action() -> None:
+    """Cycle 13 — the new flag must be enumerated in
+    GSO_RUN_MANIFEST_V2.effective_flags so postmortems can confirm
+    it was on for runs claiming I4 was closed. Default-off, so the
+    accessor returns False; it must still appear as a key with a
+    boolean value."""
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        collect_effective_flags,
+    )
+
+    flags = collect_effective_flags()
+    # Key uses the suffix-stripped form.
+    assert "forbidden_ag_admits_no_action" in flags
+    assert isinstance(flags["forbidden_ag_admits_no_action"], bool)
+
+
 def test_collect_effective_flags_strips_enabled_suffix_from_keys() -> None:
     from genie_space_optimizer.optimization.run_analysis_contract import (
         collect_effective_flags,

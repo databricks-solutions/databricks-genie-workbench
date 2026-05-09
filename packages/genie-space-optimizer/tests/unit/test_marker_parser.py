@@ -305,3 +305,68 @@ def test_parse_markers_bundle_assembly_incomplete_absent() -> None:
     log = parse_markers("(no markers)")
 
     assert log.bundle_assembly_incomplete is None
+
+
+# Cycle 14B-T3 — patch-isolation diagnostic + outcome marker routing
+
+
+def test_parse_markers_captures_patch_isolation_diagnostic() -> None:
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        patch_isolation_diagnostic_marker,
+    )
+
+    line = patch_isolation_diagnostic_marker(
+        optimization_run_id="opt1",
+        iteration=3,
+        ag_id="AG7",
+        regressed_qid="gs_018",
+        attribution_status="single_patch",
+        attribution_confidence=1.0,
+        expanded_patch_id="L4:p-bad#0",
+        live_mode=False,
+    )
+    log = parse_markers(line + "\n")
+
+    assert log.patch_isolation_diagnostic is not None
+    payload = log.patch_isolation_diagnostic[0]
+    assert payload["regressed_qid"] == "gs_018"
+    assert payload["attribution_status"] == "single_patch"
+    assert payload["attribution_confidence"] == 1.0
+    assert payload["expanded_patch_id"] == "L4:p-bad#0"
+    assert payload["live_mode"] is False
+    assert "GSO_PATCH_ISOLATION_DIAGNOSTIC_V1" not in log.unknown
+
+
+def test_parse_markers_captures_patch_isolation_outcome() -> None:
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        patch_isolation_outcome_marker,
+    )
+
+    line = patch_isolation_outcome_marker(
+        optimization_run_id="opt1",
+        iteration=3,
+        ag_id="AG7",
+        outcome="subset_accepts_clean",
+        subset_aggregate_gain_pp=10.8,
+        subset_debt_qids=(),
+        expanded_patch_id_removed="L4:p-bad#0",
+    )
+    log = parse_markers(line + "\n")
+
+    assert log.patch_isolation_outcome is not None
+    payload = log.patch_isolation_outcome[0]
+    assert payload["outcome"] == "subset_accepts_clean"
+    assert payload["subset_aggregate_gain_pp"] == 10.8
+    assert payload["expanded_patch_id_removed"] == "L4:p-bad#0"
+    assert "GSO_PATCH_ISOLATION_OUTCOME_V1" not in log.unknown
+
+
+def test_parse_markers_patch_isolation_absent() -> None:
+    from genie_space_optimizer.tools.marker_parser import parse_markers
+
+    log = parse_markers("(no markers)")
+
+    assert log.patch_isolation_diagnostic is None
+    assert log.patch_isolation_outcome is None

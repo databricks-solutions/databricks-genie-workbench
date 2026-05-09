@@ -68,3 +68,67 @@ def test_default_thresholds_met_preserves_legacy_behavior():
     )
     assert decision.accepted is True
     assert decision.reason_code == "accepted_with_attribution_drift"
+
+
+def test_new_anchor_f2_target_resolution_failed_reproduction(monkeypatch) -> None:
+    """Cycle 14-T0 regression test for new-anchor 76457773587391 F2.
+
+    Before T0: target_fixed_qids=() AND target_still_hard_qids=()
+    simultaneously, with reason_code=target_qids_not_improved (or
+    missing_pre_rows when pre_rows is empty).
+
+    After T0: target_delta_states contains the LOOKUP_FAILED entry,
+    reason_code is the typed target_resolution_failed, and the
+    invariant suite catches any drift.
+
+    The QID names mirror the new-anchor postmortem evidence so a
+    failing assertion in CI is easy to map back to the F2 finding.
+    """
+    monkeypatch.setenv("GSO_TARGET_DELTA_STRICT", "1")
+
+    # Reproduce the exact F2 input shape: target gs_026 declared,
+    # baseline pre_rows do not contain it (the upstream-row-assembly
+    # bug that surfaced the issue), candidate's failed-question list
+    # excludes it (only gs_018 failed in the candidate).
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=78.3,
+        candidate_accuracy=95.7,
+        target_qids=("gs_026",),
+        pre_rows=(),
+        post_rows=(_row("gs_018", "no", "ground_truth_correct"),),
+    )
+
+    # Legacy bucket tuples: still empty (back-compat).
+    assert decision.target_fixed_qids == ()
+    assert decision.target_still_hard_qids == ()
+
+    # New canonical surface: typed lookup-failed entry.
+    assert dict(decision.target_delta_states)["gs_026"] == "lookup_failed"
+
+    # Typed rollback reason replaces the silent legacy code.
+    assert decision.reason_code == "target_resolution_failed"
+    assert decision.accepted is False
+
+    # I13 must catch any future regression where these three
+    # surfaces drift apart.
+    from genie_space_optimizer.optimization.invariants import (
+        check_i13_target_delta_totality,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "acceptance_decision": {
+                    "target_qids": list(decision.target_qids),
+                    "target_fixed_qids": list(decision.target_fixed_qids),
+                    "target_still_hard_qids": list(decision.target_still_hard_qids),
+                    "reason_code": decision.reason_code,
+                    "target_delta_states": [
+                        list(pair) for pair in decision.target_delta_states
+                    ],
+                },
+            }
+        ]
+    }
+    assert check_i13_target_delta_totality(evidence) == []

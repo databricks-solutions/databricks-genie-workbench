@@ -32,6 +32,11 @@ class MarkerLog:
     run_manifest_v2: Mapping[str, Any] | None = None
     phase_h_strict_validation: Mapping[str, Any] | None = None
     bundle_assembly_incomplete: tuple[Mapping[str, Any], ...] | None = None
+    # Cycle 14B-T3 — patch-subset isolation diagnostic + outcome.
+    # Tuple-typed because the orchestrator may emit the diagnostic
+    # marker once per AG-emit-with-rejection within a run.
+    patch_isolation_diagnostic: tuple[Mapping[str, Any], ...] | None = None
+    patch_isolation_outcome: tuple[Mapping[str, Any], ...] | None = None
     unknown: Mapping[str, tuple[Mapping[str, Any], ...]] = field(default_factory=dict)
     parse_errors: tuple[str, ...] = field(default_factory=tuple)
 
@@ -62,6 +67,8 @@ def parse_markers(stdout: str) -> MarkerLog:
     plateau_input_source: list[Mapping[str, Any]] = []
     phase_h_strict_validation: Mapping[str, Any] | None = None
     bundle_assembly_incomplete: list[Mapping[str, Any]] | None = None
+    patch_isolation_diagnostic: list[Mapping[str, Any]] | None = None
+    patch_isolation_outcome: list[Mapping[str, Any]] | None = None
     unknown: dict[str, list[Mapping[str, Any]]] = {}
     errors: list[str] = []
 
@@ -106,6 +113,14 @@ def parse_markers(stdout: str) -> MarkerLog:
             plateau_input_source.append(payload)
         elif name == "GSO_PHASE_H_STRICT_VALIDATION_V1":
             phase_h_strict_validation = payload
+        elif name == "GSO_PATCH_ISOLATION_DIAGNOSTIC_V1":
+            if patch_isolation_diagnostic is None:
+                patch_isolation_diagnostic = []
+            patch_isolation_diagnostic.append(payload)
+        elif name == "GSO_PATCH_ISOLATION_OUTCOME_V1":
+            if patch_isolation_outcome is None:
+                patch_isolation_outcome = []
+            patch_isolation_outcome.append(payload)
         else:
             unknown.setdefault(name, []).append(payload)
 
@@ -125,6 +140,14 @@ def parse_markers(stdout: str) -> MarkerLog:
         bundle_assembly_incomplete=(
             tuple(bundle_assembly_incomplete)
             if bundle_assembly_incomplete is not None else None
+        ),
+        patch_isolation_diagnostic=(
+            tuple(patch_isolation_diagnostic)
+            if patch_isolation_diagnostic is not None else None
+        ),
+        patch_isolation_outcome=(
+            tuple(patch_isolation_outcome)
+            if patch_isolation_outcome is not None else None
         ),
         unknown={k: tuple(v) for k, v in unknown.items()},
         parse_errors=tuple(errors),

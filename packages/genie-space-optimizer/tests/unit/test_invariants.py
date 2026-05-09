@@ -58,6 +58,66 @@ def test_loop_invariants_strict_flag_default_on(monkeypatch) -> None:
     assert loop_invariants_strict() is True
 
 
+def test_target_delta_strict_flag_default_on(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_TARGET_DELTA_STRICT", raising=False)
+    from genie_space_optimizer.common.config import target_delta_strict_enabled
+    assert target_delta_strict_enabled() is True
+
+
+def test_target_delta_strict_flag_off_via_env(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_TARGET_DELTA_STRICT", "0")
+    from genie_space_optimizer.common.config import target_delta_strict_enabled
+    assert target_delta_strict_enabled() is False
+
+
+def test_partial_harvest_with_debt_flag_default_off(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_PARTIAL_HARVEST_WITH_DEBT", raising=False)
+    from genie_space_optimizer.common.config import (
+        partial_harvest_with_debt_enabled,
+    )
+    assert partial_harvest_with_debt_enabled() is False
+
+
+def test_partial_harvest_with_debt_flag_on_via_env(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_PARTIAL_HARVEST_WITH_DEBT", "1")
+    from genie_space_optimizer.common.config import (
+        partial_harvest_with_debt_enabled,
+    )
+    assert partial_harvest_with_debt_enabled() is True
+
+
+def test_patch_subset_isolation_flag_default_off(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_PATCH_SUBSET_ISOLATION", raising=False)
+    from genie_space_optimizer.common.config import (
+        patch_subset_isolation_enabled,
+    )
+    assert patch_subset_isolation_enabled() is False
+
+
+def test_patch_subset_isolation_flag_on_via_env(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_PATCH_SUBSET_ISOLATION", "1")
+    from genie_space_optimizer.common.config import (
+        patch_subset_isolation_enabled,
+    )
+    assert patch_subset_isolation_enabled() is True
+
+
+def test_patch_subset_isolation_live_flag_default_off(monkeypatch) -> None:
+    monkeypatch.delenv("GSO_PATCH_SUBSET_ISOLATION_LIVE", raising=False)
+    from genie_space_optimizer.common.config import (
+        patch_subset_isolation_live_enabled,
+    )
+    assert patch_subset_isolation_live_enabled() is False
+
+
+def test_patch_subset_isolation_live_flag_on_via_env(monkeypatch) -> None:
+    monkeypatch.setenv("GSO_PATCH_SUBSET_ISOLATION_LIVE", "1")
+    from genie_space_optimizer.common.config import (
+        patch_subset_isolation_live_enabled,
+    )
+    assert patch_subset_isolation_live_enabled() is True
+
+
 def test_i2_red_when_patch_lever_outside_ag_levers() -> None:
     from genie_space_optimizer.optimization.invariants import check_i2_lever_coherence
 
@@ -349,3 +409,185 @@ def test_i8_no_op_when_terminal_reason_is_not_plateau() -> None:
         "final_iteration_journey_hard_qids": ["q_007"],
     }
     assert check_i8_plateau_input(evidence) == []
+
+
+# ── Cycle 14-T0 — I13 target_delta_states totality ───────────────────
+
+
+def test_i13_green_when_every_target_has_delta_state() -> None:
+    from genie_space_optimizer.optimization.invariants import (
+        check_i13_target_delta_totality,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "acceptance_decision": {
+                    "target_qids": ["gs_026"],
+                    "target_fixed_qids": ["gs_026"],
+                    "target_still_hard_qids": [],
+                    "reason_code": "accepted",
+                    "target_delta_states": [["gs_026", "fixed"]],
+                },
+            }
+        ]
+    }
+    assert check_i13_target_delta_totality(evidence) == []
+
+
+def test_i13_red_when_target_missing_from_delta_states() -> None:
+    from genie_space_optimizer.optimization.invariants import (
+        check_i13_target_delta_totality,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "acceptance_decision": {
+                    "target_qids": ["gs_026", "gs_001"],
+                    "target_fixed_qids": [],
+                    "target_still_hard_qids": [],
+                    "reason_code": "target_qids_not_improved",
+                    # gs_001 is missing from the map - the totality bug
+                    "target_delta_states": [["gs_026", "fixed"]],
+                },
+            }
+        ]
+    }
+    violations = check_i13_target_delta_totality(evidence)
+    assert len(violations) == 1
+    v = violations[0]
+    assert v["invariant_id"] == "I13"
+    assert v["title"] == "target_delta_states_not_total_over_target_qids"
+    assert "gs_001" in v["missing_target_qids"]
+
+
+def test_i13_red_when_lookup_failed_but_reason_is_legacy() -> None:
+    """The new-anchor F2 reproduction at the invariant level: when
+    a target landed in lookup_failed, the rollback reason MUST be
+    target_resolution_failed. Anything else (e.g.
+    target_qids_not_improved) is the silent-failure mode I13
+    catches.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i13_target_delta_totality,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "acceptance_decision": {
+                    "target_qids": ["gs_026"],
+                    "target_fixed_qids": [],
+                    "target_still_hard_qids": [],
+                    "reason_code": "target_qids_not_improved",
+                    "target_delta_states": [["gs_026", "lookup_failed"]],
+                },
+            }
+        ]
+    }
+    violations = check_i13_target_delta_totality(evidence)
+    assert len(violations) == 1
+    v = violations[0]
+    assert v["invariant_id"] == "I13"
+    assert v["title"] == "lookup_failed_with_legacy_reason_code"
+    assert v["reason_code"] == "target_qids_not_improved"
+
+
+def test_i13_green_when_lookup_failed_and_typed_reason() -> None:
+    from genie_space_optimizer.optimization.invariants import (
+        check_i13_target_delta_totality,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "acceptance_decision": {
+                    "target_qids": ["gs_026"],
+                    "target_fixed_qids": [],
+                    "target_still_hard_qids": [],
+                    "reason_code": "target_resolution_failed",
+                    "target_delta_states": [["gs_026", "lookup_failed"]],
+                },
+            }
+        ]
+    }
+    assert check_i13_target_delta_totality(evidence) == []
+
+
+def test_i13_red_when_fixed_state_disagrees_with_target_fixed_qids() -> None:
+    """Drift catch: target_delta_states says FIXED but the legacy
+    target_fixed_qids tuple is empty (or vice versa). C14-T2's
+    canonical render is the eventual closure; until then, I13
+    surfaces the disagreement so it does not silently ship.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i13_target_delta_totality,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "acceptance_decision": {
+                    "target_qids": ["gs_026"],
+                    "target_fixed_qids": [],  # legacy says nothing fixed
+                    "target_still_hard_qids": [],
+                    "reason_code": "accepted",
+                    "target_delta_states": [["gs_026", "fixed"]],  # new says fixed
+                },
+            }
+        ]
+    }
+    violations = check_i13_target_delta_totality(evidence)
+    assert len(violations) == 1
+    assert violations[0]["title"] == "target_delta_states_disagrees_with_legacy_buckets"
+
+
+def test_i13_skipped_for_iterations_without_acceptance_decision() -> None:
+    """Empty-AG iterations (proposal_count=0) do not have an
+    acceptance decision; I13 must skip them silently.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i13_target_delta_totality,
+    )
+
+    evidence = {
+        "iterations": [
+            {"iteration": 1, "selected_ag_id": "AG1", "proposal_count": 0},
+        ]
+    }
+    assert check_i13_target_delta_totality(evidence) == []
+
+
+def test_i13_wired_into_run_invariants() -> None:
+    """I13 must appear in the run_invariants aggregator so the merge
+    gate (C16-T4) picks it up via canonical ID lookup.
+    """
+    from genie_space_optimizer.optimization.invariants import run_invariants
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "acceptance_decision": {
+                    "target_qids": ["gs_026"],
+                    "target_fixed_qids": [],
+                    "target_still_hard_qids": [],
+                    "reason_code": "target_qids_not_improved",
+                    "target_delta_states": [["gs_026", "lookup_failed"]],
+                },
+            }
+        ],
+        "manifest": {"declared_paths": [], "materialized_paths": []},
+        "convergence": {"reason": "lever_loop_completed"},
+        "phase_b": {"total_records": 0},
+        "replay_fixture_records": 0,
+    }
+    violations = run_invariants(evidence)
+    i13 = [v for v in violations if v["invariant_id"] == "I13"]
+    assert len(i13) == 1

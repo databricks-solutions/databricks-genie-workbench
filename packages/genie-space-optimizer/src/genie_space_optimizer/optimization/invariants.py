@@ -27,6 +27,9 @@ Invariant IDs:
        a cluster_blocked_no_rca typed record
   I8 — plateau decision currently_failing input matches journey-ledger
        hard-cluster set after rollback
+  I13 — target_delta_states is total over target_qids; LOOKUP_FAILED
+        implies reason_code=target_resolution_failed; FIXED /
+        STILL_HARD agree with legacy bucket tuples
 """
 
 from __future__ import annotations
@@ -377,7 +380,98 @@ def check_i8_plateau_input(evidence: Mapping[str, Any]) -> list[dict]:
     )]
 
 
-# All 8 invariants (I1–I8) are now implemented and wired in run_invariants.
+def check_i13_target_delta_totality(evidence: Mapping[str, Any]) -> list[dict]:
+    """I13 — every declared target QID has a delta_state entry;
+    LOOKUP_FAILED implies reason_code=target_resolution_failed;
+    FIXED / STILL_HARD entries agree with the legacy bucket
+    tuples. Closes new-anchor 76457773587391 F2 (target neither
+    target_fixed nor target_still_hard simultaneously).
+    """
+    violations: list[dict] = []
+    for it in evidence.get("iterations") or []:
+        ad = dict(it.get("acceptance_decision") or {})
+        if not ad:
+            continue
+        target_qids = [str(q) for q in (ad.get("target_qids") or []) if str(q)]
+        if not target_qids:
+            continue
+        delta_pairs = ad.get("target_delta_states") or []
+        delta_map: dict[str, str] = {}
+        for pair in delta_pairs:
+            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+                continue
+            qid = str(pair[0])
+            state = str(pair[1])
+            if qid:
+                delta_map[qid] = state
+
+        # (a) Totality: every target qid has a delta state.
+        missing = [q for q in target_qids if q not in delta_map]
+        if missing:
+            violations.append(_violation(
+                invariant_id="I13",
+                title="target_delta_states_not_total_over_target_qids",
+                detail=(
+                    f"{len(missing)} target qid(s) lack a delta_state entry: "
+                    f"{sorted(missing)}"
+                ),
+                iteration=int(it.get("iteration") or 0),
+                missing_target_qids=sorted(missing),
+            ))
+            continue
+
+        # (b) lookup_failed implies target_resolution_failed reason.
+        reason_code = str(ad.get("reason_code") or "")
+        has_lookup_failed = any(s == "lookup_failed" for s in delta_map.values())
+        if has_lookup_failed and reason_code != "target_resolution_failed":
+            violations.append(_violation(
+                invariant_id="I13",
+                title="lookup_failed_with_legacy_reason_code",
+                detail=(
+                    f"target_delta_states contains lookup_failed but "
+                    f"reason_code={reason_code!r}; expected "
+                    f"'target_resolution_failed'"
+                ),
+                iteration=int(it.get("iteration") or 0),
+                reason_code=reason_code,
+                lookup_failed_qids=sorted(
+                    q for q, s in delta_map.items() if s == "lookup_failed"
+                ),
+            ))
+
+        # (c) Drift catch: FIXED state must appear in target_fixed_qids;
+        # STILL_HARD must appear in target_still_hard_qids. Catches
+        # the C14-T2 pre-unification window where the two
+        # computations could disagree.
+        target_fixed_legacy = {
+            str(q) for q in (ad.get("target_fixed_qids") or []) if str(q)
+        }
+        target_still_legacy = {
+            str(q) for q in (ad.get("target_still_hard_qids") or []) if str(q)
+        }
+        delta_fixed = {q for q, s in delta_map.items() if s == "fixed"}
+        delta_still = {q for q, s in delta_map.items() if s == "still_hard"}
+        if delta_fixed != target_fixed_legacy or delta_still != target_still_legacy:
+            violations.append(_violation(
+                invariant_id="I13",
+                title="target_delta_states_disagrees_with_legacy_buckets",
+                detail=(
+                    f"delta_state(FIXED)={sorted(delta_fixed)} vs "
+                    f"target_fixed_qids={sorted(target_fixed_legacy)}; "
+                    f"delta_state(STILL_HARD)={sorted(delta_still)} vs "
+                    f"target_still_hard_qids={sorted(target_still_legacy)}"
+                ),
+                iteration=int(it.get("iteration") or 0),
+                delta_fixed=sorted(delta_fixed),
+                target_fixed_legacy=sorted(target_fixed_legacy),
+                delta_still=sorted(delta_still),
+                target_still_legacy=sorted(target_still_legacy),
+            ))
+
+    return violations
+
+
+# All 9 invariants (I1–I8 + I13) are now implemented and wired in run_invariants.
 
 def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
     """Aggregate every implemented invariant check; return all
@@ -392,6 +486,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i6_manifest_paths,
         check_i7_rca_grounding,
         check_i8_plateau_input,
+        check_i13_target_delta_totality,  # Cycle 14-T0
     ):
         try:
             violations.extend(check(evidence))

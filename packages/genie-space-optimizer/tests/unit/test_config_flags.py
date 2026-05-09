@@ -128,3 +128,38 @@ def test_gso_run_manifest_v2_enabled_off(monkeypatch):
         gso_run_manifest_v2_enabled,
     )
     assert gso_run_manifest_v2_enabled() is False
+
+
+# ── Cycle 14-T1 + T2 — default-on flags ──────────────────────────────
+
+
+def test_phase_b_aggregator_in_finalize_enabled_default_on(monkeypatch):
+    monkeypatch.delenv("GSO_PHASE_B_AGGREGATOR_IN_FINALIZE", raising=False)
+    from genie_space_optimizer.common.config import (
+        phase_b_aggregator_in_finalize_enabled,
+    )
+    assert phase_b_aggregator_in_finalize_enabled() is True
+
+
+def test_phase_b_aggregator_in_finalize_disabled_via_env(monkeypatch):
+    monkeypatch.setenv("GSO_PHASE_B_AGGREGATOR_IN_FINALIZE", "0")
+    from genie_space_optimizer.common.config import (
+        phase_b_aggregator_in_finalize_enabled,
+    )
+    assert phase_b_aggregator_in_finalize_enabled() is False
+
+
+def test_canonical_acceptance_render_enabled_default_on(monkeypatch):
+    monkeypatch.delenv("GSO_CANONICAL_ACCEPTANCE_RENDER", raising=False)
+    from genie_space_optimizer.common.config import (
+        canonical_acceptance_render_enabled,
+    )
+    assert canonical_acceptance_render_enabled() is True
+
+
+def test_canonical_acceptance_render_disabled_via_env(monkeypatch):
+    monkeypatch.setenv("GSO_CANONICAL_ACCEPTANCE_RENDER", "0")
+    from genie_space_optimizer.common.config import (
+        canonical_acceptance_render_enabled,
+    )
+    assert canonical_acceptance_render_enabled() is False

@@ -201,6 +201,79 @@ def _bar(char: str = "-") -> str:
     return char * _W
 
 
+# ── Cycle 14-V Task 6 — Databricks ID resolver ──────────────────────
+
+
+_DATABRICKS_ID_KEYS: tuple[str, ...] = (
+    "databricks_job_id",
+    "databricks_parent_run_id",
+    "lever_loop_task_run_id",
+)
+_DATABRICKS_ID_SENTINEL: str = "unknown"
+
+
+def _databricks_ids_from_env() -> dict[str, str]:
+    """Cycle 14-V T6 — resolve Databricks IDs from notebook
+    environment at run start.
+
+    Reads the standard Databricks notebook env vars and falls
+    through to ``dbutils.notebook.entry_point``'s tag-resolver when
+    running inside a job context. Returns a dict with three keys;
+    each value is either the resolved ID (non-empty string) or the
+    literal sentinel ``"unknown"`` (NEVER blank/empty).
+
+    Anchor evidence: 7Now run 338386531912450 F9 + airline run
+    833709971504406 F8 — both report blank Databricks job/task IDs
+    in ``GSO_RUN_MANIFEST_V1/V2`` cross-space.
+    """
+    import os as _os_for_ids
+
+    out: dict[str, str] = {
+        "databricks_job_id": str(_os_for_ids.environ.get("DATABRICKS_JOB_ID") or ""),
+        "databricks_parent_run_id": str(
+            _os_for_ids.environ.get("DATABRICKS_RUN_ID")
+            or _os_for_ids.environ.get("DATABRICKS_JOB_RUN_ID")
+            or ""
+        ),
+        "lever_loop_task_run_id": str(
+            _os_for_ids.environ.get("DATABRICKS_TASK_RUN_ID") or ""
+        ),
+    }
+
+    if not all(out.values()):
+        try:
+            from pyspark.dbutils import DBUtils  # type: ignore[import-not-found]
+            from pyspark.sql import SparkSession  # type: ignore[import-not-found]
+
+            dbutils = DBUtils(SparkSession.builder.getOrCreate())
+            ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+            tags = ctx.tags()
+
+            def _resolve(tag_key: str) -> str:
+                try:
+                    val = tags.get(tag_key)
+                    if val.isDefined():
+                        return str(val.get())
+                except Exception:
+                    pass
+                return ""
+
+            if not out["databricks_job_id"]:
+                out["databricks_job_id"] = _resolve("jobId")
+            if not out["databricks_parent_run_id"]:
+                out["databricks_parent_run_id"] = (
+                    _resolve("multitaskParentRunId") or _resolve("jobRunId")
+                )
+            if not out["lever_loop_task_run_id"]:
+                out["lever_loop_task_run_id"] = _resolve("runId")
+        except Exception:
+            # Outside Databricks (or dbutils unavailable) → fall
+            # through to sentinels below.
+            pass
+
+    return {k: (v or _DATABRICKS_ID_SENTINEL) for k, v in out.items()}
+
+
 def _build_baseline_overview_dict(
     *,
     prev_accuracy_percent: float,
@@ -675,6 +748,44 @@ def _finalize_iteration_summary(
         iteration_accuracy_percent=iteration_accuracy_percent,
         exit_path=exit_path,
     )
+
+    # Cycle 14-T1: lift Phase B per-iter accounting out of the
+    # iteration body's happy path so producer exceptions earlier in
+    # the iteration body cannot bypass it. Behind a default-on flag;
+    # the legacy in-body call site at harness.py:22905 is retained
+    # for byte-stability and is a no-op on re-entry via the helper's
+    # idempotency guard. The accumulators dict is threaded through
+    # current_iter_inputs by the loop's setup block.
+    try:
+        from genie_space_optimizer.common.config import (
+            phase_b_aggregator_in_finalize_enabled,
+        )
+        if phase_b_aggregator_in_finalize_enabled():
+            from genie_space_optimizer.optimization.phase_b_accounting import (
+                record_phase_b_iter_accounting,
+            )
+            accumulators = (
+                current_iter_inputs.get("_phase_b_accounting")
+                if isinstance(current_iter_inputs, dict) else None
+            )
+            if isinstance(accumulators, dict):
+                record_phase_b_iter_accounting(
+                    run_id=str(run_id or ""),
+                    iteration=int(iteration),
+                    current_iter_inputs=current_iter_inputs,
+                    journey_events=tuple(journey_events or ()),
+                    producer_exceptions=dict(iter_producer_exceptions or {}),
+                    accumulators=accumulators,
+                    contract_version=str(
+                        accumulators.get("_contract_version") or ""
+                    ),
+                )
+    except Exception:
+        logger.debug(
+            "Cycle 14-T1: Phase B aggregator finalise wiring failed "
+            "(non-fatal — legacy in-body block retains coverage)",
+            exc_info=True,
+        )
 
     # Cycle 11 Task 12 / Bug B fix — mark this iteration as finalized so
     # the outer ``try/finally`` guard around the iteration body in
@@ -1911,6 +2022,190 @@ _PRODUCTIVE_ITERATION_NO_OP_REASON_CODES: tuple[str, ...] = (
     "structural_gate_dropped_instruction_only",
     "no_structural_candidate",
 )
+
+
+# Cycle 14B-T3 — patch-subset isolation orchestrator (free helpers).
+#
+# These helpers wire C14B-T3's pure helpers (in optimization/patch_isolation)
+# into the post-gate path of ``_run_gate_checks``. The live-arm substrate
+# check is intentionally a hard False until C12-T5's per-iteration
+# ``patch_survival.json`` producer lands at the contract path; today the
+# orchestrator runs in diagnostic-only mode so attribution accuracy can
+# be corpus-validated before the expensive live re-eval ships.
+
+_PATCH_ISOLATION_REJECTION_REASONS: frozenset[str] = frozenset({
+    "rejected_unbounded_collateral",
+    "target_fixed_offset_by_regression",
+})
+
+
+def _patch_survival_json_at_contract_path() -> bool:
+    """Cycle 14B-T3 ⇄ C12-T5 substrate gate.
+
+    Returns True only when the per-iteration ``patch_survival.json``
+    is produced at the contract path declared in
+    ``run_output_contract.bundle_artifact_paths``. Until C12-T5 ships,
+    this is intentionally a hard False so the live arm of T3 stays
+    disabled even when ``GSO_PATCH_SUBSET_ISOLATION_LIVE=1``.
+    """
+    return False
+
+
+def _build_cluster_qids_map(clusters) -> dict:
+    """Best-effort cluster_id -> tuple[qid] map for the orchestrator's
+    cluster-lineage attribution fallback. Tolerates missing fields.
+    """
+    out: dict[str, tuple[str, ...]] = {}
+    for c in clusters or ():
+        if not isinstance(c, dict):
+            continue
+        cid = str(c.get("cluster_id") or "").strip()
+        if not cid:
+            continue
+        qids = tuple(
+            str(q) for q in (c.get("question_ids") or []) if str(q)
+        )
+        if qids:
+            out[cid] = qids
+    return out
+
+
+def _maybe_run_patch_isolation_orchestrator(
+    *,
+    decision,
+    iteration: int,
+    ag_id: str,
+    applied_patches,
+    clusters,
+    run_id: str,
+    emit_marker,
+) -> None:
+    """Cycle 14B-T3 — patch-subset isolation orchestrator entry.
+
+    Fires only when ``GSO_PATCH_SUBSET_ISOLATION=1`` AND the gate
+    rejected the candidate via one of the partial-harvest-recoverable
+    reason codes. In diagnostic-only mode, runs the pure attribution
+    helper and emits ``GSO_PATCH_ISOLATION_DIAGNOSTIC_V1``. Live mode
+    requires the substrate check to pass (it does not yet).
+    """
+    from genie_space_optimizer.common.config import (
+        patch_isolation_observe_enabled,
+        patch_subset_isolation_enabled,
+        patch_subset_isolation_live_enabled,
+    )
+
+    isolation_on = patch_subset_isolation_enabled()
+    observe_on = patch_isolation_observe_enabled()
+
+    # Cycle 14-V T2: enter the orchestrator either when behavior is on
+    # OR observe-mode is on so corpus measurement sees the attribution
+    # signal even with the behavior flag off (default).
+    if not (isolation_on or observe_on):
+        return
+    if decision.accepted:
+        return
+    if str(decision.reason_code or "") not in _PATCH_ISOLATION_REJECTION_REASONS:
+        return
+
+    from genie_space_optimizer.optimization.patch_isolation import (
+        attribute_regression_to_single_patch,
+    )
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        patch_isolation_diagnostic_marker,
+        patch_isolation_observe_marker,
+        patch_isolation_outcome_marker,
+    )
+
+    # Heuristic: prefer a soft_to_hard regressed qid (most likely to be
+    # policy-recoverable). Fall back to passing_to_hard, then to the
+    # full out_of_target set so the orchestrator at least diagnoses.
+    candidate_qids: list[str] = []
+    for source in (
+        decision.soft_to_hard_regressed_qids,
+        decision.passing_to_hard_regressed_qids,
+        decision.out_of_target_regressed_qids,
+    ):
+        for q in source or ():
+            if q and q not in candidate_qids:
+                candidate_qids.append(str(q))
+    if not candidate_qids:
+        return
+
+    regressed_qid = candidate_qids[0]
+    cluster_qids_map = _build_cluster_qids_map(clusters)
+    attribution = attribute_regression_to_single_patch(
+        regressed_qid=regressed_qid,
+        applied_patches=applied_patches or (),
+        cluster_qids=cluster_qids_map or None,
+    )
+    live_mode = bool(patch_subset_isolation_live_enabled())
+
+    # Cycle 14-V T2: emit the shadow marker first, regardless of
+    # isolation_on. Always carries the attribution signal so corpus
+    # measurement can validate isolation accuracy on the canonical
+    # triggers without flipping the behavior flag.
+    if observe_on:
+        emit_marker(patch_isolation_observe_marker(
+            optimization_run_id=run_id,
+            iteration=iteration,
+            ag_id=ag_id,
+            reason_code=str(decision.reason_code or ""),
+            regressed_qid=regressed_qid,
+            attribution_status=(
+                "single_patch" if attribution else "no_attribution"
+            ),
+            attribution_confidence=(
+                float(attribution.confidence) if attribution else 0.0
+            ),
+            expanded_patch_id=(
+                attribution.expanded_patch_id if attribution else ""
+            ),
+            behavior_flag_on=bool(isolation_on),
+            suppressed_by_isolation_flag_off=bool(not isolation_on),
+        ))
+
+    # Existing diagnostic + outcome markers stay gated on the behavior
+    # flag — the shadow marker above is what corpus measurement reads
+    # when isolation_on is False.
+    if not isolation_on:
+        return
+
+    emit_marker(patch_isolation_diagnostic_marker(
+        optimization_run_id=run_id,
+        iteration=iteration,
+        ag_id=ag_id,
+        regressed_qid=regressed_qid,
+        attribution_status=(
+            "single_patch" if attribution else "no_attribution"
+        ),
+        attribution_confidence=(
+            float(attribution.confidence) if attribution else 0.0
+        ),
+        expanded_patch_id=(
+            attribution.expanded_patch_id if attribution else ""
+        ),
+        live_mode=live_mode,
+    ))
+
+    if (
+        live_mode
+        and attribution is not None
+        and _patch_survival_json_at_contract_path()
+    ):
+        # Live re-eval: the orchestration that re-applies the subset,
+        # re-evals, and routes through evaluate_isolation_verdict
+        # ships in the C14B-T3 Phase 2 plan once C12-T5 lands. Until
+        # then we emit a stub outcome marker so the postmortem can
+        # see the live arm was attempted but stub-only.
+        emit_marker(patch_isolation_outcome_marker(
+            optimization_run_id=run_id,
+            iteration=iteration,
+            ag_id=ag_id,
+            outcome="live_arm_disabled_stub",
+            subset_aggregate_gain_pp=0.0,
+            subset_debt_qids=(),
+            expanded_patch_id_removed=attribution.expanded_patch_id,
+        ))
 
 
 def _enforce_regression_debt_partition_invariant(
@@ -9598,38 +9893,142 @@ def _feasible_lever_sets(ft: str) -> tuple[frozenset[int], ...]:
     return _FEASIBLE_LEVER_SETS_BY_ROOT_CAUSE.get(ft, ())
 
 
-def _compute_forbidden_ag_set(
-    reflection_buffer: list[dict],
-) -> set[tuple[str, Any, frozenset[int]]]:
-    """Build the DO-NOT-RETRY forbidden set from the reflection buffer.
+def _reflection_admitted_to_forbidden_set(
+    entry: dict, *, admit_no_action: bool = False,
+) -> bool:
+    """Cycle 13 — admission predicate for the forbidden-AG set.
 
-    Only CONTENT_REGRESSION rollbacks contribute — infra / schema / other
-    classes don't count as evidence that the strategy was wrong. Returns
-    a set of ``(root_cause, blame_set_norm, frozenset(lever_set))`` tuples.
+    Single extension point: future cycles add a new RollbackClass
+    branch here rather than re-implementing the iteration in
+    :func:`_compute_forbidden_ag_set`. Pure function (no flag reads,
+    no I/O); the flag is read at the caller boundary.
+
+    Returns ``True`` iff the entry contributes to the forbidden set.
+    Admitted classes:
+
+    * ``CONTENT_REGRESSION`` when ``accepted=False`` (Phase D2).
+    * ``ACCEPTED_WITH_DEBT`` regardless of ``accepted`` (Cycle 14B-T2 —
+      debt-accepting AGs must not be unconditionally retried).
+    * ``NO_ACTION`` when ``accepted=False`` AND the caller passed
+      ``admit_no_action=True`` (Cycle 13 — flag-gated).
+
+    Always-rejected:
+
+    * ``escalation_handled=True`` entries (already routed through the
+      escalation arm).
+    * Empty ``root_cause`` or empty ``lever_set`` (insufficient
+      identity to form a forbidden tuple).
     """
     from genie_space_optimizer.optimization.rollback_class import (
         RollbackClass,
     )
 
+    if entry.get("escalation_handled"):
+        return False
+    rollback_class = entry.get("rollback_class")
+    accepted = bool(entry.get("accepted"))
+
+    admitted_classes = {
+        RollbackClass.CONTENT_REGRESSION.value,
+        RollbackClass.ACCEPTED_WITH_DEBT.value,
+    }
+    if admit_no_action:
+        admitted_classes.add(RollbackClass.NO_ACTION.value)
+
+    if rollback_class not in admitted_classes:
+        return False
+
+    # Pre-Cycle-14B behaviour: only un-accepted entries contributed.
+    # ACCEPTED_WITH_DEBT is the singular exception (carries
+    # accepted=True intentionally).
+    if accepted and rollback_class != RollbackClass.ACCEPTED_WITH_DEBT.value:
+        return False
+
+    if not (entry.get("root_cause") or ""):
+        return False
+    if not (entry.get("lever_set") or []):
+        return False
+
+    return True
+
+
+def _compute_forbidden_ag_set(
+    reflection_buffer: list[dict],
+) -> set[tuple[str, Any, frozenset[int]]]:
+    """Build the DO-NOT-RETRY forbidden set from the reflection buffer.
+
+    Admission is delegated to :func:`_reflection_admitted_to_forbidden_set`.
+    Three reflection classes contribute today (C13 expands the third):
+
+    * ``CONTENT_REGRESSION`` rollbacks — the strategy was wrong; infra /
+      schema / other classes don't count as evidence.
+    * ``ACCEPTED_WITH_DEBT`` accepts (Cycle 14B-T2) — the AG produced a
+      debt-bearing accept; future iterations must mutate the lever
+      family or move to a new cluster.
+    * ``NO_ACTION`` (Cycle 13, flag-gated by
+      ``GSO_FORBIDDEN_AG_ADMITS_NO_ACTION``) — the AG produced no
+      patches or was intercepted by the collision guard;
+      same-signature retry is unconditionally rejected.
+
+    Returns a set of ``(root_cause, blame_set_norm, frozenset(lever_set))``
+    tuples.
+    """
+    from genie_space_optimizer.common.config import (
+        forbidden_ag_admission_observe_enabled,
+        forbidden_ag_admits_no_action_enabled,
+    )
+    from genie_space_optimizer.optimization.rollback_class import (
+        RollbackClass,
+    )
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        forbidden_ag_admission_observe_marker,
+    )
+
+    admit_no_action = forbidden_ag_admits_no_action_enabled()
+    observe = forbidden_ag_admission_observe_enabled()
     forbidden: set[tuple[str, Any, frozenset[int]]] = set()
     for r in reflection_buffer:
-        if r.get("accepted"):
+        # Cycle 14-V T1: shadow-mode observability for NO_ACTION
+        # reflections. Emit the would-admit signal regardless of
+        # the behavior flag so postmortems can measure C13's
+        # admission predicate on the current corpus before the
+        # behavior-flag default flips.
+        if observe and r.get("rollback_class") == RollbackClass.NO_ACTION.value:
+            would_admit_under_on = _reflection_admitted_to_forbidden_set(
+                r, admit_no_action=True,
+            )
+            print(forbidden_ag_admission_observe_marker(
+                optimization_run_id=str(r.get("optimization_run_id") or ""),
+                iteration=int(r.get("iteration") or 0),
+                rollback_class=str(r.get("rollback_class") or ""),
+                rollback_reason=str(r.get("rollback_reason") or ""),
+                root_cause=str(r.get("root_cause") or ""),
+                blame_set=tuple(r.get("blame_set") or ()),
+                lever_set=tuple(int(l) for l in (r.get("lever_set") or ())),
+                would_admit=bool(would_admit_under_on),
+                behavior_flag_on=bool(admit_no_action),
+                suppressed_by_admit_no_action_off=bool(
+                    would_admit_under_on and not admit_no_action
+                ),
+            ))
+
+        if not _reflection_admitted_to_forbidden_set(
+            r, admit_no_action=admit_no_action
+        ):
             continue
-        if r.get("escalation_handled"):
-            continue
-        if r.get("rollback_class") != RollbackClass.CONTENT_REGRESSION.value:
-            continue
-        rc = r.get("root_cause") or ""
-        if not rc:
-            continue
-        # Defense in depth: persisted reflections JSON-decode tuples back to
-        # lists. Normalize on read so resumed entries produce the same
-        # forbidden tuple as _ag_collision_key produces on the live path.
+        # Defense in depth: persisted reflections JSON-decode tuples
+        # back to lists. Normalize on read so resumed entries produce
+        # the same forbidden tuple as _ag_collision_key produces on
+        # the live path.
         blame = _normalise_blame(r.get("blame_set"))
         lever_set = r.get("lever_set") or []
-        if not lever_set:
-            continue
-        forbidden.add((rc, blame, frozenset(int(l) for l in lever_set)))
+        forbidden.add(
+            (
+                r.get("root_cause") or "",
+                blame,
+                frozenset(int(l) for l in lever_set),
+            )
+        )
     return forbidden
 
 
@@ -11525,6 +11924,10 @@ def _run_gate_checks(
     prev_iter_pre_accept_baseline: float | None = None,
     accepted_baseline_rows_for_control_plane: list[dict] | None = None,
     phase_h_anchor_run_id: str | None = None,
+    # Cycle 14B-T2: partial-harvest with bounded debt. Default 0 keeps
+    # legacy callers byte-stable; the lever-loop threads the running
+    # cumulative debt count.
+    cumulative_regression_debt: int = 0,
 ) -> dict:
     """Run slice → P0 → full eval gate sequence for an action group.
 
@@ -12496,6 +12899,22 @@ def _run_gate_checks(
         else True
     )
 
+    # Cycle 14B-T2: threshold-pass-rate input for the partial-harvest
+    # gate. Counts how many run-level thresholds the candidate
+    # satisfies. When no thresholds are configured the rate is 1.0
+    # (vacuously pass) so the partial-harvest gate is unblocked. The
+    # current threshold set has parity with ``_gate_thresholds_met``
+    # — a single overall-accuracy bar — but is split out so future
+    # additions land here as new entries in ``_threshold_checks``.
+    _threshold_checks: list[bool] = [
+        float(full_accuracy) >= _GATE_OVERALL_ACCURACY_BAR_PCT,
+    ]
+    _threshold_pass_rate = (
+        sum(1 for c in _threshold_checks if c) / len(_threshold_checks)
+        if _threshold_checks
+        else 1.0
+    )
+
     _control_plane_decision = decide_control_plane_acceptance(
         baseline_accuracy=float(best_accuracy),
         candidate_accuracy=float(full_accuracy),
@@ -12508,6 +12927,9 @@ def _run_gate_checks(
         baseline_pre_arbiter_accuracy=_baseline_pre_arbiter_pct,
         candidate_pre_arbiter_accuracy=_candidate_pre_arbiter_pct,
         thresholds_met=_gate_thresholds_met,
+        # Cycle 14B-T2 — partial-harvest with debt
+        cumulative_debt=int(cumulative_regression_debt),
+        threshold_pass_rate=float(_threshold_pass_rate),
     )
     # Plan N4 — lenient regression-debt partition.
     # Default: bookkeeping gaps emit
@@ -12523,6 +12945,31 @@ def _run_gate_checks(
         emit_record=lambda r: _decision_emit(r),
         emit_marker=lambda m: print(m, flush=True),
     )
+
+    # Cycle 14B-T3: patch-subset isolation orchestrator. Fires on
+    # the same rejection paths the partial-harvest branch (C14B-T2)
+    # was meant to recover. In diagnostic-only mode (default),
+    # runs the pure attribution helper and emits a typed marker
+    # so the postmortem can audit "what would isolation have done?"
+    # without performing a live re-eval. Live mode requires both
+    # GSO_PATCH_SUBSET_ISOLATION_LIVE and the substrate check (C12-T5
+    # produces ``patch_survival.json`` at the contract path); both
+    # gates are default-off / hard-False today.
+    try:
+        _maybe_run_patch_isolation_orchestrator(
+            decision=_control_plane_decision,
+            iteration=int(iteration_counter),
+            ag_id=str(ag_id),
+            applied_patches=patches,
+            clusters=clusters,
+            run_id=str(run_id),
+            emit_marker=lambda m: print(m, flush=True),
+        )
+    except Exception:
+        logger.debug(
+            "Cycle 14B-T3: patch-isolation orchestrator failed (non-fatal)",
+            exc_info=True,
+        )
 
     # v2 Task 2 — Pre-arbiter regression guardrail. A candidate that drops
     # broad pre-arbiter accuracy without flipping any declared target qid
@@ -12748,6 +13195,37 @@ def _run_gate_checks(
             + _kv("Action", "ROLLBACK") + "\n"
             + _bar("-")
         )
+        # Cycle 14-T2: emit canonical typed marker alongside the
+        # human text block. Both surfaces consume
+        # ``format_full_eval_marker_payload`` so divergence is
+        # structurally impossible.
+        try:
+            from genie_space_optimizer.common.config import (
+                canonical_acceptance_render_enabled,
+            )
+            if canonical_acceptance_render_enabled():
+                from genie_space_optimizer.optimization.control_plane import (
+                    format_full_eval_marker_payload,
+                )
+                from genie_space_optimizer.optimization.run_analysis_contract import (
+                    full_eval_marker,
+                )
+                _payload = format_full_eval_marker_payload(
+                    _control_plane_decision,
+                    ag_id=str(ag_id),
+                    iteration=int(iteration_counter),
+                    accepted_label="FAIL (REGRESSION)",
+                )
+                print(full_eval_marker(
+                    optimization_run_id=run_id,
+                    payload=_payload,
+                ))
+        except Exception:
+            logger.debug(
+                "Cycle 14-T2: FULL EVAL typed marker emission failed "
+                "(non-fatal — text block retains coverage)",
+                exc_info=True,
+            )
         try:
             update_provenance_gate(
                 spark, run_id, iteration_counter - 1, _primary_lever,
@@ -12839,6 +13317,38 @@ def _run_gate_checks(
         + _kv("Score changes", _score_delta) + "\n"
         + _bar("=")
     )
+    # Cycle 14-T2: emit canonical typed marker alongside the
+    # human text block on the PASS path. Identical structure to
+    # the regression-path emit above; the helper guarantees
+    # divergence between the two surfaces is structurally
+    # impossible.
+    try:
+        from genie_space_optimizer.common.config import (
+            canonical_acceptance_render_enabled,
+        )
+        if canonical_acceptance_render_enabled():
+            from genie_space_optimizer.optimization.control_plane import (
+                format_full_eval_marker_payload,
+            )
+            from genie_space_optimizer.optimization.run_analysis_contract import (
+                full_eval_marker,
+            )
+            _payload = format_full_eval_marker_payload(
+                _control_plane_decision,
+                ag_id=str(ag_id),
+                iteration=int(iteration_counter),
+                accepted_label=str(_accept_label),
+            )
+            print(full_eval_marker(
+                optimization_run_id=run_id,
+                payload=_payload,
+            ))
+    except Exception:
+        logger.debug(
+            "Cycle 14-T2: FULL EVAL typed marker emission failed "
+            "(non-fatal — text block retains coverage)",
+            exc_info=True,
+        )
     try:
         update_provenance_gate(
             spark, run_id, iteration_counter - 1, _primary_lever,
@@ -13031,18 +13541,15 @@ def _run_lever_loop(
     _db_parent_run_id = ""
     _db_task_run_id = ""
     try:
-        import os as _os_run_analysis
-
-        _db_job_id = str(_os_run_analysis.environ.get("DATABRICKS_JOB_ID") or "")
-        _db_parent_run_id = str(
-            _os_run_analysis.environ.get("DATABRICKS_RUN_ID")
-            or _os_run_analysis.environ.get("DATABRICKS_JOB_RUN_ID")
-            or ""
-        )
-        _db_task_run_id = str(
-            _os_run_analysis.environ.get("DATABRICKS_TASK_RUN_ID")
-            or _db_parent_run_id
-        )
+        # Cycle 14-V T6: route through the canonical resolver so
+        # postmortems get a non-blank value (sentinel "unknown" when
+        # outside a Databricks notebook context) instead of a blank
+        # string. Resolves Open Q#10 (anchors 338386531912450 F9 +
+        # 833709971504406 F8 — both report blank IDs cross-space).
+        _db_ids = _databricks_ids_from_env()
+        _db_job_id = _db_ids["databricks_job_id"]
+        _db_parent_run_id = _db_ids["databricks_parent_run_id"]
+        _db_task_run_id = _db_ids["lever_loop_task_run_id"]
         print(run_manifest_marker(
             optimization_run_id=run_id,
             databricks_job_id=_db_job_id,
@@ -13205,6 +13712,13 @@ def _run_lever_loop(
     # can distinguish a retried task from a cold start.
     start_lever = resume_state.get("resume_from_lever")
     iteration_counter = resume_state.get("iteration_counter", 0)
+    # Cycle 14B-T2: per-run cumulative regression-debt counter. Sums
+    # ``len(decision.regression_debt_qids)`` across iterations that
+    # accepted under ``RegressionDebtPolicy`` so the policy's
+    # ``cumulative_debt_max`` cap is enforced over the whole run.
+    _cumulative_regression_debt = int(
+        resume_state.get("cumulative_regression_debt", 0)
+    )
     if resume_state.get("prev_scores"):
         prev_scores = resume_state["prev_scores"]
     if resume_state.get("prev_model_id"):
@@ -13353,6 +13867,24 @@ def _run_lever_loop(
     _phase_b_producer_exceptions: dict[str, int] = {}
     _phase_b_target_qids_missing_count: int = 0
     _phase_b_total_violations: int = 0
+
+    # Cycle 14-T1: gather the four accumulators into one dict so
+    # _finalize_iteration_summary can call
+    # record_phase_b_iter_accounting on every exit path. The legacy
+    # _phase_b_iter_* names are aliases into the same lists so the
+    # in-body block at line ~22905 continues to work byte-stable.
+    # ``_seen_iter_ids`` is the helper's idempotency guard. The dict
+    # gets threaded into each iteration's _current_iter_inputs at
+    # the iteration setup point so the finalize-call site can find it.
+    _phase_b_accounting: dict = {
+        "iter_record_counts": _phase_b_iter_record_counts,
+        "iter_violation_counts": _phase_b_iter_violation_counts,
+        "no_records_iterations": _phase_b_no_records_iterations,
+        "artifact_paths": _phase_b_artifact_paths,
+        "total_violations": _phase_b_total_violations,
+        "_contract_version": _PHASE_B_CONTRACT_VERSION,
+        "_seen_iter_ids": set(),
+    }
 
     # Cycle 9 T5: cross-iteration AG constraints (forbid_tables on
     # blast-radius drops). The strategist's prompt-renderer will surface
@@ -14567,6 +15099,14 @@ def _run_lever_loop(
             _current_iter_inputs: dict = _begin_iteration_capture(
                 iterations_data=_replay_fixture_iterations,
                 iteration=iteration_counter,
+            )
+            # Cycle 14-T1: thread the Phase B accumulators dict so the
+            # finalise-call site can find it. setdefault preserves any
+            # earlier setup; the loop-scope dict is shared across
+            # iterations so the helper's _seen_iter_ids guard works
+            # across them.
+            _current_iter_inputs.setdefault(
+                "_phase_b_accounting", _phase_b_accounting
             )
 
             # Cycle 5 T1 — productive-iteration budget accounting locals.
@@ -18136,13 +18676,58 @@ def _run_lever_loop(
                 )
                 reflection_buffer.append(_build_reflection_entry(
                     iteration=iteration_counter, ag_id=ag_id, accepted=False,
-                    levers=[], target_objects=[], prev_scores=best_scores,
+                    # Cycle 13 T5: propagate lever_keys so the entry's
+                    # lever_set carries identity. Without this, the
+                    # forbidden-set admission predicate's empty-lever
+                    # short-circuit excludes the entry even when the
+                    # GSO_FORBIDDEN_AG_ADMITS_NO_ACTION flag is on.
+                    levers=[int(lk) for lk in (lever_keys or [])],
+                    target_objects=[], prev_scores=best_scores,
                     new_scores=best_scores, rollback_reason="no_proposals", patches=[],
                     affected_question_ids=ag.get("affected_questions", []),
                     prev_failure_qids=prev_failure_qids,
                     new_failure_qids=prev_failure_qids,
                     **_ag_identity_kwargs,
                 ))
+                # Cycle 13 T6 — emit a typed
+                # proposal_generated[PROPOSAL_GENERATION_EMPTY] decision
+                # record so Stage 5 has a contract record. Behind the
+                # same GSO_FORBIDDEN_AG_ADMITS_NO_ACTION flag for
+                # byte-stability of pre-C13 fixtures.
+                try:
+                    from genie_space_optimizer.common.config import (
+                        forbidden_ag_admits_no_action_enabled,
+                    )
+                    if forbidden_ag_admits_no_action_enabled():
+                        from genie_space_optimizer.optimization.decision_emitters import (
+                            proposal_generation_empty_record,
+                        )
+                        _empty_rec = proposal_generation_empty_record(
+                            run_id=run_id,
+                            iteration=iteration_counter,
+                            ag_id=ag_id,
+                            cluster_id=str(
+                                (ag.get("source_cluster_ids") or [""])[0] or ""
+                            ),
+                            rca_id="",
+                            root_cause=str(
+                                _ag_identity_kwargs.get("root_cause") or ""
+                            ),
+                            target_qids=tuple(
+                                str(q) for q in (
+                                    ag.get("affected_questions") or ()
+                                ) if str(q)
+                            ),
+                        )
+                        _current_iter_inputs.setdefault(
+                            "decision_records", []
+                        ).append(_empty_rec.to_dict())
+                except Exception:
+                    logger.debug(
+                        "Cycle 13 T6: proposal_generation_empty_record "
+                        "emit failed (non-fatal)",
+                        exc_info=True,
+                    )
                 _render_current_journey()
                 try:
                     _phase_h_a, _phase_h_r, _phase_h_s, _phase_h_g = (
@@ -21072,7 +21657,29 @@ def _run_lever_loop(
                     _accepted_baseline_rows_for_control_plane
                 ),
                 phase_h_anchor_run_id=_phase_h_anchor_run_id,
+                # Cycle 14B-T2 — partial-harvest with bounded debt
+                cumulative_regression_debt=_cumulative_regression_debt,
             )
+
+            # Cycle 14B-T2: accumulate accepted regression debt against
+            # the policy's cumulative cap. The gate's
+            # ``acceptance_decision`` carries the reason and debt qids
+            # the policy harvested.
+            try:
+                _ad = (gate_result or {}).get("acceptance_decision") or {}
+                if (
+                    str(_ad.get("reason") or "")
+                    == "accepted_with_partial_harvest_debt"
+                ):
+                    _cumulative_regression_debt += len(
+                        _ad.get("regression_debt_qids") or ()
+                    )
+            except Exception:
+                logger.debug(
+                    "Cycle 14B-T2: cumulative-debt counter update failed "
+                    "(non-fatal)",
+                    exc_info=True,
+                )
 
             # Phase A — Lossless contract: refresh the deterministic eval-result
             # carrier IMMEDIATELY after the gate returns, BEFORE the accept/
@@ -22002,12 +22609,38 @@ def _run_lever_loop(
                 f"Accuracy improved by {_acc_delta:+.1f}% "
                 f"affecting {len(ag.get('affected_questions', []))} question(s)."
             )
+            # Cycle 14B-T2: stamp ``rollback_reason`` on the reflection
+            # buffer entry for accept-with-debt iterations so the
+            # forbidden-AG admission predicate (which reads
+            # ``rollback_class`` derived from this string) recognises
+            # them. The string carries the harvested debt qids so the
+            # postmortem can audit the decision without cross-joining
+            # other markers.
+            _accepted_reflection_rollback_reason: str | None = None
+            try:
+                _ad = (gate_result or {}).get("acceptance_decision") or {}
+                if (
+                    str(_ad.get("reason") or "")
+                    == "accepted_with_partial_harvest_debt"
+                ):
+                    _debt_qids = list(_ad.get("regression_debt_qids") or ())
+                    _debt_label = ",".join(str(q) for q in _debt_qids) or "unknown"
+                    _accepted_reflection_rollback_reason = (
+                        f"accepted_with_debt:{_debt_label}"
+                    )
+            except Exception:
+                logger.debug(
+                    "Cycle 14B-T2: accept-with-debt rollback-reason stamp "
+                    "failed (non-fatal)",
+                    exc_info=True,
+                )
             reflection = _build_reflection_entry(
                 iteration=iteration_counter, ag_id=ag_id, accepted=True,
                 levers=[int(lk) for lk in lever_keys],
                 target_objects=_target_objects,
                 prev_scores=best_scores, new_scores=full_scores,
-                rollback_reason=None, patches=patches,
+                rollback_reason=_accepted_reflection_rollback_reason,
+                patches=patches,
                 affected_question_ids=ag.get("affected_questions", []),
                 prev_failure_qids=prev_failure_qids,
                 new_failure_qids=_accepted_fail_qids,
@@ -23178,6 +23811,14 @@ def _run_lever_loop(
     # surfaced. ``run_lever_loop.py:548-563`` allowlists ``phase_b`` in
     # the debug_info filter so this manifest survives the round trip.
     _phase_b_total_records = sum(_phase_b_iter_record_counts)
+    # Cycle 14-T1: the helper's flag-on path may have driven
+    # ``total_violations`` higher than the legacy in-body block did
+    # (e.g. when an early-iteration producer exception bypassed the
+    # in-body accounting). The accumulators dict is the canonical
+    # source of truth for the total once T1 ships.
+    _phase_b_total_violations = int(
+        _phase_b_accounting.get("total_violations") or _phase_b_total_violations
+    )
     try:
         from genie_space_optimizer.optimization.run_analysis_contract import (
             phase_b_end_marker as _phase_b_end_marker,

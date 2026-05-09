@@ -602,6 +602,40 @@ def test_decide_control_plane_acceptance_flags_stale_candidate_like_baseline() -
 
 
 def test_decide_control_plane_acceptance_records_empty_pre_rows_as_distinct_reason() -> None:
+    """Cycle 14-T0 — empty pre_rows now routes to the typed
+    target_resolution_failed reason when LOOKUP_FAILED targets are
+    present and ``GSO_TARGET_DELTA_STRICT`` is on (default). The
+    underlying empty-pre_rows condition is preserved on the
+    flag-off path (see the companion test below).
+    """
+    from genie_space_optimizer.optimization.control_plane import (
+        decide_control_plane_acceptance,
+    )
+
+    decision = decide_control_plane_acceptance(
+        baseline_accuracy=86.4,
+        candidate_accuracy=86.4,
+        target_qids=("q009",),
+        pre_rows=[],
+        post_rows=[
+            {
+                "id": "q009",
+                "feedback/arbiter/value": "both_correct",
+                "feedback/result_correctness/value": "yes",
+            },
+        ],
+    )
+    assert decision.reason_code == "target_resolution_failed"
+
+
+def test_decide_control_plane_acceptance_empty_pre_rows_legacy_reason_under_flag_off(
+    monkeypatch,
+) -> None:
+    """Flag-off (``GSO_TARGET_DELTA_STRICT=0``) preserves the legacy
+    ``missing_pre_rows`` reason code so byte-stable replay holds
+    on fixtures committed before T0 shipped.
+    """
+    monkeypatch.setenv("GSO_TARGET_DELTA_STRICT", "0")
     from genie_space_optimizer.optimization.control_plane import (
         decide_control_plane_acceptance,
     )

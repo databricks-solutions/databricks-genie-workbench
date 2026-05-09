@@ -907,25 +907,75 @@ def ag_outcome_decision_record(
             reason_code = _resolve_acceptance_reason_code(
                 cp_reason_code, accepted=cp_accepted,
             )
-            from genie_space_optimizer.optimization.control_plane import (
-                format_control_plane_acceptance_detail,
-            )
+            # Cycle 14-T2: prefer the canonical helper. On flag-off
+            # fall back to the legacy renderer + legacy metrics
+            # projection so pre-T2 fixtures replay byte-stable.
             try:
-                reason_detail = format_control_plane_acceptance_detail(
-                    acceptance_detail,
+                from genie_space_optimizer.common.config import (
+                    canonical_acceptance_render_enabled,
                 )
+                use_canonical = canonical_acceptance_render_enabled()
             except Exception:
-                reason_detail = (
-                    f"reason={cp_reason_code}" if cp_reason_code else ""
+                use_canonical = False
+            if use_canonical:
+                from genie_space_optimizer.optimization.control_plane import (
+                    format_full_eval_marker_payload,
                 )
-            metrics = _acceptance_detail_metrics(acceptance_detail)
-            cp_regress = getattr(
-                acceptance_detail, "out_of_target_regressed_qids", None,
-            )
-            if isinstance(cp_regress, (list, tuple, set)):
-                detail_regression_qids = tuple(
-                    str(q) for q in cp_regress if str(q)
+                _ag_id_for_payload = str(
+                    ag.get("id") or ag.get("ag_id") or ""
                 )
+                payload = format_full_eval_marker_payload(
+                    acceptance_detail,
+                    ag_id=_ag_id_for_payload,
+                    iteration=int(iteration),
+                    accepted_label=(
+                        "PASS -- ACCEPTED" if cp_accepted else "FAIL (REGRESSION)"
+                    ),
+                )
+                reason_detail = str(payload.get("reason_detail") or "")
+                # Match the legacy *_count metrics shape so existing
+                # transcript readers are byte-stable on the metrics
+                # surface, then layer the canonical bucket lists on top.
+                metrics = _acceptance_detail_metrics(acceptance_detail)
+                metrics.update({
+                    k: payload[k]
+                    for k in (
+                        "target_fixed_qids",
+                        "target_still_hard_qids",
+                        "out_of_target_regressed_qids",
+                        "regression_debt_qids",
+                        "soft_to_hard_regressed_qids",
+                        "passing_to_hard_regressed_qids",
+                        "unknown_to_hard_regressed_qids",
+                        "target_delta_states",
+                    )
+                    if k in payload
+                })
+                cp_regress = payload.get("out_of_target_regressed_qids") or ()
+                if cp_regress:
+                    detail_regression_qids = tuple(
+                        str(q) for q in cp_regress if str(q)
+                    )
+            else:
+                from genie_space_optimizer.optimization.control_plane import (
+                    format_control_plane_acceptance_detail,
+                )
+                try:
+                    reason_detail = format_control_plane_acceptance_detail(
+                        acceptance_detail,
+                    )
+                except Exception:
+                    reason_detail = (
+                        f"reason={cp_reason_code}" if cp_reason_code else ""
+                    )
+                metrics = _acceptance_detail_metrics(acceptance_detail)
+                cp_regress = getattr(
+                    acceptance_detail, "out_of_target_regressed_qids", None,
+                )
+                if isinstance(cp_regress, (list, tuple, set)):
+                    detail_regression_qids = tuple(
+                        str(q) for q in cp_regress if str(q)
+                    )
         except Exception:
             # Defensive: never let a malformed detail shape crash the
             # emitter — fall back to the legacy reason mapping.

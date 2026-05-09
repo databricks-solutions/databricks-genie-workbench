@@ -306,6 +306,242 @@ def bundle_assembly_incomplete_marker(
     )
 
 
+def patch_isolation_diagnostic_marker(
+    *,
+    optimization_run_id: str = "",
+    iteration: int,
+    ag_id: str,
+    regressed_qid: str,
+    attribution_status: str,
+    attribution_confidence: float,
+    expanded_patch_id: str = "",
+    live_mode: bool = False,
+) -> str:
+    """Cycle 14B-T3 — diagnostic-only marker emitted by the patch-
+    subset isolation orchestrator when the partial-harvest gate
+    rejected and isolation attribution was attempted.
+
+    ``attribution_status`` is one of ``single_patch`` /
+    ``multi_patch`` / ``no_attribution``. ``attribution_confidence``
+    matches ``SinglePatchAttribution.confidence`` (1.0 / 0.5 / 0.0).
+    ``live_mode`` indicates whether the LIVE flag was on at emit
+    time (does not imply a live re-eval ran — the substrate check
+    may still have skipped the live arm).
+    """
+    return marker_line(
+        "GSO_PATCH_ISOLATION_DIAGNOSTIC_V1",
+        {
+            "optimization_run_id": optimization_run_id,
+            "iteration": int(iteration),
+            "ag_id": str(ag_id),
+            "regressed_qid": str(regressed_qid),
+            "attribution_status": str(attribution_status),
+            "attribution_confidence": float(attribution_confidence),
+            "expanded_patch_id": str(expanded_patch_id),
+            "live_mode": bool(live_mode),
+        },
+    )
+
+
+def patch_isolation_outcome_marker(
+    *,
+    optimization_run_id: str = "",
+    iteration: int,
+    ag_id: str,
+    outcome: str,
+    subset_aggregate_gain_pp: float,
+    subset_debt_qids: Sequence[str],
+    expanded_patch_id_removed: str,
+) -> str:
+    """Cycle 14B-T3 — marker emitted after a live patch-subset
+    isolation re-eval completes (or the live arm declines to run).
+
+    ``outcome`` is one of ``IsolationVerdict.outcome`` values
+    (``subset_accepts_clean`` / ``subset_accepts_with_debt`` /
+    ``subset_still_over_policy`` / ``subset_regresses_aggregate``)
+    plus a sentinel ``live_arm_disabled_stub`` for the diagnostic-
+    only stub path.
+    """
+    return marker_line(
+        "GSO_PATCH_ISOLATION_OUTCOME_V1",
+        {
+            "optimization_run_id": optimization_run_id,
+            "iteration": int(iteration),
+            "ag_id": str(ag_id),
+            "outcome": str(outcome),
+            "subset_aggregate_gain_pp": float(subset_aggregate_gain_pp),
+            "subset_debt_qids": list(subset_debt_qids),
+            "expanded_patch_id_removed": str(expanded_patch_id_removed),
+        },
+    )
+
+
+def full_eval_marker(
+    *,
+    optimization_run_id: str,
+    payload: dict,
+) -> str:
+    """Cycle 14-T2 — canonical typed stdout marker for one AG's full
+    eval outcome.
+
+    Emitted alongside (not in place of) the human-readable FULL EVAL
+    [{ag_id}] print block. Both surfaces consume
+    ``format_full_eval_marker_payload`` so divergence between the
+    typed marker and the human text is structurally impossible.
+
+    Behind ``GSO_CANONICAL_ACCEPTANCE_RENDER`` (default on); on
+    flag-off the marker is not emitted and only the legacy text
+    block survives, preserving byte-stable replay of pre-T2 fixtures.
+    """
+    return marker_line(
+        "GSO_FULL_EVAL_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "payload": dict(payload or {}),
+        },
+    )
+
+
+# ── Cycle 14-V — shadow-mode + regression-rail markers ───────────────
+
+
+def forbidden_ag_admission_observe_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    rollback_class: str,
+    rollback_reason: str,
+    root_cause: str,
+    blame_set: tuple,
+    lever_set: tuple,
+    would_admit: bool,
+    behavior_flag_on: bool,
+    suppressed_by_admit_no_action_off: bool,
+) -> str:
+    """Cycle 14-V T1 — shadow emission for the C13 admission predicate.
+
+    Emitted once per ``NO_ACTION`` reflection processed by
+    ``_compute_forbidden_ag_set`` when
+    ``forbidden_ag_admission_observe_enabled()`` is True. The
+    payload records what the predicate decided AND why; the most
+    important field is ``suppressed_by_admit_no_action_off``,
+    which is True when the predicate would have admitted under
+    ``admit_no_action=True`` but did not under the live flag value.
+    """
+    return marker_line(
+        "GSO_FORBIDDEN_AG_ADMISSION_OBSERVE_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "rollback_class": str(rollback_class or ""),
+            "rollback_reason": str(rollback_reason or ""),
+            "root_cause": str(root_cause or ""),
+            "blame_set": [str(b) for b in (blame_set or ())],
+            "lever_set": [int(l) for l in (lever_set or ())],
+            "would_admit_with_admit_no_action_on": bool(would_admit),
+            "behavior_flag_on": bool(behavior_flag_on),
+            "suppressed_by_admit_no_action_off": bool(
+                suppressed_by_admit_no_action_off
+            ),
+        },
+    )
+
+
+def patch_isolation_observe_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    reason_code: str,
+    regressed_qid: str,
+    attribution_status: str,
+    attribution_confidence: float,
+    expanded_patch_id: str,
+    behavior_flag_on: bool,
+    suppressed_by_isolation_flag_off: bool,
+) -> str:
+    """Cycle 14-V T2 — shadow emission for the C14B-T3 diagnostic
+    orchestrator.
+
+    Emitted once per acceptance decision whose ``reason_code`` is
+    in the canonical isolation-eligible set, when
+    ``patch_isolation_observe_enabled()`` is True.
+    """
+    return marker_line(
+        "GSO_PATCH_ISOLATION_OBSERVE_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id or ""),
+            "reason_code": str(reason_code or ""),
+            "regressed_qid": str(regressed_qid or ""),
+            "attribution_status": str(attribution_status or ""),
+            "attribution_confidence": float(attribution_confidence),
+            "expanded_patch_id": str(expanded_patch_id or ""),
+            "behavior_flag_on": bool(behavior_flag_on),
+            "suppressed_by_isolation_flag_off": bool(
+                suppressed_by_isolation_flag_off
+            ),
+        },
+    )
+
+
+def canonical_render_invariant_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    ag_id: str,
+    violation_class: str,
+    contradicting_qids: tuple,
+    detail: str,
+) -> str:
+    """Cycle 14-V T4 — emitted by ``format_full_eval_marker_payload``
+    when its own output contains a same-QID contradiction across
+    rendered fields. Silent on clean payloads.
+
+    ``violation_class`` enum:
+      - ``fixed_and_still_hard_overlap``
+      - ``target_in_out_of_target_set``
+      - ``delta_state_disagrees_with_bucket``
+    """
+    return marker_line(
+        "GSO_CANONICAL_RENDER_INVARIANT_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id or ""),
+            "violation_class": str(violation_class or ""),
+            "contradicting_qids": [str(q) for q in (contradicting_qids or ())],
+            "detail": str(detail or ""),
+        },
+    )
+
+
+def bundle_assembly_list_normalized_marker(
+    *,
+    optimization_run_id: str,
+    iteration: int,
+    stage_key: str,
+    original_type: str,
+    normalized_to: str,
+) -> str:
+    """Cycle 14-V T5 — diagnostic for the bundle assembler list-value
+    normalization safety net. Emitted whenever
+    ``_normalize_stage_capture`` discards a non-dict-shaped value
+    so postmortem tooling can measure how often this engages.
+    """
+    return marker_line(
+        "GSO_BUNDLE_ASSEMBLY_LIST_NORMALIZED_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "stage_key": str(stage_key or ""),
+            "original_type": str(original_type or ""),
+            "normalized_to": str(normalized_to or ""),
+        },
+    )
+
+
 def phase_h_strict_validation_marker(
     *,
     optimization_run_id: str,

@@ -197,3 +197,91 @@ def test_record_with_unknown_cp_reason_falls_back_to_legacy_reason_code() -> Non
     assert rec is not None
     assert rec.reason_code == ReasonCode.PATCH_SKIPPED
     assert "some_future_reason_not_yet_typed" in rec.reason_detail
+
+
+# ── Cycle 14-T2: ag_outcome_decision_record consumes the helper ──────
+
+
+def test_ag_outcome_record_metrics_match_helper_output_post_t2(
+    monkeypatch,
+) -> None:
+    """Cycle 14-T2: the replay record's metrics dict is sourced from
+    format_full_eval_marker_payload. Byte-equality between the typed
+    marker payload and the record's relevant slots is the
+    precondition for C14-T3's I9."""
+    monkeypatch.delenv("GSO_CANONICAL_ACCEPTANCE_RENDER", raising=False)
+    from genie_space_optimizer.optimization.control_plane import (
+        ControlPlaneAcceptance,
+        DeltaState,
+        format_full_eval_marker_payload,
+    )
+
+    decision = ControlPlaneAcceptance(
+        accepted=True,
+        reason_code="accepted",
+        baseline_accuracy=83.3,
+        candidate_accuracy=100.0,
+        delta_pp=16.7,
+        target_qids=("gs_024",),
+        target_fixed_qids=("gs_024",),
+        target_still_hard_qids=(),
+        out_of_target_regressed_qids=(),
+        target_delta_states=(("gs_024", DeltaState.FIXED.value),),
+    )
+    ag = {"id": "AG_DECOMPOSED_H004", "affected_questions": ["gs_024"]}
+    record = ag_outcome_decision_record(
+        run_id="run-1",
+        iteration=1,
+        ag=ag,
+        outcome="accepted",
+        acceptance_detail=decision,
+    )
+    payload = format_full_eval_marker_payload(
+        decision,
+        ag_id="AG_DECOMPOSED_H004",
+        iteration=1,
+        accepted_label="PASS -- ACCEPTED",
+    )
+    assert record is not None
+    # The DecisionRecord's reason_detail slot is the helper's
+    # reason_detail string verbatim.
+    assert record.reason_detail == payload["reason_detail"]
+    # The record's regression_qids comes from the helper's
+    # out_of_target_regressed_qids list.
+    assert list(record.regression_qids) == payload["out_of_target_regressed_qids"]
+
+
+def test_ag_outcome_record_byte_stable_on_flag_off(
+    monkeypatch,
+) -> None:
+    """When GSO_CANONICAL_ACCEPTANCE_RENDER is off, the legacy code
+    path runs unchanged. Pre-T2 fixtures replay byte-stable: the
+    ``reason_detail`` is still
+    ``format_control_plane_acceptance_detail(decision)``."""
+    monkeypatch.setenv("GSO_CANONICAL_ACCEPTANCE_RENDER", "0")
+    from genie_space_optimizer.optimization.control_plane import (
+        ControlPlaneAcceptance,
+        format_control_plane_acceptance_detail,
+    )
+
+    decision = ControlPlaneAcceptance(
+        accepted=True,
+        reason_code="accepted",
+        baseline_accuracy=83.3,
+        candidate_accuracy=100.0,
+        delta_pp=16.7,
+        target_qids=("gs_024",),
+        target_fixed_qids=("gs_024",),
+        target_still_hard_qids=(),
+        out_of_target_regressed_qids=(),
+    )
+    ag = {"id": "AG_DECOMPOSED_H004", "affected_questions": ["gs_024"]}
+    record = ag_outcome_decision_record(
+        run_id="run-1",
+        iteration=1,
+        ag=ag,
+        outcome="accepted",
+        acceptance_detail=decision,
+    )
+    assert record is not None
+    assert record.reason_detail == format_control_plane_acceptance_detail(decision)

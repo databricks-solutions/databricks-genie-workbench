@@ -27,6 +27,32 @@ errors:
   whether a patched Genie space reaches steady state before the next
   iteration.
 
+* ``ACCEPTED_WITH_DEBT`` — Cycle 14B-T2. The iteration accepted the
+  candidate under ``RegressionDebtPolicy`` with one or more
+  out-of-target regressions counted as bounded debt. Not a rollback
+  in the strict sense — the enum is the reflection-classification
+  axis used by the forbidden-AG admission predicate (so a
+  debt-accepting AG is not unconditionally retried with the same
+  signature on the next iteration).
+
+* ``MULTI_PATCH_REGRESSION`` — Cycle 14B-T3. Patch-subset isolation
+  could not isolate the regression to a single patch — multiple
+  applied patches contributed. The candidate is fully discarded;
+  this reason names the diagnosis honestly so the postmortem can
+  act on it (instead of silently falling back to ``OTHER``).
+
+* ``NO_ACTION`` — Cycle 13. The iteration emitted no patches
+  (``no_proposals``) or was intercepted by the strategist
+  collision guard (``ag_collision_with_forbidden_set``). Not a
+  rollback in the strict sense; the enum is the
+  reflection-classification axis used by the forbidden-AG
+  admission predicate so a same-signature AG is not
+  unconditionally retried with zero proposals on the next
+  iteration. Behind ``GSO_FORBIDDEN_AG_ADMITS_NO_ACTION``
+  (default-off); when off, ``NO_ACTION`` is classified
+  correctly but the admission predicate excludes it (legacy
+  behaviour, replay byte-stable).
+
 * ``OTHER`` — catch-all for escalation_handled entries, ``no_proposals``
   skips, and anything the classifier doesn't recognise. These do not
   participate in the diminishing-returns / consecutive-rollback gates.
@@ -50,6 +76,22 @@ class RollbackClass(str, Enum):
     INFRA_FAILURE = "infra_failure"
     SCHEMA_FAILURE = "schema_failure"
     PROPAGATION_FAILURE = "propagation_failure"  # reserved; no producer yet
+    # Cycle 14B-T2: an iteration that accepted a candidate with
+    # bounded out-of-target regression debt under
+    # RegressionDebtPolicy. Not a rollback in the strict sense; the
+    # enum is the reflection-classification axis (see module
+    # docstring).
+    ACCEPTED_WITH_DEBT = "accepted_with_debt"
+    # Cycle 14B-T3: patch-subset isolation could not isolate the
+    # regression to a single patch — multiple patches contributed.
+    # The candidate is fully discarded; this reason names the
+    # diagnosis honestly so the postmortem can act on it.
+    MULTI_PATCH_REGRESSION = "multi_patch_regression"
+    # Cycle 13: an iteration that produced no patches (no_proposals)
+    # or was intercepted by the strategist collision guard
+    # (ag_collision_with_forbidden_set). Reflection-classification
+    # axis used by the forbidden-AG admission predicate.
+    NO_ACTION = "no_action"
     OTHER = "other"
 
 
@@ -91,6 +133,23 @@ def classify_rollback_reason(reason: str | None) -> RollbackClass:
     if any(sig in lowered for sig in _SCHEMA_FAILURE_SIGNATURES):
         return RollbackClass.SCHEMA_FAILURE
 
+    # Cycle 14B-T2: accept-with-debt iterations are reflected with an
+    # ``accepted_with_debt:<qid>`` (or bare ``accepted_with_debt``)
+    # rollback-reason string so the forbidden-AG admission predicate
+    # can pick them up.
+    if lowered == "accepted_with_debt" or lowered.startswith("accepted_with_debt:"):
+        return RollbackClass.ACCEPTED_WITH_DEBT
+
+    # Cycle 14B-T3: patch-subset isolation halts with a
+    # ``multi_patch_regression`` reason (optionally suffixed with
+    # the contributing qids) when more than one applied patch is
+    # implicated in an out-of-target regression.
+    if (
+        lowered == "multi_patch_regression"
+        or lowered.startswith("multi_patch_regression:")
+    ):
+        return RollbackClass.MULTI_PATCH_REGRESSION
+
     if any(lowered.startswith(prefix) for prefix in _CONTENT_REGRESSION_PREFIXES):
         return RollbackClass.CONTENT_REGRESSION
 
@@ -103,7 +162,14 @@ def classify_rollback_reason(reason: str | None) -> RollbackClass:
         # content / infra budgets.
         return RollbackClass.OTHER
 
-    if lowered == "no_proposals":
-        return RollbackClass.OTHER
+    # Cycle 13: no_proposals and ag_collision_with_forbidden_set are
+    # reflection-axis classifications (the iteration produced no
+    # patch-applying action). They route to NO_ACTION so the
+    # forbidden-AG admission predicate can pick them up when
+    # GSO_FORBIDDEN_AG_ADMITS_NO_ACTION is enabled. Pre-C13 both
+    # classified as OTHER (no_proposals via this exact-match branch,
+    # ag_collision_with_forbidden_set via the default fall-through).
+    if lowered == "no_proposals" or lowered == "ag_collision_with_forbidden_set":
+        return RollbackClass.NO_ACTION
 
     return RollbackClass.OTHER

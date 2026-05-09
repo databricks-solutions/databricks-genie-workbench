@@ -21,6 +21,34 @@ from genie_space_optimizer.optimization.stages import STAGES
 SCHEMA_VERSION = "v1"
 
 
+def _normalize_stage_capture(value: object) -> dict:
+    """Cycle 14-V T5 — normalize a stage-capture value to a dict so
+    downstream ``.get()`` access is safe.
+
+    The harness's ``stage_io_capture`` wrapper occasionally produces
+    list-valued captures (when a stage emits multiple decisions in
+    a single call). The bundle assembler historically called
+    ``.get()`` directly, raising ``AttributeError`` on lists.
+
+    Anchor evidence: airline run 833709971504406 F7 (emits
+    ``GSO_BUNDLE_ASSEMBLY_FAILED_V1`` with
+    ``AttributeError: 'list' object has no attribute 'get'``).
+
+    Behaviour:
+      - dict → returned unchanged.
+      - list-of-dict → first dict in the list returned.
+      - list-of-non-dict / empty list / non-dict / None → empty dict.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                return item
+        return {}
+    return {}
+
+
 def _normalize_accuracy_pct(value: Any) -> Any:
     """Cycle 6 F-6 — collapse 0-1 fraction inputs and 0-100 percent
     inputs to a single canonical 0-100 representation, rounded to one

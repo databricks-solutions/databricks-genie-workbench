@@ -81,3 +81,24 @@ def test_phase_b_no_records_marker_with_empty_producer_exceptions_byte_stable() 
         '"producer_exceptions":{},'
         '"reason":"no_clusters"}'
     )
+
+
+def test_phase_b_end_marker_includes_no_records_iters_post_t1() -> None:
+    """Cycle 14-T1: GSO_PHASE_B_END_V1.no_records_iterations carries
+    every iteration that produced zero records, including those whose
+    in-body Phase B block never ran due to an upstream producer
+    exception."""
+    from genie_space_optimizer.optimization.run_analysis_contract import (
+        phase_b_end_marker,
+    )
+
+    line = phase_b_end_marker(
+        optimization_run_id="run-1",
+        total_records=2,
+        iter_record_counts=[2, 0, 0, 0, 0],
+        iter_violation_counts=[0, 0, 0, 0, 0],
+        no_records_iterations=[2, 3, 4, 5],
+        contract_version="v1",
+    )
+    assert "GSO_PHASE_B_END_V1" in line
+    assert '"no_records_iterations":[2,3,4,5]' in line.replace(" ", "")
