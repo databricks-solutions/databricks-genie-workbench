@@ -1,3 +1,4 @@
+from dataclasses import replace as _dc_replace
 from unittest.mock import MagicMock
 
 from genie_space_optimizer.optimization.stages import StageContext
@@ -108,8 +109,7 @@ def test_update_emits_ag_retired_record_when_target_no_longer_hard() -> None:
         DecisionType, DecisionOutcome, ReasonCode,
     )
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     inp = lrn.LearningInput(
         prior_reflection_buffer=(),
@@ -170,8 +170,7 @@ def test_update_resolves_terminal_decision_dict_shape() -> None:
 def test_update_handles_empty_input() -> None:
     from genie_space_optimizer.optimization.stages import learning as lrn
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     inp = lrn.LearningInput(
         prior_reflection_buffer=(),

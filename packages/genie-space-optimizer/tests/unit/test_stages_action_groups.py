@@ -1,3 +1,4 @@
+from dataclasses import replace as _dc_replace
 from unittest.mock import MagicMock
 
 from genie_space_optimizer.optimization.stages import StageContext
@@ -55,8 +56,7 @@ def test_select_emits_strategist_ag_record_per_ag() -> None:
     """select() emits one STRATEGIST_AG_EMITTED record per AG."""
     from genie_space_optimizer.optimization.stages import action_groups as ags
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     inp = ags.ActionGroupsInput(
         action_groups=(
@@ -95,8 +95,7 @@ def test_select_handles_missing_target_qids() -> None:
     from genie_space_optimizer.optimization.stages import action_groups as ags
     from genie_space_optimizer.optimization.rca_decision_trace import ReasonCode
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     inp = ags.ActionGroupsInput(
         action_groups=(
@@ -118,8 +117,7 @@ def test_select_handles_missing_target_qids() -> None:
 def test_select_handles_empty_input() -> None:
     from genie_space_optimizer.optimization.stages import action_groups as ags
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     inp = ags.ActionGroupsInput(
         action_groups=(),

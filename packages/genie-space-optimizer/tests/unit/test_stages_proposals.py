@@ -1,3 +1,4 @@
+from dataclasses import replace as _dc_replace
 from unittest.mock import MagicMock
 
 from genie_space_optimizer.optimization.stages import StageContext
@@ -60,8 +61,7 @@ def test_generate_emits_proposal_records_with_content_fingerprint() -> None:
     each with a content_fingerprint via patch_retry_signature."""
     from genie_space_optimizer.optimization.stages import proposals as ps
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     inp = ps.ProposalsInput(
         proposals_by_ag={
@@ -104,8 +104,7 @@ def test_generate_emits_proposal_records_with_content_fingerprint() -> None:
 def test_generate_handles_empty_input() -> None:
     from genie_space_optimizer.optimization.stages import proposals as ps
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     inp = ps.ProposalsInput(
         proposals_by_ag={},
@@ -123,8 +122,7 @@ def test_generate_skips_proposals_without_target_qids() -> None:
     PROPOSAL_GENERATED record (the producer drops it per Cycle-8-Bug-1)."""
     from genie_space_optimizer.optimization.stages import proposals as ps
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     inp = ps.ProposalsInput(
         proposals_by_ag={

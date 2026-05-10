@@ -1,3 +1,4 @@
+from dataclasses import replace as _dc_replace
 from unittest.mock import MagicMock
 
 from genie_space_optimizer.optimization.stages import StageContext
@@ -84,8 +85,7 @@ def test_decide_accepts_pre_arbiter_improvement_when_post_arbiter_saturated() ->
     accepted with reason_code=accepted_pre_arbiter_improvement."""
     from genie_space_optimizer.optimization.stages import acceptance as ac
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     # 22 passing + 2 hard before; same 22 + 2 hard after (post saturated).
     pre_rows = tuple(_row(f"q{i}", passing=True) for i in range(22)) + (
@@ -120,8 +120,7 @@ def test_decide_rolls_back_when_post_arbiter_drops_with_collateral() -> None:
     rolled_back."""
     from genie_space_optimizer.optimization.stages import acceptance as ac
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     pre_rows = (
         _row("q1", passing=True),
@@ -156,8 +155,7 @@ def test_decide_emits_qid_resolution_records() -> None:
     """post_eval_resolution_records fires one record per eval qid."""
     from genie_space_optimizer.optimization.stages import acceptance as ac
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     pre_rows = (
         _row("q1", passing=True),
@@ -193,8 +191,7 @@ def test_decide_emits_qid_resolution_records() -> None:
 def test_decide_handles_empty_input() -> None:
     from genie_space_optimizer.optimization.stages import acceptance as ac
     captured: list = []
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda r: captured.append(r)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
     inp = ac.AcceptanceInput(
         applied_entries_by_ag={},

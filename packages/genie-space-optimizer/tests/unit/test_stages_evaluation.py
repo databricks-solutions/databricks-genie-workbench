@@ -1,3 +1,4 @@
+from dataclasses import replace as _dc_replace
 from unittest.mock import MagicMock
 
 from genie_space_optimizer.optimization.stages import StageContext
@@ -64,8 +65,7 @@ def test_evaluate_post_patch_partitions_rows_and_emits_classification(
 
     captured_records: list = []
 
-    ctx = _stub_ctx()
-    ctx.decision_emit = lambda record: captured_records.append(record)
+    ctx = _dc_replace(_stub_ctx(), decision_emit=lambda record: captured_records.append(record))
 
     fake_rows = [
         {"question_id": "q1", "result_correctness": "yes",
