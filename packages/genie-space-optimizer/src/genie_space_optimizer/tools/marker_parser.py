@@ -37,6 +37,9 @@ class MarkerLog:
     # marker once per AG-emit-with-rejection within a run.
     patch_isolation_diagnostic: tuple[Mapping[str, Any], ...] | None = None
     patch_isolation_outcome: tuple[Mapping[str, Any], ...] | None = None
+    # Cycle 14-C T5 — diagnostic ``GSO_ATTRIBUTION_DRIFT_V1`` payloads,
+    # one per accepted_with_attribution_drift acceptance.
+    attribution_drift: tuple[Mapping[str, Any], ...] = ()
     unknown: Mapping[str, tuple[Mapping[str, Any], ...]] = field(default_factory=dict)
     parse_errors: tuple[str, ...] = field(default_factory=tuple)
 
@@ -69,6 +72,7 @@ def parse_markers(stdout: str) -> MarkerLog:
     bundle_assembly_incomplete: list[Mapping[str, Any]] | None = None
     patch_isolation_diagnostic: list[Mapping[str, Any]] | None = None
     patch_isolation_outcome: list[Mapping[str, Any]] | None = None
+    attribution_drift: list[Mapping[str, Any]] = []
     unknown: dict[str, list[Mapping[str, Any]]] = {}
     errors: list[str] = []
 
@@ -121,6 +125,8 @@ def parse_markers(stdout: str) -> MarkerLog:
             if patch_isolation_outcome is None:
                 patch_isolation_outcome = []
             patch_isolation_outcome.append(payload)
+        elif name == "GSO_ATTRIBUTION_DRIFT_V1":
+            attribution_drift.append(payload)
         else:
             unknown.setdefault(name, []).append(payload)
 
@@ -149,6 +155,7 @@ def parse_markers(stdout: str) -> MarkerLog:
             tuple(patch_isolation_outcome)
             if patch_isolation_outcome is not None else None
         ),
+        attribution_drift=tuple(attribution_drift),
         unknown={k: tuple(v) for k, v in unknown.items()},
         parse_errors=tuple(errors),
     )

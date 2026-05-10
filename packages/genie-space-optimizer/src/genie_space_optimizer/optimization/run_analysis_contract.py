@@ -517,6 +517,230 @@ def canonical_render_invariant_marker(
     )
 
 
+def databricks_ids_resolved_marker(
+    *,
+    resolution_path: str,
+    fields_resolved: int,
+    fields_total: int,
+    dbutils_attempted: bool,
+    dbutils_succeeded: bool,
+    sample_field: str = "",
+    sample_value: str = "",
+) -> str:
+    """Cycle 14-W T3 — resolution-path tracing for
+    ``_databricks_ids_from_env``.
+
+    ``resolution_path`` ∈ {``env``, ``dbutils``, ``mixed``,
+    ``sentinel``}. The marker exists so corpus measurement can
+    catch the regression where the resolver is reached but its
+    internal path returns blank (D-5 was a regression of C14-V T6
+    because the unit test exercised the API but not the production
+    Databricks Jobs runtime).
+    """
+    return marker_line(
+        "GSO_DATABRICKS_IDS_RESOLVED_V1",
+        {
+            "resolution_path": str(resolution_path or ""),
+            "fields_resolved": int(fields_resolved),
+            "fields_total": int(fields_total),
+            "dbutils_attempted": bool(dbutils_attempted),
+            "dbutils_succeeded": bool(dbutils_succeeded),
+            "sample_field": str(sample_field or ""),
+            "sample_value": str(sample_value or ""),
+        },
+    )
+
+
+def check_iteration_summary_totality(
+    *,
+    iteration_counter: int,
+    iteration_summary_count: int,
+    phase_b_iter_record_counts_length: int,
+) -> dict | None:
+    """Cycle 14-W T5 — pure helper that detects the
+    iteration-summary totality violation.
+
+    Returns ``None`` on a clean run (all three values equal) or
+    a violation dict suitable for direct emission via
+    :func:`iteration_summary_totality_marker` when any pair
+    disagrees.
+    """
+    if (
+        int(iteration_counter)
+        == int(iteration_summary_count)
+        == int(phase_b_iter_record_counts_length)
+    ):
+        return None
+    return {
+        "iteration_counter": int(iteration_counter),
+        "iteration_summary_count": int(iteration_summary_count),
+        "phase_b_iter_record_counts_length": int(
+            phase_b_iter_record_counts_length
+        ),
+    }
+
+
+def iteration_summary_totality_marker(
+    *,
+    optimization_run_id: str = "",
+    iteration_counter: int,
+    iteration_summary_count: int,
+    phase_b_iter_record_counts_length: int,
+) -> str:
+    """Cycle 14-W T5 — invariant alarm: ``iteration_counter`` must
+    equal both the number of emitted ``GSO_ITERATION_SUMMARY_V1``
+    markers AND the length of
+    ``GSO_PHASE_B_END_V1.iter_record_counts``. Silent on clean
+    runs; emits when any of the three disagree.
+    """
+    return marker_line(
+        "GSO_ITERATION_SUMMARY_TOTALITY_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration_counter": int(iteration_counter),
+            "iteration_summary_count": int(iteration_summary_count),
+            "phase_b_iter_record_counts_length": int(
+                phase_b_iter_record_counts_length
+            ),
+            "expected_equality": (
+                "iteration_counter == iteration_summary_count == "
+                "phase_b_iter_record_counts_length"
+            ),
+        },
+    )
+
+
+def detect_phase_h_acceptance_drift(
+    *,
+    canonical_outcome: str,
+    canonical_reason_code: str,
+    phase_h_outcome: str,
+    phase_h_reason_code: str,
+) -> bool:
+    """Cycle 14-W T6 — pure helper that returns True iff the
+    Phase H acceptance writer's output disagrees with the canonical
+    ``ControlPlaneAcceptance`` decision on either ``outcome`` or
+    ``reason_code``.
+
+    Anchor: airline run 1105451933925748 F8 — stdout says iter 1
+    ACCEPTED, downloaded acceptance bundle says
+    ``outcome=rolled_back, reason_code=missing_pre_rows``.
+    """
+    return (
+        str(canonical_outcome or "").strip().lower()
+        != str(phase_h_outcome or "").strip().lower()
+    ) or (
+        str(canonical_reason_code or "").strip().lower()
+        != str(phase_h_reason_code or "").strip().lower()
+    )
+
+
+def detect_phase_h_journey_drift(
+    *,
+    canonical_violation_count: int,
+    phase_h_violation_count: int,
+) -> bool:
+    """Cycle 14-W T6 — pure helper that returns True iff the
+    Phase H journey-validator output disagrees with the canonical
+    replay validator on the violation count.
+
+    Anchor: 7Now run 960148942255012 F8 — local replay reports 25
+    journey violations; Phase H ``journey_validation_all.json``
+    reports 0.
+    """
+    return int(canonical_violation_count) != int(phase_h_violation_count)
+
+
+def phase_h_acceptance_drift_marker(
+    *,
+    optimization_run_id: str = "",
+    iteration: int,
+    canonical_outcome: str,
+    canonical_reason_code: str,
+    phase_h_outcome: str,
+    phase_h_reason_code: str,
+) -> str:
+    """Cycle 14-W T6 — alarm: Phase H acceptance writer disagrees
+    with the canonical ``ControlPlaneAcceptance`` decision.
+    """
+    return marker_line(
+        "GSO_PHASE_H_ACCEPTANCE_DRIFT_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "canonical_outcome": str(canonical_outcome or ""),
+            "canonical_reason_code": str(canonical_reason_code or ""),
+            "phase_h_outcome": str(phase_h_outcome or ""),
+            "phase_h_reason_code": str(phase_h_reason_code or ""),
+        },
+    )
+
+
+def phase_h_journey_drift_marker(
+    *,
+    optimization_run_id: str = "",
+    iteration: int,
+    canonical_violation_count: int,
+    phase_h_violation_count: int,
+) -> str:
+    """Cycle 14-W T6 — alarm: Phase H journey-validator output
+    disagrees with the canonical replay validator.
+    """
+    return marker_line(
+        "GSO_PHASE_H_JOURNEY_DRIFT_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "canonical_violation_count": int(canonical_violation_count),
+            "phase_h_violation_count": int(phase_h_violation_count),
+        },
+    )
+
+
+def attribution_drift_marker(
+    *,
+    optimization_run_id: str = "",
+    iteration: int,
+    ag_id: str,
+    baseline_accuracy: float,
+    candidate_accuracy: float,
+    delta_pp: float,
+    target_qids: Sequence[str],
+    accidentally_improved_qids: Sequence[str],
+    unresolved_target_debt_qids: Sequence[str],
+) -> str:
+    """Cycle 14-C T5 — diagnostic marker emitted on every
+    ``accepted_with_attribution_drift`` acceptance.
+
+    Records the reattribution payload so postmortem tooling can grep
+    for the branch's firings without parsing every
+    ``GSO_FULL_EVAL_V1`` marker. Diagnostic-only; subset of
+    ``GSO_FULL_EVAL_V1``'s payload.
+
+    Anchor: airline run 1105451933925748 iter 1 — first
+    in-production demonstration of keep-the-win behaviour on a
+    target-drift case.
+    """
+    return marker_line(
+        "GSO_ATTRIBUTION_DRIFT_V1",
+        {
+            "optimization_run_id": str(optimization_run_id or ""),
+            "iteration": int(iteration),
+            "ag_id": str(ag_id or ""),
+            "baseline_accuracy": float(baseline_accuracy),
+            "candidate_accuracy": float(candidate_accuracy),
+            "delta_pp": float(delta_pp),
+            "target_qids": [str(q) for q in (target_qids or ())],
+            "accidentally_improved_qids": [
+                str(q) for q in (accidentally_improved_qids or ())
+            ],
+            "unresolved_target_debt_qids": [
+                str(q) for q in (unresolved_target_debt_qids or ())
+            ],
+        },
+    )
+
+
 def bundle_assembly_list_normalized_marker(
     *,
     optimization_run_id: str,

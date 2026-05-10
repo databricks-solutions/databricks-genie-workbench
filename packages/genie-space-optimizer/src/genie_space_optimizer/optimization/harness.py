@@ -429,6 +429,54 @@ def _emit_phase_h_acceptance_drift_if_any(
         )
 
 
+def _maybe_emit_attribution_drift_marker(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    decision,
+) -> None:
+    """Cycle 14-C T5 — emit ``GSO_ATTRIBUTION_DRIFT_V1`` if the
+    decision's reason is ``accepted_with_attribution_drift`` and the
+    observability flag is on.
+
+    Anchor: airline run 1105451933925748 iter 1.
+    """
+    try:
+        from genie_space_optimizer.common.config import (
+            attribution_drift_reattribution_enabled,
+        )
+        if not attribution_drift_reattribution_enabled():
+            return
+        if str(getattr(decision, "reason_code", "") or "") != (
+            "accepted_with_attribution_drift"
+        ):
+            return
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            attribution_drift_marker,
+        )
+        print(attribution_drift_marker(
+            optimization_run_id=str(run_id or ""),
+            iteration=int(iteration),
+            ag_id=str(ag_id or ""),
+            baseline_accuracy=float(decision.baseline_accuracy),
+            candidate_accuracy=float(decision.candidate_accuracy),
+            delta_pp=float(decision.delta_pp),
+            target_qids=tuple(decision.target_qids or ()),
+            accidentally_improved_qids=tuple(
+                decision.accidentally_improved_qids or ()
+            ),
+            unresolved_target_debt_qids=tuple(
+                decision.unresolved_target_debt_qids or ()
+            ),
+        ))
+    except Exception:
+        logger.debug(
+            "GSO attribution-drift marker emission skipped",
+            exc_info=True,
+        )
+
+
 def _emit_phase_h_journey_drift_if_any(
     *,
     run_id: str,
@@ -13542,6 +13590,15 @@ def _run_gate_checks(
                 optimization_run_id=run_id,
                 payload=_payload,
             ))
+            # Cycle 14-C T5 — emit the focused attribution-drift
+            # marker if the branch fired. Diagnostic-only; sibling
+            # to the canonical full-eval marker.
+            _maybe_emit_attribution_drift_marker(
+                run_id=run_id,
+                iteration=int(iteration_counter),
+                ag_id=str(ag_id),
+                decision=_control_plane_decision,
+            )
     except Exception:
         logger.debug(
             "Cycle 14-T2: FULL EVAL typed marker emission failed "
