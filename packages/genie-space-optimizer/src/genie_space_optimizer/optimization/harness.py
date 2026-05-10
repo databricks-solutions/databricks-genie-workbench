@@ -212,6 +212,43 @@ _DATABRICKS_ID_KEYS: tuple[str, ...] = (
 _DATABRICKS_ID_SENTINEL: str = "unknown"
 
 
+def _build_stage_ctx(
+    *,
+    run_id: str,
+    iteration: int,
+    space_id: str,
+    domain: str,
+    catalog: str,
+    schema: str,
+    apply_mode: str,
+    journey_emit: Any,
+    decision_emit: Any,
+    feature_flags: dict | None = None,
+    mlflow_anchor_run_id: str | None = None,
+) -> Any:
+    """C15 Phase 1 Task 1.9 — Build a StageContext for a single iteration.
+
+    Used by every Chunk-D/A/B/C delegation site behind a chunk flag.
+    Deferred import keeps the harness importable even if the stages
+    package has a partial install.
+    """
+    from genie_space_optimizer.optimization.stages import StageContext
+
+    return StageContext(
+        run_id=run_id,
+        iteration=iteration,
+        space_id=space_id,
+        domain=domain,
+        catalog=catalog,
+        schema=schema,
+        apply_mode=apply_mode,
+        journey_emit=journey_emit,
+        decision_emit=decision_emit,
+        feature_flags=feature_flags or {},
+        mlflow_anchor_run_id=mlflow_anchor_run_id,
+    )
+
+
 def _databricks_ids_from_env() -> dict[str, str]:
     """Cycle 14-V T6 + Cycle 14-W T3 — resolve Databricks IDs from
     notebook environment at run start.
@@ -13808,7 +13845,88 @@ def _run_lever_loop(
         # outside a Databricks notebook context) instead of a blank
         # string. Resolves Open Q#10 (anchors 338386531912450 F9 +
         # 833709971504406 F8 — both report blank IDs cross-space).
-        _db_ids = _databricks_ids_from_env()
+        #
+        # C15 Phase 1 Task 1.9: when GSO_STAGE_HANDLERS_CHUNK_D is on,
+        # delegate to the typed run_manifest stage so the resolver path
+        # is contract-shaped and fixture-replayable (closes D-5
+        # contract surface).
+        from genie_space_optimizer.common.config import (
+            stage_handlers_chunk_d_enabled as _chunk_d_enabled_rm,
+        )
+        if _chunk_d_enabled_rm():
+            import os as _os_rm
+            from genie_space_optimizer.optimization.stages import (
+                run_manifest as _rm_stage,
+            )
+
+            _rm_dbutils_available = False
+            _rm_dbutils_tags: dict[str, str] = {}
+            try:
+                from pyspark.dbutils import DBUtils as _DBUtils_rm  # type: ignore[import-not-found]  # noqa: F401
+                from pyspark.sql import SparkSession as _SparkSession_rm  # type: ignore[import-not-found]  # noqa: F401
+                _rm_dbutils_available = True
+                try:
+                    _rm_dbu = _DBUtils_rm(_SparkSession_rm.builder.getOrCreate())
+                    _rm_ctx = _rm_dbu.notebook.entry_point.getDbutils().notebook().getContext()
+                    _rm_raw_tags = _rm_ctx.tags()
+                    for _rm_tag_key in ("jobId", "multitaskParentRunId", "jobRunId", "runId"):
+                        try:
+                            _rm_val = _rm_raw_tags.get(_rm_tag_key)
+                            if _rm_val.isDefined():
+                                _rm_dbutils_tags[_rm_tag_key] = str(_rm_val.get())
+                        except Exception:
+                            pass
+                except Exception:
+                    _rm_dbutils_tags = {}
+            except Exception:
+                pass
+
+            _rm_out = _rm_stage.execute(
+                ctx=None,
+                inp=_rm_stage.RunManifestInput(
+                    env={
+                        k: v for k, v in _os_rm.environ.items()
+                        if k in (
+                            "DATABRICKS_JOB_ID",
+                            "DATABRICKS_RUN_ID",
+                            "DATABRICKS_JOB_RUN_ID",
+                            "DATABRICKS_TASK_RUN_ID",
+                        )
+                    },
+                    dbutils_available=_rm_dbutils_available,
+                    dbutils_tags=_rm_dbutils_tags,
+                ),
+            )
+            _db_ids = {
+                "databricks_job_id": _rm_out.databricks_job_id,
+                "databricks_parent_run_id": _rm_out.databricks_parent_run_id,
+                "lever_loop_task_run_id": _rm_out.lever_loop_task_run_id,
+            }
+            # Preserve C14-W T3 trace marker visibility on the chunk-D path.
+            try:
+                from genie_space_optimizer.optimization.run_analysis_contract import (
+                    databricks_ids_resolved_marker as _ids_resolved_marker,
+                )
+                _rm_sample_field = next(
+                    (
+                        k for k, v in _db_ids.items()
+                        if v == _rm_stage.DATABRICKS_ID_SENTINEL
+                    ),
+                    "",
+                )
+                print(_ids_resolved_marker(
+                    resolution_path=str(_rm_out.resolution_path),
+                    fields_resolved=_rm_out.fields_resolved,
+                    fields_total=_rm_out.fields_total,
+                    dbutils_attempted=_rm_out.dbutils_attempted,
+                    dbutils_succeeded=_rm_out.dbutils_succeeded,
+                    sample_field=_rm_sample_field,
+                    sample_value="",
+                ))
+            except Exception:
+                logger.debug("run_manifest chunk-D trace marker skipped", exc_info=True)
+        else:
+            _db_ids = _databricks_ids_from_env()
         _db_job_id = _db_ids["databricks_job_id"]
         _db_parent_run_id = _db_ids["databricks_parent_run_id"]
         _db_task_run_id = _db_ids["lever_loop_task_run_id"]
