@@ -36,7 +36,7 @@ def test_run_role_values() -> None:
     assert RunRole.LOGGED_MODEL.value == "logged_model"
 
 
-def test_process_stage_order_has_eleven_entries_in_canonical_order() -> None:
+def test_process_stage_order_has_thirteen_entries_in_canonical_order() -> None:
     keys = [stage.key for stage in PROCESS_STAGE_ORDER]
     assert keys == [
         "evaluation_state",
@@ -49,6 +49,8 @@ def test_process_stage_order_has_eleven_entries_in_canonical_order() -> None:
         "post_patch_evaluation",
         "acceptance_decision",
         "learning_next_action",
+        "bundle_assembly",
+        "run_manifest",
         "contract_health",
     ]
     for stage in PROCESS_STAGE_ORDER:

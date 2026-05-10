@@ -1,9 +1,13 @@
 """Phase H Task 2: PROCESS_STAGE_ORDER ↔ STAGES reconciliation.
 
-The 9 STAGES registry keys must appear in PROCESS_STAGE_ORDER in the
+The 11 STAGES registry keys must appear in PROCESS_STAGE_ORDER in the
 same relative order. PROCESS_STAGE_ORDER may have additional entries
 (post_patch_evaluation, contract_health) that don't correspond to
 distinct STAGES entries — those are transcript-only.
+
+C15 Phase 1: STAGES grew from 9 to 11 (bundle_assembly + run_manifest
+added). PROCESS_STAGE_ORDER grew from 11 to 13. Transcript-only keys
+remain {post_patch_evaluation, contract_health}.
 """
 
 from __future__ import annotations
@@ -67,7 +71,7 @@ def test_manifest_stage_keys_in_process_order_uses_full_stage_contract() -> None
     MUST mirror ``PROCESS_STAGE_ORDER`` so the transcript and
     manifest agree on what a complete iteration looks like.
 
-    C15 Phase 1: PROCESS_STAGE_ORDER grew by 1 (bundle_assembly added).
+    C15 Phase 1: PROCESS_STAGE_ORDER grew to 13 (bundle_assembly + run_manifest added).
     """
     from genie_space_optimizer.optimization.run_output_bundle import (
         build_manifest,
@@ -85,8 +89,8 @@ def test_manifest_stage_keys_in_process_order_uses_full_stage_contract() -> None
         missing_pieces=[],
     )
     expected_keys = [s.key for s in PROCESS_STAGE_ORDER]
-    # C15 P1: PROCESS_STAGE_ORDER now has 12 entries (was 11; bundle_assembly added)
-    assert len(expected_keys) >= 11
+    # C15 P1: PROCESS_STAGE_ORDER now has 13 entries (was 11; bundle_assembly + run_manifest added)
+    assert len(expected_keys) == 13
     assert manifest["stage_keys_in_process_order"] == expected_keys
 
 
@@ -95,7 +99,7 @@ def test_manifest_executable_stage_keys_field_lists_executable_stages() -> None:
     walker that reads stage I/O artifacts), the manifest exposes a
     separate ``executable_stage_keys`` field sourced from ``STAGES``.
 
-    C15 Phase 1: STAGES now has 10 entries (was 9; bundle_assembly added).
+    C15 Phase 1: STAGES now has 11 entries (was 9; bundle_assembly + run_manifest added).
     """
     from genie_space_optimizer.optimization.run_output_bundle import (
         build_manifest,
@@ -111,6 +115,6 @@ def test_manifest_executable_stage_keys_field_lists_executable_stages() -> None:
         missing_pieces=[],
     )
     expected_executable = [e.stage_key for e in STAGES]
-    # C15 P1: now 10 stages (9 original + bundle_assembly)
-    assert len(expected_executable) >= 9
+    # C15 P1: now 11 stages (9 original + bundle_assembly + run_manifest)
+    assert len(expected_executable) == 11
     assert manifest["executable_stage_keys"] == expected_executable

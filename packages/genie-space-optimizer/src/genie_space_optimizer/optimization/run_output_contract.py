@@ -7,18 +7,16 @@ constants and path builders.
 
 Reconciliation with the G-lite stage registry (stages/_registry.py):
 
-  - STAGES (9 entries) is the executable iteration target.
-  - PROCESS_STAGE_ORDER (11 entries) is the human-readable transcript
+  - STAGES (11 entries) is the executable iteration target.
+  - PROCESS_STAGE_ORDER (13 entries) is the human-readable transcript
     ordering.
   - The reconciliation rule is locked by
     tests/unit/test_process_stage_order_matches_stages_registry.py:
     every STAGES.stage_key must appear as a PROCESS_STAGE_ORDER.key.
 
-Note on bundle_assembly and run_manifest: these stages exist as
-module-level contracts (stages/bundle_assembly.py, stages/run_manifest.py)
-but are NOT enumerated in PROCESS_STAGE_ORDER or STAGES. They are
-registry-level entries only — they do not produce per-iteration
-artifacts in the postmortem bundle layout.
+Note on post_patch_evaluation and contract_health: these keys appear
+in PROCESS_STAGE_ORDER but NOT in STAGES — they are transcript-only
+entries that do not produce per-iteration executable artifacts.
 """
 
 from __future__ import annotations
@@ -140,6 +138,25 @@ PROCESS_STAGE_ORDER: tuple[ProcessStage, ...] = (
         why=(
             "The loop records what worked, what failed, and what the next "
             "iteration or human operator should do."
+        ),
+    ),
+    ProcessStage(
+        key="bundle_assembly",
+        title="Bundle Assembly",
+        why=(
+            "Stage captures are normalized to dict shape before the "
+            "postmortem bundle is assembled, closing D-4 so no downstream "
+            "consumer can encounter AttributeError on list-valued captures."
+        ),
+    ),
+    ProcessStage(
+        key="run_manifest",
+        title="Run Manifest",
+        why=(
+            "Databricks IDs (job, parent run, task run) are resolved from "
+            "environment variables and dbutils tags and written to the "
+            "canonical experimental-setup record so D-5 blank-ID regressions "
+            "cannot recur."
         ),
     ),
     ProcessStage(

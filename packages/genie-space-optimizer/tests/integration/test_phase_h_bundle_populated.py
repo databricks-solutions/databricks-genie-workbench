@@ -210,8 +210,10 @@ def test_root_paths_are_consistent_across_helpers() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Phase H Completion Task 5: 9 executable stages + 11 transcript
-# sections + 27 distinct artifact paths per iteration.
+# Phase H Completion Task 5: 11 executable stages + 13 transcript
+# sections + 33 distinct artifact paths per iteration.
+# C15 Phase 1: bundle_assembly (11) and run_manifest (12) added to
+# STAGES and PROCESS_STAGE_ORDER.
 # ──────────────────────────────────────────────────────────────────────
 from genie_space_optimizer.optimization.run_output_contract import (  # noqa: E402
     PROCESS_STAGE_ORDER,
@@ -228,6 +230,8 @@ _EXECUTABLE_STAGES: tuple[str, ...] = (
     "applied_patches",
     "acceptance_decision",
     "learning_next_action",
+    "bundle_assembly",
+    "run_manifest",
 )
 
 
@@ -251,7 +255,7 @@ def test_all_nine_executable_stages_have_distinct_artifact_paths() -> None:
     assert len(seen) == len(_EXECUTABLE_STAGES) * 3
 
 
-def test_transcript_renders_all_11_process_order_sections() -> None:
+def test_transcript_renders_all_13_process_order_sections() -> None:
     from genie_space_optimizer.optimization.operator_process_transcript import (
         render_iteration_transcript,
         render_run_overview,
@@ -297,4 +301,4 @@ def test_transcript_renders_all_11_process_order_sections() -> None:
             f"Transcript missing heading {heading!r}; renderer + "
             f"PROCESS_STAGE_ORDER are out of sync"
         )
-    assert "11. Contract Health" in body
+    assert "13. Contract Health" in body

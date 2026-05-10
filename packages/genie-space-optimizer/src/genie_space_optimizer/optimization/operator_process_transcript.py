@@ -10,8 +10,8 @@ schema:
     - What happened
     - Why this stage exists
   ### 2. RCA Evidence
-  ... (and so on for all 11 stages)
-  ### 11. Contract Health
+  ... (and so on for all 13 stages)
+  ### 13. Contract Health
 
 Schema reference: the predecessor plan
 (2026-05-03-gso-run-output-contract-plan.md:497-820) has the full
@@ -51,7 +51,13 @@ _STAGE_DECISION_TYPE_MAP: dict[str, tuple[DecisionType, ...]] = {
         # iteration outcome and operator-facing guidance.
         DecisionType.ITERATION_BUDGET_DECISION,
     ),
-    # Phase H Fidelity Task 5: Stage 11 was permanently empty because
+    # C15 Phase 1: bundle_assembly and run_manifest are new executable
+    # stages (positions 11 and 12 in PROCESS_STAGE_ORDER). They do not
+    # emit DecisionRecord events in the current implementation; the empty
+    # tuple means the transcript renders the standard placeholder.
+    "bundle_assembly":          (),
+    "run_manifest":             (),
+    # Phase H Fidelity Task 5: Stage 13 was permanently empty because
     # ``contract_health`` mapped to an empty tuple. Surface producer
     # exceptions and invariant violations here so the operator
     # transcript reports whether decision-record persistence and the

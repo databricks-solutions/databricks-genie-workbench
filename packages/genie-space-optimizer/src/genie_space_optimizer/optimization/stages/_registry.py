@@ -1,4 +1,4 @@
-"""Stage registry: canonical 9-entry tuple in process order.
+"""Stage registry: canonical 11-entry tuple in process order.
 
 The registry is the single source of truth for "what stages exist
 and in what order" until Phase H promotes the keys to
@@ -7,7 +7,7 @@ registry imports the order from there to stay in lockstep.
 
 Each ``StageEntry`` carries:
 
-- ``stage_key``: one of the 9 canonical keys.
+- ``stage_key``: one of the 11 canonical keys.
 - ``module``: the imported stage module (e.g. ``stages.evaluation``).
 - ``execute``: the uniform ``execute`` callable on the module
   (added by Phase G-lite Task 2; aliases the named verb).
@@ -32,12 +32,14 @@ from genie_space_optimizer.optimization.stages import (
     acceptance,
     action_groups,
     application,
+    bundle_assembly,
     clustering,
     evaluation,
     gates,
     learning,
     proposals,
     rca_evidence,
+    run_manifest,
 )
 
 
@@ -59,33 +61,36 @@ class StageEntry:
     output_class: type
 
 
-# Canonical process order: 9 executable stages.
-# PROCESS_STAGE_ORDER (run_output_contract) has 11 entries — the 9 here
+# Canonical process order: 11 executable stages.
+# PROCESS_STAGE_ORDER (run_output_contract) has 13 entries — the 11 here
 # plus ``post_patch_evaluation`` and ``contract_health`` (transcript-only).
-# bundle_assembly and run_manifest exist as stage modules but are NOT
-# enumerated here — they do not produce per-iteration artifacts in the
-# 11-section postmortem bundle layout.
+# C15 Phase 1 adds ``bundle_assembly`` (position 10) and ``run_manifest``
+# (position 11) to the executable registry.
 # Phase H's PROCESS_STAGE_ORDER must agree with this tuple's keys
 # (the conformance test in tests/unit/test_stage_registry.py pins the order).
 STAGES: tuple[StageEntry, ...] = (
-    StageEntry("evaluation_state",       evaluation,    evaluation.execute,
+    StageEntry("evaluation_state",       evaluation,      evaluation.execute,
                evaluation.INPUT_CLASS,    evaluation.OUTPUT_CLASS),
-    StageEntry("rca_evidence",           rca_evidence,  rca_evidence.execute,
+    StageEntry("rca_evidence",           rca_evidence,    rca_evidence.execute,
                rca_evidence.INPUT_CLASS,  rca_evidence.OUTPUT_CLASS),
-    StageEntry("cluster_formation",      clustering,    clustering.execute,
+    StageEntry("cluster_formation",      clustering,      clustering.execute,
                clustering.INPUT_CLASS,    clustering.OUTPUT_CLASS),
-    StageEntry("action_group_selection", action_groups, action_groups.execute,
+    StageEntry("action_group_selection", action_groups,   action_groups.execute,
                action_groups.INPUT_CLASS, action_groups.OUTPUT_CLASS),
-    StageEntry("proposal_generation",    proposals,     proposals.execute,
+    StageEntry("proposal_generation",    proposals,       proposals.execute,
                proposals.INPUT_CLASS,     proposals.OUTPUT_CLASS),
-    StageEntry("safety_gates",           gates,         gates.execute,
+    StageEntry("safety_gates",           gates,           gates.execute,
                gates.INPUT_CLASS,         gates.OUTPUT_CLASS),
-    StageEntry("applied_patches",        application,   application.execute,
+    StageEntry("applied_patches",        application,     application.execute,
                application.INPUT_CLASS,   application.OUTPUT_CLASS),
-    StageEntry("acceptance_decision",    acceptance,    acceptance.execute,
+    StageEntry("acceptance_decision",    acceptance,      acceptance.execute,
                acceptance.INPUT_CLASS,    acceptance.OUTPUT_CLASS),
-    StageEntry("learning_next_action",   learning,      learning.execute,
+    StageEntry("learning_next_action",   learning,        learning.execute,
                learning.INPUT_CLASS,      learning.OUTPUT_CLASS),
+    StageEntry("bundle_assembly",        bundle_assembly, bundle_assembly.execute,
+               bundle_assembly.INPUT_CLASS, bundle_assembly.OUTPUT_CLASS),
+    StageEntry("run_manifest",           run_manifest,    run_manifest.execute,
+               run_manifest.INPUT_CLASS,  run_manifest.OUTPUT_CLASS),
 )
 
 
@@ -97,7 +102,7 @@ _STAGE_BY_KEY: dict[str, StageEntry] = {
 def get_stage(stage_key: str) -> StageEntry:
     """Return the StageEntry for ``stage_key``.
 
-    Raises ``KeyError`` if ``stage_key`` is not one of the 9 canonical
+    Raises ``KeyError`` if ``stage_key`` is not one of the 11 canonical
     keys.
     """
     if stage_key not in _STAGE_BY_KEY:

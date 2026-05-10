@@ -70,23 +70,23 @@ def test_build_manifest_includes_stage_keys_in_process_order() -> None:
         iterations=[1],
         missing_pieces=[],
     )
-    # Phase H Fidelity Task 6: manifest stage order mirrors the
-    # 11-entry transcript contract (PROCESS_STAGE_ORDER), not the
-    # 9-entry executable STAGES registry. The transcript-only stages
+    # C15 Phase 1: manifest stage order mirrors the 13-entry transcript
+    # contract (PROCESS_STAGE_ORDER). The transcript-only stages
     # ``post_patch_evaluation`` (between ``applied_patches`` and
     # ``acceptance_decision``) and ``contract_health`` (final) are
     # included so postmortem skills walk every stage the operator
-    # transcript renders.
+    # transcript renders. bundle_assembly and run_manifest are now
+    # executable stages at positions 11 and 12.
     keys = manifest["stage_keys_in_process_order"]
     assert keys[0] == "evaluation_state"
     assert keys[-1] == "contract_health"
-    assert len(keys) == 11
-    # Executable subset (9 stages from STAGES) is still exposed for
+    assert len(keys) == 13
+    # Executable subset (11 stages from STAGES) is still exposed for
     # consumers that need to reach stage I/O artifacts.
     exec_keys = manifest["executable_stage_keys"]
     assert exec_keys[0] == "evaluation_state"
-    assert exec_keys[-1] == "learning_next_action"
-    assert len(exec_keys) == 9
+    assert exec_keys[-1] == "run_manifest"
+    assert len(exec_keys) == 11
 
 
 # Cycle 12-T3 — parent-bundle aggregators / minimal producers

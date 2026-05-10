@@ -79,11 +79,14 @@ def test_artifact_index_lists_every_stage_per_iteration() -> None:
     index = build_artifact_index(iterations=[1, 2])
     for iteration in [1, 2]:
         per_iter = index["iterations"][str(iteration)]
-        # 9 executable stages (post_patch_evaluation + contract_health
-        # are transcript-only and not in the per-stage paths).
-        assert len(per_iter["stages"]) == 9
+        # C15 Phase 1: 11 executable stages (post_patch_evaluation + contract_health
+        # are transcript-only and not in the per-stage paths; bundle_assembly
+        # and run_manifest are now executable at positions 11 and 12).
+        assert len(per_iter["stages"]) == 11
         assert "01_evaluation_state" in per_iter["stages"]
         # PROCESS_STAGE_ORDER positions: 8=post_patch_evaluation (transcript-only),
-        # so the 9 executable stages get positions 1-7, 9, 10.
+        # so the 11 executable stages get positions 1-7, 9-12.
         assert "09_acceptance_decision" in per_iter["stages"]
         assert "10_learning_next_action" in per_iter["stages"]
+        assert "11_bundle_assembly" in per_iter["stages"]
+        assert "12_run_manifest" in per_iter["stages"]
