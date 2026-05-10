@@ -11,11 +11,19 @@ inside a single F4 gate is high-risk for byte-stability. F4 stands up
 the typed surface and STRATEGIST_AG_EMITTED emission entry; the LLM
 invocation, constraint filtering, and buffered-AG draining stay in
 harness for now and are deferred to a follow-up plan.
+
+C15 Phase 3: adds JsonRoundTrip to ActionGroupsInput / ActionGroupSlate,
+and adds the ForbiddenReason / AdmissionVerdict / ForbiddenAG /
+AdmissionTrace admission-trace types. When stage_handlers_chunk_b_enabled()
+is on, select() populates ActionGroupSlate.admission_trace from the
+forbidden-AG set so the postmortem bundle can surface which AGs were
+denied and why (forbidden-AG no-op loop observability).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Mapping, Sequence
 
 from genie_space_optimizer.optimization.decision_emitters import (
@@ -24,12 +32,74 @@ from genie_space_optimizer.optimization.decision_emitters import (
 from genie_space_optimizer.optimization.rca_decision_trace import (
     AlternativeOption,
 )
+from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
 
 
 STAGE_KEY: str = "action_group_selection"
 
 
-# Cycle 2 Task 4 — root causes that are inherently question-local.
+# ── C15 Phase 3: Admission trace types ────────────────────────────────
+
+
+class ForbiddenReason(StrEnum):
+    """Why an AG was denied admission to the slate.
+
+    Mirrors the rollback_class vocabulary used by
+    ``_compute_forbidden_ag_set`` in harness.py so postmortems can
+    cross-reference forbidden-AG denials with the reflection buffer
+    without re-parsing raw harness logs.
+    """
+    CONTENT_REGRESSION = "content_regression"
+    NO_PROPOSALS = "no_proposals"
+    AG_RETIRED = "ag_retired"
+    OTHER = "other"
+
+
+class AdmissionVerdict(StrEnum):
+    ADMITTED = "admitted"
+    DENIED = "denied"
+
+
+@dataclass(frozen=True, slots=True)
+class ForbiddenAG(JsonRoundTrip):
+    """A single forbidden-AG record supplied to ``ActionGroupsInput``.
+
+    ``ag_id`` matches the ``id`` / ``ag_id`` key on candidate AG dicts.
+    ``reason`` is the ``ForbiddenReason`` that caused the denial.
+    """
+    ag_id: str
+    reason: ForbiddenReason
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "ForbiddenAG":
+        return cls(
+            ag_id=str(payload["ag_id"]),
+            reason=ForbiddenReason(payload["reason"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AdmissionTrace(JsonRoundTrip):
+    """Per-candidate admission verdict for a single AG.
+
+    Populated in ``ActionGroupSlate.admission_trace`` when
+    ``stage_handlers_chunk_b_enabled()`` is on.  Empty tuple when
+    flag is off (byte-stable with legacy behaviour).
+    """
+    ag_id: str
+    verdict: AdmissionVerdict
+    denial_reason: str = ""
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "AdmissionTrace":
+        return cls(
+            ag_id=str(payload["ag_id"]),
+            verdict=AdmissionVerdict(payload["verdict"]),
+            denial_reason=str(payload.get("denial_reason", "")),
+        )
+
+
+# ── C15 Phase 2 Task 4 — root causes that are inherently question-local.
 # A single-question cluster with one of these root causes should be
 # fixed with a per-question lever, not a space-wide one.
 _QUESTION_SHAPE_ROOT_CAUSES: frozenset[str] = frozenset({
@@ -93,7 +163,7 @@ def stamp_recommended_levers_on_clusters(
 
 
 @dataclass
-class ActionGroupsInput:
+class ActionGroupsInput(JsonRoundTrip):
     """Input to stages.action_groups.select.
 
     ``action_groups`` is the slate of AGs the strategist returned (after
@@ -102,6 +172,10 @@ class ActionGroupsInput:
     AG's root_cause can be recovered. ``rca_id_by_cluster`` maps cluster
     id to its RCA id. ``ag_alternatives_by_id`` carries Phase D.5
     rejected-alternatives stamping.
+
+    C15 Phase 3: ``forbidden_ags`` carries the typed forbidden-AG set so
+    select() can produce a per-candidate AdmissionTrace when
+    ``stage_handlers_chunk_b_enabled()`` is on.
     """
 
     action_groups: tuple[Mapping[str, Any], ...]
@@ -126,20 +200,79 @@ class ActionGroupsInput:
     # the same dropped pattern. Typed as ``tuple[Any, ...]`` to avoid a
     # circular import on ``stages.gates.DroppedCausalPatch``.
     prior_iteration_dropped_causal_patches: tuple[Any, ...] = ()
+    # C15 Phase 3 — typed forbidden-AG set forwarded from
+    # _compute_forbidden_ag_set. Empty unless stage_handlers_chunk_b_enabled().
+    # When non-empty, select() records an AdmissionTrace per candidate.
+    forbidden_ags: tuple[ForbiddenAG, ...] = ()
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "ActionGroupsInput":
+        ags = tuple(
+            dict(a) for a in (payload.get("action_groups") or [])
+        )
+        src = {
+            str(k): dict(v)
+            for k, v in (payload.get("source_clusters_by_id") or {}).items()
+        }
+        rca_by_cluster = {
+            str(k): str(v)
+            for k, v in (payload.get("rca_id_by_cluster") or {}).items()
+        }
+        ag_alts = {
+            str(k): tuple(v)
+            for k, v in (payload.get("ag_alternatives_by_id") or {}).items()
+        }
+        buckets = dict(payload.get("prior_buckets_by_qid") or {})
+        dropped = tuple(payload.get("prior_iteration_dropped_causal_patches") or [])
+        forbidden = tuple(
+            ForbiddenAG.from_json(f)
+            for f in (payload.get("forbidden_ags") or [])
+        )
+        return cls(
+            action_groups=ags,
+            source_clusters_by_id=src,
+            rca_id_by_cluster=rca_by_cluster,
+            ag_alternatives_by_id=ag_alts,
+            prior_buckets_by_qid=buckets,
+            prior_iteration_dropped_causal_patches=dropped,
+            forbidden_ags=forbidden,
+        )
 
 
 @dataclass
-class ActionGroupSlate:
+class ActionGroupSlate(JsonRoundTrip):
     """Output of stages.action_groups.select.
 
     ``ags`` is the selected AG tuple (same content as input but normalized
     to a tuple). ``rejected_ag_alternatives`` records AGs the strategist
     proposed but the constraint/buffer pipeline filtered out, for Phase
     D.5 alternatives capture.
+
+    C15 Phase 3: ``admission_trace`` records per-candidate AdmissionTrace
+    entries when stage_handlers_chunk_b_enabled() is on. Empty tuple
+    when flag is off (byte-stable with legacy behaviour — zero new fields
+    emitted to postmortem bundle unless flag is on).
     """
 
     ags: tuple[Mapping[str, Any], ...]
     rejected_ag_alternatives: tuple[Mapping[str, Any], ...] = ()
+    # C15 Phase 3 — per-candidate admission verdicts. Populated when
+    # stage_handlers_chunk_b_enabled() is on; always empty otherwise.
+    admission_trace: tuple[AdmissionTrace, ...] = ()
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "ActionGroupSlate":
+        ags = tuple(
+            dict(a) for a in (payload.get("ags") or [])
+        )
+        rejected = tuple(
+            dict(r) for r in (payload.get("rejected_ag_alternatives") or [])
+        )
+        trace = tuple(
+            AdmissionTrace.from_json(t)
+            for t in (payload.get("admission_trace") or [])
+        )
+        return cls(ags=ags, rejected_ag_alternatives=rejected, admission_trace=trace)
 
 
 def _apply_bucket_policy(
@@ -235,6 +368,35 @@ def normalize_strategist_ags_with_recommended_levers(
     return out
 
 
+def _build_admission_trace(
+    candidates: tuple[Mapping[str, Any], ...],
+    forbidden_ags: tuple[ForbiddenAG, ...],
+) -> tuple[AdmissionTrace, ...]:
+    """C15 Phase 3 — produce per-candidate AdmissionTrace entries.
+
+    Each candidate whose ``id``/``ag_id`` key matches a ``ForbiddenAG``
+    gets verdict=DENIED with ``denial_reason`` set to the ForbiddenReason
+    value. All other candidates get verdict=ADMITTED.
+
+    Pure; no side effects. Called only when stage_handlers_chunk_b_enabled().
+    """
+    forbidden_by_id = {f.ag_id: f for f in forbidden_ags}
+    trace: list[AdmissionTrace] = []
+    for cand in candidates:
+        ag_id = str(cand.get("id") or cand.get("ag_id") or "")
+        if not ag_id:
+            continue
+        if ag_id in forbidden_by_id:
+            trace.append(AdmissionTrace(
+                ag_id=ag_id,
+                verdict=AdmissionVerdict.DENIED,
+                denial_reason=forbidden_by_id[ag_id].reason.value,
+            ))
+        else:
+            trace.append(AdmissionTrace(ag_id=ag_id, verdict=AdmissionVerdict.ADMITTED))
+    return tuple(trace)
+
+
 def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
     """Stage 4 entry. Emits STRATEGIST_AG_EMITTED records and returns a
     typed slate. F4 is observability-only — does NOT invoke the
@@ -246,9 +408,17 @@ def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
     ``GSO_BUCKET_DRIVEN_AG_SELECTION`` is on AND ``prior_buckets_by_qid``
     is non-empty, the slate is filtered through ``_apply_bucket_policy``
     before STRATEGIST_AG_EMITTED records are produced.
+
+    C15 Phase 3: when stage_handlers_chunk_b_enabled() is on AND
+    ``inp.forbidden_ags`` is non-empty, populates ``ActionGroupSlate.
+    admission_trace`` with per-candidate verdicts so the postmortem bundle
+    can surface which AGs were denied and why (forbidden-AG no-op loop
+    observability). Flag-off behaviour is byte-stable with pre-Phase-3
+    runs (admission_trace is always an empty tuple when flag is off).
     """
     from genie_space_optimizer.common.config import (
         bucket_driven_ag_selection_enabled,
+        stage_handlers_chunk_b_enabled,
     )
 
     if (
@@ -286,9 +456,18 @@ def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
     for record in records:
         ctx.decision_emit(record)
 
+    # C15 Phase 3 — admission trace (chunk_b flag-gated; byte-stable when off).
+    admission_trace: tuple[AdmissionTrace, ...] = ()
+    if stage_handlers_chunk_b_enabled() and inp.forbidden_ags:
+        admission_trace = _build_admission_trace(
+            candidates=inp.action_groups,
+            forbidden_ags=inp.forbidden_ags,
+        )
+
     return ActionGroupSlate(
         ags=filtered_ags,
         rejected_ag_alternatives=(),
+        admission_trace=admission_trace,
     )
 
 
