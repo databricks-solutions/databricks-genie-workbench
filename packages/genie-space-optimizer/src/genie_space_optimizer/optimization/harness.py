@@ -348,9 +348,9 @@ def _emit_iteration_summary_totality_at_terminate(
     """
     try:
         from genie_space_optimizer.common.config import (
-            iteration_summary_totality_observe_enabled,
+            iteration_summary_totality_enabled,
         )
-        if not iteration_summary_totality_observe_enabled():
+        if not iteration_summary_totality_enabled():
             return
         from genie_space_optimizer.optimization.run_analysis_contract import (
             check_iteration_summary_totality,

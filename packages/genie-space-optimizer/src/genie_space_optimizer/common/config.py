@@ -5902,19 +5902,6 @@ def gso_run_manifest_v2_enabled() -> bool:
     return _flag_default_on("GSO_RUN_MANIFEST_V2_ENABLED")
 
 
-def iteration_summary_totality_observe_enabled() -> bool:
-    """Cycle 14-W hardening — when on (default), the lever-loop
-    terminate path calls ``check_iteration_summary_totality()`` and
-    emits ``GSO_ITERATION_SUMMARY_TOTALITY_V1`` if the iteration
-    counter, summary-emission counter, and Phase B record-count
-    cardinality disagree. Diagnostic-only; no behaviour change.
-
-    Disable with ``GSO_ITERATION_SUMMARY_TOTALITY=0`` if the alarm
-    fires noisily on a corpus run while triage is in progress.
-    """
-    return _flag_default_on("GSO_ITERATION_SUMMARY_TOTALITY")
-
-
 def phase_h_drift_observe_enabled() -> bool:
     """Cycle 14-W hardening — when on (default), the harness compares
     canonical ``ControlPlaneAcceptance`` against the Phase H acceptance
