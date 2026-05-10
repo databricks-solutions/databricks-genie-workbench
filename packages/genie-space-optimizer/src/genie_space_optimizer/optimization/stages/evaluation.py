@@ -24,6 +24,7 @@ from genie_space_optimizer.optimization.decision_emitters import (
 from genie_space_optimizer.optimization.eval_entry import (
     _emit_eval_entry_journey,
 )
+from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
 from genie_space_optimizer.optimization.stages._run_evaluation_kwargs import (
     RunEvaluationKwargs,
 )
@@ -34,7 +35,7 @@ POST_PATCH_STAGE_KEY: str = "post_patch_evaluation"
 
 
 @dataclass
-class EvaluationInput:
+class EvaluationInput(JsonRoundTrip):
     """Input to evaluate_baseline / evaluate_post_patch.
 
     ``run_role`` distinguishes baseline / iteration_eval / strategy from
@@ -52,7 +53,7 @@ class EvaluationInput:
 
 
 @dataclass
-class EvaluationResult:
+class EvaluationResult(JsonRoundTrip):
     """Output of evaluate_baseline / evaluate_post_patch.
 
     Field set is the union of what today's harness locals expose to
