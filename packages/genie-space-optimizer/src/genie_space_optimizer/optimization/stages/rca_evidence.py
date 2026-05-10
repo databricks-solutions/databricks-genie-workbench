@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
 from genie_space_optimizer.optimization.rca import (
     _asi_finding_from_metadata,
     _safe_rca_kind,
@@ -30,7 +31,7 @@ STAGE_KEY: str = "rca_evidence"
 
 
 @dataclass
-class RcaEvidenceInput:
+class RcaEvidenceInput(JsonRoundTrip):
     """Input to stages.rca_evidence.collect.
 
     ``eval_rows`` is the per-qid eval result list (used for SQL
@@ -49,7 +50,7 @@ class RcaEvidenceInput:
 
 
 @dataclass
-class RcaEvidenceBundle:
+class RcaEvidenceBundle(JsonRoundTrip):
     """Per-qid evidence record after Phase C grounding + PR-D top-N routing.
 
     ``per_qid_evidence[qid]`` is a dict carrying judge verdict, sql_diff,
