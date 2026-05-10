@@ -164,9 +164,12 @@ def test_no_proposals_in_forbidden_set_when_flag_on(monkeypatch) -> None:
 
 
 def test_no_proposals_not_in_forbidden_set_when_flag_off(monkeypatch) -> None:
-    """Replay byte-stability: with the flag off, the same entry
-    is excluded — pre-C13 behaviour."""
-    monkeypatch.delenv("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION", raising=False)
+    """Replay byte-stability: with the flag explicitly off
+    (``GSO_FORBIDDEN_AG_ADMITS_NO_ACTION=0``), the same entry is
+    excluded — pre-C13 / pre-14-W-default-flip behaviour. Cycle
+    14-W T4 flipped the default ON; this test now uses an
+    explicit override."""
+    monkeypatch.setenv("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION", "0")
     buf = [_no_proposals_entry("plural_top_n_collapse", ["zone_vp_name"], [5, 6])]
     assert _compute_forbidden_ag_set(buf) == set()
 

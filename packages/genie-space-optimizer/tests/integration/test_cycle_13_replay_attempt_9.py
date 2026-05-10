@@ -73,7 +73,11 @@ def test_anchor_iter1_to_iter2_intercepted_with_flag_on(monkeypatch) -> None:
 
 
 def test_anchor_iter1_to_iter2_unchanged_with_flag_off(monkeypatch) -> None:
-    """Replay byte-stability: pre-C13 fixtures still pass."""
-    monkeypatch.delenv("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION", raising=False)
+    """Replay byte-stability: pre-C13 fixtures still pass under
+    explicit ``GSO_FORBIDDEN_AG_ADMITS_NO_ACTION=0`` override.
+    Cycle 14-W T4 flipped the default to ON; this test exercises
+    the operator-override escape hatch for replaying pre-14-W
+    fixtures byte-stable."""
+    monkeypatch.setenv("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION", "0")
     reflection_buffer = [_anchor_iter1_no_proposals_entry()]
     assert _compute_forbidden_ag_set(reflection_buffer) == set()

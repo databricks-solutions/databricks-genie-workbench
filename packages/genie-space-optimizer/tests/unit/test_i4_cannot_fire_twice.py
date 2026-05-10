@@ -74,9 +74,12 @@ def test_i4_cannot_fire_twice_in_one_run_after_cycle_13(monkeypatch) -> None:
 
 
 def test_i4_can_still_fire_on_flag_off(monkeypatch) -> None:
-    """Replay byte-stability: with the flag off, the legacy
-    behaviour (I4 fires on iter 2) is preserved."""
-    monkeypatch.delenv("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION", raising=False)
+    """Replay byte-stability: with the flag explicitly off
+    (``GSO_FORBIDDEN_AG_ADMITS_NO_ACTION=0``), the legacy
+    behaviour (I4 fires on iter 2) is preserved. Cycle 14-W T4
+    flipped the default ON; the explicit override exercises the
+    pre-14-W behaviour."""
+    monkeypatch.setenv("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION", "0")
     iter1_entry = _build_reflection_entry(
         iteration=1, ag_id="AG1", accepted=False,
         levers=[5, 6], target_objects=[],
