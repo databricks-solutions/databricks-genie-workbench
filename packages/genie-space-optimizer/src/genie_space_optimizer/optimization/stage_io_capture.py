@@ -249,7 +249,18 @@ def wrap_with_io_capture(
             captured_decisions.append(record)
             original_emit(record)
 
-        ctx.decision_emit = _capturing_emit
+        # StageContext is frozen+slotted; use dataclasses.replace() to
+        # pass a new context with the capturing emit rather than mutating.
+        # Fall back to direct attribute mutation for non-dataclass ctx
+        # objects (e.g. plain-class stubs used by legacy tests).
+        from dataclasses import is_dataclass, replace as _dc_replace
+        if is_dataclass(ctx) and not isinstance(ctx, type):
+            ctx_capturing = _dc_replace(ctx, decision_emit=_capturing_emit)
+            _ctx_to_restore = None
+        else:
+            ctx.decision_emit = _capturing_emit  # type: ignore[attr-defined]
+            ctx_capturing = ctx
+            _ctx_to_restore = original_emit
         # Phase H Task 9 — flush captured_decisions to MLflow even when
         # ``execute`` raises so stage-09 (acceptance) fails loudly with
         # an audit trail. ``out`` is None in the raise path; the
@@ -259,11 +270,12 @@ def wrap_with_io_capture(
         out: Any = None
         execute_exc: BaseException | None = None
         try:
-            out = execute(ctx, inp)
+            out = execute(ctx_capturing, inp)
         except BaseException as exc:  # noqa: BLE001 — propagate after flush
             execute_exc = exc
         finally:
-            ctx.decision_emit = original_emit
+            if _ctx_to_restore is not None:
+                ctx.decision_emit = _ctx_to_restore  # type: ignore[attr-defined]
 
         if anchor:
             try:

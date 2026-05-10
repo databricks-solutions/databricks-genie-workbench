@@ -6,16 +6,17 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class StageContext:
     """Context plumbed into every stage's execute() call.
 
-    Owned in the stages package so harness wiring is the only place that
-    builds it. Stages depend on the package, not on harness.py.
+    Owned in the stages package so harness wiring is the only place
+    that builds it. Stages depend on the package, not on harness.py.
 
-    Phase G freezes this dataclass and adds slots=True. Phase H reads
-    ``mlflow_anchor_run_id`` to attach per-stage I/O captures to a
-    deterministic run.
+    Frozen + slotted so accidental mutation (e.g. ``ctx.iteration = N``
+    in a downstream consumer) raises FrozenInstanceError instead of
+    silently corrupting the next stage. ``feature_flags`` is a
+    read-only Mapping at the type level for the same reason.
     """
 
     run_id: str
