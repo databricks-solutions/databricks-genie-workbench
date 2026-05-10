@@ -1022,6 +1022,18 @@ def format_full_eval_marker_payload(
             str(q) for q in (decision.passing_to_hard_regressed_qids or ())
         ],
         "unknown_to_hard_regressed_qids": list(unknown_to_hard_qids),
+        "accidentally_improved_qids": [
+            str(q)
+            for q in (
+                getattr(decision, "accidentally_improved_qids", ()) or ()
+            )
+        ],
+        "unresolved_target_debt_qids": [
+            str(q)
+            for q in (
+                getattr(decision, "unresolved_target_debt_qids", ()) or ()
+            )
+        ],
         "reason_detail": format_control_plane_acceptance_detail(decision),
     }
 

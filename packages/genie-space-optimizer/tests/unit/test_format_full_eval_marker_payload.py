@@ -67,12 +67,20 @@ def test_helper_returns_dict_with_stable_keys() -> None:
         "target_qids",
         "target_fixed_qids",
         "target_still_hard_qids",
+        # Cycle 14-W T1: SOFT_PASSING targets get a first-class
+        # bucket field.
+        "target_soft_passing_qids",
         "target_delta_states",
         "out_of_target_regressed_qids",
         "regression_debt_qids",
         "soft_to_hard_regressed_qids",
         "passing_to_hard_regressed_qids",
         "unknown_to_hard_regressed_qids",
+        # Cycle 14-C T4: reattribution accounting fields. Empty
+        # lists for non-drift decisions; populated only when the
+        # accepted_with_attribution_drift branch fires.
+        "accidentally_improved_qids",
+        "unresolved_target_debt_qids",
         "reason_detail",
     }
     assert set(payload.keys()) == expected_keys
