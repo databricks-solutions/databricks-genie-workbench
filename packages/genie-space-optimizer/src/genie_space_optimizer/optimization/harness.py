@@ -24379,6 +24379,39 @@ def _run_lever_loop(
                     ),
                     artifact_file=_paths["journey_validation_all"],
                 )
+
+                # Cycle 14-W hardening (G-4 / D-8) — compare canonical
+                # replay-validator aggregate against the Phase H
+                # journey-validator upload and alarm on disagreement.
+                # Canonical is the naive sum over the in-memory
+                # ``_per_iter_journey_reports``; Phase H is what
+                # ``_build_journey_validation_all`` produced for the
+                # bundle upload.
+                try:
+                    _canonical_journey_violations = sum(
+                        len((rep or {}).get("violations") or [])
+                        for rep in (_per_iter_journey_reports or [])
+                    )
+                    _phase_h_journey_payload = _build_journey_validation_all(
+                        iter_reports=_per_iter_journey_reports,
+                    )
+                    _phase_h_journey_violations = int(
+                        _phase_h_journey_payload.get(
+                            "total_violation_count"
+                        ) or 0
+                    )
+                    _emit_phase_h_journey_drift_if_any(
+                        run_id=run_id,
+                        iteration=0,
+                        canonical_violation_count=_canonical_journey_violations,
+                        phase_h_violation_count=_phase_h_journey_violations,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Phase H journey-drift comparison failed "
+                        "(non-fatal)",
+                        exc_info=True,
+                    )
                 _client_phase_h.log_text(
                     run_id=_phase_h_anchor_run_id,
                     text=(_replay_fixture_json or "{}"),
