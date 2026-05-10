@@ -5950,3 +5950,38 @@ def unresolved_target_debt_strategist_enabled() -> bool:
     canonical unresolved-target-debt QID.
     """
     return _flag_default_on("GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cycle 15 Phase 0 — stage-handler chunk flags (all default-off)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def stage_handlers_chunk_a_enabled() -> bool:
+    """Cycle 15 Phase 2: route Chunk A (judges→strategist context) through
+    typed stage handlers in ``optimization/stages/``. Default-off so
+    replay byte-stability is preserved; flipped on after Phase 2 lands
+    and replay parity is verified."""
+    return _flag_enabled("GSO_STAGE_HANDLERS_CHUNK_A")
+
+
+def stage_handlers_chunk_b_enabled() -> bool:
+    """Cycle 15 Phase 3: route Chunk B (strategist output → AG selection)
+    through typed stage handlers."""
+    return _flag_enabled("GSO_STAGE_HANDLERS_CHUNK_B")
+
+
+def stage_handlers_chunk_c_enabled() -> bool:
+    """Cycle 15 Phase 4: route Chunk C (proposals → applied patches)
+    through typed stage handlers."""
+    return _flag_enabled("GSO_STAGE_HANDLERS_CHUNK_C")
+
+
+def stage_handlers_chunk_d_enabled() -> bool:
+    """Cycle 15 Phase 1: route Chunk D (eval → acceptance → bundle)
+    through typed stage handlers. The Phase 1 PR ships the typed
+    contracts and the harness wiring; with the flag off, the legacy
+    harness path runs; with the flag on, harness call sites delegate
+    to ``stages.acceptance.execute`` / ``stages.learning.execute`` /
+    ``stages.bundle_assembly.execute`` / ``stages.run_manifest.execute``."""
+    return _flag_enabled("GSO_STAGE_HANDLERS_CHUNK_D")
