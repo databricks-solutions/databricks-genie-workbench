@@ -281,3 +281,13 @@ def sample_clusters():
             "asi_counterfactual_fixes": [],
         },
     ]
+
+
+# C15-P0.4: make scripts/ importable for capture-script smoke tests.
+import sys
+from pathlib import Path
+
+_PKG_ROOT = Path(__file__).resolve().parents[1]
+_SCRIPTS = _PKG_ROOT / "scripts"
+if str(_SCRIPTS.parent) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS.parent))
