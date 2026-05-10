@@ -13,6 +13,12 @@ Reconciliation with the G-lite stage registry (stages/_registry.py):
   - The reconciliation rule is locked by
     tests/unit/test_process_stage_order_matches_stages_registry.py:
     every STAGES.stage_key must appear as a PROCESS_STAGE_ORDER.key.
+
+Note on bundle_assembly and run_manifest: these stages exist as
+module-level contracts (stages/bundle_assembly.py, stages/run_manifest.py)
+but are NOT enumerated in PROCESS_STAGE_ORDER or STAGES. They are
+registry-level entries only — they do not produce per-iteration
+artifacts in the postmortem bundle layout.
 """
 
 from __future__ import annotations
@@ -134,24 +140,6 @@ PROCESS_STAGE_ORDER: tuple[ProcessStage, ...] = (
         why=(
             "The loop records what worked, what failed, and what the next "
             "iteration or human operator should do."
-        ),
-    ),
-    ProcessStage(
-        key="bundle_assembly",
-        title="Bundle Assembly",
-        why=(
-            "Normalizes stage captures from list shape to dict shape "
-            "before the postmortem bundle is assembled. Closes D-4 "
-            "(C15 Phase 1 new stage)."
-        ),
-    ),
-    ProcessStage(
-        key="run_manifest",
-        title="Run Manifest",
-        why=(
-            "Resolves Databricks job/run/task IDs from environment or "
-            "dbutils tags. Closes D-5 contract surface "
-            "(C15 Phase 1 new stage)."
         ),
     ),
     ProcessStage(

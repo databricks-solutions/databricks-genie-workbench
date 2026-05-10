@@ -32,14 +32,12 @@ from genie_space_optimizer.optimization.stages import (
     acceptance,
     action_groups,
     application,
-    bundle_assembly,
     clustering,
     evaluation,
     gates,
     learning,
     proposals,
     rca_evidence,
-    run_manifest,
 )
 
 
@@ -61,7 +59,12 @@ class StageEntry:
     output_class: type
 
 
-# Canonical process order (9 original + 2 new C15 stages = 11 total).
+# Canonical process order: 9 executable stages.
+# PROCESS_STAGE_ORDER (run_output_contract) has 11 entries — the 9 here
+# plus ``post_patch_evaluation`` and ``contract_health`` (transcript-only).
+# bundle_assembly and run_manifest exist as stage modules but are NOT
+# enumerated here — they do not produce per-iteration artifacts in the
+# 11-section postmortem bundle layout.
 # Phase H's PROCESS_STAGE_ORDER must agree with this tuple's keys
 # (the conformance test in tests/unit/test_stage_registry.py pins the order).
 STAGES: tuple[StageEntry, ...] = (
@@ -83,10 +86,6 @@ STAGES: tuple[StageEntry, ...] = (
                acceptance.INPUT_CLASS,    acceptance.OUTPUT_CLASS),
     StageEntry("learning_next_action",   learning,      learning.execute,
                learning.INPUT_CLASS,      learning.OUTPUT_CLASS),
-    StageEntry("bundle_assembly",        bundle_assembly, bundle_assembly.execute,
-               bundle_assembly.INPUT_CLASS, bundle_assembly.OUTPUT_CLASS),
-    StageEntry("run_manifest",           run_manifest,    run_manifest.execute,
-               run_manifest.INPUT_CLASS,    run_manifest.OUTPUT_CLASS),
 )
 
 

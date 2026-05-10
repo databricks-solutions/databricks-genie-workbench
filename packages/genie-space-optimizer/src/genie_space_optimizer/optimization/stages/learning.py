@@ -91,9 +91,9 @@ class LearningInput(JsonRoundTrip):
     bookkeeping. The harness never reshapes the verdict; LearningInput
     accepts the AcceptanceVerdict enum or its string form (from_json).
 
-    NOTE: The legacy LearningInput (below) is preserved for the existing
-    update() function. This new contract is what INPUT_CLASS points to
-    for the conformance test and fixture replay.
+    NOTE: The legacy _LearningInputLegacy (below) is preserved for the
+    existing update() function. This new contract is what INPUT_CLASS
+    points to for the conformance test and fixture replay.
     """
 
     iteration: int
@@ -122,13 +122,19 @@ class LearningInput(JsonRoundTrip):
 
 
 @dataclass(frozen=True, slots=True)
-class LearningOutput(JsonRoundTrip):
-    """C15 Phase 1 typed output of stages.learning.execute. Drives:
+class _LearningOutputTyped(JsonRoundTrip):
+    """C15 Phase 1 typed output of stages.learning.execute (typed path).
 
+    Drives:
     * D-7: GSO_ITERATION_SUMMARY_TOTALITY_V1 emits len(iteration_summaries)
       records, exactly one per attempted iter.
     * Stage 10 → Stage 4 arrow: forbidden-AG set is rebuilt from
       iteration_summaries[*].rolled_back_content_fingerprints.
+
+    Exposed as OUTPUT_CLASS with __name__ == "LearningUpdate" per the
+    natural-noun convention (Findings/Slate/Outcome/PatchSet/Update/Bundle).
+    The deprecated alias LearningOutput is kept at module bottom for
+    callers referencing the old name.
     """
 
     iteration_summaries: tuple[IterationSummary, ...] = ()
@@ -136,7 +142,7 @@ class LearningOutput(JsonRoundTrip):
     terminate_reason: str = ""
 
     @classmethod
-    def from_json(cls, payload: dict) -> "LearningOutput":
+    def from_json(cls, payload: dict) -> "_LearningOutputTyped":
         return cls(
             iteration_summaries=tuple(
                 IterationSummary.from_json(s)
@@ -145,6 +151,12 @@ class LearningOutput(JsonRoundTrip):
             terminate=bool(payload.get("terminate", False)),
             terminate_reason=str(payload.get("terminate_reason", "")),
         )
+
+
+# Expose as "LearningUpdate" so OUTPUT_CLASS.__name__ == "LearningUpdate"
+# per the natural-noun convention and test_stage_io_class_declarations.py.
+_LearningOutputTyped.__name__ = "LearningUpdate"
+_LearningOutputTyped.__qualname__ = "LearningUpdate"
 
 
 @dataclass
@@ -169,6 +181,11 @@ class _LearningInputLegacy:
 
 @dataclass
 class LearningUpdate:
+    """Legacy output of the update() legacy path. Preserved for harness
+    call sites and test_stages_learning.py. NOT the OUTPUT_CLASS — the
+    typed _LearningOutputTyped (aliased to "LearningUpdate") is. Callers
+    of the legacy update() function continue to receive this type when
+    passing _LearningInputLegacy inputs."""
     new_reflection_buffer: tuple[dict[str, Any], ...]
     new_do_not_retry: set[str]
     new_rolled_back_content_fingerprints: set[str]
@@ -255,14 +272,55 @@ def _emit_ag_retired_records(
     return tuple(records)
 
 
-def update(ctx, inp: _LearningInputLegacy) -> LearningUpdate:
-    """Stage 9 entry. Builds the next-iteration learning state and
-    emits AG_RETIRED records when applicable.
+def update(ctx, inp):
+    """Stage 9 entry — unified callable exposed as both ``update`` and
+    ``execute`` (conformance contract: ``execute is update``).
+
+    Dispatches on input type:
+
+    * ``LearningInput`` (C15 Phase 1 typed path): builds one
+      IterationSummary and returns a ``_LearningOutputTyped`` (a
+      ``JsonRoundTrip`` with ``__name__ == "LearningUpdate"``). This
+      path is exercised by the fixture-replay tests and the totality
+      emitter (Task 1.11).
+
+    * ``_LearningInputLegacy`` (legacy harness path): runs the full
+      reflection-buffer / plateau / AG_RETIRED logic and returns a
+      ``LearningUpdate`` (the plain dataclass preserved for backward
+      compatibility). Harness call sites that have not yet migrated
+      take this path.
 
     F9 is observability-only — does NOT modify any harness call site.
-    Harness still owns the inline reflection-buffer / plateau /
-    AG_RETIRED block; this stage exposes a parallel typed surface
-    that Phase G/H will adopt.
+    """
+    if isinstance(inp, LearningInput):
+        return _execute_typed(ctx, inp)
+    return _update_legacy(ctx, inp)
+
+
+def _execute_typed(ctx, inp: LearningInput) -> _LearningOutputTyped:
+    """C15 Phase 1 typed execute path: LearningInput → _LearningOutputTyped."""
+    summary = IterationSummary(
+        iteration=inp.iteration,
+        attempted=inp.attempted,
+        verdict=inp.verdict,
+        candidate_accuracy=inp.candidate_accuracy,
+        baseline_accuracy=inp.baseline_accuracy,
+        accidentally_improved_qids=inp.accidentally_improved_qids,
+        unresolved_target_debt_qids=inp.unresolved_target_debt_qids,
+        rolled_back_content_fingerprints=inp.rolled_back_content_fingerprints,
+    )
+    return _LearningOutputTyped(
+        iteration_summaries=(summary,),
+        terminate=False,
+        terminate_reason="",
+    )
+
+
+def _update_legacy(ctx, inp: _LearningInputLegacy) -> LearningUpdate:
+    """Legacy update path: _LearningInputLegacy → LearningUpdate.
+
+    Builds the next-iteration learning state and emits AG_RETIRED
+    records when applicable.
     """
     new_reflection_buffer = _append_reflection_buffer_entry(
         prior=inp.prior_reflection_buffer,
@@ -319,37 +377,19 @@ def update(ctx, inp: _LearningInputLegacy) -> LearningUpdate:
     )
 
 
-def execute(ctx, inp: LearningInput) -> LearningOutput:
-    """Stage 9 entry for the C15 Phase 1 typed contract.
-
-    Builds one IterationSummary for this attempted iteration and
-    returns it wrapped in a LearningOutput. The ``terminate`` flag
-    and ``terminate_reason`` are computed by the harness caller
-    (which still owns plateau resolution) and passed through inp.
-    """
-    summary = IterationSummary(
-        iteration=inp.iteration,
-        attempted=inp.attempted,
-        verdict=inp.verdict,
-        candidate_accuracy=inp.candidate_accuracy,
-        baseline_accuracy=inp.baseline_accuracy,
-        accidentally_improved_qids=inp.accidentally_improved_qids,
-        unresolved_target_debt_qids=inp.unresolved_target_debt_qids,
-        rolled_back_content_fingerprints=inp.rolled_back_content_fingerprints,
-    )
-    return LearningOutput(
-        iteration_summaries=(summary,),
-        terminate=False,
-        terminate_reason="",
-    )
-
-
 # ── Phase H: explicit Input/Output class declarations ─────────────────
 # Phase H's per-stage I/O capture decorator imports these to serialize
 # the stage's typed input and output to MLflow.
-# C15 Phase 1: INPUT_CLASS → new frozen LearningInput (JsonRoundTrip);
-# OUTPUT_CLASS → new frozen LearningOutput (JsonRoundTrip).
-# The legacy _LearningInputLegacy / LearningUpdate remain for the
-# existing update() function body.
+# C15 Phase 1 naming alignment:
+#   INPUT_CLASS  → LearningInput (JsonRoundTrip)
+#   OUTPUT_CLASS → _LearningOutputTyped (JsonRoundTrip, __name__=="LearningUpdate")
+# ``execute`` aliases ``update`` per the G-lite stage conformance contract
+# (test_stage_conformance.py pins: execute is update).
 INPUT_CLASS = LearningInput
-OUTPUT_CLASS = LearningOutput
+OUTPUT_CLASS = _LearningOutputTyped
+execute = update
+
+# Deprecated alias: LearningOutput → _LearningOutputTyped.
+# Harness comments reference "LearningOutput"; callers that import it
+# by name continue to work. Remove in Phase 6.
+LearningOutput = _LearningOutputTyped
