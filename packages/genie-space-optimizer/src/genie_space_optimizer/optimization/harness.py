@@ -213,8 +213,8 @@ _DATABRICKS_ID_SENTINEL: str = "unknown"
 
 
 def _databricks_ids_from_env() -> dict[str, str]:
-    """Cycle 14-V T6 — resolve Databricks IDs from notebook
-    environment at run start.
+    """Cycle 14-V T6 + Cycle 14-W T3 — resolve Databricks IDs from
+    notebook environment at run start.
 
     Reads the standard Databricks notebook env vars and falls
     through to ``dbutils.notebook.entry_point``'s tag-resolver when
@@ -222,14 +222,23 @@ def _databricks_ids_from_env() -> dict[str, str]:
     each value is either the resolved ID (non-empty string) or the
     literal sentinel ``"unknown"`` (NEVER blank/empty).
 
+    Cycle 14-W T3: emits ``GSO_DATABRICKS_IDS_RESOLVED_V1`` recording
+    which resolution path fired (``env`` / ``dbutils`` / ``mixed``
+    / ``sentinel``). The trace exists because D-5 regressed in
+    C14-V — the resolver was reached, but the production code path
+    returned blank. The trace lets corpus measurement catch
+    function-reached-but-wrong-path failures.
+
     Anchor evidence: 7Now run 338386531912450 F9 + airline run
-    833709971504406 F8 — both report blank Databricks job/task IDs
-    in ``GSO_RUN_MANIFEST_V1/V2`` cross-space.
+    833709971504406 F8 (C14-V), 7Now run 960148942255012 F8 +
+    airline run 1105451933925748 F8 (C14-W regression).
     """
     import os as _os_for_ids
 
-    out: dict[str, str] = {
-        "databricks_job_id": str(_os_for_ids.environ.get("DATABRICKS_JOB_ID") or ""),
+    env_resolved: dict[str, str] = {
+        "databricks_job_id": str(
+            _os_for_ids.environ.get("DATABRICKS_JOB_ID") or ""
+        ),
         "databricks_parent_run_id": str(
             _os_for_ids.environ.get("DATABRICKS_RUN_ID")
             or _os_for_ids.environ.get("DATABRICKS_JOB_RUN_ID")
@@ -239,8 +248,12 @@ def _databricks_ids_from_env() -> dict[str, str]:
             _os_for_ids.environ.get("DATABRICKS_TASK_RUN_ID") or ""
         ),
     }
+    out: dict[str, str] = dict(env_resolved)
 
+    dbutils_attempted = False
+    dbutils_succeeded = False
     if not all(out.values()):
+        dbutils_attempted = True
         try:
             from pyspark.dbutils import DBUtils  # type: ignore[import-not-found]
             from pyspark.sql import SparkSession  # type: ignore[import-not-found]
@@ -266,12 +279,105 @@ def _databricks_ids_from_env() -> dict[str, str]:
                 )
             if not out["lever_loop_task_run_id"]:
                 out["lever_loop_task_run_id"] = _resolve("runId")
+            dbutils_succeeded = any(
+                out[k] != env_resolved[k] for k in out
+            )
         except Exception:
             # Outside Databricks (or dbutils unavailable) → fall
             # through to sentinels below.
             pass
 
-    return {k: (v or _DATABRICKS_ID_SENTINEL) for k, v in out.items()}
+    final = {k: (v or _DATABRICKS_ID_SENTINEL) for k, v in out.items()}
+
+    # Cycle 14-W T3: emit the resolution-path trace so corpus
+    # measurement sees which path fired.
+    try:
+        from genie_space_optimizer.common.config import (
+            databricks_ids_resolution_trace_enabled,
+        )
+        if databricks_ids_resolution_trace_enabled():
+            from genie_space_optimizer.optimization.run_analysis_contract import (
+                databricks_ids_resolved_marker,
+            )
+            fields_resolved = sum(
+                1 for v in final.values() if v != _DATABRICKS_ID_SENTINEL
+            )
+            if all(env_resolved.values()):
+                path = "env"
+            elif dbutils_succeeded and any(env_resolved.values()):
+                path = "mixed"
+            elif dbutils_succeeded:
+                path = "dbutils"
+            else:
+                path = "sentinel"
+            sample_field = next(
+                (k for k, v in final.items() if v == _DATABRICKS_ID_SENTINEL),
+                "",
+            )
+            print(databricks_ids_resolved_marker(
+                resolution_path=path,
+                fields_resolved=fields_resolved,
+                fields_total=len(final),
+                dbutils_attempted=dbutils_attempted,
+                dbutils_succeeded=dbutils_succeeded,
+                sample_field=sample_field,
+                sample_value="",  # never echo the value itself
+            ))
+    except Exception:
+        # Defensive: trace emit must never crash the resolver.
+        pass
+
+    return final
+
+
+def _emit_iteration_summary_totality_at_terminate(
+    *,
+    run_id: str,
+    iteration_counter: int,
+    iteration_summary_count: int,
+    phase_b_iter_record_counts_length: int,
+) -> None:
+    """Cycle 14-W hardening — emit ``GSO_ITERATION_SUMMARY_TOTALITY_V1``
+    if the three cardinalities disagree. Silent on clean runs and
+    when the observability flag is off.
+
+    Anchor: airline run 1105451933925748 F7 — 3 iterations attempted,
+    1 ``GSO_ITERATION_SUMMARY_V1`` emitted, ``iter_record_counts``
+    has 4 buckets. Production-wiring fix for D-7 (G-3 hardening
+    delta).
+    """
+    try:
+        from genie_space_optimizer.common.config import (
+            iteration_summary_totality_observe_enabled,
+        )
+        if not iteration_summary_totality_observe_enabled():
+            return
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            check_iteration_summary_totality,
+            iteration_summary_totality_marker,
+        )
+        violation = check_iteration_summary_totality(
+            iteration_counter=int(iteration_counter),
+            iteration_summary_count=int(iteration_summary_count),
+            phase_b_iter_record_counts_length=int(
+                phase_b_iter_record_counts_length
+            ),
+        )
+        if violation is None:
+            return
+        print(iteration_summary_totality_marker(
+            optimization_run_id=str(run_id or ""),
+            iteration_counter=int(iteration_counter),
+            iteration_summary_count=int(iteration_summary_count),
+            phase_b_iter_record_counts_length=int(
+                phase_b_iter_record_counts_length
+            ),
+        ))
+    except Exception:
+        logger.debug(
+            "GSO iteration-summary totality alarm emission skipped",
+            exc_info=True,
+        )
 
 
 def _build_baseline_overview_dict(
@@ -13868,6 +13974,13 @@ def _run_lever_loop(
     _phase_b_target_qids_missing_count: int = 0
     _phase_b_total_violations: int = 0
 
+    # Cycle 14-W hardening (G-3 / D-7) — count successful
+    # ``GSO_ITERATION_SUMMARY_V1`` emissions so the terminate path
+    # can fire ``GSO_ITERATION_SUMMARY_TOTALITY_V1`` if the
+    # cardinality drifts away from ``iteration_counter`` /
+    # ``len(_phase_b_iter_record_counts)``.
+    _iteration_summary_emission_count: int = 0
+
     # Cycle 14-T1: gather the four accumulators into one dict so
     # _finalize_iteration_summary can call
     # record_phase_b_iter_accounting on every exit path. The legacy
@@ -23481,6 +23594,7 @@ def _run_lever_loop(
                         0 if _journey_report is None else len(_journey_report.violations)
                     ),
                 ))
+                _iteration_summary_emission_count += 1
             except Exception:
                 logger.debug("GSO iteration summary marker skipped", exc_info=True)
 
@@ -23833,6 +23947,15 @@ def _run_lever_loop(
         ))
     except Exception:
         logger.debug("Phase B end marker emission skipped", exc_info=True)
+
+    # Cycle 14-W hardening (G-3 / D-7) — alarm if iteration summary
+    # totality is broken at terminate.
+    _emit_iteration_summary_totality_at_terminate(
+        run_id=run_id,
+        iteration_counter=int(iteration_counter),
+        iteration_summary_count=int(_iteration_summary_emission_count),
+        phase_b_iter_record_counts_length=int(len(_phase_b_iter_record_counts)),
+    )
 
     # Phase F+H C18 (v2, Phase-H reliability fix): split rendering from
     # upload. Rendering the operator transcript and bundle JSONs runs

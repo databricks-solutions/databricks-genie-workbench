@@ -5477,24 +5477,59 @@ def canonical_render_invariant_enabled() -> bool:
     return _flag_default_on("GSO_CANONICAL_RENDER_INVARIANT")
 
 
+def databricks_ids_resolution_trace_enabled() -> bool:
+    """Cycle 14-W T3 — emit ``GSO_DATABRICKS_IDS_RESOLVED_V1``
+    recording which resolution path (env / dbutils / mixed /
+    sentinel) populated each manifest ID. Diagnostic-only.
+
+    Default ON. Disable with
+    ``GSO_DATABRICKS_IDS_RESOLUTION_TRACE=0``.
+    """
+    return _flag_default_on("GSO_DATABRICKS_IDS_RESOLUTION_TRACE")
+
+
+def iteration_summary_totality_enabled() -> bool:
+    """Cycle 14-W T5 — when on (default), the loop emits
+    ``GSO_ITERATION_SUMMARY_TOTALITY_V1`` if the iteration counter,
+    iteration-summary marker count, and ``GSO_PHASE_B_END_V1``
+    record-count cardinality disagree.
+
+    Default ON. Disable with ``GSO_ITERATION_SUMMARY_TOTALITY=0``.
+    """
+    return _flag_default_on("GSO_ITERATION_SUMMARY_TOTALITY")
+
+
+def phase_h_canonical_consumer_enabled() -> bool:
+    """Cycle 14-W T6 — when on (default), Phase H acceptance writer
+    + journey validator are routed through the canonical decision
+    surface (and a drift alarm fires on disagreement).
+
+    Default ON. Disable with ``GSO_PHASE_H_CANONICAL_CONSUMER=0``.
+    """
+    return _flag_default_on("GSO_PHASE_H_CANONICAL_CONSUMER")
+
+
 def forbidden_ag_admits_no_action_enabled() -> bool:
-    """Cycle 13 — when on, ``_compute_forbidden_ag_set`` admits
-    reflections classified as ``RollbackClass.NO_ACTION`` (i.e.
-    ``no_proposals`` and ``ag_collision_with_forbidden_set``)
+    """Cycle 13 / Cycle 14-W T4 — when on, ``_compute_forbidden_ag_set``
+    admits reflections classified as ``RollbackClass.NO_ACTION``
+    (i.e. ``no_proposals`` and ``ag_collision_with_forbidden_set``)
     alongside the existing ``CONTENT_REGRESSION`` and
     ``ACCEPTED_WITH_DEBT`` admissions. Closes the Stage 10 → Stage 4
-    arrow in the GSO Run Output Contract: the strategist's input
-    on iteration N+1 reflects that an empty-proposal AG signature
-    on iteration N should not be unconditionally retried.
+    arrow in the GSO Run Output Contract: the strategist's input on
+    iteration N+1 reflects that an empty-proposal AG signature on
+    iteration N should not be unconditionally retried.
 
-    Default OFF for the initial pilot. Flip to default-on after one
-    corpus pilot validates that AG retirement does not starve the
-    loop (i.e. that the strategist proposes an alternate AG family
-    rather than terminating).
+    **Cycle 14-W T4 (2026-05-09): default flipped to ON.** Corpus
+    evidence: 7Now run 960148942255012 F5 — the C14-V T1 shadow
+    marker ``GSO_FORBIDDEN_AG_ADMISSION_OBSERVE_V1`` fired on 5/5
+    NO_ACTION reflections with
+    ``would_admit_with_admit_no_action_on=true``; the regression
+    rail ``GSO_FORBIDDEN_AG_ADMISSION_BYPASSED_V1`` fired 0 times.
 
-    Enable with ``GSO_FORBIDDEN_AG_ADMITS_NO_ACTION=1``.
+    Disable with ``GSO_FORBIDDEN_AG_ADMITS_NO_ACTION=0`` (replay
+    byte-stability for pre-14-W fixtures).
     """
-    return _flag_enabled("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION")
+    return _flag_default_on("GSO_FORBIDDEN_AG_ADMITS_NO_ACTION")
 
 
 def bucket_driven_ag_selection_enabled() -> bool:
@@ -5865,3 +5900,16 @@ def gso_run_manifest_v2_enabled() -> bool:
     only the legacy V1 marker is emitted.
     """
     return _flag_default_on("GSO_RUN_MANIFEST_V2_ENABLED")
+
+
+def iteration_summary_totality_observe_enabled() -> bool:
+    """Cycle 14-W hardening — when on (default), the lever-loop
+    terminate path calls ``check_iteration_summary_totality()`` and
+    emits ``GSO_ITERATION_SUMMARY_TOTALITY_V1`` if the iteration
+    counter, summary-emission counter, and Phase B record-count
+    cardinality disagree. Diagnostic-only; no behaviour change.
+
+    Disable with ``GSO_ITERATION_SUMMARY_TOTALITY=0`` if the alarm
+    fires noisily on a corpus run while triage is in progress.
+    """
+    return _flag_default_on("GSO_ITERATION_SUMMARY_TOTALITY")
