@@ -5912,3 +5912,20 @@ def phase_h_drift_observe_enabled() -> bool:
     noisily on a corpus run while triage is in progress.
     """
     return _flag_default_on("GSO_PHASE_H_DRIFT_OBSERVE")
+
+
+def attribution_drift_reattribution_enabled() -> bool:
+    """Cycle 14-C T1 — when on (default), the
+    ``accepted_with_attribution_drift`` branch in
+    ``decide_control_plane_acceptance`` populates two new fields on
+    ``ControlPlaneAcceptance`` (``accidentally_improved_qids``,
+    ``unresolved_target_debt_qids``) and the harness emits
+    ``GSO_ATTRIBUTION_DRIFT_V1`` with the reattribution payload.
+
+    Default ON. Disable with ``GSO_ATTRIBUTION_DRIFT_REATTRIBUTION=0``
+    if the marker fires noisily on a corpus run while triage is in
+    progress; disabling restores byte-identical pre-14-C behaviour
+    on this branch (the legacy fields stay populated; the new fields
+    return empty tuples; the new marker is not emitted).
+    """
+    return _flag_default_on("GSO_ATTRIBUTION_DRIFT_REATTRIBUTION")

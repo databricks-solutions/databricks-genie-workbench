@@ -165,6 +165,53 @@ def hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(qids))
 
 
+def compute_accidentally_improved_qids(
+    *,
+    pre_rows: Iterable[dict],
+    post_rows: Iterable[dict],
+    target_qids: Iterable[str],
+) -> tuple[str, ...]:
+    """Cycle 14-C T1 — return the QIDs that were ``hard`` in baseline,
+    ``passing`` in candidate, and NOT in the named target set.
+
+    These are the QIDs that explain a global accuracy gain when the
+    strategist's named target did not flip — i.e. the
+    ``accepted_with_attribution_drift`` branch fired. Surfacing
+    them is the cycle's primary contribution: keeps the win, but
+    attributes the gain to the QIDs that actually moved instead of
+    silently crediting the still-hard target.
+
+    Pure: no I/O, no globals, no side effects. Suitable for unit
+    tests on synthetic inputs.
+
+    Anchor: airline run 1105451933925748 iter 1 — target=gs_024
+    remained STILL_HARD; multiple non-target QIDs flipped from
+    baseline-hard to candidate-passing.
+
+    Returns a sorted tuple (canonical order so the resulting
+    ``ControlPlaneAcceptance`` field is byte-stable across runs).
+    """
+    pre_rows_list = list(pre_rows or [])
+    post_rows_list = list(post_rows or [])
+    target_set = {str(q) for q in (target_qids or ()) if str(q)}
+    pre_hard = set(hard_failure_qids(pre_rows_list))
+    pre_hard |= {
+        str(row.get("question_id") or row.get("id") or "")
+        for row in pre_rows_list
+        if isinstance(row, dict)
+        and str(row.get("row_status", "")).lower() == "hard"
+    }
+    pre_hard.discard("")
+    post_passing = {
+        str(row.get("question_id") or row.get("id") or "")
+        for row in post_rows_list
+        if isinstance(row, dict)
+        and str(row.get("row_status", "")).lower() == "passing"
+    }
+    accidentally_improved = (pre_hard & post_passing) - target_set
+    return tuple(sorted(q for q in accidentally_improved if q))
+
+
 # ── Cycle 14-T0: per-QID target-delta classifier ─────────────────────
 #
 # Total function over target_qids. Every declared target lands in
@@ -897,8 +944,17 @@ def format_full_eval_marker_payload(
             str(q) for q, s in delta_states_pairs
             if str(s) == DeltaState.STILL_HARD.value
         )
+        # Cycle 14-W T1: derive target_soft_passing_qids from
+        # target_delta_states so SOFT_PASSING targets have a
+        # first-class bucket field rather than being silently
+        # absent from every legacy bucket.
+        derived_soft_passing = tuple(
+            str(q) for q, s in delta_states_pairs
+            if str(s) == DeltaState.SOFT_PASSING.value
+        )
         target_fixed_qids = derived_fixed
         target_still_hard_qids = derived_still_hard
+        target_soft_passing_qids = derived_soft_passing
 
         # Subtract target QIDs from the unknown_to_hard bucket
         # because target QIDs are exhaustively classified by
@@ -916,6 +972,13 @@ def format_full_eval_marker_payload(
         target_still_hard_qids = tuple(
             str(q) for q in (decision.target_still_hard_qids or ())
         )
+        # Cycle 14-W T1: legacy fixtures don't carry a
+        # target_soft_passing_qids field; default to empty so the
+        # payload key is always present.
+        target_soft_passing_qids = tuple(
+            str(q)
+            for q in (getattr(decision, "target_soft_passing_qids", ()) or ())
+        )
         unknown_to_hard_qids = tuple(
             str(q) for q in (decision.unknown_to_hard_regressed_qids or ())
         )
@@ -932,6 +995,7 @@ def format_full_eval_marker_payload(
         "target_qids": [str(q) for q in (decision.target_qids or ())],
         "target_fixed_qids": list(target_fixed_qids),
         "target_still_hard_qids": list(target_still_hard_qids),
+        "target_soft_passing_qids": list(target_soft_passing_qids),
         "target_delta_states": delta_states_list,
         "out_of_target_regressed_qids": [
             str(q) for q in (decision.out_of_target_regressed_qids or ())
@@ -994,6 +1058,9 @@ def _detect_render_contradictions(payload: dict) -> list[dict]:
     violations: list[dict] = []
     fixed = set(payload.get("target_fixed_qids") or ())
     still_hard = set(payload.get("target_still_hard_qids") or ())
+    # Cycle 14-W T1: SOFT_PASSING is now a first-class bucket field;
+    # check pairwise overlap across {fixed, still_hard, soft_passing}.
+    soft_passing = set(payload.get("target_soft_passing_qids") or ())
     delta_pairs = payload.get("target_delta_states") or ()
     out_of_target = set(payload.get("out_of_target_regressed_qids") or ())
 
@@ -1007,6 +1074,28 @@ def _detect_render_contradictions(payload: dict) -> list[dict]:
                 f"target_still_hard_qids: {sorted(overlap)}"
             ),
         })
+
+    # Cycle 14-W T1: detect overlaps involving the new
+    # ``soft_passing`` bucket. The existing ``fixed_and_still_hard_overlap``
+    # class above already covers the {fixed, still_hard} pair; this
+    # generic class extends coverage to any pair involving
+    # ``soft_passing`` without double-counting the legacy case.
+    soft_passing_pairs = (
+        ("fixed", fixed, "soft_passing", soft_passing),
+        ("still_hard", still_hard, "soft_passing", soft_passing),
+    )
+    for name_a, set_a, name_b, set_b in soft_passing_pairs:
+        bucket_overlap = set_a & set_b
+        if bucket_overlap:
+            violations.append({
+                "class": "qid_in_multiple_state_buckets",
+                "qids": tuple(sorted(bucket_overlap)),
+                "detail": (
+                    f"qids appear in both target_{name_a}_qids "
+                    f"and target_{name_b}_qids: "
+                    f"{sorted(bucket_overlap)}"
+                ),
+            })
 
     target_qids_in_delta = {str(p[0]) for p in delta_pairs if p}
     target_in_out = target_qids_in_delta & out_of_target
