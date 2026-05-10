@@ -19551,6 +19551,55 @@ def _run_lever_loop(
                 # qids are all EVIDENCE_GAP with ``ag_kind=
                 # "evidence_gathering"``. Iter 1 sees an empty map (no
                 # carry-over yet), so the slate is unfiltered.
+
+                # C15 Phase 3 — build typed ForbiddenAG list for the
+                # admission trace when stage_handlers_chunk_b_enabled().
+                # Maps reflection_buffer entries that are admitted to the
+                # forbidden set (same predicate as _compute_forbidden_ag_set)
+                # to ForbiddenAG(ag_id, reason) objects so select() can
+                # populate ActionGroupSlate.admission_trace per candidate.
+                # Flag-off: empty tuple (byte-stable with pre-Phase-3 runs).
+                from genie_space_optimizer.common.config import (
+                    stage_handlers_chunk_b_enabled as _chunk_b_on,
+                )
+                if _chunk_b_on():
+                    from genie_space_optimizer.common.config import (
+                        forbidden_ag_admits_no_action_enabled as _c15_no_action_enabled,
+                    )
+                    from genie_space_optimizer.optimization.rollback_class import (
+                        RollbackClass as _RollbackClass,
+                    )
+                    from genie_space_optimizer.optimization.stages.action_groups import (
+                        ForbiddenAG as _ForbiddenAG,
+                        ForbiddenReason as _ForbiddenReason,
+                    )
+                    _rollback_class_to_forbidden_reason = {
+                        _RollbackClass.CONTENT_REGRESSION.value: _ForbiddenReason.CONTENT_REGRESSION,
+                        _RollbackClass.NO_ACTION.value: _ForbiddenReason.NO_PROPOSALS,
+                        _RollbackClass.ACCEPTED_WITH_DEBT.value: _ForbiddenReason.OTHER,
+                    }
+                    _c15_admit_no_action = _c15_no_action_enabled()
+                    _chunk_b_forbidden_ags: tuple = tuple(
+                        _ForbiddenAG(
+                            ag_id=str(r.get("ag_id") or ""),
+                            reason=_rollback_class_to_forbidden_reason.get(
+                                str(r.get("rollback_class") or ""),
+                                _ForbiddenReason.OTHER,
+                            ),
+                        )
+                        for r in (reflection_buffer or [])
+                        if (
+                            r.get("ag_id")
+                            and str(r.get("rollback_class") or "") in _rollback_class_to_forbidden_reason
+                            and not r.get("escalation_handled")
+                            and _reflection_admitted_to_forbidden_set(
+                                r, admit_no_action=_c15_admit_no_action,
+                            )
+                        )
+                    )
+                else:
+                    _chunk_b_forbidden_ags = ()
+
                 _ags_inp = _ags_stage.ActionGroupsInput(
                     action_groups=tuple([ag]),
                     source_clusters_by_id={
@@ -19574,6 +19623,9 @@ def _run_lever_loop(
                     prior_iteration_dropped_causal_patches=tuple(
                         _prior_iteration_dropped_causal_patches
                     ),
+                    # C15 Phase 3 — typed forbidden-AG set for admission trace.
+                    # Empty tuple when chunk_b flag is off (byte-stable).
+                    forbidden_ags=_chunk_b_forbidden_ags,
                 )
                 # Phase F+H Commit B11: wrap F4 with stage_io_capture
                 # decorator. Replay-byte-stable — wrap_with_io_capture
