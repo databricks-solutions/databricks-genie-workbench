@@ -1,0 +1,11 @@
+{
+  "ags": [],
+  "rejected_ag_alternatives": [],
+  "admission_trace": [
+    {
+      "ag_id": "AG1",
+      "verdict": "denied",
+      "denial_reason": "no_proposals"
+    }
+  ]
+}
