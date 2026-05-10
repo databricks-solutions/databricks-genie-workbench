@@ -9611,6 +9611,58 @@ def _call_llm_for_adaptive_strategy(
         )
 
     # ── Build structured context ────────────────────────────────────
+    # C15 Phase 2 Task 2.7: when GSO_STAGE_HANDLERS_CHUNK_A is on,
+    # emit a typed StrategistContextOutput that captures the exact
+    # boundary the strategist sees — enforcing the Stage 2→4 arrow
+    # (grounded-only RCA cards). The output is currently observability-
+    # only: the prompt still uses context_data from _build_context_data.
+    # Future phases will refactor the strategist prompt to consume
+    # rca_cards_grounded_only from the typed output directly.
+    # Default-off guarantees legacy byte-stability.
+    try:
+        from genie_space_optimizer.common.config import (
+            stage_handlers_chunk_a_enabled as _chunk_a_on,
+        )
+        if _chunk_a_on():
+            from genie_space_optimizer.optimization.stages import (
+                strategist_context as _sc_stage,
+            )
+            # Extract cluster → qid mapping and rca cards from the
+            # clusters list for the StrategistContextInput boundary.
+            _sc_clusters_by_qid: dict[str, str] = {}
+            _sc_rca_cards: list[dict] = []
+            for _c in (clusters or []):
+                _cid = str(_c.get("cluster_id") or "")
+                for _q in (_c.get("question_ids") or []):
+                    _sc_clusters_by_qid[str(_q)] = _cid
+                # Include any inline rca evidence the cluster carries.
+                if _c.get("rca_id") or _c.get("grounding"):
+                    _sc_rca_cards.append({
+                        "rca_id": str(_c.get("rca_id") or ""),
+                        "cluster_id": _cid,
+                        "grounding": str(_c.get("grounding") or "grounded"),
+                        "evidence_qids": list(_c.get("question_ids") or []),
+                    })
+            _hard_qids = tuple(
+                str(q) for c in (clusters or [])
+                for q in (c.get("question_ids") or [])
+            )
+            _sc_inp = _sc_stage.StrategistContextInput(
+                hard_failure_qids=_hard_qids,
+                clusters_by_qid=_sc_clusters_by_qid,
+                rca_cards=tuple(_sc_rca_cards),
+                reflection_buffer=tuple(reflection_buffer or []),
+                baseline_accuracy=float(
+                    metadata_snapshot.get("_baseline_accuracy") or 0.0
+                ),
+            )
+            _sc_out = _sc_stage.execute(ctx=None, inp=_sc_inp)
+            # rca_cards_grounded_only is available for future prompt wiring.
+            # rca_cards_ungrounded_count surfaces dropped cards for audit.
+            del _sc_out  # consumed by future phases; suppress unused-var lint
+    except Exception:
+        pass  # observability-only; never interrupt the strategist flow
+
     context_data = _build_context_data(
         clusters=clusters,
         soft_signal_clusters=soft_signal_clusters,
