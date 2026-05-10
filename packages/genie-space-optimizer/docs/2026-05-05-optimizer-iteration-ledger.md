@@ -115,7 +115,8 @@ C-<cycle>-<letter> (seed): <pattern>
 | 5 | 2026-05-04 | `2423b960-16e8-41d4-a0cb-74c563378e05` attempt `587549760880226` (MERGE_GATE_GAP), confirmed by attempt `833969815458299` (READY_TO_MERGE with contract gaps) | C-5-A (no-op iteration budget consumption), C-5-B (causal-drop strategist feedback), C-5-C (diagnostic-AG RCA regeneration), C-5-D (acceptance reason granularity), C-5-E (soft-cluster drift recovery), C-5-F (Repair-Run widget context preservation) | T1 → T6 (process-spine hardening) | `GSO_PRODUCTIVE_ITERATION_BUDGET`, `GSO_CAUSAL_DROP_FEEDBACK_TO_STRATEGIST`, `GSO_DIAGNOSTIC_AG_RCA_REGEN` (T4–T6 observability/reliability, no flag) | [`2026-05-04-cycle-5-process-spine-plan.md`](./2026-05-04-cycle-5-process-spine-plan.md) | 7Now 89.47% (attempt `587549760880226`: 0 accepted, 5 iters, structural drops on iters 2 + 5, empty-proposer on iters 3 + 4) | 7Now 89.47% → 100.0% in one accepted iteration on attempt `833969815458299`; `thresholds_met=true`; control-flow paths verified shipped | PARTIALLY SHIPPED | All six tasks landed code; T2/T4/T6 verified shipped and effective. **2026-05-04 audit (run `833969815458299`):** T1 emit-site idempotency missing — `iteration_budget_consumed` × 2, `soft_cluster_drift_recovered` × 2, `rca_regeneration_triggered` × 2, `rca_regeneration_exhausted` × 2 in the same iteration. T3 `_regenerate_rca_for_cluster` body returns immediately with `attempted_evidence_sources=[]` (helper wired but body empty). T3 does not emit a `diagnostic_ag` trunk journey event so terminal-state classification on RCA-exhausted hard qids is wrong. Closed by [Cycle 6 F-1, F-2, F-7](./2026-05-04-cycle-6-shipped-code-defect-sweep-plan.md). |
 | 6 | 2026-05-04 | `2423b960-16e8-41d4-a0cb-74c563378e05` attempt `833969815458299` (READY_TO_MERGE with contract gaps) | C-6-A (Cycle 5 emit-site duplication), C-6-B (Cycle 5 T3 stub helper), C-6-C (post-eval missing QID_RESOLUTION emits), C-6-D (P2 `proposal_generated` normalization gap), C-6-E (N1 producer-side trunk dedup gap), C-6-F (Phase H bundle hardening: RecursionError + lying manifest + unit-cascade), C-6-G (T3 missing `diagnostic_ag` trunk emit + classifier under-specification — gs_021 case) | F-1 → F-7 (defect fixes; no behavioral flags) | (none — defect sweep, all changes ship behind existing flag scopes or are pure observability) | [`2026-05-04-cycle-6-shipped-code-defect-sweep-plan.md`](./2026-05-04-cycle-6-shipped-code-defect-sweep-plan.md) | 7Now 89.47% → 100.0% (already converged on `833969815458299`; defect fixes do not change optimizer outcome) | terminal-success projected, journey violations reduced from 18 → ≤2, manifest.missing_pieces accurate, gs_021 classified `hard_failure_unresolved`, no duplicate emits, baseline accuracy printed correctly | IN FLIGHT | Audit of run `833969815458299` revealed every Cycle 1-5 plan has shipped code, but five plans (Cycle 5 T1/T3/T5, P2, N1, N2) carry implementation defects. Cycle 6 is the targeted sweep — seven surgical fixes (~30–80 LOC each), TDD-disciplined, byte-stable. gs_021 triage finding: user's `clustered → soft_signal` hypothesis was disproven by evidence (gs_021 has no soft_signal trunk event in this run); the real defect is an adjacent `diagnostic_ag` trunk-emit gap surfaced as F-7. |
 | 7 | 2026-05-04 | `2afb0be2-88b6-4832-99aa-c7e78fbc90f7` (variance source attempt `596465849524605`); fix exemplar attempt `993610879088298` | C-7-A (Lever-6 coverage gap on SQL-shape RCA) | AG-7-A (`_should_force_lever6_proposal` predicate + `_force_lever6_proposal_for_ag` helper wired in `harness.py` immediately after the P3 forced-structural-synthesis block) | `GSO_REQUIRE_LEVER6_FOR_SQL_SHAPE_RCA` (default off; flip default-on after corpus measurement) | [`2026-05-04-cycle-7-lever-6-coverage-sql-shape-plan.md`](./2026-05-04-cycle-7-lever-6-coverage-sql-shape-plan.md) | airline `596465849524605`: 87.5% → 95.8% (5 iters, 1 accepted, `gs_009 missing_filter` hard at termination) | airline target: terminal 100% on a fresh post-enrichment run with flag on; `gs_009` resolved by the forced L6 candidate (matches the `993610879088298` trajectory) | IN FLIGHT | Code lands flag-off independently of Cycle 6 validation. Cycle 6 must be validated before Cycle 7's flag flips on so the corpus measurement is uncontaminated by Cycle 6 defects. T1+T2+T3 are byte-stable replay-safe at `BURNDOWN_BUDGET=0`; T4 is this row. |
-| 14-V | 2026-05-09 | post-redeploy anchors: 7Now `338386531912450` + airline `833709971504406` | C-14-V-A (D-1 C13 admission not corpus-measurable), C-14-V-B (D-2 C14B-T3 orchestrator not corpus-measurable), C-14-V-C (D-3 canonical render contradiction), C-14-V-D (D-4 list-valued stage capture), C-14-V-E (D-5 manifest IDs blank) | T1 → T6 (defect sweep tasks; no AGs because no behavior change) | 3 observability-only flags (default-on): `GSO_FORBIDDEN_AG_ADMISSION_OBSERVE`, `GSO_PATCH_ISOLATION_OBSERVE`, `GSO_CANONICAL_RENDER_INVARIANT` | [`2026-05-09-cycle-14-v-shipped-cycle-defect-sweep-plan.md`](./2026-05-09-cycle-14-v-shipped-cycle-defect-sweep-plan.md) | post-redeploy 7Now 78.3% → 87.0% rolled back (correctly); airline 83.3% → 95.8% accepted with debt (first in-production C14B accept) | corpus delta gate is evidence-driven on the next post-14-V pilot — observe markers must emit on canonical triggers; rail markers must stay silent | IN FLIGHT (drafted) | The Cycle 6 precedent applied to the 2026-05-09 cycle batch. Strictly observability-only: no behavior-flag flips, no decision-sequence changes; replay byte-stable with all flags off. Closes defects D-1 → D-5 in the roadmap [Defect Registry](./2026-05-07-contract-spirit-compliance-roadmap.md#defect-registry--single-source-of-truth-for-shipped-but-silent-defects). |
+| 14-V | 2026-05-09 | post-redeploy anchors: 7Now `338386531912450` + airline `833709971504406` | C-14-V-A (D-1 C13 admission not corpus-measurable), C-14-V-B (D-2 C14B-T3 orchestrator not corpus-measurable), C-14-V-C (D-3 canonical render contradiction), C-14-V-D (D-4 list-valued stage capture), C-14-V-E (D-5 manifest IDs blank) | T1 → T6 (defect sweep tasks; no AGs because no behavior change) | 3 observability-only flags (default-on): `GSO_FORBIDDEN_AG_ADMISSION_OBSERVE`, `GSO_PATCH_ISOLATION_OBSERVE`, `GSO_CANONICAL_RENDER_INVARIANT` | [`2026-05-09-cycle-14-v-shipped-cycle-defect-sweep-plan.md`](./2026-05-09-cycle-14-v-shipped-cycle-defect-sweep-plan.md) | post-redeploy 7Now 78.3% → 87.0% rolled back (correctly); airline 83.3% → 95.8% accepted with debt (first in-production C14B accept) | post-14-V corpus pilot: D-1 corpus-validated (5/5 NO_ACTION reflections traced); D-2 untested (no canonical trigger); D-3 partial (`SOFT_PASSING` not in any bucket); D-4/D-5 regressed in production | SHIPPED (post-pilot scoreboard 2026-05-09 #4) | The Cycle 6 precedent applied to the 2026-05-09 cycle batch. Strictly observability-only. Post-pilot scoreboard moved 3 defect closures to Cycle 14-W. Closes defects D-1 → D-5 in the roadmap [Defect Registry](./2026-05-07-contract-spirit-compliance-roadmap.md#defect-registry--single-source-of-truth-for-shipped-but-silent-defects). |
+| 14-W | 2026-05-09 | post-Cycle-14-V anchors: 7Now `960148942255012` (attempt 11) + airline `1105451933925748` (attempt 13) | C-14-W-A (D-3 ext: `SOFT_PASSING` representation), C-14-W-B (D-4 regressed: list normalization production-shape), C-14-W-C (D-5 regressed: dbutils tag resolution path), C-14-W-D (D-1 corpus-validated default-flip), C-14-W-E (D-7 iteration summary totality), C-14-W-F (D-6 + D-8 Phase H writer canonical consumer) | T1 → T6 (substantive); T7 integration replay; T8 self-review; one default-flip (T4 only); no new AGs | 3 new observability-only flags (default-on): `GSO_DATABRICKS_IDS_RESOLUTION_TRACE`, `GSO_ITERATION_SUMMARY_TOTALITY`, `GSO_PHASE_H_CANONICAL_CONSUMER`; 1 default-flip: `GSO_FORBIDDEN_AG_ADMITS_NO_ACTION` (off → on, corpus-validated by C14-V T1) | [`2026-05-09-cycle-14-w-post-cycle-14-v-defect-sweep-plan.md`](./2026-05-09-cycle-14-w-post-cycle-14-v-defect-sweep-plan.md) | 7Now 78.3% → 86.4% rolled back (target_qids_not_improved on `gs_026=soft_passing`); airline 83.3% → 95.8% accepted via `accepted_with_attribution_drift` (FIRST in-production keep-the-win on a target-drift case) | corpus pilot post-14-W: every regression rail silent; D-3 ext renders `target_soft_passing_qids`; D-4/D-5 fixture-replay tests pass; D-1 admission rail silent under default-on; D-6/D-7/D-8 alarms silent; airline ready for Cycle 14-C attribution formalization | IN FLIGHT (drafted) | The Cycle 6 / Cycle 14-V precedent applied recursively. Introduces two new institutional disciplines: **Discipline A** (regressed-defect closures require integration tests) + **Discipline B** (multi-path resolvers ship `_RESOLVED_V1` tracing markers). Closes defects D-3 (extended), D-4, D-5 (regressed), D-1 (corpus-validated default-flip), D-6, D-7, D-8 in the roadmap [Defect Registry](./2026-05-07-contract-spirit-compliance-roadmap.md#defect-registry--single-source-of-truth-for-shipped-but-silent-defects). Predecessor of queued Cycle 14-C (first-class attribution-drift partial harvest). |
 
 ## Cycles
 
@@ -966,4 +967,115 @@ I4 (`no_silent_retry`) is the invariant that catches both failure modes: identic
   - **C14-T3 (I9 byte-equality invariant)** reads the post-T3 canonical render — without T3, I9 would invariant-check a contradicting render and itself fire on every iteration.
   - **C16-T3 (regression bucket completeness)** reads the post-T3 fix as a cleaner upstream — `unknown_to_hard_regressed_qids` no longer leaks target QIDs.
   - **C16-T4 (contract-health summary)** reads the new T4 regression-rail markers as the canonical "shipped-cycle defect emerged" signal in the HIGH severity tier.
-- **Follow-up:** if a fourth `D-N+1` defect emerges from the post-14-V corpus pilot, register it in the roadmap Defect Registry and ship a follow-up cycle (mirroring the Cycle 6 → Cycle 14-V precedent). Shadow-mode pattern promotion to standard discipline (Open Q#12 in roadmap) is decided at C14-V closeout based on whether the pattern adds zero replay-byte-stability risk.
+- **Follow-up:** if a fourth `D-N+1` defect emerges from the post-14-V corpus pilot, register it in the roadmap Defect Registry and ship a follow-up cycle (mirroring the Cycle 6 → Cycle 14-V precedent). Shadow-mode pattern promotion to standard discipline (Open Q#12 in roadmap) is decided at C14-V closeout based on whether the pattern adds zero replay-byte-stability risk. **Closeout (2026-05-09 #4):** post-14-V corpus pilot (anchors #7 + #8) confirmed D-1 corpus-validated and shadow-mode pattern works as designed (Q#12 RESOLVED — promoted to standard discipline). However, D-3 partial, D-4/D-5 regressed in production, and three new defects (D-6/D-7/D-8) emerged. Recursive Cycle 14-V → **Cycle 14-W** precedent applied — see [Cycle 14-W ledger entry](#cycle-14-w--post-cycle-14-v-defect-sweep-2--c13-default-flip-promotion) below.
+
+
+## Cycle 14-W — Post-Cycle-14-V defect sweep #2 + C13 default-flip promotion
+
+- **Date drafted:** 2026-05-09 #4 (in flight)
+- **Inspiration evidence (post-Cycle-14-V corpus):**
+  - **Anchor #7 — 7Now task `960148942255012`** (attempt 11 in [`runid_analysis/3b050ec5-...`](./runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097/postmortem.md)). MERGE_GATE_GAP. **Validates C14-V T1**: `GSO_FORBIDDEN_AG_ADMISSION_OBSERVE_V1` fires on 5/5 NO_ACTION reflections with `would_admit_with_admit_no_action_on=true`. Surfaces D-3 extension (`gs_026=soft_passing` in `target_delta_states` while both bucket fields empty AND Phase H reports `target_resolution_failed` — 3-way contradiction; `SOFT_PASSING` not represented in any bucket field), D-5 regression (manifest IDs still blank despite C14-V T6), D-8 (new — local replay reports 25 journey violations, Phase H reports 0).
+  - **Anchor #8 — airline task `1105451933925748`** (attempt 13 in [`runid_analysis/1099b152-...`](./runid_analysis/1099b152-8655-4f1e-ab43-1240a9400280/postmortem.md)). READY_TO_MERGE_WITH_ATTRIBUTION_DRIFT. **First in-production `accepted_with_attribution_drift` keep-the-win:** `83.3% → 95.8%`, thresholds met, `target_qids=gs_024` remained still-hard, gain attributed to `AG_DECOMPOSED_H004` cluster. Surfaces D-4 regression (`AttributeError: 'list' object has no attribute 'get'` still raises despite C14-V T5), D-5 cross-space regression, D-6 (new — Phase H acceptance writer says `outcome=rolled_back/missing_pre_rows` while stdout says ACCEPTED), D-7 (new — `iter_record_counts=[46,54,48,47]` for 3-iter run; only 1 of 3 expected `GSO_ITERATION_SUMMARY_V1` emitted). Also motivates queued **Cycle 14-C** (first-class attribution-drift partial harvest).
+- **Stage(s) closed (partial):** none — defect sweep + corpus-validated default-flip. Cycle 14-W *unblocks* corpus measurement and downstream cycles: C14-T3 (Phase H acceptance canonical consumer needed), C14-C (`target_soft_passing_qids` substrate needed), C16-T3 (cleaner regression buckets).
+- **What changes:** Six surgical tasks (T1 D-3 ext + soft_passing render; T2 D-4 production-shape fix + airline fixture replay; T3 D-5 dbutils tag-resolver tracing + Jobs-runtime test; T4 D-1 default-flip promotion + regression rail; T5 D-7 iteration-summary totality; T6 D-6 + D-8 Phase H writer canonical consumer). Plan ref: [`2026-05-09-cycle-14-w-post-cycle-14-v-defect-sweep-plan.md`](./2026-05-09-cycle-14-w-post-cycle-14-v-defect-sweep-plan.md).
+- **Defects closed (linked to roadmap Defect Registry):** D-3 ext (T1), D-4 (T2), D-5 (T3), D-1 (T4 default-flip + corpus validation), D-7 (T5), D-6 + D-8 (T6).
+- **Flag(s) introduced:** three new observability-only flags, all default-on; one behavior-flag default-flip.
+  - (a) `GSO_DATABRICKS_IDS_RESOLUTION_TRACE` — resolution-path trace inside `_databricks_ids_from_env` (Discipline B canonical example).
+  - (b) `GSO_ITERATION_SUMMARY_TOTALITY` — invariant alarm at finalize-stage.
+  - (c) `GSO_PHASE_H_CANONICAL_CONSUMER` — Phase H writers consume canonical decision/state.
+  - (d) **`GSO_FORBIDDEN_AG_ADMITS_NO_ACTION` flipped from default-off to default-on** (corpus-validated by C14-V T1; explicit replay-fixture flag-set preserves byte-stability of pre-14-W fixtures).
+- **Markers introduced:** four typed markers — `GSO_DATABRICKS_IDS_RESOLVED_V1` (T3), `GSO_ITERATION_SUMMARY_TOTALITY_V1` (T5), `GSO_PHASE_H_ACCEPTANCE_DRIFT_V1` (T6), `GSO_PHASE_H_JOURNEY_DRIFT_V1` (T6). Plus extension to existing `GSO_FULL_EVAL_V1` payload (new field `target_soft_passing_qids`).
+- **Invariants introduced:** none new (T1's `qid_in_multiple_state_buckets` violation class extends C14-V T4's existing `GSO_CANONICAL_RENDER_INVARIANT_V1` rather than registering a new invariant ID).
+- **Binary criterion:**
+  - T1 — both anchors emit `target_soft_passing_qids` populated when `target_delta_states` contains a `SOFT_PASSING` entry; no QID appears in two of `{fixed, still_hard, soft_passing}`; `GSO_CANONICAL_RENDER_INVARIANT_V1` rail silent.
+  - T2 — `tests/integration/test_bundle_assembler_airline_fixture_replay` is green; no `GSO_BUNDLE_ASSEMBLY_FAILED_V1` markers on either anchor; AST-walk static-analysis test green (no unguarded `<*stage*|*capture*>.get(...)`).
+  - T3 — `tests/integration/test_databricks_ids_in_jobs_runtime` is green; replay with mocked dbutils tags returns non-blank IDs; `GSO_DATABRICKS_IDS_RESOLVED_V1` records the correct `resolution_path`.
+  - T4 — under default-on flag, replay byte-stability preserved by explicit fixture flag-set; `GSO_FORBIDDEN_AG_ADMISSION_BYPASSED_V1` rail stays silent on corpus pilot post-flip.
+  - T5 — exactly one `GSO_ITERATION_SUMMARY_V1` per attempted iteration regardless of acceptance outcome; `phase_b_iter_record_counts` length equals `iteration_counter`; `GSO_ITERATION_SUMMARY_TOTALITY_V1` rail silent.
+  - T6 — Phase H acceptance writer JSON output matches `GSO_FULL_EVAL_V1` payload byte-for-byte on iter-decision fields; local-replay journey violation count equals Phase H `journey_validation_all.json` violation count; `GSO_PHASE_H_*_DRIFT_V1` rails silent.
+- **Replay byte-stability:** preserved on all flag-default values + the explicit T4 fixture flag-set. The replay test sets `GSO_FORBIDDEN_AG_ADMITS_NO_ACTION=0` to match the pre-flip fixture capture; production runs use the new default-on.
+- **Corpus delta gate:** evidence-driven. Post-Cycle-14-W corpus pilot on both anchors must produce: (a) `target_soft_passing_qids` populated with `gs_026` for 7Now (proves D-3 ext); (b) zero `GSO_BUNDLE_ASSEMBLY_FAILED_V1` markers (proves D-4); (c) non-blank manifest IDs + `GSO_DATABRICKS_IDS_RESOLVED_V1` with `resolution_path ∈ {env, dbutils, mixed, sentinel}` (proves D-5); (d) zero `GSO_FORBIDDEN_AG_ADMISSION_BYPASSED_V1` under default-on (proves D-1 corpus-validation); (e) iteration summary count == iteration counter; zero `GSO_ITERATION_SUMMARY_TOTALITY_V1` (proves D-7); (f) Phase H stdout-acceptance match + replay-vs-Phase-H journey-violation match; zero `GSO_PHASE_H_*_DRIFT_V1` (proves D-6 + D-8).
+- **Coordination:**
+  - **C14-T3** (acceptance-trace replay validity) reads the post-14-W canonical Phase H acceptance writer (T6 dependency).
+  - **C14-C** (first-class attribution-drift partial harvest, queued next) reads the post-14-W `target_soft_passing_qids` field (T1 dependency) — the attribution-points-at-hard rail can't derive correctly without it.
+  - **C16-T3** (regression bucket completeness) reads the post-14-W cleaner `target_soft_passing_qids` derivation (T1 dependency).
+  - **C16-T4** (contract-health summary) reads `GSO_DATABRICKS_IDS_RESOLVED_V1` + `GSO_PHASE_H_*_DRIFT_V1` + `GSO_ITERATION_SUMMARY_TOTALITY_V1` as canonical contract-health signals (T3 + T5 + T6 dependencies).
+- **Disciplines introduced:** Two new institutional disciplines promoted from this cycle's evidence:
+  - **Discipline A — Regressed-defect closures require integration tests, not just unit tests.** D-4 and D-5 regressed in production despite C14-V unit tests passing; their unit tests didn't exercise the production code path. Cycle 14-W T2 + T3 ship anchor-fixture-replay integration tests. (See [iteration ledger plan revision #4](./2026-05-05-optimizer-iteration-ledger-plan.md).)
+  - **Discipline B — Multi-path resolvers ship typed `_RESOLVED_V1` tracing markers.** D-5's regression was invisible because `_databricks_ids_from_env`'s internal resolution path wasn't traced. Cycle 14-W T3 introduces `GSO_DATABRICKS_IDS_RESOLVED_V1` as the canonical example.
+- **Follow-up:** if a `D-N+1` defect emerges from the post-14-W corpus pilot, register it in the roadmap Defect Registry and ship a follow-up cycle (recursive Cycle 14-V → Cycle 14-W → Cycle 14-X precedent). After 14-W lands and the corpus pilot passes the binary criterion, draft **Cycle 14-C** (first-class attribution-drift partial harvest) — first in-production `accepted_with_attribution_drift` from anchor #8 is the canonical motivating evidence.
+
+## Cycle 14-C — First-Class Attribution-Drift Partial Harvest
+
+**Status:** SHIPPED (pending Tier-3 corpus ratification).
+
+**Plan:** [`2026-05-10-cycle-14-c-first-class-attribution-drift-partial-harvest-plan.md`](./2026-05-10-cycle-14-c-first-class-attribution-drift-partial-harvest-plan.md).
+
+### Section 1: Corpus runs (post-deploy Tier-3 pilot)
+
+To be filled in after the operator runs the combined C14-W + C14-C
+corpus pilot. Two rows: airline anchor space, 7Now anchor space.
+
+### Section 2: Postmortem clustering
+
+C-14C-A: attribution-drift accepted iterations now emit reattribution
+  payloads (`accidentally_improved_qids` non-empty;
+  `unresolved_target_debt_qids` = original `target_qids`).
+
+### Section 3: AG hypothesis(es)
+
+```text
+AG-14C-A: First-class reattribution accounting on
+  accepted_with_attribution_drift acceptances
+  Cluster: C-14C-A
+  RCA: airline iter-1 +12.5pp gain currently attributed to
+       still-hard gs_024; the gain came from non-target
+       QIDs that flipped silently.
+  Causal target: optimization/control_plane.py
+       (decide_control_plane_acceptance reattribution branch),
+       optimization/harness.py (marker emission +
+       _unresolved_target_debt_qids plumbing),
+       optimization/optimizer.py (strategist context slot).
+  Expected effect: airline anchor iter-1 emits
+       GSO_ATTRIBUTION_DRIFT_V1 with accidentally_improved_qids
+       non-empty and unresolved_target_debt_qids=[gs_024].
+  Negative-space: 7Now anchor pilot must NOT trigger the
+       branch; replay byte-stability holds with all flags off.
+  Feature flag: GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST (default off).
+  Plan ref: 2026-05-10-cycle-14-c-...md, Tasks 1-7.
+```
+
+### Section 4: Feature flags introduced this cycle
+
+| Flag | Default | Touches | Isolated test |
+|---|---|---|---|
+| `GSO_ATTRIBUTION_DRIFT_REATTRIBUTION` | ON (observability circuit-breaker) | T1, T3, T4, T5 | `test_attribution_drift_marker::test_harness_marker_silent_when_flag_off` |
+| `GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST` | OFF (behaviour pilot) | T6 | `test_strategist_unresolved_target_debt_context::test_slot_absent_when_flag_off_even_if_debt_populated` |
+
+### Section 5: Gate results
+
+| Gate | Status | Evidence |
+|---|---|---|
+| Byte-stable replay (flags off) | PASS | T1-T7 each commit gated on the airline replay test |
+| Tier-1 corpus delta (fixture replay) | PASS | `tests/integration/test_cycle_14_c_anchor_corpus_replay.py` (3 passed + 1 graceful skip) |
+| Tier-3 corpus delta (lever-loop pilot) | PENDING | T8 combined corpus pilot |
+| Skill accountability | PASS | postmortem skill grep on `GSO_ATTRIBUTION_DRIFT_V1` and `accidentally_improved_qids` returns the marker payload |
+
+### Section 6: Decision
+
+`SHIPPED pending Tier-3 ratification`. The default-off behaviour
+flag (`GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST`) is deliberately
+held back from default-flip until the corpus pilot confirms the
+strategist actually consumes the slot productively.
+
+### Section 7: Seeds for next cycle
+
+If the corpus pilot's strategist responses on iter N+1 demonstrate
+re-targeting of unresolved debt (i.e., the strategist names the
+debt QID as a new target), open a follow-up cycle to flip
+`GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST` default-on.
+
+If the pilot shows no re-targeting effect, open a follow-up cycle
+to refine the prompt template (the slot is present but not
+prompting attention; experiment with positioning it earlier in
+the context block).
