@@ -146,6 +146,15 @@ PROCESS_STAGE_ORDER: tuple[ProcessStage, ...] = (
         ),
     ),
     ProcessStage(
+        key="run_manifest",
+        title="Run Manifest",
+        why=(
+            "Resolves Databricks job/run/task IDs from environment or "
+            "dbutils tags. Closes D-5 contract surface "
+            "(C15 Phase 1 new stage)."
+        ),
+    ),
+    ProcessStage(
         key="contract_health",
         title="Contract Health",
         why=(

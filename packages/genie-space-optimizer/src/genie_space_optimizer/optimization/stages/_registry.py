@@ -39,6 +39,7 @@ from genie_space_optimizer.optimization.stages import (
     learning,
     proposals,
     rca_evidence,
+    run_manifest,
 )
 
 
@@ -84,6 +85,8 @@ STAGES: tuple[StageEntry, ...] = (
                learning.INPUT_CLASS,      learning.OUTPUT_CLASS),
     StageEntry("bundle_assembly",        bundle_assembly, bundle_assembly.execute,
                bundle_assembly.INPUT_CLASS, bundle_assembly.OUTPUT_CLASS),
+    StageEntry("run_manifest",           run_manifest,    run_manifest.execute,
+               run_manifest.INPUT_CLASS,    run_manifest.OUTPUT_CLASS),
 )
 
 
