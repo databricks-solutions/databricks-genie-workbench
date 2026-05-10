@@ -870,6 +870,17 @@ class ControlPlaneAcceptance:
     # Sorted tuple of (qid, DeltaState.value) pairs — frozen,
     # JSON-friendly, byte-stable for MLflow replay.
     target_delta_states: tuple[tuple[str, str], ...] = ()
+    # Cycle 14-W T1: SOFT_PASSING bucket for targets that improved
+    # but didn't fully flip to PASSING. Surfaced as a first-class
+    # render bucket in format_full_eval_marker_payload so postmortem
+    # tools see soft signals alongside FIXED / STILL_HARD.
+    target_soft_passing_qids: tuple[str, ...] = ()
+    # Cycle 14-C T2: reattribution accounting for the
+    # accepted_with_attribution_drift branch. Populated in T3 when
+    # the branch fires; empty tuple in every other branch and on
+    # legacy / pre-T2 replay fixtures.
+    accidentally_improved_qids: tuple[str, ...] = ()
+    unresolved_target_debt_qids: tuple[str, ...] = ()
 
 
 def _fmt_qids(qids: Iterable[str]) -> str:
