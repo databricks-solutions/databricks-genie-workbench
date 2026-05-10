@@ -39,3 +39,15 @@ fixtures/
 4. **One anchor per workspace.** Today the registry is two anchors
    (airline + 7Now). New anchors register here when a new workspace
    produces a defect-class previously unrepresented.
+
+## Normalization
+
+Captured JSON is written with `sort_keys=True` so that:
+- Diff-friendly replay-byte-stability tests compare canonical key order.
+- A schema change that renames a field cannot accidentally pass because
+  the diff falls in a different place.
+
+If a future test needs to assert source key order (e.g. it depends on
+JSON object ordering for some marshalling reason), capture the raw
+bundle separately and compare against that — do NOT compare against
+the fixture under `tests/integration/fixtures/`.

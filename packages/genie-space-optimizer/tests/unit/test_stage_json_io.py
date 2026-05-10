@@ -52,3 +52,33 @@ def test_round_trip_through_actual_json_text(
     s = _Sample(name=name, qids=qids, counts=counts)
     payload = json.loads(json.dumps(s.to_json()))
     assert _Sample.from_json(payload) == s
+
+
+# ---------------------------------------------------------------------------
+# I1 — capital-T Tuple / FrozenSet string type hints round-trip correctly
+# ---------------------------------------------------------------------------
+
+from genie_space_optimizer.optimization.stages._json_io import _from_json_value
+
+
+def test_from_json_handles_capital_T_tuple_hint() -> None:
+    """PEP-563 string hints in capital-T form must round-trip via _from_json_value."""
+    # Simulate a field annotated as `Tuple[str, ...]` under
+    # `from __future__ import annotations` — the hint arrives as a string.
+    result = _from_json_value(["a", "b", "c"], "Tuple[str, ...]")
+    assert result == ("a", "b", "c")
+    assert isinstance(result, tuple)
+
+
+def test_from_json_handles_capital_FrozenSet_hint() -> None:
+    """Capital-F FrozenSet string hints must also round-trip."""
+    result = _from_json_value(["x", "y"], "FrozenSet[str]")
+    assert result == frozenset({"x", "y"})
+    assert isinstance(result, frozenset)
+
+
+def test_from_json_handles_lowercase_tuple_hint() -> None:
+    """Lower-case `tuple[...]` (PEP-585) string hints must still work."""
+    result = _from_json_value([1, 2], "tuple[int, ...]")
+    assert result == (1, 2)
+    assert isinstance(result, tuple)

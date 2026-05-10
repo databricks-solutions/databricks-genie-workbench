@@ -11,19 +11,17 @@ Every stage's ``INPUT_CLASS`` / ``OUTPUT_CLASS`` mixes in
   * boundary-fixture replay tests round-trip through the same path
     a real run would (no synthetic-shape escape hatches).
 
-The mixin operates on dataclass fields only — fields whose types are
-non-JSON-native (e.g. ``set[str]`` ⇄ list, ``StrEnum`` ⇄ str,
-nested dataclasses ⇄ dict) are converted via the per-class
-``__json_field_codec__`` registry. Default behaviour handles
-``tuple/list/dict/str/int/float/bool/None`` plus nested
-JsonRoundTrip dataclasses.
+The mixin handles ``tuple/list/dict/set/frozenset/str/int/float/bool/None``,
+``Enum`` (via ``.value``), and nested JsonRoundTrip dataclasses.
+Phases 1–4 will introduce a ``__json_field_codec__`` override seam if a
+stage I/O type requires custom (de)serialization beyond these defaults.
 """
 
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
 from enum import Enum
-from typing import Any, ClassVar
+from typing import Any
 
 
 class JsonRoundTrip:
@@ -34,8 +32,6 @@ class JsonRoundTrip:
     decorator so that ``slots=True`` interacts correctly with the
     multiple-base-class rule (slots base allowed).
     """
-
-    __json_field_codec__: ClassVar[dict[str, tuple[Any, Any]]] = {}
 
     def to_json(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -80,15 +76,15 @@ def _to_json_value(val: Any) -> Any:
 def _from_json_value(val: Any, type_hint: Any) -> Any:
     # Type hints arrive as strings under PEP 563, or as actual type
     # objects when annotations are not stringified (no future import).
-    # The codec registry in __json_field_codec__ overrides. Default
-    # behaviour handles the most common non-native types by inspecting
-    # the type hint. Stage Input/Output overrides __json_field_codec__
-    # for fields whose types do not round-trip natively (StrEnum,
-    # nested dataclass, set, frozenset).
+    # Default behaviour handles the most common non-native types by
+    # inspecting the type hint.
     if isinstance(val, list):
-        # Check string-form type hints (PEP 563 / from __future__ import annotations)
+        # Check string-form type hints (PEP 563 / from __future__ import annotations).
+        # Normalize to lower-case so both `tuple[...]` (PEP-585) and
+        # `Tuple[...]` (typing.Tuple, still common under from __future__ import
+        # annotations) are handled identically.
         if isinstance(type_hint, str):
-            hint = type_hint.strip()
+            hint = type_hint.strip().lower()
             if hint.startswith("tuple"):
                 return tuple(val)
             if hint.startswith("frozenset"):
