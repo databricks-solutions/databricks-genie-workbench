@@ -168,47 +168,40 @@ def hard_failure_qids(rows: Iterable[dict]) -> tuple[str, ...]:
 
 def compute_accidentally_improved_qids(
     *,
-    pre_rows: Iterable[dict],
-    post_rows: Iterable[dict],
-    target_qids: Iterable[str],
+    pre_rows: Iterable[dict] | Iterable["EvalRow"],
+    post_rows: Iterable[dict] | Iterable["EvalRow"],
+    target_qids: Iterable[str] | None = None,
 ) -> tuple[str, ...]:
-    """Cycle 14-C T1 — return the QIDs that were ``hard`` in baseline,
-    ``passing`` in candidate, and NOT in the named target set.
+    """QIDs that were hard pre-iteration and passing post-iteration,
+    EXCLUDING declared target QIDs.
 
-    These are the QIDs that explain a global accuracy gain when the
-    strategist's named target did not flip — i.e. the
-    ``accepted_with_attribution_drift`` branch fired. Surfacing
-    them is the cycle's primary contribution: keeps the win, but
-    attributes the gain to the QIDs that actually moved instead of
-    silently crediting the still-hard target.
-
-    Pure: no I/O, no globals, no side effects. Suitable for unit
-    tests on synthetic inputs.
-
-    Anchor: airline run 1105451933925748 iter 1 — target=gs_024
-    remained STILL_HARD; multiple non-target QIDs flipped from
-    baseline-hard to candidate-passing.
-
-    Returns a sorted tuple (canonical order so the resulting
-    ``ControlPlaneAcceptance`` field is byte-stable across runs).
+    C15 Phase 1 fix (closes D-3 ext): both pre and post rows are
+    classified via ``EvalRow.is_passing()`` / ``is_hard_failure()``,
+    so production rows (``result_correctness`` + ``arbiter``) and
+    synthetic test rows (``row_status``) both resolve correctly.
+    Pre-fix code checked ``row_status`` only and silently returned
+    () in production (anchor: airline iter 1 — five baseline-hard
+    QIDs flipped to passing without target attribution; pre-fix
+    output was () instead of the expected non-target set).
     """
-    pre_rows_list = list(pre_rows or [])
-    post_rows_list = list(post_rows or [])
+    from genie_space_optimizer.optimization.eval_row import EvalRow as _EvalRow
+
+    def _wrap(rows: Iterable) -> list:
+        out = []
+        for row in rows or ():
+            if isinstance(row, _EvalRow):
+                out.append(row)
+            elif isinstance(row, dict):
+                out.append(_EvalRow.from_dict(row))
+        return out
+
+    pre_wrapped = _wrap(pre_rows)
+    post_wrapped = _wrap(post_rows)
     target_set = {str(q) for q in (target_qids or ()) if str(q)}
-    pre_hard = set(hard_failure_qids(pre_rows_list))
-    pre_hard |= {
-        str(row.get("question_id") or row.get("id") or "")
-        for row in pre_rows_list
-        if isinstance(row, dict)
-        and str(row.get("row_status", "")).lower() == "hard"
-    }
-    pre_hard.discard("")
-    post_passing = {
-        str(row.get("question_id") or row.get("id") or "")
-        for row in post_rows_list
-        if isinstance(row, dict)
-        and str(row.get("row_status", "")).lower() == "passing"
-    }
+
+    pre_hard = {r.question_id for r in pre_wrapped if r.is_hard_failure() and r.question_id}
+    post_passing = {r.question_id for r in post_wrapped if r.is_passing() and r.question_id}
+
     accidentally_improved = (pre_hard & post_passing) - target_set
     return tuple(sorted(q for q in accidentally_improved if q))
 

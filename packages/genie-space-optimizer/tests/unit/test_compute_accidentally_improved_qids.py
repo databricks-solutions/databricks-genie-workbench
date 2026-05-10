@@ -94,6 +94,42 @@ def test_target_qid_passing_in_candidate_excluded_from_accidental() -> None:
     assert tuple(sorted(result)) == ("gs_002",)
 
 
+def test_accidentally_improved_with_production_shape_rows() -> None:
+    """Anchor regression test for D-3 ext.
+
+    Production rows use ``result_correctness`` + ``arbiter``, NOT
+    ``row_status``. The pre-fix implementation read ``row_status``
+    only and silently returned () in production. After the fix,
+    both shapes resolve via EvalRow.is_passing().
+    """
+    pre_rows = [
+        {"question_id": "gs_001", "result_correctness": "no",  "arbiter": "hard"},
+        {"question_id": "gs_007", "result_correctness": "no",  "arbiter": "hard"},
+        {"question_id": "gs_009", "result_correctness": "no",  "arbiter": "hard"},
+        {"question_id": "gs_016", "result_correctness": "no",  "arbiter": "hard"},
+        {"question_id": "gs_024", "result_correctness": "no",  "arbiter": "hard"},
+    ]
+    post_rows = [
+        {"question_id": "gs_001", "result_correctness": "yes", "arbiter": "n/a"},
+        {"question_id": "gs_007", "result_correctness": "yes", "arbiter": "n/a"},
+        {"question_id": "gs_009", "result_correctness": "yes", "arbiter": "n/a"},
+        {"question_id": "gs_016", "result_correctness": "yes", "arbiter": "n/a"},
+        {"question_id": "gs_024", "result_correctness": "no",  "arbiter": "hard"},
+    ]
+    from genie_space_optimizer.optimization.control_plane import (
+        compute_accidentally_improved_qids,
+    )
+
+    out = compute_accidentally_improved_qids(
+        pre_rows=pre_rows,
+        post_rows=post_rows,
+        target_qids=("gs_024",),
+    )
+    # Target gs_024 stayed hard (attribution drift). Four other
+    # baseline-hard QIDs flipped to passing without being targeted.
+    assert out == ("gs_001", "gs_007", "gs_009", "gs_016")
+
+
 def test_result_is_sorted_for_byte_stability() -> None:
     """The helper's return order is canonical (sorted) so the
     resulting `ControlPlaneAcceptance` field is byte-stable across
