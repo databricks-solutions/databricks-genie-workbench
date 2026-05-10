@@ -7732,10 +7732,13 @@ def _build_context_data(
 ) -> dict:
     """Assemble all context sections as a single Python dict for JSON serialization."""
     from genie_space_optimizer.optimization.applier import _get_general_instructions
+    from genie_space_optimizer.common.config import (
+        unresolved_target_debt_strategist_enabled,
+    )
 
     relevant_tables = _extract_tables_from_clusters(clusters + soft_signal_clusters)
 
-    return {
+    context: dict = {
         "progress_summary": success_summary,
         "mandatory_regression_debt_qids": (
             list(metadata_snapshot.get("_mandatory_regression_debt_qids") or [])
@@ -7781,6 +7784,19 @@ def _build_context_data(
             clusters, metadata_snapshot.get("_data_profile", {}),
         ),
     }
+
+    # Cycle 14-C T6: include the unresolved-target-debt slot only
+    # when (a) the flag is on AND (b) there is actual debt to
+    # surface. Empty / absent debt means no slot — keeps the
+    # strategist prompt clean and byte-stable on flag-off.
+    if unresolved_target_debt_strategist_enabled():
+        debt = list(
+            metadata_snapshot.get("_unresolved_target_debt_qids") or []
+        )
+        if debt:
+            context["unresolved_target_debt_qids"] = debt
+
+    return context
 
 
 _SQL_PATTERN_ROOT_CAUSES = frozenset({

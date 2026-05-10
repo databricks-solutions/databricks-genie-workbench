@@ -13688,6 +13688,12 @@ def _run_gate_checks(
             "passing_to_hard_regressed_qids": list(
                 _control_plane_decision.passing_to_hard_regressed_qids
             ),
+            # Cycle 14-C T6: surface unresolved-target-debt qids so
+            # the iteration body can plumb them into metadata_snapshot
+            # for the next strategist call.
+            "unresolved_target_debt_qids": list(
+                getattr(_control_plane_decision, "unresolved_target_debt_qids", ()) or ()
+            ),
         },
     }
 
@@ -14048,6 +14054,13 @@ def _run_lever_loop(
     # Task 8 — accumulator for regression-debt qids carried into the next
     # strategist call. Updated only when an AG is accepted with debt.
     _regression_debt_qids_for_next_iteration: tuple[str, ...] = ()
+
+    # Cycle 14-C T6 — accumulator for unresolved-target-debt qids
+    # (the originally-targeted qids the accepted candidate did not
+    # flip, e.g. via accepted_with_attribution_drift). Plumbed into
+    # the next iteration's strategist context behind a default-off
+    # behaviour flag.
+    _unresolved_target_debt_qids_for_next_iteration: tuple[str, ...] = ()
 
     # Task 6 — track whether live Genie state is trusted enough to
     # mutate quarantine. Set to False if rollback verification ever
@@ -16821,6 +16834,14 @@ def _run_lever_loop(
                     if _regression_debt_qids_for_next_iteration:
                         metadata_snapshot["_mandatory_regression_debt_qids"] = list(
                             _regression_debt_qids_for_next_iteration
+                        )
+                    # Cycle 14-C T6 — thread unresolved-target debt
+                    # into metadata_snapshot so _build_context_data
+                    # can render the new strategist slot when the
+                    # default-off flag is enabled.
+                    if _unresolved_target_debt_qids_for_next_iteration:
+                        metadata_snapshot["_unresolved_target_debt_qids"] = list(
+                            _unresolved_target_debt_qids_for_next_iteration
                         )
                         _debt_set = set(_regression_debt_qids_for_next_iteration)
                         _debt_clusters = [
@@ -23030,6 +23051,14 @@ def _run_lever_loop(
                     + _kv("QIDs", list(_regression_debt_qids_for_next_iteration)) + "\n"
                     + _bar("-")
                 )
+            # Cycle 14-C T6 — carry unresolved-target debt forward.
+            _unresolved_target_debt_qids_for_next_iteration = tuple(
+                str(q)
+                for q in (
+                    _acceptance_detail.get("unresolved_target_debt_qids") or []
+                )
+                if str(q)
+            )
 
             new_refs = extract_reference_sqls(full_result)
             if new_refs:
