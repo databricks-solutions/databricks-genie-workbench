@@ -26,6 +26,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
+
 
 STAGE_KEY: str = "safety_gates"
 
@@ -128,7 +130,14 @@ class GateDrop:
 
 
 @dataclass
-class GatesInput:
+class GatesInput(JsonRoundTrip):
+    """Input to stages.gates.filter.
+
+    C15 Phase 4.2: mixes JsonRoundTrip for boundary-fixture replay.
+    Sets (rolled_back_content_fingerprints, forbidden_signatures) are
+    serialised as sorted lists and restored as sets in from_json.
+    """
+
     proposals_by_ag: dict[str, tuple[dict[str, Any], ...]]
     ags: tuple[dict[str, Any], ...]
     rca_evidence: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -137,12 +146,102 @@ class GatesInput:
     forbidden_signatures: set[str] = field(default_factory=set)
     space_snapshot: dict[str, Any] = field(default_factory=dict)
 
+    def to_json(self) -> dict[str, Any]:  # type: ignore[override]
+        return {
+            "proposals_by_ag": {
+                ag_id: [dict(p) for p in props]
+                for ag_id, props in (self.proposals_by_ag or {}).items()
+            },
+            "ags": [dict(ag) for ag in (self.ags or ())],
+            "rca_evidence": {k: dict(v) for k, v in (self.rca_evidence or {}).items()},
+            "applied_history": [dict(h) for h in (self.applied_history or ())],
+            "rolled_back_content_fingerprints": sorted(
+                self.rolled_back_content_fingerprints or set()
+            ),
+            "forbidden_signatures": sorted(
+                self.forbidden_signatures or set()
+            ),
+            "space_snapshot": dict(self.space_snapshot or {}),
+        }
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> "GatesInput":  # type: ignore[override]
+        return cls(
+            proposals_by_ag={
+                ag_id: tuple(dict(p) for p in props)
+                for ag_id, props in (payload.get("proposals_by_ag") or {}).items()
+            },
+            ags=tuple(dict(ag) for ag in (payload.get("ags") or [])),
+            rca_evidence={
+                k: dict(v)
+                for k, v in (payload.get("rca_evidence") or {}).items()
+            },
+            applied_history=tuple(
+                dict(h) for h in (payload.get("applied_history") or [])
+            ),
+            rolled_back_content_fingerprints=set(
+                payload.get("rolled_back_content_fingerprints") or []
+            ),
+            forbidden_signatures=set(
+                payload.get("forbidden_signatures") or []
+            ),
+            space_snapshot=dict(payload.get("space_snapshot") or {}),
+        )
+
 
 @dataclass
-class GateOutcome:
+class GateOutcome(JsonRoundTrip):
+    """Output of stages.gates.filter.
+
+    C15 Phase 4.2: mixes JsonRoundTrip for boundary-fixture replay.
+    GateDrop instances are serialised as plain dicts and restored via
+    GateDrop(**...) in from_json.
+    """
+
     survived_by_ag: dict[str, tuple[dict[str, Any], ...]]
     dropped: tuple[GateDrop, ...] = ()
     new_dead_on_arrival_signatures: tuple[str, ...] = ()
+
+    def to_json(self) -> dict[str, Any]:  # type: ignore[override]
+        return {
+            "survived_by_ag": {
+                ag_id: [dict(p) for p in props]
+                for ag_id, props in (self.survived_by_ag or {}).items()
+            },
+            "dropped": [
+                {
+                    "proposal_id": d.proposal_id,
+                    "gate": d.gate,
+                    "reason": d.reason,
+                    "detail": d.detail,
+                }
+                for d in (self.dropped or ())
+            ],
+            "new_dead_on_arrival_signatures": list(
+                self.new_dead_on_arrival_signatures or ()
+            ),
+        }
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> "GateOutcome":  # type: ignore[override]
+        return cls(
+            survived_by_ag={
+                ag_id: tuple(dict(p) for p in props)
+                for ag_id, props in (payload.get("survived_by_ag") or {}).items()
+            },
+            dropped=tuple(
+                GateDrop(
+                    proposal_id=str(d.get("proposal_id", "")),
+                    gate=str(d.get("gate", "")),
+                    reason=str(d.get("reason", "")),
+                    detail=str(d.get("detail", "")),
+                )
+                for d in (payload.get("dropped") or [])
+            ),
+            new_dead_on_arrival_signatures=tuple(
+                payload.get("new_dead_on_arrival_signatures") or []
+            ),
+        )
 
 
 def _run_intra_ag_dedup(
