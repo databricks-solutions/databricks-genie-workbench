@@ -30,6 +30,10 @@ from genie_space_optimizer.optimization.rca_decision_trace import (
 from genie_space_optimizer.optimization.run_output_contract import (
     PROCESS_STAGE_ORDER,
 )
+from genie_space_optimizer.optimization.stages._json_io import (
+    JsonRoundTrip,
+    pretty_block,
+)
 
 
 _STAGE_DECISION_TYPE_MAP: dict[str, tuple[DecisionType, ...]] = {
@@ -107,10 +111,20 @@ def render_run_overview(
 def render_iteration_transcript(
     *,
     iteration: int,
-    trace: OptimizationTrace,
+    trace: OptimizationTrace | None,
     iteration_summary: dict[str, Any],
+    typed_stage_io: "dict[str, tuple[Any, Any, tuple[str, ...]]] | None" = None,
+    # ^ optional. Maps stage_key → (input_obj, output_obj, markers_emitted).
+    fixture_anchor: str | None = None,
 ) -> str:
-    """Render a single iteration's transcript block."""
+    """Render a single iteration's transcript block.
+
+    C15 Phase 5: ``typed_stage_io`` and ``fixture_anchor`` are new optional
+    parameters.  When ``typed_stage_io`` is provided and a stage key appears
+    in it, ``render_typed_stage_block`` appends the typed I/O block after the
+    legacy decision-record summary.  ``trace`` may be ``None`` when only the
+    typed path is used (e.g. snapshot tests).
+    """
     lines: list[str] = []
     lines.append(f"\n## Iteration {iteration}\n")
 
@@ -128,16 +142,67 @@ def render_iteration_transcript(
         lines.append(f"**Why this stage exists:** {stage.why}")
         lines.append("")
         lines.append("**What happened:**")
-        records = _records_for_stage(trace, stage.key)
-        if records:
-            for rec in records[:5]:
-                lines.append(f"- {_format_record(rec)}")
-            if len(records) > 5:
-                lines.append(f"- (+{len(records) - 5} more records)")
+        if trace is not None:
+            records = _records_for_stage(trace, stage.key)
+            if records:
+                for rec in records[:5]:
+                    lines.append(f"- {_format_record(rec)}")
+                if len(records) > 5:
+                    lines.append(f"- (+{len(records) - 5} more records)")
+            else:
+                lines.append("- (no decisions emitted for this stage in this iteration)")
         else:
-            lines.append("- (no decisions emitted for this stage in this iteration)")
+            lines.append("- (trace not available)")
         lines.append("")
+        if typed_stage_io and stage.key in typed_stage_io:
+            inp_obj, out_obj, markers = typed_stage_io[stage.key]
+            lines.append(render_typed_stage_block(
+                stage_index=stage_idx,
+                stage_key=stage.key,
+                inp=inp_obj,
+                out=out_obj,
+                markers_emitted=markers,
+                fixture_anchor=fixture_anchor,
+            ))
+            lines.append("")
 
+    return "\n".join(lines)
+
+
+def render_typed_stage_block(
+    *,
+    stage_index: int,
+    stage_key: str,
+    inp: JsonRoundTrip,
+    out: JsonRoundTrip,
+    markers_emitted: tuple[str, ...] = (),
+    fixture_anchor: str | None = None,
+    width: int = 72,
+) -> str:
+    """C15 Phase 5: render one stage's I/O as a fixed-format block.
+
+    Produces:
+
+        [STAGE N: stage_key]                     fixture: <anchor>
+        ─ Input ──────────────────────────────────────────────────
+         <field> : <value>
+         ...
+        ─ Output ─────────────────────────────────────────────────
+         <field> : <value>
+         ...
+        ─ Markers emitted ───────────────────────────────────────
+         <marker_name>            ✓
+    """
+    lines: list[str] = []
+    header_left = f"[STAGE {stage_index}: {stage_key}]"
+    header_right = f"fixture: {fixture_anchor}" if fixture_anchor else ""
+    pad = max(1, width - len(header_left) - len(header_right))
+    lines.append(f"{header_left}{' ' * pad}{header_right}")
+    lines.append(pretty_block("Input", inp.to_pretty(width=width), width=width))
+    lines.append(pretty_block("Output", out.to_pretty(width=width), width=width))
+    if markers_emitted:
+        marker_body = "\n".join(f" {m:<28}    ✓" for m in markers_emitted)
+        lines.append(pretty_block("Markers emitted", marker_body, width=width))
     return "\n".join(lines)
 
 
