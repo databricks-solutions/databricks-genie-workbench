@@ -18,6 +18,7 @@ plan.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from genie_space_optimizer.optimization.rca_decision_trace import (
@@ -30,13 +31,128 @@ from genie_space_optimizer.optimization.rca_terminal import (
     RcaTerminalDecision,
     resolve_terminal_on_plateau,
 )
+from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
 
 
 STAGE_KEY: str = "learning_next_action"
 
 
+# ── C15 Phase 1: new typed contracts for LearningInput / LearningOutput ──────
+
+
+class AcceptanceVerdict(StrEnum):
+    """Canonical AG-level verdict, sourced from AgOutcomeRecord.outcome.
+
+    String values are the legacy outcome strings the codebase already
+    emits, so JSON round-trip is byte-stable across this rewrite.
+    """
+
+    ACCEPTED = "accepted"
+    ACCEPTED_WITH_ATTRIBUTION_DRIFT = "accepted_with_attribution_drift"
+    ACCEPTED_WITH_REGRESSION_DEBT = "accepted_with_regression_debt"
+    ROLLED_BACK = "rolled_back"
+
+
+@dataclass(frozen=True, slots=True)
+class IterationSummary(JsonRoundTrip):
+    """One per attempted iteration. Closes D-7 — the totality marker
+    has one summary per attempted iter, not one per accepted iter."""
+
+    iteration: int
+    attempted: bool
+    verdict: AcceptanceVerdict
+    candidate_accuracy: float
+    baseline_accuracy: float
+    accidentally_improved_qids: tuple[str, ...] = ()
+    unresolved_target_debt_qids: tuple[str, ...] = ()
+    rolled_back_content_fingerprints: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "IterationSummary":
+        return cls(
+            iteration=int(payload["iteration"]),
+            attempted=bool(payload["attempted"]),
+            verdict=AcceptanceVerdict(payload["verdict"]),
+            candidate_accuracy=float(payload["candidate_accuracy"]),
+            baseline_accuracy=float(payload["baseline_accuracy"]),
+            accidentally_improved_qids=tuple(payload.get("accidentally_improved_qids") or ()),
+            unresolved_target_debt_qids=tuple(payload.get("unresolved_target_debt_qids") or ()),
+            rolled_back_content_fingerprints=tuple(payload.get("rolled_back_content_fingerprints") or ()),
+            notes=tuple(payload.get("notes") or ()),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LearningInput(JsonRoundTrip):
+    """C15 Phase 1 typed input to stages.learning.execute.
+
+    Sourced directly from the AcceptanceOutput plus iteration-counter
+    bookkeeping. The harness never reshapes the verdict; LearningInput
+    accepts the AcceptanceVerdict enum or its string form (from_json).
+
+    NOTE: The legacy LearningInput (below) is preserved for the existing
+    update() function. This new contract is what INPUT_CLASS points to
+    for the conformance test and fixture replay.
+    """
+
+    iteration: int
+    attempted: bool
+    verdict: AcceptanceVerdict
+    candidate_accuracy: float
+    baseline_accuracy: float
+    accidentally_improved_qids: tuple[str, ...] = ()
+    unresolved_target_debt_qids: tuple[str, ...] = ()
+    rolled_back_content_fingerprints: tuple[str, ...] = ()
+    qid_resolutions: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "LearningInput":
+        return cls(
+            iteration=int(payload["iteration"]),
+            attempted=bool(payload["attempted"]),
+            verdict=AcceptanceVerdict(payload["verdict"]),
+            candidate_accuracy=float(payload["candidate_accuracy"]),
+            baseline_accuracy=float(payload["baseline_accuracy"]),
+            accidentally_improved_qids=tuple(payload.get("accidentally_improved_qids") or ()),
+            unresolved_target_debt_qids=tuple(payload.get("unresolved_target_debt_qids") or ()),
+            rolled_back_content_fingerprints=tuple(payload.get("rolled_back_content_fingerprints") or ()),
+            qid_resolutions=dict(payload.get("qid_resolutions") or {}),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class LearningOutput(JsonRoundTrip):
+    """C15 Phase 1 typed output of stages.learning.execute. Drives:
+
+    * D-7: GSO_ITERATION_SUMMARY_TOTALITY_V1 emits len(iteration_summaries)
+      records, exactly one per attempted iter.
+    * Stage 10 → Stage 4 arrow: forbidden-AG set is rebuilt from
+      iteration_summaries[*].rolled_back_content_fingerprints.
+    """
+
+    iteration_summaries: tuple[IterationSummary, ...] = ()
+    terminate: bool = False
+    terminate_reason: str = ""
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "LearningOutput":
+        return cls(
+            iteration_summaries=tuple(
+                IterationSummary.from_json(s)
+                for s in (payload.get("iteration_summaries") or ())
+            ),
+            terminate=bool(payload.get("terminate", False)),
+            terminate_reason=str(payload.get("terminate_reason", "")),
+        )
+
+
 @dataclass
-class LearningInput:
+class _LearningInputLegacy:
+    """Legacy learning input used by update(). Preserved for harness wiring
+    that has not yet migrated to the C15 Phase 1 typed LearningInput.
+    Not exported as INPUT_CLASS — the new LearningInput (above) is."""
+
     prior_reflection_buffer: tuple[dict[str, Any], ...]
     prior_do_not_retry: set[str]
     prior_rolled_back_content_fingerprints: set[str]
@@ -139,7 +255,7 @@ def _emit_ag_retired_records(
     return tuple(records)
 
 
-def update(ctx, inp: LearningInput) -> LearningUpdate:
+def update(ctx, inp: _LearningInputLegacy) -> LearningUpdate:
     """Stage 9 entry. Builds the next-iteration learning state and
     emits AG_RETIRED records when applicable.
 
@@ -203,15 +319,37 @@ def update(ctx, inp: LearningInput) -> LearningUpdate:
     )
 
 
+def execute(ctx, inp: LearningInput) -> LearningOutput:
+    """Stage 9 entry for the C15 Phase 1 typed contract.
+
+    Builds one IterationSummary for this attempted iteration and
+    returns it wrapped in a LearningOutput. The ``terminate`` flag
+    and ``terminate_reason`` are computed by the harness caller
+    (which still owns plateau resolution) and passed through inp.
+    """
+    summary = IterationSummary(
+        iteration=inp.iteration,
+        attempted=inp.attempted,
+        verdict=inp.verdict,
+        candidate_accuracy=inp.candidate_accuracy,
+        baseline_accuracy=inp.baseline_accuracy,
+        accidentally_improved_qids=inp.accidentally_improved_qids,
+        unresolved_target_debt_qids=inp.unresolved_target_debt_qids,
+        rolled_back_content_fingerprints=inp.rolled_back_content_fingerprints,
+    )
+    return LearningOutput(
+        iteration_summaries=(summary,),
+        terminate=False,
+        terminate_reason="",
+    )
+
+
 # ── Phase H: explicit Input/Output class declarations ─────────────────
 # Phase H's per-stage I/O capture decorator imports these to serialize
 # the stage's typed input and output to MLflow.
+# C15 Phase 1: INPUT_CLASS → new frozen LearningInput (JsonRoundTrip);
+# OUTPUT_CLASS → new frozen LearningOutput (JsonRoundTrip).
+# The legacy _LearningInputLegacy / LearningUpdate remain for the
+# existing update() function body.
 INPUT_CLASS = LearningInput
-OUTPUT_CLASS = LearningUpdate
-
-
-# ── G-lite: uniform execute() alias ───────────────────────────────────
-# The named verb above is preserved for human-readable harness call
-# sites. The ``execute`` alias is what the stage registry, conformance
-# test, and Phase H capture decorator import.
-execute = update
+OUTPUT_CLASS = LearningOutput

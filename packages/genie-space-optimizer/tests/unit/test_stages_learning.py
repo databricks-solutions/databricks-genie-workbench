@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 from genie_space_optimizer.optimization.stages import StageContext
 from genie_space_optimizer.optimization.stages.learning import (
-    LearningInput,
+    _LearningInputLegacy as LearningInput,
     LearningUpdate,
 )
 
@@ -59,7 +59,7 @@ def test_update_appends_to_reflection_buffer() -> None:
     from genie_space_optimizer.optimization.stages import learning as lrn
     ctx = _stub_ctx()
 
-    inp = lrn.LearningInput(
+    inp = lrn._LearningInputLegacy(
         prior_reflection_buffer=({"iter": 1, "accepted": False},),
         prior_do_not_retry=set(),
         prior_rolled_back_content_fingerprints=set(),
@@ -85,7 +85,7 @@ def test_update_accumulates_rolled_back_content_fingerprints() -> None:
     from genie_space_optimizer.optimization.stages import learning as lrn
     ctx = _stub_ctx()
 
-    inp = lrn.LearningInput(
+    inp = lrn._LearningInputLegacy(
         prior_reflection_buffer=(),
         prior_do_not_retry=set(),
         prior_rolled_back_content_fingerprints={"old_fp"},
@@ -111,7 +111,7 @@ def test_update_emits_ag_retired_record_when_target_no_longer_hard() -> None:
     captured: list = []
     ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
-    inp = lrn.LearningInput(
+    inp = lrn._LearningInputLegacy(
         prior_reflection_buffer=(),
         prior_do_not_retry=set(),
         prior_rolled_back_content_fingerprints=set(),
@@ -151,7 +151,7 @@ def test_update_resolves_terminal_decision_dict_shape() -> None:
     from genie_space_optimizer.optimization.stages import learning as lrn
     ctx = _stub_ctx()
 
-    inp = lrn.LearningInput(
+    inp = lrn._LearningInputLegacy(
         prior_reflection_buffer=(),
         prior_do_not_retry=set(),
         prior_rolled_back_content_fingerprints=set(),
@@ -172,7 +172,7 @@ def test_update_handles_empty_input() -> None:
     captured: list = []
     ctx = _dc_replace(_stub_ctx(), decision_emit=lambda r: captured.append(r))
 
-    inp = lrn.LearningInput(
+    inp = lrn._LearningInputLegacy(
         prior_reflection_buffer=(),
         prior_do_not_retry=set(),
         prior_rolled_back_content_fingerprints=set(),
