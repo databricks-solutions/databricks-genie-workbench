@@ -1050,7 +1050,7 @@ AG-14C-A: First-class reattribution accounting on
 | Flag | Default | Touches | Isolated test |
 |---|---|---|---|
 | `GSO_ATTRIBUTION_DRIFT_REATTRIBUTION` | ON (observability circuit-breaker) | T1, T3, T4, T5 | `test_attribution_drift_marker::test_harness_marker_silent_when_flag_off` |
-| `GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST` | OFF (behaviour pilot) | T6 | `test_strategist_unresolved_target_debt_context::test_slot_absent_when_flag_off_even_if_debt_populated` |
+| `GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST` | ON (operator-flipped 2026-05-10 for combined pre-pilot test; explicit-off override preserves replay byte-stability) | T6 | `test_strategist_unresolved_target_debt_context::test_slot_absent_when_flag_explicitly_off`, `test_default_on_after_2026_05_10_flip` |
 
 ### Section 5: Gate results
 
@@ -1063,10 +1063,14 @@ AG-14C-A: First-class reattribution accounting on
 
 ### Section 6: Decision
 
-`SHIPPED pending Tier-3 ratification`. The default-off behaviour
-flag (`GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST`) is deliberately
-held back from default-flip until the corpus pilot confirms the
-strategist actually consumes the slot productively.
+`SHIPPED pending Tier-3 ratification`. **Operator decision
+(2026-05-10):** the behaviour flag
+`GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST` was flipped default-on at
+ship time to surface the strategist debt slot during the pre-pilot
+test, rather than wait for a separate post-pilot default-flip
+cycle. The Tier-3 corpus pilot (T8 protocol) now ratifies the
+default-on configuration directly. Replay byte-stability is
+preserved via explicit-off override on legacy fixtures.
 
 ### Section 7: Seeds for next cycle
 

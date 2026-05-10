@@ -5932,18 +5932,21 @@ def attribution_drift_reattribution_enabled() -> bool:
 
 
 def unresolved_target_debt_strategist_enabled() -> bool:
-    """Cycle 14-C T6 — when on, ``_build_context_data`` includes a
-    new ``unresolved_target_debt_qids`` slot that the strategist
-    sees on the next iteration's prompt. Sibling to
+    """Cycle 14-C T6 — when on (default), ``_build_context_data``
+    includes a new ``unresolved_target_debt_qids`` slot that the
+    strategist sees on the next iteration's prompt. Sibling to
     ``mandatory_regression_debt_qids`` (C14B regression debt) but
     captures the unresolved-target case (the named target qid did
     not flip on the accepted iteration).
 
-    Default OFF. The corpus pilot (Cycle 14-C T8) measures whether
-    the strategist actually consumes the slot to re-target debt;
-    flip default-on in a follow-up cycle once the pilot confirms.
+    **Default flipped ON for the combined C14-W + C14-C pre-pilot
+    test (2026-05-10).** Operator decision: surface the slot during
+    the test pilot rather than wait for a separate post-pilot
+    default-flip cycle. Disable with
+    ``GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST=0`` for byte-stable
+    replay of pre-14-C fixtures.
 
     Anchor: airline run 1105451933925748 iter 1 — gs_024 is the
     canonical unresolved-target-debt QID.
     """
-    return _flag_enabled("GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST")
+    return _flag_default_on("GSO_UNRESOLVED_TARGET_DEBT_STRATEGIST")
