@@ -19834,59 +19834,66 @@ def _run_lever_loop(
             )
 
             try:
-                from genie_space_optimizer.optimization.stages import (
-                    StageContext as _StageCtx,
+                # C15 Phase 4.6: gate F5 proposal_generation behind
+                # GSO_STAGE_HANDLERS_CHUNK_C. Flag-off → no-op
+                # (byte-stable with pre-Phase-4 runs).
+                from genie_space_optimizer.common.config import (
+                    stage_handlers_chunk_c_enabled as _chunk_c_on_f5,
                 )
-                from genie_space_optimizer.optimization.stages import (
-                    proposals as _prop_stage,
-                )
+                if _chunk_c_on_f5():
+                    from genie_space_optimizer.optimization.stages import (
+                        StageContext as _StageCtx,
+                    )
+                    from genie_space_optimizer.optimization.stages import (
+                        proposals as _prop_stage,
+                    )
 
-                _stage_ctx_a3 = _StageCtx(
-                    run_id=str(run_id),
-                    iteration=int(iteration_counter),
-                    space_id=str(space_id),
-                    domain=str(domain),
-                    catalog=str(catalog),
-                    schema=str(schema),
-                    apply_mode=str(apply_mode),
-                    journey_emit=_journey_emit,
-                    decision_emit=_decision_emit,
-                    mlflow_anchor_run_id=_phase_h_anchor_run_id,  # C17 v2 — activates Phase B capture
-                    feature_flags={},
-                )
-                _cluster_root_cause_by_id = {
-                    str(_c.get("cluster_id") or ""): str(_c.get("root_cause") or "")
-                    for _c in (clusters or [])
-                    if _c.get("cluster_id")
-                }
-                _prop_inp = _prop_stage.ProposalsInput(
-                    proposals_by_ag={
-                        str(ag_id): tuple(all_proposals or []),
-                    },
-                    rca_id_by_cluster=dict(_iter_rca_id_by_cluster),
-                    cluster_root_cause_by_id=_cluster_root_cause_by_id,
-                    proposal_alternatives_by_ag={
-                        str(ag_id): tuple(_proposal_alts or []),
-                    },
-                )
-                # Phase F+H Commit B12: wrap F5 with stage_io_capture
-                # decorator. Replay-byte-stable — wrap_with_io_capture
-                # returns the stage output unchanged; MLflow log_text
-                # calls are no-ops while mlflow_anchor_run_id is None
-                # (C17 wires the anchor on real runs).
-                from genie_space_optimizer.optimization.stage_io_capture import (
-                    wrap_with_io_capture as _wrap_with_io_capture_a3,
-                )
-                _prop_wrapped = _wrap_with_io_capture_a3(
-                    execute=_prop_stage.execute,
-                    stage_key="proposal_generation",
-                )
-                _prop_slate = _prop_wrapped(_stage_ctx_a3, _prop_inp)
-                # _prop_slate is observability-only: F6 (deferred) would
-                # consume _prop_slate.proposals_by_ag (fingerprint-stamped)
-                # when wired. Until F6 lands, the harness's all_proposals
-                # (already fingerprinted by :14311) is the canonical input
-                # to downstream gates — DO NOT replace.
+                    _stage_ctx_a3 = _StageCtx(
+                        run_id=str(run_id),
+                        iteration=int(iteration_counter),
+                        space_id=str(space_id),
+                        domain=str(domain),
+                        catalog=str(catalog),
+                        schema=str(schema),
+                        apply_mode=str(apply_mode),
+                        journey_emit=_journey_emit,
+                        decision_emit=_decision_emit,
+                        mlflow_anchor_run_id=_phase_h_anchor_run_id,  # C17 v2
+                        feature_flags={},
+                    )
+                    _cluster_root_cause_by_id = {
+                        str(_c.get("cluster_id") or ""): str(_c.get("root_cause") or "")
+                        for _c in (clusters or [])
+                        if _c.get("cluster_id")
+                    }
+                    _prop_inp = _prop_stage.ProposalsInput(
+                        proposals_by_ag={
+                            str(ag_id): tuple(all_proposals or []),
+                        },
+                        rca_id_by_cluster=dict(_iter_rca_id_by_cluster),
+                        cluster_root_cause_by_id=_cluster_root_cause_by_id,
+                        proposal_alternatives_by_ag={
+                            str(ag_id): tuple(_proposal_alts or []),
+                        },
+                    )
+                    # Phase F+H Commit B12: wrap F5 with stage_io_capture
+                    # decorator. Replay-byte-stable — wrap_with_io_capture
+                    # returns the stage output unchanged; MLflow log_text
+                    # calls are no-ops while mlflow_anchor_run_id is None
+                    # (C17 wires the anchor on real runs).
+                    from genie_space_optimizer.optimization.stage_io_capture import (
+                        wrap_with_io_capture as _wrap_with_io_capture_a3,
+                    )
+                    _prop_wrapped = _wrap_with_io_capture_a3(
+                        execute=_prop_stage.execute,
+                        stage_key="proposal_generation",
+                    )
+                    _prop_slate = _prop_wrapped(_stage_ctx_a3, _prop_inp)
+                    # _prop_slate is observability-only: F6 (deferred) would
+                    # consume _prop_slate.proposals_by_ag (fingerprint-stamped)
+                    # when wired. Until F6 lands, the harness's all_proposals
+                    # (already fingerprinted by :14311) is the canonical input
+                    # to downstream gates — DO NOT replace.
             except Exception as _proposal_generated_exc:
                 try:
                     from genie_space_optimizer.common.config import (
@@ -20720,49 +20727,54 @@ def _run_lever_loop(
             # additive — wrap_with_io_capture returns the GateOutcome
             # unchanged; MLflow log_text calls are no-ops while
             # mlflow_anchor_run_id is None. Replay-byte-stable.
+            # C15 Phase 4.6: gated behind GSO_STAGE_HANDLERS_CHUNK_C.
             try:
-                from genie_space_optimizer.optimization.stages import (
-                    gates as _gates_stage,
-                    StageContext as _StageCtx_f6,
+                from genie_space_optimizer.common.config import (
+                    stage_handlers_chunk_c_enabled as _chunk_c_on_f6,
                 )
-                from genie_space_optimizer.optimization.stage_io_capture import (
-                    wrap_with_io_capture as _wrap_capture_f6,
-                )
+                if _chunk_c_on_f6():
+                    from genie_space_optimizer.optimization.stages import (
+                        gates as _gates_stage,
+                        StageContext as _StageCtx_f6,
+                    )
+                    from genie_space_optimizer.optimization.stage_io_capture import (
+                        wrap_with_io_capture as _wrap_capture_f6,
+                    )
 
-                _f6_inp = _gates_stage.GatesInput(
-                    proposals_by_ag={str(ag_id): tuple(patches or [])},
-                    ags=tuple([ag] if isinstance(ag, dict) else []),
-                    rca_evidence=(
-                        dict(_rca_evidence_bundle.per_qid_evidence)
-                        if "_rca_evidence_bundle" in dir()
-                        and _rca_evidence_bundle is not None
-                        else {}
-                    ),
-                    applied_history=tuple(),
-                    rolled_back_content_fingerprints=set(
-                        _rolled_back_content_fingerprints
-                    ) if "_rolled_back_content_fingerprints" in dir() else set(),
-                    forbidden_signatures=set(),
-                    space_snapshot={},
-                )
-                _f6_stage_ctx = _StageCtx_f6(
-                    run_id=str(run_id),
-                    iteration=int(iteration_counter),
-                    space_id=str(space_id),
-                    domain=str(domain),
-                    catalog=str(catalog),
-                    schema=str(schema),
-                    apply_mode="real",
-                    journey_emit=lambda *a, **k: None,
-                    decision_emit=lambda r: None,
-                    mlflow_anchor_run_id=_phase_h_anchor_run_id,
-                    feature_flags={},
-                )
-                _f6_wrapped = _wrap_capture_f6(
-                    execute=_gates_stage.filter,
-                    stage_key="safety_gates",
-                )
-                _gate_outcome = _f6_wrapped(_f6_stage_ctx, _f6_inp)
+                    _f6_inp = _gates_stage.GatesInput(
+                        proposals_by_ag={str(ag_id): tuple(patches or [])},
+                        ags=tuple([ag] if isinstance(ag, dict) else []),
+                        rca_evidence=(
+                            dict(_rca_evidence_bundle.per_qid_evidence)
+                            if "_rca_evidence_bundle" in dir()
+                            and _rca_evidence_bundle is not None
+                            else {}
+                        ),
+                        applied_history=tuple(),
+                        rolled_back_content_fingerprints=set(
+                            _rolled_back_content_fingerprints
+                        ) if "_rolled_back_content_fingerprints" in dir() else set(),
+                        forbidden_signatures=set(),
+                        space_snapshot={},
+                    )
+                    _f6_stage_ctx = _StageCtx_f6(
+                        run_id=str(run_id),
+                        iteration=int(iteration_counter),
+                        space_id=str(space_id),
+                        domain=str(domain),
+                        catalog=str(catalog),
+                        schema=str(schema),
+                        apply_mode="real",
+                        journey_emit=lambda *a, **k: None,
+                        decision_emit=lambda r: None,
+                        mlflow_anchor_run_id=_phase_h_anchor_run_id,
+                        feature_flags={},
+                    )
+                    _f6_wrapped = _wrap_capture_f6(
+                        execute=_gates_stage.filter,
+                        stage_key="safety_gates",
+                    )
+                    _gate_outcome = _f6_wrapped(_f6_stage_ctx, _f6_inp)
             except Exception:
                 logger.debug(
                     "Phase H Task 4: F6 safety_gates stage failed (non-fatal)",
@@ -21904,60 +21916,67 @@ def _run_lever_loop(
             # PATCH_APPLIED via ctx.decision_emit at :170-171),
             # 65-77 (AppliedPatchSet — fields applied + applied_signature).
             try:
-                from genie_space_optimizer.optimization.stages import (
-                    StageContext as _StageCtx,
+                # C15 Phase 4.6: gate F7 applied_patches behind
+                # GSO_STAGE_HANDLERS_CHUNK_C. Flag-off → no-op
+                # (byte-stable with pre-Phase-4 runs).
+                from genie_space_optimizer.common.config import (
+                    stage_handlers_chunk_c_enabled as _chunk_c_on_f7,
                 )
-                from genie_space_optimizer.optimization.stages import (
-                    application as _app_stage,
-                )
+                if _chunk_c_on_f7():
+                    from genie_space_optimizer.optimization.stages import (
+                        StageContext as _StageCtx,
+                    )
+                    from genie_space_optimizer.optimization.stages import (
+                        application as _app_stage,
+                    )
 
-                _cluster_root_cause_by_id = {
-                    str(_c.get("cluster_id") or ""): str(_c.get("root_cause") or "")
-                    for _c in (clusters or [])
-                    if _c.get("cluster_id")
-                }
-                _stage_ctx_application = _StageCtx(
-                    run_id=str(run_id),
-                    iteration=int(iteration_counter),
-                    space_id=str(space_id),
-                    domain=str(domain),
-                    catalog=str(catalog),
-                    schema=str(schema),
-                    apply_mode=str(apply_mode),
-                    journey_emit=_journey_emit,
-                    decision_emit=(
-                        lambda record:
-                            _current_iter_inputs.setdefault(
-                                "decision_records", []
-                            ).append(record.to_dict())
-                    ),
-                    mlflow_anchor_run_id=_phase_h_anchor_run_id,
-                    feature_flags={},
-                )
-                _app_inp = _app_stage.ApplicationInput(
-                    applied_entries_by_ag={
-                        str(ag_id): tuple(apply_log.get("applied", []) or [])
-                    },
-                    ags=tuple([ag] if isinstance(ag, dict) else []),
-                    rca_id_by_cluster=_iter_rca_id_by_cluster,
-                    cluster_root_cause_by_id=_cluster_root_cause_by_id,
-                )
-                # Phase F+H Commit B14: wrap F7 with stage_io_capture decorator.
-                # Replay-byte-stable because wrap_with_io_capture returns out
-                # unchanged and the MLflow log_text calls are no-ops while
-                # _stage_ctx_application.mlflow_anchor_run_id is None (Phase C
-                # Commit 17 wires the anchor).
-                from genie_space_optimizer.optimization.stage_io_capture import (
-                    wrap_with_io_capture as _wrap_with_io_capture_a4,
-                )
-                _app_wrapped = _wrap_with_io_capture_a4(
-                    execute=_app_stage.execute,
-                    stage_key="applied_patches",
-                )
-                _applied_set = _app_wrapped(_stage_ctx_application, _app_inp)
-                # _applied_set.applied is tuple[AppliedPatch, ...]; available
-                # for downstream stages (F8 acceptance, F9 learning) when
-                # those wire-ups land.
+                    _cluster_root_cause_by_id = {
+                        str(_c.get("cluster_id") or ""): str(_c.get("root_cause") or "")
+                        for _c in (clusters or [])
+                        if _c.get("cluster_id")
+                    }
+                    _stage_ctx_application = _StageCtx(
+                        run_id=str(run_id),
+                        iteration=int(iteration_counter),
+                        space_id=str(space_id),
+                        domain=str(domain),
+                        catalog=str(catalog),
+                        schema=str(schema),
+                        apply_mode=str(apply_mode),
+                        journey_emit=_journey_emit,
+                        decision_emit=(
+                            lambda record:
+                                _current_iter_inputs.setdefault(
+                                    "decision_records", []
+                                ).append(record.to_dict())
+                        ),
+                        mlflow_anchor_run_id=_phase_h_anchor_run_id,
+                        feature_flags={},
+                    )
+                    _app_inp = _app_stage.ApplicationInput(
+                        applied_entries_by_ag={
+                            str(ag_id): tuple(apply_log.get("applied", []) or [])
+                        },
+                        ags=tuple([ag] if isinstance(ag, dict) else []),
+                        rca_id_by_cluster=_iter_rca_id_by_cluster,
+                        cluster_root_cause_by_id=_cluster_root_cause_by_id,
+                    )
+                    # Phase F+H Commit B14: wrap F7 with stage_io_capture decorator.
+                    # Replay-byte-stable because wrap_with_io_capture returns out
+                    # unchanged and the MLflow log_text calls are no-ops while
+                    # _stage_ctx_application.mlflow_anchor_run_id is None (Phase C
+                    # Commit 17 wires the anchor).
+                    from genie_space_optimizer.optimization.stage_io_capture import (
+                        wrap_with_io_capture as _wrap_with_io_capture_a4,
+                    )
+                    _app_wrapped = _wrap_with_io_capture_a4(
+                        execute=_app_stage.execute,
+                        stage_key="applied_patches",
+                    )
+                    _applied_set = _app_wrapped(_stage_ctx_application, _app_inp)
+                    # _applied_set.applied is tuple[AppliedPatch, ...]; available
+                    # for downstream stages (F8 acceptance, F9 learning) when
+                    # those wire-ups land.
             except Exception as _patch_applied_exc:
                 try:
                     from genie_space_optimizer.common.config import (
