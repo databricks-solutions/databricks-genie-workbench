@@ -29,25 +29,26 @@ from genie_space_optimizer.optimization.decision_emitters import (
     ag_outcome_decision_record,
     post_eval_resolution_records,
 )
+from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
 
 
 STAGE_KEY: str = "acceptance_decision"
 
 
-@dataclass
-class AgOutcomeRecord:
+@dataclass(frozen=True, slots=True)
+class AgOutcomeRecord(JsonRoundTrip):
     """Per-AG acceptance outcome record."""
 
     ag_id: str
-    outcome: str  # "accepted" | "accepted_with_regression_debt" | "rolled_back"
+    outcome: str  # "accepted" | "accepted_with_regression_debt" | "accepted_with_attribution_drift" | "rolled_back"
     reason_code: str
-    target_qids: tuple[str, ...]
-    affected_qids: tuple[str, ...]
+    target_qids: tuple[str, ...] = ()
+    affected_qids: tuple[str, ...] = ()
     content_fingerprints: tuple[str, ...] = ()
 
 
-@dataclass
-class AcceptanceInput:
+@dataclass(frozen=True, slots=True)
+class AcceptanceInput(JsonRoundTrip):
     """Input to stages.acceptance.decide.
 
     Field names match the actual ``decide_control_plane_acceptance``
@@ -59,25 +60,28 @@ class AcceptanceInput:
 
     ``pre_rows`` / ``post_rows`` are eval-row dicts (with
     ``question_id``, ``result_correctness``, ``arbiter``) — the gate
-    derives hard-failure sets via ``hard_failure_qids`` from these.
+    derives hard-failure sets via ``EvalRow.is_hard_failure()`` from these.
 
     ``baseline_pre_arbiter_accuracy`` / ``candidate_pre_arbiter_accuracy``
     enable the PR-E saturation-mode acceptance branch when supplied.
+
+    C15 Phase 1: frozen+slots+JsonRoundTrip. All collection types are
+    immutable (tuple/dict) so freezing extends to the contained data.
     """
 
-    applied_entries_by_ag: dict[str, tuple[Mapping[str, Any], ...]]
-    ags: tuple[Mapping[str, Any], ...]
+    applied_entries_by_ag: dict[str, tuple[dict, ...]] = field(default_factory=dict)
+    ags: tuple[dict, ...] = ()
     baseline_accuracy: float = 0.0
     candidate_accuracy: float = 0.0
     baseline_pre_arbiter_accuracy: float | None = None
     candidate_pre_arbiter_accuracy: float | None = None
-    pre_rows: tuple[Mapping[str, Any], ...] = ()
-    post_rows: tuple[Mapping[str, Any], ...] = ()
+    pre_rows: tuple[dict, ...] = ()
+    post_rows: tuple[dict, ...] = ()
     protected_qids: tuple[str, ...] = ()
     min_gain_pp: float = 0.0
     min_pre_arbiter_gain_pp: float = 2.0
-    rca_id_by_cluster: Mapping[str, str] = field(default_factory=dict)
-    cluster_by_qid: Mapping[str, str] = field(default_factory=dict)
+    rca_id_by_cluster: dict[str, str] = field(default_factory=dict)
+    cluster_by_qid: dict[str, str] = field(default_factory=dict)
     # Optimizer Control-Plane Hardening Plan — Task A. When False, the
     # control-plane gate's attribution-drift branch rejects below-
     # threshold acceptances. Default True preserves legacy behaviour;
@@ -86,8 +90,8 @@ class AcceptanceInput:
     thresholds_met: bool = True
 
 
-@dataclass
-class AgOutcome:
+@dataclass(frozen=True, slots=True)
+class AgOutcome(JsonRoundTrip):
     """Output of stages.acceptance.decide.
 
     ``outcomes_by_ag`` maps AG id → AgOutcomeRecord.
@@ -96,11 +100,27 @@ class AgOutcome:
     ``rolled_back_content_fingerprints`` is the union of every
     rolled-back AG's patch fingerprints — F6's PR-E content-fingerprint
     dedup gate consumes this on the next iteration.
+
+    C15 Phase 1: frozen+slots+JsonRoundTrip (closes D-6 contract surface).
     """
 
-    outcomes_by_ag: dict[str, AgOutcomeRecord]
+    outcomes_by_ag: dict[str, AgOutcomeRecord] = field(default_factory=dict)
     qid_resolutions: dict[str, str] = field(default_factory=dict)
-    rolled_back_content_fingerprints: set[str] = field(default_factory=set)
+    rolled_back_content_fingerprints: frozenset[str] = field(default_factory=frozenset)
+
+    @classmethod
+    def from_json(cls, payload: dict) -> "AgOutcome":
+        outcomes = {
+            ag_id: AgOutcomeRecord.from_json(rec)
+            for ag_id, rec in (payload.get("outcomes_by_ag") or {}).items()
+        }
+        return AgOutcome(
+            outcomes_by_ag=outcomes,
+            qid_resolutions=dict(payload.get("qid_resolutions") or {}),
+            rolled_back_content_fingerprints=frozenset(
+                payload.get("rolled_back_content_fingerprints") or []
+            ),
+        )
 
 
 def _row_qid(row: Mapping[str, Any]) -> str:
@@ -270,7 +290,7 @@ def decide(ctx, inp: AcceptanceInput) -> AgOutcome:
     return AgOutcome(
         outcomes_by_ag=outcomes,
         qid_resolutions=qid_resolutions,
-        rolled_back_content_fingerprints=rolled_back_fps,
+        rolled_back_content_fingerprints=frozenset(rolled_back_fps),
     )
 
 
