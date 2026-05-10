@@ -1,4 +1,4 @@
-"""Phase H Fidelity Task 4 — pin Stage 10 (Learning / Next Action)
+"""Phase H Fidelity Task 4 — pin Stage 11 (Learning / Next Action)
 emission for no-op and rollback iteration paths.
 
 Run ``3b050ec5-4032-457f-a785-2d1a3942a097`` exhibited Stage 10 reading
@@ -12,8 +12,11 @@ paths emit neither.
 This test file pins the new contract: every iteration finalises with a
 typed learning record summarising the exit path, AG-level counters, and
 operator-facing next action. The renderer also surfaces these records
-in Stage 10 so the operator transcript becomes the source of truth for
+in Stage 11 so the operator transcript becomes the source of truth for
 "what should the next iteration do".
+
+C15 Phase 2: learning_next_action moved from position 10 to position 11
+after strategist_context was inserted at position 4.
 """
 
 from __future__ import annotations
@@ -84,7 +87,7 @@ def test_iteration_learning_record_for_accepted_path() -> None:
 def test_iteration_learning_record_for_unknown_exit_path_degrades_gracefully() -> None:
     """An unrecognised exit_path string must not crash the helper. The
     record degrades to ``DecisionOutcome.INFO`` so the iteration still
-    has at least one Stage 10 line."""
+    has at least one Stage 11 line."""
     rec = iteration_learning_record(
         run_id="r1",
         iteration=4,
@@ -103,7 +106,7 @@ def test_iteration_learning_record_for_unknown_exit_path_degrades_gracefully() -
 
 def test_learning_next_action_stage_renders_iteration_budget_decision() -> None:
     """Phase H Fidelity Task 4: the operator-transcript stage map must
-    surface ITERATION_BUDGET_DECISION records in Stage 10 so the
+    surface ITERATION_BUDGET_DECISION records in Stage 11 so the
     learning record actually appears in the operator transcript."""
     from genie_space_optimizer.optimization.operator_process_transcript import (
         _STAGE_DECISION_TYPE_MAP,
@@ -115,10 +118,11 @@ def test_learning_next_action_stage_renders_iteration_budget_decision() -> None:
     )
 
 
-def test_full_transcript_renders_learning_record_in_stage_10() -> None:
+def test_full_transcript_renders_learning_record_in_stage_11() -> None:
     """End-to-end: when an iteration trace contains a learning record,
-    Stage 10 of the rendered transcript must contain that record's text
-    (decision_type + reason_code) instead of the empty placeholder."""
+    Stage 11 of the rendered transcript must contain that record's text
+    (decision_type + reason_code) instead of the empty placeholder.
+    C15 Phase 2: learning_next_action moved from position 10 to 11."""
     from genie_space_optimizer.optimization.operator_process_transcript import (
         render_iteration_transcript,
     )
@@ -144,6 +148,6 @@ def test_full_transcript_renders_learning_record_in_stage_10() -> None:
         trace=trace,
         iteration_summary={"iteration": 1, "exit_path": "proposals_empty"},
     )
-    assert "10. Learning / Next Action" in rendered
+    assert "11. Learning / Next Action" in rendered
     assert "iteration_budget_decision" in rendered
     assert "proposal_generation_empty" in rendered

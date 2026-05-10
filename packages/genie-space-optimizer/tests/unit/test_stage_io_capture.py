@@ -69,7 +69,8 @@ def test_capture_decorator_logs_input_output_and_returns_unchanged(
     assert any("output.json" in p for p in artifact_paths)
     assert any("decisions.json" in p for p in artifact_paths)
     for _, p, _ in captured_logs:
-        assert "iterations/iter_02/stages/06_safety_gates" in p
+        # C15 Phase 2: strategist_context at position 4 shifts safety_gates from 06 to 07.
+        assert "iterations/iter_02/stages/07_safety_gates" in p
 
     in_json = next(t for _, p, t in captured_logs if "input.json" in p)
     assert json.loads(in_json) == {"qid": "q9"}

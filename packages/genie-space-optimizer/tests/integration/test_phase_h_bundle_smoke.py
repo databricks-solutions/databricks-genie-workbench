@@ -79,14 +79,16 @@ def test_artifact_index_lists_every_stage_per_iteration() -> None:
     index = build_artifact_index(iterations=[1, 2])
     for iteration in [1, 2]:
         per_iter = index["iterations"][str(iteration)]
-        # C15 Phase 1: 11 executable stages (post_patch_evaluation + contract_health
+        # C15 Phase 2: 12 executable stages (post_patch_evaluation + contract_health
         # are transcript-only and not in the per-stage paths; bundle_assembly
-        # and run_manifest are now executable at positions 11 and 12).
-        assert len(per_iter["stages"]) == 11
+        # and run_manifest are now executable at positions 12 and 13;
+        # strategist_context is at position 4).
+        assert len(per_iter["stages"]) == 12
         assert "01_evaluation_state" in per_iter["stages"]
-        # PROCESS_STAGE_ORDER positions: 8=post_patch_evaluation (transcript-only),
-        # so the 11 executable stages get positions 1-7, 9-12.
-        assert "09_acceptance_decision" in per_iter["stages"]
-        assert "10_learning_next_action" in per_iter["stages"]
-        assert "11_bundle_assembly" in per_iter["stages"]
-        assert "12_run_manifest" in per_iter["stages"]
+        # PROCESS_STAGE_ORDER positions: 4=strategist_context, 9=post_patch_evaluation
+        # (transcript-only), so the 12 executable stages get positions 1-8, 10-13.
+        assert "04_strategist_context" in per_iter["stages"]
+        assert "10_acceptance_decision" in per_iter["stages"]
+        assert "11_learning_next_action" in per_iter["stages"]
+        assert "12_bundle_assembly" in per_iter["stages"]
+        assert "13_run_manifest" in per_iter["stages"]

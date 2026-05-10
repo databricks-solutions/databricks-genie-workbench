@@ -1,4 +1,4 @@
-"""Stage registry: canonical 11-entry tuple in process order.
+"""Stage registry: canonical 12-entry tuple in process order.
 
 The registry is the single source of truth for "what stages exist
 and in what order" until Phase H promotes the keys to
@@ -7,7 +7,7 @@ registry imports the order from there to stay in lockstep.
 
 Each ``StageEntry`` carries:
 
-- ``stage_key``: one of the 11 canonical keys.
+- ``stage_key``: one of the 12 canonical keys.
 - ``module``: the imported stage module (e.g. ``stages.evaluation``).
 - ``execute``: the uniform ``execute`` callable on the module
   (added by Phase G-lite Task 2; aliases the named verb).
@@ -40,6 +40,7 @@ from genie_space_optimizer.optimization.stages import (
     proposals,
     rca_evidence,
     run_manifest,
+    strategist_context,
 )
 
 
@@ -61,11 +62,13 @@ class StageEntry:
     output_class: type
 
 
-# Canonical process order: 11 executable stages.
-# PROCESS_STAGE_ORDER (run_output_contract) has 13 entries — the 11 here
+# Canonical process order: 12 executable stages.
+# PROCESS_STAGE_ORDER (run_output_contract) has 14 entries — the 12 here
 # plus ``post_patch_evaluation`` and ``contract_health`` (transcript-only).
 # C15 Phase 1 adds ``bundle_assembly`` (position 10) and ``run_manifest``
 # (position 11) to the executable registry.
+# C15 Phase 2 adds ``strategist_context`` (position 4, between
+# ``cluster_formation`` and ``action_group_selection``).
 # Phase H's PROCESS_STAGE_ORDER must agree with this tuple's keys
 # (the conformance test in tests/unit/test_stage_registry.py pins the order).
 STAGES: tuple[StageEntry, ...] = (
@@ -75,6 +78,8 @@ STAGES: tuple[StageEntry, ...] = (
                rca_evidence.INPUT_CLASS,  rca_evidence.OUTPUT_CLASS),
     StageEntry("cluster_formation",      clustering,      clustering.execute,
                clustering.INPUT_CLASS,    clustering.OUTPUT_CLASS),
+    StageEntry("strategist_context",     strategist_context, strategist_context.execute,
+               strategist_context.INPUT_CLASS, strategist_context.OUTPUT_CLASS),
     StageEntry("action_group_selection", action_groups,   action_groups.execute,
                action_groups.INPUT_CLASS, action_groups.OUTPUT_CLASS),
     StageEntry("proposal_generation",    proposals,       proposals.execute,

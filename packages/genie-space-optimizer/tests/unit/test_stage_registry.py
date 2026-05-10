@@ -9,6 +9,8 @@ _EXPECTED_KEYS_IN_ORDER: tuple[str, ...] = (
     "evaluation_state",
     "rca_evidence",
     "cluster_formation",
+    # C15 Phase 2 new stage:
+    "strategist_context",
     "action_group_selection",
     "proposal_generation",
     "safety_gates",
@@ -25,19 +27,20 @@ _ORIGINAL_9_KEYS: tuple[str, ...] = _EXPECTED_KEYS_IN_ORDER[:9]
 
 
 def test_stages_registry_has_nine_entries_in_process_order() -> None:
-    """C15 Phase 1: STAGES tuple has 11 entries — 9 original stages +
-    bundle_assembly + run_manifest. The original 9-stage core order is
-    preserved."""
+    """C15 Phase 2: STAGES tuple has 12 entries — 9 original stages +
+    bundle_assembly + run_manifest (Phase 1) + strategist_context (Phase 2).
+    The original 9-stage core order is preserved (with strategist_context
+    inserted at position 4 between cluster_formation and action_group_selection)."""
     from genie_space_optimizer.optimization.stages import STAGES
 
     # At minimum, original 9 must be present in order
     assert len(STAGES) >= 9
     actual_keys = tuple(entry.stage_key for entry in STAGES)
-    assert actual_keys[:9] == _ORIGINAL_9_KEYS, (
-        f"Original 9-stage order drift: {actual_keys[:9]!r}"
+    assert actual_keys[:3] == _ORIGINAL_9_KEYS[:3], (
+        f"First 3-stage order drift: {actual_keys[:3]!r}"
     )
-    # The full registry now has exactly 11 entries
-    assert len(STAGES) == 11, f"Expected 11 STAGES entries, got {len(STAGES)}"
+    # The full registry now has exactly 12 entries
+    assert len(STAGES) == 12, f"Expected 12 STAGES entries, got {len(STAGES)}"
     assert actual_keys == _EXPECTED_KEYS_IN_ORDER, (
         f"STAGES order drift: {actual_keys!r}"
     )

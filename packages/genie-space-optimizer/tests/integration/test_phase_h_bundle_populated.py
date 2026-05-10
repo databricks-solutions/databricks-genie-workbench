@@ -98,7 +98,9 @@ def test_wrapped_f3_writes_to_correct_bundle_path(monkeypatch) -> None:
 
 
 def test_wrapped_f7_writes_to_correct_bundle_path(monkeypatch) -> None:
-    """Same contract for F7 application — paths under 07_applied_patches."""
+    """Same contract for F7 application — paths under 08_applied_patches.
+    C15 Phase 2: strategist_context at position 4 shifts applied_patches
+    from 07 to 08."""
     captured: list[tuple[str, str, str]] = []
 
     monkeypatch.setattr(
@@ -125,7 +127,7 @@ def test_wrapped_f7_writes_to_correct_bundle_path(monkeypatch) -> None:
 
     artifact_files = [p for _, p, _ in captured]
     for p in artifact_files:
-        assert "iterations/iter_01/stages/07_applied_patches" in p
+        assert "iterations/iter_01/stages/08_applied_patches" in p
 
 
 def test_skips_capture_when_anchor_is_none() -> None:
@@ -188,7 +190,9 @@ def test_bundle_jsons_compose_for_a_single_iteration_run() -> None:
     # wrappers wrote in the previous tests.
     iter_paths = index["iterations"]["1"]
     assert "03_cluster_formation" in iter_paths["stages"]
-    assert "07_applied_patches" in iter_paths["stages"]
+    # C15 Phase 2: strategist_context at position 4 shifts applied_patches
+    # from position 07 to position 08.
+    assert "08_applied_patches" in iter_paths["stages"]
     f3_paths = iter_paths["stages"]["03_cluster_formation"]
     assert f3_paths["input"] == stage_artifact_paths(1, "cluster_formation")["input"]
 
@@ -210,10 +214,11 @@ def test_root_paths_are_consistent_across_helpers() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Phase H Completion Task 5: 11 executable stages + 13 transcript
-# sections + 33 distinct artifact paths per iteration.
+# Phase H Completion Task 5: 12 executable stages + 14 transcript
+# sections + 36 distinct artifact paths per iteration.
 # C15 Phase 1: bundle_assembly (11) and run_manifest (12) added to
 # STAGES and PROCESS_STAGE_ORDER.
+# C15 Phase 2: strategist_context (position 4) added.
 # ──────────────────────────────────────────────────────────────────────
 from genie_space_optimizer.optimization.run_output_contract import (  # noqa: E402
     PROCESS_STAGE_ORDER,
@@ -224,6 +229,7 @@ _EXECUTABLE_STAGES: tuple[str, ...] = (
     "evaluation_state",
     "rca_evidence",
     "cluster_formation",
+    "strategist_context",
     "action_group_selection",
     "proposal_generation",
     "safety_gates",
@@ -255,7 +261,7 @@ def test_all_nine_executable_stages_have_distinct_artifact_paths() -> None:
     assert len(seen) == len(_EXECUTABLE_STAGES) * 3
 
 
-def test_transcript_renders_all_13_process_order_sections() -> None:
+def test_transcript_renders_all_14_process_order_sections() -> None:
     from genie_space_optimizer.optimization.operator_process_transcript import (
         render_iteration_transcript,
         render_run_overview,
@@ -301,4 +307,4 @@ def test_transcript_renders_all_13_process_order_sections() -> None:
             f"Transcript missing heading {heading!r}; renderer + "
             f"PROCESS_STAGE_ORDER are out of sync"
         )
-    assert "13. Contract Health" in body
+    assert "14. Contract Health" in body

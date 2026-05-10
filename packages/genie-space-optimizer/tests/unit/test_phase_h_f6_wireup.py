@@ -80,4 +80,5 @@ def test_f6_capture_wrap_writes_to_anchor_run() -> None:
     paths = stage_artifact_paths(iteration=2, stage_key="safety_gates")
     assert paths["input"] in captured
     assert paths["output"] in captured
-    assert "06_safety_gates" in paths["input"]
+    # C15 Phase 2: strategist_context at position 4 shifts safety_gates from 06 to 07.
+    assert "07_safety_gates" in paths["input"]

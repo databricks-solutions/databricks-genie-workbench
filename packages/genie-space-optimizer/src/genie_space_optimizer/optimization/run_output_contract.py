@@ -7,8 +7,8 @@ constants and path builders.
 
 Reconciliation with the G-lite stage registry (stages/_registry.py):
 
-  - STAGES (11 entries) is the executable iteration target.
-  - PROCESS_STAGE_ORDER (13 entries) is the human-readable transcript
+  - STAGES (12 entries) is the executable iteration target.
+  - PROCESS_STAGE_ORDER (14 entries) is the human-readable transcript
     ordering.
   - The reconciliation rule is locked by
     tests/unit/test_process_stage_order_matches_stages_registry.py:
@@ -79,6 +79,16 @@ PROCESS_STAGE_ORDER: tuple[ProcessStage, ...] = (
         why=(
             "Related failures are grouped so the optimizer targets causal "
             "patterns instead of isolated symptoms."
+        ),
+    ),
+    ProcessStage(
+        key="strategist_context",
+        title="Strategist Context",
+        why=(
+            "The optimizer assembles the exact typed boundary the "
+            "strategist LLM sees — enforcing that only grounded RCA "
+            "evidence reaches the proposal generator and making the "
+            "judges-to-strategist path deterministic and replay-stable."
         ),
     ),
     ProcessStage(

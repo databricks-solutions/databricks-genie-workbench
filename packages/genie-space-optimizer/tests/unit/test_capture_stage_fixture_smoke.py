@@ -62,9 +62,11 @@ def test_redact_passes_unknown_fields_through() -> None:
 
 
 def test_read_archive_resolves_indexed_stage_dir(tmp_path):
-    """_read_archive must read stages/09_acceptance_decision/, not stages/acceptance_decision/."""
+    """_read_archive must read stages/10_acceptance_decision/, not stages/acceptance_decision/.
+    C15 Phase 2: strategist_context inserted at position 4 shifts acceptance_decision
+    from position 09 to position 10."""
     # Build the production bundle layout under tmp_path.
-    stage_dir = tmp_path / "iterations" / "iter_01" / "stages" / "09_acceptance_decision"
+    stage_dir = tmp_path / "iterations" / "iter_01" / "stages" / "10_acceptance_decision"
     stage_dir.mkdir(parents=True)
     (stage_dir / "input.json").write_text(json.dumps({"keep": True}))
     (stage_dir / "output.json").write_text(json.dumps({"accepted": True}))

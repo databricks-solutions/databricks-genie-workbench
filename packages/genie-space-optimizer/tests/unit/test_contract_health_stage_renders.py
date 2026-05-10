@@ -1,4 +1,4 @@
-"""Phase H Fidelity Task 5 — pin Stage 13 (Contract Health) renderer.
+"""Phase H Fidelity Task 5 — pin Stage 14 (Contract Health) renderer.
 
 Run ``3b050ec5-4032-457f-a785-2d1a3942a097`` exhibited Stage 13 reading
 ``(no decisions emitted for this stage in this iteration)`` despite
@@ -8,12 +8,15 @@ postmortem evidence. The transcript renderer's
 which is why the stage was permanently empty.
 
 This test pins the new contract: PRODUCER_EXCEPTION and
-INVARIANT_VIOLATION records render in Stage 13 so the operator
-transcript surfaces contract-health regressions instead of hiding them.
+INVARIANT_VIOLATION records render in the Contract Health stage so the
+operator transcript surfaces contract-health regressions instead of hiding
+them.
 
 C15 Phase 1: contract_health moved from position 11 to position 13
 after bundle_assembly (11) and run_manifest (12) were added to
 PROCESS_STAGE_ORDER.
+C15 Phase 2: contract_health moved from position 13 to position 14
+after strategist_context was inserted at position 4.
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ def test_contract_health_stage_includes_producer_exception_and_invariant() -> No
     assert DecisionType.INVARIANT_VIOLATION in types
 
 
-def test_render_stage_13_with_producer_exception_record() -> None:
+def test_render_stage_14_with_producer_exception_record() -> None:
     rec = DecisionRecord(
         run_id="r1",
         iteration=1,
@@ -57,14 +60,14 @@ def test_render_stage_13_with_producer_exception_record() -> None:
         trace=trace,
         iteration_summary={"iteration": 1, "exit_path": "in_progress"},
     )
-    assert "13. Contract Health" in rendered
+    assert "14. Contract Health" in rendered
     assert "producer_exception" in rendered
     # Reason detail must surface so operators see *which* producer
     # raised and what kind of error.
     assert "ValueError" in rendered
 
 
-def test_render_stage_13_with_invariant_violation_record() -> None:
+def test_render_stage_14_with_invariant_violation_record() -> None:
     rec = DecisionRecord(
         run_id="r1",
         iteration=2,
@@ -82,12 +85,12 @@ def test_render_stage_13_with_invariant_violation_record() -> None:
         trace=trace,
         iteration_summary={"iteration": 2, "exit_path": "completed"},
     )
-    assert "13. Contract Health" in rendered
+    assert "14. Contract Health" in rendered
     assert "invariant_violation" in rendered
     assert "cap_conservation_repaired" in rendered
 
 
-def test_render_stage_13_empty_when_no_contract_health_records() -> None:
+def test_render_stage_14_empty_when_no_contract_health_records() -> None:
     """When neither producer exceptions nor invariant violations exist,
     the stage continues to render the empty placeholder (back-compat)."""
     trace = OptimizationTrace(
@@ -99,6 +102,6 @@ def test_render_stage_13_empty_when_no_contract_health_records() -> None:
         trace=trace,
         iteration_summary={"iteration": 1, "exit_path": "completed"},
     )
-    assert "13. Contract Health" in rendered
+    assert "14. Contract Health" in rendered
     # The placeholder text is the fallback for empty stages.
     assert "no decisions emitted for this stage" in rendered

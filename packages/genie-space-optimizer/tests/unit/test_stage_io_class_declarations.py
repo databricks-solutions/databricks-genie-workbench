@@ -10,23 +10,26 @@ import pytest
 _EXPECTED: tuple[tuple[str, str, str], ...] = (
     # (stage_module, input_class_name, output_class_name)
     ("genie_space_optimizer.optimization.stages.evaluation",
-     "EvaluationInput",     "EvaluationResult"),
+     "EvaluationInput",          "EvaluationResult"),
     ("genie_space_optimizer.optimization.stages.rca_evidence",
-     "RcaEvidenceInput",    "RcaEvidenceBundle"),
+     "RcaEvidenceInput",         "RcaEvidenceBundle"),
     ("genie_space_optimizer.optimization.stages.clustering",
-     "ClusteringInput",     "ClusterFindings"),
+     "ClusteringInput",          "ClusterFindings"),
+    # C15 Phase 2: strategist_context is the NEW stage (user's stated goal)
+    ("genie_space_optimizer.optimization.stages.strategist_context",
+     "StrategistContextInput",   "StrategistContextOutput"),
     ("genie_space_optimizer.optimization.stages.action_groups",
-     "ActionGroupsInput",   "ActionGroupSlate"),
+     "ActionGroupsInput",        "ActionGroupSlate"),
     ("genie_space_optimizer.optimization.stages.proposals",
-     "ProposalsInput",      "ProposalSlate"),
+     "ProposalsInput",           "ProposalSlate"),
     ("genie_space_optimizer.optimization.stages.gates",
-     "GatesInput",          "GateOutcome"),
+     "GatesInput",               "GateOutcome"),
     ("genie_space_optimizer.optimization.stages.application",
-     "ApplicationInput",    "AppliedPatchSet"),
+     "ApplicationInput",         "AppliedPatchSet"),
     ("genie_space_optimizer.optimization.stages.acceptance",
-     "AcceptanceInput",     "AgOutcome"),
+     "AcceptanceInput",          "AgOutcome"),
     ("genie_space_optimizer.optimization.stages.learning",
-     "LearningInput",       "LearningUpdate"),
+     "LearningInput",            "LearningUpdate"),
 )
 
 
