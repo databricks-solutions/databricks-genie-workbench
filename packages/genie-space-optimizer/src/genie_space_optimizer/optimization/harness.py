@@ -369,20 +369,71 @@ def _databricks_ids_from_env() -> dict[str, str]:
 
 def _emit_iteration_summary_totality_at_terminate(
     *,
-    run_id: str,
-    iteration_counter: int,
-    iteration_summary_count: int,
-    phase_b_iter_record_counts_length: int,
+    # C15 Phase 1 Task 1.11: typed path — accepts a LearningOutput and emits
+    # one GSO_ITERATION_SUMMARY_V1 per attempted iteration then a totality
+    # marker. When this kwarg is provided, the legacy kwargs are ignored.
+    learning_output: Any | None = None,
+    # Legacy kwargs — preserved for backward compat when chunk-D flag is off.
+    run_id: str = "",
+    iteration_counter: int = 0,
+    iteration_summary_count: int = 0,
+    phase_b_iter_record_counts_length: int = 0,
 ) -> None:
-    """Cycle 14-W hardening — emit ``GSO_ITERATION_SUMMARY_TOTALITY_V1``
-    if the three cardinalities disagree. Silent on clean runs and
-    when the observability flag is off.
+    """Emit ``GSO_ITERATION_SUMMARY_TOTALITY_V1`` at run termination.
+
+    C15 Phase 1 Task 1.11 — D-7 closure typed path (``learning_output`` set):
+      Emits one ``GSO_ITERATION_SUMMARY_V1`` per
+      ``LearningOutput.iteration_summaries`` entry (i.e. one per *attempted*
+      iteration, not one per *accepted* iteration — that was D-7). Then emits
+      a single totality marker.
+
+    Cycle 14-W legacy path (``learning_output=None``):
+      Emits ``GSO_ITERATION_SUMMARY_TOTALITY_V1`` only when the three
+      cardinalities disagree. Silent on clean runs and when the observability
+      flag is off.
 
     Anchor: airline run 1105451933925748 F7 — 3 iterations attempted,
     1 ``GSO_ITERATION_SUMMARY_V1`` emitted, ``iter_record_counts``
     has 4 buckets. Production-wiring fix for D-7 (G-3 hardening
     delta).
     """
+    import json as _json_totality
+
+    if learning_output is not None:
+        # C15 Phase 1: typed LearningOutput path. Emits one per summary.
+        try:
+            from genie_space_optimizer.common.config import (
+                iteration_summary_totality_enabled,
+            )
+            if not iteration_summary_totality_enabled():
+                return
+            summaries = getattr(learning_output, "iteration_summaries", ()) or ()
+            for s in summaries:
+                try:
+                    print("GSO_ITERATION_SUMMARY_V1 " + _json_totality.dumps(
+                        s.to_json(), sort_keys=True
+                    ))
+                except Exception:
+                    logger.debug(
+                        "GSO_ITERATION_SUMMARY_V1 emit failed (non-fatal)",
+                        exc_info=True,
+                    )
+            totality = {
+                "iteration_counter": len(summaries),
+                "summary_count": len(summaries),
+                "totality_satisfied": True,
+            }
+            print("GSO_ITERATION_SUMMARY_TOTALITY_V1 " + _json_totality.dumps(
+                totality, sort_keys=True
+            ))
+        except Exception:
+            logger.debug(
+                "GSO iteration-summary totality (LearningOutput path) skipped",
+                exc_info=True,
+            )
+        return
+
+    # Legacy path: Cycle 14-W cardinality-disagreement alarm.
     try:
         from genie_space_optimizer.common.config import (
             iteration_summary_totality_enabled,
@@ -464,6 +515,51 @@ def _emit_phase_h_acceptance_drift_if_any(
             "GSO Phase H acceptance-drift alarm emission skipped",
             exc_info=True,
         )
+
+
+def write_phase_h_acceptance_decision_output(
+    *,
+    ag_outcome: Any,
+    iteration: int,
+) -> dict:
+    """C15 Phase 1 Task 1.10 — D-6 closure: produce the Phase H
+    acceptance-decision output dict by consuming ``AgOutcome`` directly,
+    not re-deriving from raw eval rows.
+
+    D-6 root cause: the legacy Phase H writer synthesised
+    ``outcome=rolled_back / reason_code=missing_pre_rows`` from a
+    parallel code path (raw pre_rows count check) while the canonical
+    control-plane gate produced ``accepted_with_attribution_drift``.
+    This function eliminates the parallel derivation — the caller
+    passes the *same* ``AgOutcome`` instance the stdout summary was
+    produced from, so Phase H always agrees with stdout.
+
+    Returns a plain dict ready for JSON serialisation + MLflow upload.
+    The caller is responsible for serialise + upload.
+    """
+    from genie_space_optimizer.optimization.stages.acceptance import AgOutcome
+
+    if not isinstance(ag_outcome, AgOutcome) or not ag_outcome.outcomes_by_ag:
+        return {
+            "iteration": iteration,
+            "outcome": "no_ags",
+            "reason_code": "no_ag_candidates",
+            "ags": [],
+        }
+
+    ags_payload = [rec.to_json() for rec in ag_outcome.outcomes_by_ag.values()]
+    overall_outcome = (
+        "accepted"
+        if any(a["outcome"].startswith("accepted") for a in ags_payload)
+        else "rolled_back"
+    )
+    overall_reason = ags_payload[0]["reason_code"] if ags_payload else ""
+    return {
+        "iteration": iteration,
+        "outcome": overall_outcome,
+        "reason_code": overall_reason,
+        "ags": ags_payload,
+    }
 
 
 def _maybe_emit_attribution_drift_marker(
