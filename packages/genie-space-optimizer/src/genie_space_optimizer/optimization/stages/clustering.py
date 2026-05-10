@@ -33,13 +33,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from genie_space_optimizer.optimization.optimizer import cluster_failures
+from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
 
 
 STAGE_KEY: str = "cluster_formation"
 
 
 @dataclass
-class ClusteringInput:
+class ClusteringInput(JsonRoundTrip):
     """Input to stages.clustering.form, matching the actual
     optimizer.cluster_failures signature.
 
@@ -57,7 +58,7 @@ class ClusteringInput:
 
 
 @dataclass
-class ClusterFindings:
+class ClusterFindings(JsonRoundTrip):
     """Output of stages.clustering.form.
 
     ``clusters`` is the promoted-hard tuple (no ``demoted_reason``).
