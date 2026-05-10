@@ -60,3 +60,12 @@ genie_space_optimizer_docs/
 docs/*
 !docs/optimizer-process-design
 !docs/runid_analysis
+
+# Proprietary postmortem evidence — exclude all run-specific data by default.
+# Customer task IDs, optimization-run UUIDs, MLflow exports, replay fixtures,
+# and Phase H bundles are confidential. Opt-in generic process docs explicitly
+# below.
+docs/runid_analysis/*
+!docs/runid_analysis/.gitkeep
+!docs/runid_analysis/README.md
+!docs/runid_analysis/cycle_11_falsification_probe.md

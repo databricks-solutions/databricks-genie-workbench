@@ -257,3 +257,9 @@ packages/genie-space-optimizer/docs/scoring_v2_rollout.md
 packages/genie-space-optimizer/docs/high level plans/
 packages/genie-space-optimizer/docs/runid_analysis/
 packages/genie-space-optimizer/docs/skills/
+
+# Local AI/dev tooling (user-specific, references home dir paths)
+.ai-dev-kit/
+.github/skills/
+.windsurf/
+.mcp.json
