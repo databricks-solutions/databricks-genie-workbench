@@ -32,6 +32,7 @@ from genie_space_optimizer.optimization.stages import (
     acceptance,
     action_groups,
     application,
+    bundle_assembly,
     clustering,
     evaluation,
     gates,
@@ -59,9 +60,9 @@ class StageEntry:
     output_class: type
 
 
-# Canonical 9-stage process order. Phase H's PROCESS_STAGE_ORDER
-# must agree with this tuple's keys (the conformance test in
-# tests/unit/test_stage_registry.py pins the order).
+# Canonical process order (9 original + 2 new C15 stages = 11 total).
+# Phase H's PROCESS_STAGE_ORDER must agree with this tuple's keys
+# (the conformance test in tests/unit/test_stage_registry.py pins the order).
 STAGES: tuple[StageEntry, ...] = (
     StageEntry("evaluation_state",       evaluation,    evaluation.execute,
                evaluation.INPUT_CLASS,    evaluation.OUTPUT_CLASS),
@@ -81,6 +82,8 @@ STAGES: tuple[StageEntry, ...] = (
                acceptance.INPUT_CLASS,    acceptance.OUTPUT_CLASS),
     StageEntry("learning_next_action",   learning,      learning.execute,
                learning.INPUT_CLASS,      learning.OUTPUT_CLASS),
+    StageEntry("bundle_assembly",        bundle_assembly, bundle_assembly.execute,
+               bundle_assembly.INPUT_CLASS, bundle_assembly.OUTPUT_CLASS),
 )
 
 

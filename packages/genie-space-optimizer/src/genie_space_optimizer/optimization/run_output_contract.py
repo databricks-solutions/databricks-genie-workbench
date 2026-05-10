@@ -137,6 +137,15 @@ PROCESS_STAGE_ORDER: tuple[ProcessStage, ...] = (
         ),
     ),
     ProcessStage(
+        key="bundle_assembly",
+        title="Bundle Assembly",
+        why=(
+            "Normalizes stage captures from list shape to dict shape "
+            "before the postmortem bundle is assembled. Closes D-4 "
+            "(C15 Phase 1 new stage)."
+        ),
+    ),
+    ProcessStage(
         key="contract_health",
         title="Contract Health",
         why=(

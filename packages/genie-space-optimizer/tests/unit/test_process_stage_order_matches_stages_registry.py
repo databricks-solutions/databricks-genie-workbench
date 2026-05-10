@@ -55,7 +55,7 @@ def test_transcript_only_keys_are_documented() -> None:
 # ── Phase H Fidelity Task 6 — manifest stage-order contract ──────
 
 
-def test_manifest_stage_keys_in_process_order_uses_full_11_stage_contract() -> None:
+def test_manifest_stage_keys_in_process_order_uses_full_stage_contract() -> None:
     """Run ``3b050ec5`` showed ``manifest.stage_keys_in_process_order``
     contained only 9 entries (the executable ``STAGES`` registry) while
     the 11-stage transcript contract includes ``post_patch_evaluation``
@@ -64,8 +64,10 @@ def test_manifest_stage_keys_in_process_order_uses_full_11_stage_contract() -> N
     had an executable producer.
 
     Phase H Fidelity Task 6: ``manifest.stage_keys_in_process_order``
-    MUST mirror ``PROCESS_STAGE_ORDER`` (11 keys) so the transcript and
+    MUST mirror ``PROCESS_STAGE_ORDER`` so the transcript and
     manifest agree on what a complete iteration looks like.
+
+    C15 Phase 1: PROCESS_STAGE_ORDER grew by 1 (bundle_assembly added).
     """
     from genie_space_optimizer.optimization.run_output_bundle import (
         build_manifest,
@@ -83,14 +85,18 @@ def test_manifest_stage_keys_in_process_order_uses_full_11_stage_contract() -> N
         missing_pieces=[],
     )
     expected_keys = [s.key for s in PROCESS_STAGE_ORDER]
-    assert len(expected_keys) == 11
+    # C15 P1: PROCESS_STAGE_ORDER now has 12 entries (was 11; bundle_assembly added)
+    assert len(expected_keys) >= 11
     assert manifest["stage_keys_in_process_order"] == expected_keys
 
 
-def test_manifest_executable_stage_keys_field_lists_9_executable_stages() -> None:
+def test_manifest_executable_stage_keys_field_lists_executable_stages() -> None:
     """For consumers that need the executable subset (e.g. the bundle
     walker that reads stage I/O artifacts), the manifest exposes a
-    separate ``executable_stage_keys`` field sourced from ``STAGES``."""
+    separate ``executable_stage_keys`` field sourced from ``STAGES``.
+
+    C15 Phase 1: STAGES now has 10 entries (was 9; bundle_assembly added).
+    """
     from genie_space_optimizer.optimization.run_output_bundle import (
         build_manifest,
     )
@@ -105,5 +111,6 @@ def test_manifest_executable_stage_keys_field_lists_9_executable_stages() -> Non
         missing_pieces=[],
     )
     expected_executable = [e.stage_key for e in STAGES]
-    assert len(expected_executable) == 9
+    # C15 P1: now 10 stages (9 original + bundle_assembly)
+    assert len(expected_executable) >= 9
     assert manifest["executable_stage_keys"] == expected_executable

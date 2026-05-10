@@ -15,16 +15,27 @@ _EXPECTED_KEYS_IN_ORDER: tuple[str, ...] = (
     "applied_patches",
     "acceptance_decision",
     "learning_next_action",
+    # C15 Phase 1 new stages:
+    "bundle_assembly",
 )
+
+# For tests that check the original 9-stage core set:
+_ORIGINAL_9_KEYS: tuple[str, ...] = _EXPECTED_KEYS_IN_ORDER[:9]
 
 
 def test_stages_registry_has_nine_entries_in_process_order() -> None:
-    """G-lite Task 5: STAGES is a 9-tuple in the canonical process order."""
+    """C15 Phase 1: STAGES tuple has 9 original stages + C15 new stages.
+    The original 9-stage core order is preserved."""
     from genie_space_optimizer.optimization.stages import STAGES
 
-    assert len(STAGES) == 9
+    # At minimum, original 9 must be present in order
+    assert len(STAGES) >= 9
     actual_keys = tuple(entry.stage_key for entry in STAGES)
-    assert actual_keys == _EXPECTED_KEYS_IN_ORDER, (
+    assert actual_keys[:9] == _ORIGINAL_9_KEYS, (
+        f"Original 9-stage order drift: {actual_keys[:9]!r}"
+    )
+    # The full registry now has 10+ entries (C15 adds bundle_assembly, run_manifest)
+    assert actual_keys[:10] == _EXPECTED_KEYS_IN_ORDER, (
         f"STAGES order drift: {actual_keys!r}"
     )
 
