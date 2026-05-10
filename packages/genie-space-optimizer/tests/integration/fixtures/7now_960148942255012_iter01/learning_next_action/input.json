@@ -1,0 +1,16 @@
+{
+  "accidentally_improved_qids": [],
+  "attempted": true,
+  "baseline_accuracy": 75.0,
+  "candidate_accuracy": 83.33,
+  "iteration": 1,
+  "qid_resolutions": {
+    "7now_delivery_analytics_space_gs_001": "fail_to_pass",
+    "7now_delivery_analytics_space_gs_002": "fail_to_pass",
+    "7now_delivery_analytics_space_gs_003": "fail_to_pass",
+    "7now_delivery_analytics_space_gs_026": "hold_fail"
+  },
+  "rolled_back_content_fingerprints": [],
+  "unresolved_target_debt_qids": [],
+  "verdict": "accepted"
+}

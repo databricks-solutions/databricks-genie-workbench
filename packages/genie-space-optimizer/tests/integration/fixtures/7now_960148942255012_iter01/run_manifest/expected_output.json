@@ -1,0 +1,10 @@
+{
+  "databricks_job_id": "REDACTED_JOB_ID",
+  "databricks_parent_run_id": "REDACTED_RUN_ID",
+  "dbutils_attempted": false,
+  "dbutils_succeeded": false,
+  "fields_resolved": 3,
+  "fields_total": 3,
+  "lever_loop_task_run_id": "REDACTED_TASK_RUN_ID",
+  "resolution_path": "env"
+}

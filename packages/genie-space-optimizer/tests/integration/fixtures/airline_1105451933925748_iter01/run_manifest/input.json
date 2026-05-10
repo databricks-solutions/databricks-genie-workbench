@@ -1,0 +1,9 @@
+{
+  "dbutils_available": false,
+  "dbutils_tags": {},
+  "env": {
+    "DATABRICKS_JOB_ID": "REDACTED_JOB_ID",
+    "DATABRICKS_RUN_ID": "REDACTED_RUN_ID",
+    "DATABRICKS_TASK_RUN_ID": "REDACTED_TASK_RUN_ID"
+  }
+}

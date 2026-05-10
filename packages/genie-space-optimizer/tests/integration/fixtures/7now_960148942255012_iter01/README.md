@@ -7,8 +7,8 @@
 | Lever-loop attempt | 12 |
 | Iteration | 1 |
 | Run dir (postmortem) | `docs/runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097/` |
-| Captured at | <FILL ON FIRST CAPTURE: ISO-8601 timestamp> |
-| Captured by | <PR author handle> |
+| Captured at | 2026-05-10 |
+| Captured by | prashanth-subrahmanyam_data |
 | Defects this anchor pins | D-5, D-7, D-8 (Chunk-D side) + forbidden-AG no-op loop (Chunk B side) |
 
 ## Why this iteration

@@ -1,0 +1,32 @@
+{
+  "acceptance_output": {},
+  "iteration": 1,
+  "learning_output": {},
+  "run_id": "airline_1105451933925748_iter01",
+  "stage_captures": {
+    "acceptance_decision": {
+      "outcomes_by_ag": {
+        "AG_DECOMPOSED_H004": {
+          "affected_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ],
+          "ag_id": "AG_DECOMPOSED_H004",
+          "content_fingerprints": [],
+          "outcome": "rolled_back",
+          "reason_code": "missing_pre_rows",
+          "target_qids": [
+            "airline_ticketing_and_fare_analysis_gs_024"
+          ]
+        }
+      },
+      "qid_resolutions": {
+        "airline_ticketing_and_fare_analysis_gs_001": "fail_to_pass",
+        "airline_ticketing_and_fare_analysis_gs_002": "fail_to_pass",
+        "airline_ticketing_and_fare_analysis_gs_003": "fail_to_pass",
+        "airline_ticketing_and_fare_analysis_gs_004": "fail_to_pass",
+        "airline_ticketing_and_fare_analysis_gs_024": "hold_fail"
+      },
+      "rolled_back_content_fingerprints": []
+    }
+  }
+}

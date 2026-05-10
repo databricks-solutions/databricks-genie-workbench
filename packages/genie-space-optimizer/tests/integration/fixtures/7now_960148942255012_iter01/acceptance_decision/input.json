@@ -1,0 +1,74 @@
+{
+  "ags": [
+    {
+      "affected_questions": [
+        "7now_delivery_analytics_space_gs_026"
+      ],
+      "id": "AG1",
+      "target_qids": [
+        "7now_delivery_analytics_space_gs_026"
+      ]
+    }
+  ],
+  "applied_entries_by_ag": {
+    "AG1": []
+  },
+  "baseline_accuracy": 75.0,
+  "baseline_pre_arbiter_accuracy": null,
+  "candidate_accuracy": 83.33,
+  "candidate_pre_arbiter_accuracy": null,
+  "cluster_by_qid": {
+    "7now_delivery_analytics_space_gs_026": "C1"
+  },
+  "min_gain_pp": 0.0,
+  "min_pre_arbiter_gain_pp": 2.0,
+  "post_rows": [
+    {
+      "arbiter": "n/a",
+      "question_id": "7now_delivery_analytics_space_gs_001",
+      "result_correctness": "yes"
+    },
+    {
+      "arbiter": "n/a",
+      "question_id": "7now_delivery_analytics_space_gs_002",
+      "result_correctness": "yes"
+    },
+    {
+      "arbiter": "n/a",
+      "question_id": "7now_delivery_analytics_space_gs_003",
+      "result_correctness": "yes"
+    },
+    {
+      "arbiter": "soft",
+      "question_id": "7now_delivery_analytics_space_gs_026",
+      "result_correctness": "no"
+    }
+  ],
+  "pre_rows": [
+    {
+      "arbiter": "hard",
+      "question_id": "7now_delivery_analytics_space_gs_001",
+      "result_correctness": "no"
+    },
+    {
+      "arbiter": "hard",
+      "question_id": "7now_delivery_analytics_space_gs_002",
+      "result_correctness": "no"
+    },
+    {
+      "arbiter": "hard",
+      "question_id": "7now_delivery_analytics_space_gs_003",
+      "result_correctness": "no"
+    },
+    {
+      "arbiter": "hard",
+      "question_id": "7now_delivery_analytics_space_gs_026",
+      "result_correctness": "no"
+    }
+  ],
+  "protected_qids": [],
+  "rca_id_by_cluster": {
+    "C1": "rca_001"
+  },
+  "thresholds_met": true
+}

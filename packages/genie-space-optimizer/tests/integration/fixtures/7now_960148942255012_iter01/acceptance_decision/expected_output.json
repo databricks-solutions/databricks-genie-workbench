@@ -1,0 +1,23 @@
+{
+  "outcomes_by_ag": {
+    "AG1": {
+      "affected_qids": [
+        "7now_delivery_analytics_space_gs_026"
+      ],
+      "ag_id": "AG1",
+      "content_fingerprints": [],
+      "outcome": "accepted",
+      "reason_code": "accepted_with_attribution_drift",
+      "target_qids": [
+        "7now_delivery_analytics_space_gs_026"
+      ]
+    }
+  },
+  "qid_resolutions": {
+    "7now_delivery_analytics_space_gs_001": "fail_to_pass",
+    "7now_delivery_analytics_space_gs_002": "fail_to_pass",
+    "7now_delivery_analytics_space_gs_003": "fail_to_pass",
+    "7now_delivery_analytics_space_gs_026": "hold_fail"
+  },
+  "rolled_back_content_fingerprints": []
+}

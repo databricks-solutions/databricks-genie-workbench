@@ -7,8 +7,8 @@
 | Lever-loop attempt | 14 |
 | Iteration | 1 |
 | Run dir (postmortem) | `docs/runid_analysis/1099b152-8655-4f1e-ab43-1240a9400280/` |
-| Captured at | <FILL ON FIRST CAPTURE: ISO-8601 timestamp> |
-| Captured by | <PR author handle> |
+| Captured at | 2026-05-10 |
+| Captured by | prashanth-subrahmanyam_data |
 | Defects this anchor pins | D-3 ext, D-4, D-5, D-6, D-7 |
 
 ## Why this iteration

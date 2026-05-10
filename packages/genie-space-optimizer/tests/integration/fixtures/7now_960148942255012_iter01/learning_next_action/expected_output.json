@@ -1,0 +1,17 @@
+{
+  "iteration_summaries": [
+    {
+      "accidentally_improved_qids": [],
+      "attempted": true,
+      "baseline_accuracy": 75.0,
+      "candidate_accuracy": 83.33,
+      "iteration": 1,
+      "notes": [],
+      "rolled_back_content_fingerprints": [],
+      "unresolved_target_debt_qids": [],
+      "verdict": "accepted"
+    }
+  ],
+  "terminate": false,
+  "terminate_reason": ""
+}

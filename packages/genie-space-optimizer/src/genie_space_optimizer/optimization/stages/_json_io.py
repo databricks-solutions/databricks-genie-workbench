@@ -66,7 +66,7 @@ def _to_json_value(val: Any) -> Any:
         return val.value
     if isinstance(val, (list, tuple)):
         return [_to_json_value(v) for v in val]
-    if isinstance(val, set):
+    if isinstance(val, (set, frozenset)):
         return sorted(_to_json_value(v) for v in val)
     if isinstance(val, dict):
         return {str(k): _to_json_value(v) for k, v in val.items()}
