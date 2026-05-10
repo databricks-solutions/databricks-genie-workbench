@@ -5913,3 +5913,15 @@ def iteration_summary_totality_observe_enabled() -> bool:
     fires noisily on a corpus run while triage is in progress.
     """
     return _flag_default_on("GSO_ITERATION_SUMMARY_TOTALITY")
+
+
+def phase_h_drift_observe_enabled() -> bool:
+    """Cycle 14-W hardening — when on (default), the harness compares
+    canonical ``ControlPlaneAcceptance`` against the Phase H acceptance
+    bundle output and emits ``GSO_PHASE_H_ACCEPTANCE_DRIFT_V1`` on
+    disagreement; same for journey validation. Diagnostic-only.
+
+    Disable with ``GSO_PHASE_H_DRIFT_OBSERVE=0`` if the alarm fires
+    noisily on a corpus run while triage is in progress.
+    """
+    return _flag_default_on("GSO_PHASE_H_DRIFT_OBSERVE")

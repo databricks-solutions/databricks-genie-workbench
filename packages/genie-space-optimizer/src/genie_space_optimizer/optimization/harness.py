@@ -380,6 +380,99 @@ def _emit_iteration_summary_totality_at_terminate(
         )
 
 
+def _emit_phase_h_acceptance_drift_if_any(
+    *,
+    run_id: str,
+    iteration: int,
+    canonical_outcome: str,
+    canonical_reason_code: str,
+    phase_h_outcome: str,
+    phase_h_reason_code: str,
+) -> None:
+    """Cycle 14-W hardening — emit ``GSO_PHASE_H_ACCEPTANCE_DRIFT_V1``
+    if the canonical decision and Phase H writer disagree on
+    ``outcome`` or ``reason_code``. Silent on clean runs and when
+    the observability flag is off.
+
+    Anchor: airline run 1105451933925748 F8 — production-wiring fix
+    for D-6 (G-4 hardening delta).
+    """
+    try:
+        from genie_space_optimizer.common.config import (
+            phase_h_drift_observe_enabled,
+        )
+        if not phase_h_drift_observe_enabled():
+            return
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            detect_phase_h_acceptance_drift,
+            phase_h_acceptance_drift_marker,
+        )
+        if not detect_phase_h_acceptance_drift(
+            canonical_outcome=str(canonical_outcome),
+            canonical_reason_code=str(canonical_reason_code),
+            phase_h_outcome=str(phase_h_outcome),
+            phase_h_reason_code=str(phase_h_reason_code),
+        ):
+            return
+        print(phase_h_acceptance_drift_marker(
+            optimization_run_id=str(run_id or ""),
+            iteration=int(iteration),
+            canonical_outcome=str(canonical_outcome),
+            canonical_reason_code=str(canonical_reason_code),
+            phase_h_outcome=str(phase_h_outcome),
+            phase_h_reason_code=str(phase_h_reason_code),
+        ))
+    except Exception:
+        logger.debug(
+            "GSO Phase H acceptance-drift alarm emission skipped",
+            exc_info=True,
+        )
+
+
+def _emit_phase_h_journey_drift_if_any(
+    *,
+    run_id: str,
+    iteration: int,
+    canonical_violation_count: int,
+    phase_h_violation_count: int,
+) -> None:
+    """Cycle 14-W hardening — emit ``GSO_PHASE_H_JOURNEY_DRIFT_V1``
+    if the canonical replay validator and Phase H journey-validator
+    disagree on the violation count. Silent on clean runs and when
+    the observability flag is off.
+
+    Anchor: 7Now run 960148942255012 F8 — local replay reports 25
+    violations; Phase H ``journey_validation_all.json`` reports 0.
+    Production-wiring fix for D-8 (G-4 hardening delta).
+    """
+    try:
+        from genie_space_optimizer.common.config import (
+            phase_h_drift_observe_enabled,
+        )
+        if not phase_h_drift_observe_enabled():
+            return
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            detect_phase_h_journey_drift,
+            phase_h_journey_drift_marker,
+        )
+        if not detect_phase_h_journey_drift(
+            canonical_violation_count=int(canonical_violation_count),
+            phase_h_violation_count=int(phase_h_violation_count),
+        ):
+            return
+        print(phase_h_journey_drift_marker(
+            optimization_run_id=str(run_id or ""),
+            iteration=int(iteration),
+            canonical_violation_count=int(canonical_violation_count),
+            phase_h_violation_count=int(phase_h_violation_count),
+        ))
+    except Exception:
+        logger.debug(
+            "GSO Phase H journey-drift alarm emission skipped",
+            exc_info=True,
+        )
+
+
 def _build_baseline_overview_dict(
     *,
     prev_accuracy_percent: float,
@@ -22043,6 +22136,54 @@ def _run_lever_loop(
                     stage_key="acceptance_decision",
                 )
                 _ag_outcome = _accept_wrapped(_stage_ctx_a5, _accept_inp)
+
+                # Cycle 14-W hardening (G-4 / D-6) — compare canonical
+                # gate decision against captured Phase H acceptance
+                # bundle output and alarm on drift. The captured output
+                # is the per-AG outcome record produced by F8 (the same
+                # object the wrapper wrote to ``acceptance_decision/
+                # output.json``). The canonical decision lives on
+                # ``gate_result["acceptance_decision"]`` (a dict carried
+                # forward from ``_run_gate_checks``).
+                try:
+                    _canonical_dict = (
+                        (gate_result or {}).get("acceptance_decision") or {}
+                    )
+                    _canonical_outcome = (
+                        "accepted"
+                        if bool(_canonical_dict.get("accepted", False))
+                        else "rolled_back"
+                    )
+                    _canonical_reason = str(
+                        _canonical_dict.get("reason")
+                        or _canonical_dict.get("reason_code")
+                        or ""
+                    )
+                    _ph_rec = (
+                        _ag_outcome.outcomes_by_ag.get(str(ag_id))
+                        if hasattr(_ag_outcome, "outcomes_by_ag")
+                        else None
+                    )
+                    _phase_h_outcome = str(
+                        getattr(_ph_rec, "outcome", "") or ""
+                    )
+                    _phase_h_reason = str(
+                        getattr(_ph_rec, "reason_code", "") or ""
+                    )
+                    _emit_phase_h_acceptance_drift_if_any(
+                        run_id=run_id,
+                        iteration=int(iteration_counter),
+                        canonical_outcome=_canonical_outcome,
+                        canonical_reason_code=_canonical_reason,
+                        phase_h_outcome=_phase_h_outcome,
+                        phase_h_reason_code=_phase_h_reason,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Phase H acceptance-drift comparison failed "
+                        "(non-fatal)",
+                        exc_info=True,
+                    )
             except Exception as _accept_stage_exc:
                 try:
                     from genie_space_optimizer.common.config import (
