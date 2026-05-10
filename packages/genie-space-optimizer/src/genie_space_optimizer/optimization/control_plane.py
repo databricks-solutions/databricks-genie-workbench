@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 from genie_space_optimizer.common.config import (
     IGNORED_OPTIMIZATION_JUDGES as _CONFIG_IGNORED_OPTIMIZATION_JUDGES,
+    attribution_drift_reattribution_enabled,
 )
 from genie_space_optimizer.optimization.eval_row_access import (
     row_qid as _row_qid,
@@ -1498,6 +1499,26 @@ def decide_control_plane_acceptance(
         out_of_target_regressed if accepted and out_of_target_regressed else ()
     )
 
+    # Cycle 14-C T3: when the accepted_with_attribution_drift branch
+    # fires, populate accidentally_improved_qids and
+    # unresolved_target_debt_qids so the next iteration's strategist
+    # sees the correct attribution. Behind the default-on circuit-
+    # breaker GSO_ATTRIBUTION_DRIFT_REATTRIBUTION; flag-off restores
+    # byte-identical pre-14-C output on this branch.
+    if (
+        reason == "accepted_with_attribution_drift"
+        and attribution_drift_reattribution_enabled()
+    ):
+        accidentally_improved_qids = compute_accidentally_improved_qids(
+            pre_rows=pre_rows_list,
+            post_rows=post_rows_list,
+            target_qids=targets,
+        )
+        unresolved_target_debt_qids = tuple(targets)
+    else:
+        accidentally_improved_qids = ()
+        unresolved_target_debt_qids = ()
+
     return ControlPlaneAcceptance(
         accepted=accepted,
         reason_code=reason,
@@ -1514,6 +1535,8 @@ def decide_control_plane_acceptance(
         passing_to_hard_regressed_qids=passing_to_hard,
         unknown_to_hard_regressed_qids=unknown_to_hard,
         target_delta_states=target_delta_states_tuple,
+        accidentally_improved_qids=accidentally_improved_qids,
+        unresolved_target_debt_qids=unresolved_target_debt_qids,
     )
 
 
