@@ -13984,20 +13984,73 @@ def _run_gate_checks(
     # regardless of pass/fail. ``reason_code`` lets a single SQL query
     # answer "did we accept, regress, or fall short of the gain floor?"
     # without parsing logs.
-    _audit_emit(
-        stage_letter="N",
-        gate_name="full_eval_acceptance",
-        decision=("pass" if _strict_decision.accepted else "fail"),
-        reason_code=_strict_decision.reason_code,
-        metrics={
-            "delta_pp": _strict_decision.delta_pp,
-            "min_gain_pp": _strict_decision.min_gain_pp,
-            "post_arbiter_candidate": _strict_decision.post_arbiter_candidate,
-            "post_arbiter_baseline": _strict_decision.post_arbiter_baseline,
-            "previous_pre_arbiter": _best_pre_arbiter,
-            "previous_post_arbiter": best_accuracy,
-        },
+    # RCO-4b Phase E — delegate the verdict-emit audit-metrics
+    # construction to the pure helper in stages.eval_gates when
+    # GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE is truthy. Default-off
+    # keeps the legacy inline path byte-stable. Note: the helper is
+    # called at all three audit-emission sites with site-appropriate
+    # inputs (the harness's verdict-emit fires BEFORE Task 4 +
+    # control_plane have populated regressions/control_plane_reason).
+    from genie_space_optimizer.common.config import (
+        gate_checks_full_eval_acceptance_pure_enabled
+            as _gate_checks_full_eval_pure_on,
     )
+    if _gate_checks_full_eval_pure_on():
+        from genie_space_optimizer.optimization.stages.eval_gates import (
+            decide_full_eval_acceptance as _rco4b_decide_full_eval,
+        )
+        from genie_space_optimizer.optimization.stages.gate_types import (
+            FullEvalAcceptanceInput as _RCO4bFullEvalInput,
+        )
+        # At verdict-emit time, regressions[] and _control_plane_decision
+        # are NOT yet populated (Task 4 + control_plane run later). The
+        # verdict_audit_metrics field only reads strict_decision +
+        # pre_arbiter_baseline, so empty regressions/empty reason_code
+        # do not affect the verdict payload.
+        _rco4b_full_eval_out = _rco4b_decide_full_eval(
+            _RCO4bFullEvalInput(
+                ag_id=str(ag_id),
+                iteration=int(iteration_counter),
+                strict_decision_accepted=bool(_strict_decision.accepted),
+                strict_decision_reason_code=str(_strict_decision.reason_code),
+                strict_decision_delta_pp=float(_strict_decision.delta_pp),
+                strict_decision_post_arbiter_candidate=float(
+                    _strict_decision.post_arbiter_candidate
+                ),
+                strict_decision_post_arbiter_baseline=float(
+                    _strict_decision.post_arbiter_baseline
+                ),
+                strict_decision_min_gain_pp=float(_strict_decision.min_gain_pp),
+                pre_arbiter_candidate=float(full_pre_arbiter_accuracy),
+                pre_arbiter_baseline=float(_best_pre_arbiter),
+                control_plane_reason_code="",  # not yet decided
+                diagnostic_regression_judges=(),  # not yet decided
+                regressions=(),  # not yet populated
+            )
+        )
+        _audit_emit(
+            stage_letter="N",
+            gate_name="full_eval_acceptance",
+            decision=("pass" if _strict_decision.accepted else "fail"),
+            reason_code=_rco4b_full_eval_out.reason_code,
+            metrics=dict(_rco4b_full_eval_out.verdict_audit_metrics),
+        )
+    else:
+        # ─── Legacy path: preserved verbatim. ───
+        _audit_emit(
+            stage_letter="N",
+            gate_name="full_eval_acceptance",
+            decision=("pass" if _strict_decision.accepted else "fail"),
+            reason_code=_strict_decision.reason_code,
+            metrics={
+                "delta_pp": _strict_decision.delta_pp,
+                "min_gain_pp": _strict_decision.min_gain_pp,
+                "post_arbiter_candidate": _strict_decision.post_arbiter_candidate,
+                "post_arbiter_baseline": _strict_decision.post_arbiter_baseline,
+                "previous_pre_arbiter": _best_pre_arbiter,
+                "previous_post_arbiter": best_accuracy,
+            },
+        )
 
     # Task 4: per-question pass/fail transition tracker. Aggregate
     # averages on the retail run hid AG2 flipping previously-passing
@@ -14503,25 +14556,72 @@ def _run_gate_checks(
             )
         except Exception:
             logger.debug("Failed to log full eval gate feedback", exc_info=True)
-        _audit_emit(
-            stage_letter="N",
-            gate_name="full_eval_acceptance",
-            decision="rolled_back",
-            reason_code=_strict_decision.reason_code,
-            reason_detail=f"full_eval: {regressions[0]['judge']}",
-            metrics={
-                "regression_count": len(regressions),
-                "post_arbiter_candidate": _strict_decision.post_arbiter_candidate,
-                "post_arbiter_baseline": _strict_decision.post_arbiter_baseline,
-                "delta_pp": _strict_decision.delta_pp,
-                "min_gain_pp": _strict_decision.min_gain_pp,
-                "pre_arbiter_candidate": float(full_pre_arbiter_accuracy),
-                "pre_arbiter_baseline": float(_best_pre_arbiter),
-                "diagnostic_regressions": [
-                    r.get("judge") for r in _diagnostic_regressions
-                ],
-            },
-        )
+        # RCO-4b Phase E — delegate the rollback audit-metrics
+        # construction to the pure helper when the flag is on. By this
+        # point, _control_plane_decision and regressions[] are fully
+        # populated.
+        if _gate_checks_full_eval_pure_on():
+            from genie_space_optimizer.optimization.stages.eval_gates import (
+                decide_full_eval_acceptance as _rco4b_decide_full_eval,
+            )
+            from genie_space_optimizer.optimization.stages.gate_types import (
+                FullEvalAcceptanceInput as _RCO4bFullEvalInput,
+            )
+            _rco4b_full_eval_out = _rco4b_decide_full_eval(
+                _RCO4bFullEvalInput(
+                    ag_id=str(ag_id),
+                    iteration=int(iteration_counter),
+                    strict_decision_accepted=bool(_strict_decision.accepted),
+                    strict_decision_reason_code=str(_strict_decision.reason_code),
+                    strict_decision_delta_pp=float(_strict_decision.delta_pp),
+                    strict_decision_post_arbiter_candidate=float(
+                        _strict_decision.post_arbiter_candidate
+                    ),
+                    strict_decision_post_arbiter_baseline=float(
+                        _strict_decision.post_arbiter_baseline
+                    ),
+                    strict_decision_min_gain_pp=float(_strict_decision.min_gain_pp),
+                    pre_arbiter_candidate=float(full_pre_arbiter_accuracy),
+                    pre_arbiter_baseline=float(_best_pre_arbiter),
+                    control_plane_reason_code=str(
+                        _control_plane_decision.reason_code
+                    ),
+                    diagnostic_regression_judges=tuple(
+                        str(r.get("judge", "") or "")
+                        for r in _diagnostic_regressions
+                    ),
+                    regressions=tuple(regressions),
+                )
+            )
+            _audit_emit(
+                stage_letter="N",
+                gate_name="full_eval_acceptance",
+                decision="rolled_back",
+                reason_code=_rco4b_full_eval_out.reason_code,
+                reason_detail=_rco4b_full_eval_out.rollback_reason or "full_eval",
+                metrics=dict(_rco4b_full_eval_out.rollback_audit_metrics or {}),
+            )
+        else:
+            # ─── Legacy path: preserved verbatim. ───
+            _audit_emit(
+                stage_letter="N",
+                gate_name="full_eval_acceptance",
+                decision="rolled_back",
+                reason_code=_strict_decision.reason_code,
+                reason_detail=f"full_eval: {regressions[0]['judge']}",
+                metrics={
+                    "regression_count": len(regressions),
+                    "post_arbiter_candidate": _strict_decision.post_arbiter_candidate,
+                    "post_arbiter_baseline": _strict_decision.post_arbiter_baseline,
+                    "delta_pp": _strict_decision.delta_pp,
+                    "min_gain_pp": _strict_decision.min_gain_pp,
+                    "pre_arbiter_candidate": float(full_pre_arbiter_accuracy),
+                    "pre_arbiter_baseline": float(_best_pre_arbiter),
+                    "diagnostic_regressions": [
+                        r.get("judge") for r in _diagnostic_regressions
+                    ],
+                },
+            )
         _audit_persist()
         return {
             "passed": False,
@@ -14654,23 +14754,67 @@ def _run_gate_checks(
             _actual_fixed,
         )
 
-    _audit_emit(
-        stage_letter="N",
-        gate_name="full_eval_acceptance",
-        decision="accepted",
-        reason_code=_strict_decision.reason_code,
-        metrics={
-            "post_arbiter_candidate": _strict_decision.post_arbiter_candidate,
-            "post_arbiter_baseline": _strict_decision.post_arbiter_baseline,
-            "delta_pp": _strict_decision.delta_pp,
-            "min_gain_pp": _strict_decision.min_gain_pp,
-            "pre_arbiter_candidate": float(full_pre_arbiter_accuracy),
-            "pre_arbiter_baseline": float(_best_pre_arbiter),
-            "diagnostic_regressions": [
-                r.get("judge") for r in _diagnostic_regressions
-            ],
-        },
-    )
+    # RCO-4b Phase E — delegate the accept audit-metrics construction
+    # to the pure helper when the flag is on.
+    if _gate_checks_full_eval_pure_on():
+        from genie_space_optimizer.optimization.stages.eval_gates import (
+            decide_full_eval_acceptance as _rco4b_decide_full_eval,
+        )
+        from genie_space_optimizer.optimization.stages.gate_types import (
+            FullEvalAcceptanceInput as _RCO4bFullEvalInput,
+        )
+        _rco4b_full_eval_out = _rco4b_decide_full_eval(
+            _RCO4bFullEvalInput(
+                ag_id=str(ag_id),
+                iteration=int(iteration_counter),
+                strict_decision_accepted=bool(_strict_decision.accepted),
+                strict_decision_reason_code=str(_strict_decision.reason_code),
+                strict_decision_delta_pp=float(_strict_decision.delta_pp),
+                strict_decision_post_arbiter_candidate=float(
+                    _strict_decision.post_arbiter_candidate
+                ),
+                strict_decision_post_arbiter_baseline=float(
+                    _strict_decision.post_arbiter_baseline
+                ),
+                strict_decision_min_gain_pp=float(_strict_decision.min_gain_pp),
+                pre_arbiter_candidate=float(full_pre_arbiter_accuracy),
+                pre_arbiter_baseline=float(_best_pre_arbiter),
+                control_plane_reason_code=str(
+                    _control_plane_decision.reason_code
+                ),
+                diagnostic_regression_judges=tuple(
+                    str(r.get("judge", "") or "")
+                    for r in _diagnostic_regressions
+                ),
+                regressions=(),  # accept branch — regressions is empty here
+            )
+        )
+        _audit_emit(
+            stage_letter="N",
+            gate_name="full_eval_acceptance",
+            decision="accepted",
+            reason_code=_rco4b_full_eval_out.reason_code,
+            metrics=dict(_rco4b_full_eval_out.accept_audit_metrics or {}),
+        )
+    else:
+        # ─── Legacy path: preserved verbatim. ───
+        _audit_emit(
+            stage_letter="N",
+            gate_name="full_eval_acceptance",
+            decision="accepted",
+            reason_code=_strict_decision.reason_code,
+            metrics={
+                "post_arbiter_candidate": _strict_decision.post_arbiter_candidate,
+                "post_arbiter_baseline": _strict_decision.post_arbiter_baseline,
+                "delta_pp": _strict_decision.delta_pp,
+                "min_gain_pp": _strict_decision.min_gain_pp,
+                "pre_arbiter_candidate": float(full_pre_arbiter_accuracy),
+                "pre_arbiter_baseline": float(_best_pre_arbiter),
+                "diagnostic_regressions": [
+                    r.get("judge") for r in _diagnostic_regressions
+                ],
+            },
+        )
     _audit_persist()
     return {
         "passed": True,
