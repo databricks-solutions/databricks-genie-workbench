@@ -77,14 +77,21 @@ def sort_proposals_canonically(
 # ── Patches ───────────────────────────────────────────────────────────
 
 
-def _patch_key(patch: Mapping[str, Any]) -> tuple[str, str]:
+def _patch_key(patch: Mapping[str, Any]) -> tuple[str, str, str]:
     """Canonical sort key for a patch dict.
 
     Primary: ``expanded_patch_id`` / ``proposal_id``.
-    Tiebreaker: ``_stable_identity`` from ``patch_selection`` so two
+    Secondary: ``_stable_identity`` from ``patch_selection`` so two
     patches sharing an id but differing in lever / type / target
     fingerprint sort deterministically.
+    Tertiary: full JSON serialization of the dict (sorted keys) so
+    two patches sharing a stable identity (same lever, type, targets)
+    but differing in other fields (e.g. relevance_score) produce a
+    consistent ordering and thus a deterministic first-wins dedup
+    outcome.
     """
+    import json as _json
+
     # Imported lazily to avoid a circular-import risk between
     # llm_boundary_sort and patch_selection in future refactors.
     from genie_space_optimizer.optimization.patch_selection import (
@@ -95,7 +102,9 @@ def _patch_key(patch: Mapping[str, Any]) -> tuple[str, str]:
         or patch.get("proposal_id")
         or ""
     )
-    return (primary, _stable_identity(dict(patch)))
+    patch_dict = dict(patch)
+    tertiary = _json.dumps(patch_dict, sort_keys=True, default=str)
+    return (primary, _stable_identity(patch_dict), tertiary)
 
 
 def sort_patches_canonically(

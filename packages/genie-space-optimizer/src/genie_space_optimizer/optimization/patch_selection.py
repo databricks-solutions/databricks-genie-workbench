@@ -288,7 +288,16 @@ def select_causal_patch_cap(
     Diversity is intentionally a tiebreaker. A lower-relevance patch should
     never displace a higher-relevance RCA patch merely because it belongs to
     a different lever or instruction section.
+
+    RCO-7 Site 3: ``patches`` is pre-sorted by canonical key before
+    ``_deduplicate_patches`` (first-wins) so the surviving patch per
+    stable identity is independent of incoming list order.
     """
+    from genie_space_optimizer.optimization.llm_boundary_sort import (
+        sort_patches_canonically,
+    )
+    # RCO-7 Site 3 — canonical pre-sort makes first-wins dedup deterministic.
+    patches = sort_patches_canonically(patches)
     patches = _deduplicate_patches(patches)
     _input_count = len(patches)
     if max_patches <= 0:
@@ -596,6 +605,12 @@ def select_target_aware_causal_patch_cap(
     ``active_cluster_match_tier``, and ``is_direct_behavior`` — so the
     next dropped patch is debuggable.
     """
+    from genie_space_optimizer.optimization.llm_boundary_sort import (
+        sort_patches_canonically,
+    )
+    # RCO-7 Site 3 — canonical pre-sort makes target-aware first-wins
+    # dedup deterministic.
+    patches = sort_patches_canonically(patches)
     patches = _deduplicate_patches(patches)
     # Conservation invariant: this function's two early returns delegate to
     # ``select_causal_patch_cap``, which enforces conservation. The third

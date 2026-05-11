@@ -181,6 +181,11 @@ def generate(ctx, inp: ProposalsInput) -> ProposalSlate:
     Harness still owns the synthesis dispatch and feeds the result
     into ``inp.proposals_by_ag`` when the harness wire-up lands in a
     follow-up plan.
+
+    RCO-7 Site 3: iterate AGs in canonical id order and proposals
+    within each AG in canonical ``expanded_patch_id`` / ``proposal_id``
+    order so PROPOSAL_GENERATED records and content_fingerprint
+    emission are independent of incidental LLM ordering.
     """
     # Optimizer Control-Plane Hardening Plan — Task D. When the
     # GSO_RCA_AWARE_PATCH_CAP flag is on, stamp ``rca_id`` from the
@@ -191,12 +196,22 @@ def generate(ctx, inp: ProposalsInput) -> ProposalSlate:
     from genie_space_optimizer.common.config import (
         rca_aware_patch_cap_enabled as _rca_aware_patch_cap_enabled,
     )
+    from genie_space_optimizer.optimization.llm_boundary_sort import (
+        sort_proposals_canonically,
+    )
     stamp_rca = _rca_aware_patch_cap_enabled()
 
     fingerprinted: dict[str, tuple[dict[str, Any], ...]] = {}
     fingerprints: list[str] = []
 
-    for ag_id, proposals in (inp.proposals_by_ag or {}).items():
+    # RCO-7 Site 3 — walk AGs by canonical id order.
+    ag_ids_sorted = sorted(str(k) for k in (inp.proposals_by_ag or {}).keys())
+
+    for ag_id in ag_ids_sorted:
+        # RCO-7 Site 3 — pre-sort proposals within the AG.
+        proposals = tuple(
+            sort_proposals_canonically(inp.proposals_by_ag.get(ag_id) or ())
+        )
         ag_fingerprinted: list[dict[str, Any]] = []
         for proposal in proposals:
             stamped = dict(proposal)
