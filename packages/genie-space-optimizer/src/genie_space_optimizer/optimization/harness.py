@@ -2522,16 +2522,20 @@ _PATCH_ISOLATION_REJECTION_REASONS: frozenset[str] = frozenset({
 })
 
 
-def _patch_survival_json_at_contract_path() -> bool:
+def _patch_survival_json_at_contract_path(*, iteration: int) -> bool:
     """Cycle 14B-T3 ⇄ C12-T5 substrate gate.
 
     Returns True only when the per-iteration ``patch_survival.json``
-    is produced at the contract path declared in
-    ``run_output_contract.bundle_artifact_paths``. Until C12-T5 ships,
-    this is intentionally a hard False so the live arm of T3 stays
-    disabled even when ``GSO_PATCH_SUBSET_ISOLATION_LIVE=1``.
+    has been successfully persisted at the canonical bundle contract
+    path ``gso_postmortem_bundle/iterations/iter_NN/patch_survival.json``
+    by ``_persist_iter_patch_survival_to_anchor`` in this process.
+
+    The materialised set is process-scoped and grows monotonically
+    across iterations within one ``run_lever_loop`` invocation. A
+    fresh invocation starts empty, which matches the natural artifact
+    lifecycle.
     """
-    return False
+    return int(iteration) in _PATCH_SURVIVAL_MATERIALIZED_ITERS
 
 
 def _build_cluster_qids_map(clusters) -> dict:
@@ -2673,7 +2677,7 @@ def _maybe_run_patch_isolation_orchestrator(
     if (
         live_mode
         and attribution is not None
-        and _patch_survival_json_at_contract_path()
+        and _patch_survival_json_at_contract_path(iteration=int(iteration))
     ):
         # Live re-eval: the orchestration that re-applies the subset,
         # re-evals, and routes through evaluate_isolation_verdict
@@ -14012,6 +14016,11 @@ def _run_lever_loop(
         types — see scoping comment above ``_PATCH_TEXT_FIELDS`` in
         leakage.py.
     """
+    # C12-T5: process-scoped substrate gate must start empty for every
+    # lever-loop invocation so prior runs do not contaminate the gate
+    # for this run's iterations.
+    _PATCH_SURVIVAL_MATERIALIZED_ITERS.clear()
+
     levers = levers or DEFAULT_LEVER_ORDER
     thresholds = thresholds or DEFAULT_THRESHOLDS
 
