@@ -497,6 +497,66 @@ def test_i13_red_when_lookup_failed_but_reason_is_legacy() -> None:
     assert v["reason_code"] == "target_qids_not_improved"
 
 
+def test_i9_green_when_full_eval_marker_absent_on_every_iteration() -> None:
+    """Legacy replay fixtures do not capture the typed stdout marker
+    payload as a parallel evidence field. I9 must stay silent so
+    pre-Cycle-15.1 fixtures remain byte-stable.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i9_acceptance_render_byte_equality,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "acceptance_decision": {
+                    "reason_code": "accepted",
+                    "target_qids": ["q_001"],
+                    "target_fixed_qids": ["q_001"],
+                    "target_still_hard_qids": [],
+                    "out_of_target_regressed_qids": [],
+                },
+            },
+        ],
+    }
+    assert check_i9_acceptance_render_byte_equality(evidence) == []
+
+
+def test_i9_green_when_decision_record_and_marker_agree_byte_for_byte() -> None:
+    """Both consumers of format_full_eval_marker_payload render the
+    same canonical field set. I9 stays silent.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i9_acceptance_render_byte_equality,
+    )
+
+    canonical = {
+        "reason_code": "accepted",
+        "accepted": True,
+        "target_qids": ["q_001", "q_002"],
+        "target_fixed_qids": ["q_001"],
+        "target_still_hard_qids": ["q_002"],
+        "target_soft_passing_qids": [],
+        "out_of_target_regressed_qids": [],
+        "soft_to_hard_regressed_qids": [],
+        "passing_to_hard_regressed_qids": [],
+        "unknown_to_hard_regressed_qids": [],
+        "accidentally_improved_qids": [],
+        "unresolved_target_debt_qids": [],
+    }
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "acceptance_decision": dict(canonical),
+                "full_eval_marker": dict(canonical),
+            },
+        ],
+    }
+    assert check_i9_acceptance_render_byte_equality(evidence) == []
+
+
 def test_i13_green_when_lookup_failed_and_typed_reason() -> None:
     from genie_space_optimizer.optimization.invariants import (
         check_i13_target_delta_totality,
@@ -591,3 +651,113 @@ def test_i13_wired_into_run_invariants() -> None:
     violations = run_invariants(evidence)
     i13 = [v for v in violations if v["invariant_id"] == "I13"]
     assert len(i13) == 1
+
+
+def test_i9_red_when_target_fixed_qids_disagree_between_record_and_marker() -> None:
+    """Reproducer for the D-6 Phase-H acceptance drift shape: the
+    record claims gs_024 fixed; the marker claims it still hard.
+    I9 fires once per disagreeing field.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i9_acceptance_render_byte_equality,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "acceptance_decision": {
+                    "reason_code": "accepted_with_attribution_drift",
+                    "accepted": True,
+                    "target_qids": ["gs_024"],
+                    "target_fixed_qids": ["gs_024"],
+                    "target_still_hard_qids": [],
+                },
+                "full_eval_marker": {
+                    "reason_code": "accepted_with_attribution_drift",
+                    "accepted": True,
+                    "target_qids": ["gs_024"],
+                    "target_fixed_qids": [],
+                    "target_still_hard_qids": ["gs_024"],
+                },
+            },
+        ],
+    }
+    violations = check_i9_acceptance_render_byte_equality(evidence)
+    fields = {v["field"] for v in violations}
+    assert "target_fixed_qids" in fields
+    assert "target_still_hard_qids" in fields
+    assert all(v["invariant_id"] == "I9" for v in violations)
+    assert all(v["iteration"] == 1 for v in violations)
+
+
+def test_i9_red_when_reason_code_disagrees_between_record_and_marker() -> None:
+    """A divergent renderer that re-derives reason_code from a stale
+    field would surface here. I9 fires once for the reason_code field.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i9_acceptance_render_byte_equality,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 2,
+                "acceptance_decision": {
+                    "reason_code": "accepted",
+                    "accepted": True,
+                    "target_qids": ["q_a"],
+                    "target_fixed_qids": ["q_a"],
+                    "target_still_hard_qids": [],
+                },
+                "full_eval_marker": {
+                    "reason_code": "accepted_with_regression_debt",
+                    "accepted": True,
+                    "target_qids": ["q_a"],
+                    "target_fixed_qids": ["q_a"],
+                    "target_still_hard_qids": [],
+                },
+            },
+        ],
+    }
+    violations = check_i9_acceptance_render_byte_equality(evidence)
+    assert any(
+        v["field"] == "reason_code" and v["iteration"] == 2
+        for v in violations
+    )
+
+
+def test_i9_wired_into_run_invariants() -> None:
+    """When I9 fires standalone, run_invariants must surface the
+    violation in its combined output.
+    """
+    from genie_space_optimizer.optimization.invariants import run_invariants
+
+    evidence = {
+        "phase_b": {"total_records": 1, "producer_exceptions": {}},
+        "replay_fixture_records": 1,
+        "iterations": [
+            {
+                "iteration": 1,
+                "acceptance_decision": {
+                    "reason_code": "accepted",
+                    "accepted": True,
+                    "target_qids": ["q_a"],
+                    "target_fixed_qids": ["q_a"],
+                    "target_still_hard_qids": [],
+                },
+                "full_eval_marker": {
+                    "reason_code": "rejected_no_gain",
+                    "accepted": False,
+                    "target_qids": ["q_a"],
+                    "target_fixed_qids": [],
+                    "target_still_hard_qids": ["q_a"],
+                },
+            },
+        ],
+        "manifest": {"declared_paths": [], "materialized_paths": []},
+        "convergence": {"reason": "lever_loop_completed"},
+    }
+    violations = run_invariants(evidence)
+    i9 = [v for v in violations if v["invariant_id"] == "I9"]
+    assert i9, f"expected I9 in combined output, got {violations!r}"

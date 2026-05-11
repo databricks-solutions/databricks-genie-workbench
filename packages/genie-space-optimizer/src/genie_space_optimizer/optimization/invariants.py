@@ -380,6 +380,88 @@ def check_i8_plateau_input(evidence: Mapping[str, Any]) -> list[dict]:
     )]
 
 
+# I9 compares this exact field set across the DecisionRecord and the
+# typed stdout marker. Sorted-tuple normalization on each value makes
+# the comparison list-or-tuple agnostic.
+_I9_CANONICAL_KEYS: tuple[str, ...] = (
+    "reason_code",
+    "accepted",
+    "target_qids",
+    "target_fixed_qids",
+    "target_still_hard_qids",
+    "target_soft_passing_qids",
+    "out_of_target_regressed_qids",
+    "soft_to_hard_regressed_qids",
+    "passing_to_hard_regressed_qids",
+    "unknown_to_hard_regressed_qids",
+    "accidentally_improved_qids",
+    "unresolved_target_debt_qids",
+)
+
+
+def _i9_normalize(value: Any) -> Any:
+    """Canonicalise one field for byte-equality comparison.
+
+    Lists/tuples become sorted tuples of strings; scalars become their
+    bool/str/float counterpart. ``None`` becomes the empty tuple so a
+    missing list and an explicit ``[]`` compare equal.
+    """
+    if value is None:
+        return ()
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, (list, tuple)):
+        return tuple(sorted(str(x) for x in value))
+    return str(value)
+
+
+def check_i9_acceptance_render_byte_equality(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I9 — every consumer of ``format_full_eval_marker_payload``
+    must render the same canonical field set byte-for-byte.
+
+    Consumed surfaces:
+      - ``DecisionRecord.metrics`` of the ``acceptance_decided`` record
+        (evidence key: ``iterations[i].acceptance_decision``).
+      - ``GSO_FULL_EVAL_V1`` typed stdout marker payload
+        (evidence key: ``iterations[i].full_eval_marker``).
+
+    Silent when ``full_eval_marker`` is missing on every iteration so
+    legacy replay fixtures (no marker capture) stay green.
+    """
+    violations: list[dict] = []
+    iters = list(evidence.get("iterations") or [])
+    saw_marker = False
+    for it in iters:
+        record = dict(it.get("acceptance_decision") or {})
+        marker = dict(it.get("full_eval_marker") or {})
+        if not marker:
+            continue
+        saw_marker = True
+        iter_idx = int(it.get("iteration") or 0)
+        for key in _I9_CANONICAL_KEYS:
+            lhs = _i9_normalize(record.get(key))
+            rhs = _i9_normalize(marker.get(key))
+            if lhs != rhs:
+                violations.append(_violation(
+                    invariant_id="I9",
+                    title="acceptance_render_byte_inequality",
+                    detail=(
+                        f"field {key!r} disagrees: "
+                        f"acceptance_decision={lhs!r} vs "
+                        f"full_eval_marker={rhs!r}"
+                    ),
+                    iteration=iter_idx,
+                    field=str(key),
+                    acceptance_decision_value=record.get(key),
+                    full_eval_marker_value=marker.get(key),
+                ))
+    if not saw_marker:
+        return []
+    return violations
+
+
 def check_i13_target_delta_totality(evidence: Mapping[str, Any]) -> list[dict]:
     """I13 — every declared target QID has a delta_state entry;
     LOOKUP_FAILED implies reason_code=target_resolution_failed;
@@ -486,6 +568,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i6_manifest_paths,
         check_i7_rca_grounding,
         check_i8_plateau_input,
+        check_i9_acceptance_render_byte_equality,  # Cycle 15.1-T1
         check_i13_target_delta_totality,  # Cycle 14-T0
     ):
         try:
