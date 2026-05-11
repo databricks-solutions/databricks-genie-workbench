@@ -1350,3 +1350,102 @@ def build_narrow_l6_replacement(
         "narrowing_target_qids": list(qids),
         "_cycle_9_narrow_replacement": True,
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Cycle 16 T1 — Branch C: L5 example-SQL fallback for L6 expression /
+# measure patches dropped at high_collateral_risk_flagged. Pure helper,
+# no I/O, no flag reads, no logger; safe to unit-test.
+#
+# Branch C is the *correct* shape for the metric-view case where Branch
+# A's query_id-in-CASE wrap is semantically wrong (metric-view DDL has
+# no query_id column). Each resolvable target QID gets one L5
+# add_example_sql patch carrying that QID's reference SQL as the
+# example_sql payload. A QID is *resolvable* iff both qid_to_question_text
+# and qid_to_reference_sql carry a non-empty value for it.
+
+_BRANCH_C_L6_PATCH_TYPES: frozenset[str] = frozenset({
+    "add_sql_snippet_expression",
+    "add_sql_snippet_measure",
+})
+
+
+def build_l5_example_sql_replacement(
+    *,
+    original_patch: dict,
+    ag_target_qids: tuple[str, ...],
+    qid_to_question_text: dict[str, str],
+    qid_to_reference_sql: dict[str, str],
+    root_cause: str,
+) -> tuple[dict, ...]:
+    """Cycle 16 T1 — synthesize one Lever-5 ``add_example_sql`` patch
+    per resolvable target QID when an L6 expression / measure patch is
+    dropped at blast-radius.
+
+    A target QID is resolvable iff both ``qid_to_question_text[qid]``
+    and ``qid_to_reference_sql[qid]`` are non-empty strings.
+
+    Each output patch carries:
+      * ``patch_type = "add_example_sql"``
+      * ``example_question`` and ``example_sql`` (from the resolver
+        dicts; the Genie API schema is validated by
+        ``applier._validate_example_sql_entry`` at apply time)
+      * ``rca_id`` and ``root_cause`` inherited from the parent
+      * ``proposal_id = f"{parent_proposal_id}#L5_BRANCH_C_{qid}"`` —
+        injective per (parent, qid)
+      * ``derived_from = parent_proposal_id``
+      * ``narrowing_strategy = "l5_example_sql_per_qid"``
+      * ``narrow_replacement_branch = "C"``
+
+    Sort order is by QID ascending so the output is replay byte-stable
+    independent of dict insertion order on the caller side.
+
+    Returns ``()`` (empty tuple) when:
+      * ``ag_target_qids`` is empty, OR
+      * ``original_patch.patch_type`` is not L6 expression / measure, OR
+      * no target QID is resolvable.
+
+    Pure: no I/O, no clock, no logger, no flag reads.
+    """
+    ptype = str((original_patch or {}).get("patch_type") or "")
+    if ptype not in _BRANCH_C_L6_PATCH_TYPES:
+        return ()
+    qids = tuple(
+        str(q).strip()
+        for q in (ag_target_qids or ())
+        if str(q).strip()
+    )
+    if not qids:
+        return ()
+    parent_pid = str(
+        (original_patch or {}).get("proposal_id") or "L6:UNKNOWN"
+    )
+    parent_rca_id = str((original_patch or {}).get("rca_id") or "")
+    parent_rationale = str((original_patch or {}).get("rationale") or "")
+    parent_target = str((original_patch or {}).get("target") or "")
+    rc = str(root_cause or "")
+
+    out: list[dict] = []
+    for qid in sorted(qids):
+        q_text = str((qid_to_question_text or {}).get(qid) or "").strip()
+        ref_sql = str((qid_to_reference_sql or {}).get(qid) or "").strip()
+        if not q_text or not ref_sql:
+            continue
+        out.append({
+            "proposal_id": f"{parent_pid}#L5_BRANCH_C_{qid}",
+            "patch_type": "add_example_sql",
+            "example_question": q_text,
+            "example_sql": ref_sql,
+            "rca_id": parent_rca_id,
+            "root_cause": rc,
+            "derived_from": parent_pid,
+            "narrowing_strategy": "l5_example_sql_per_qid",
+            "narrow_replacement_branch": "C",
+            "narrow_target_qids": (qid,),
+            "narrowing_target_qids": [qid],
+            "rationale": (
+                f"Branch C L5 fallback for {parent_pid} on "
+                f"{parent_target}; parent rationale: {parent_rationale}"
+            ).strip(),
+        })
+    return tuple(out)
