@@ -97,3 +97,42 @@ def test_inventory_doc_references_match_guard_list() -> None:
             f"Inventory doc {doc_path} is missing the gate name {name!r}. "
             f"The guard list and the inventory must stay in sync."
         )
+
+
+# ---------------------------------------------------------------------------
+# RCO-4b Phase B — slice_gate position assertions
+# ---------------------------------------------------------------------------
+
+
+def test_slice_gate_audit_emit_appears_exactly_once_in_rollback_path() -> None:
+    """RCO-4b Phase B — Phase B must NOT duplicate the slice_gate audit
+    row. Even though the wiring has two flag branches (flag-on / legacy
+    else), only the rollback path emits, and there is exactly one
+    rollback path. The literal ``gate_name="slice_gate"`` must appear
+    exactly once in harness.py.
+    """
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    assert src.count('gate_name="slice_gate"') == 1
+
+
+def test_slice_gate_audit_emit_position_unchanged_relative_to_propagation_wait() -> None:
+    """Phase A pinned ``gate_name="propagation_wait"`` to fire
+    BEFORE ``gate_name="slice_gate"``. Phase B must not reorder."""
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    prop_idx = src.find('gate_name="propagation_wait"')
+    slice_idx = src.find('gate_name="slice_gate"')
+    if prop_idx == -1 or slice_idx == -1:
+        # If propagation_wait's audit was inlined into the helper rather
+        # than the harness, this assertion has no anchor — skip rather
+        # than fail. The base sequence-guard catches that case.
+        import pytest
+        pytest.skip("propagation_wait or slice_gate audit not found in harness")
+    assert prop_idx < slice_idx, (
+        "Phase B must preserve the propagation_wait -> slice_gate ordering"
+    )
