@@ -52,10 +52,13 @@ _EXPECTED_ORDER = [
     "_asi_audit_1",           # Phase D: legacy branch (or "asi_extraction" fallback)
     "baseline_drift_diagnostic",  # Phase D: flag-on branch
     "baseline_drift_diagnostic",  # Phase D: legacy branch
-    "full_eval_acceptance",   # first emission
+    "full_eval_acceptance",   # Phase E: verdict-emit flag-on
+    "full_eval_acceptance",   # Phase E: verdict-emit legacy
     "pre_arbiter_regression_guardrail",
-    "full_eval_acceptance",   # second emission
-    "full_eval_acceptance",   # third emission
+    "full_eval_acceptance",   # Phase E: rollback-emit flag-on
+    "full_eval_acceptance",   # Phase E: rollback-emit legacy
+    "full_eval_acceptance",   # Phase E: accept-emit flag-on
+    "full_eval_acceptance",   # Phase E: accept-emit legacy
 ]
 
 
@@ -265,3 +268,119 @@ def test_baseline_drift_audit_fires_after_asi_extraction_in_both_branches() -> N
         "Phase D must preserve the asi_extraction -> baseline_drift_diagnostic "
         "ordering across both flag branches"
     )
+
+
+# ---------------------------------------------------------------------------
+# RCO-4b Phase E — full_eval_acceptance position assertions
+# ---------------------------------------------------------------------------
+
+
+def test_full_eval_acceptance_audits_appear_six_times() -> None:
+    """RCO-4b Phase E — three audit-emission sites (verdict, rollback,
+    accept), each duplicated across the helper-on and legacy branches.
+    Only one verdict + one branch-specific audit fires per iteration;
+    the parity test verifies identical behavior."""
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    assert src.count('gate_name="full_eval_acceptance"') == 6
+
+
+def test_full_eval_acceptance_audits_fire_after_baseline_drift() -> None:
+    """RCO-4b Phase E — the full-eval-acceptance audits must follow
+    the baseline_drift_diagnostic audit pinned in Phase D, preserving
+    the conceptual stage order."""
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    drift_idx = src.find('gate_name="baseline_drift_diagnostic"')
+    first_full_eval = src.find('gate_name="full_eval_acceptance"')
+    if drift_idx == -1 or first_full_eval == -1:
+        import pytest
+        pytest.skip("expected audit gate_names missing")
+    assert drift_idx < first_full_eval, (
+        "Phase E must preserve the baseline_drift_diagnostic -> "
+        "full_eval_acceptance ordering"
+    )
+
+
+def test_full_eval_verdict_audit_fires_before_rollback_and_accept() -> None:
+    """RCO-4b Phase E — the three audit-emission sites must appear in
+    source order: verdict-emit → rollback-emit → accept-emit. Each
+    site has 2 occurrences (flag-on + legacy) of
+    ``gate_name="full_eval_acceptance"``. The 6 occurrences cluster
+    into 3 site-clusters; cluster 1 = verdict, cluster 2 = rollback,
+    cluster 3 = accept.
+
+    Note: ``decision="rolled_back"`` and ``decision="accepted"`` are
+    NOT unique to full_eval (slice_gate / p0_gate use the same
+    decision literals), so this test anchors on the
+    ``gate_name="full_eval_acceptance"`` site clusters directly.
+    """
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    positions: list[int] = []
+    start = 0
+    needle = 'gate_name="full_eval_acceptance"'
+    while True:
+        idx = src.find(needle, start)
+        if idx == -1:
+            break
+        positions.append(idx)
+        start = idx + 1
+    if len(positions) != 6:
+        import pytest
+        pytest.skip(f"expected 6 full_eval_acceptance audits, got {len(positions)}")
+    # Three clusters of 2: positions[0:2] = verdict, [2:4] = rollback, [4:6] = accept.
+    verdict_first, verdict_last = positions[0], positions[1]
+    rollback_first, rollback_last = positions[2], positions[3]
+    accept_first, accept_last = positions[4], positions[5]
+    assert verdict_last < rollback_first, (
+        "verdict-emit site must precede rollback-emit site in source order"
+    )
+    assert rollback_last < accept_first, (
+        "rollback-emit site must precede accept-emit site in source order "
+        "(rollback branch returns early; accept-emit is unreachable "
+        "from inside the rollback if-block)"
+    )
+
+
+def test_full_eval_acceptance_audits_appear_at_three_distinct_positions() -> None:
+    """RCO-4b Phase E — beyond the count check, assert the three SITES
+    are at distinct positions (not all clustered in one place). Each
+    of the 6 occurrences should map to one of three distinct line
+    ranges roughly 1000+ chars apart."""
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    positions: list[int] = []
+    start = 0
+    needle = 'gate_name="full_eval_acceptance"'
+    while True:
+        idx = src.find(needle, start)
+        if idx == -1:
+            break
+        positions.append(idx)
+        start = idx + 1
+    assert len(positions) == 6
+    min_cluster_gap = 1000
+    clusters: list[list[int]] = [[positions[0]]]
+    for p in positions[1:]:
+        if p - clusters[-1][-1] < min_cluster_gap:
+            clusters[-1].append(p)
+        else:
+            clusters.append([p])
+    assert len(clusters) == 3, (
+        f"Expected 3 distinct audit sites; found {len(clusters)} "
+        f"clusters at positions {positions}"
+    )
+    for c in clusters:
+        assert len(c) == 2, (
+            f"Each site should have 2 occurrences (helper-on + legacy); "
+            f"cluster {c} has {len(c)}"
+        )
