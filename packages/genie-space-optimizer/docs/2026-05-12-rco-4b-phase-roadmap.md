@@ -27,17 +27,23 @@
 
 ## Phase B — Slice gate
 
-**Plan:** `docs/<TBD>-rco-4b-phase-b-slice-gate-extraction-plan.md` — to be drafted using Phase A's `run_propagation_wait_gate` as the template.
+**Plan:** `docs/2026-05-12-rco-4b-phase-b-slice-gate-extraction-plan.md`.
+
+**Status:** in-flight — extraction proceeds in three pure helpers
+(should_run / effective_tolerance / post_eval) so the side-effecting
+middle step (``run_evaluation`` + ``detect_regressions``) remains in the
+harness. See ``2026-05-12-rco-4b-phase-b-slice-gate-extraction-plan.md``.
 
 **Scope:**
-- Add `run_slice_gate_pre_eval(inp: SliceGatePreEvalInput) -> SliceGatePreEvalOutcome` and `run_slice_gate_post_eval(inp: SliceGatePostEvalInput) -> SliceGatePostEvalOutcome` to `eval_gates.py`.
-- Two-step pure helper because `run_evaluation` runs between the pre-eval and post-eval decisions.
-- Flip `GSO_GATE_CHECKS_SLICE_PURE` flag from default-off to wired-on-when-enabled; legacy inline preserved in `else` branch.
+- Add `decide_slice_gate_should_run`, `compute_slice_gate_effective_tolerance`, and `decide_slice_gate_post_eval` to `eval_gates.py`.
+- Three-step pure helpers because `run_evaluation` runs between the pre-eval and post-eval decisions.
+- Wire `GSO_GATE_CHECKS_SLICE_PURE` flag (default-off); legacy inline preserved in `else` branch.
 - Parity test + production-shape fixtures.
 
 **Blocked by:** Phase A.
 
-**Estimated commits:** ~6.
+**Estimated commits:** ~10 (1 doc + 3 helpers + harness wiring + 5
+fixtures + parity + sequence-guard + roadmap close).
 
 ## Phase C — P0 gate
 

@@ -71,9 +71,12 @@ The sequence-guard test at `tests/unit/test_rco4b_run_gate_checks_sequence_guard
 - `_audit_emit`
 - `print`
 
-**Why deferred to Phase B:**
-- Two-step decision (pre-eval and post-eval).
-- `run_evaluation` invocation in between is the bulky side-effect site that cannot move into the helper.
+**Status:** extracted in Phase B — three pure helpers in
+`stages/eval_gates.py` (`decide_slice_gate_should_run`,
+`compute_slice_gate_effective_tolerance`,
+`decide_slice_gate_post_eval`). Default-off behind
+`GSO_GATE_CHECKS_SLICE_PURE`. See
+`2026-05-12-rco-4b-phase-b-slice-gate-extraction-plan.md`.
 
 ### 3. p0_gate
 
