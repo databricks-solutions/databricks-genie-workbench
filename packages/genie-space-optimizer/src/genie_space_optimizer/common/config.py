@@ -6062,3 +6062,66 @@ def journey_producer_strict_enabled() -> bool:
     Enable with ``GSO_JOURNEY_PRODUCER_STRICT=1``.
     """
     return _flag_enabled("GSO_JOURNEY_PRODUCER_STRICT")
+
+
+# ---------------------------------------------------------------------------
+# RCO-4b — Per-gate-stage extraction flags for ``_run_gate_checks``
+# ---------------------------------------------------------------------------
+# All six default-off. Phase A consumes only the propagation flag; the
+# other five are reserved for Phases B-E.
+
+def gate_checks_propagation_pure_enabled() -> bool:
+    """RCO-4b Phase A — when ``GSO_GATE_CHECKS_PROPAGATION_PURE`` is
+    truthy, ``_run_gate_checks`` delegates the propagation-wait block
+    to ``stages.eval_gates.run_propagation_wait_gate``. Default-off
+    keeps legacy callers byte-stable."""
+    import os as _os
+
+    return _os.environ.get(
+        "GSO_GATE_CHECKS_PROPAGATION_PURE", "0"
+    ).lower() in {"1", "true", "yes", "on"}
+
+
+def gate_checks_slice_pure_enabled() -> bool:
+    """RCO-4b Phase B — reserved. Default-off."""
+    import os as _os
+
+    return _os.environ.get(
+        "GSO_GATE_CHECKS_SLICE_PURE", "0"
+    ).lower() in {"1", "true", "yes", "on"}
+
+
+def gate_checks_p0_pure_enabled() -> bool:
+    """RCO-4b Phase C — reserved. Default-off."""
+    import os as _os
+
+    return _os.environ.get(
+        "GSO_GATE_CHECKS_P0_PURE", "0"
+    ).lower() in {"1", "true", "yes", "on"}
+
+
+def gate_checks_asi_extraction_pure_enabled() -> bool:
+    """RCO-4b Phase D — reserved. Default-off."""
+    import os as _os
+
+    return _os.environ.get(
+        "GSO_GATE_CHECKS_ASI_EXTRACTION_PURE", "0"
+    ).lower() in {"1", "true", "yes", "on"}
+
+
+def gate_checks_baseline_drift_pure_enabled() -> bool:
+    """RCO-4b Phase D — reserved. Default-off."""
+    import os as _os
+
+    return _os.environ.get(
+        "GSO_GATE_CHECKS_BASELINE_DRIFT_PURE", "0"
+    ).lower() in {"1", "true", "yes", "on"}
+
+
+def gate_checks_full_eval_acceptance_pure_enabled() -> bool:
+    """RCO-4b Phase E — reserved. Default-off."""
+    import os as _os
+
+    return _os.environ.get(
+        "GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE", "0"
+    ).lower() in {"1", "true", "yes", "on"}
