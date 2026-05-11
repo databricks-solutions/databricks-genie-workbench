@@ -14,6 +14,8 @@ the production exit path still defaults to warn-and-degrade.
 from __future__ import annotations
 
 import enum
+from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
 
 
 HIGH_TIER_INVARIANT_IDS: frozenset[str] = frozenset(
@@ -52,3 +54,61 @@ class MergeGateStatus(enum.Enum):
     HEALTHY = "healthy"
     WARN = "warn"
     MERGE_GATE_BLOCKED = "merge_gate_blocked"
+
+
+@dataclass(frozen=True)
+class ContractHealthSummary:
+    """Pure end-of-run contract-health summary (RCO-2a keystone).
+
+    Built by ``build_contract_health_summary`` from evidence already
+    emitted by upstream stages. Serialized into stdout via
+    ``contract_health_summary_marker`` and rendered into the operator
+    process transcript's ``Contract Health`` stage section.
+    """
+
+    optimization_run_id: str
+    merge_gate_status: MergeGateStatus
+    high_tier_violations: tuple[Mapping[str, Any], ...]
+    medium_tier_violations: tuple[Mapping[str, Any], ...]
+    phase_h_listing_status: str
+    phase_h_validator_status: str
+    bundle_status: str
+    replay_is_valid: bool
+    replay_violation_count: int
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return {
+            "optimization_run_id": str(self.optimization_run_id),
+            "merge_gate_status": self.merge_gate_status.value,
+            "high_tier_violations": [
+                dict(v) for v in self.high_tier_violations
+            ],
+            "medium_tier_violations": [
+                dict(v) for v in self.medium_tier_violations
+            ],
+            "phase_h_listing_status": str(self.phase_h_listing_status),
+            "phase_h_validator_status": str(self.phase_h_validator_status),
+            "bundle_status": str(self.bundle_status),
+            "replay_is_valid": bool(self.replay_is_valid),
+            "replay_violation_count": int(self.replay_violation_count),
+        }
+
+    @classmethod
+    def from_json_dict(cls, blob: Mapping[str, Any]) -> "ContractHealthSummary":
+        return cls(
+            optimization_run_id=str(blob.get("optimization_run_id") or ""),
+            merge_gate_status=MergeGateStatus(
+                str(blob.get("merge_gate_status") or "warn")
+            ),
+            high_tier_violations=tuple(
+                dict(v) for v in (blob.get("high_tier_violations") or [])
+            ),
+            medium_tier_violations=tuple(
+                dict(v) for v in (blob.get("medium_tier_violations") or [])
+            ),
+            phase_h_listing_status=str(blob.get("phase_h_listing_status") or ""),
+            phase_h_validator_status=str(blob.get("phase_h_validator_status") or ""),
+            bundle_status=str(blob.get("bundle_status") or ""),
+            replay_is_valid=bool(blob.get("replay_is_valid")),
+            replay_violation_count=int(blob.get("replay_violation_count") or 0),
+        )
