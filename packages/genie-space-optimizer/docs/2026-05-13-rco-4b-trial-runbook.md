@@ -91,3 +91,9 @@ anchors:
 
 If any anchor fails any criterion, halt — do not promote that anchor's
 evidence. File a defect plan against the failing surface.
+
+## Preflight green-light log
+
+| Date | Operator | Preflight test count | Defense-in-depth suite | Result |
+|---|---|---|---|---|
+| 2026-05-11 | prashanth.subrahmanyam | 36 (20 trial preflight + 14 RCO-4b sequence guard + 2 RCO-4 sequence guard) | 323 unit tests across `test_rco4b_*`, `test_rco4_*`, `test_rco5_*`, `test_rco7_*`, `test_rco8_*`, `test_rco2a_*` | All green; trial is submittable. |
