@@ -298,3 +298,39 @@ def decide_p0_gate_should_run(inp: P0GateInput) -> P0GateOutcome:
         should_run=True,
         skip_reason=None,
     )
+
+
+def decide_p0_gate_post_eval(
+    inp: P0GateInput,
+    *,
+    p0_failures_count: int,
+) -> P0GateOutcome:
+    """RCO-4b Phase C — post-eval P0-gate rollback decision.
+
+    Mirrors the inline body at ``harness._run_gate_checks:13321-13343``.
+    Pure function; the harness owns the ``run_evaluation`` call that
+    produces ``p0_result``, the ``write_iteration`` spark write, the
+    ``print(...)`` audit-line render, and the early-return control
+    flow.
+
+    Returns ``passed=True`` when ``p0_failures_count <= 0`` (the
+    candidate clears the P0 gate). Returns ``passed=False`` with
+    ``rollback_reason="p0_gate: N failures"`` and ``failure_count=N``
+    when N > 0, matching the legacy ``return {"passed": False,
+    "rollback_reason": f"p0_gate: {len(p0_failures)} failures", ...}``
+    line.
+    """
+    count = int(p0_failures_count)
+    if count <= 0:
+        return P0GateOutcome(
+            should_run=False,  # post-eval doesn't drive should_run; preserve default
+            passed=True,
+            failure_count=0,
+            rollback_reason=None,
+        )
+    return P0GateOutcome(
+        should_run=False,
+        passed=False,
+        failure_count=count,
+        rollback_reason=f"p0_gate: {count} failures",
+    )
