@@ -6125,3 +6125,14 @@ def gate_checks_full_eval_acceptance_pure_enabled() -> bool:
     return _os.environ.get(
         "GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE", "0"
     ).lower() in {"1", "true", "yes", "on"}
+
+
+def gso_contract_health_summary_enabled() -> bool:
+    """RCO-2a — emit ``GSO_CONTRACT_HEALTH_V1`` at end-of-run.
+
+    Default-on so trial corpus collection begins immediately. The
+    marker is emission-only — RCO-2b owns the production posture
+    flip that turns ``merge_gate_blocked`` into a non-zero exit.
+    Disable via ``GSO_CONTRACT_HEALTH_SUMMARY_V1=0``.
+    """
+    return _flag_default_on("GSO_CONTRACT_HEALTH_SUMMARY_V1")
