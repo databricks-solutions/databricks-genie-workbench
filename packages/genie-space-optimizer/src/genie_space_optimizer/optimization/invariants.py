@@ -462,6 +462,96 @@ def check_i9_acceptance_render_byte_equality(
     return violations
 
 
+def check_i10_applied_patch_id_injective(
+    evidence: Mapping[str, Any],
+) -> list[dict]:
+    """I10 — every applied patch's ``expanded_patch_id`` is non-empty
+    and globally unique across the run; the triple
+    ``(parent_proposal_id, lever, iteration)`` does not collide within
+    a single iteration.
+
+    Consumed surface:
+      - ``iterations[i].applied_patch_identifiers`` — list of dicts
+        ``{expanded_patch_id, proposal_id|parent_proposal_id, lever}``
+        captured alongside each iteration's applied-patch list.
+
+    Silent when no iteration carries ``applied_patch_identifiers``.
+
+    Closes C14-T4. Catches: stamper bypass, parent-id reuse with the
+    same lever, empty/missing expanded id, split-child suffix
+    collision.
+    """
+    violations: list[dict] = []
+    iters = list(evidence.get("iterations") or [])
+    saw_any = False
+    seen_global: dict[str, int] = {}
+    for it in iters:
+        rows = list(it.get("applied_patch_identifiers") or [])
+        if not rows:
+            continue
+        saw_any = True
+        iter_idx = int(it.get("iteration") or 0)
+        seen_in_iter: set[tuple[str, str]] = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            expanded = str(row.get("expanded_patch_id") or "").strip()
+            if not expanded:
+                violations.append(_violation(
+                    invariant_id="I10",
+                    title="empty_expanded_patch_id",
+                    detail=(
+                        f"applied patch in iter {iter_idx} is missing "
+                        f"expanded_patch_id: {row!r}"
+                    ),
+                    iteration=iter_idx,
+                    row=dict(row),
+                ))
+                continue
+            prior = seen_global.get(expanded)
+            if prior is not None:
+                violations.append(_violation(
+                    invariant_id="I10",
+                    title="duplicate_expanded_patch_id",
+                    detail=(
+                        f"expanded_patch_id={expanded!r} appears in both "
+                        f"iter {prior} and iter {iter_idx}"
+                    ),
+                    iteration=iter_idx,
+                    expanded_patch_id=expanded,
+                    first_iteration=prior,
+                ))
+            else:
+                seen_global[expanded] = iter_idx
+            parent = str(
+                row.get("parent_proposal_id")
+                or row.get("source_proposal_id")
+                or row.get("proposal_id")
+                or ""
+            ).strip()
+            lever_raw = row.get("lever")
+            lever = "" if lever_raw is None else str(lever_raw)
+            if parent:
+                key = (parent, lever)
+                if key in seen_in_iter:
+                    violations.append(_violation(
+                        invariant_id="I10",
+                        title="duplicate_parent_lever_within_iteration",
+                        detail=(
+                            f"parent_proposal_id={parent!r} lever={lever!r} "
+                            f"appears twice in iter {iter_idx}"
+                        ),
+                        iteration=iter_idx,
+                        parent_proposal_id=parent,
+                        lever=lever,
+                    ))
+                else:
+                    seen_in_iter.add(key)
+    if not saw_any:
+        return []
+    return violations
+
+
 def check_i13_target_delta_totality(evidence: Mapping[str, Any]) -> list[dict]:
     """I13 — every declared target QID has a delta_state entry;
     LOOKUP_FAILED implies reason_code=target_resolution_failed;
@@ -569,6 +659,7 @@ def run_invariants(evidence: Mapping[str, Any]) -> list[dict]:
         check_i7_rca_grounding,
         check_i8_plateau_input,
         check_i9_acceptance_render_byte_equality,  # Cycle 15.1-T1
+        check_i10_applied_patch_id_injective,  # Cycle 15.1-T2
         check_i13_target_delta_totality,  # Cycle 14-T0
     ):
         try:

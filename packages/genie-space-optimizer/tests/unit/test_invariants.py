@@ -761,3 +761,162 @@ def test_i9_wired_into_run_invariants() -> None:
     violations = run_invariants(evidence)
     i9 = [v for v in violations if v["invariant_id"] == "I9"]
     assert i9, f"expected I9 in combined output, got {violations!r}"
+
+
+def test_i10_green_when_applied_patch_identifiers_absent() -> None:
+    """Legacy replay fixtures do not capture applied_patch_identifiers
+    as a parallel evidence field. I10 must stay silent.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i10_applied_patch_id_injective,
+    )
+
+    evidence = {"iterations": [{"iteration": 1}, {"iteration": 2}]}
+    assert check_i10_applied_patch_id_injective(evidence) == []
+
+
+def test_i10_red_when_expanded_patch_id_duplicated_across_iterations() -> None:
+    """Reproducer for stamper-bypass shape: the same expanded id
+    appears in iter 1 and iter 2 — patch-subset isolation cannot
+    distinguish them.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i10_applied_patch_id_injective,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "applied_patch_identifiers": [
+                    {
+                        "expanded_patch_id": "P001#1",
+                        "parent_proposal_id": "P001",
+                        "lever": 6,
+                    },
+                ],
+            },
+            {
+                "iteration": 2,
+                "applied_patch_identifiers": [
+                    {
+                        "expanded_patch_id": "P001#1",
+                        "parent_proposal_id": "P001",
+                        "lever": 6,
+                    },
+                ],
+            },
+        ],
+    }
+    violations = check_i10_applied_patch_id_injective(evidence)
+    dup = [v for v in violations if v["title"] == "duplicate_expanded_patch_id"]
+    assert len(dup) == 1
+    assert dup[0]["expanded_patch_id"] == "P001#1"
+    assert dup[0]["first_iteration"] == 1
+    assert dup[0]["iteration"] == 2
+
+
+def test_i10_red_when_parent_proposal_lever_pair_collides_within_iteration() -> None:
+    """Two applied patches with the same parent proposal id and the
+    same lever inside a single iteration is a stamping bug; their
+    expanded ids should have distinct suffixes.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i10_applied_patch_id_injective,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "applied_patch_identifiers": [
+                    {
+                        "expanded_patch_id": "P007#1",
+                        "parent_proposal_id": "P007",
+                        "lever": 5,
+                    },
+                    {
+                        "expanded_patch_id": "P007#2",
+                        "parent_proposal_id": "P007",
+                        "lever": 5,
+                    },
+                ],
+            },
+        ],
+    }
+    violations = check_i10_applied_patch_id_injective(evidence)
+    col = [
+        v for v in violations
+        if v["title"] == "duplicate_parent_lever_within_iteration"
+    ]
+    assert len(col) == 1
+    assert col[0]["parent_proposal_id"] == "P007"
+    assert col[0]["lever"] == "5"
+
+
+def test_i10_red_when_expanded_patch_id_is_empty() -> None:
+    """A patch that bypassed the stamper has no expanded_patch_id —
+    every downstream id-keyed contract (patch-subset isolation,
+    per-iteration bundle paths) breaks. I10 fires once.
+    """
+    from genie_space_optimizer.optimization.invariants import (
+        check_i10_applied_patch_id_injective,
+    )
+
+    evidence = {
+        "iterations": [
+            {
+                "iteration": 1,
+                "applied_patch_identifiers": [
+                    {
+                        "expanded_patch_id": "",
+                        "parent_proposal_id": "P009",
+                        "lever": 2,
+                    },
+                ],
+            },
+        ],
+    }
+    violations = check_i10_applied_patch_id_injective(evidence)
+    empty = [v for v in violations if v["title"] == "empty_expanded_patch_id"]
+    assert len(empty) == 1
+    assert empty[0]["iteration"] == 1
+
+
+def test_i10_wired_into_run_invariants() -> None:
+    """A duplicate expanded_patch_id must surface in run_invariants's
+    combined output, tagged with invariant_id='I10'.
+    """
+    from genie_space_optimizer.optimization.invariants import run_invariants
+
+    evidence = {
+        "phase_b": {"total_records": 1, "producer_exceptions": {}},
+        "replay_fixture_records": 1,
+        "iterations": [
+            {
+                "iteration": 1,
+                "applied_patch_identifiers": [
+                    {
+                        "expanded_patch_id": "P001#1",
+                        "parent_proposal_id": "P001",
+                        "lever": 6,
+                    },
+                ],
+            },
+            {
+                "iteration": 2,
+                "applied_patch_identifiers": [
+                    {
+                        "expanded_patch_id": "P001#1",
+                        "parent_proposal_id": "P001",
+                        "lever": 6,
+                    },
+                ],
+            },
+        ],
+        "manifest": {"declared_paths": [], "materialized_paths": []},
+        "convergence": {"reason": "lever_loop_completed"},
+    }
+    violations = run_invariants(evidence)
+    i10 = [v for v in violations if v["invariant_id"] == "I10"]
+    assert i10, f"expected I10 in combined output, got {violations!r}"
