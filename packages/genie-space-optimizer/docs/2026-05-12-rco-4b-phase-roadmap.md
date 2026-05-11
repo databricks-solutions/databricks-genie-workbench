@@ -63,16 +63,24 @@ fixtures + parity + sequence-guard + roadmap close).
 
 ## Phase D — ASI + baseline-drift
 
-**Plan:** `docs/<TBD>-rco-4b-phase-d-asi-baseline-drift-extraction-plan.md`.
+**Plan:** `docs/2026-05-12-rco-4b-phase-d-asi-extraction-and-baseline-drift-plan.md`.
+
+**Status:** in-flight — extracts two observability-only stages
+(ASI audit forwarder + baseline-drift diagnostic) into pure helpers.
+Independent of Phase B (slice gate) and Phase C (P0 gate); safe to
+parallelize.
 
 **Scope:**
-- Add `run_asi_extraction(inp: AsiExtractionInput) -> AsiExtractionOutcome`.
-- Add `run_baseline_drift_diagnostic(inp: BaselineDriftDiagnosticInput) -> BaselineDriftDiagnosticOutcome`.
-- Both are audit-only — they emit a row and return; no rollback path. Smallest helpers in the suite.
+- Add `forward_asi_extraction_audit(inp: AsiExtractionInput) -> AsiExtractionOutcome`.
+- Add `build_baseline_drift_diagnostic(inp: BaselineDriftDiagnosticInput) -> BaselineDriftDiagnosticOutcome`.
+- Refine Phase A placeholder ASI shape to audit-forwarder contract.
+- Two independent default-off flags (`GSO_GATE_CHECKS_ASI_EXTRACTION_PURE`, `GSO_GATE_CHECKS_BASELINE_DRIFT_PURE`).
+- Both are audit-only — they emit a row and return; no rollback path.
 
 **Blocked by:** Phase A. Independent of Phases B/C/E.
 
-**Estimated commits:** ~10.
+**Estimated commits:** ~9 (1 doc + 1 contract refine + 2 helpers +
+2 harness wirings + 1 sequence-guard + 1 fixtures + 1 roadmap close).
 
 ## Phase E — Full-eval acceptance
 

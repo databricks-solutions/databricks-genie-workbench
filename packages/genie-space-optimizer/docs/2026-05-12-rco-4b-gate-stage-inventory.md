@@ -121,7 +121,10 @@ The sequence-guard test at `tests/unit/test_rco4b_run_gate_checks_sequence_guard
 
 **Side effects:** `_audit_emit` only.
 
-**Why deferred to Phase D:** depends on full-eval Part 1 to land first, but otherwise small.
+**Status:** extracted in Phase D — pure helper in
+`stages/eval_gates.py` (`forward_asi_extraction_audit`). Default-off
+behind `GSO_GATE_CHECKS_ASI_EXTRACTION_PURE`. See
+`2026-05-12-rco-4b-phase-d-asi-extraction-and-baseline-drift-plan.md`.
 
 ### 6. baseline_drift_diagnostic
 
@@ -134,7 +137,10 @@ The sequence-guard test at `tests/unit/test_rco4b_run_gate_checks_sequence_guard
 
 **Side effects:** `_audit_emit` only.
 
-**Why deferred to Phase D:** small but co-located with `asi_extraction` so they ship together.
+**Status:** extracted in Phase D — pure helper in
+`stages/eval_gates.py` (`build_baseline_drift_diagnostic`). Default-off
+behind `GSO_GATE_CHECKS_BASELINE_DRIFT_PURE`. See
+`2026-05-12-rco-4b-phase-d-asi-extraction-and-baseline-drift-plan.md`.
 
 ### 7. pre_arbiter_regression_guardrail
 
