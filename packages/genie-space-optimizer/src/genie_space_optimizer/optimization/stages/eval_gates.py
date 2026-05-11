@@ -390,3 +390,75 @@ def forward_asi_extraction_audit(
         reason_code=raw.get("reason_code"),
         metrics=metrics_out,
     )
+
+
+# Import at module level so the default keyword arg captures the production
+# function. Tests inject a stub via the keyword-only ``decide_drift_fn`` arg.
+from genie_space_optimizer.optimization.acceptance_policy import (
+    decide_baseline_drift as _default_decide_baseline_drift,
+)
+
+
+def build_baseline_drift_diagnostic(
+    inp: BaselineDriftDiagnosticInput,
+    *,
+    decide_drift_fn: Callable[..., Any] = _default_decide_baseline_drift,
+) -> BaselineDriftDiagnosticOutcome:
+    """RCO-4b Phase D — wrap ``decide_baseline_drift`` and package the
+    audit-row + log-line payload.
+
+    Mirrors the inline body at ``harness._run_gate_checks:~13830``.
+    Pure function — does not call logger, does not call ``_audit_emit``.
+    Returns a typed outcome the harness then emits.
+
+    The ``decide_drift_fn`` parameter is keyword-only and defaults to
+    the production ``acceptance_policy.decide_baseline_drift``. Tests
+    inject a stub to exercise both branches deterministically.
+
+    When the underlying decision is not triggered, the outcome carries
+    ``triggered=False`` and all emission fields at their defaults.
+    When triggered, the outcome carries the formatted ``log_line``
+    (matching the legacy ``logger.info(...)`` format byte-for-byte)
+    and the four-key ``audit_metrics`` dict that the legacy
+    ``_audit_emit(metrics=...)`` payload used.
+    """
+    drift = decide_drift_fn(
+        post_arbiter_current=float(inp.current_post_arbiter_accuracy),
+        prev_iter_pre_accept_baseline=inp.prev_iter_pre_accept_baseline,
+        threshold_pp=float(inp.diagnostic_threshold_pp),
+    )
+    if not drift.triggered:
+        return BaselineDriftDiagnosticOutcome(triggered=False)
+
+    prev_baseline_for_log = float(drift.prev_iter_pre_accept_baseline or 0.0)
+    log_line = (
+        "BASELINE DRIFT [%s]: iter %d post-arbiter %.1f%% is %.1fpp "
+        "below the previous iteration's pre-acceptance baseline "
+        "(%.1f%%). Logging suspected_stale_baseline diagnostic; "
+        "iteration continues normally."
+    ) % (
+        inp.ag_id,
+        int(inp.iteration),
+        float(drift.post_arbiter_current),
+        float(drift.delta_pp),
+        prev_baseline_for_log,
+    )
+
+    audit_metrics: dict[str, float] = {
+        "post_arbiter_candidate": float(drift.post_arbiter_current),
+        "prev_iter_pre_accept_baseline": (
+            float(drift.prev_iter_pre_accept_baseline)
+            if drift.prev_iter_pre_accept_baseline is not None
+            else 0.0
+        ),
+        "delta_pp": float(drift.delta_pp),
+        "threshold_pp": float(drift.threshold_pp),
+    }
+
+    return BaselineDriftDiagnosticOutcome(
+        triggered=True,
+        delta_pp=float(drift.delta_pp),
+        audit_metrics=audit_metrics,
+        reason_code=drift.reason_code,
+        log_line=log_line,
+    )
