@@ -86,9 +86,10 @@ parallelize.
 
 **Plan:** `docs/2026-05-12-rco-4b-phase-e-full-eval-acceptance-plan.md`.
 
-**Status:** in-flight — extracts the verdict-consolidation decision
-from the ~700-line full-eval block. Largest extraction of RCO-4b
-(three audit-emission sites instead of two).
+**Status:** `closed-local pending corpus`. Three audit-emission sites
+extracted into a single pure verdict-consolidation helper. With
+Phase E landed, the `_run_gate_checks` decomposition is structurally
+complete and **RCO-4b is fully landed**.
 
 **Scope:**
 - Add `decide_full_eval_acceptance` to `eval_gates.py` consolidating
@@ -137,3 +138,25 @@ Phases B, C, D can land in any order (or in parallel) after A. Phase E can land 
 ## Closeout signal
 
 RCO-4b is "closed-local pending corpus" when Phases A-E have all landed and the sequence-guard test passes with every gate flag flippable to true (parity verified). RCO-9's final audit greps for `class .*Input` and `def run_.*_gate` in `eval_gates.py` to confirm the surface matches this roadmap.
+
+
+## Post-RCO-4b — Trial-Run Gating
+
+After Phase E lands, the recommended next step is a **single
+consolidating trial run** that enables all six gate-flags
+simultaneously:
+
+- ``GSO_GATE_CHECKS_PROPAGATION_PURE`` (Phase A)
+- ``GSO_GATE_CHECKS_SLICE_PURE`` (Phase B)
+- ``GSO_GATE_CHECKS_P0_PURE`` (Phase C)
+- ``GSO_GATE_CHECKS_ASI_EXTRACTION_PURE`` (Phase D)
+- ``GSO_GATE_CHECKS_BASELINE_DRIFT_PURE`` (Phase D)
+- ``GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE`` (Phase E)
+
+The trial's captured artifacts (``GSO_CONTRACT_HEALTH_V1`` markers,
+audit rows, journey events, bundle JSON) simultaneously unblock:
+
+- **RCO-2b** strict-mode default-flip decision
+- **RCO-3** pilot-gated default-flip closeout
+- **RCO-4c** deferred-gate unblock (alignment, cap, reflection)
+- **RCO-6** replay/production journey producer parity

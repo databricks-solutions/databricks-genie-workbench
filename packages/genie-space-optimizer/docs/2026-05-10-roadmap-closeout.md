@@ -210,7 +210,7 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 ### RCO-4b — `_run_gate_checks` Decomposition (Phased)
 
-**Status:** Phases A, B, C, and D landed — propagation_wait, slice_gate, p0_gate, asi_extraction forwarder, and baseline_drift_diagnostic extracted; typed contracts defined for all six stages; sequence-guard test pins production firing order. Phase E remains.
+**Status:** `landed` — all five phases A–E shipped. Every conceptual gate-stage inside `_run_gate_checks` has a pure-helper extraction in `optimization/stages/eval_gates.py`.
 
 **Phase A plan:** `docs/2026-05-12-rco-4b-phase-a-run-gate-checks-decomposition-plan.md`.
 
@@ -219,6 +219,8 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 **Phase C plan:** `docs/2026-05-12-rco-4b-phase-c-p0-gate-extraction-plan.md`.
 
 **Phase D plan:** `docs/2026-05-12-rco-4b-phase-d-asi-extraction-and-baseline-drift-plan.md`.
+
+**Phase E plan:** `docs/2026-05-12-rco-4b-phase-e-full-eval-acceptance-plan.md`.
 
 **Phase roadmap:** `docs/2026-05-12-rco-4b-phase-roadmap.md`.
 
@@ -240,8 +242,20 @@ The earlier closeout list was directionally right but stale in a few places. Thi
   `forward_asi_extraction_audit`, `build_baseline_drift_diagnostic`;
   default-off behind `GSO_GATE_CHECKS_ASI_EXTRACTION_PURE` and
   `GSO_GATE_CHECKS_BASELINE_DRIFT_PURE`).
-- E — Full-eval-acceptance extraction. Pending. (Soft-blocked by B/C/D for diff-size reasons.)
+- E — Full-eval-acceptance verdict extraction. ✅ closed-local
+  pending corpus (one pure helper: `decide_full_eval_acceptance`;
+  default-off behind `GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE`;
+  three audit-emission sites pinned by sequence-guard).
 - F (RCO-4c) — Unblock RCO-4 deferred gates. Pending.
+
+**RCO-4b consolidating trial:** With every gate-stage now extracted,
+the next milestone is a single consolidating trial run that enables
+all six gate-flags simultaneously and captures
+`GSO_CONTRACT_HEALTH_V1`, audit rows, journey events, and bundle
+artifacts. The trial's outputs simultaneously unblock RCO-2b
+(strict-mode default-flip), RCO-3 (pilot-gated default-flip),
+RCO-4c (deferred-gate unblock), and RCO-6 (replay/production
+parity).
 
 **Closeout signal:** RCO-4b is "closed-local pending corpus" when Phases A-E have all landed and the sequence-guard test passes with every per-stage feature flag flippable to true with parity verified.
 
