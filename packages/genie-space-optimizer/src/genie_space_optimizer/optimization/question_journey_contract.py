@@ -85,6 +85,20 @@ _LEGAL_NEXT: dict[JourneyStage, frozenset[JourneyStage]] = {
         JourneyStage.DIAGNOSTIC_AG,
         JourneyStage.INTENT_COLLISION_DETECTED,
         JourneyStage.POST_EVAL,
+        # Cycle 17 T1 — state-machine extension #1. Legitimate scenario:
+        # `target_resolved_elsewhere_in_same_iteration`. A row clustered
+        # as related-but-not-target may remain passing throughout the
+        # iteration because its failure-conditioning attribute is resolved
+        # by a fix elsewhere. Anchors: airline run 294 (gs_007 after
+        # AG_DECOMPOSED_H004 fixed gs_024) and 7Now run 3b050ec5
+        # (gs_001, gs_013 both row-classified already_passing and declared
+        # in hard clusters by the clusterer). Both classifications are
+        # legitimate signals; the transition is a contract bug, not a
+        # producer bug. Extension is unconditional (no flag): pre-Cycle-17
+        # fixtures see fewer violations under this `_LEGAL_NEXT`; the
+        # producers do not change behaviour, so canonical-event JSON
+        # remains byte-stable.
+        JourneyStage.ALREADY_PASSING,
     }),
     JourneyStage.SOFT_SIGNAL: frozenset({
         JourneyStage.AG_ASSIGNED,

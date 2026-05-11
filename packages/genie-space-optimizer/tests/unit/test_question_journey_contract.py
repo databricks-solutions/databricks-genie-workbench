@@ -276,3 +276,55 @@ def test_journey_validation_report_to_dict_round_trip() -> None:
         "q1": "hard_failure_unresolved",
         "q2": "already_passing",
     }
+
+
+def test_clustered_to_already_passing_is_legal_cycle17():
+    """Cycle 17 T1 — state-machine extension #1.
+
+    `clustered → already_passing` is legitimate when a row is clustered
+    as related-but-not-target AND remains passing because its
+    failure-conditioning attribute is resolved elsewhere in the same
+    iteration. Anchor: airline run 294 (gs_007) and 7Now run 3b050ec5
+    (gs_001, gs_013).
+
+    Predicate name: `target_resolved_elsewhere_in_same_iteration`.
+    """
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        JourneyStage,
+        is_legal_next_stage,
+    )
+
+    assert is_legal_next_stage(
+        prev=JourneyStage.CLUSTERED,
+        nxt=JourneyStage.ALREADY_PASSING,
+    ) is True
+
+
+def test_clustered_to_already_passing_recognised_by_validator_cycle17():
+    """End-to-end check: a synthetic qid with events
+    [evaluated, clustered, already_passing, post_eval] validates
+    without an `illegal_transition` violation after the extension.
+    """
+    from genie_space_optimizer.optimization.question_journey import (
+        QuestionJourneyEvent,
+    )
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        validate_question_journeys,
+    )
+
+    qid = "q_legit"
+    events = [
+        QuestionJourneyEvent(question_id=qid, stage="evaluated"),
+        QuestionJourneyEvent(question_id=qid, stage="clustered", cluster_id="H1"),
+        QuestionJourneyEvent(question_id=qid, stage="already_passing"),
+        QuestionJourneyEvent(
+            question_id=qid, stage="post_eval",
+            was_passing=True, is_passing=True, transition="hold_pass",
+        ),
+    ]
+    report = validate_question_journeys(events=events, eval_qids={qid})
+    illegal = [v for v in report.violations if v.kind == "illegal_transition"]
+    assert illegal == [], (
+        f"expected no illegal_transition violations, got: "
+        f"{[(v.detail) for v in illegal]}"
+    )
