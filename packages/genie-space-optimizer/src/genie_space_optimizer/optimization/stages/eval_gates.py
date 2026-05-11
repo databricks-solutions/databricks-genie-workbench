@@ -215,3 +215,42 @@ def compute_slice_gate_effective_tolerance(
     )
     qw = 100.0 / max(full_corpus, 1)
     return max(base, float(inp.noise_floor) + 2.0, qw + 0.5)
+
+
+def decide_slice_gate_post_eval(
+    inp: SliceGateInput,
+    *,
+    slice_drops: tuple[dict[str, Any], ...],
+    effective_tolerance: float,
+) -> SliceGateOutcome:
+    """RCO-4b Phase B — post-eval slice-gate rollback decision.
+
+    Mirrors the inline body at ``harness._run_gate_checks:13169-13222``.
+    Pure function; the harness owns the ``run_evaluation`` /
+    ``detect_regressions`` calls that produce ``slice_drops``, the
+    ``print(...)`` audit-line render, and the spark-side writes
+    (``update_provenance_gate``, ``log_gate_feedback_on_traces``).
+
+    Returns ``passed=True`` when ``slice_drops`` is empty (the
+    candidate clears the slice gate). Returns ``passed=False`` with
+    ``rollback_reason="slice_gate: <judge>"`` and
+    ``regression_judge=<judge>`` when any drop is present (the first
+    drop wins, matching the legacy ``slice_drops[0]["judge"]`` read).
+    """
+    if not slice_drops:
+        return SliceGateOutcome(
+            should_run=False,  # not relevant post-eval; preserve default
+            passed=True,
+            rollback_reason=None,
+            regression_judge=None,
+            effective_tolerance=float(effective_tolerance),
+        )
+    first = dict(slice_drops[0])
+    judge = str(first.get("judge", "") or "")
+    return SliceGateOutcome(
+        should_run=False,
+        passed=False,
+        rollback_reason=f"slice_gate: {judge}",
+        regression_judge=judge,
+        effective_tolerance=float(effective_tolerance),
+    )
