@@ -30,9 +30,14 @@ Phase A ships ``run_propagation_wait_gate``. Phases B-E append
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 from genie_space_optimizer.optimization.stages.gate_types import (
+    AsiExtractionInput,
+    AsiExtractionOutcome,
+    BaselineDriftDiagnosticInput,
+    BaselineDriftDiagnosticOutcome,
     P0GateInput,
     P0GateOutcome,
     PropagationWaitInput,
@@ -48,6 +53,8 @@ __all__ = [
     "decide_slice_gate_post_eval",
     "decide_p0_gate_should_run",
     "decide_p0_gate_post_eval",
+    "forward_asi_extraction_audit",
+    "build_baseline_drift_diagnostic",
 ]
 
 
@@ -333,4 +340,53 @@ def decide_p0_gate_post_eval(
         passed=False,
         failure_count=count,
         rollback_reason=f"p0_gate: {count} failures",
+    )
+
+
+def forward_asi_extraction_audit(
+    inp: AsiExtractionInput,
+) -> AsiExtractionOutcome:
+    """RCO-4b Phase D — forward the ASI-extraction audit row that
+    ``run_evaluation`` stamped on its result.
+
+    Mirrors the inline body at ``harness._run_gate_checks:~13731``.
+    Pure function — does not call ``_audit_emit``; returns the audit
+    payload as a typed outcome and lets the harness decide whether
+    and how to render it.
+
+    Returns ``should_emit=False`` when ``inp.raw_audit`` is None or
+    not a dict (matches the legacy ``isinstance(_asi_audit_1, dict)``
+    guard). Otherwise returns ``should_emit=True`` with all five
+    audit fields populated using the same ``or``-fallback defaults as
+    the legacy code:
+
+      - ``stage_letter`` defaults to ``"C"``.
+      - ``gate_name`` defaults to ``"asi_extraction"``.
+      - ``decision`` defaults to ``"ok"``.
+      - ``reason_code`` defaults to ``None``.
+      - ``metrics`` is the parsed ``metrics_json`` payload:
+        - If it's a JSON string, it's ``json.loads``-parsed; parse
+          failures set ``metrics=None``.
+        - If it's already a dict, it passes through.
+        - If it's any other type (list, int, etc.), it's set to None.
+    """
+    raw = inp.raw_audit
+    if not isinstance(raw, dict):
+        return AsiExtractionOutcome(should_emit=False)
+
+    metrics_value: Any = raw.get("metrics_json")
+    if isinstance(metrics_value, str):
+        try:
+            metrics_value = json.loads(metrics_value)
+        except (TypeError, ValueError):
+            metrics_value = None
+    metrics_out = metrics_value if isinstance(metrics_value, dict) else None
+
+    return AsiExtractionOutcome(
+        should_emit=True,
+        stage_letter=raw.get("stage_letter") or "C",
+        gate_name=raw.get("gate_name") or "asi_extraction",
+        decision=raw.get("decision") or "ok",
+        reason_code=raw.get("reason_code"),
+        metrics=metrics_out,
     )
