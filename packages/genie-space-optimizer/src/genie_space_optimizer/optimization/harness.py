@@ -17722,7 +17722,16 @@ def _run_lever_loop(
                             json.dumps(_l3_diagnostics, default=str),
                         )
                         strategy["lever3_directive_diagnostics"] = _l3_diagnostics
-                    action_groups = strategy.get("action_groups", [])
+                    # RCO-7 Site 1 — sort the strategist's action_groups
+                    # list by canonical key (ag id) so downstream
+                    # deterministic stages are independent of LLM
+                    # output ordering.
+                    from genie_space_optimizer.optimization.llm_boundary_sort import (
+                        sort_action_groups_canonically as _sort_ags_rco7_site1,
+                    )
+                    action_groups = _sort_ags_rco7_site1(
+                        strategy.get("action_groups", [])
+                    )
                     # Task 8 — strategist coverage enforcement. Any patchable
                     # hard cluster the LLM dropped gets a deterministic
                     # diagnostic AG so the loop attempts it before declaring
