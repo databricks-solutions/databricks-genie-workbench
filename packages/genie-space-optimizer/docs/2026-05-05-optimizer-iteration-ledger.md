@@ -1149,3 +1149,17 @@ AG-16-A: L5 question-scoped example-SQL narrow replacement (Branch C)
 - **Corpus pilot:** run airline anchor with `GSO_L6_NARROW_REPLACEMENT_BRANCH_C=1`; verify `GSO_NARROW_REPLACEMENT_BRANCH_C_SYNTHESIZED_V1` markers present on the iteration where a structural L6 patch was blast-radius dropped. If the synthesized `add_example_sql` patches improve the target QID score, promote the flag default-on.
 - **I11 corpus validation:** verify I11 passes on the corpus pilot run (all iterations with `structural_causal_dropped_count > 0` have either `narrow_branch_c_synthesized_count > 0` or `no_structural_alternative_ag_ids` non-empty).
 - **C16-T3 through T6 remain open:** bucket attribution (T3), contract-health marker (T4), merge-gate exit (T5), strict-mode default flip (T6) are sequenced after T1+T2 corpus validation.
+
+---
+
+## Cycle 17 — Journey-validation producer fix (`closed-local pending corpus`)
+
+**Plan:** [`2026-05-10-cycle-17-journey-validation-producer-fix-plan.md`](./2026-05-10-cycle-17-journey-validation-producer-fix-plan.md)
+**Anchor:** `runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097` postmortem F9 (25 illegal trunk transitions on local replay).
+**Effect — T1 (unconditional state-machine extensions):** `CLUSTERED → ALREADY_PASSING` and `EVALUATED → POST_EVAL` added to `_LEGAL_NEXT` in `optimization/question_journey_contract.py`. Anchor violations: 25 → 15 (clears 10 × `clustered → already_passing`).
+**Effect — T2 (flag-gated producer fix):** `_replay_iteration` filters `soft -= hard_cluster_qids`; `emit_cluster_membership_events` threads `seen_clustered` into the soft pass. Both gated on `GSO_JOURNEY_PRODUCER_STRICT` (default-off). Anchor violations under flag-on: 15 → 0.
+**Effect — T3 (invariant registration):** `check_i12_replay_validity` registered under canonical ID `I12` in `optimization/invariants.py`. Co-exists with MEDIUM-severity I5; C16-T4 reads at HIGH tier.
+**Effect — T4 (regression fixtures):** `tests/replay/test_replay_cycle10_zero_violations.py::test_replay_yields_zero_violations` unskipped (PR-D follow-up closed). New `tests/replay/test_replay_anchor_3b050ec5_zero_violations.py` asserts both regimes.
+**Replay byte-stability:** preserved on every fixture under flag-off. Flag-on intentionally changes events on the 3b050ec5 anchor (fewer `soft_signal` emits for hard-clustered qids).
+**Follow-up — default-flip:** after one corpus pilot validates the flag-on path produces no regressions in production runs, flip `GSO_JOURNEY_PRODUCER_STRICT` default to on. Scheduled as a one-line config edit; track in the next ledger row.
+**Follow-up — harness-side audit:** if the corpus pilot surfaces residual `clustered → soft_signal` violations from production code paths outside `lever_loop_replay.py` (e.g., harness producer sites for the soft-cluster-drift recovery), open a Cycle 17.1 to extend the strict-producer guard into those sites.
