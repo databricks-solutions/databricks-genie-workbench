@@ -161,6 +161,8 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 ### RCO-4 — Stage-6 Gate Pure-Helper Extraction
 
+**Status:** closed-local pending corpus — three of six conceptual gates extracted into pure helpers in ``optimization/stages/gates.py`` (``run_blast_radius_production_gate``, ``resolve_narrow_replacement``, ``run_applyability_gate``) behind default-off flags ``GSO_STAGE6_BLAST_RADIUS_PURE`` / ``GSO_STAGE6_NARROW_REPL_PURE`` / ``GSO_STAGE6_APPLYABILITY_PURE``. The remaining three (alignment / reflection / cap) are deferred to RCO-4b with named blockers documented in ``docs/2026-05-11-rco-4-deferred-gates.md`` and a full gate-to-code mapping in ``docs/2026-05-11-rco-4-gate-inventory.md``. Production firing order pinned by ``tests/unit/test_rco4_sequencing_grep_guard.py``. Parity fixtures under ``tests/unit/fixtures/rco4/``. Corpus confirmation + simultaneous flag flip pending the next airline + 7Now run (the flag flip belongs in RCO-3's pilot batch).
+
 **Why this exists:** `optimization/stages/gates.py` documents that the production gate logic still lives in `harness.py`. Stage 6 remains the most complex deterministic region and should be gate-by-gate testable.
 
 **Primary files:**
@@ -189,6 +191,31 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 - Stage 6 can be reasoned about as a pipeline of typed pure helpers.
 - Harness orchestration is thin and mostly passes typed inputs to helpers.
 - A failing patch can be traced to exactly one gate decision and one typed reason.
+
+### RCO-4b — `_run_gate_checks` Decomposition (Deferred)
+
+**Status:** deferred — surfaced during RCO-4 drafting.
+
+**Why this exists:** RCO-4 extracted three of six conceptual gates. The remaining three (alignment, reflection, cap) are entangled with the 800-line ``_run_gate_checks`` function in ``optimization/harness.py``. Decomposing that function is its own multi-task plan; doing it inside RCO-4 would have pushed RCO-4 past a single-PR scope.
+
+**Primary files:**
+
+- ``optimization/harness.py:_run_gate_checks`` (line ~12732, ~800 LOC)
+- ``optimization/cumulative_regression_debt.py``
+- ``optimization/reflection_retry.py``
+- Existing eval-acceptance / debt-cap tests
+
+**Work:**
+
+- Extract slice / P0 / full-eval-acceptance / pre-arbiter-regression / baseline-drift gates into typed pure helpers using ``predict_fn`` / ``scorers`` as injected dependencies.
+- Once decomposed, RCO-4's deferred gates (alignment, reflection, cap) become directly addressable.
+
+**Exit criteria:**
+
+- ``_run_gate_checks`` body is reduced to typed orchestration + helper dispatch.
+- Alignment, reflection, and cap gates can be added to the RCO-4 pattern without re-entangling ``_run_gate_checks``.
+
+**Scheduling note:** Not in Tier 2. RCO-4b runs after the keystone (RCO-2) lands, because the alignment gate's halting decision should be readable from the contract-health summary.
 
 ### RCO-5 — Acceptance Object Consolidation
 
@@ -325,7 +352,7 @@ These are relatively low-conflict and do not require the contract-health keyston
 
 ### Tier 2 — After Cycle 16/17 Land
 
-5. RCO-4: Stage-6 gate pure-helper extraction.
+5. RCO-4: Stage-6 gate pure-helper extraction. ✅ closed-local pending corpus (3 of 6 conceptual gates; alignment/reflection/cap deferred to RCO-4b).
 6. RCO-6: Replay/production journey producer parity.
 
 These should wait until Cycle 16/17 finish because they overlap with the gate and journey surfaces those cycles are actively changing.
