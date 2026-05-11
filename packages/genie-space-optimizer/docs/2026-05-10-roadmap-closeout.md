@@ -269,6 +269,8 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 ### RCO-8 — Sub-Stage Production-Shape Boundary Fixtures
 
+**Status:** closed-local pending corpus — production-shape fixture pairs are pinned for the three C14-V / C14-W anchored helpers (`_normalize_stage_capture`, `_databricks_ids_from_env`, `parse_markers`) under `tests/unit/fixtures/rco8/`. Floor tests in each of `tests/unit/test_rco8_*_production_fixtures.py` enforce the minimum-case set. No production code changed. Corpus confirmation pending the next airline run.
+
 **Why this exists:** Cycle 14-V showed fixes passing unit tests while failing in production because synthetic fixtures did not match production shapes.
 
 **Primary targets:**
@@ -317,7 +319,7 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 2. RCO-1: Bundle replay-assembler parity closeout. ✅ closed-local pending corpus.
 3. RCO-7: Canonical sort audit at LLM boundaries. ✅ closed-local pending corpus.
-4. RCO-8: Sub-stage production-shape boundary fixtures.
+4. RCO-8: Sub-stage production-shape boundary fixtures. ✅ closed-local pending corpus.
 
 These are relatively low-conflict and do not require the contract-health keystone to exist first.
 
