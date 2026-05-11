@@ -13080,7 +13080,100 @@ def _run_gate_checks(
     # strict full-eval acceptance policy supersedes it. Operators who
     # want the old behaviour set ``GSO_ENABLE_LEGACY_SLICE_P0_GATES=true``.
     from genie_space_optimizer.common.config import ENABLE_LEGACY_SLICE_P0_GATES
-    if not ENABLE_LEGACY_SLICE_P0_GATES:
+    # RCO-4b Phase B — delegate slice-gate decisions to the pure
+    # helpers in stages.eval_gates when GSO_GATE_CHECKS_SLICE_PURE
+    # is truthy. Default-off keeps the legacy inline path byte-stable.
+    from genie_space_optimizer.common.config import (
+        gate_checks_slice_pure_enabled as _gate_checks_slice_pure_on,
+    )
+    slice_benchmarks: list = []
+    if _gate_checks_slice_pure_on():
+        from genie_space_optimizer.optimization.stages.eval_gates import (
+            decide_slice_gate_should_run as _rco4b_should_run,
+        )
+        from genie_space_optimizer.optimization.stages.gate_types import (
+            SliceGateInput as _RCO4bSliceInput,
+        )
+        # Pre-compute slice_benchmarks so the helper sees the real
+        # count (the legacy path does the same).
+        _rco4b_affected = affected_question_ids or set()
+        _rco4b_all_qids = {b.get("id") for b in benchmarks if b.get("id")}
+        _rco4b_baseline_passing = (
+            _rco4b_all_qids - set(prev_failure_qids or set())
+            if prev_failure_qids is not None else None
+        )
+        if ENABLE_LEGACY_SLICE_P0_GATES and ENABLE_SLICE_GATE:
+            slice_benchmarks = filter_benchmarks_by_scope(
+                benchmarks, "slice", patched_objects,
+                affected_question_ids=_rco4b_affected,
+                baseline_passing_qids=_rco4b_baseline_passing,
+            )
+        _rco4b_slice_inp = _RCO4bSliceInput(
+            ag_id=str(ag_id),
+            run_id=str(run_id),
+            iteration=int(iteration_counter),
+            all_benchmark_qids=tuple(
+                str(b.get("id")) for b in benchmarks if b.get("id")
+            ),
+            prev_failure_qids=tuple(prev_failure_qids or ()),
+            affected_question_ids=tuple(_rco4b_affected),
+            baseline_passing_qids_known=(prev_failure_qids is not None),
+            slice_benchmark_count=int(
+                len(slice_benchmarks) if slice_benchmarks else 0
+            ),
+            full_benchmark_count=int(len(benchmarks)),
+            best_accuracy=float(best_accuracy or 0.0),
+            noise_floor=float(noise_floor),
+            legacy_gates_enabled=bool(ENABLE_LEGACY_SLICE_P0_GATES),
+            slice_gate_enabled=bool(ENABLE_SLICE_GATE),
+        )
+        _rco4b_should = _rco4b_should_run(
+            _rco4b_slice_inp,
+            slice_min_reduction=float(SLICE_GATE_MIN_REDUCTION),
+            broadness_small_corpus_rows=30,
+        )
+        if not _rco4b_should.should_run:
+            _skip = _rco4b_should.skip_reason or "skipped"
+            if _skip == "legacy_gates_disabled":
+                print(
+                    _section(f"SLICE GATE [{ag_id}]: SKIPPED (Task 2)", "-") + "\n"
+                    + _kv(
+                        "Reason",
+                        "ENABLE_LEGACY_SLICE_P0_GATES=False — strict full-eval "
+                        "acceptance is the only gate; opt back in via "
+                        "GSO_ENABLE_LEGACY_SLICE_P0_GATES=true",
+                    ) + "\n"
+                    + _bar("-")
+                )
+            elif _skip == "slice_gate_disabled":
+                print(
+                    _section(f"SLICE GATE [{ag_id}]: DISABLED", "-") + "\n"
+                    + _kv(
+                        "Reason",
+                        "ENABLE_SLICE_GATE=False in common/config.py — set True to enable",
+                    ) + "\n"
+                    + _bar("-")
+                )
+            else:
+                # slice_empty or slice_too_broad
+                _total = int(_rco4b_slice_inp.full_benchmark_count)
+                _sliced = int(_rco4b_slice_inp.slice_benchmark_count)
+                _ratio = _rco4b_should.broadness_ratio or 0.0
+                _is_small = _total <= 30
+                _thresh = 0.9 if _is_small else (1.0 - float(SLICE_GATE_MIN_REDUCTION))
+                print(
+                    _section(f"SLICE GATE [{ag_id}]: SKIPPED", "-") + "\n"
+                    + _kv(
+                        "Reason",
+                        f"slice too broad ({_sliced}/{_total} benchmarks, "
+                        f"ratio {_ratio:.2f} > {_thresh:.2f})",
+                    ) + "\n"
+                    + _bar("-")
+                )
+            _run_slice = False
+        else:
+            _run_slice = True
+    elif not ENABLE_LEGACY_SLICE_P0_GATES:
         print(
             _section(f"SLICE GATE [{ag_id}]: SKIPPED (Task 2)", "-") + "\n"
             + _kv(
@@ -13185,7 +13278,22 @@ def _run_gate_checks(
         else:
             _base_tol = SLICE_GATE_TOLERANCE
             _tol_source = "standard"
-        effective_slice_tol = max(_base_tol, noise_floor + 2.0, _slice_qw + 0.5)
+        if _gate_checks_slice_pure_on():
+            # RCO-4b Phase B — delegate tolerance computation to the pure
+            # helper. The harness retains ownership of the
+            # ``_tol_source`` / ``_base_tol`` strings used by the logger
+            # below; the helper returns the float only.
+            from genie_space_optimizer.optimization.stages.eval_gates import (
+                compute_slice_gate_effective_tolerance as _rco4b_eff_tol,
+            )
+            effective_slice_tol = _rco4b_eff_tol(
+                _rco4b_slice_inp,
+                base_tol_standard=float(SLICE_GATE_TOLERANCE),
+                base_tol_small_corpus=float(SLICE_GATE_TOLERANCE_SMALL_CORPUS),
+                small_corpus_threshold_rows=int(SLICE_GATE_SMALL_CORPUS_ROWS),
+            )
+        else:
+            effective_slice_tol = max(_base_tol, noise_floor + 2.0, _slice_qw + 0.5)
         logger.info(
             "SLICE GATE [%s]: tolerance=%.1f%% (source=%s, base=%.1f, "
             "noise_floor+2=%.1f, qw+0.5=%.1f, corpus=%d)",
@@ -13200,6 +13308,25 @@ def _run_gate_checks(
             skip_judges=_informational_judges,
         )
 
+        # RCO-4b Phase B — delegate the post-eval pass/fail decision to
+        # the pure helper when the flag is on. The harness retains
+        # ownership of the spark writes (write_iteration, the
+        # update_provenance_gate + log_gate_feedback_on_traces calls
+        # below) and the single slice-gate audit emission below. The
+        # helper just decides; the harness acts.
+        if _gate_checks_slice_pure_on():
+            from genie_space_optimizer.optimization.stages.eval_gates import (
+                decide_slice_gate_post_eval as _rco4b_post_eval,
+            )
+            _rco4b_outcome = _rco4b_post_eval(
+                _rco4b_slice_inp,
+                slice_drops=tuple(slice_drops or ()),
+                effective_tolerance=float(effective_slice_tol),
+            )
+            _rco4b_slice_failed = not _rco4b_outcome.passed
+        else:
+            _rco4b_slice_failed = bool(slice_drops)
+
         try:
             write_iteration(
                 spark, run_id, iteration_counter, slice_result,
@@ -13210,7 +13337,7 @@ def _run_gate_checks(
         except Exception:
             logger.debug("Failed to write slice iteration", exc_info=True)
 
-        if slice_drops:
+        if _rco4b_slice_failed:
             _score_changes = ", ".join(
                 f"{d['judge']} {best_scores.get(d['judge'], 0):.1f}->{slice_scores.get(d['judge'], 0):.1f} ({d['drop']:+.1f})"
                 for d in slice_drops
