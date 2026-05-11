@@ -21479,21 +21479,46 @@ def _run_lever_loop(
             )
 
             try:
-                # Dry-run applyability gate. Drops patches with applyable=False
-                # before the causal-first cap can rank them.
-                from genie_space_optimizer.optimization.patch_applyability import (
-                    filter_applyable_patches,
+                # RCO-4 Task 9 — delegate to stage-uniform wrapper when
+                # ``GSO_STAGE6_APPLYABILITY_PURE`` is truthy.
+                from genie_space_optimizer.common.config import (
+                    stage6_applyability_pure_enabled as _stage6_app_pure_on,
                 )
-
                 _patches_before_applyability = list(patches)
-                patches, _applyability_decisions = filter_applyable_patches(
-                    patches=_patches_before_applyability,
-                    metadata_snapshot=metadata_snapshot,
-                    space_id=space_id,
-                )
-                _non_applyable_decisions = [
-                    d for d in _applyability_decisions if not d.applyable
-                ]
+                if _stage6_app_pure_on():
+                    from genie_space_optimizer.optimization.stages.gate_types import (
+                        ApplyabilityGateInput as _RCO4_APInput,
+                    )
+                    from genie_space_optimizer.optimization.stages.gates import (
+                        run_applyability_gate as _rco4_run_apply,
+                    )
+                    _rco4_ap_outcome = _rco4_run_apply(_RCO4_APInput(
+                        candidates=tuple(_patches_before_applyability),
+                        metadata_snapshot=metadata_snapshot or {},
+                    ))
+                    patches = list(_rco4_ap_outcome.applyable)
+                    # Wrap rejected dicts in a SimpleNamespace so the
+                    # downstream print/logging block below (which accesses
+                    # .expanded_patch_id, .proposal_id, etc.) is unchanged.
+                    import types as _types
+                    _non_applyable_decisions = [
+                        _types.SimpleNamespace(**d)
+                        for d in _rco4_ap_outcome.rejected
+                    ]
+                else:
+                    # Dry-run applyability gate. Drops patches with applyable=False
+                    # before the causal-first cap can rank them.
+                    from genie_space_optimizer.optimization.patch_applyability import (
+                        filter_applyable_patches,
+                    )
+                    patches, _applyability_decisions = filter_applyable_patches(
+                        patches=_patches_before_applyability,
+                        metadata_snapshot=metadata_snapshot,
+                        space_id=space_id,
+                    )
+                    _non_applyable_decisions = [
+                        d for d in _applyability_decisions if not d.applyable
+                    ]
                 if _non_applyable_decisions:
                     print(
                         _section(f"[{ag_id}] PATCH APPLYABILITY GATE", "-") + "\n"
