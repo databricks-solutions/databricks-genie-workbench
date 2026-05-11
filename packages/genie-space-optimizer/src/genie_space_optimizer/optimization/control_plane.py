@@ -875,6 +875,13 @@ class ControlPlaneAcceptance:
     # legacy / pre-T2 replay fixtures.
     accidentally_improved_qids: tuple[str, ...] = ()
     unresolved_target_debt_qids: tuple[str, ...] = ()
+    # Cycle 16-T3: first-class bucket for QIDs that were hard at
+    # baseline AND remained hard at candidate AND are not in the
+    # AG's declared target set. Today these silently fall outside
+    # every render bucket — strategist and postmortem derive them
+    # by subtraction, which breaks the moment a renderer changes.
+    # Defaults to () so legacy replay fixtures load unchanged.
+    existing_hard_still_hard_outside_target_qids: tuple[str, ...] = ()
 
 
 def _fmt_qids(qids: Iterable[str]) -> str:
@@ -1027,6 +1034,12 @@ def format_full_eval_marker_payload(
                 getattr(decision, "unresolved_target_debt_qids", ()) or ()
             )
         ],
+        "existing_hard_still_hard_outside_target_qids": [
+            str(q)
+            for q in (
+                getattr(decision, "existing_hard_still_hard_outside_target_qids", ()) or ()
+            )
+        ],
         "reason_detail": format_control_plane_acceptance_detail(decision),
     }
 
@@ -1113,6 +1126,25 @@ def _detect_render_contradictions(payload: dict) -> list[dict]:
                     f"{sorted(bucket_overlap)}"
                 ),
             })
+
+    # Cycle 16-T3: the existing-hard-outside-target bucket is disjoint
+    # from {target_fixed, target_still_hard, target_soft_passing} by
+    # construction in decide_control_plane_acceptance. Any overlap
+    # surfaces a math regression in the bucket builder.
+    existing_hard = set(
+        payload.get("existing_hard_still_hard_outside_target_qids") or ()
+    )
+    target_bucket_union = fixed | still_hard | soft_passing
+    overlap = existing_hard & target_bucket_union
+    if overlap:
+        violations.append({
+            "class": "existing_hard_overlaps_target_bucket",
+            "qids": tuple(sorted(overlap)),
+            "detail": (
+                f"existing_hard_still_hard_outside_target_qids overlaps "
+                f"target buckets: {sorted(overlap)}"
+            ),
+        })
 
     target_qids_in_delta = {str(p[0]) for p in delta_pairs if p}
     target_in_out = target_qids_in_delta & out_of_target
@@ -1248,6 +1280,13 @@ def decide_control_plane_acceptance(
     target_fixed = tuple(sorted((pre_hard & target_set) - post_hard))
     target_still = tuple(sorted(post_hard & target_set))
     out_of_target_regressed = tuple(sorted((post_hard - pre_hard) - target_set))
+    # Cycle 16-T3: parallel bucket for baseline-hard non-target QIDs
+    # that did not flip. Disjoint from target_fixed (the target_set
+    # subtraction), disjoint from target_still (same), disjoint from
+    # out_of_target_regressed (the post_hard - pre_hard subtraction).
+    existing_hard_still_hard_outside_target = tuple(
+        sorted((pre_hard & post_hard) - target_set)
+    )
     delta = round(float(candidate_accuracy) - float(baseline_accuracy), 1)
 
     fixed_count = len(target_fixed)
@@ -1488,6 +1527,7 @@ def decide_control_plane_acceptance(
             passing_to_hard_regressed_qids=passing_to_hard,
             unknown_to_hard_regressed_qids=unknown_to_hard,
             target_delta_states=target_delta_states_tuple,
+            existing_hard_still_hard_outside_target_qids=existing_hard_still_hard_outside_target,
         )
         verdict = evaluate_regression_debt(
             decision=synthetic,
@@ -1542,6 +1582,7 @@ def decide_control_plane_acceptance(
         target_delta_states=target_delta_states_tuple,
         accidentally_improved_qids=accidentally_improved_qids,
         unresolved_target_debt_qids=unresolved_target_debt_qids,
+        existing_hard_still_hard_outside_target_qids=existing_hard_still_hard_outside_target,
     )
 
 
