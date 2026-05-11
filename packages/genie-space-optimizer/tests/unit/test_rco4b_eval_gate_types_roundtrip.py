@@ -133,12 +133,24 @@ def test_p0_gate_outcome_roundtrips() -> None:
 
 
 def test_asi_extraction_input_roundtrips() -> None:
+    """Phase D refined shape: ASI is an audit-forwarder, not a primitive
+    extractor. Input carries the pre-stamped raw_audit dict from
+    run_evaluation."""
     inp = AsiExtractionInput(
         ag_id="AG_alpha",
-        applied_instruction_texts=("instr_1", "instr_2"),
-        post_eval_pre_arbiter_accuracy=70.0,
-        post_eval_post_arbiter_accuracy=75.0,
-        baseline_post_arbiter_accuracy=72.0,
+        iteration=3,
+        raw_audit={"stage_letter": "C", "decision": "ok"},
+    )
+    s = json.dumps(inp.to_json())
+    rt = AsiExtractionInput.from_json(json.loads(s))
+    assert rt == inp
+
+
+def test_asi_extraction_input_roundtrips_with_none_audit() -> None:
+    inp = AsiExtractionInput(
+        ag_id="AG_alpha",
+        iteration=3,
+        raw_audit=None,
     )
     s = json.dumps(inp.to_json())
     rt = AsiExtractionInput.from_json(json.loads(s))
@@ -146,11 +158,23 @@ def test_asi_extraction_input_roundtrips() -> None:
 
 
 def test_asi_extraction_outcome_roundtrips() -> None:
+    """Phase D refined shape: outcome carries the should_emit gate +
+    the audit-row payload fields."""
     out = AsiExtractionOutcome(
-        triggered=True,
+        should_emit=True,
+        stage_letter="C",
         gate_name="asi_extraction",
-        audit_metrics={"asi_indicator": 1.0},
+        decision="warn",
+        reason_code="low_pre_arbiter_gain",
+        metrics={"asi_indicator": 1.0},
     )
+    s = json.dumps(out.to_json())
+    rt = AsiExtractionOutcome.from_json(json.loads(s))
+    assert rt == out
+
+
+def test_asi_extraction_outcome_roundtrips_with_defaults() -> None:
+    out = AsiExtractionOutcome(should_emit=False)
     s = json.dumps(out.to_json())
     rt = AsiExtractionOutcome.from_json(json.loads(s))
     assert rt == out
@@ -174,6 +198,8 @@ def test_baseline_drift_diagnostic_outcome_roundtrips() -> None:
         triggered=True,
         delta_pp=8.0,
         audit_metrics={"prev": 80.0, "current": 72.0},
+        reason_code="suspected_stale_baseline",
+        log_line="BASELINE DRIFT [ag-x]: iter 3 ...",
     )
     s = json.dumps(out.to_json())
     rt = BaselineDriftDiagnosticOutcome.from_json(json.loads(s))

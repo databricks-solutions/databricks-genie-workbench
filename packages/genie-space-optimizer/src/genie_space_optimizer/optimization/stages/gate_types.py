@@ -285,38 +285,60 @@ class P0GateOutcome(JsonRoundTrip):
 
 @dataclass(frozen=True)
 class AsiExtractionInput(JsonRoundTrip):
-    """Input for ``run_asi_extraction`` (Phase D)."""
+    """Input for ``forward_asi_extraction_audit`` (Phase D).
+
+    Phase A placeholder shape (``applied_instruction_texts``,
+    ``post_eval_pre_arbiter_accuracy``, etc.) was speculative and did
+    not match the harness-side extraction reality, which forwards a
+    pre-stamped audit dict produced inside ``run_evaluation``. Phase D
+    refines the contract to match. The primitive ASI inputs live
+    inside ``run_evaluation`` and are not visible to the harness.
+    """
     ag_id: str
-    applied_instruction_texts: tuple[str, ...]
-    post_eval_pre_arbiter_accuracy: float
-    post_eval_post_arbiter_accuracy: float
-    baseline_post_arbiter_accuracy: float
+    iteration: int
+    raw_audit: dict | None = None
 
 
 @dataclass(frozen=True)
 class AsiExtractionOutcome(JsonRoundTrip):
-    """Outcome of ``run_asi_extraction`` (Phase D)."""
-    triggered: bool
-    gate_name: str
-    audit_metrics: dict[str, float] = field(default_factory=dict)
+    """Outcome of ``forward_asi_extraction_audit`` (Phase D)."""
+    should_emit: bool
+    stage_letter: str = "C"
+    gate_name: str = "asi_extraction"
+    decision: str = "ok"
+    reason_code: str | None = None
+    metrics: dict | None = None
 
 
 @dataclass(frozen=True)
 class BaselineDriftDiagnosticInput(JsonRoundTrip):
-    """Input for ``run_baseline_drift_diagnostic`` (Phase D)."""
+    """Input for ``build_baseline_drift_diagnostic`` (Phase D).
+
+    ``prev_iter_pre_accept_baseline`` can be ``None`` on the first
+    iteration (no prior baseline carried).
+    """
     ag_id: str
     iteration: int
-    prev_iter_pre_accept_baseline: float
+    prev_iter_pre_accept_baseline: float | None
     current_post_arbiter_accuracy: float
     diagnostic_threshold_pp: float
 
 
 @dataclass(frozen=True)
 class BaselineDriftDiagnosticOutcome(JsonRoundTrip):
-    """Outcome of ``run_baseline_drift_diagnostic`` (Phase D)."""
+    """Outcome of ``build_baseline_drift_diagnostic`` (Phase D).
+
+    Phase A's placeholder shape had only ``triggered``, ``delta_pp``,
+    and ``audit_metrics``. Phase D adds ``reason_code`` (passed through
+    from ``decide_baseline_drift``) and ``log_line`` (the formatted
+    info-log line the harness used to render inline). Both default to
+    falsy values when ``triggered`` is False.
+    """
     triggered: bool
-    delta_pp: float
+    delta_pp: float = 0.0
     audit_metrics: dict[str, float] = field(default_factory=dict)
+    reason_code: str | None = None
+    log_line: str = ""
 
 
 @dataclass(frozen=True)
