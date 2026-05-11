@@ -1,0 +1,17 @@
+{
+  "drift_input": {
+    "ag_id": "ag-004",
+    "iteration": 4,
+    "prev_iter_pre_accept_baseline": 72.0,
+    "current_post_arbiter_accuracy": 65.0,
+    "diagnostic_threshold_pp": 3.0
+  },
+  "stub_drift_decision": {
+    "triggered": true,
+    "delta_pp": 7.0,
+    "post_arbiter_current": 65.0,
+    "prev_iter_pre_accept_baseline": 72.0,
+    "threshold_pp": 3.0,
+    "reason_code": "suspected_stale_baseline"
+  }
+}

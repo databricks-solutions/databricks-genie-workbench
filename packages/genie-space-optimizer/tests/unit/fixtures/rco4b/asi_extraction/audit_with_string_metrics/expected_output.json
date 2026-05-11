@@ -1,0 +1,13 @@
+{
+  "outcome": {
+    "should_emit": true,
+    "stage_letter": "C",
+    "gate_name": "asi_extraction",
+    "decision": "warn",
+    "reason_code": "low_pre_arbiter_gain",
+    "metrics": {
+      "applied_instruction_count": 2.0,
+      "delta_pp": -1.5
+    }
+  }
+}

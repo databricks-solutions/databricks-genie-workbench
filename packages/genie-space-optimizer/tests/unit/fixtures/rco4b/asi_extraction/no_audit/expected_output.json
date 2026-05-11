@@ -1,0 +1,10 @@
+{
+  "outcome": {
+    "should_emit": false,
+    "stage_letter": "C",
+    "gate_name": "asi_extraction",
+    "decision": "ok",
+    "reason_code": null,
+    "metrics": null
+  }
+}

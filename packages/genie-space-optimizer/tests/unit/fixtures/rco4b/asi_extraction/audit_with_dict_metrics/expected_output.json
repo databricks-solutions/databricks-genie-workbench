@@ -1,0 +1,15 @@
+{
+  "outcome": {
+    "should_emit": true,
+    "stage_letter": "C",
+    "gate_name": "asi_extraction",
+    "decision": "ok",
+    "reason_code": null,
+    "metrics": {
+      "applied_instruction_count": 3.0,
+      "post_eval_pre_arbiter_accuracy": 68.5,
+      "post_eval_post_arbiter_accuracy": 71.2,
+      "baseline_post_arbiter_accuracy": 65.0
+    }
+  }
+}

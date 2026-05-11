@@ -1,0 +1,14 @@
+{
+  "outcome": {
+    "triggered": true,
+    "delta_pp": 7.0,
+    "audit_metrics": {
+      "post_arbiter_candidate": 65.0,
+      "prev_iter_pre_accept_baseline": 72.0,
+      "delta_pp": 7.0,
+      "threshold_pp": 3.0
+    },
+    "reason_code": "suspected_stale_baseline",
+    "log_line": "BASELINE DRIFT [ag-004]: iter 4 post-arbiter 65.0% is 7.0pp below the previous iteration's pre-acceptance baseline (72.0%). Logging suspected_stale_baseline diagnostic; iteration continues normally."
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "asi_input": {
+    "ag_id": "ag-003",
+    "iteration": 3,
+    "raw_audit": {
+      "stage_letter": "C",
+      "gate_name": "asi_extraction",
+      "decision": "warn",
+      "reason_code": "low_pre_arbiter_gain",
+      "metrics_json": "{\"applied_instruction_count\": 2.0, \"delta_pp\": -1.5}"
+    }
+  }
+}
