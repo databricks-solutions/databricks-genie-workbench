@@ -52,6 +52,7 @@
   "plateau_input_source": [],
   "run_manifest_v2": null,
   "phase_h_strict_validation": null,
+  "contract_health": null,
   "bundle_assembly_incomplete": [
     {
       "optimization_run_id": "opt-airline-001",

@@ -11,6 +11,7 @@
   "plateau_input_source": [],
   "run_manifest_v2": null,
   "phase_h_strict_validation": null,
+  "contract_health": null,
   "bundle_assembly_incomplete": null,
   "patch_isolation_diagnostic": null,
   "patch_isolation_outcome": null,

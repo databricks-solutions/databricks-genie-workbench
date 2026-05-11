@@ -99,6 +99,22 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 ### RCO-2 — Contract Health + Merge Gate Keystone
 
+**Split into two phases (RCO-X-Phase-A / RCO-X-Phase-B shape, matches RCO-4 and RCO-4b).**
+
+- **RCO-2a — Marker + Summary half** — `closed-local pending corpus`.
+  Ships ``GSO_CONTRACT_HEALTH_V1`` marker, parser, ``ContractHealthSummary``,
+  ``build_contract_health_summary`` pure builder, all three merge-gate
+  categories (``healthy`` / ``warn`` / ``merge_gate_blocked``), default-on
+  emission flag, harness end-of-run wiring, operator transcript renderer.
+  Production posture remains warn-and-degrade. See
+  ``2026-05-12-rco-2a-contract-health-marker-and-summary-plan.md``.
+
+- **RCO-2b — Production posture flip** — `deferred`.
+  Named blocker: **first trial run that emits ``GSO_CONTRACT_HEALTH_V1``
+  for ≥1 anchor, with the marker payload showing the expected
+  ``merge_gate_status`` for that anchor's known failure mode**. See
+  ``2026-05-12-rco-2b-deferral.md``.
+
 **Why this exists:** The deterministic spine is only useful if a bad run cannot silently pass. Current code has invariant records and strict mode, but no `GSO_CONTRACT_HEALTH_V1` marker and the lever-loop job defaults strict invariants to warn-and-degrade.
 
 **Primary files:**
@@ -377,6 +393,8 @@ These should wait until Cycle 16/17 finish because they overlap with the gate an
 ### Tier 3 — Keystone
 
 7. RCO-2: Contract health + merge gate keystone.
+   - RCO-2a (marker + summary half): ✅ closed-local pending corpus.
+   - RCO-2b (production posture flip): deferred — blocker is the first trial marker emission.
 
 This should land after Cycle 17's I12 and RCO-1's bundle parity are available, because it consumes both.
 
