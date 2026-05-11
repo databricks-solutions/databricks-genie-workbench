@@ -183,3 +183,35 @@ def decide_slice_gate_should_run(
         skip_reason=None,
         broadness_ratio=broadness_ratio,
     )
+
+
+def compute_slice_gate_effective_tolerance(
+    inp: SliceGateInput,
+    *,
+    base_tol_standard: float,
+    base_tol_small_corpus: float,
+    small_corpus_threshold_rows: int,
+) -> float:
+    """RCO-4b Phase B — compute the effective slice-gate regression
+    tolerance.
+
+    Mirrors ``harness._run_gate_checks:13136-13144`` exactly:
+
+        full_corpus = len(benchmarks)
+        is_small_corpus = full_corpus < SLICE_GATE_SMALL_CORPUS_ROWS
+        base = TOLERANCE_SMALL_CORPUS if is_small_corpus else TOLERANCE
+        qw = 100.0 / max(full_corpus, 1)
+        effective = max(base, noise_floor + 2.0, qw + 0.5)
+
+    The harness consumes the return value as the ``threshold`` argument
+    to ``detect_regressions``. Pure function; no I/O.
+    """
+    full_corpus = int(inp.full_benchmark_count)
+    is_small_corpus = full_corpus < int(small_corpus_threshold_rows)
+    base = (
+        float(base_tol_small_corpus)
+        if is_small_corpus
+        else float(base_tol_standard)
+    )
+    qw = 100.0 / max(full_corpus, 1)
+    return max(base, float(inp.noise_floor) + 2.0, qw + 0.5)
