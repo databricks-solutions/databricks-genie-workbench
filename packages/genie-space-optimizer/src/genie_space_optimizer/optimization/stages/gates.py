@@ -611,3 +611,223 @@ def detect_structural_causal_drop(
             target_qids=targets,
         ))
     return tuple(out)
+
+
+# ── RCO-4: production blast-radius gate orchestration ─────────────────
+#
+# Pure orchestration extracted from harness.py:20860-20940. The
+# underlying predicates ``patch_blast_radius_is_safe`` and
+# ``instruction_patch_scope_is_safe`` already live in
+# ``optimization/proposal_grounding.py`` and are pure. This helper
+# wraps the per-candidate iteration + dropped-record-shape construction
+# so the harness call site collapses to one delegation under
+# ``GSO_STAGE6_BLAST_RADIUS_PURE``.
+
+
+def run_blast_radius_production_gate(
+    inp: "BlastRadiusProductionInput",
+) -> "BlastRadiusProductionOutcome":
+    """RCO-4 Task 5 — production blast-radius orchestration.
+
+    Iterates the candidate patches, calls the two pure predicates
+    (``patch_blast_radius_is_safe`` and ``instruction_patch_scope_is_safe``)
+    on each, and accumulates kept / dropped lists with the same field
+    shape that the legacy harness inline code at ~harness.py:20860-20940
+    produces.
+
+    Returns a frozen ``BlastRadiusProductionOutcome``. Pure: no I/O,
+    no journey emission, no DecisionRecord construction (the harness
+    still owns those side effects in the legacy code path).
+    """
+    from genie_space_optimizer.optimization.proposal_grounding import (
+        instruction_patch_scope_is_safe,
+        patch_blast_radius_is_safe,
+    )
+    from genie_space_optimizer.optimization.stages.gate_types import (
+        BlastRadiusProductionOutcome,
+    )
+
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+
+    for candidate in inp.patches:
+        decision = patch_blast_radius_is_safe(
+            candidate,
+            ag_target_qids=inp.ag_target_qids,
+            max_outside_target=int(inp.max_outside_target),
+            live_hard_qids=inp.live_hard_qids,
+        )
+        if not decision["safe"]:
+            dropped.append({
+                "proposal_id": str(
+                    candidate.get("proposal_id")
+                    or candidate.get("id")
+                    or "?"
+                ),
+                "patch_type": str(
+                    candidate.get("type")
+                    or candidate.get("patch_type")
+                    or "?"
+                ),
+                "reason": decision["reason"],
+                "passing_dependents_outside_target": decision.get(
+                    "passing_dependents_outside_target", []
+                ),
+                "target": str(
+                    candidate.get("target")
+                    or candidate.get("table")
+                    or ""
+                ),
+                "original_patch": candidate,
+            })
+            continue
+
+        scope_decision = instruction_patch_scope_is_safe(
+            candidate,
+            ag_target_qids=inp.ag_target_qids,
+        )
+        if not scope_decision["safe"]:
+            dropped.append({
+                "proposal_id": str(
+                    candidate.get("proposal_id")
+                    or candidate.get("id")
+                    or "?"
+                ),
+                "patch_type": str(
+                    candidate.get("type")
+                    or candidate.get("patch_type")
+                    or "?"
+                ),
+                "reason": scope_decision["reason"],
+                "passing_dependents_outside_target": [],
+                "target": str(
+                    candidate.get("target")
+                    or candidate.get("table")
+                    or ""
+                ),
+                "original_patch": candidate,
+            })
+            continue
+
+        kept.append(candidate)
+
+    return BlastRadiusProductionOutcome(
+        kept=tuple(kept),
+        dropped=tuple(dropped),
+    )
+
+
+def resolve_narrow_replacement(
+    inp: "NarrowReplacementInput",
+    *,
+    narrow_survivors: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+) -> "NarrowReplacementOutcome":
+    """RCO-4 Task 7 — pure narrow-replacement orchestration.
+
+    Given the AG-level blast-radius drops AND the already-computed
+    narrow survivors from ``_run_narrow_l6_replacement_loop`` (which
+    the harness still calls; this helper is downstream of that loop),
+    returns:
+
+    * ``narrow_survivors``: passthrough of the loop's survivors.
+    * ``structural_causal_dropped``: the structural-causal drops that
+      have no narrow-survivor replacement (i.e., the halt-causing set).
+    * ``halt_no_structural_alternative``: True iff
+      ``structural_causal_dropped`` is non-empty AND ``ag_rca_id`` is
+      present (diagnostic AGs with no inherited RCA are not subject
+      to the halt).
+
+    Reuses the already-pure ``detect_structural_causal_drop`` from
+    Cycle 16 T4. Pure: no I/O, no journey emission.
+    """
+    from genie_space_optimizer.optimization.stages.gate_types import (
+        NarrowReplacementOutcome,
+    )
+
+    survivors_tuple = tuple(narrow_survivors or ())
+
+    rca = str(inp.ag_rca_id or "").strip()
+    if not rca:
+        return NarrowReplacementOutcome(
+            narrow_survivors=survivors_tuple,
+            structural_causal_dropped=(),
+            halt_no_structural_alternative=False,
+        )
+
+    structural_drops = detect_structural_causal_drop(
+        blast_dropped=inp.blast_dropped,
+        narrow_survivors=survivors_tuple,
+        ag_rca_id=rca,
+        ag_target_qids=inp.ag_target_qids,
+    )
+
+    # ``StructuralCausalDrop`` is a frozen dataclass; serialize to dicts
+    # so the outcome stays JSON-roundtrippable.
+    serialized = tuple(
+        {
+            "ag_rca_id": d.ag_rca_id,
+            "original_proposal_id": d.original_proposal_id,
+            "original_patch_type": d.original_patch_type,
+            "original_target": d.original_target,
+            "drop_reason": d.drop_reason,
+            "target_qids": list(d.target_qids),
+        }
+        for d in structural_drops
+    )
+
+    return NarrowReplacementOutcome(
+        narrow_survivors=survivors_tuple,
+        structural_causal_dropped=serialized,
+        halt_no_structural_alternative=bool(serialized),
+    )
+
+
+def run_applyability_gate(
+    inp: "ApplyabilityGateInput",
+) -> "ApplyabilityGateOutcome":
+    """RCO-4 Task 8 — stage-uniform wrapper over the pure
+    ``optimization/patch_applyability.py`` module.
+
+    Thin adapter. The actual applyability decision lives in
+    ``patch_applyability.check_patch_applyability`` and the public
+    decision function in that module. This wrapper exists only to
+    give Stage-6 callers a uniform ``(typed_input) → typed_outcome``
+    surface; no logic moves and no flag changes behavior here. The
+    flag-gated harness call site is wired in Task 9.
+
+    Pure: no I/O. The applyability dry-run already deep-copies the
+    metadata snapshot — see ``patch_applyability`` module docstring.
+    """
+    from genie_space_optimizer.optimization.patch_applyability import (
+        check_patch_applyability,
+    )
+    from genie_space_optimizer.optimization.stages.gate_types import (
+        ApplyabilityGateOutcome,
+    )
+
+    applyable: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for candidate in inp.candidates:
+        decision = check_patch_applyability(
+            patch=candidate,
+            metadata_snapshot=inp.metadata_snapshot,
+            space_id="",
+        )
+        if decision.applyable:
+            applyable.append(candidate)
+        else:
+            rejected.append({
+                "proposal_id": decision.proposal_id,
+                "expanded_patch_id": decision.expanded_patch_id,
+                "patch_type": decision.patch_type,
+                "target": decision.target,
+                "table": decision.table,
+                "column": decision.column,
+                "applyable": decision.applyable,
+                "reason": decision.reason,
+                "error_excerpt": decision.error_excerpt,
+            })
+    return ApplyabilityGateOutcome(
+        applyable=tuple(applyable),
+        rejected=tuple(rejected),
+    )
