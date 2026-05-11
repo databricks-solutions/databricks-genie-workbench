@@ -6005,3 +6005,25 @@ def stage_handlers_chunk_d_enabled() -> bool:
     to ``stages.acceptance.execute`` / ``stages.learning.execute`` /
     ``stages.bundle_assembly.execute`` / ``stages.run_manifest.execute``."""
     return _flag_enabled("GSO_STAGE_HANDLERS_CHUNK_D")
+
+
+def journey_producer_strict_enabled() -> bool:
+    """Cycle 17 T2 — when on, the journey-event producers enforce
+    mutual exclusion between hard-cluster and soft-signal emit
+    passes. Specifically: ``_replay_iteration`` in
+    ``optimization/lever_loop_replay.py`` filters
+    ``soft -= hard_cluster_qids`` before emitting ``soft_signal``;
+    ``emit_cluster_membership_events`` in
+    ``optimization/question_journey.py`` skips qids already emitted
+    as ``clustered`` in its soft pass.
+
+    Default OFF. Flag-off path keeps current emit behaviour, so every
+    fixture committed before Cycle 17 replays byte-stable.
+
+    Anchor: ``runid_analysis/3b050ec5-4032-457f-a785-2d1a3942a097``
+    postmortem F9 — 15 × ``clustered -> soft_signal`` illegal trunk
+    transitions clear when this flag is on.
+
+    Enable with ``GSO_JOURNEY_PRODUCER_STRICT=1``.
+    """
+    return _flag_enabled("GSO_JOURNEY_PRODUCER_STRICT")
