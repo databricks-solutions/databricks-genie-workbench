@@ -31,6 +31,7 @@ class MarkerLog:
     plateau_input_source: tuple[Mapping[str, Any], ...] = ()
     run_manifest_v2: Mapping[str, Any] | None = None
     phase_h_strict_validation: Mapping[str, Any] | None = None
+    contract_health: Mapping[str, Any] | None = None  # RCO-2a
     bundle_assembly_incomplete: tuple[Mapping[str, Any], ...] | None = None
     # Cycle 14B-T3 — patch-subset isolation diagnostic + outcome.
     # Tuple-typed because the orchestrator may emit the diagnostic
@@ -69,6 +70,7 @@ def parse_markers(stdout: str) -> MarkerLog:
     bundle_assembly_failed: list[Mapping[str, Any]] = []
     plateau_input_source: list[Mapping[str, Any]] = []
     phase_h_strict_validation: Mapping[str, Any] | None = None
+    contract_health: Mapping[str, Any] | None = None  # RCO-2a
     bundle_assembly_incomplete: list[Mapping[str, Any]] | None = None
     patch_isolation_diagnostic: list[Mapping[str, Any]] | None = None
     patch_isolation_outcome: list[Mapping[str, Any]] | None = None
@@ -117,6 +119,8 @@ def parse_markers(stdout: str) -> MarkerLog:
             plateau_input_source.append(payload)
         elif name == "GSO_PHASE_H_STRICT_VALIDATION_V1":
             phase_h_strict_validation = payload
+        elif name == "GSO_CONTRACT_HEALTH_V1":
+            contract_health = payload  # last-wins, matches phase_h convention
         elif name == "GSO_PATCH_ISOLATION_DIAGNOSTIC_V1":
             if patch_isolation_diagnostic is None:
                 patch_isolation_diagnostic = []
@@ -143,6 +147,7 @@ def parse_markers(stdout: str) -> MarkerLog:
         plateau_input_source=tuple(plateau_input_source),
         run_manifest_v2=run_manifest_v2,
         phase_h_strict_validation=phase_h_strict_validation,
+        contract_health=contract_health,
         bundle_assembly_incomplete=(
             tuple(bundle_assembly_incomplete)
             if bundle_assembly_incomplete is not None else None
