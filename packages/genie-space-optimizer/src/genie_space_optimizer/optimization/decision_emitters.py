@@ -2432,6 +2432,80 @@ def narrow_replacement_synthesized_record(
     )
 
 
+@dataclass(frozen=True)
+class NarrowReplacementBranchCSynthesizedRecord:
+    """Cycle 16 T3 — typed record emitted at every Branch C survivor.
+
+    One record per Lever-5 ``add_example_sql`` patch synthesized from a
+    dropped L6 expression / measure. Mirrors
+    ``NarrowReplacementSynthesizedRecord`` (Branch A) but additionally
+    carries ``branch`` and the per-QID ``target_qid`` so the
+    operator transcript can render Branch C survivors one-to-one with
+    their target QIDs.
+    """
+    decision_type: str
+    run_id: str
+    iteration: int
+    ag_id: str
+    cluster_id: str
+    root_cause: str
+    original_patch_type: str
+    original_proposal_id: str
+    narrow_proposal_id: str
+    narrowing_strategy: str
+    branch: str
+    target_qid: str
+    target_qids: tuple
+
+    def to_dict(self) -> dict:
+        return {
+            "decision_type": self.decision_type,
+            "run_id": self.run_id,
+            "iteration": int(self.iteration),
+            "ag_id": self.ag_id,
+            "cluster_id": self.cluster_id,
+            "root_cause": self.root_cause,
+            "original_patch_type": self.original_patch_type,
+            "original_proposal_id": self.original_proposal_id,
+            "narrow_proposal_id": self.narrow_proposal_id,
+            "narrowing_strategy": self.narrowing_strategy,
+            "branch": self.branch,
+            "target_qid": self.target_qid,
+            "target_qids": list(self.target_qids),
+        }
+
+
+def narrow_replacement_branch_c_synthesized_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    root_cause: str,
+    original_patch_type: str,
+    original_proposal_id: str,
+    narrow_proposal_id: str,
+    target_qid: str,
+    target_qids,
+) -> "NarrowReplacementBranchCSynthesizedRecord":
+    """Cycle 16 T3 — typed record for one Branch C L5 survivor."""
+    return NarrowReplacementBranchCSynthesizedRecord(
+        decision_type="narrow_replacement_branch_c_synthesized",
+        run_id=str(run_id),
+        iteration=int(iteration),
+        ag_id=str(ag_id),
+        cluster_id=str(cluster_id),
+        root_cause=str(root_cause),
+        original_patch_type=str(original_patch_type),
+        original_proposal_id=str(original_proposal_id),
+        narrow_proposal_id=str(narrow_proposal_id),
+        narrowing_strategy="l5_example_sql_per_qid",
+        branch="C",
+        target_qid=str(target_qid),
+        target_qids=tuple(str(q) for q in (target_qids or ()) if str(q)),
+    )
+
+
 def ag_levers_unioned_record(
     *,
     run_id: str,

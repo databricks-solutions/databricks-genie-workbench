@@ -3003,6 +3003,75 @@ def _emit_idempotency_key(record: dict) -> tuple:
     )
 
 
+def _branch_c_qid_to_question_text(
+    *,
+    clusters: list[dict] | tuple[dict, ...] | None,
+    benchmarks: list[dict] | tuple[dict, ...] | None,
+    ag_target_qids: tuple[str, ...] | list[str] | None,
+) -> dict[str, str]:
+    """Cycle 16 T3 — assemble ``{qid: question_text}`` for Branch C
+    synthesis. Walks the in-memory benchmark roster first (canonical),
+    then falls back to cluster question records. Returns ``{}`` when
+    no source carries the target QIDs.
+
+    Pure: reads dicts only. Returns an empty dict when inputs are None
+    so Branch C declines gracefully (no_resolvable_target_qids) rather
+    than silently filling with empty strings.
+    """
+    targets = {
+        str(q).strip()
+        for q in (ag_target_qids or ())
+        if str(q).strip()
+    }
+    if not targets:
+        return {}
+    out: dict[str, str] = {}
+    for row in (benchmarks or ()):
+        if not isinstance(row, dict):
+            continue
+        qid = str(
+            row.get("question_id")
+            or row.get("qid")
+            or ""
+        ).strip()
+        if not qid or qid not in targets:
+            continue
+        text = str(
+            row.get("question")
+            or row.get("question_text")
+            or row.get("inputs/question")
+            or ""
+        ).strip()
+        if text:
+            out[qid] = text
+    for cluster in (clusters or ()):
+        if not isinstance(cluster, dict):
+            continue
+        question_records = (
+            cluster.get("questions")
+            or cluster.get("question_records")
+            or []
+        )
+        for q in question_records:
+            if not isinstance(q, dict):
+                continue
+            qid = str(
+                q.get("question_id")
+                or q.get("qid")
+                or ""
+            ).strip()
+            if not qid or qid not in targets or qid in out:
+                continue
+            text = str(
+                q.get("question_text")
+                or q.get("question")
+                or ""
+            ).strip()
+            if text:
+                out[qid] = text
+    return out
+
+
 def _run_narrow_l6_replacement_loop(
     *,
     blast_dropped: list[dict],
@@ -3013,26 +3082,24 @@ def _run_narrow_l6_replacement_loop(
     ag_id: str = "",
     cluster_id: str = "",
     iter_inputs: dict | None = None,
+    qid_to_question_text: dict[str, str] | None = None,
+    qid_to_reference_sql: dict[str, str] | None = None,
 ) -> list[dict]:
-    """Cycle 9 W3 / Cycle 10 W4 — for each L6 patch dropped at HCRF
-    (``high_collateral_risk_flagged``), build a narrow-scope variant
-    and re-test it via ``patch_blast_radius_is_safe``. Returns the
-    list of survivors so the harness caller can extend ``_blast_kept``.
+    """Cycle 9 W3 / Cycle 10 W4 / Cycle 16 T3 — for each L6 patch dropped
+    at HCRF (``high_collateral_risk_flagged``), build a narrow-scope
+    variant and re-test it via ``patch_blast_radius_is_safe``. Returns
+    the list of survivors so the harness caller can extend
+    ``_blast_kept``.
 
-    Gated by ``GSO_L6_NARROW_REPLACEMENT_ON_HCRF`` (default-on); the
-    flag-off path returns ``[]`` immediately so replay byte-stability
-    holds against the airline canonical fixture which predates this
-    behaviour.
+    Branch precedence per drop (Cycle 16 T2):
+      * Branch C (L5 example_sql per resolvable target QID) — when
+        ``GSO_L6_NARROW_REPLACEMENT_BRANCH_C=1`` AND patch_type is L6
+        expression / measure AND at least one target QID is resolvable.
+      * Branch A (legacy filter qid-scope or legacy
+        expression_qid_scope) — for all other dispatches.
 
-    Cycle 10 W4 — when the patch-aware flag is on AND the call site
-    supplies ``run_id`` / ``iteration`` / ``ag_id`` / ``iter_inputs``,
-    every drop whose builder declined produces a typed
-    ``narrow_not_applicable`` decision record + marker so dashboards
-    can audit the fallback to L5 example_sql synthesis.
-
-    Closes the variance source observed in run 1099b152 where three
-    iterations dropped the same ``add_sql_snippet_*`` patch with no
-    narrow-scope retry.
+    Gated by ``GSO_L6_NARROW_REPLACEMENT_ON_HCRF`` (default-on) at the
+    outermost layer.
     """
     from genie_space_optimizer.common.config import (
         l6_narrow_replacement_on_hcrf_enabled,
@@ -3040,6 +3107,7 @@ def _run_narrow_l6_replacement_loop(
     if not l6_narrow_replacement_on_hcrf_enabled():
         return []
     from genie_space_optimizer.optimization.cluster_driven_synthesis import (
+        build_l5_example_sql_replacement,
         build_narrow_l6_replacement,
         narrow_replacement_diagnosis,
     )
@@ -3047,10 +3115,119 @@ def _run_narrow_l6_replacement_loop(
         patch_blast_radius_is_safe,
     )
     survivors: list[dict] = []
+    q_text_map = qid_to_question_text or {}
+    ref_sql_map = qid_to_reference_sql or {}
     for drop in blast_dropped or ():
         if str((drop or {}).get("reason") or "") != "high_collateral_risk_flagged":
             continue
         original = (drop or {}).get("original_patch") or {}
+
+        # Branch C dispatch first (takes precedence when flag on).
+        diag = narrow_replacement_diagnosis(
+            original_patch=original,
+            ag_target_qids=tuple(blast_target_qids or ()),
+            root_cause=str(ag_root_cause or ""),
+            qid_to_question_text=q_text_map,
+            qid_to_reference_sql=ref_sql_map,
+        )
+        if (
+            diag.get("applicable") is True
+            and str(diag.get("branch") or "") == "C"
+        ):
+            branch_c_candidates = build_l5_example_sql_replacement(
+                original_patch=original,
+                ag_target_qids=tuple(blast_target_qids or ()),
+                qid_to_question_text=q_text_map,
+                qid_to_reference_sql=ref_sql_map,
+                root_cause=str(ag_root_cause or ""),
+            )
+            for cand in branch_c_candidates:
+                try:
+                    retest = patch_blast_radius_is_safe(
+                        cand,
+                        ag_target_qids=tuple(blast_target_qids or ()),
+                        max_outside_target=0,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Cycle 16 T3: Branch C re-gate raised (non-fatal); "
+                        "skipping candidate",
+                        exc_info=True,
+                    )
+                    continue
+                if retest.get("safe") is not True:
+                    continue
+                survivors.append(cand)
+                if iter_inputs is None:
+                    continue
+                try:
+                    from genie_space_optimizer.optimization.decision_emitters import (
+                        narrow_replacement_branch_c_synthesized_record,
+                    )
+                    from genie_space_optimizer.common.mlflow_markers import (
+                        narrow_replacement_branch_c_synthesized_marker,
+                    )
+                    target_qid = str(
+                        (cand.get("narrow_target_qids") or ("",))[0]
+                    )
+                    _rec = narrow_replacement_branch_c_synthesized_record(
+                        run_id=str(run_id),
+                        iteration=int(iteration),
+                        ag_id=str(ag_id),
+                        cluster_id=str(cluster_id),
+                        root_cause=str(ag_root_cause or ""),
+                        original_patch_type=str(
+                            (drop or {}).get("patch_type") or ""
+                        ),
+                        original_proposal_id=str(
+                            (drop or {}).get("proposal_id") or ""
+                        ),
+                        narrow_proposal_id=str(
+                            cand.get("proposal_id") or ""
+                        ),
+                        target_qid=target_qid,
+                        target_qids=tuple(blast_target_qids or ()),
+                    )
+                    iter_inputs.setdefault(
+                        "decision_records", []
+                    ).append(_rec.to_dict())
+                    try:
+                        _marker = (
+                            narrow_replacement_branch_c_synthesized_marker(
+                                run_id=str(run_id),
+                                iteration=int(iteration),
+                                ag_id=str(ag_id),
+                                cluster_id=str(cluster_id),
+                                root_cause=str(ag_root_cause or ""),
+                                original_patch_type=str(
+                                    (drop or {}).get("patch_type") or ""
+                                ),
+                                narrow_proposal_id=str(
+                                    cand.get("proposal_id") or ""
+                                ),
+                                target_qid=target_qid,
+                            )
+                        )
+                        iter_inputs.setdefault(
+                            "markers", []
+                        ).append(_marker)
+                    except Exception:
+                        logger.debug(
+                            "Cycle 16 T3: Branch C synthesized marker "
+                            "emit failed (non-fatal)",
+                            exc_info=True,
+                        )
+                except Exception:
+                    logger.debug(
+                        "Cycle 16 T3: Branch C synthesized record "
+                        "emit failed (non-fatal)",
+                        exc_info=True,
+                    )
+            # Branch C handled this drop fully; do not fall through to
+            # Branch A's per-drop loop.
+            continue
+
+        # Legacy Branch A path (unchanged from Cycle 10 W4).
         narrow = build_narrow_l6_replacement(
             original_patch=original,
             ag_target_qids=tuple(blast_target_qids or ()),
@@ -3066,12 +3243,7 @@ def _run_narrow_l6_replacement_loop(
                         l6_narrow_replacement_patch_aware_enabled,
                     )
                     if l6_narrow_replacement_patch_aware_enabled():
-                        diag = narrow_replacement_diagnosis(
-                            original_patch=original,
-                            ag_target_qids=tuple(blast_target_qids or ()),
-                            root_cause=str(ag_root_cause or ""),
-                        )
-                        if not diag["applicable"]:
+                        if not diag.get("applicable"):
                             from genie_space_optimizer.optimization.decision_emitters import (
                                 narrow_not_applicable_record,
                             )
@@ -20596,6 +20768,19 @@ def _run_lever_loop(
                         (ag.get("source_cluster_ids") or ["?"])[0]
                     ),
                     iter_inputs=_current_iter_inputs,
+                    # Cycle 16 T3 — Branch C needs the per-QID
+                    # question text + reference SQL to synthesize
+                    # add_example_sql patches. The harness already
+                    # threads ``reference_sqls`` and the per-QID
+                    # question texts via the benchmark roster; surface
+                    # them here so flag-off behavior is identical
+                    # (None defaults route through Branch A).
+                    qid_to_question_text=_branch_c_qid_to_question_text(
+                        clusters=clusters,
+                        benchmarks=benchmarks,
+                        ag_target_qids=_blast_target_qids,
+                    ),
+                    qid_to_reference_sql=reference_sqls or {},
                 )
                 if _narrow_kept:
                     _blast_kept = list(_blast_kept) + _narrow_kept
@@ -20821,6 +21006,13 @@ def _run_lever_loop(
                         (ag.get("source_cluster_ids") or ["?"])[0]
                     ),
                     iter_inputs=_current_iter_inputs,
+                    # Cycle 16 T3 — Branch C resolver dicts (same as Site A).
+                    qid_to_question_text=_branch_c_qid_to_question_text(
+                        clusters=clusters,
+                        benchmarks=benchmarks,
+                        ag_target_qids=_blast_target_qids,
+                    ),
+                    qid_to_reference_sql=reference_sqls or {},
                 )
                 if _narrow_kept:
                     _blast_kept = list(_blast_kept) + _narrow_kept

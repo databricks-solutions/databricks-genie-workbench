@@ -236,3 +236,38 @@ def plateau_input_source_marker(
         "last_acceptance_was_rollback": bool(last_acceptance_was_rollback),
     }
     return "GSO_PLATEAU_INPUT_SOURCE_V1 " + json.dumps(payload, sort_keys=True)
+
+
+def narrow_replacement_branch_c_synthesized_marker(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    root_cause: str,
+    original_patch_type: str,
+    narrow_proposal_id: str,
+    target_qid: str,
+) -> str:
+    """Cycle 16 T3 — stdout marker for one Branch C L5 survivor.
+
+    Mirror of ``narrow_replacement_synthesized_marker`` (Branch A) with
+    the additional ``branch`` discriminator and per-QID
+    ``target_qid``.
+    """
+    payload = {
+        "run_id": str(run_id),
+        "iteration": int(iteration),
+        "ag_id": str(ag_id),
+        "cluster_id": str(cluster_id),
+        "root_cause": str(root_cause),
+        "original_patch_type": str(original_patch_type),
+        "narrowing_strategy": "l5_example_sql_per_qid",
+        "branch": "C",
+        "narrow_proposal_id": str(narrow_proposal_id),
+        "target_qid": str(target_qid),
+    }
+    return (
+        "GSO_NARROW_REPLACEMENT_BRANCH_C_SYNTHESIZED_V1 "
+        + json.dumps(payload, sort_keys=True)
+    )

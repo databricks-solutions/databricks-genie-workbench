@@ -146,6 +146,13 @@ class ReasonCode(str, Enum):
     # current patch_type (e.g., add_sql_snippet_measure /
     # add_sql_snippet_expression lack a where_predicate to narrow).
     NARROW_NOT_APPLICABLE = "narrow_not_applicable"
+    # Cycle 16 T3 — Branch C survivor: an L6 expression / measure
+    # dropped at blast-radius was replaced with one Lever-5
+    # add_example_sql patch per resolvable target QID. Mirror of
+    # NARROW_NOT_APPLICABLE for the Branch C success path so the
+    # operator transcript can tell Branch A and Branch C survivors
+    # apart.
+    NARROW_BRANCH_C_SYNTHESIZED = "narrow_branch_c_synthesized"
     # Cycle 10 W8 — AG-emit observability companion to W2: emitted
     # when ``union_ag_levers_with_recommended`` widened the AG's
     # lever set with cluster.recommended_levers entries.
