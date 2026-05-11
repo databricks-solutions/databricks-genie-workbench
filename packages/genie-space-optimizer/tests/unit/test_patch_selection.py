@@ -46,7 +46,10 @@ def test_causal_patch_cap_keeps_function_routing_over_lower_relevance_instructio
         "P015": "selected",
         "P003": "dropped",
     }
-    assert decisions[1]["selection_reason"] == "highest_causal_relevance"
+    # RCO-7: canonical sort changes input order before decision rows are
+    # built; look up by proposal_id instead of positional index.
+    p015_decision = next(d for d in decisions if d["proposal_id"] == "P015")
+    assert p015_decision["selection_reason"] == "highest_causal_relevance"
 
 
 def test_causal_patch_cap_uses_lever_diversity_only_after_relevance_ties() -> None:
