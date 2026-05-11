@@ -13,7 +13,7 @@ from genie_space_optimizer.optimization.acceptance_policy import (
     ACCEPTED,
     REJECTED_INSUFFICIENT_GAIN,
     REJECTED_REGRESSION,
-    AcceptanceDecision,
+    GainGateDecision,
     decide_acceptance,
 )
 
@@ -98,7 +98,7 @@ def test_zero_delta_is_insufficient_gain_not_regression() -> None:
 
 
 def test_decision_is_frozen_dataclass() -> None:
-    """``AcceptanceDecision`` is intentionally immutable so audit rows
+    """``GainGateDecision`` is intentionally immutable so audit rows
     can be passed around without worrying about callers mutating the
     decision after the fact.
     """
@@ -130,14 +130,14 @@ def test_zero_min_gain_rejects_zero_delta() -> None:
 
 
 def test_returns_acceptance_decision_instance() -> None:
-    """Sanity: the public surface is the ``AcceptanceDecision`` dataclass."""
+    """Sanity: the public surface is the ``GainGateDecision`` dataclass."""
     decision = decide_acceptance(
         post_arbiter_candidate=78.0,
         post_arbiter_baseline=72.0,
         min_gain_pp=2.0,
     )
 
-    assert isinstance(decision, AcceptanceDecision)
+    assert isinstance(decision, GainGateDecision)
 
 
 def test_decide_acceptance_accepts_any_positive_arbiter_gain() -> None:

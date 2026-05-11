@@ -42,8 +42,20 @@ SUSPECTED_STALE_BASELINE = "suspected_stale_baseline"
 
 
 @dataclass(frozen=True)
-class AcceptanceDecision:
-    """Outcome of the single-criterion full-eval acceptance gate.
+class GainGateDecision:
+    """RCO-5 — outcome of the single-criterion gain-gate.
+
+    This is the UPSTREAM gain-gate sub-decision: did the candidate
+    beat the baseline by at least ``min_gain_pp``? It is NOT the
+    canonical Stage-9 acceptance decision — see
+    ``optimization.control_plane.ControlPlaneAcceptance`` for that.
+
+    The harness combines this gain-gate result with target-set
+    classification (target_fixed / target_still_hard / regression
+    buckets) to produce the canonical ``ControlPlaneAcceptance``.
+
+    Renamed from ``AcceptanceDecision`` in RCO-5 to make the
+    upstream-feeder role structurally explicit.
 
     ``reason_code`` is one of:
 
@@ -67,7 +79,7 @@ def decide_acceptance(
     post_arbiter_candidate: float,
     post_arbiter_baseline: float,
     min_gain_pp: float,
-) -> AcceptanceDecision:
+) -> GainGateDecision:
     """Decide whether to accept the candidate state for this iteration.
 
     Single criterion: ``candidate >= baseline + min_gain_pp``. Pure
@@ -75,7 +87,7 @@ def decide_acceptance(
 
     Returns
     -------
-    :class:`AcceptanceDecision`
+    :class:`GainGateDecision`
         ``accepted=True`` only when the candidate strictly cleared the
         gain floor. ``delta_pp`` is candidate minus baseline, rounded to
         one decimal so audit rows are comparable across iterations.
@@ -93,7 +105,7 @@ def decide_acceptance(
         reason = REJECTED_INSUFFICIENT_GAIN
         accepted = False
 
-    return AcceptanceDecision(
+    return GainGateDecision(
         accepted=accepted,
         post_arbiter_candidate=round(float(post_arbiter_candidate), 1),
         post_arbiter_baseline=round(float(post_arbiter_baseline), 1),
