@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from genie_space_optimizer.common import config as _gso_config
 from genie_space_optimizer.optimization.question_journey import (
     QuestionJourneyEvent,
 )
@@ -106,6 +107,25 @@ def _replay_iteration(
         hard -= fixture_soft_qids
         already_passing -= fixture_soft_qids
         gt_corr -= fixture_soft_qids
+
+    # Cycle 17 T2 — producer-side mutual exclusion. When the strict
+    # producer flag is on, suppress the row-level `soft_signal` emit
+    # for qids the clusterer surfaced as hard. The hard-cluster signal
+    # wins: the qid stays clustered, and the redundant soft fall-through
+    # emit does not produce an illegal `clustered → soft_signal` trunk
+    # transition (anchor: 3b050ec5 postmortem F9, 15 such violations
+    # across 5 iters × 3 qids). `already_passing` is intentionally
+    # *not* filtered here — T1's state-machine extension makes
+    # `clustered → already_passing` legal, so suppressing the
+    # already_passing emit would drop a legitimate signal.
+    if _gso_config.journey_producer_strict_enabled():
+        hard_cluster_qids: set[str] = set()
+        for c in iteration_plan.get("clusters") or []:
+            for q in c.get("question_ids") or []:
+                qstr = str(q)
+                if qstr:
+                    hard_cluster_qids.add(qstr)
+        soft -= hard_cluster_qids
 
     def _emit(stage, **fields):
         qids = fields.pop("question_ids", None) or []

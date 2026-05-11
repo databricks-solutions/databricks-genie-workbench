@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from genie_space_optimizer.common import config as _gso_config
+
 
 _STAGE_ORDER: list[str] = [
     "evaluated",
@@ -146,6 +148,19 @@ def emit_cluster_membership_events(
         primary_clustered,
         extras_clustered,
     )
+
+    # Cycle 17 T2 — producer-side mutual exclusion. When the strict
+    # producer flag is on, the soft pass starts with `seen_clustered`
+    # as its initial seen set: any qid that already received a
+    # `clustered` emit in the hard pass is skipped here. The hard-
+    # cluster signal wins; the qid stays clustered. Without this,
+    # a qid declared in BOTH hard_clusters and soft_clusters
+    # receives two trunk events, producing an illegal
+    # `clustered → soft_signal` transition after canonical sort.
+    # Anchor: 3b050ec5 postmortem F9 (15 such violations).
+    if _gso_config.journey_producer_strict_enabled():
+        seen_soft |= seen_clustered
+
     _emit_loop(
         list(soft_clusters or []),
         "soft_signal",

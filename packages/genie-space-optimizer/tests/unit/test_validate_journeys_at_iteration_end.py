@@ -35,7 +35,12 @@ def test_validator_returns_report_on_clean_iteration() -> None:
 
 def test_validator_returns_report_on_dirty_iteration_warn_only() -> None:
     """When raise_on_violation=False and the iteration is dirty, the helper
-    must log warnings AND return the report."""
+    must log warnings AND return the report.
+
+    Cycle 17 T1: `evaluated → post_eval` is now legal
+    ('iteration_terminal_with_acceptance'). Updated to use a still-illegal
+    transition: `post_eval → evaluated` (going backward in the trunk).
+    """
     from genie_space_optimizer.optimization.harness import (
         _validate_journeys_at_iteration_end,
     )
@@ -43,9 +48,13 @@ def test_validator_returns_report_on_dirty_iteration_warn_only() -> None:
         QuestionJourneyEvent,
     )
 
-    # evaluated -> post_eval is illegal (no classification stage in between)
+    # clustered -> soft_signal is still an illegal trunk transition (Cycle 17
+    # T1 only legalizes evaluated -> post_eval and clustered -> already_passing;
+    # clustered -> soft_signal remains illegal without the T2 producer fix).
     events = [
         QuestionJourneyEvent(question_id="q1", stage="evaluated"),
+        QuestionJourneyEvent(question_id="q1", stage="clustered", cluster_id="H1"),
+        QuestionJourneyEvent(question_id="q1", stage="soft_signal"),
         QuestionJourneyEvent(
             question_id="q1", stage="post_eval",
             was_passing=False, is_passing=False, transition="hold_fail",
