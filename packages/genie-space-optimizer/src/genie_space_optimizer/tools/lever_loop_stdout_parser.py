@@ -77,7 +77,21 @@ class PatchSurvival:
 
 
 @dataclass(frozen=True)
-class AcceptanceDecision:
+class ParsedAcceptanceView:
+    """RCO-5 — parsed projection of one rendered acceptance decision.
+
+    This is a stdout-parser artifact: it captures only the fields
+    visible in the rendered ``FULL EVAL`` / acceptance-decision
+    blocks. It is NOT a runtime decision and NOT the canonical
+    acceptance object — see
+    ``optimization.control_plane.ControlPlaneAcceptance`` for that.
+
+    Renamed from ``AcceptanceDecision`` in RCO-5 to make the
+    view-layer role structurally explicit. Use
+    ``parsed_view_to_control_plane`` to project an instance into
+    a canonical-shaped object with sentinel-filled unobservable
+    fields.
+    """
     iteration: int
     ag_id: str
     accepted: bool
@@ -106,7 +120,7 @@ class LeverLoopStdoutView:
     )
     blast_radius_drops: dict[int, tuple[BlastRadiusDrop, ...]] = field(default_factory=dict)
     patch_survival: dict[int, dict[str, PatchSurvival]] = field(default_factory=dict)
-    acceptance_decision: dict[int, dict[str, AcceptanceDecision]] = field(
+    acceptance_decision: dict[int, dict[str, ParsedAcceptanceView]] = field(
         default_factory=dict
     )
 
@@ -332,7 +346,7 @@ _REGRESSIONS_LINE_RE = re.compile(
 
 def _parse_full_eval_for_ag(
     body: str, iteration: int, ag_id: str, target_qids: tuple[str, ...]
-) -> AcceptanceDecision | None:
+) -> ParsedAcceptanceView | None:
     m = _FULL_EVAL_RE.search(body)
     if not m or m.group(1) != ag_id:
         return None
@@ -383,7 +397,7 @@ def _parse_full_eval_for_ag(
         r"reason=([a-z_]+)", eval_body
     )
 
-    return AcceptanceDecision(
+    return ParsedAcceptanceView(
         iteration=iteration,
         ag_id=ag_id,
         accepted=accepted,
@@ -517,7 +531,7 @@ def parse_lever_loop_stdout(text: str) -> LeverLoopStdoutView:
     proposal_inventory: dict[int, dict[str, tuple[ProposalInventoryEntry, ...]]] = {}
     blast_radius_drops: dict[int, list[BlastRadiusDrop]] = {}
     patch_survival: dict[int, dict[str, PatchSurvival]] = {}
-    acceptance_decision: dict[int, dict[str, AcceptanceDecision]] = {}
+    acceptance_decision: dict[int, dict[str, ParsedAcceptanceView]] = {}
 
     for iteration, ag_id, start, end in blocks:
         ag_body = text[start:end]
