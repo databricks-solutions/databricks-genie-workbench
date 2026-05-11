@@ -55,6 +55,7 @@ __all__ = [
     "decide_p0_gate_post_eval",
     "forward_asi_extraction_audit",
     "build_baseline_drift_diagnostic",
+    "decide_full_eval_acceptance",
 ]
 
 
@@ -461,4 +462,119 @@ def build_baseline_drift_diagnostic(
         audit_metrics=audit_metrics,
         reason_code=drift.reason_code,
         log_line=log_line,
+    )
+
+
+# Import the new types at module level for the helper below.
+from genie_space_optimizer.optimization.stages.gate_types import (
+    FullEvalAcceptanceInput as _FullEvalAcceptanceInput,
+    FullEvalAcceptanceOutcome as _FullEvalAcceptanceOutcome,
+)
+
+
+_CONTROL_PLANE_REASON_TO_BRANCH = {
+    "accepted_with_attribution_drift": "accept_with_drift",
+    "accepted_with_regression_debt": "accept_with_debt",
+}
+
+
+def decide_full_eval_acceptance(
+    inp: _FullEvalAcceptanceInput,
+) -> _FullEvalAcceptanceOutcome:
+    """RCO-4b Phase E — consolidate upstream decisions into the
+    full-eval acceptance verdict.
+
+    Mirrors the verdict-consolidation logic at
+    ``harness._run_gate_checks:13987-14524 + 14657-14673``. Pure
+    function — no logger calls, no ``_audit_emit`` calls, no Spark,
+    no prints.
+
+    The harness pre-computes the strict decision (from
+    ``acceptance_policy.decide_acceptance``), the Task 4 per-question
+    transition verdict, and the control-plane decision, then
+    populates ``inp.regressions`` from the three sources. The helper
+    decides verdict purely on ``len(inp.regressions)`` and packages
+    the three audit-metrics payloads (verdict, rollback, accept) for
+    the harness to emit.
+
+    Verdict rules:
+      - ``regressions`` is empty → accepted, branch determined by
+        ``control_plane_reason_code``.
+      - ``regressions`` is non-empty → rollback, branch="rollback",
+        rollback_reason="full_eval: <first regression's judge>".
+
+    Branch vocabulary:
+      - ``"rollback"`` — regressions non-empty.
+      - ``"accept_with_drift"`` — ``control_plane_reason_code ==
+        "accepted_with_attribution_drift"`` and regressions empty.
+      - ``"accept_with_debt"`` — ``control_plane_reason_code ==
+        "accepted_with_regression_debt"`` and regressions empty.
+      - ``"accept"`` — fallback (accepted/default reason codes).
+    """
+    # Verdict-time audit metrics fire regardless of pass/fail.
+    # Mirrors harness.py:13987-14000.
+    verdict_metrics = {
+        "delta_pp": float(inp.strict_decision_delta_pp),
+        "min_gain_pp": float(inp.strict_decision_min_gain_pp),
+        "post_arbiter_candidate": float(inp.strict_decision_post_arbiter_candidate),
+        "post_arbiter_baseline": float(inp.strict_decision_post_arbiter_baseline),
+        "previous_pre_arbiter": float(inp.pre_arbiter_baseline),
+        "previous_post_arbiter": float(inp.strict_decision_post_arbiter_baseline),
+    }
+
+    if inp.regressions:
+        first = inp.regressions[0]
+        try:
+            first_judge = str(first.get("judge", "") or "")
+        except AttributeError:
+            first_judge = ""
+        rollback_reason = f"full_eval: {first_judge}"
+        # Rollback-time audit metrics fire only on the rollback branch.
+        # Mirrors harness.py:14506-14524.
+        rollback_metrics: dict[str, Any] = {
+            "regression_count": len(inp.regressions),
+            "post_arbiter_candidate": float(inp.strict_decision_post_arbiter_candidate),
+            "post_arbiter_baseline": float(inp.strict_decision_post_arbiter_baseline),
+            "delta_pp": float(inp.strict_decision_delta_pp),
+            "min_gain_pp": float(inp.strict_decision_min_gain_pp),
+            "pre_arbiter_candidate": float(inp.pre_arbiter_candidate),
+            "pre_arbiter_baseline": float(inp.pre_arbiter_baseline),
+            "diagnostic_regressions": list(inp.diagnostic_regression_judges),
+        }
+        return _FullEvalAcceptanceOutcome(
+            accepted=False,
+            branch="rollback",
+            reason_code=str(inp.strict_decision_reason_code),
+            rollback_reason=rollback_reason,
+            regression_count=len(inp.regressions),
+            verdict_audit_metrics=verdict_metrics,
+            rollback_audit_metrics=rollback_metrics,
+            accept_audit_metrics=None,
+        )
+
+    # Accept branch — derive label from control_plane_reason_code.
+    branch = _CONTROL_PLANE_REASON_TO_BRANCH.get(
+        inp.control_plane_reason_code,
+        "accept",
+    )
+    # Accept-time audit metrics fire only on the accept branch.
+    # Mirrors harness.py:14657-14673.
+    accept_metrics: dict[str, Any] = {
+        "post_arbiter_candidate": float(inp.strict_decision_post_arbiter_candidate),
+        "post_arbiter_baseline": float(inp.strict_decision_post_arbiter_baseline),
+        "delta_pp": float(inp.strict_decision_delta_pp),
+        "min_gain_pp": float(inp.strict_decision_min_gain_pp),
+        "pre_arbiter_candidate": float(inp.pre_arbiter_candidate),
+        "pre_arbiter_baseline": float(inp.pre_arbiter_baseline),
+        "diagnostic_regressions": list(inp.diagnostic_regression_judges),
+    }
+    return _FullEvalAcceptanceOutcome(
+        accepted=True,
+        branch=branch,
+        reason_code=str(inp.strict_decision_reason_code),
+        rollback_reason=None,
+        regression_count=0,
+        verdict_audit_metrics=verdict_metrics,
+        rollback_audit_metrics=None,
+        accept_audit_metrics=accept_metrics,
     )
