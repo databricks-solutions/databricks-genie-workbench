@@ -1,0 +1,20 @@
+{
+  "anchors": {
+    "f9_3b050ec5": {
+      "expected_merge_gate_status": "merge_gate_blocked",
+      "expected_high_tier_invariant_ids": ["I12"],
+      "expected_high_tier_min_count": 1,
+      "expected_bundle_status_in": ["complete", "incomplete"],
+      "expected_replay_violation_min_count": 0,
+      "notes": "F9 anchor; 25 illegal trunk transitions per the Cycle 17 anchor regression test. I12 is the driver; bundle may or may not be complete (the blocker is invariant-driven)."
+    },
+    "airline_clean": {
+      "expected_merge_gate_status": "healthy",
+      "expected_high_tier_invariant_ids": [],
+      "expected_high_tier_min_count": 0,
+      "expected_bundle_status_in": ["complete"],
+      "expected_replay_violation_max_count": 0,
+      "notes": "Airline green-path anchor; no HIGH-tier invariants, complete bundle, zero replay violations."
+    }
+  }
+}
