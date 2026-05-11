@@ -33,6 +33,8 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from genie_space_optimizer.optimization.stages.gate_types import (
+    P0GateInput,
+    P0GateOutcome,
     PropagationWaitInput,
     PropagationWaitOutcome,
     SliceGateInput,
@@ -44,6 +46,8 @@ __all__ = [
     "decide_slice_gate_should_run",
     "compute_slice_gate_effective_tolerance",
     "decide_slice_gate_post_eval",
+    "decide_p0_gate_should_run",
+    "decide_p0_gate_post_eval",
 ]
 
 
@@ -253,4 +257,44 @@ def decide_slice_gate_post_eval(
         rollback_reason=f"slice_gate: {judge}",
         regression_judge=judge,
         effective_tolerance=float(effective_tolerance),
+    )
+
+
+def decide_p0_gate_should_run(inp: P0GateInput) -> P0GateOutcome:
+    """RCO-4b Phase C — pre-eval P0-gate gating decision.
+
+    Mirrors the inline body at ``harness._run_gate_checks:13276-13290``.
+    Pure function — no ``run_evaluation`` calls, no Spark, no prints.
+
+    Returns a ``P0GateOutcome`` with ``should_run`` populated; when
+    ``should_run`` is False, ``skip_reason`` carries one of:
+
+    - ``"legacy_gates_disabled"`` — ``ENABLE_LEGACY_SLICE_P0_GATES=False``
+    - ``"p0_empty"`` — ``filter_benchmarks_by_scope(benchmarks, "p0")``
+      returned 0 rows
+
+    The post-eval fields (``passed``, ``failure_count``, ``rollback_reason``)
+    are left at their dataclass defaults. The harness owns those after
+    ``run_evaluation`` produces the failure list.
+
+    Note on banner parity: the legacy code prints a "SKIPPED (Task 2)"
+    banner for ``legacy_gates_disabled`` but does NOT print a banner
+    for ``p0_empty`` (it silently falls through because
+    ``if p0_benchmarks:`` is False). The harness's wiring preserves
+    this asymmetry — the helper just records the reason; the harness
+    decides whether to render.
+    """
+    if not inp.legacy_gates_enabled:
+        return P0GateOutcome(
+            should_run=False,
+            skip_reason="legacy_gates_disabled",
+        )
+    if int(inp.p0_benchmark_count) <= 0:
+        return P0GateOutcome(
+            should_run=False,
+            skip_reason="p0_empty",
+        )
+    return P0GateOutcome(
+        should_run=True,
+        skip_reason=None,
     )
