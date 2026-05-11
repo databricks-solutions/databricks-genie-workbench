@@ -4,19 +4,22 @@
 > trial needs to be re-run (e.g. after a defect fix surfaced by the
 > first trial).
 
-## Flags to enable (all default-off; set to `"1"` for trial)
+## Flags (default-ON after Task 3 default-flip)
 
-| # | Flag | Phase | Helper(s) it routes to |
-|---|---|---|---|
-| 1 | `GSO_STAGE6_BLAST_RADIUS_PURE` | RCO-4 | `stages.gates.run_blast_radius_production_gate` |
-| 2 | `GSO_STAGE6_NARROW_REPL_PURE` | RCO-4 | `stages.gates.resolve_narrow_replacement` |
-| 3 | `GSO_STAGE6_APPLYABILITY_PURE` | RCO-4 | `stages.gates.run_applyability_gate` |
-| 4 | `GSO_GATE_CHECKS_PROPAGATION_PURE` | RCO-4b A | `stages.eval_gates.run_propagation_wait_gate` |
-| 5 | `GSO_GATE_CHECKS_SLICE_PURE` | RCO-4b B | `decide_slice_gate_should_run`, `compute_slice_gate_effective_tolerance`, `decide_slice_gate_post_eval` |
-| 6 | `GSO_GATE_CHECKS_P0_PURE` | RCO-4b C | `decide_p0_gate_should_run`, `decide_p0_gate_post_eval` |
-| 7 | `GSO_GATE_CHECKS_ASI_EXTRACTION_PURE` | RCO-4b D | `forward_asi_extraction_audit` |
-| 8 | `GSO_GATE_CHECKS_BASELINE_DRIFT_PURE` | RCO-4b D | `build_baseline_drift_diagnostic` |
-| 9 | `GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE` | RCO-4b E | `decide_full_eval_acceptance` |
+All nine flags default to ON in the codebase. The lever-loop job
+exercises every new pure helper without any env-var setup.
+
+| # | Flag | Default | Phase | Helper(s) it routes to | Rollback escape hatch |
+|---|---|---|---|---|---|
+| 1 | `GSO_STAGE6_BLAST_RADIUS_PURE` | **ON** | RCO-4 | `stages.gates.run_blast_radius_production_gate` | set `=0` to disable |
+| 2 | `GSO_STAGE6_NARROW_REPL_PURE` | **ON** | RCO-4 | `stages.gates.resolve_narrow_replacement` | set `=0` to disable |
+| 3 | `GSO_STAGE6_APPLYABILITY_PURE` | **ON** | RCO-4 | `stages.gates.run_applyability_gate` | set `=0` to disable |
+| 4 | `GSO_GATE_CHECKS_PROPAGATION_PURE` | **ON** | RCO-4b A | `stages.eval_gates.run_propagation_wait_gate` | set `=0` to disable |
+| 5 | `GSO_GATE_CHECKS_SLICE_PURE` | **ON** | RCO-4b B | `decide_slice_gate_should_run`, `compute_slice_gate_effective_tolerance`, `decide_slice_gate_post_eval` | set `=0` to disable |
+| 6 | `GSO_GATE_CHECKS_P0_PURE` | **ON** | RCO-4b C | `decide_p0_gate_should_run`, `decide_p0_gate_post_eval` | set `=0` to disable |
+| 7 | `GSO_GATE_CHECKS_ASI_EXTRACTION_PURE` | **ON** | RCO-4b D | `forward_asi_extraction_audit` | set `=0` to disable |
+| 8 | `GSO_GATE_CHECKS_BASELINE_DRIFT_PURE` | **ON** | RCO-4b D | `build_baseline_drift_diagnostic` | set `=0` to disable |
+| 9 | `GSO_GATE_CHECKS_FULL_EVAL_ACCEPTANCE_PURE` | **ON** | RCO-4b E | `decide_full_eval_acceptance` | set `=0` to disable |
 
 `GSO_LOOP_INVARIANTS_STRICT` stays at `"0"` (the lever-loop job
 hardcodes that in `jobs/run_lever_loop.py:327`). RCO-2b flips it after
@@ -31,8 +34,10 @@ this trial.
 
 ## Submission command
 
-Set the nine env vars on the lever-loop cluster (or as job-level
-`spark_env_vars` if the cluster is policy-managed) and trigger the job:
+Pre-requisite: the commit from Task 3 (default-flip) must be deployed
+to the workspace via `databricks bundle deploy -t app`. After deploy,
+trigger the job per anchor — no env vars, no widget overrides beyond
+the anchor's normal production params:
 
 ```bash
 databricks jobs run-now <LEVER_LOOP_JOB_ID> \
@@ -96,4 +101,3 @@ evidence. File a defect plan against the failing surface.
 
 | Date | Operator | Preflight test count | Defense-in-depth suite | Result |
 |---|---|---|---|---|
-| 2026-05-11 | prashanth.subrahmanyam | 36 (20 trial preflight + 14 RCO-4b sequence guard + 2 RCO-4 sequence guard) | 323 unit tests across `test_rco4b_*`, `test_rco4_*`, `test_rco5_*`, `test_rco7_*`, `test_rco8_*`, `test_rco2a_*` | All green; trial is submittable. |
