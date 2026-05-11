@@ -24,9 +24,19 @@ until a follow-up plan does the full extraction.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from genie_space_optimizer.optimization.stages._json_io import JsonRoundTrip
+
+if TYPE_CHECKING:
+    from genie_space_optimizer.optimization.stages.gate_types import (
+        ApplyabilityGateInput,
+        ApplyabilityGateOutcome,
+        BlastRadiusProductionInput,
+        BlastRadiusProductionOutcome,
+        NarrowReplacementInput,
+        NarrowReplacementOutcome,
+    )
 
 
 STAGE_KEY: str = "safety_gates"
