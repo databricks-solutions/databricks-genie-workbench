@@ -222,6 +222,12 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 **Phase E plan:** `docs/2026-05-12-rco-4b-phase-e-full-eval-acceptance-plan.md`.
 
+**Trial submission plan:** `docs/2026-05-13-rco-4b-consolidating-trial-submission-plan.md`.
+
+**Trial runbook (long-lived):** `docs/2026-05-13-rco-4b-trial-runbook.md`.
+
+**Trial status:** not yet submitted.
+
 **Phase roadmap:** `docs/2026-05-12-rco-4b-phase-roadmap.md`.
 
 **Stage inventory:** `docs/2026-05-12-rco-4b-gate-stage-inventory.md`.
