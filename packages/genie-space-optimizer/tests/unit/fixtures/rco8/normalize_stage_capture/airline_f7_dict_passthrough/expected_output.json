@@ -1,0 +1,8 @@
+{
+  "stage_key": "action_group_selection",
+  "ags": [
+    {"id": "AG_alpha", "target_qids": ["q1", "q2"]},
+    {"id": "AG_beta", "target_qids": ["q3"]}
+  ],
+  "iteration": 7
+}

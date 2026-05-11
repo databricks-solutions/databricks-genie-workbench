@@ -1,0 +1,21 @@
+{
+  "value": [
+    {
+      "stage_key": "safety_gates",
+      "decisions": [
+        {"proposal_id": "L5:P001#1", "verdict": "kept"},
+        {"proposal_id": "L3:P002#1", "verdict": "dropped"}
+      ],
+      "iteration": 7,
+      "drop_count": 1
+    },
+    {
+      "stage_key": "safety_gates",
+      "decisions": [
+        {"proposal_id": "L5:P003#1", "verdict": "kept"}
+      ],
+      "iteration": 7,
+      "drop_count": 0
+    }
+  ]
+}
