@@ -911,6 +911,50 @@ def _compute_iteration_counters(
     return (accepted, rolled_back, skipped, gate_drop)
 
 
+def _emit_contract_health_summary(
+    *,
+    optimization_run_id: str,
+    invariant_violations,
+    phase_h_strict_validation,
+    bundle_assembly_failed,
+    bundle_assembly_incomplete,
+    replay_validation,
+) -> None:
+    """RCO-2a — emit ``GSO_CONTRACT_HEALTH_V1`` at end-of-run.
+
+    Pure I/O wrapper: builds the summary via the pure module, then
+    prints the marker line. Swallows all exceptions silently — a bug
+    here must never break the end-of-run path. RCO-2b will revisit
+    this when the production posture flips.
+    """
+    try:
+        from genie_space_optimizer.common.config import (
+            gso_contract_health_summary_enabled,
+        )
+        if not gso_contract_health_summary_enabled():
+            return
+        from genie_space_optimizer.optimization.contract_health import (
+            build_contract_health_summary,
+        )
+        from genie_space_optimizer.optimization.run_analysis_contract import (
+            contract_health_summary_marker,
+        )
+        summary = build_contract_health_summary(
+            optimization_run_id=optimization_run_id,
+            invariant_violations=invariant_violations or (),
+            phase_h_strict_validation=phase_h_strict_validation,
+            bundle_assembly_failed=bundle_assembly_failed or (),
+            bundle_assembly_incomplete=bundle_assembly_incomplete,
+            replay_validation=replay_validation,
+        )
+        print(contract_health_summary_marker(summary))
+    except Exception:
+        logger.debug(
+            "RCO-2a contract-health summary emission skipped",
+            exc_info=True,
+        )
+
+
 def _run_iteration_invariants_and_append_records(
     *,
     run_id: str,
@@ -25234,6 +25278,26 @@ def _run_lever_loop(
                 ))
             except Exception:
                 logger.debug("GSO run manifest V2 (end) emission skipped", exc_info=True)
+        # RCO-2a Task 9 — emit end-of-run contract-health summary.
+        # Pure observability; production posture remains warn-and-degrade.
+        # The RCO-2b flip will consume this marker's payload as evidence.
+        # Evidence variables that aren't accumulated as locals at this
+        # scope are passed as None / () — the builder treats missing
+        # evidence as "skipped"/"complete" per the policy doc.
+        _emit_contract_health_summary(
+            optimization_run_id=run_id,
+            invariant_violations=locals().get("_invariant_violations") or (),
+            phase_h_strict_validation=locals().get(
+                "_phase_h_marker_payload"
+            ),
+            bundle_assembly_failed=tuple(
+                locals().get("_bundle_assembly_failed_payloads") or ()
+            ),
+            bundle_assembly_incomplete=locals().get(
+                "_bundle_assembly_incomplete_payloads"
+            ),
+            replay_validation=locals().get("_run_end_replay_validation"),
+        )
     except Exception:
         logger.debug("GSO convergence/end marker skipped", exc_info=True)
 
