@@ -101,3 +101,4 @@ evidence. File a defect plan against the failing surface.
 
 | Date | Operator | Preflight test count | Defense-in-depth suite | Result |
 |---|---|---|---|---|
+| 2026-05-11 | prashanth.subrahmanyam | 57 (9 default-ON + 45 falsy-rollback + 1 harness-import + 1 `_flag_default_on` grep + 1 strict-default unchanged) | 360 RCO unit tests (`test_rco4b_*`, `test_rco4_*`, `test_rco5_*`, `test_rco7_*`, `test_rco8_*`, `test_rco2a_*`); 4693 unit+integration passes, 4 pre-existing failures unrelated to the flip (`test_skill_parser_handoff` x2; `test_evidence_bundle_smoke` + `test_mlflow_smoke_one_iteration` show same failures on pre-flip HEAD) | All green; trial is submittable. |
