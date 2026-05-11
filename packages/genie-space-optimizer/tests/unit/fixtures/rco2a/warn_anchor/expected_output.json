@@ -1,0 +1,22 @@
+{
+  "optimization_run_id": "anchor-warn-001",
+  "merge_gate_status": "warn",
+  "high_tier_violations": [],
+  "medium_tier_violations": [
+    {
+      "invariant_id": "I3",
+      "title": "acceptance_bucket_mismatch",
+      "detail": "expected 3 buckets, observed 2"
+    },
+    {
+      "invariant_id": "I7",
+      "title": "rca_grounding_missing",
+      "detail": "no rca evidence for AG ag-001"
+    }
+  ],
+  "phase_h_listing_status": "skipped",
+  "phase_h_validator_status": "skipped",
+  "bundle_status": "incomplete",
+  "replay_is_valid": true,
+  "replay_violation_count": 0
+}

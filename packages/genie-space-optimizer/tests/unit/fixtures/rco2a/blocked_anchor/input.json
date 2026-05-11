@@ -1,0 +1,30 @@
+{
+  "optimization_run_id": "anchor-blocked-001",
+  "invariant_violations": [
+    {
+      "invariant_id": "I12",
+      "title": "replay_validity_violated",
+      "detail": "replay reports 25 illegal trunk transitions",
+      "violation_count": 25,
+      "violation_details": {"forbidden_repeat": 25}
+    }
+  ],
+  "phase_h_strict_validation": {
+    "optimization_run_id": "anchor-blocked-001",
+    "flag_enabled": true,
+    "declared_count": 3,
+    "materialized_count": 3,
+    "self_write_count": 1,
+    "missing_count": 0,
+    "listing_status": "ok",
+    "validator_status": "ok",
+    "exception_class": ""
+  },
+  "bundle_assembly_failed": [],
+  "bundle_assembly_incomplete": null,
+  "replay_validation": {
+    "is_valid": false,
+    "violation_count": 25,
+    "violation_details": {"forbidden_repeat": 25}
+  }
+}

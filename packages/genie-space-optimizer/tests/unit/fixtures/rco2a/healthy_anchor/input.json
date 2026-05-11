@@ -1,0 +1,22 @@
+{
+  "optimization_run_id": "anchor-healthy-001",
+  "invariant_violations": [],
+  "phase_h_strict_validation": {
+    "optimization_run_id": "anchor-healthy-001",
+    "flag_enabled": true,
+    "declared_count": 3,
+    "materialized_count": 3,
+    "self_write_count": 1,
+    "missing_count": 0,
+    "listing_status": "ok",
+    "validator_status": "ok",
+    "exception_class": ""
+  },
+  "bundle_assembly_failed": [],
+  "bundle_assembly_incomplete": null,
+  "replay_validation": {
+    "is_valid": true,
+    "violation_count": 0,
+    "violation_details": {}
+  }
+}

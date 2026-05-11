@@ -1,0 +1,39 @@
+{
+  "optimization_run_id": "anchor-warn-001",
+  "invariant_violations": [
+    {
+      "invariant_id": "I3",
+      "title": "acceptance_bucket_mismatch",
+      "detail": "expected 3 buckets, observed 2"
+    },
+    {
+      "invariant_id": "I7",
+      "title": "rca_grounding_missing",
+      "detail": "no rca evidence for AG ag-001"
+    }
+  ],
+  "phase_h_strict_validation": {
+    "optimization_run_id": "anchor-warn-001",
+    "flag_enabled": false,
+    "declared_count": 0,
+    "materialized_count": 0,
+    "self_write_count": 0,
+    "missing_count": 0,
+    "listing_status": "skipped",
+    "validator_status": "skipped",
+    "exception_class": ""
+  },
+  "bundle_assembly_failed": [],
+  "bundle_assembly_incomplete": [
+    {
+      "optimization_run_id": "anchor-warn-001",
+      "missing_count": 1,
+      "missing_artifacts": ["iter_03/judge_verdict.json"]
+    }
+  ],
+  "replay_validation": {
+    "is_valid": true,
+    "violation_count": 0,
+    "violation_details": {}
+  }
+}
