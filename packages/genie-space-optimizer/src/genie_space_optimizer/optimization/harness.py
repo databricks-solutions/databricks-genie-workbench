@@ -12885,65 +12885,145 @@ def _run_gate_checks(
     )
 
     from genie_space_optimizer.common.genie_client import fetch_space_config as _fetch_cfg
+    from genie_space_optimizer.common.config import (
+        gate_checks_propagation_pure_enabled as _rco4b_propagation_pure_on,
+    )
 
-    while _elapsed < float(wait_time):
-        time.sleep(_poll_interval)
-        _elapsed += _poll_interval
-        if not _expected_snippets:
-            # No verifiable instruction-text snippet; fall back to the
-            # full budget (this is the case for non-instruction-only
-            # patches like snippet / join_spec changes).
-            continue
-        try:
+    if _rco4b_propagation_pure_on():
+        # RCO-4b Phase A — delegate the polling loop to the pure helper.
+        # Side effects (audit emit, full-budget sleep) stay here.
+        from genie_space_optimizer.optimization.stages.eval_gates import (
+            run_propagation_wait_gate as _rco4b_run_propagation,
+        )
+        from genie_space_optimizer.optimization.stages.gate_types import (
+            PropagationWaitInput as _RCO4bPWInput,
+        )
+
+        def _rco4b_fetch_text() -> str:
             _cfg_probe = _fetch_cfg(w, space_id)
-        except Exception:
-            continue
-        _parsed_probe = _cfg_probe.get("_parsed_space", _cfg_probe) if isinstance(_cfg_probe, dict) else {}
-        _instr_probe = _parsed_probe.get("instructions", {}) if isinstance(_parsed_probe, dict) else {}
-        _txt_probe = _instr_probe.get("text_instructions", "") if isinstance(_instr_probe, dict) else ""
-        if not isinstance(_txt_probe, str) or not _txt_probe:
-            continue
-        if any(_snip in _txt_probe for _snip in _expected_snippets):
-            _propagated = True
-            break
-
-    if _expected_snippets and _propagated:
-        logger.info(
-            "Propagation confirmed after %.1fs (< max %ds) for AG %s",
-            _elapsed, wait_time, ag_id,
-        )
-        _audit_emit(
-            stage_letter="K",
-            gate_name="propagation_wait",
-            decision="confirmed",
-            metrics={
-                "elapsed_seconds": round(_elapsed, 1),
-                "max_wait_seconds": int(wait_time),
-                "patches_applied": len(_applied_entries),
-            },
-        )
-    else:
-        remaining = max(0.0, float(wait_time) - _elapsed)
-        if remaining > 0:
-            time.sleep(remaining)
-            logger.info(
-                "Propagation not confirmed for AG %s — waited full %ds budget",
-                ag_id, wait_time,
+            _parsed_probe = (
+                _cfg_probe.get("_parsed_space", _cfg_probe)
+                if isinstance(_cfg_probe, dict) else {}
             )
-        _audit_emit(
-            stage_letter="K",
-            gate_name="propagation_wait",
-            decision="waited_full_budget",
-            reason_code=(
-                "no_verifiable_snippet" if not _expected_snippets
-                else "snippet_not_observed"
+            _instr_probe = (
+                _parsed_probe.get("instructions", {})
+                if isinstance(_parsed_probe, dict) else {}
+            )
+            _txt_probe = (
+                _instr_probe.get("text_instructions", "")
+                if isinstance(_instr_probe, dict) else ""
+            )
+            return _txt_probe if isinstance(_txt_probe, str) else ""
+
+        _rco4b_outcome = _rco4b_run_propagation(
+            _RCO4bPWInput(
+                ag_id=str(ag_id),
+                max_wait_seconds=int(wait_time),
+                poll_interval_seconds=float(_poll_interval),
+                applied_patches_count=len(_applied_entries),
+                patched_objects=tuple(str(o) for o in (patched_objects or ())),
+                expected_instruction_snippets=tuple(_expected_snippets),
+                has_dictionary_changes=bool(has_dict_changes),
             ),
-            metrics={
-                "elapsed_seconds": round(_elapsed, 1),
-                "max_wait_seconds": int(wait_time),
-                "patches_applied": len(_applied_entries),
-            },
+            sleep_fn=time.sleep,
+            fetch_text_fn=_rco4b_fetch_text,
         )
+        _elapsed = float(_rco4b_outcome.elapsed_seconds)
+        _propagated = bool(_rco4b_outcome.propagated)
+
+        if _rco4b_outcome.audit_decision == "confirmed":
+            logger.info(
+                "Propagation confirmed after %.1fs (< max %ds) for AG %s",
+                _elapsed, wait_time, ag_id,
+            )
+            _audit_emit(
+                stage_letter="K",
+                gate_name="propagation_wait",
+                decision="confirmed",
+                metrics={
+                    "elapsed_seconds": round(_elapsed, 1),
+                    "max_wait_seconds": int(wait_time),
+                    "patches_applied": len(_applied_entries),
+                },
+            )
+        else:
+            remaining = max(0.0, float(wait_time) - _elapsed)
+            if remaining > 0:
+                time.sleep(remaining)
+                logger.info(
+                    "Propagation not confirmed for AG %s — waited full %ds budget",
+                    ag_id, wait_time,
+                )
+            _audit_emit(
+                stage_letter="K",
+                gate_name="propagation_wait",
+                decision="waited_full_budget",
+                reason_code=_rco4b_outcome.reason_code or "snippet_not_observed",
+                metrics={
+                    "elapsed_seconds": round(_elapsed, 1),
+                    "max_wait_seconds": int(wait_time),
+                    "patches_applied": len(_applied_entries),
+                },
+            )
+    else:
+        while _elapsed < float(wait_time):
+            time.sleep(_poll_interval)
+            _elapsed += _poll_interval
+            if not _expected_snippets:
+                # No verifiable instruction-text snippet; fall back to the
+                # full budget (this is the case for non-instruction-only
+                # patches like snippet / join_spec changes).
+                continue
+            try:
+                _cfg_probe = _fetch_cfg(w, space_id)
+            except Exception:
+                continue
+            _parsed_probe = _cfg_probe.get("_parsed_space", _cfg_probe) if isinstance(_cfg_probe, dict) else {}
+            _instr_probe = _parsed_probe.get("instructions", {}) if isinstance(_parsed_probe, dict) else {}
+            _txt_probe = _instr_probe.get("text_instructions", "") if isinstance(_instr_probe, dict) else ""
+            if not isinstance(_txt_probe, str) or not _txt_probe:
+                continue
+            if any(_snip in _txt_probe for _snip in _expected_snippets):
+                _propagated = True
+                break
+
+        if _expected_snippets and _propagated:
+            logger.info(
+                "Propagation confirmed after %.1fs (< max %ds) for AG %s",
+                _elapsed, wait_time, ag_id,
+            )
+            _audit_emit(
+                stage_letter="K",
+                gate_name="propagation_wait",
+                decision="confirmed",
+                metrics={
+                    "elapsed_seconds": round(_elapsed, 1),
+                    "max_wait_seconds": int(wait_time),
+                    "patches_applied": len(_applied_entries),
+                },
+            )
+        else:
+            remaining = max(0.0, float(wait_time) - _elapsed)
+            if remaining > 0:
+                time.sleep(remaining)
+                logger.info(
+                    "Propagation not confirmed for AG %s — waited full %ds budget",
+                    ag_id, wait_time,
+                )
+            _audit_emit(
+                stage_letter="K",
+                gate_name="propagation_wait",
+                decision="waited_full_budget",
+                reason_code=(
+                    "no_verifiable_snippet" if not _expected_snippets
+                    else "snippet_not_observed"
+                ),
+                metrics={
+                    "elapsed_seconds": round(_elapsed, 1),
+                    "max_wait_seconds": int(wait_time),
+                    "patches_applied": len(_applied_entries),
+                },
+            )
 
     # ── Slice gate ────────────────────────────────────────────────────
     try:
