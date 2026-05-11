@@ -1,0 +1,29 @@
+{
+  "outcome": {
+    "accepted": true,
+    "branch": "accept_with_drift",
+    "reason_code": "accepted",
+    "rollback_reason": null,
+    "regression_count": 0,
+    "verdict_audit_metrics": {
+      "delta_pp": 2.5,
+      "min_gain_pp": 1.0,
+      "post_arbiter_candidate": 71.0,
+      "post_arbiter_baseline": 68.5,
+      "previous_pre_arbiter": 66.0,
+      "previous_post_arbiter": 68.5
+    },
+    "rollback_audit_metrics": null,
+    "accept_audit_metrics": {
+      "post_arbiter_candidate": 71.0,
+      "post_arbiter_baseline": 68.5,
+      "delta_pp": 2.5,
+      "min_gain_pp": 1.0,
+      "pre_arbiter_candidate": 69.0,
+      "pre_arbiter_baseline": 66.0,
+      "diagnostic_regressions": [
+        "asset_routing"
+      ]
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "outcome": {
+    "accepted": false,
+    "branch": "rollback",
+    "reason_code": "accepted",
+    "rollback_reason": "full_eval: per_question_pass_to_fail",
+    "regression_count": 1,
+    "verdict_audit_metrics": {
+      "delta_pp": 2.0,
+      "min_gain_pp": 1.0,
+      "post_arbiter_candidate": 70.5,
+      "post_arbiter_baseline": 68.5,
+      "previous_pre_arbiter": 66.0,
+      "previous_post_arbiter": 68.5
+    },
+    "rollback_audit_metrics": {
+      "regression_count": 1,
+      "post_arbiter_candidate": 70.5,
+      "post_arbiter_baseline": 68.5,
+      "delta_pp": 2.0,
+      "min_gain_pp": 1.0,
+      "pre_arbiter_candidate": 68.0,
+      "pre_arbiter_baseline": 66.0,
+      "diagnostic_regressions": []
+    },
+    "accept_audit_metrics": null
+  }
+}

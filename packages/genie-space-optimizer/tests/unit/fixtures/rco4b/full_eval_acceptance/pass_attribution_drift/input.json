@@ -1,0 +1,19 @@
+{
+  "full_eval_input": {
+    "ag_id": "ag-002",
+    "iteration": 5,
+    "strict_decision_accepted": true,
+    "strict_decision_reason_code": "accepted",
+    "strict_decision_delta_pp": 2.5,
+    "strict_decision_post_arbiter_candidate": 71.0,
+    "strict_decision_post_arbiter_baseline": 68.5,
+    "strict_decision_min_gain_pp": 1.0,
+    "pre_arbiter_candidate": 69.0,
+    "pre_arbiter_baseline": 66.0,
+    "control_plane_reason_code": "accepted_with_attribution_drift",
+    "diagnostic_regression_judges": [
+      "asset_routing"
+    ],
+    "regressions": []
+  }
+}

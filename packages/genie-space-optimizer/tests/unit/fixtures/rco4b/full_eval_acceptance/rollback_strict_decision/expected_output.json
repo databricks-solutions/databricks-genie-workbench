@@ -1,0 +1,30 @@
+{
+  "outcome": {
+    "accepted": false,
+    "branch": "rollback",
+    "reason_code": "below_min_gain",
+    "rollback_reason": "full_eval: overall_accuracy_guard",
+    "regression_count": 1,
+    "verdict_audit_metrics": {
+      "delta_pp": -0.5,
+      "min_gain_pp": 1.0,
+      "post_arbiter_candidate": 68.0,
+      "post_arbiter_baseline": 68.5,
+      "previous_pre_arbiter": 66.0,
+      "previous_post_arbiter": 68.5
+    },
+    "rollback_audit_metrics": {
+      "regression_count": 1,
+      "post_arbiter_candidate": 68.0,
+      "post_arbiter_baseline": 68.5,
+      "delta_pp": -0.5,
+      "min_gain_pp": 1.0,
+      "pre_arbiter_candidate": 65.0,
+      "pre_arbiter_baseline": 66.0,
+      "diagnostic_regressions": [
+        "overall_accuracy"
+      ]
+    },
+    "accept_audit_metrics": null
+  }
+}

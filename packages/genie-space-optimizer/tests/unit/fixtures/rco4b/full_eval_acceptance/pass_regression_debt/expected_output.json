@@ -1,0 +1,29 @@
+{
+  "outcome": {
+    "accepted": true,
+    "branch": "accept_with_debt",
+    "reason_code": "accepted",
+    "rollback_reason": null,
+    "regression_count": 0,
+    "verdict_audit_metrics": {
+      "delta_pp": 4.0,
+      "min_gain_pp": 1.0,
+      "post_arbiter_candidate": 73.0,
+      "post_arbiter_baseline": 69.0,
+      "previous_pre_arbiter": 67.0,
+      "previous_post_arbiter": 69.0
+    },
+    "rollback_audit_metrics": null,
+    "accept_audit_metrics": {
+      "post_arbiter_candidate": 73.0,
+      "post_arbiter_baseline": 69.0,
+      "delta_pp": 4.0,
+      "min_gain_pp": 1.0,
+      "pre_arbiter_candidate": 71.0,
+      "pre_arbiter_baseline": 67.0,
+      "diagnostic_regressions": [
+        "sql_semantics"
+      ]
+    }
+  }
+}

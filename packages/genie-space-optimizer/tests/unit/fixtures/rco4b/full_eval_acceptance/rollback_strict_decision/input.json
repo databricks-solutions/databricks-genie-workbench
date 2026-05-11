@@ -1,0 +1,26 @@
+{
+  "full_eval_input": {
+    "ag_id": "ag-004",
+    "iteration": 4,
+    "strict_decision_accepted": false,
+    "strict_decision_reason_code": "below_min_gain",
+    "strict_decision_delta_pp": -0.5,
+    "strict_decision_post_arbiter_candidate": 68.0,
+    "strict_decision_post_arbiter_baseline": 68.5,
+    "strict_decision_min_gain_pp": 1.0,
+    "pre_arbiter_candidate": 65.0,
+    "pre_arbiter_baseline": 66.0,
+    "control_plane_reason_code": "below_min_gain",
+    "diagnostic_regression_judges": [
+      "overall_accuracy"
+    ],
+    "regressions": [
+      {
+        "judge": "overall_accuracy_guard",
+        "drop": 0.5,
+        "previous": 68.5,
+        "current": 68.0
+      }
+    ]
+  }
+}
