@@ -210,11 +210,13 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 ### RCO-4b — `_run_gate_checks` Decomposition (Phased)
 
-**Status:** Phase A + Phase B landed — propagation_wait and slice_gate extracted; typed contracts defined for all six stages; sequence-guard test pins production firing order. Phases C-E remain.
+**Status:** Phases A, B, and C landed — propagation_wait, slice_gate, and p0_gate extracted; typed contracts defined for all six stages; sequence-guard test pins production firing order. Phases D-E remain.
 
 **Phase A plan:** `docs/2026-05-12-rco-4b-phase-a-run-gate-checks-decomposition-plan.md`.
 
 **Phase B plan:** `docs/2026-05-12-rco-4b-phase-b-slice-gate-extraction-plan.md`.
+
+**Phase C plan:** `docs/2026-05-12-rco-4b-phase-c-p0-gate-extraction-plan.md`.
 
 **Phase roadmap:** `docs/2026-05-12-rco-4b-phase-roadmap.md`.
 
@@ -227,7 +229,10 @@ The earlier closeout list was directionally right but stale in a few places. Thi
   `compute_slice_gate_effective_tolerance`,
   `decide_slice_gate_post_eval`; default-off behind
   `GSO_GATE_CHECKS_SLICE_PURE`).
-- C — P0 gate extraction. Pending. (Independent of B.)
+- C — P0 gate extraction. ✅ closed-local pending corpus
+  (two pure helpers: `decide_p0_gate_should_run`,
+  `decide_p0_gate_post_eval`; default-off behind
+  `GSO_GATE_CHECKS_P0_PURE`).
 - D — ASI + baseline-drift extraction. Pending. (Independent of B/C.)
 - E — Full-eval-acceptance extraction. Pending. (Soft-blocked by B/C/D for diff-size reasons.)
 - F (RCO-4c) — Unblock RCO-4 deferred gates. Pending.
