@@ -87,7 +87,11 @@ The sequence-guard test at `tests/unit/test_rco4b_run_gate_checks_sequence_guard
 
 **Decision shape:** same two-step pattern as slice_gate (run / drop).
 
-**Why deferred to Phase C:** same shape as slice_gate; the extraction follows the same template.
+**Status:** extracted in Phase C — two pure helpers in
+`stages/eval_gates.py` (`decide_p0_gate_should_run`,
+`decide_p0_gate_post_eval`). Default-off behind
+`GSO_GATE_CHECKS_P0_PURE`. See
+`2026-05-12-rco-4b-phase-c-p0-gate-extraction-plan.md`.
 
 ### 4. full_eval_acceptance (Part 1 — eval run)
 

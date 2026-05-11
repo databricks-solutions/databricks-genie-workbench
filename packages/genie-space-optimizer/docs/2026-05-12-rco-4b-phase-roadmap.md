@@ -47,13 +47,19 @@ fixtures + parity + sequence-guard + roadmap close).
 
 ## Phase C — P0 gate
 
-**Plan:** `docs/<TBD>-rco-4b-phase-c-p0-gate-extraction-plan.md`.
+**Plan:** `docs/2026-05-12-rco-4b-phase-c-p0-gate-extraction-plan.md`.
 
-**Scope:** same two-step extraction pattern as Phase B.
+**Status:** in-flight — extraction proceeds in two pure helpers
+(should_run / post_eval). No tolerance computation needed (P0 gate
+has none). See ``2026-05-12-rco-4b-phase-c-p0-gate-extraction-plan.md``.
+
+**Scope:** same two-step extraction pattern as Phase B (minus the
+tolerance helper).
 
 **Blocked by:** Phase A. Independent of Phase B (can land in parallel).
 
-**Estimated commits:** ~6.
+**Estimated commits:** ~7 (1 doc + 2 helpers + harness wiring + 4
+fixtures + parity + sequence-guard + roadmap close).
 
 ## Phase D — ASI + baseline-drift
 
