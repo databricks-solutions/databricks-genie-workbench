@@ -1677,6 +1677,109 @@ def _persist_phase_b_artifacts_to_anchor(
         )
 
 
+# ── Cycle 15.2 / C12-T5: patch_survival.json persist helper ──────────
+#
+# Module-level state for the substrate gate. The set is populated by
+# _persist_iter_patch_survival_to_anchor on successful upload; read by
+# _patch_survival_json_at_contract_path. Process-scoped — a fresh
+# run_lever_loop starts empty, which matches the natural lifecycle.
+_PATCH_SURVIVAL_MATERIALIZED_ITERS: set[int] = set()
+
+
+def _build_mlflow_client_for_persist():
+    """Lazy MlflowClient constructor so unit tests can monkeypatch
+    this seam without importing mlflow at module load time.
+    """
+    from mlflow.tracking import MlflowClient
+    return MlflowClient()
+
+
+def _resolve_anchor_run_id_for_persist(opt_run_id: str) -> str:
+    """Resolve the lever-loop anchor run id for an artifact upload.
+    Wraps the existing resolve_anchor_run_id helper so tests can
+    monkeypatch this seam. Returns "" on failure.
+    """
+    try:
+        import mlflow
+        from genie_space_optimizer.tools.mlflow_artifact_anchor import (
+            resolve_anchor_run_id,
+        )
+        client = _build_mlflow_client_for_persist()
+        active = mlflow.active_run()
+        experiment_ids: list[str] = []
+        if active is not None:
+            experiment_ids.append(active.info.experiment_id)
+        else:
+            for e in client.search_experiments():
+                experiment_ids.append(e.experiment_id)
+        return str(
+            resolve_anchor_run_id(
+                client=client,
+                opt_run_id=opt_run_id,
+                experiment_ids=experiment_ids,
+            ) or ""
+        )
+    except Exception:
+        return ""
+
+
+def _persist_iter_patch_survival_to_anchor(
+    *,
+    opt_run_id: str,
+    iteration: int,
+    per_ag_snapshots,
+) -> _ArtifactPersistResult:
+    """C12-T5 — write per-iteration patch_survival.json at the
+    canonical bundle contract path
+    ``gso_postmortem_bundle/iterations/iter_NN/patch_survival.json``.
+
+    On success, records the iteration in
+    ``_PATCH_SURVIVAL_MATERIALIZED_ITERS`` so the substrate gate
+    in ``_patch_survival_json_at_contract_path(iteration)`` returns
+    True for the live arm of C14B-T3 patch-subset isolation.
+
+    Pure-ish: no global state beyond the materialized-iters set; one
+    MlflowClient.log_text call on success; never raises.
+    """
+    from genie_space_optimizer.optimization.patch_survival import (
+        aggregate_patch_survival_for_iteration,
+    )
+    from genie_space_optimizer.optimization.run_output_contract import (
+        iteration_bundle_prefix,
+    )
+
+    anchor = _resolve_anchor_run_id_for_persist(opt_run_id)
+    if not anchor:
+        return _ArtifactPersistResult(
+            success=False, anchor_run_id="",
+            exception_class="NoSiblingRun",
+        )
+
+    artifact_file = f"{iteration_bundle_prefix(int(iteration))}/patch_survival.json"
+    try:
+        import json as _json
+        payload = aggregate_patch_survival_for_iteration(
+            iteration=int(iteration),
+            per_ag_snapshots=per_ag_snapshots or [],
+        )
+        text = _json.dumps(payload, sort_keys=True, indent=2)
+        client = _build_mlflow_client_for_persist()
+        client.log_text(
+            run_id=anchor,
+            text=text,
+            artifact_file=artifact_file,
+        )
+        _PATCH_SURVIVAL_MATERIALIZED_ITERS.add(int(iteration))
+        return _ArtifactPersistResult(
+            success=True, anchor_run_id=anchor, exception_class="",
+        )
+    except Exception as exc:
+        return _ArtifactPersistResult(
+            success=False, anchor_run_id=anchor,
+            exception_class=type(exc).__name__,
+        )
+
+
 # ── Phase D.5 alternatives-capture helpers ────────────────────────────
 # Build the alternatives_by_id maps that the three trace-aware producers
 # (cluster_records, strategist_ag_records, proposal_generated_records)
@@ -15613,6 +15716,11 @@ def _run_lever_loop(
             _iter_no_op_cause: str = ""
             _iter_applied_count: int = 0
 
+            # C12-T5: accumulator for per-iteration patch_survival.json
+            # persistence. Reset once per iteration so each AG's
+            # snapshot lands in the right per-iter file.
+            _iter_patch_survival_snapshots: list = []
+
             # Cycle 5 T2 — per-iteration accumulator for gate-drops carrying
             # a causal-target patch. Populated unconditionally at the
             # blast-radius drop site (capture is cheap memory; no behaviour
@@ -21485,6 +21593,7 @@ def _run_lever_loop(
                 _survival_table = build_patch_survival_table(_survival_snapshot)
                 if _survival_table:
                     print(_survival_table)
+                _iter_patch_survival_snapshots.append(_survival_snapshot)
             except Exception:
                 logger.debug("Patch-survival ledger failed (non-fatal)", exc_info=True)
 
@@ -24150,6 +24259,24 @@ def _run_lever_loop(
             except Exception:
                 logger.debug(
                     "Phase H iteration finalise skipped (non-fatal)",
+                    exc_info=True,
+                )
+
+            # C12-T5: persist per-iteration patch_survival.json at the
+            # canonical bundle contract path. The persist helper is
+            # best-effort: a failure leaves _PATCH_SURVIVAL_MATERIALIZED_ITERS
+            # without this iteration, which keeps the C14B-T3 live arm's
+            # substrate gate False for this iteration — exactly the
+            # behaviour we want.
+            try:
+                _persist_iter_patch_survival_to_anchor(
+                    opt_run_id=run_id,
+                    iteration=int(iteration_counter),
+                    per_ag_snapshots=list(_iter_patch_survival_snapshots),
+                )
+            except Exception:
+                logger.debug(
+                    "Patch-survival persist failed (non-fatal)",
                     exc_info=True,
                 )
 
