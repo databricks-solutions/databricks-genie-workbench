@@ -1081,3 +1081,20 @@ def assemble_run_manifest_v2_line(
         python_version=read_python_version(),
         domain=read_domain(),
     )
+
+
+def contract_health_summary_marker(summary) -> str:
+    """RCO-2a — emit ``GSO_CONTRACT_HEALTH_V1`` carrying the typed
+    end-of-run health summary.
+
+    ``summary`` must be a ``contract_health.ContractHealthSummary``;
+    we don't import the type at module load to keep
+    ``run_analysis_contract.py`` free of optimization-package imports
+    (it is intentionally Spark/Databricks/MLflow free).
+
+    The merge-gate categories carried in the payload are **wired but
+    not enforced** in RCO-2a — the production job still exits with
+    success on ``merge_gate_blocked``. RCO-2b flips that posture.
+    """
+    payload = summary.to_json_dict()
+    return marker_line("GSO_CONTRACT_HEALTH_V1", payload)
