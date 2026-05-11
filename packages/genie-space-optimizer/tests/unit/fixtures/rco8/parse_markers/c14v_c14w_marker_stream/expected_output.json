@@ -1,0 +1,94 @@
+{
+  "run_manifest": {
+    "databricks_job_id": "airline-job-7",
+    "databricks_parent_run_id": "airline-parent-run-8",
+    "event": "start",
+    "lever_loop_task_run_id": "airline-task-run-9",
+    "mlflow_experiment_id": "exp-airline",
+    "optimization_run_id": "opt-airline-001",
+    "space_id": "sp-airline"
+  },
+  "iteration_summaries": [
+    {
+      "accepted_count": 1,
+      "decision_record_count": 4,
+      "gate_drop_count": 1,
+      "iteration": 1,
+      "journey_violation_count": 0,
+      "optimization_run_id": "opt-airline-001",
+      "rolled_back_count": 0,
+      "skipped_count": 0
+    }
+  ],
+  "phase_b": [
+    {
+      "decision_record_count": 4,
+      "decision_trace_artifact": "phase_b/decision_trace/iter_01.json",
+      "decision_validation_count": 4,
+      "iteration": 1,
+      "operator_transcript_artifact": "phase_b/operator_transcript/iter_01.txt",
+      "optimization_run_id": "opt-airline-001",
+      "persist_ok": true,
+      "transcript_chars": 2048
+    }
+  ],
+  "phase_b_no_records": [],
+  "phase_a_artifact": [],
+  "phase_b_artifact": [],
+  "convergence": {
+    "best_accuracy": 0.71,
+    "iteration_counter": 1,
+    "optimization_run_id": "opt-airline-001",
+    "reason": "stalled",
+    "thresholds_met": false
+  },
+  "artifact_index": {
+    "artifact_index_path": "gso_postmortem_bundle/artifact_index.json",
+    "iterations": [1],
+    "optimization_run_id": "opt-airline-001",
+    "parent_bundle_run_id": "br-1"
+  },
+  "bundle_assembly_failed": [],
+  "plateau_input_source": [],
+  "run_manifest_v2": null,
+  "phase_h_strict_validation": null,
+  "bundle_assembly_incomplete": [
+    {
+      "optimization_run_id": "opt-airline-001",
+      "parent_bundle_run_id": "br-1",
+      "total_declared": 42,
+      "total_materialized": 41,
+      "missing_count": 1,
+      "parent_level_missing": ["gso_postmortem_bundle/failure_buckets.json"],
+      "unmigrated_per_iteration_missing": []
+    }
+  ],
+  "patch_isolation_diagnostic": null,
+  "patch_isolation_outcome": null,
+  "attribution_drift": [
+    {
+      "optimization_run_id": "opt-airline-001",
+      "iteration": 1,
+      "ag_id": "AG_alpha",
+      "drift_class": "target_in_out_of_target_set",
+      "detail": "q3 not in causal target set"
+    }
+  ],
+  "unknown": {
+    "GSO_DATABRICKS_IDS_RESOLVED_V1": [
+      {
+        "resolution_path": "mixed",
+        "fields_resolved": 3,
+        "fields_total": 3,
+        "dbutils_attempted": true,
+        "dbutils_succeeded": true,
+        "sample_field": "",
+        "sample_value": ""
+      }
+    ],
+    "GSO_UNKNOWN_FUTURE_V1": [
+      {"forward_compat_field": "x"}
+    ]
+  },
+  "parse_errors": []
+}

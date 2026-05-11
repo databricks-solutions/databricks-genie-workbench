@@ -1,0 +1,10 @@
+[INFO] Preamble line that is not a marker.
+GSO_RUN_MANIFEST_V1 {"databricks_job_id":"airline-job-7","databricks_parent_run_id":"airline-parent-run-8","event":"start","lever_loop_task_run_id":"airline-task-run-9","mlflow_experiment_id":"exp-airline","optimization_run_id":"opt-airline-001","space_id":"sp-airline"}
+GSO_DATABRICKS_IDS_RESOLVED_V1 {"resolution_path":"mixed","fields_resolved":3,"fields_total":3,"dbutils_attempted":true,"dbutils_succeeded":true,"sample_field":"","sample_value":""}
+GSO_ITERATION_SUMMARY_V1 {"accepted_count":1,"decision_record_count":4,"gate_drop_count":1,"iteration":1,"journey_violation_count":0,"optimization_run_id":"opt-airline-001","rolled_back_count":0,"skipped_count":0}
+GSO_PHASE_B_V1 {"decision_record_count":4,"decision_trace_artifact":"phase_b/decision_trace/iter_01.json","decision_validation_count":4,"iteration":1,"operator_transcript_artifact":"phase_b/operator_transcript/iter_01.txt","optimization_run_id":"opt-airline-001","persist_ok":true,"transcript_chars":2048}
+GSO_ATTRIBUTION_DRIFT_V1 {"optimization_run_id":"opt-airline-001","iteration":1,"ag_id":"AG_alpha","drift_class":"target_in_out_of_target_set","detail":"q3 not in causal target set"}
+GSO_BUNDLE_ASSEMBLY_INCOMPLETE_V1 {"optimization_run_id":"opt-airline-001","parent_bundle_run_id":"br-1","total_declared":42,"total_materialized":41,"missing_count":1,"parent_level_missing":["gso_postmortem_bundle/failure_buckets.json"],"unmigrated_per_iteration_missing":[]}
+GSO_ARTIFACT_INDEX_V1 {"artifact_index_path":"gso_postmortem_bundle/artifact_index.json","iterations":[1],"optimization_run_id":"opt-airline-001","parent_bundle_run_id":"br-1"}
+GSO_CONVERGENCE_V1 {"best_accuracy":0.71,"iteration_counter":1,"optimization_run_id":"opt-airline-001","reason":"stalled","thresholds_met":false}
+GSO_UNKNOWN_FUTURE_V1 {"forward_compat_field":"x"}

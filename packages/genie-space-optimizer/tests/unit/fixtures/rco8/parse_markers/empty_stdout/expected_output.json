@@ -1,0 +1,20 @@
+{
+  "run_manifest": null,
+  "iteration_summaries": [],
+  "phase_b": [],
+  "phase_b_no_records": [],
+  "phase_a_artifact": [],
+  "phase_b_artifact": [],
+  "convergence": null,
+  "artifact_index": null,
+  "bundle_assembly_failed": [],
+  "plateau_input_source": [],
+  "run_manifest_v2": null,
+  "phase_h_strict_validation": null,
+  "bundle_assembly_incomplete": null,
+  "patch_isolation_diagnostic": null,
+  "patch_isolation_outcome": null,
+  "attribution_drift": [],
+  "unknown": {},
+  "parse_errors": []
+}
