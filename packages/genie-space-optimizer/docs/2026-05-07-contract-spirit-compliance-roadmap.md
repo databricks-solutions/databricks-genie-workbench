@@ -266,7 +266,7 @@ Merge-gate enforcement (`Stage 11 → run exit` arrow) is Cycle 16; producer cor
 | C12-T2 | drafted | 6 | ~2 |
 | C12-T3 | drafted | 11 | ~3-4 |
 | C12-T4 | pending | ~3-4 | ~1 |
-| C12-T5 | scoped, not yet drafted | TBD (~10) | ~3-4 |
+| C12-T5 | closed-local pending corpus (closed by [Cycle 15.2 — Patch-Survival Substrate](./2026-05-10-cycle-15-2-patch-survival-substrate-plan.md)) | TBD (~10) | ~3-4 |
 | **Total** | | | **~11-13** |
 
 T1, T2, T3 are independent and can ship in any order (or in parallel). T4 depends on T1+T2+T3 having shipped (audit consumes their typed markers). T5 depends on T4 having returned green on the parent-level closeout (so we know per-iteration is the only remaining layer).
@@ -690,7 +690,7 @@ Plus three loud-failure regression-rail markers (`GSO_FORBIDDEN_AG_ADMISSION_BYP
 
   **Severity tiers:**
   - **HIGH** — `I3`, `I4`, `I7`, `I8`, `I9`, `I10`, **`I11`** (causal continuity), **`I12`** (replay validity, reserved for C17), **`I13`** (per-QID delta totality, from C14-T0); `replay_validity=false`; `phase_b records ≠ replay records`; **P1 invariant violation** (regression-bucket sum ≠ candidate-failed-QID count); `phase_h_strict_validation.validator_status` ∈ `{listing_failed, validator_failed}` *(silent-but-wired failure surfaced by C12-T2)*; `bundle_assembly_incomplete.parent_level_missing_count > 0` *(producer didn't run, surfaced by C12-T3)*.
-  - **MEDIUM** — `I5`, `I6`, `manifest_path_missing > 0`, `bundle_assembly_incomplete.unmigrated_per_iteration_missing_count > 0` (until C12-T5 ships, after which this tier promotes to HIGH).
+  - **MEDIUM** — `I5`, `I6`, `manifest_path_missing > 0`, `bundle_assembly_incomplete.unmigrated_per_iteration_missing_count > 0` (until C12-T5 ships, after which this tier promotes to HIGH; `patch_survival.json` is now migrated as of Cycle 15.2 — `decision_trace` and `journey_validation` remain on the legacy → re-upload path and are not in scope for this delta).
   - **LOW** — `I1` warnings; `phase_h_strict_validation.flag_enabled=false` *(only legitimate when explicitly disabled for an experiment)*.
   - **Excluded from severity** (terminal reasons, not violations) — `terminal_reason` ∈ `{no_grounded_clusters, no_eligible_ag_after_forbidden, no_structural_alternative}`. These surface in the marker payload for postmortem inspection but do not contribute to the merge-gate trip count.
 
@@ -831,6 +831,7 @@ producer):
 | 14B | ~3-4 | 2 (T1+T2 / T3) | `GSO_PARTIAL_HARVEST_WITH_DEBT` (off → warn → enforce); `GSO_PATCH_SUBSET_ISOLATION` (off → on after corpus measurement) |
 | 15 | ~3 | 1 | `GSO_RCA_GROUNDING_PRE_EMIT_GATE` (off → warn → enforce) |
 | Cycle 15.1 — Compliance Ratchet | closed-local pending corpus | I9 (acceptance render byte-equality), I10 (applied-patch ID injectivity), C16-T3 (existing-hard-outside-target bucket + soft-signal routing lock-in). No behaviour change; observability + bookkeeping closures. | [2026-05-10-cycle-15-1-compliance-ratchet-plan.md](./2026-05-10-cycle-15-1-compliance-ratchet-plan.md) |
+| Cycle 15.2 — Patch-Survival Substrate | closed-local pending corpus | C12-T5 (per-iter `patch_survival.json` producer at canonical bundle contract path). Substrate gate `_patch_survival_json_at_contract_path(iteration)` now flips to True after each iteration's successful persist, unblocking the live arm of C14B-T3 patch-subset isolation pending a corpus pilot validation of attribution accuracy. No behaviour change; additive artifact only. | [2026-05-10-cycle-15-2-patch-survival-substrate-plan.md](./2026-05-10-cycle-15-2-patch-survival-substrate-plan.md) |
 | 16 | ~6 | 3 | `GSO_L6_NARROW_REPLACEMENT_BRANCH_C` (off → on); `GSO_CONTRACT_HEALTH_MERGE_GATE` (off → warn → enforce); `GSO_LOOP_INVARIANTS_STRICT` (default flip) |
 | 17 | ~3 | 1 | `GSO_JOURNEY_PRODUCER_STRICT` (off → on after pilot) |
 | **Total** | **~41-48 working days** | **20 plans** | **17 new flags + 2 default flips + 8 emit-only markers + 4 regression-rail markers** |
