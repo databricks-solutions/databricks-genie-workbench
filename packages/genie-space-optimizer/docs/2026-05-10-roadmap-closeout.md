@@ -219,6 +219,8 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 ### RCO-5 — Acceptance Object Consolidation
 
+**Status:** closed-local pending corpus — ``optimization.control_plane.ControlPlaneAcceptance`` is canonical; ``optimization.acceptance_policy.AcceptanceDecision`` renamed to ``GainGateDecision``; ``tools.lever_loop_stdout_parser.AcceptanceDecision`` renamed to ``ParsedAcceptanceView`` with new ``parsed_view_to_control_plane`` projection. Structural guard at ``tests/unit/test_rco5_acceptance_structural_guard.py``. Policy doc at ``docs/2026-05-11-rco-5-acceptance-consolidation-policy.md``. I9 still the runtime render-drift guard. No semantic changes; corpus confirmation pending the next airline + 7Now run.
+
 **Why this exists:** Stage 9 still has multiple acceptance representations. I9 catches render drift, but drift should be structurally hard to create.
 
 **Primary files:**
@@ -371,7 +373,7 @@ This follows the keystone and corpus evidence. Do not flip defaults speculativel
 
 ### Tier 5 — Structural Simplification + Final Audit
 
-9. RCO-5: Acceptance object consolidation.
+9. RCO-5: Acceptance object consolidation. ✅ closed-local pending corpus.
 10. RCO-9: Final closeout audit.
 
 Acceptance consolidation can happen before the keystone if execution capacity is available, but it is safest after the health/merge-gate contract is stable because it touches Stage 9 semantics.
