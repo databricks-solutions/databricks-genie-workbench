@@ -415,10 +415,27 @@ def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
     can surface which AGs were denied and why (forbidden-AG no-op loop
     observability). Flag-off behaviour is byte-stable with pre-Phase-3
     runs (admission_trace is always an empty tuple when flag is off).
+
+    RCO-7 Site 2: ``inp.action_groups`` and ``inp.forbidden_ags`` are
+    pre-sorted by canonical AG id before any downstream walk so the
+    stage's outputs are independent of incidental LLM-output ordering.
+    Harness-side sort (Site 1) is the first defense; this is
+    defense-in-depth at the stage boundary.
     """
     from genie_space_optimizer.common.config import (
         bucket_driven_ag_selection_enabled,
         stage_handlers_chunk_b_enabled,
+    )
+    from genie_space_optimizer.optimization.llm_boundary_sort import (
+        sort_action_groups_canonically,
+    )
+
+    # RCO-7 Site 2 — canonical pre-sort.
+    sorted_action_groups = tuple(
+        sort_action_groups_canonically(inp.action_groups)
+    )
+    sorted_forbidden_ags = tuple(
+        sorted(inp.forbidden_ags, key=lambda f: f.ag_id)
     )
 
     if (
@@ -427,12 +444,12 @@ def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
     ):
         filtered_ags = tuple(
             _apply_bucket_policy(
-                inp.action_groups,
+                sorted_action_groups,
                 buckets_by_qid=inp.prior_buckets_by_qid,
             )
         )
     else:
-        filtered_ags = tuple(inp.action_groups)
+        filtered_ags = sorted_action_groups
 
     # Cycle 11 Task 13 — union cluster.recommended_levers into
     # strategist-emit AG lever_directives so the strategist path
@@ -457,11 +474,13 @@ def select(ctx, inp: ActionGroupsInput) -> ActionGroupSlate:
         ctx.decision_emit(record)
 
     # C15 Phase 3 — admission trace (chunk_b flag-gated; byte-stable when off).
+    # RCO-7 Site 2 — feed the canonically sorted tuples so admission
+    # trace order is deterministic.
     admission_trace: tuple[AdmissionTrace, ...] = ()
-    if stage_handlers_chunk_b_enabled() and inp.forbidden_ags:
+    if stage_handlers_chunk_b_enabled() and sorted_forbidden_ags:
         admission_trace = _build_admission_trace(
-            candidates=inp.action_groups,
-            forbidden_ags=inp.forbidden_ags,
+            candidates=sorted_action_groups,
+            forbidden_ags=sorted_forbidden_ags,
         )
 
     return ActionGroupSlate(
