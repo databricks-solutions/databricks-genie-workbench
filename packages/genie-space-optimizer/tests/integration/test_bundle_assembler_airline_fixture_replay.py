@@ -90,9 +90,27 @@ def test_airline_anchor_13_assemble_bundle_for_replay_emits_no_failure_markers(
     assert "GSO_BUNDLE_ASSEMBLY_FAILED_V1" not in out, (
         f"assembler emitted failure markers:\n{out}"
     )
-    # The seam must produce a well-shaped bundle dict.
-    assert "manifest" in result
-    assert "iteration_summaries" in result
-    assert "decision_trace_all" in result
-    assert "journey_validation_all" in result
+
+    # RCO-1 — parent-bundle parity contract. Every canonical parent-level
+    # key (minus operator_transcript / replay_fixture, which the seam
+    # intentionally excludes) must be present. The synthetic-fixture
+    # version of this assertion lives in
+    # tests/unit/test_replay_assembler_parent_bundle_parity.py.
+    from genie_space_optimizer.optimization.run_output_contract import (
+        bundle_artifact_paths,
+    )
+    _EXCLUDED = {"operator_transcript", "replay_fixture"}
+    canonical = {
+        k for k in bundle_artifact_paths(iterations=[1]).keys()
+        if k != "iterations"
+    } - _EXCLUDED
+    canonical.add("iteration_summaries")
+    missing = canonical - set(result.keys())
+    assert not missing, (
+        f"Airline fixture replay missing parent-level keys: {sorted(missing)}"
+    )
+
+    # The seam must still produce a well-shaped bundle dict.
     assert isinstance(result["manifest"].get("iterations"), list)
+    assert isinstance(result["failure_buckets"], dict)
+    assert result["failure_buckets"].get("schema_version") == "v1"
