@@ -30,14 +30,21 @@ Phase A ships ``run_propagation_wait_gate``. Phases B-E append
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 
 from genie_space_optimizer.optimization.stages.gate_types import (
     PropagationWaitInput,
     PropagationWaitOutcome,
+    SliceGateInput,
+    SliceGateOutcome,
 )
 
-__all__ = ["run_propagation_wait_gate"]
+__all__ = [
+    "run_propagation_wait_gate",
+    "decide_slice_gate_should_run",
+    "compute_slice_gate_effective_tolerance",
+    "decide_slice_gate_post_eval",
+]
 
 
 def run_propagation_wait_gate(
@@ -111,4 +118,68 @@ def run_propagation_wait_gate(
         applied_patches_count=int(inp.applied_patches_count),
         audit_decision=decision,
         reason_code=reason_code,
+    )
+
+
+def decide_slice_gate_should_run(
+    inp: SliceGateInput,
+    *,
+    slice_min_reduction: float,
+    broadness_small_corpus_rows: int = 30,
+) -> SliceGateOutcome:
+    """RCO-4b Phase B — pre-eval slice-gate gating decision.
+
+    Mirrors the inline body at ``harness._run_gate_checks:13030-13099``.
+    Pure function — no ``run_evaluation`` calls, no Spark, no prints.
+
+    Returns a ``SliceGateOutcome`` with ``should_run`` populated; when
+    ``should_run`` is False, ``skip_reason`` carries one of:
+
+    - ``"legacy_gates_disabled"`` — ``ENABLE_LEGACY_SLICE_P0_GATES=False``
+    - ``"slice_gate_disabled"`` — ``ENABLE_SLICE_GATE=False``
+    - ``"slice_empty"`` — ``filter_benchmarks_by_scope`` returned 0 rows
+    - ``"slice_too_broad"`` — broadness ratio exceeds the threshold
+
+    The post-eval fields (``passed``, ``rollback_reason``,
+    ``regression_judge``, ``effective_tolerance``) are left at their
+    dataclass defaults (``None``). The harness owns those after
+    ``run_evaluation`` and ``detect_regressions`` produce slice drops.
+
+    ``broadness_small_corpus_rows`` defaults to 30 to match the legacy
+    hardcoded threshold at ``harness:13076``. It is parameterized only
+    so tests can probe other thresholds.
+    """
+    if not inp.legacy_gates_enabled:
+        return SliceGateOutcome(
+            should_run=False,
+            skip_reason="legacy_gates_disabled",
+        )
+    if not inp.slice_gate_enabled:
+        return SliceGateOutcome(
+            should_run=False,
+            skip_reason="slice_gate_disabled",
+        )
+    if inp.slice_benchmark_count <= 0:
+        return SliceGateOutcome(
+            should_run=False,
+            skip_reason="slice_empty",
+        )
+
+    total = int(inp.full_benchmark_count)
+    sliced = int(inp.slice_benchmark_count)
+    broadness_ratio = (sliced / total) if total > 0 else 1.0
+    is_small_corpus = total <= int(broadness_small_corpus_rows)
+    threshold = 0.9 if is_small_corpus else (1.0 - float(slice_min_reduction))
+
+    if broadness_ratio > threshold:
+        return SliceGateOutcome(
+            should_run=False,
+            skip_reason="slice_too_broad",
+            broadness_ratio=broadness_ratio,
+        )
+
+    return SliceGateOutcome(
+        should_run=True,
+        skip_reason=None,
+        broadness_ratio=broadness_ratio,
     )
