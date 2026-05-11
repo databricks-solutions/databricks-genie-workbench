@@ -333,6 +333,15 @@ def _make_arbiter_scorer(
 
         try:
             result = _call_llm_for_scoring(w, prompt, prompt_name=get_registered_prompt_name("arbiter"))
+            # RCO-7 Site 4 — sort list-valued arbiter fields so
+            # downstream RCA-card construction and ``build_asi_metadata``
+            # see deterministic blame_set / expected_objects /
+            # actual_objects / recommended_levers regardless of LLM
+            # output ordering.
+            from genie_space_optimizer.optimization.llm_boundary_sort import (
+                canonicalize_arbiter_verdict,
+            )
+            result = canonicalize_arbiter_verdict(result)
             verdict = result.get("verdict", "ground_truth_correct")
             valid_verdicts = ARBITER_VERDICTS - {"skipped"}
             if verdict not in valid_verdicts:
