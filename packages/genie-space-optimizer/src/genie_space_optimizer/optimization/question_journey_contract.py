@@ -79,6 +79,16 @@ _LEGAL_NEXT: dict[JourneyStage, frozenset[JourneyStage]] = {
         JourneyStage.SOFT_SIGNAL,
         JourneyStage.GT_CORRECTION_CANDIDATE,
         JourneyStage.ALREADY_PASSING,
+        # Cycle 17 T1 — state-machine extension #2. Legitimate scenario:
+        # `iteration_terminal_with_acceptance`. A qid that is evaluated
+        # but not surfaced by any classifier (no hard cluster, no soft
+        # pile, no gt_correction, no already_passing) reaches the
+        # post-eval terminal state after iteration acceptance closes the
+        # iteration. Anchors: airline run 294 (gs_016) and the cycle 10
+        # fixture's "3 qids reach post_eval directly from evaluated"
+        # case. Extension is unconditional (no flag): producers do not
+        # change behaviour, so canonical-event JSON remains byte-stable.
+        JourneyStage.POST_EVAL,
     }),
     JourneyStage.CLUSTERED: frozenset({
         JourneyStage.AG_ASSIGNED,

@@ -104,27 +104,33 @@ def test_run_replay_two_iter_clean_fixture_validates_cleanly() -> None:
     assert result.validation.missing_qids == ()
 
 
-def test_run_replay_intra_iter_violation_is_caught_and_attributed() -> None:
-    """A qid that goes evaluated -> post_eval (no classification stage) is an
-    illegal transition. The fix must keep catching this; it must NOT be silenced
-    by per-iteration scoping."""
+def test_run_replay_intra_iter_violation_fixture_is_now_valid_cycle17() -> None:
+    """Cycle 17 T1 — state-machine extension #2 legalized `evaluated →
+    post_eval` ('iteration_terminal_with_acceptance'). The fixture
+    ``synthetic_two_iter_one_intra_violation.json`` contained exactly
+    that transition for ``syn_q2`` (result_correctness=no, arbiter=
+    neither_correct, no clusters in iter 2). Under the old contract
+    this was the test's "intra-iter violation". Under the new contract
+    (Cycle 17 T1), the transition is legal and the replay is valid.
+
+    This test is preserved as a regression check that the extension
+    persists: if ``evaluated → post_eval`` becomes illegal again, this
+    test fails loudly.
+    """
     from genie_space_optimizer.optimization.lever_loop_replay import run_replay
 
     result = run_replay(_load("synthetic_two_iter_one_intra_violation.json"))
 
-    assert not result.validation.is_valid
+    # After Cycle 17 T1, the fixture is clean — syn_q2's evaluated →
+    # post_eval direct path is now a legal 'iteration_terminal_with_acceptance'.
     illegal = [
         v for v in result.validation.violations if v.kind == "illegal_transition"
     ]
-    assert len(illegal) == 1, (
-        f"Expected 1 illegal_transition (syn_q2 evaluated -> post_eval), got "
-        f"{len(illegal)}: {[(v.question_id, v.detail) for v in illegal]}"
+    assert illegal == [], (
+        f"Cycle 17 T1 should make evaluated → post_eval legal; "
+        f"got unexpected violations: {[(v.question_id, v.detail) for v in illegal]}"
     )
-    assert illegal[0].question_id == "syn_q2"
-    # PR-C: detail is prefixed with the chain label ("trunk: " for trunk
-    # transitions, "lane[<pid>]: " for proposal-lane transitions) so
-    # postmortem readers can locate the offending chain.
-    assert illegal[0].detail == "trunk: evaluated -> post_eval"
+    assert result.validation.is_valid
 
 
 def test_run_replay_single_iter_5cluster_fixture_still_validates_cleanly() -> None:

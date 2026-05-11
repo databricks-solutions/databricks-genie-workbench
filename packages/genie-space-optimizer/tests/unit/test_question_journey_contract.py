@@ -328,3 +328,60 @@ def test_clustered_to_already_passing_recognised_by_validator_cycle17():
         f"expected no illegal_transition violations, got: "
         f"{[(v.detail) for v in illegal]}"
     )
+
+
+def test_evaluated_to_post_eval_is_legal_cycle17():
+    """Cycle 17 T1 — state-machine extension #2.
+
+    `evaluated → post_eval` is legitimate when a qid is evaluated but
+    not surfaced by any classifier (hard, soft, gt_corr,
+    already_passing) and reaches the post-eval terminal state after
+    iteration acceptance. Anchor: airline run 294 (gs_016) and cycle
+    10 fixture (3 qids that fall through every classifier).
+
+    Predicate name: `iteration_terminal_with_acceptance`.
+    """
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        JourneyStage,
+        is_legal_next_stage,
+    )
+
+    assert is_legal_next_stage(
+        prev=JourneyStage.EVALUATED,
+        nxt=JourneyStage.POST_EVAL,
+    ) is True
+
+
+def test_evaluated_to_post_eval_recognised_by_validator_cycle17():
+    """End-to-end check: a synthetic qid with events
+    [evaluated, post_eval] validates without an `illegal_transition`
+    violation after the extension. Terminal-state classification
+    remains correct (post_eval is_passing=True implies the qid is
+    not flagged as `no_terminal_state`).
+    """
+    from genie_space_optimizer.optimization.question_journey import (
+        QuestionJourneyEvent,
+    )
+    from genie_space_optimizer.optimization.question_journey_contract import (
+        validate_question_journeys,
+    )
+
+    qid = "q_filtered"
+    events = [
+        QuestionJourneyEvent(question_id=qid, stage="evaluated"),
+        QuestionJourneyEvent(
+            question_id=qid, stage="post_eval",
+            was_passing=True, is_passing=True, transition="hold_pass",
+        ),
+    ]
+    report = validate_question_journeys(events=events, eval_qids={qid})
+    illegal = [v for v in report.violations if v.kind == "illegal_transition"]
+    no_terminal = [v for v in report.violations if v.kind == "no_terminal_state"]
+    assert illegal == [], (
+        f"expected no illegal_transition violations, got: "
+        f"{[(v.detail) for v in illegal]}"
+    )
+    assert no_terminal == [], (
+        f"expected no no_terminal_state violations, got: "
+        f"{[(v.detail) for v in no_terminal]}"
+    )
