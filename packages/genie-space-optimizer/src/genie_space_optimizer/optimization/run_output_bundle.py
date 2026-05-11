@@ -310,12 +310,18 @@ def assemble_bundle_for_replay(replay_fixture: dict) -> dict:
     every per-iteration call site.
 
     The seam mirrors what the harness's terminate path does in
-    ``harness.py:23878-23918``: build the manifest, run summary,
+    ``harness.py:25067-25411``: build the manifest, run summary,
     artifact index, decision-trace aggregate, journey-validation
-    aggregate, scoreboard, and per-iteration bundles. Every stage
-    capture is routed through ``_normalize_stage_capture`` so a
-    list-valued capture (the C14-V D-4 regression shape) cannot
-    raise ``AttributeError``.
+    aggregate, scoreboard, failure-buckets aggregate, and the
+    per-iteration summaries. Every stage capture is routed through
+    ``_normalize_stage_capture`` so a list-valued capture (the
+    C14-V D-4 regression shape) cannot raise ``AttributeError``.
+
+    RCO-1 — ``failure_buckets`` is sourced from each iteration's
+    ``bucket_assignments`` field, mirroring the harness terminate
+    path at ``harness.py:25400-25406``. Iterations that omit the
+    field contribute an empty buckets dict, so the seam stays robust
+    for partial fixtures.
 
     Returns a dict keyed on the parent-bundle artifact paths so the
     integration test can assert structural well-formedness.
@@ -340,6 +346,11 @@ def assemble_bundle_for_replay(replay_fixture: dict) -> dict:
     levers_attempted: dict[int, int] = {}
     levers_accepted: dict[int, int] = {}
     levers_rolled_back: dict[int, int] = {}
+    # RCO-1 — Per-iteration bucket assignments feed
+    # ``build_failure_buckets``. Shape mirrors the harness terminate
+    # path at harness.py:25400-25406, where ``buckets`` comes from each
+    # iteration's journey-validation report under ``bucket_assignments``.
+    iter_assignments: list[dict[str, Any]] = []
     for idx, blob in enumerate(iterations, start=1):
         records = list(blob.get("decision_records") or [])
         iter_traces.append({"iteration": idx, "records": records})
@@ -353,6 +364,13 @@ def assemble_bundle_for_replay(replay_fixture: dict) -> dict:
         iter_violation_counts.append(len(violations))
         if not records:
             no_records_iterations.append(idx)
+        # RCO-1 — Capture bucket assignments per iteration so the
+        # assembler can emit a failure_buckets payload identical in
+        # shape to the harness terminate-path emission.
+        iter_assignments.append({
+            "iteration": idx,
+            "buckets": dict(blob.get("bucket_assignments") or {}),
+        })
         # Walk every stage capture through _normalize_stage_capture.
         # This is the critical D-4 invariant: list-valued captures
         # must survive normalisation without raising AttributeError.
@@ -398,6 +416,12 @@ def assemble_bundle_for_replay(replay_fixture: dict) -> dict:
             best_accuracy=replay_fixture.get("final_accuracy"),
             baseline_accuracy=replay_fixture.get("baseline_accuracy"),
             iteration_count=len(iter_indices),
+        ),
+        # RCO-1 — failure_buckets parity with harness terminate path
+        # (harness.py:25392-25411). Wired here so contract-health
+        # (RCO-2) can consume a complete parent bundle from replay.
+        "failure_buckets": build_failure_buckets(
+            iter_assignments=iter_assignments,
         ),
         "artifact_index": build_artifact_index(iterations=iter_indices),
         "iteration_summaries": [
