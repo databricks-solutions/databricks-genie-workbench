@@ -3373,6 +3373,184 @@ def _run_narrow_l6_replacement_loop(
     return survivors
 
 
+def _emit_structural_causal_dropped_records(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    rca_id: str,
+    root_cause: str,
+    drops: tuple,
+    iter_inputs: dict | None,
+) -> None:
+    """Cycle 16 T4 — emit one ``structural_causal_dropped`` record +
+    marker per orphan structural-causal blast-radius drop. Called from
+    the blast-radius gate site immediately after
+    ``_run_narrow_l6_replacement_loop`` has finished.
+    """
+    if not drops or iter_inputs is None:
+        return
+    try:
+        from genie_space_optimizer.optimization.decision_emitters import (
+            structural_causal_dropped_record,
+        )
+        from genie_space_optimizer.common.mlflow_markers import (
+            structural_causal_dropped_marker,
+        )
+        for d in drops:
+            _rec = structural_causal_dropped_record(
+                run_id=str(run_id),
+                iteration=int(iteration),
+                ag_id=str(ag_id),
+                cluster_id=str(cluster_id),
+                rca_id=str(rca_id),
+                root_cause=str(root_cause),
+                original_proposal_id=str(d.original_proposal_id),
+                original_patch_type=str(d.original_patch_type),
+                original_target=str(d.original_target),
+                drop_reason=str(d.drop_reason),
+                target_qids=tuple(d.target_qids or ()),
+            )
+            iter_inputs.setdefault(
+                "decision_records", []
+            ).append(_rec.to_dict())
+            try:
+                _marker = structural_causal_dropped_marker(
+                    run_id=str(run_id),
+                    iteration=int(iteration),
+                    ag_id=str(ag_id),
+                    cluster_id=str(cluster_id),
+                    root_cause=str(root_cause),
+                    rca_id=str(rca_id),
+                    original_proposal_id=str(d.original_proposal_id),
+                    original_patch_type=str(d.original_patch_type),
+                    original_target=str(d.original_target),
+                    drop_reason=str(d.drop_reason),
+                )
+                iter_inputs.setdefault("markers", []).append(_marker)
+            except Exception:
+                logger.debug(
+                    "Cycle 16 T4: structural_causal_dropped marker "
+                    "emit failed (non-fatal)",
+                    exc_info=True,
+                )
+    except Exception:
+        logger.debug(
+            "Cycle 16 T4: structural_causal_dropped record emit "
+            "failed (non-fatal)",
+            exc_info=True,
+        )
+
+
+def _emit_no_structural_alternative_halt(
+    *,
+    run_id: str,
+    iteration: int,
+    ag: dict,
+    iter_inputs: dict | None,
+    reflection_buffer: list,
+) -> None:
+    """Cycle 16 T4 — emit the AG-level halt record + marker + reflection
+    entry when at least one structural-causal patch was dropped AND no
+    Branch C survivor replaced it.
+
+    Idempotency: callers must invoke this at most once per (ag, iter).
+    The blast-radius gate site enforces this by gating on
+    ``not _halted_no_structural_alternative_already[ag_id]``.
+    """
+    from genie_space_optimizer.optimization.rollback_class import (
+        RollbackClass,
+    )
+
+    ag_id = str(ag.get("ag_id") or ag.get("id") or "")
+    cluster_id = str(
+        (ag.get("source_cluster_ids") or [""])[0]
+    )
+    rca_id = str(ag.get("rca_id") or "")
+    root_cause = str(ag.get("root_cause") or "")
+    target_qids = tuple(
+        str(q) for q in (ag.get("target_qids") or ()) if str(q)
+    )
+    lever_set = tuple(
+        int(l) for l in (ag.get("lever_set") or ()) if l is not None
+    )
+    dropped_proposal_ids = tuple(
+        str(p) for p in (ag.get("dropped_proposal_ids") or ()) if str(p)
+    )
+
+    if iter_inputs is not None:
+        try:
+            from genie_space_optimizer.optimization.decision_emitters import (
+                no_structural_alternative_record,
+            )
+            _rec = no_structural_alternative_record(
+                run_id=str(run_id),
+                iteration=int(iteration),
+                ag_id=ag_id,
+                cluster_id=cluster_id,
+                rca_id=rca_id,
+                root_cause=root_cause,
+                dropped_proposal_ids=dropped_proposal_ids,
+                target_qids=target_qids,
+            )
+            iter_inputs.setdefault(
+                "decision_records", []
+            ).append(_rec.to_dict())
+        except Exception:
+            logger.debug(
+                "Cycle 16 T4: no_structural_alternative record emit "
+                "failed (non-fatal)",
+                exc_info=True,
+            )
+        try:
+            from genie_space_optimizer.common.mlflow_markers import (
+                no_structural_alternative_marker,
+            )
+            _marker = no_structural_alternative_marker(
+                run_id=str(run_id),
+                iteration=int(iteration),
+                ag_id=ag_id,
+                cluster_id=cluster_id,
+                rca_id=rca_id,
+                root_cause=root_cause,
+                dropped_proposal_count=len(dropped_proposal_ids),
+            )
+            iter_inputs.setdefault("markers", []).append(_marker)
+        except Exception:
+            logger.debug(
+                "Cycle 16 T4: no_structural_alternative marker emit "
+                "failed (non-fatal)",
+                exc_info=True,
+            )
+
+    # Reflection entry — RollbackClass.NO_ACTION, levers=ag.lever_set,
+    # rollback_reason="no_structural_alternative". C13's admission
+    # predicate (_reflection_admitted_to_forbidden_set) admits this
+    # when admit_no_action=True (C14-W default-flip flag).
+    reflection_entry: dict = {
+        "iteration": int(iteration),
+        "ag_id": ag_id,
+        "accepted": False,
+        "rollback_class": RollbackClass.NO_ACTION.value,
+        "rollback_reason": "no_structural_alternative",
+        "root_cause": root_cause,
+        "blame_set": target_qids,
+        "lever_set": lever_set,
+        "source_cluster_ids": (cluster_id,) if cluster_id else (),
+        "escalation_handled": False,
+        "patches": [],
+        "reflection_text": (
+            "Structural-causal patch dropped at blast-radius; "
+            "Branch C synthesis produced no replacement."
+        ),
+        "refinement_mode": "out_of_plan",
+        "affected_question_ids": list(target_qids),
+        "optimization_run_id": str(run_id),
+    }
+    reflection_buffer.append(reflection_entry)
+
+
 def _capture_doa_fingerprints_on_rollback(
     *,
     buffer,  # DoaFingerprintBuffer | None
@@ -20784,6 +20962,74 @@ def _run_lever_loop(
                 )
                 if _narrow_kept:
                     _blast_kept = list(_blast_kept) + _narrow_kept
+                # Cycle 16 T4 — Branch C cleanup: when at least one
+                # structural-causal patch was dropped AND no narrow
+                # survivor replaced it (Branch A or Branch C), emit
+                # typed structural_causal_dropped records + halt the
+                # AG with no_structural_alternative.
+                try:
+                    from genie_space_optimizer.optimization.stages.gates import (
+                        detect_structural_causal_drop,
+                    )
+                    _structural_drops = detect_structural_causal_drop(
+                        blast_dropped=tuple(_blast_dropped or ()),
+                        narrow_survivors=tuple(_narrow_kept or ()),
+                        ag_rca_id=str(ag.get("rca_id") or ""),
+                        ag_target_qids=tuple(_blast_target_qids),
+                    )
+                    if _structural_drops:
+                        _emit_structural_causal_dropped_records(
+                            run_id=str(run_id),
+                            iteration=int(iteration_counter),
+                            ag_id=str(ag_id),
+                            cluster_id=str(
+                                (ag.get("source_cluster_ids") or ["?"])[0]
+                            ),
+                            rca_id=str(ag.get("rca_id") or ""),
+                            root_cause=str(ag.get("root_cause") or ""),
+                            drops=_structural_drops,
+                            iter_inputs=_current_iter_inputs,
+                        )
+                        # Halt the AG: stamp patches=[] so the patch_cap
+                        # short-circuits, mirror no_causal_applyable_halt's
+                        # pattern.
+                        _ag_for_halt = dict(ag)
+                        _ag_for_halt["dropped_proposal_ids"] = tuple(
+                            str(d.original_proposal_id)
+                            for d in _structural_drops
+                        )
+                        # Prefer the blast target set so the halt records
+                        # cite the live targets.
+                        _ag_for_halt["target_qids"] = tuple(
+                            _blast_target_qids
+                        )
+                        _ag_for_halt["lever_set"] = tuple(
+                            int(l)
+                            for l in (ag.get("lever_set") or ag.get("Levers") or ())
+                            if l is not None
+                        )
+                        _emit_no_structural_alternative_halt(
+                            run_id=str(run_id),
+                            iteration=int(iteration_counter),
+                            ag=_ag_for_halt,
+                            iter_inputs=_current_iter_inputs,
+                            reflection_buffer=reflection_buffer,
+                        )
+                        # Track for the I11 evidence builder later in
+                        # this iteration's finalize block (Task 5).
+                        _current_iter_inputs.setdefault(
+                            "_c16_no_structural_alternative_ags", []
+                        ).append(str(ag_id))
+                        # Wipe the kept set so the patch_cap loop runs
+                        # with zero survivors for this AG.
+                        _blast_kept = []
+                except Exception:
+                    logger.debug(
+                        "Cycle 16 T4: structural-drop halt block "
+                        "raised (non-fatal); continuing with current "
+                        "_blast_kept",
+                        exc_info=True,
+                    )
                 if _blast_dropped:
                     print(
                         _section(f"[{ag_id}] BLAST-RADIUS GATE", "-") + "\n"

@@ -153,6 +153,18 @@ class ReasonCode(str, Enum):
     # operator transcript can tell Branch A and Branch C survivors
     # apart.
     NARROW_BRANCH_C_SYNTHESIZED = "narrow_branch_c_synthesized"
+    # Cycle 16 T4 — structural-causal-patch dropped at blast-radius
+    # while non-structural causal patches survived. Emitted per drop so
+    # the operator transcript can render which structural shapes the
+    # safety gate cost the AG.
+    STRUCTURAL_CAUSAL_DROPPED = "structural_causal_dropped"
+    # Cycle 16 T4 — Branch C synthesis could not replace a dropped
+    # structural-causal patch (zero resolvable QIDs, or every Branch C
+    # candidate failed blast-radius re-gate). Emitted once per AG to
+    # mark the honest halt; the AG's reflection entry uses
+    # RollbackClass.NO_ACTION so C13's forbidden-set picks the constraint
+    # up on the next iteration.
+    NO_STRUCTURAL_ALTERNATIVE = "no_structural_alternative"
     # Cycle 10 W8 — AG-emit observability companion to W2: emitted
     # when ``union_ag_levers_with_recommended`` widened the AG's
     # lever set with cluster.recommended_levers entries.

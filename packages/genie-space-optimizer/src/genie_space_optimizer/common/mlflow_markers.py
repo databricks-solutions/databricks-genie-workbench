@@ -271,3 +271,63 @@ def narrow_replacement_branch_c_synthesized_marker(
         "GSO_NARROW_REPLACEMENT_BRANCH_C_SYNTHESIZED_V1 "
         + json.dumps(payload, sort_keys=True)
     )
+
+
+def structural_causal_dropped_marker(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    root_cause: str,
+    rca_id: str,
+    original_proposal_id: str,
+    original_patch_type: str,
+    original_target: str,
+    drop_reason: str,
+) -> str:
+    """Cycle 16 T4 — one stdout marker per structural-causal blast-
+    radius drop that lost causal continuity."""
+    payload = {
+        "run_id": str(run_id),
+        "iteration": int(iteration),
+        "ag_id": str(ag_id),
+        "cluster_id": str(cluster_id),
+        "root_cause": str(root_cause),
+        "rca_id": str(rca_id),
+        "original_proposal_id": str(original_proposal_id),
+        "original_patch_type": str(original_patch_type),
+        "original_target": str(original_target),
+        "drop_reason": str(drop_reason),
+    }
+    return (
+        "GSO_STRUCTURAL_CAUSAL_DROPPED_V1 "
+        + json.dumps(payload, sort_keys=True)
+    )
+
+
+def no_structural_alternative_marker(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    rca_id: str,
+    root_cause: str,
+    dropped_proposal_count: int,
+) -> str:
+    """Cycle 16 T4 — one stdout marker per AG halted because Branch C
+    synthesis could not replace any structural-causal drop."""
+    payload = {
+        "run_id": str(run_id),
+        "iteration": int(iteration),
+        "ag_id": str(ag_id),
+        "cluster_id": str(cluster_id),
+        "rca_id": str(rca_id),
+        "root_cause": str(root_cause),
+        "dropped_proposal_count": int(dropped_proposal_count),
+    }
+    return (
+        "GSO_NO_STRUCTURAL_ALTERNATIVE_V1 "
+        + json.dumps(payload, sort_keys=True)
+    )

@@ -2506,6 +2506,128 @@ def narrow_replacement_branch_c_synthesized_record(
     )
 
 
+def structural_causal_dropped_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    root_cause: str,
+    rca_id: str,
+    original_proposal_id: str,
+    original_patch_type: str,
+    original_target: str,
+    drop_reason: str,
+    target_qids: tuple,
+) -> DecisionRecord:
+    """Cycle 16 T4 — typed record for one structural-causal blast-radius
+    drop that was not replaced by any narrow survivor.
+
+    Decision type ``GATE_DECISION`` with reason_code
+    ``structural_causal_dropped``. Mirrors the existing blast-radius
+    drop record convention but adds the causal-continuity dimension
+    (the drop crossed an RCA-bound structural patch).
+    """
+    qids_tuple = tuple(str(q) for q in (target_qids or ()) if str(q))
+    return DecisionRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        decision_type=DecisionType.GATE_DECISION,
+        outcome=DecisionOutcome.DROPPED,
+        reason_code=ReasonCode.STRUCTURAL_CAUSAL_DROPPED,
+        ag_id=str(ag_id),
+        cluster_id=str(cluster_id),
+        rca_id=str(rca_id),
+        proposal_id=str(original_proposal_id),
+        gate="blast_radius",
+        root_cause=str(root_cause),
+        target_qids=qids_tuple,
+        affected_qids=qids_tuple,
+        reason_detail=(
+            f"structural patch (type={original_patch_type}) on "
+            f"{original_target} dropped at blast-radius "
+            f"({drop_reason}); no narrow survivor replaced it"
+        ),
+        expected_effect=(
+            "Structural patch would have closed the AG's causal RCA."
+        ),
+        observed_effect=(
+            "Structural patch dropped at blast-radius; narrow-"
+            "replacement loop produced no survivor for this parent."
+        ),
+        next_action=(
+            "Halt the AG with no_structural_alternative; the "
+            "next-iteration strategist must shift the lever family or "
+            "narrow the cluster scope."
+        ),
+        metrics={
+            "original_patch_type": str(original_patch_type),
+            "original_target": str(original_target),
+            "drop_reason": str(drop_reason),
+        },
+    )
+
+
+def no_structural_alternative_record(
+    *,
+    run_id: str,
+    iteration: int,
+    ag_id: str,
+    cluster_id: str,
+    rca_id: str,
+    root_cause: str,
+    dropped_proposal_ids: tuple,
+    target_qids: tuple,
+) -> DecisionRecord:
+    """Cycle 16 T4 — typed AG-level halt record emitted when at least
+    one structural-causal patch was dropped AND Branch C synthesis
+    produced no survivor.
+
+    Decision type ``AG_RETIRED`` with reason_code
+    ``no_structural_alternative`` and outcome ``RETIRED``. Sibling to
+    Cycle 15-T3's ``no_grounded_clusters`` terminal record (different
+    failure mode: patch-level vs cluster-level).
+    """
+    dropped_pid_tuple = tuple(
+        str(p) for p in (dropped_proposal_ids or ()) if str(p)
+    )
+    qids_tuple = tuple(str(q) for q in (target_qids or ()) if str(q))
+    return DecisionRecord(
+        run_id=str(run_id),
+        iteration=int(iteration),
+        decision_type=DecisionType.AG_RETIRED,
+        outcome=DecisionOutcome.RETIRED,
+        reason_code=ReasonCode.NO_STRUCTURAL_ALTERNATIVE,
+        ag_id=str(ag_id),
+        cluster_id=str(cluster_id),
+        rca_id=str(rca_id),
+        root_cause=str(root_cause),
+        gate="blast_radius",
+        target_qids=qids_tuple,
+        affected_qids=qids_tuple,
+        proposal_ids=dropped_pid_tuple,
+        reason_detail=(
+            f"{len(dropped_pid_tuple)} structural-causal patch(es) "
+            f"dropped; Branch C synthesis produced no survivor"
+        ),
+        expected_effect=(
+            "AG would have shipped a structural fix for the causal RCA."
+        ),
+        observed_effect=(
+            "No structural alternative survived blast-radius; AG halts "
+            "for this iteration."
+        ),
+        next_action=(
+            "C13 forbidden-set admits the NO_ACTION reflection entry "
+            "on the next iteration; strategist must shift levers or "
+            "narrow scope."
+        ),
+        metrics={
+            "dropped_proposal_count": len(dropped_pid_tuple),
+        },
+    )
+
+
 def ag_levers_unioned_record(
     *,
     run_id: str,

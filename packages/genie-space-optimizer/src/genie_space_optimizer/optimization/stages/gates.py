@@ -515,3 +515,99 @@ OUTPUT_CLASS = GateOutcome
 # sites. The ``execute`` alias is what the stage registry, conformance
 # test, and Phase H capture decorator import.
 execute = filter
+
+
+@dataclass(frozen=True)
+class StructuralCausalDrop:
+    """Cycle 16 T4 — payload captured for every blast-radius drop whose
+    dropped patch was a structural-shape causal patch (L6 expression /
+    measure bound to the AG's RCA) AND was not replaced by a narrow
+    survivor.
+
+    The harness emits one ``STRUCTURAL_CAUSAL_DROPPED`` decision record
+    per instance, then halts the AG with one
+    ``NO_STRUCTURAL_ALTERNATIVE`` record + one NO_ACTION reflection
+    entry so C13's forbidden-set picks up the constraint.
+    """
+    ag_rca_id: str
+    original_proposal_id: str
+    original_patch_type: str
+    original_target: str
+    drop_reason: str
+    target_qids: tuple[str, ...]
+
+
+_STRUCTURAL_CAUSAL_PATCH_TYPES: frozenset[str] = frozenset({
+    "add_sql_snippet_expression",
+    "add_sql_snippet_measure",
+})
+
+
+def detect_structural_causal_drop(
+    *,
+    blast_dropped: tuple[dict, ...] | list[dict],
+    narrow_survivors: tuple[dict, ...] | list[dict],
+    ag_rca_id: str,
+    ag_target_qids: tuple[str, ...] | list[str],
+) -> tuple[StructuralCausalDrop, ...]:
+    """Cycle 16 T4 — return one ``StructuralCausalDrop`` per dropped
+    structural-causal patch whose causal RCA was not replaced by any
+    narrow survivor in this AG's drop list.
+
+    A drop is *structural-causal* iff:
+      * ``original_patch.patch_type ∈ {add_sql_snippet_expression,
+        add_sql_snippet_measure}`` (structural shape), AND
+      * ``original_patch.rca_id == ag_rca_id`` (causal — bound to the
+        AG's RCA).
+
+    A narrow survivor *replaces* a dropped patch iff
+    ``survivor.derived_from == dropped.original_patch.proposal_id``.
+
+    When ``ag_rca_id`` is empty (diagnostic AG with no inherited RCA),
+    returns ``()`` — diagnostic AGs are not subject to this halt.
+
+    Pure: no I/O.
+    """
+    rca = str(ag_rca_id or "").strip()
+    if not rca:
+        return ()
+    survivor_derived_from: set[str] = {
+        str(s.get("derived_from") or "").strip()
+        for s in (narrow_survivors or ())
+        if isinstance(s, dict)
+    }
+    survivor_derived_from.discard("")
+    targets = tuple(
+        str(q).strip()
+        for q in (ag_target_qids or ())
+        if str(q).strip()
+    )
+    out: list[StructuralCausalDrop] = []
+    for drop in (blast_dropped or ()):
+        if not isinstance(drop, dict):
+            continue
+        original = drop.get("original_patch") or {}
+        if not isinstance(original, dict):
+            continue
+        ptype = str(original.get("patch_type") or "").strip()
+        if ptype not in _STRUCTURAL_CAUSAL_PATCH_TYPES:
+            continue
+        orig_rca = str(original.get("rca_id") or "").strip()
+        if orig_rca != rca:
+            continue
+        original_pid = str(original.get("proposal_id") or "").strip()
+        if original_pid and original_pid in survivor_derived_from:
+            continue
+        out.append(StructuralCausalDrop(
+            ag_rca_id=rca,
+            original_proposal_id=original_pid,
+            original_patch_type=ptype,
+            original_target=str(
+                original.get("target")
+                or drop.get("target")
+                or ""
+            ),
+            drop_reason=str(drop.get("reason") or ""),
+            target_qids=targets,
+        ))
+    return tuple(out)
