@@ -1,0 +1,8 @@
+{
+  "propagated": true,
+  "elapsed_seconds": 4.0,
+  "max_wait_seconds": 30,
+  "applied_patches_count": 2,
+  "audit_decision": "confirmed",
+  "reason_code": null
+}

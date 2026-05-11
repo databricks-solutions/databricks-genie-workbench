@@ -1,0 +1,10 @@
+{
+  "ag_id": "AG_join_spec_only",
+  "max_wait_seconds": 6,
+  "poll_interval_seconds": 2.0,
+  "applied_patches_count": 1,
+  "patched_objects": ["catalog.schema.join_target"],
+  "expected_instruction_snippets": [],
+  "has_dictionary_changes": false,
+  "fetch_text_sequence": []
+}

@@ -1,0 +1,16 @@
+{
+  "ag_id": "AG_failed_instruction_propagation",
+  "max_wait_seconds": 10,
+  "poll_interval_seconds": 2.0,
+  "applied_patches_count": 1,
+  "patched_objects": ["catalog.schema.foo"],
+  "expected_instruction_snippets": ["this snippet is never present in the fetched config"],
+  "has_dictionary_changes": false,
+  "fetch_text_sequence": [
+    "no match",
+    "still no match",
+    "still no match",
+    "still no match",
+    "still no match"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "propagated": false,
+  "elapsed_seconds": 6.0,
+  "max_wait_seconds": 6,
+  "applied_patches_count": 1,
+  "audit_decision": "waited_full_budget",
+  "reason_code": "no_verifiable_snippet"
+}

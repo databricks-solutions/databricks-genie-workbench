@@ -1,0 +1,13 @@
+{
+  "ag_id": "AG_pickup_zone_hint",
+  "max_wait_seconds": 30,
+  "poll_interval_seconds": 2.0,
+  "applied_patches_count": 2,
+  "patched_objects": ["catalog.schema.pickup_zones"],
+  "expected_instruction_snippets": ["When the user asks about pickup zones, prefer the pickup_zone_id"],
+  "has_dictionary_changes": false,
+  "fetch_text_sequence": [
+    "stale config",
+    "When the user asks about pickup zones, prefer the pickup_zone_id when matching"
+  ]
+}
