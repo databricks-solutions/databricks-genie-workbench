@@ -1,0 +1,25 @@
+{
+  "input": {
+    "ag_id": "AG_alpha_airline_f9",
+    "ag_rca_id": "rca-airline-1",
+    "ag_target_qids": ["q1"],
+    "ag_root_cause": "missing causal measure",
+    "blast_dropped": [
+      {
+        "proposal_id": "L6:P002#1",
+        "reason": "outside_target_dependents_passing",
+        "original_patch": {
+          "proposal_id": "L6:P002#1",
+          "patch_type": "add_sql_snippet_expression",
+          "rca_id": "rca-airline-1",
+          "target": "orders"
+        }
+      }
+    ],
+    "qid_to_question_text": {"q1": "?"},
+    "qid_to_reference_sql": {"q1": "select 1"}
+  },
+  "narrow_survivors": [
+    {"proposal_id": "L6:P002#1_narrow", "derived_from": "L6:P002#1"}
+  ]
+}

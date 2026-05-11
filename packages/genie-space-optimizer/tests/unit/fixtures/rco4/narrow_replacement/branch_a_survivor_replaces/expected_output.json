@@ -1,0 +1,10 @@
+{
+  "narrow_survivors": [
+    {
+      "proposal_id": "L6:P002#1_narrow",
+      "derived_from": "L6:P002#1"
+    }
+  ],
+  "structural_causal_dropped": [],
+  "halt_no_structural_alternative": false
+}

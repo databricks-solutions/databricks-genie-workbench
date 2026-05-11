@@ -1,0 +1,27 @@
+{
+  "applyable": [],
+  "rejected": [
+    {
+      "proposal_id": "L2:P001#1",
+      "expanded_patch_id": "L2:P001#1",
+      "patch_type": "add_column_description",
+      "target": "orders.customer_id",
+      "table": "orders",
+      "column": "customer_id",
+      "applyable": false,
+      "reason": "apply_action_returned_false",
+      "error_excerpt": ""
+    },
+    {
+      "proposal_id": "L2:P002#1",
+      "expanded_patch_id": "L2:P002#1",
+      "patch_type": "add_column_description",
+      "target": "orders",
+      "table": "orders",
+      "column": "",
+      "applyable": false,
+      "reason": "invalid_column_target",
+      "error_excerpt": ""
+    }
+  ]
+}

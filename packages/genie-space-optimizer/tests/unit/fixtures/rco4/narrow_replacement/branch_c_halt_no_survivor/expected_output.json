@@ -1,0 +1,16 @@
+{
+  "narrow_survivors": [],
+  "structural_causal_dropped": [
+    {
+      "ag_rca_id": "rca-airline-1",
+      "original_proposal_id": "L6:P002#1",
+      "original_patch_type": "add_sql_snippet_expression",
+      "original_target": "orders",
+      "drop_reason": "outside_target_dependents_passing",
+      "target_qids": [
+        "q1"
+      ]
+    }
+  ],
+  "halt_no_structural_alternative": true
+}

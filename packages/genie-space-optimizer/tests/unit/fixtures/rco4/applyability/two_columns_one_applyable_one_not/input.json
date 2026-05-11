@@ -1,0 +1,24 @@
+{
+  "candidates": [
+    {
+      "proposal_id": "L2:P001#1",
+      "patch_type": "add_column_description",
+      "target": "orders.customer_id",
+      "table": "orders",
+      "column": "customer_id",
+      "new_text": "FK to customers"
+    },
+    {
+      "proposal_id": "L2:P002#1",
+      "patch_type": "add_column_description",
+      "target": "orders",
+      "table": "orders",
+      "new_text": "ghost column"
+    }
+  ],
+  "metadata_snapshot": {
+    "tables": [
+      {"name": "orders", "columns": [{"name": "customer_id"}]}
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "ag_id": "AG_clean",
+  "ag_target_qids": ["q1", "q2"],
+  "live_hard_qids": ["q1", "q2"],
+  "max_outside_target": 0,
+  "patches": [
+    {
+      "proposal_id": "L6:P010#1",
+      "patch_type": "add_sql_snippet_expression",
+      "target": "orders",
+      "target_qids": ["q1", "q2"],
+      "passing_dependents": ["q1", "q2"]
+    }
+  ]
+}

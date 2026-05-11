@@ -1,0 +1,60 @@
+{
+  "kept": [
+    {
+      "proposal_id": "L6:P001#1",
+      "patch_type": "add_sql_snippet_expression",
+      "target": "orders",
+      "target_qids": [
+        "q1"
+      ],
+      "passing_dependents": [
+        "q1",
+        "q2"
+      ]
+    }
+  ],
+  "dropped": [
+    {
+      "proposal_id": "L6:P002#1",
+      "patch_type": "add_sql_snippet_expression",
+      "reason": "blast_radius_exceeds_threshold",
+      "passing_dependents_outside_target": [
+        "q7"
+      ],
+      "target": "orders",
+      "original_patch": {
+        "proposal_id": "L6:P002#1",
+        "patch_type": "add_sql_snippet_expression",
+        "target": "orders",
+        "target_qids": [
+          "q1"
+        ],
+        "passing_dependents": [
+          "q1",
+          "q7"
+        ]
+      }
+    },
+    {
+      "proposal_id": "L6:P003#1",
+      "patch_type": "add_sql_snippet_expression",
+      "reason": "blast_radius_exceeds_threshold",
+      "passing_dependents_outside_target": [
+        "q9"
+      ],
+      "target": "orders",
+      "original_patch": {
+        "proposal_id": "L6:P003#1",
+        "patch_type": "add_sql_snippet_expression",
+        "target": "orders",
+        "target_qids": [
+          "q2"
+        ],
+        "passing_dependents": [
+          "q2",
+          "q9"
+        ]
+      }
+    }
+  ]
+}
