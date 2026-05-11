@@ -13848,36 +13848,66 @@ def _run_gate_checks(
     from genie_space_optimizer.common.config import (
         BASELINE_DRIFT_DIAGNOSTIC_PP,
         MIN_POST_ARBITER_GAIN_PP,
+        gate_checks_baseline_drift_pure_enabled as _gate_checks_drift_pure_on,
     )
-    from genie_space_optimizer.optimization.acceptance_policy import (
-        decide_baseline_drift,
-    )
-    _drift = decide_baseline_drift(
-        post_arbiter_current=float(full_accuracy),
-        prev_iter_pre_accept_baseline=prev_iter_pre_accept_baseline,
-        threshold_pp=float(BASELINE_DRIFT_DIAGNOSTIC_PP),
-    )
-    if _drift.triggered:
-        logger.info(
-            "BASELINE DRIFT [%s]: iter %d post-arbiter %.1f%% is %.1fpp "
-            "below the previous iteration's pre-acceptance baseline "
-            "(%.1f%%). Logging suspected_stale_baseline diagnostic; "
-            "iteration continues normally.",
-            ag_id, iteration_counter, full_accuracy, _drift.delta_pp,
-            float(_drift.prev_iter_pre_accept_baseline or 0.0),
+    if _gate_checks_drift_pure_on():
+        from genie_space_optimizer.optimization.stages.eval_gates import (
+            build_baseline_drift_diagnostic as _rco4b_build_drift,
         )
-        _audit_emit(
-            stage_letter="N",
-            gate_name="baseline_drift_diagnostic",
-            decision="diagnostic",
-            reason_code=_drift.reason_code,
-            metrics={
-                "post_arbiter_candidate": _drift.post_arbiter_current,
-                "prev_iter_pre_accept_baseline": _drift.prev_iter_pre_accept_baseline,
-                "delta_pp": _drift.delta_pp,
-                "threshold_pp": _drift.threshold_pp,
-            },
+        from genie_space_optimizer.optimization.stages.gate_types import (
+            BaselineDriftDiagnosticInput as _RCO4bDriftInput,
         )
+        _rco4b_drift_out = _rco4b_build_drift(
+            _RCO4bDriftInput(
+                ag_id=str(ag_id),
+                iteration=int(iteration_counter),
+                prev_iter_pre_accept_baseline=prev_iter_pre_accept_baseline,
+                current_post_arbiter_accuracy=float(full_accuracy),
+                diagnostic_threshold_pp=float(BASELINE_DRIFT_DIAGNOSTIC_PP),
+            )
+        )
+        if _rco4b_drift_out.triggered:
+            logger.info(_rco4b_drift_out.log_line)
+            _audit_emit(
+                stage_letter="N",
+                gate_name="baseline_drift_diagnostic",
+                decision="diagnostic",
+                reason_code=_rco4b_drift_out.reason_code,
+                metrics=dict(_rco4b_drift_out.audit_metrics),
+            )
+    else:
+        # ─── Legacy path: preserved verbatim. Do NOT modify; the
+        # parity test asserts this branch is byte-stable when the
+        # flag is off. ───
+        from genie_space_optimizer.optimization.acceptance_policy import (
+            decide_baseline_drift,
+        )
+        _drift = decide_baseline_drift(
+            post_arbiter_current=float(full_accuracy),
+            prev_iter_pre_accept_baseline=prev_iter_pre_accept_baseline,
+            threshold_pp=float(BASELINE_DRIFT_DIAGNOSTIC_PP),
+        )
+        if _drift.triggered:
+            logger.info(
+                "BASELINE DRIFT [%s]: iter %d post-arbiter %.1f%% is %.1fpp "
+                "below the previous iteration's pre-acceptance baseline "
+                "(%.1f%%). Logging suspected_stale_baseline diagnostic; "
+                "iteration continues normally.",
+                ag_id, iteration_counter, full_accuracy, _drift.delta_pp,
+                float(_drift.prev_iter_pre_accept_baseline or 0.0),
+            )
+            _audit_emit(
+                stage_letter="N",
+                gate_name="baseline_drift_diagnostic",
+                decision="diagnostic",
+                reason_code=_drift.reason_code,
+                metrics={
+                    "post_arbiter_candidate": _drift.post_arbiter_current,
+                    "prev_iter_pre_accept_baseline": _drift.prev_iter_pre_accept_baseline,
+                    "delta_pp": _drift.delta_pp,
+                    "threshold_pp": _drift.threshold_pp,
+                },
+            )
 
     # Per-judge regression detection — DIAGNOSTIC only. Logged into
     # the decision_audit row for transparency, never rolls back.
