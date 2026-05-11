@@ -67,6 +67,99 @@ def _clusters_with_count(patches: Iterable[dict]) -> dict[str, int]:
     return counts
 
 
+# Cycle 15.2 / C12-T5: JSON serialisation of the per-AG survival
+# snapshot. Mirrors build_patch_survival_table column-for-column;
+# both readers consume the same PatchSurvivalSnapshot so the table
+# and the persisted JSON can never disagree.
+
+_GATE_ORDER: tuple[str, ...] = (
+    "proposed", "normalized", "applyable", "capped", "applied",
+)
+
+
+def _lost_at_gate(counts: dict[str, int]) -> str:
+    """Return the name of the first gate where the cluster's count
+    drops to zero. Returns "" if the cluster survives all gates or
+    never appeared. The names mirror the ``lost_at:G`` notes in
+    ``build_patch_survival_table`` so JSON consumers see the same
+    failure point operators saw in stdout.
+    """
+    prev = 0
+    for idx, gate in enumerate(_GATE_ORDER):
+        current = int(counts.get(gate, 0))
+        if idx == 0:
+            prev = current
+            continue
+        if prev > 0 and current == 0:
+            _GATE_LABEL: dict[str, str] = {
+                "normalized": "normalize",
+                "applyable":  "applyability",
+                "applied":    "apply",
+            }
+            return _GATE_LABEL.get(gate, gate)
+        prev = current
+    return ""
+
+
+def build_patch_survival_json_payload(snap: "PatchSurvivalSnapshot") -> dict:
+    """Per-AG JSON shape for the bundle contract path.
+
+    Returns ``{"ag_id": str, "clusters": [...]}``. Cluster rows are
+    sorted by ``cluster_id``; the empty-string cluster id (AG-level
+    metadata patches with no cluster lineage) renders as
+    ``"(ag_level)"`` to stay consistent with
+    ``build_patch_survival_table``.
+
+    Pure: no I/O, no module-level state, no MLflow imports.
+    """
+    by_gate: dict[str, dict[str, int]] = {
+        "proposed":   _clusters_with_count(snap.proposed),
+        "normalized": _clusters_with_count(snap.normalized),
+        "applyable":  _clusters_with_count(snap.applyable),
+        "capped":     _clusters_with_count(snap.capped),
+        "applied":    _clusters_with_count(snap.applied),
+    }
+    all_cluster_ids = sorted(
+        set().union(*(g.keys() for g in by_gate.values()))
+    )
+    clusters_out: list[dict] = []
+    for cid in all_cluster_ids:
+        counts = {gate: int(by_gate[gate].get(cid, 0)) for gate in _GATE_ORDER}
+        label = cid if cid else "(ag_level)"
+        row = {
+            "cluster_id": label,
+            **counts,
+            "lost_at": _lost_at_gate(counts),
+        }
+        clusters_out.append(row)
+    return {"ag_id": str(snap.ag_id), "clusters": clusters_out}
+
+
+def aggregate_patch_survival_for_iteration(
+    *,
+    iteration: int,
+    per_ag_snapshots: Iterable["PatchSurvivalSnapshot"],
+) -> dict:
+    """Per-iteration JSON shape for the canonical bundle contract path
+    ``gso_postmortem_bundle/iterations/iter_NN/patch_survival.json``.
+
+    Returns ``{"iteration": int, "ags": [<per-AG-payload>, ...]}``.
+    AGs are sorted by ``ag_id``; each AG's ``clusters`` list is sorted
+    by ``cluster_id`` (see ``build_patch_survival_json_payload``).
+    Empty ``per_ag_snapshots`` returns ``{"iteration": N, "ags": []}``
+    — a valid, persistable shape for iterations where every AG
+    bailed before producing a snapshot.
+
+    Pure: no I/O, no module-level state, no MLflow imports.
+    """
+    snapshots = list(per_ag_snapshots or [])
+    snapshots.sort(key=lambda s: str(s.ag_id))
+    return {
+        "iteration": int(iteration),
+        "ags": [build_patch_survival_json_payload(s) for s in snapshots],
+    }
+
+
 def build_patch_survival_table(snap: PatchSurvivalSnapshot) -> str:
     """Render a fixed-width per-AG patch-survival table.
 

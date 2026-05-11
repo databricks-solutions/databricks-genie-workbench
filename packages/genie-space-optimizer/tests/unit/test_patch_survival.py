@@ -141,6 +141,109 @@ def test_ag_level_patches_with_no_cluster_lineage_render_their_own_row() -> None
     )
 
 
+def test_build_patch_survival_json_payload_pure_shape() -> None:
+    """Per-AG JSON payload mirrors the table columns. Pure, sorted,
+    JSON-serialisable, no side effects.
+    """
+    from genie_space_optimizer.optimization.patch_survival import (
+        PatchSurvivalSnapshot,
+        build_patch_survival_json_payload,
+    )
+
+    snap = PatchSurvivalSnapshot(
+        ag_id="AG2",
+        proposed=[
+            {"proposal_id": "P002", "cluster_id": "H002"},
+            {"proposal_id": "P001", "cluster_id": "H001"},
+        ],
+        normalized=[
+            {"proposal_id": "P001", "cluster_id": "H001"},
+            {"proposal_id": "P002", "cluster_id": "H002"},
+        ],
+        applyable=[{"proposal_id": "P001", "cluster_id": "H001"}],
+        capped=[{"proposal_id": "P001", "cluster_id": "H001"}],
+        applied=[],
+    )
+    payload = build_patch_survival_json_payload(snap)
+    assert payload == {
+        "ag_id": "AG2",
+        "clusters": [
+            {
+                "cluster_id": "H001",
+                "proposed": 1,
+                "normalized": 1,
+                "applyable": 1,
+                "capped": 1,
+                "applied": 0,
+                "lost_at": "apply",
+            },
+            {
+                "cluster_id": "H002",
+                "proposed": 1,
+                "normalized": 1,
+                "applyable": 0,
+                "capped": 0,
+                "applied": 0,
+                "lost_at": "applyability",
+            },
+        ],
+    }
+
+
+def test_aggregate_patch_survival_for_iteration_sorts_ags_and_clusters() -> None:
+    """Per-iteration JSON aggregates per-AG payloads sorted by ag_id.
+    Each ag's clusters list stays sorted by cluster_id. Pure,
+    JSON-serialisable, deterministic.
+    """
+    from genie_space_optimizer.optimization.patch_survival import (
+        PatchSurvivalSnapshot,
+        aggregate_patch_survival_for_iteration,
+    )
+
+    snap_b = PatchSurvivalSnapshot(
+        ag_id="AG_B",
+        proposed=[{"proposal_id": "P", "cluster_id": "H_B"}],
+        normalized=[{"proposal_id": "P", "cluster_id": "H_B"}],
+        applyable=[{"proposal_id": "P", "cluster_id": "H_B"}],
+        capped=[{"proposal_id": "P", "cluster_id": "H_B"}],
+        applied=[{"proposal_id": "P", "cluster_id": "H_B"}],
+    )
+    snap_a = PatchSurvivalSnapshot(
+        ag_id="AG_A",
+        proposed=[{"proposal_id": "Q", "cluster_id": "H_A"}],
+        normalized=[],
+        applyable=[],
+        capped=[],
+        applied=[],
+    )
+    payload = aggregate_patch_survival_for_iteration(
+        iteration=3,
+        per_ag_snapshots=[snap_b, snap_a],
+    )
+    assert payload["iteration"] == 3
+    assert [ag["ag_id"] for ag in payload["ags"]] == ["AG_A", "AG_B"]
+    assert payload["ags"][0]["clusters"][0]["cluster_id"] == "H_A"
+    assert payload["ags"][0]["clusters"][0]["lost_at"] == "normalize"
+    assert payload["ags"][1]["clusters"][0]["applied"] == 1
+    assert payload["ags"][1]["clusters"][0]["lost_at"] == ""
+
+
+def test_aggregate_with_zero_snapshots_returns_empty_iteration_payload() -> None:
+    """An iteration where every AG bailed before producing a snapshot
+    still produces a valid, persistable JSON shape with an empty
+    ``ags`` list. Postmortem tooling can rely on the key being
+    present.
+    """
+    from genie_space_optimizer.optimization.patch_survival import (
+        aggregate_patch_survival_for_iteration,
+    )
+
+    payload = aggregate_patch_survival_for_iteration(
+        iteration=7, per_ag_snapshots=[],
+    )
+    assert payload == {"iteration": 7, "ags": []}
+
+
 def test_lost_at_normalize_must_not_fire_when_descendant_patches_applied() -> None:
     """Track 3 — when a parent rewrite proposal is normalized into K
     split-children for the same cluster lineage and any of those
