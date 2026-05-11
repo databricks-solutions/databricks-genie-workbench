@@ -343,29 +343,68 @@ class BaselineDriftDiagnosticOutcome(JsonRoundTrip):
 
 @dataclass(frozen=True)
 class FullEvalAcceptanceInput(JsonRoundTrip):
-    """Input for ``run_full_eval_acceptance`` (Phase E).
+    """Input for ``decide_full_eval_acceptance`` (Phase E).
 
-    Phase E may split this into Part-1 (eval-run) and Part-2 (decide)
-    inputs; this is the union shape for the typed-contract guard.
+    Phase A placeholder shape (``full_eval_post_arbiter_accuracy``,
+    ``baseline_post_arbiter_accuracy``, ``min_gain_pp``, ``target_qids``,
+    ``cumulative_regression_debt``) was speculative and did not match
+    the verdict-consolidation reality, which consumes already-computed
+    upstream decisions from ``acceptance_policy.decide_acceptance``,
+    ``control_plane``, and the Task 4 per-question transition
+    machinery. Phase E refines the contract to flatten those decisions
+    into the primitive fields the helper needs.
+
+    Field groups:
+      - ``strict_decision_*``: pass-through of acceptance_policy
+        decide_acceptance result fields.
+      - ``pre_arbiter_*``: pre-arbiter context for the audit metrics
+        payloads.
+      - ``control_plane_reason_code``: drives the accept-branch label
+        (``"accept"`` / ``"accept_with_drift"`` / ``"accept_with_debt"``).
+      - ``diagnostic_regression_judges``: judge names for the
+        ``diagnostic_regressions`` audit metric.
+      - ``regressions``: the consolidated rollback driver list,
+        populated upstream by the harness. Helper decides verdict
+        purely on ``len(regressions)``.
     """
     ag_id: str
     iteration: int
-    full_eval_post_arbiter_accuracy: float
-    baseline_post_arbiter_accuracy: float
-    min_gain_pp: float
-    target_qids: tuple[str, ...]
-    cumulative_regression_debt: int
+    strict_decision_accepted: bool
+    strict_decision_reason_code: str
+    strict_decision_delta_pp: float
+    strict_decision_post_arbiter_candidate: float
+    strict_decision_post_arbiter_baseline: float
+    strict_decision_min_gain_pp: float
+    pre_arbiter_candidate: float
+    pre_arbiter_baseline: float
+    control_plane_reason_code: str
+    diagnostic_regression_judges: tuple[str, ...]
+    regressions: tuple[dict[str, Any], ...]
 
 
 @dataclass(frozen=True)
 class FullEvalAcceptanceOutcome(JsonRoundTrip):
-    """Outcome of ``run_full_eval_acceptance`` (Phase E).
+    """Outcome of ``decide_full_eval_acceptance`` (Phase E).
 
-    The full canonical ``ControlPlaneAcceptance`` instance is constructed
-    by the helper and returned alongside this outcome via a sibling
-    field (Phase E adds it). For Phase A's typed-contract guard we only
-    need the accept/reject + branch tag here.
+    Carries the verdict (``accepted`` + ``branch`` + ``rollback_reason``)
+    plus three audit-metrics payloads (one per harness audit
+    emission site). The harness picks which payload to emit based
+    on the verdict — the helper is pure and does not emit.
+
+    Branch vocabulary:
+      - ``"rollback"`` — rollback branch (``regressions`` non-empty).
+      - ``"accept"`` — clean accept (``control_plane_reason_code ==
+        "accepted"`` or default).
+      - ``"accept_with_drift"`` — ``control_plane_reason_code ==
+        "accepted_with_attribution_drift"``.
+      - ``"accept_with_debt"`` — ``control_plane_reason_code ==
+        "accepted_with_regression_debt"``.
     """
     accepted: bool
     branch: str
+    reason_code: str
     rollback_reason: str | None = None
+    regression_count: int = 0
+    verdict_audit_metrics: dict[str, float] = field(default_factory=dict)
+    rollback_audit_metrics: dict[str, Any] | None = None
+    accept_audit_metrics: dict[str, Any] | None = None

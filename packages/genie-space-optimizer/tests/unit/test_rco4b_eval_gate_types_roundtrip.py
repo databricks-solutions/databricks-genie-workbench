@@ -207,14 +207,22 @@ def test_baseline_drift_diagnostic_outcome_roundtrips() -> None:
 
 
 def test_full_eval_acceptance_input_roundtrips() -> None:
+    """Phase E refined shape: verdict-consolidation contract flattens
+    upstream decisions into primitives the helper reads."""
     inp = FullEvalAcceptanceInput(
         ag_id="AG_alpha",
         iteration=3,
-        full_eval_post_arbiter_accuracy=82.0,
-        baseline_post_arbiter_accuracy=80.0,
-        min_gain_pp=1.0,
-        target_qids=("q1", "q2"),
-        cumulative_regression_debt=0,
+        strict_decision_accepted=True,
+        strict_decision_reason_code="accepted",
+        strict_decision_delta_pp=3.5,
+        strict_decision_post_arbiter_candidate=72.0,
+        strict_decision_post_arbiter_baseline=68.5,
+        strict_decision_min_gain_pp=1.0,
+        pre_arbiter_candidate=70.0,
+        pre_arbiter_baseline=66.0,
+        control_plane_reason_code="accepted",
+        diagnostic_regression_judges=("judge_x",),
+        regressions=({"judge": "j1", "drop": 1.0},),
     )
     s = json.dumps(inp.to_json())
     rt = FullEvalAcceptanceInput.from_json(json.loads(s))
@@ -224,8 +232,29 @@ def test_full_eval_acceptance_input_roundtrips() -> None:
 def test_full_eval_acceptance_outcome_roundtrips() -> None:
     out = FullEvalAcceptanceOutcome(
         accepted=True,
-        branch="accepted",
+        branch="accept",
+        reason_code="accepted",
         rollback_reason=None,
+        regression_count=0,
+        verdict_audit_metrics={"delta_pp": 3.5, "min_gain_pp": 1.0},
+        rollback_audit_metrics=None,
+        accept_audit_metrics={"post_arbiter_candidate": 72.0},
+    )
+    s = json.dumps(out.to_json())
+    rt = FullEvalAcceptanceOutcome.from_json(json.loads(s))
+    assert rt == out
+
+
+def test_full_eval_acceptance_outcome_rollback_roundtrips() -> None:
+    out = FullEvalAcceptanceOutcome(
+        accepted=False,
+        branch="rollback",
+        reason_code="below_min_gain",
+        rollback_reason="full_eval: j_main",
+        regression_count=1,
+        verdict_audit_metrics={"delta_pp": -0.5},
+        rollback_audit_metrics={"regression_count": 1},
+        accept_audit_metrics=None,
     )
     s = json.dumps(out.to_json())
     rt = FullEvalAcceptanceOutcome.from_json(json.loads(s))
