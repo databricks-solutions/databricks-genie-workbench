@@ -6007,6 +6007,41 @@ def stage_handlers_chunk_d_enabled() -> bool:
     return _flag_enabled("GSO_STAGE_HANDLERS_CHUNK_D")
 
 
+def stage6_blast_radius_pure_enabled() -> bool:
+    """RCO-4 Task 5 — when ``GSO_STAGE6_BLAST_RADIUS_PURE`` is truthy,
+    the harness's inline blast-radius gate firing delegates to
+    ``stages.gates.run_blast_radius_production_gate``. Default-off so
+    legacy callers stay byte-stable until RCO-3's batched flip."""
+    import os as _os
+
+    return _os.environ.get(
+        "GSO_STAGE6_BLAST_RADIUS_PURE", "0"
+    ).lower() in {"1", "true", "yes", "on"}
+
+
+def stage6_narrow_repl_pure_enabled() -> bool:
+    """RCO-4 Task 6 — when ``GSO_STAGE6_NARROW_REPL_PURE`` is truthy,
+    the harness's inline narrow-replacement Branch-C orchestration
+    delegates to ``stages.gates.resolve_narrow_replacement``.
+    Default-off; RCO-3 batches the flip."""
+    import os as _os
+
+    return _os.environ.get(
+        "GSO_STAGE6_NARROW_REPL_PURE", "0"
+    ).lower() in {"1", "true", "yes", "on"}
+
+
+def stage6_applyability_pure_enabled() -> bool:
+    """RCO-4 Task 7 — when ``GSO_STAGE6_APPLYABILITY_PURE`` is truthy,
+    the harness's applyability call site delegates to
+    ``stages.gates.run_applyability_gate``. Default-off."""
+    import os as _os
+
+    return _os.environ.get(
+        "GSO_STAGE6_APPLYABILITY_PURE", "0"
+    ).lower() in {"1", "true", "yes", "on"}
+
+
 def journey_producer_strict_enabled() -> bool:
     """Cycle 17 T2 — when on, the journey-event producers enforce
     mutual exclusion between hard-cluster and soft-signal emit
