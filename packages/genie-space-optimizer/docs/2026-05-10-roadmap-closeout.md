@@ -210,13 +210,15 @@ The earlier closeout list was directionally right but stale in a few places. Thi
 
 ### RCO-4b — `_run_gate_checks` Decomposition (Phased)
 
-**Status:** Phases A, B, and C landed — propagation_wait, slice_gate, and p0_gate extracted; typed contracts defined for all six stages; sequence-guard test pins production firing order. Phases D-E remain.
+**Status:** Phases A, B, C, and D landed — propagation_wait, slice_gate, p0_gate, asi_extraction forwarder, and baseline_drift_diagnostic extracted; typed contracts defined for all six stages; sequence-guard test pins production firing order. Phase E remains.
 
 **Phase A plan:** `docs/2026-05-12-rco-4b-phase-a-run-gate-checks-decomposition-plan.md`.
 
 **Phase B plan:** `docs/2026-05-12-rco-4b-phase-b-slice-gate-extraction-plan.md`.
 
 **Phase C plan:** `docs/2026-05-12-rco-4b-phase-c-p0-gate-extraction-plan.md`.
+
+**Phase D plan:** `docs/2026-05-12-rco-4b-phase-d-asi-extraction-and-baseline-drift-plan.md`.
 
 **Phase roadmap:** `docs/2026-05-12-rco-4b-phase-roadmap.md`.
 
@@ -233,7 +235,11 @@ The earlier closeout list was directionally right but stale in a few places. Thi
   (two pure helpers: `decide_p0_gate_should_run`,
   `decide_p0_gate_post_eval`; default-off behind
   `GSO_GATE_CHECKS_P0_PURE`).
-- D — ASI + baseline-drift extraction. Pending. (Independent of B/C.)
+- D — ASI extraction forwarder + baseline-drift diagnostic. ✅
+  closed-local pending corpus (two observability-only pure helpers:
+  `forward_asi_extraction_audit`, `build_baseline_drift_diagnostic`;
+  default-off behind `GSO_GATE_CHECKS_ASI_EXTRACTION_PURE` and
+  `GSO_GATE_CHECKS_BASELINE_DRIFT_PURE`).
 - E — Full-eval-acceptance extraction. Pending. (Soft-blocked by B/C/D for diff-size reasons.)
 - F (RCO-4c) — Unblock RCO-4 deferred gates. Pending.
 
