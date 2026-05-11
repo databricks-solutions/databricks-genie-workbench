@@ -46,7 +46,8 @@ _EXPECTED_ORDER = [
     "propagation_wait",       # legacy: confirmed-fast emission
     "propagation_wait",       # legacy: full-budget emission
     "slice_gate",
-    "p0_gate",
+    "p0_gate",                # Phase C: flag-on branch
+    "p0_gate",                # Phase C: legacy branch
     "_asi_audit_1",           # asi_extraction (via ``or "asi_extraction"`` fallback)
     "baseline_drift_diagnostic",
     "full_eval_acceptance",   # first emission
@@ -135,4 +136,52 @@ def test_slice_gate_audit_emit_position_unchanged_relative_to_propagation_wait()
         pytest.skip("propagation_wait or slice_gate audit not found in harness")
     assert prop_idx < slice_idx, (
         "Phase B must preserve the propagation_wait -> slice_gate ordering"
+    )
+
+
+# ---------------------------------------------------------------------------
+# RCO-4b Phase C — p0_gate position assertions
+# ---------------------------------------------------------------------------
+
+
+def test_p0_gate_audit_emit_appears_twice_one_per_flag_branch() -> None:
+    """RCO-4b Phase C — the P0-gate wiring duplicates the audit call
+    (one per flag branch) because the legacy reason_detail format
+    constructs ``f"p0_gate: {N} failures"`` inline while the
+    helper-on path reads the same string from the typed outcome.
+    Unifying the two would require a 3-arg helper that's worse than
+    the duplication.
+
+    Only one branch fires per run; the parity test verifies they
+    produce identical audit rows for the same input.
+    """
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    assert src.count('gate_name="p0_gate"') == 2
+
+
+def test_p0_gate_audit_emit_position_unchanged_relative_to_slice_gate() -> None:
+    """Phase B pinned ``gate_name="slice_gate"`` to fire BEFORE
+    ``gate_name="p0_gate"``. Phase C must not reorder.
+
+    Both p0_gate audit positions must be after the slice_gate audit
+    position.
+    """
+    import pathlib
+    src = pathlib.Path(
+        "src/genie_space_optimizer/optimization/harness.py"
+    ).read_text(encoding="utf-8")
+    slice_idx = src.find('gate_name="slice_gate"')
+    first_p0_idx = src.find('gate_name="p0_gate"')
+    last_p0_idx = src.rfind('gate_name="p0_gate"')
+    if slice_idx == -1 or first_p0_idx == -1:
+        import pytest
+        pytest.skip("slice_gate or p0_gate audit not found in harness")
+    assert slice_idx < first_p0_idx, (
+        "Phase C must preserve the slice_gate -> p0_gate ordering"
+    )
+    assert slice_idx < last_p0_idx, (
+        "Both p0_gate audit positions must follow the slice_gate audit"
     )
