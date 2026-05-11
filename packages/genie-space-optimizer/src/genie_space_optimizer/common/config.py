@@ -5805,6 +5805,26 @@ def l6_narrow_replacement_for_expression_enabled() -> bool:
     return _flag_enabled("GSO_L6_NARROW_REPLACEMENT_FOR_EXPRESSION")
 
 
+def l6_narrow_replacement_branch_c_enabled() -> bool:
+    """Cycle 16 T1 / T2 — Branch C of the narrow L6 replacement loop:
+    when an ``add_sql_snippet_expression`` or ``add_sql_snippet_measure``
+    is dropped at ``high_collateral_risk_flagged``, synthesize one
+    Lever-5 ``add_example_sql`` patch per resolvable target QID instead
+    of attempting Branch A's (semantically-wrong) ``query_id``-in-CASE
+    wrap.
+
+    Default-off so existing canonical replay fixtures stay byte-stable.
+    Promote to default-on after one corpus pilot confirms Branch C
+    survivors clear the blast-radius gate AND improve target-QID
+    accuracy on the anchor runs.
+
+    Replaces the misnamed ``GSO_L6_NARROW_REPLACEMENT_FOR_EXPRESSION``
+    (Branch A) — see Cycle 16 plan migration note. When both flags are
+    on, Branch C takes precedence.
+    """
+    return _flag_enabled("GSO_L6_NARROW_REPLACEMENT_BRANCH_C")
+
+
 def doa_fingerprint_patch_body_match_enabled() -> bool:
     """Cycle 10 W5 — DOA fingerprint buffer also indexes
     ``patch_body_fingerprint`` so reproposals that switch

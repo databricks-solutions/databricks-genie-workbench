@@ -1211,25 +1211,65 @@ def narrow_replacement_diagnosis(
     original_patch: dict,
     ag_target_qids: tuple,
     root_cause: str,
+    qid_to_question_text: dict[str, str] | None = None,
+    qid_to_reference_sql: dict[str, str] | None = None,
 ) -> dict:
     """Cycle 10 W4 — return a structured diagnosis of whether a narrow
     L6 replacement is applicable for ``original_patch``.
 
-    Pure: no I/O.
+    Cycle 16 T2 — extended with Branch C: when
+    ``GSO_L6_NARROW_REPLACEMENT_BRANCH_C`` is on AND the patch is an L6
+    expression / measure AND at least one target QID is *resolvable*
+    (has both ``qid_to_question_text[qid]`` and
+    ``qid_to_reference_sql[qid]`` non-empty), the diagnosis returns
+    ``applicable=True, reason="l5_example_sql_per_qid", branch="C"``.
+    Branch C takes precedence over Branch A (the semantically-wrong
+    ``query_id``-in-CASE wrap).
 
-    Returns ``{"applicable": bool, "reason": str, "original_patch_type": str}``.
+    Pure: no I/O. Reads two feature flags at the boundary so the inner
+    builders stay pure.
+
+    Returns ``{"applicable": bool, "reason": str, "original_patch_type":
+    str, "branch": "A"|"C" (when applicable), "resolvable_target_qids":
+    tuple[str, ...] (Branch C only)}``.
     """
     _ = root_cause
     ptype = str((original_patch or {}).get("patch_type") or "")
     qids = tuple(str(q) for q in (ag_target_qids or ()) if str(q))
+
     if ptype in _MEASURE_OR_EXPR_PATCH_TYPES:
-        # P0: when the expression-narrowing flag is on AND the patch
-        # carries a non-empty sql_expression AND target qids are
-        # supplied, the synthesizer can emit a CASE-wrapped narrow
-        # variant. Otherwise preserve the legacy decline.
+        # Cycle 16 T2 — Branch C dispatch first (takes precedence over
+        # Branch A's semantically-wrong query_id-in-CASE wrap).
         from genie_space_optimizer.common.config import (
+            l6_narrow_replacement_branch_c_enabled,
             l6_narrow_replacement_for_expression_enabled,
         )
+        if l6_narrow_replacement_branch_c_enabled():
+            q_text_map = qid_to_question_text or {}
+            ref_sql_map = qid_to_reference_sql or {}
+            resolvable = tuple(
+                q for q in sorted(qids)
+                if str(q_text_map.get(q) or "").strip()
+                and str(ref_sql_map.get(q) or "").strip()
+            )
+            if resolvable:
+                return {
+                    "applicable": True,
+                    "reason": "l5_example_sql_per_qid",
+                    "original_patch_type": ptype,
+                    "branch": "C",
+                    "resolvable_target_qids": resolvable,
+                }
+            return {
+                "applicable": False,
+                "reason": "no_resolvable_target_qids",
+                "original_patch_type": ptype,
+                "branch": "C",
+            }
+        # P0 (legacy Branch A): when the expression-narrowing flag is on
+        # AND the patch carries a non-empty sql_expression AND target
+        # qids are supplied, the synthesizer can emit a CASE-wrapped
+        # narrow variant. Otherwise preserve the legacy decline.
         if (
             l6_narrow_replacement_for_expression_enabled()
             and qids
@@ -1239,6 +1279,7 @@ def narrow_replacement_diagnosis(
                 "applicable": True,
                 "reason": "expression_qid_scope",
                 "original_patch_type": ptype,
+                "branch": "A",
             }
         return {
             "applicable": False,
@@ -1270,6 +1311,7 @@ def narrow_replacement_diagnosis(
         "applicable": True,
         "reason": "filter_predicate_narrowable",
         "original_patch_type": ptype,
+        "branch": "A",
     }
 
 
